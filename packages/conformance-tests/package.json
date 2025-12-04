@@ -1,0 +1,36 @@
+{
+  "name": "@durable-stream/conformance-tests",
+  "version": "0.0.1",
+  "description": "Conformance test suite for Durable Streams server implementations",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durable-stream/client": "workspace:*",
+    "vitest": "^3.2.4"
+  },
+  "devDependencies": {
+    "tsdown": "^0.9.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
