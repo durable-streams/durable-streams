@@ -145,6 +145,30 @@ Your application server consumes from backend streaming systems, applies authori
 - Durable Streams to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
+## Relationship to Server-Sent Events (SSE)
+
+Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks the durability and robust resumability needed for production applications.
+
+**SSE limitations:**
+
+- **No durable storage** - SSE is ephemeral; disconnect and data is lost. Servers must implement their own storage and replay logic
+- **Limited resumability** - SSE's `Last-Event-ID` mechanism requires servers to maintain per-client state and lacks standardized offset semantics
+- **No catch-up protocol** - No defined way to efficiently retrieve historical data before switching to live mode
+- **Text-only** - SSE is text-only
+- **No caching support** - Without durable offsets, CDN and browser caching are difficult to implement correctly
+- **Implementation variability** - No standard for how servers should handle reconnection, leading to fragile custom solutions
+
+**Durable Stream provides:**
+
+- **Durable storage** - Data persists across server restarts and client disconnections
+- **Opaque offset semantics** - Lexicographically sortable offsets with standardized resumption behavior
+- **Unified catch-up and live protocol** - Same offset-based API for historical and real-time data
+- **Binary support** - Content-type agnostic byte streams
+- **Caching-friendly** - Offset-based requests with Cache-Control headers enable efficient caching in CDNs and browsers
+- **Conformance tests** - Standardized test suite ensures consistent implementation behavior
+
+Durable Stream can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability and resumability layer on top.
+
 ## Running Your Own Server
 
 ### Node.js Reference Implementation
