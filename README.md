@@ -267,7 +267,7 @@ await stream.append(JSON.stringify({ type: "OrderCreated", orderId: "123" }))
 await stream.append(JSON.stringify({ type: "OrderPaid", orderId: "123" }))
 
 // Replay from beginning
-const result = await stream.read({ offset: "0_0" })
+const result = await stream.read({ offset: "-1" })
 const events = parseEvents(result.data)
 const state = events.reduce(applyEvent, initialState)
 ```
