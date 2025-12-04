@@ -169,9 +169,36 @@ Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks
 
 Durable Stream can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability and resumability layer on top.
 
-## Running Your Own Server
+## Implementations
 
-### Node.js Reference Implementation
+This repository provides reference implementations in TypeScript and Node.js:
+
+- **[@durable-stream/client](./packages/client)** - TypeScript client library for browsers and Node.js
+- **[@durable-stream/server](./packages/server)** - Node.js reference server implementation
+- **[@durable-stream/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[@durable-stream/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
+
+### Building Your Own Implementation
+
+The protocol is designed to support implementations in any language or platform. A conforming server implementation requires:
+
+1. **HTTP API** - Implement the protocol operations (PUT, POST, GET, DELETE, HEAD) as defined in [PROTOCOL.md](./PROTOCOL.md)
+2. **Durable storage** - Persist stream data with offset tracking (in-memory, file-based, database, object storage, etc.)
+3. **Offset management** - Generate opaque, lexicographically sortable offset tokens
+
+Client implementations need only support standard HTTP requests and offset tracking.
+
+We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
+
+```typescript
+import { runConformanceTests } from "@durable-stream/conformance-tests"
+
+runConformanceTests({
+  baseUrl: "http://localhost:8787",
+})
+```
+
+### Node.js Reference Server
 
 ```bash
 npm install @durable-stream/server
@@ -190,14 +217,6 @@ await server.start()
 ```
 
 See [@durable-stream/server](./packages/server) for more details.
-
-### Other Implementations
-
-The protocol is implementation-agnostic. You can:
-
-- Build your own server in any language
-- Use [@durable-stream/conformance-tests](./packages/conformance-tests) to verify compliance
-- Run [@durable-stream/benchmarks](./packages/benchmarks) to measure performance
 
 ## CLI Tool
 
