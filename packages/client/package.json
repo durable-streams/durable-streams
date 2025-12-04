@@ -1,5 +1,5 @@
 {
-  "name": "@durable-stream/client",
+  "name": "@durable-streams/client",
   "description": "TypeScript client for the Durable Streams protocol",
   "version": "0.1.0",
   "author": "Durable Stream contributors",
@@ -30,7 +30,7 @@
     "@microsoft/fetch-event-source": "^2.0.1"
   },
   "devDependencies": {
-    "@durable-stream/server": "workspace:*",
+    "@durable-streams/server": "workspace:*",
     "tsdown": "^0.9.0"
   },
   "scripts": {

@@ -1,5 +1,5 @@
 {
-  "name": "@durable-stream/server",
+  "name": "@durable-streams/server",
   "version": "0.0.1",
   "description": "Node.js reference server implementation for Durable Streams",
   "author": "Durable Stream contributors",

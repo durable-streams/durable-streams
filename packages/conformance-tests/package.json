@@ -1,5 +1,5 @@
 {
-  "name": "@durable-stream/conformance-tests",
+  "name": "@durable-streams/conformance-tests",
   "version": "0.0.1",
   "description": "Conformance test suite for Durable Streams server implementations",
   "author": "Durable Stream contributors",
@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durable-stream/client": "workspace:*",
+    "@durable-streams/client": "workspace:*",
     "vitest": "^3.2.4"
   },
   "devDependencies": {

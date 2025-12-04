@@ -1,5 +1,5 @@
 {
-  "name": "@durable-stream/monorepo",
+  "name": "@durable-streams/monorepo",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.11.0",

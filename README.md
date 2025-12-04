@@ -1,10 +1,10 @@
-# Durable Stream
+# Durable Streams
 
 **Open protocol for real-time sync to client applications**
 
 HTTP-based durable streams for streaming data reliably to web browsers, mobile apps, and native clients with offset-based resumability.
 
-Durable Stream provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
+Durable Streams provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
 
 ## The Missing Primitive
 
@@ -21,7 +21,7 @@ While durable streams exist throughout backend infrastructure (database WALs, Ka
 
 Applications typically implement ad-hoc solutions for resumable streaming—combinations of databases, queues, polling mechanisms, and custom offset tracking. Most implementations handle reconnection poorly: streaming responses break when clients switch tabs, experience brief network interruptions, or refresh pages.
 
-**Durable Stream addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at Electric for real-time Postgres sync.
+**Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at Electric for real-time Postgres sync.
 
 The protocol provides:
 
@@ -37,24 +37,24 @@ The protocol provides:
 
 This monorepo contains:
 
-- **[@durable-stream/client](./packages/client)** - TypeScript client library
-- **[@durable-stream/server](./packages/server)** - Node.js reference server implementation
-- **[@durable-stream/cli](./packages/cli)** - Command-line tool
-- **[@durable-stream/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
-- **[@durable-stream/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
+- **[@durable-streams/client](./packages/client)** - TypeScript client library
+- **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
+- **[@durable-streams/cli](./packages/cli)** - Command-line tool
+- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Quick Start
 
 ### Install the client
 
 ```bash
-npm install @durable-stream/client
+npm install @durable-streams/client
 ```
 
 ### Create and append to a stream
 
 ```typescript
-import { DurableStream } from "@durable-stream/client"
+import { DurableStream } from "@durable-streams/client"
 
 // Create a new stream
 const stream = await DurableStream.create({
@@ -97,7 +97,7 @@ for await (const chunk of stream.follow({
 
 ## Protocol
 
-Durable Stream is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PROTOCOL.md) for the complete specification.
+Durable Streams is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PROTOCOL.md) for the complete specification.
 
 **Core operations:**
 
@@ -119,7 +119,7 @@ Durable Stream is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PRO
 
 ## Relationship to Backend Streaming Systems
 
-Backend streaming systems like Kafka, RabbitMQ, and Kinesis excel at server-to-server messaging and backend event processing. Durable Stream complements these systems by solving a different problem: **reliably streaming data to client applications**.
+Backend streaming systems like Kafka, RabbitMQ, and Kinesis excel at server-to-server messaging and backend event processing. Durable Streams complements these systems by solving a different problem: **reliably streaming data to client applications**.
 
 The challenges of streaming to clients are distinct from server-to-server streaming:
 
@@ -133,16 +133,16 @@ The challenges of streaming to clients are distinct from server-to-server stream
 **Complementary architecture:**
 
 ```
-Kafka/RabbitMQ → Application Server → Durable Streams → Clients
+Kafka/RabbitMQ → Application Server → Durable Streamss → Clients
 (server-to-server)   (shapes data,      (server-to-client)
                       authorizes)
 ```
 
-Your application server consumes from backend streaming systems, applies authorization logic, shapes data for specific clients, and fans out via Durable Streams. This separation allows:
+Your application server consumes from backend streaming systems, applies authorization logic, shapes data for specific clients, and fans out via Durable Streamss. This separation allows:
 
 - Backend systems to optimize for throughput, partitioning, and server-to-server reliability
 - Application servers to enforce authorization boundaries and transform data
-- Durable Streams to optimize for HTTP compatibility, CDN leverage, and client resumability
+- Durable Streamss to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
 ## Relationship to Server-Sent Events (SSE)
@@ -158,7 +158,7 @@ Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks
 - **No caching support** - Without durable offsets, CDN and browser caching are difficult to implement correctly
 - **Implementation variability** - No standard for how servers should handle reconnection, leading to fragile custom solutions
 
-**Durable Stream provides:**
+**Durable Streams provides:**
 
 - **Durable storage** - Data persists across server restarts and client disconnections
 - **Opaque offset semantics** - Lexicographically sortable offsets with standardized resumption behavior
@@ -167,16 +167,16 @@ Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks
 - **Caching-friendly** - Offset-based requests with Cache-Control headers enable efficient caching in CDNs and browsers
 - **Conformance tests** - Standardized test suite ensures consistent implementation behavior
 
-Durable Stream can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability and resumability layer on top.
+Durable Streams can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability and resumability layer on top.
 
 ## Implementations
 
 This repository provides reference implementations in TypeScript and Node.js:
 
-- **[@durable-stream/client](./packages/client)** - TypeScript client library for browsers and Node.js
-- **[@durable-stream/server](./packages/server)** - Node.js reference server implementation
-- **[@durable-stream/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
-- **[@durable-stream/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
+- **[@durable-streams/client](./packages/client)** - TypeScript client library for browsers and Node.js
+- **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
+- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ### Building Your Own Implementation
 
@@ -191,7 +191,7 @@ Client implementations need only support standard HTTP requests and offset track
 We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
 
 ```typescript
-import { runConformanceTests } from "@durable-stream/conformance-tests"
+import { runConformanceTests } from "@durable-streams/conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:8787",
@@ -201,11 +201,11 @@ runConformanceTests({
 ### Node.js Reference Server
 
 ```bash
-npm install @durable-stream/server
+npm install @durable-streams/server
 ```
 
 ```typescript
-import { createDurableStreamServer } from "@durable-stream/server"
+import { createDurableStreamServer } from "@durable-streams/server"
 
 const server = createDurableStreamServer({
   port: 8787,
@@ -216,12 +216,12 @@ const server = createDurableStreamServer({
 await server.start()
 ```
 
-See [@durable-stream/server](./packages/server) for more details.
+See [@durable-streams/server](./packages/server) for more details.
 
 ## CLI Tool
 
 ```bash
-npm install -g @durable-stream/cli
+npm install -g @durable-streams/cli
 ```
 
 ```bash
@@ -296,7 +296,7 @@ for await (const chunk of stream.follow({
 Use the conformance test suite to verify your server implements the protocol correctly:
 
 ```typescript
-import { runConformanceTests } from "@durable-stream/conformance-tests"
+import { runConformanceTests } from "@durable-streams/conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:8787",
@@ -308,7 +308,7 @@ runConformanceTests({
 Measure your server's performance:
 
 ```typescript
-import { runBenchmarks } from "@durable-stream/benchmarks"
+import { runBenchmarks } from "@durable-streams/benchmarks"
 
 runBenchmarks({
   baseUrl: "http://localhost:8787",
@@ -324,7 +324,7 @@ We welcome contributions! This project follows the [Contributor Covenant](https:
 
 ```bash
 # Clone the repository
-git clone https://github.com/durable-stream/durable-stream.git
+git clone https://github.com/durable-streams/durable-streams.git
 cd durable-stream
 
 # Install dependencies
@@ -363,7 +363,7 @@ Apache 2.0 - see [LICENSE](./LICENSE)
 ## Links
 
 - [Protocol Specification](./PROTOCOL.md)
-- [GitHub Repository](https://github.com/durable-stream/durable-stream)
+- [GitHub Repository](https://github.com/durable-streams/durable-streams)
 - [NPM Organization](https://www.npmjs.com/org/durable-stream)
 
 ---

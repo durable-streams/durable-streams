@@ -1,6 +1,6 @@
-# DRAFT: The Durable Stream Protocol
+# DRAFT: The Durable Streams Protocol
 
-**Document:** Durable Stream Protocol  
+**Document:** Durable Streams Protocol  
 **Version:** 1.0  
 **Date:** 2025-01-XX  
 **Author:** ElectricSQL
@@ -9,7 +9,7 @@
 
 ## Abstract
 
-This document specifies the Durable Stream Protocol, an HTTP-based protocol for creating, appending to, and reading from durable, append-only byte streams. The protocol provides a simple, web-native primitive for applications requiring ordered, replayable data streams with support for catch-up reads and live tailing. It is designed to be a foundation for higher-level abstractions such as event sourcing, database synchronization, collaborative editing, and AI conversation histories.
+This document specifies the Durable Streams Protocol, an HTTP-based protocol for creating, appending to, and reading from durable, append-only byte streams. The protocol provides a simple, web-native primitive for applications requiring ordered, replayable data streams with support for catch-up reads and live tailing. It is designed to be a foundation for higher-level abstractions such as event sourcing, database synchronization, collaborative editing, and AI conversation histories.
 
 ## Copyright Notice
 
@@ -52,7 +52,7 @@ Modern web and cloud applications frequently require ordered, durable sequences 
 
 While these patterns are widespread, the web platform lacks a simple, first-class primitive for durable streams. Applications typically implement ad-hoc solutions using combinations of databases, queues, and polling mechanisms, each reinventing similar offset-based replay semantics.
 
-The Durable Stream Protocol provides a minimal HTTP-based interface for durable, append-only byte streams. It is intentionally low-level and byte-oriented, allowing higher-level abstractions to be built on top without protocol changes.
+The Durable Streams Protocol provides a minimal HTTP-based interface for durable, append-only byte streams. It is intentionally low-level and byte-oriented, allowing higher-level abstractions to be built on top without protocol changes.
 
 ## 2. Terminology
 
@@ -68,7 +68,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 ## 3. Protocol Overview
 
-The Durable Stream Protocol is an HTTP-based protocol that operates on URLs. A stream is simply a URL; the protocol defines how to interact with that URL using standard HTTP methods, query parameters, and custom headers.
+The Durable Streams Protocol is an HTTP-based protocol that operates on URLs. A stream is simply a URL; the protocol defines how to interact with that URL using standard HTTP methods, query parameters, and custom headers.
 
 The protocol defines operations to create, append to, read, delete, and query metadata for streams. Reads have three modes: catch-up, long-poll, and Server-Sent Events (SSE). The primary operations are:
 
@@ -448,7 +448,7 @@ SSE connections **SHOULD** be closed by the server approximately every 60 second
 
 ## 9. Extensibility
 
-The Durable Stream Protocol is designed to be extended for specific use cases and implementations. Extensions **SHOULD** be pure supersets of the base protocol, ensuring compatibility with any client that implements the base protocol.
+The Durable Streams Protocol is designed to be extended for specific use cases and implementations. Extensions **SHOULD** be pure supersets of the base protocol, ensuring compatibility with any client that implements the base protocol.
 
 ### 9.1. Protocol Extensions
 

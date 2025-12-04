@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { DurableStream } from "@durable-stream/client"
+import { DurableStream } from "@durable-streams/client"
 
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
