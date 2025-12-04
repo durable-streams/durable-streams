@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh issue view:*)",
+      "Bash(gh issue edit:*)",
+      "Bash(mkdir:*)",
+      "WebFetch(domain:alan.norbauer.com)",
+      "WebFetch(domain:tsdown.dev)",
+      "Bash(pnpm build:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pnpm test:run:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm lint:fix:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

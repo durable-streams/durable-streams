@@ -1,0 +1,52 @@
+{
+  "name": "@durable-stream/monorepo",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --build",
+    "prepare": "husky",
+    "changeset": "changeset",
+    "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
+    "changeset:publish": "pnpm build && changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.8",
+    "@svitejs/changesets-changelog-github-compact": "^1.2.0",
+    "@eslint/js": "^9.39.1",
+    "@stylistic/eslint-plugin": "^4.4.1",
+    "@tanstack/config": "^0.22.1",
+    "@types/node": "^22.15.21",
+    "@typescript-eslint/eslint-plugin": "^8.47.0",
+    "@typescript-eslint/parser": "^8.47.0",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-import-resolver-typescript": "^4.4.4",
+    "eslint-plugin-prettier": "^5.5.4",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.6.2",
+    "tsdown": "^0.9.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  }
+}
