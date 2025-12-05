@@ -299,16 +299,6 @@ Content-Type: application/json
 - **ETag** - Efficient revalidation for unchanged data
 - **Request collapsing** - Multiple clients requesting same offset collapsed to single upstream request
 
-**With authentication:**
-Use `Cache-Control: private` instead of `public` and configure CDN to vary cache by auth token/user:
-
-```
-Cache-Control: private, max-age=60
-Vary: Authorization
-```
-
-Or use signed URLs with auth in query parameters for public caching.
-
 ## Relationship to Backend Streaming Systems
 
 Backend streaming systems like Kafka, RabbitMQ, and Kinesis excel at server-to-server messaging and backend event processing. Durable Streams complements these systems by solving a different problem: **reliably streaming data to client applications**.
