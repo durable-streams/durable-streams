@@ -368,17 +368,7 @@ WebSockets provide full-duplex communication, but are poorly suited for durable 
 - **Stateless servers** - No connection state to manage; clients track their own offsets
 - **Simple protocol** - Standard HTTP methods and headers, no custom framing required
 
-## Implementations
-
-This repository provides reference implementations in TypeScript and Node.js:
-
-- **[@durable-streams/client](./packages/client)** - TypeScript read-only client
-- **[@durable-streams/writer](./packages/writer)** - TypeScript read/write client
-- **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
-- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
-- **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
-
-### Building Your Own Implementation
+## Building Your Own Implementation
 
 The protocol is designed to support implementations in any language or platform. A conforming server implementation requires:
 
