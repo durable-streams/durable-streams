@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@durable-streams/client": "workspace:*",
     "@durable-streams/writer": "workspace:*",
     "vitest": "^3.2.4"
   },

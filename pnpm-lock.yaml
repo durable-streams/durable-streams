@@ -113,6 +113,9 @@ importers:
 
   packages/conformance-tests:
     dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
       '@durable-streams/writer':
         specifier: workspace:*
         version: link:../writer

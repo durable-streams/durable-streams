@@ -15,7 +15,8 @@
       "Bash(pnpm typecheck:*)",
       "Bash(pnpm test:conformance:*)",
       "Bash(pnpm --filter @durable-streams/server build:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(pnpm --filter @durable-streams/client build:*)"
     ],
     "deny": [],
     "ask": []

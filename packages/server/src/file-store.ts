@@ -41,11 +41,12 @@ class FileHandlePool {
   private dirty = new Set<string>()
 
   constructor(maxSize: number) {
-    this.cache = new SieveCache<string, PooledHandle>({
-      capacity: maxSize,
-      onEvict: async (key, handle) => {
-        // Close the handle when evicted
-        await this.closeHandle(key, handle)
+    this.cache = new SieveCache<string, PooledHandle>(maxSize, {
+      evictHook: (key: string, handle: PooledHandle) => {
+        // Close the handle when evicted (sync version - fire and forget)
+        this.closeHandle(key, handle).catch((err: Error) => {
+          console.error(`[FileHandlePool] Error closing evicted handle:`, err)
+        })
       },
     })
   }
@@ -143,7 +144,7 @@ export interface FileBackedStreamStoreOptions {
 export class FileBackedStreamStore {
   private db: Database
   private fileManager: StreamFileManager
-  private fileHandlePool: SimpleFileHandlePool
+  private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private fsyncTimer: NodeJS.Timeout | null = null
   private fsyncIntervalMs: number
@@ -178,7 +179,7 @@ export class FileBackedStreamStore {
    */
   private startFsyncTimer(): void {
     this.fsyncTimer = setInterval(() => {
-      this.fileHandlePool.fsyncDirty().catch((err) => {
+      this.fileHandlePool.fsyncDirty().catch((err: Error) => {
         console.error(`[FileBackedStreamStore] Fsync error:`, err)
       })
     }, this.fsyncIntervalMs)
@@ -613,7 +614,7 @@ export class FileBackedStreamStore {
     }
 
     // Clear file handle pool
-    this.fileHandlePool.closeAll().catch((err) => {
+    this.fileHandlePool.closeAll().catch((err: Error) => {
       console.error(`[FileBackedStreamStore] Error closing handles:`, err)
     })
 
