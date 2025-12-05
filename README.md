@@ -111,6 +111,98 @@ for await (const chunk of stream.follow({
 }
 ```
 
+## Message Framing
+
+Durable Streams operates in two modes for handling message boundaries:
+
+### Byte Stream Mode (Default)
+
+By default, Durable Streams is a **raw byte stream with no message boundaries**. When you append data, it's concatenated directly. A single read may return partial messages, multiple messages, or data spanning across reads.
+
+```typescript
+// Append multiple messages
+await stream.append("hello")
+await stream.append("world")
+
+// Reads return arbitrary byte chunks - NOT message-aligned
+const result = await stream.read()
+// result.data might be: "helloworld", "hello", "hel", etc.
+```
+
+**You must implement your own framing.** Common patterns:
+
+**Newline-delimited (NDJSON):**
+
+```typescript
+// Write with newlines
+await stream.append(JSON.stringify({ event: "user.created" }) + "\n")
+await stream.append(JSON.stringify({ event: "user.updated" }) + "\n")
+
+// Parse line by line
+const text = new TextDecoder().decode(result.data)
+const messages = text.split("\n").filter(Boolean).map(JSON.parse)
+```
+
+**Length-prefixed:**
+
+```typescript
+// Write with length prefix
+const data = JSON.stringify({ event: "user.created" })
+const length = new Uint8Array([data.length])
+await stream.append(
+  new Uint8Array([...length, ...new TextEncoder().encode(data)])
+)
+```
+
+### JSON Mode
+
+When creating a stream with `contentType: "application/json"`, the server guarantees message boundaries. Each read returns a complete JSON array of the messages appended since the last offset.
+
+```typescript
+// Create a JSON-mode stream
+const stream = await DurableStream.create({
+  url: "https://your-server.com/v1/stream/my-stream",
+  contentType: "application/json",
+})
+
+// Append individual JSON values
+await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
+await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+
+// Read returns parsed JSON array automatically
+const result = await stream.read()
+// result.data = [
+//   { event: "user.created", userId: "123" },
+//   { event: "user.updated", userId: "123" }
+// ]
+```
+
+In JSON mode:
+
+- Each append must be a valid JSON value
+- The server batches appends into JSON arrays for reads
+- Message boundaries are preserved
+- Ideal for structured event streams
+
+## Offset Semantics
+
+Offsets are opaque tokens that identify positions within a stream:
+
+- **Opaque strings** - Treat as black boxes; don't parse or construct them
+- **Lexicographically sortable** - You can compare offsets to determine ordering
+- **`"-1"` means start** - Use `offset: "-1"` to read from the beginning
+- **Server-generated** - Always use the `offset` value returned in responses
+
+```typescript
+// Start from beginning
+const result = await stream.read({ offset: "-1" })
+
+// Resume from last position
+const next = await stream.read({ offset: result.offset })
+```
+
+Offset format is implementation-defined (e.g., `"0_100"` might encode chunk ID and byte position, but clients should never rely on this).
+
 ## Protocol
 
 Durable Streams is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PROTOCOL.md) for the complete specification.
@@ -149,16 +241,16 @@ The challenges of streaming to clients are distinct from server-to-server stream
 **Complementary architecture:**
 
 ```
-Kafka/RabbitMQ → Application Server → Durable Streamss → Clients
+Kafka/RabbitMQ → Application Server → Durable Streams → Clients
 (server-to-server)   (shapes data,      (server-to-client)
                       authorizes)
 ```
 
-Your application server consumes from backend streaming systems, applies authorization logic, shapes data for specific clients, and fans out via Durable Streamss. This separation allows:
+Your application server consumes from backend streaming systems, applies authorization logic, shapes data for specific clients, and fans out via Durable Streams. This separation allows:
 
 - Backend systems to optimize for throughput, partitioning, and server-to-server reliability
 - Application servers to enforce authorization boundaries and transform data
-- Durable Streamss to optimize for HTTP compatibility, CDN leverage, and client resumability
+- Durable Streams to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
 ## Why Not SSE?
@@ -359,7 +451,7 @@ We welcome contributions! This project follows the [Contributor Covenant](https:
 ```bash
 # Clone the repository
 git clone https://github.com/durable-streams/durable-streams.git
-cd durable-stream
+cd durable-streams
 
 # Install dependencies
 pnpm install
@@ -398,7 +490,7 @@ Apache 2.0 - see [LICENSE](./LICENSE)
 
 - [Protocol Specification](./PROTOCOL.md)
 - [GitHub Repository](https://github.com/durable-streams/durable-streams)
-- [NPM Organization](https://www.npmjs.com/org/durable-stream)
+- [NPM Organization](https://www.npmjs.com/org/durable-streams)
 
 ---
 
