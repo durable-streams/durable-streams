@@ -96,7 +96,10 @@ export class DurableStreamTestServer {
       this.server!.close(async (err) => {
         if (err) {
           reject(err)
-        } else {
+          return
+        }
+
+        try {
           // Close file-backed store if used
           if (this.store instanceof FileBackedStreamStore) {
             await this.store.close()
@@ -105,6 +108,8 @@ export class DurableStreamTestServer {
           this.server = null
           this._url = null
           resolve()
+        } catch (closeErr) {
+          reject(closeErr)
         }
       })
     })

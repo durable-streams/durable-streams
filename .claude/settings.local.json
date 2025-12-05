@@ -16,7 +16,10 @@
       "Bash(pnpm test:conformance:*)",
       "Bash(pnpm --filter @durable-streams/server build:*)",
       "Bash(find:*)",
-      "Bash(pnpm --filter @durable-streams/client build:*)"
+      "Bash(pnpm --filter @durable-streams/client build:*)",
+      "Bash(pnpm --filter @durable-streams/client test:run -- file-backed.test.ts --reporter=verbose)",
+      "WebFetch(domain:www.npmjs.com)",
+      "Bash(node --input-type=module -e:*)"
     ],
     "deny": [],
     "ask": []

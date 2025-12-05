@@ -36,6 +36,14 @@ export class StreamFileManager {
   }
 
   /**
+   * Delete a directory by its exact name (used for unique directory names).
+   */
+  async deleteDirectoryByName(directoryName: string): Promise<void> {
+    const dir = path.join(this.streamsDir, directoryName)
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+
+  /**
    * Get the absolute path to a stream's directory.
    * Returns null if the directory doesn't exist.
    */

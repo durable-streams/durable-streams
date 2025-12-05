@@ -5,6 +5,7 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { randomBytes } from "node:crypto"
 import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
@@ -25,6 +26,12 @@ interface StreamMetadata {
   createdAt: number
   segmentCount: number
   totalBytes: number
+  /**
+   * Unique directory name for this stream instance.
+   * Format: {encoded_path}~{timestamp}~{random_hex}
+   * This allows safe async deletion and immediate reuse of stream paths.
+   */
+  directoryName: string
 }
 
 /**
@@ -79,7 +86,16 @@ class FileHandlePool {
       return new Promise<void>((resolve, reject) => {
         // Use fdatasync (faster than fsync, skips metadata)
         // Cast to any to access fd property (exists at runtime but not in types)
-        const fd = (handle.stream as any).fd as number
+        const fd = (handle.stream as any).fd
+
+        // If fd is null, stream hasn't been opened yet - skip fsync
+        if (typeof fd !== `number`) {
+          handle.dirty = false
+          this.dirty.delete(filePath)
+          resolve()
+          return
+        }
+
         fs.fdatasync(fd, (err) => {
           if (err) reject(err)
           else {
@@ -106,22 +122,40 @@ class FileHandlePool {
     this.cache.clear()
   }
 
+  /**
+   * Close a specific file handle if it exists in the cache.
+   * Useful for cleanup before deleting files.
+   */
+  async closeFileHandle(filePath: string): Promise<void> {
+    const handle = this.cache.get(filePath)
+    if (handle) {
+      await this.closeHandle(filePath, handle)
+      this.cache.delete(filePath)
+    }
+  }
+
   private async closeHandle(
     filePath: string,
     handle: PooledHandle
   ): Promise<void> {
     // Fsync if dirty before closing
     if (handle.dirty) {
-      await new Promise<void>((resolve, reject) => {
-        const fd = (handle.stream as any).fd as number
-        fs.fdatasync(fd, (err) => {
-          if (err) reject(err)
-          else {
-            this.dirty.delete(filePath)
-            resolve()
-          }
+      const fd = (handle.stream as any).fd
+
+      // Only fsync if fd is available
+      if (typeof fd === `number`) {
+        await new Promise<void>((resolve, reject) => {
+          fs.fdatasync(fd, (err) => {
+            if (err) reject(err)
+            else {
+              this.dirty.delete(filePath)
+              resolve()
+            }
+          })
         })
-      })
+      } else {
+        this.dirty.delete(filePath)
+      }
     }
 
     // Close the stream
@@ -138,6 +172,18 @@ export interface FileBackedStreamStoreOptions {
 }
 
 /**
+ * Generate a unique directory name for a stream.
+ * Format: {encoded_path}~{timestamp}~{random_hex}
+ * This allows safe async deletion and immediate reuse of stream paths.
+ */
+function generateUniqueDirectoryName(streamPath: string): string {
+  const encoded = encodeStreamPath(streamPath)
+  const timestamp = Date.now().toString(36) // Base36 for shorter strings
+  const random = randomBytes(4).toString(`hex`) // 8 chars hex
+  return `${encoded}~${timestamp}~${random}`
+}
+
+/**
  * File-backed implementation of StreamStore.
  * Maintains the same interface as the in-memory StreamStore for drop-in compatibility.
  */
@@ -149,6 +195,12 @@ export class FileBackedStreamStore {
   private fsyncTimer: NodeJS.Timeout | null = null
   private fsyncIntervalMs: number
   private dataDir: string
+  /**
+   * In-memory buffer for recent appends per stream.
+   * Ensures read-your-writes consistency and fast long-poll notification.
+   * Messages remain in buffer until fsynced to disk.
+   */
+  private messageBuffers: Map<string, Array<StreamMessage>> = new Map()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -187,11 +239,13 @@ export class FileBackedStreamStore {
 
   /**
    * Recover streams from disk on startup.
+   * Validates that LMDB metadata matches actual file contents and reconciles any mismatches.
    */
   private recover(): void {
     console.log(`[FileBackedStreamStore] Starting recovery...`)
 
     let recovered = 0
+    let reconciled = 0
     let errors = 0
 
     // Scan LMDB for all streams
@@ -203,10 +257,50 @@ export class FileBackedStreamStore {
     // Convert to array to avoid iterator issues
     const entries = Array.from(range)
 
-    for (const { key } of entries) {
+    for (const { key, value } of entries) {
       try {
         // Key should be a string in our schema
         if (typeof key !== `string`) continue
+
+        const streamMeta = value as StreamMetadata
+        const streamPath = key.replace(`stream:`, ``)
+
+        // Get segment file path
+        const segmentPath = path.join(
+          this.dataDir,
+          `streams`,
+          streamMeta.directoryName,
+          `segment_00000.log`
+        )
+
+        // Check if file exists
+        if (!fs.existsSync(segmentPath)) {
+          console.warn(
+            `[FileBackedStreamStore] Recovery: Stream file missing for ${streamPath}, removing from LMDB`
+          )
+          this.db.removeSync(key)
+          errors++
+          continue
+        }
+
+        // Scan file to compute true offset
+        const trueOffset = this.scanFileForTrueOffset(segmentPath)
+
+        // Check if offset matches
+        if (trueOffset !== streamMeta.currentOffset) {
+          console.warn(
+            `[FileBackedStreamStore] Recovery: Offset mismatch for ${streamPath}: ` +
+              `LMDB says ${streamMeta.currentOffset}, file says ${trueOffset}. Reconciling to file.`
+          )
+
+          // Update LMDB to match file (source of truth)
+          const reconciledMeta: StreamMetadata = {
+            ...streamMeta,
+            currentOffset: trueOffset,
+          }
+          this.db.putSync(key, reconciledMeta)
+          reconciled++
+        }
 
         recovered++
       } catch (err) {
@@ -216,8 +310,58 @@ export class FileBackedStreamStore {
     }
 
     console.log(
-      `[FileBackedStreamStore] Recovery complete: ${recovered} streams, ${errors} errors`
+      `[FileBackedStreamStore] Recovery complete: ${recovered} streams, ` +
+        `${reconciled} reconciled, ${errors} errors`
     )
+  }
+
+  /**
+   * Scan a segment file to compute the true last offset.
+   * Handles partial/truncated messages at the end.
+   */
+  private scanFileForTrueOffset(segmentPath: string): string {
+    try {
+      const fileContent = fs.readFileSync(segmentPath)
+      let filePos = 0
+      let currentDataOffset = 0
+
+      while (filePos < fileContent.length) {
+        // Read message length (4 bytes)
+        if (filePos + 4 > fileContent.length) {
+          // Truncated length header - stop here
+          break
+        }
+
+        const messageLength = fileContent.readUInt32BE(filePos)
+        filePos += 4
+
+        // Check if we have the full message
+        if (filePos + messageLength > fileContent.length) {
+          // Truncated message data - stop here
+          break
+        }
+
+        filePos += messageLength
+
+        // Skip newline
+        if (filePos < fileContent.length) {
+          filePos += 1
+        }
+
+        // Update offset with this complete message
+        currentDataOffset += messageLength
+      }
+
+      // Return offset in format "readSeq_byteOffset"
+      return `0_${currentDataOffset}`
+    } catch (err) {
+      console.error(
+        `[FileBackedStreamStore] Error scanning file ${segmentPath}:`,
+        err
+      )
+      // Return empty offset on error
+      return `0_0`
+    }
   }
 
   /**
@@ -288,7 +432,7 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Initialize metadata (directory created lazily on first append)
+    // Initialize metadata
     const streamMeta: StreamMetadata = {
       path: streamPath,
       contentType: options.contentType,
@@ -299,10 +443,30 @@ export class FileBackedStreamStore {
       createdAt: Date.now(),
       segmentCount: 1,
       totalBytes: 0,
+      directoryName: generateUniqueDirectoryName(streamPath),
+    }
+
+    // Create stream directory and empty segment file immediately
+    // This ensures the stream is fully initialized and can be recovered
+    const streamDir = path.join(
+      this.dataDir,
+      `streams`,
+      streamMeta.directoryName
+    )
+    try {
+      fs.mkdirSync(streamDir, { recursive: true })
+      const segmentPath = path.join(streamDir, `segment_00000.log`)
+      fs.writeFileSync(segmentPath, ``)
+    } catch (err) {
+      console.error(
+        `[FileBackedStreamStore] Error creating stream directory:`,
+        err
+      )
+      throw err
     }
 
     // Save to LMDB
-    this.db.put(key, streamMeta)
+    this.db.putSync(key, streamMeta)
 
     // Append initial data if provided
     if (options.initialData && options.initialData.length > 0) {
@@ -328,25 +492,43 @@ export class FileBackedStreamStore {
 
   delete(streamPath: string): boolean {
     const key = `stream:${streamPath}`
-    const exists = this.db.get(key) !== undefined
+    const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
-    if (!exists) {
+    if (!streamMeta) {
       return false
     }
 
     // Cancel any pending long-polls for this stream
     this.cancelLongPollsForStream(streamPath)
 
-    // Delete from LMDB
-    this.db.remove(key)
+    // Clear in-memory buffer for this stream
+    this.messageBuffers.delete(streamPath)
 
-    // Delete files (async, but don't wait)
-    this.fileManager.deleteStreamDirectory(streamPath).catch((err) => {
-      console.error(
-        `[FileBackedStreamStore] Error deleting stream directory:`,
-        err
-      )
+    // Close any open file handle for this stream's segment file
+    // This is important especially on Windows where open handles block deletion
+    const segmentPath = path.join(
+      this.dataDir,
+      `streams`,
+      streamMeta.directoryName,
+      `segment_00000.log`
+    )
+    this.fileHandlePool.closeFileHandle(segmentPath).catch((err: Error) => {
+      console.error(`[FileBackedStreamStore] Error closing file handle:`, err)
     })
+
+    // Delete from LMDB
+    this.db.removeSync(key)
+
+    // Delete files using unique directory name (async, but don't wait)
+    // Safe to reuse stream path immediately since new creation gets new directory
+    this.fileManager
+      .deleteDirectoryByName(streamMeta.directoryName)
+      .catch((err: Error) => {
+        console.error(
+          `[FileBackedStreamStore] Error deleting stream directory:`,
+          err
+        )
+      })
 
     return true
   }
@@ -395,25 +577,12 @@ export class FileBackedStreamStore {
     const newByteOffset = byteOffset + data.length
     const newOffset = `${readSeq}_${newByteOffset}`
 
-    // Ensure stream directory exists (lazy creation)
+    // Get segment file path (directory was created in create())
     const streamDir = path.join(
       this.dataDir,
       `streams`,
-      encodeStreamPath(streamPath)
+      streamMeta.directoryName
     )
-
-    // Create directory synchronously if it doesn't exist
-    try {
-      fs.mkdirSync(streamDir, { recursive: true })
-      const segmentPath = path.join(streamDir, `segment_00000.log`)
-      if (!fs.existsSync(segmentPath)) {
-        fs.writeFileSync(segmentPath, ``)
-      }
-    } catch {
-      // Directory might already exist, that's OK
-    }
-
-    // Get segment file path
     const segmentPath = path.join(streamDir, `segment_00000.log`)
 
     // Get write stream from pool
@@ -436,7 +605,7 @@ export class FileBackedStreamStore {
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + data.length + 5, // +4 for length, +1 for newline
     }
-    this.db.put(key, updatedMeta)
+    this.db.putSync(key, updatedMeta)
 
     // Create message
     const message: StreamMessage = {
@@ -445,7 +614,12 @@ export class FileBackedStreamStore {
       timestamp: Date.now(),
     }
 
-    // Notify long-polls
+    // Add to in-memory buffer for read-your-writes consistency
+    const buffer = this.messageBuffers.get(streamPath) ?? []
+    buffer.push(message)
+    this.messageBuffers.set(streamPath, buffer)
+
+    // Notify long-polls (they'll read from buffer + disk)
     this.notifyLongPolls(streamPath)
 
     return message
@@ -480,11 +654,11 @@ export class FileBackedStreamStore {
       return { messages: [], upToDate: true }
     }
 
-    // Get segment file path
+    // Get segment file path using unique directory name
     const streamDir = path.join(
       this.dataDir,
       `streams`,
-      encodeStreamPath(streamPath)
+      streamMeta.directoryName
     )
     const segmentPath = path.join(streamDir, `segment_00000.log`)
 
@@ -539,9 +713,20 @@ export class FileBackedStreamStore {
       }
     } catch (err) {
       console.error(`[FileBackedStreamStore] Error reading file:`, err)
-      // Return empty messages on error
-      return { messages: [], upToDate: true }
+      // Return empty messages on error (but still include buffer below)
     }
+
+    // Merge in-memory buffer messages (for read-your-writes consistency)
+    const buffer = this.messageBuffers.get(streamPath) ?? []
+    const bufferMessages = buffer.filter((msg) => {
+      // Parse message offset to compare with start offset
+      const msgParts = msg.offset.split(`_`).map(Number)
+      const msgByte = msgParts[1] ?? 0
+      return msgByte > startByte
+    })
+
+    // Append buffer messages to disk messages
+    messages.push(...bufferMessages)
 
     return { messages, upToDate: true }
   }
@@ -600,6 +785,9 @@ export class FileBackedStreamStore {
     }
     this.pendingLongPolls = []
 
+    // Clear in-memory message buffers
+    this.messageBuffers.clear()
+
     // Clear all streams from LMDB
     const range = this.db.getRange({
       start: `stream:`,
@@ -610,7 +798,7 @@ export class FileBackedStreamStore {
     const entries = Array.from(range)
 
     for (const { key } of entries) {
-      this.db.remove(key)
+      this.db.removeSync(key)
     }
 
     // Clear file handle pool
@@ -618,8 +806,8 @@ export class FileBackedStreamStore {
       console.error(`[FileBackedStreamStore] Error closing handles:`, err)
     })
 
-    // Note: Files are not deleted in clear() to match in-memory behavior
-    // Use delete() for individual streams to remove files
+    // Note: Files are not deleted in clear() with unique directory names
+    // New streams get fresh directories, so old files won't interfere
   }
 
   list(): Array<string> {

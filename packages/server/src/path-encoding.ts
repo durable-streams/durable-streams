@@ -25,7 +25,8 @@ export function encodeStreamPath(path: string): string {
   // Hash long paths to keep directory names manageable
   if (base64.length > MAX_ENCODED_LENGTH) {
     const hash = createHash(`sha256`).update(path).digest(`hex`).slice(0, 16)
-    return `${base64.slice(0, 180)}_${hash}`
+    // Use ~ as separator since it cannot appear in base64url output
+    return `${base64.slice(0, 180)}~${hash}`
   }
 
   return base64
@@ -38,13 +39,17 @@ export function encodeStreamPath(path: string): string {
  * decodeStreamPath("L3N0cmVhbS91c2VyczpjcmVhdGVk") → "/stream/users:created"
  */
 export function decodeStreamPath(encoded: string): string {
-  // Remove hash suffix if present (hash is always 16 chars at the end after underscore)
-  const parts = encoded.split(`_`)
-  const lastPart = parts[parts.length - 1]
-  const base =
-    parts.length > 1 && lastPart && lastPart.length === 16
-      ? parts.slice(0, -1).join(`_`)
-      : encoded
+  // Remove hash suffix if present (hash is always 16 chars after ~ separator)
+  // Use ~ as separator since it cannot appear in base64url output
+  let base = encoded
+  const tildeIndex = encoded.lastIndexOf(`~`)
+  if (tildeIndex !== -1) {
+    const possibleHash = encoded.slice(tildeIndex + 1)
+    // Verify it's a 16-char hex hash before removing it
+    if (possibleHash.length === 16 && /^[0-9a-f]+$/.test(possibleHash)) {
+      base = encoded.slice(0, tildeIndex)
+    }
+  }
 
   // Restore base64 from base64url
   const normalized = base.replace(/-/g, `+`).replace(/_/g, `/`)
