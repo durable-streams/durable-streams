@@ -203,6 +203,23 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
+    // Validate TTL and Expires-At headers
+    if (ttlHeader && expiresAtHeader) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Cannot specify both Stream-TTL and Stream-Expires-At`)
+      return
+    }
+
+    let ttlSeconds: number | undefined
+    if (ttlHeader) {
+      ttlSeconds = parseInt(ttlHeader, 10)
+      if (isNaN(ttlSeconds) || ttlSeconds < 0) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-TTL value`)
+        return
+      }
+    }
+
     // Read body if present
     const body = await this.readBody(req)
 
@@ -210,7 +227,7 @@ export class DurableStreamTestServer {
 
     this.store.create(path, {
       contentType,
-      ttlSeconds: ttlHeader ? parseInt(ttlHeader, 10) : undefined,
+      ttlSeconds,
       expiresAt: expiresAtHeader,
       initialData: body.length > 0 ? body : undefined,
     })
@@ -270,6 +287,15 @@ export class DurableStreamTestServer {
     const offset = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined
     const live = url.searchParams.get(LIVE_QUERY_PARAM)
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
+
+    // Validate offset format (must not contain commas or spaces)
+    if (offset) {
+      if (offset.includes(`,`) || offset.includes(` `)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid offset format`)
+        return
+      }
+    }
 
     // Read current messages
     let { messages, upToDate } = this.store.read(path, offset)

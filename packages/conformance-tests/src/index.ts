@@ -534,5 +534,427 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(response.status).toBe(409)
     })
+
+    test(`should enforce lexicographic seq ordering ("2" then "10" rejects)`, async () => {
+      const streamPath = `/v1/stream/seq-lexicographic-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with seq "2"
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `2`,
+        },
+        body: `first`,
+      })
+
+      // Try to append with seq "10" - should fail (lexicographically "10" < "2")
+      // A numeric implementation would incorrectly accept this (10 > 2)
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `10`,
+        },
+        body: `second`,
+      })
+
+      expect(response.status).toBe(409)
+    })
+
+    test(`should allow lexicographic seq ordering ("09" then "10" succeeds)`, async () => {
+      const streamPath = `/v1/stream/seq-padded-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with seq "09"
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `09`,
+        },
+        body: `first`,
+      })
+
+      // Append with seq "10" - should succeed (lexicographically "10" > "09")
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `10`,
+        },
+        body: `second`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should reject duplicate seq values`, async () => {
+      const streamPath = `/v1/stream/seq-duplicate-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with seq "001"
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `001`,
+        },
+        body: `first`,
+      })
+
+      // Try to append with same seq "001" - should fail
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `001`,
+        },
+        body: `duplicate`,
+      })
+
+      expect(response.status).toBe(409)
+    })
+  })
+
+  // ============================================================================
+  // TTL and Expiry Validation
+  // ============================================================================
+
+  describe(`TTL and Expiry Validation`, () => {
+    test(`should reject both TTL and Expires-At (400)`, async () => {
+      const streamPath = `/v1/stream/ttl-expires-conflict-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `3600`,
+          "Stream-Expires-At": new Date(Date.now() + 3600000).toISOString(),
+        },
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should reject invalid TTL (non-integer)`, async () => {
+      const streamPath = `/v1/stream/ttl-invalid-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `abc`,
+        },
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should reject negative TTL`, async () => {
+      const streamPath = `/v1/stream/ttl-negative-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `-1`,
+        },
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should accept valid TTL`, async () => {
+      const streamPath = `/v1/stream/ttl-valid-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `3600`,
+        },
+      })
+
+      expect([200, 201]).toContain(response.status)
+    })
+
+    test(`should accept valid Expires-At`, async () => {
+      const streamPath = `/v1/stream/expires-valid-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-Expires-At": new Date(Date.now() + 3600000).toISOString(),
+        },
+      })
+
+      expect([200, 201]).toContain(response.status)
+    })
+  })
+
+  // ============================================================================
+  // Content-Type Validation
+  // ============================================================================
+
+  describe(`Content-Type Validation`, () => {
+    test(`should enforce content-type match on append`, async () => {
+      const streamPath = `/v1/stream/content-type-enforcement-test-${Date.now()}`
+
+      // Create with text/plain
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Try to append with application/json - should fail
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `{"test": true}`,
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should allow append with matching content-type`, async () => {
+      const streamPath = `/v1/stream/content-type-match-test-${Date.now()}`
+
+      // Create with application/json
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Append with same content-type - should succeed
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `{"test": true}`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should return stream content-type on GET`, async () => {
+      const streamPath = `/v1/stream/content-type-get-test-${Date.now()}`
+
+      // Create with application/json
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `{"initial": true}`,
+      })
+
+      // Read and verify content-type
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`content-type`)).toBe(`application/json`)
+    })
+  })
+
+  // ============================================================================
+  // HEAD Metadata Tests
+  // ============================================================================
+
+  describe(`HEAD Metadata`, () => {
+    test(`should return metadata without body`, async () => {
+      const streamPath = `/v1/stream/head-test-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // HEAD request
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `HEAD`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`content-type`)).toBe(`text/plain`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // Body should be empty
+      const text = await response.text()
+      expect(text).toBe(``)
+    })
+
+    test(`should return 404 for non-existent stream`, async () => {
+      const streamPath = `/v1/stream/head-404-test-${Date.now()}`
+
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `HEAD`,
+      })
+
+      expect(response.status).toBe(404)
+    })
+
+    test(`should return tail offset`, async () => {
+      const streamPath = `/v1/stream/head-offset-test-${Date.now()}`
+
+      // Create empty stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // HEAD should show initial offset
+      const response1 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const offset1 = response1.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset1).toBeDefined()
+
+      // Append data
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test`,
+      })
+
+      // HEAD should show updated offset
+      const response2 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const offset2 = response2.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset2).toBeDefined()
+      expect(offset2).not.toBe(offset1)
+    })
+  })
+
+  // ============================================================================
+  // Offset Validation and Resumability
+  // ============================================================================
+
+  describe(`Offset Validation and Resumability`, () => {
+    test(`should reject malformed offset (contains comma)`, async () => {
+      const streamPath = `/v1/stream/offset-comma-test-${Date.now()}`
+
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test`,
+      })
+
+      const response = await fetch(`${baseUrl}${streamPath}?offset=0,1`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should reject offset with spaces`, async () => {
+      const streamPath = `/v1/stream/offset-spaces-test-${Date.now()}`
+
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test`,
+      })
+
+      const response = await fetch(`${baseUrl}${streamPath}?offset=0 1`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should support resumable reads (no duplicate data)`, async () => {
+      const streamPath = `/v1/stream/resumable-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append chunk 1
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `chunk1`,
+      })
+
+      // Read chunk 1
+      const response1 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+      const text1 = await response1.text()
+      const offset1 = response1.headers.get(STREAM_OFFSET_HEADER)
+
+      expect(text1).toBe(`chunk1`)
+      expect(offset1).toBeDefined()
+
+      // Append chunk 2
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `chunk2`,
+      })
+
+      // Read from offset1 - should only get chunk2
+      const response2 = await fetch(
+        `${baseUrl}${streamPath}?offset=${offset1}`,
+        {
+          method: `GET`,
+        }
+      )
+      const text2 = await response2.text()
+
+      expect(text2).toBe(`chunk2`)
+    })
+
+    test(`should return empty response when reading from tail offset`, async () => {
+      const streamPath = `/v1/stream/tail-read-test-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test`,
+      })
+
+      // Read all data
+      const response1 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+      const tailOffset = response1.headers.get(STREAM_OFFSET_HEADER)
+
+      // Read from tail offset - should return empty with up-to-date
+      const response2 = await fetch(
+        `${baseUrl}${streamPath}?offset=${tailOffset}`,
+        {
+          method: `GET`,
+        }
+      )
+
+      expect(response2.status).toBe(200)
+      const text = await response2.text()
+      expect(text).toBe(``)
+      expect(response2.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
   })
 }
