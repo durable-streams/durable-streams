@@ -6,6 +6,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { open as openLMDB } from "lmdb"
+import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import type { Database } from "lmdb"
@@ -27,37 +28,61 @@ interface StreamMetadata {
 }
 
 /**
- * Simple file handle pool using a Map.
- * SIEVE cache will be added in Phase 2.
+ * File handle pool with SIEVE cache eviction.
+ * Automatically closes least-recently-used handles when capacity is reached.
  */
-class SimpleFileHandlePool {
-  private handles = new Map<string, fs.WriteStream>()
+interface PooledHandle {
+  stream: fs.WriteStream
+  dirty: boolean
+}
+
+class FileHandlePool {
+  private cache: SieveCache<string, PooledHandle>
   private dirty = new Set<string>()
 
+  constructor(maxSize: number) {
+    this.cache = new SieveCache<string, PooledHandle>({
+      capacity: maxSize,
+      onEvict: async (key, handle) => {
+        // Close the handle when evicted
+        await this.closeHandle(key, handle)
+      },
+    })
+  }
+
   getWriteStream(filePath: string): fs.WriteStream {
-    if (!this.handles.has(filePath)) {
+    let handle = this.cache.get(filePath)
+
+    if (!handle) {
       const stream = fs.createWriteStream(filePath, { flags: `a` })
-      this.handles.set(filePath, stream)
+      handle = { stream, dirty: false }
+      this.cache.set(filePath, handle)
     }
-    return this.handles.get(filePath)!
+
+    return handle.stream
   }
 
   markDirty(filePath: string): void {
-    this.dirty.add(filePath)
+    const handle = this.cache.get(filePath)
+    if (handle) {
+      handle.dirty = true
+      this.dirty.add(filePath)
+    }
   }
 
   async fsyncDirty(): Promise<void> {
     const promises = Array.from(this.dirty).map((filePath) => {
-      const stream = this.handles.get(filePath)
-      if (!stream) return Promise.resolve()
+      const handle = this.cache.get(filePath)
+      if (!handle) return Promise.resolve()
 
       return new Promise<void>((resolve, reject) => {
         // Use fdatasync (faster than fsync, skips metadata)
         // Cast to any to access fd property (exists at runtime but not in types)
-        const fd = (stream as any).fd as number
+        const fd = (handle.stream as any).fd as number
         fs.fdatasync(fd, (err) => {
           if (err) reject(err)
           else {
+            handle.dirty = false
             this.dirty.delete(filePath)
             resolve()
           }
@@ -71,21 +96,44 @@ class SimpleFileHandlePool {
   async closeAll(): Promise<void> {
     await this.fsyncDirty()
 
-    const promises = Array.from(this.handles.values()).map(
-      (stream) =>
-        new Promise<void>((resolve) => {
-          stream.end(() => resolve())
-        })
-    )
+    const promises: Array<Promise<void>> = []
+    for (const [key, handle] of this.cache.entries()) {
+      promises.push(this.closeHandle(key, handle))
+    }
 
     await Promise.all(promises)
-    this.handles.clear()
+    this.cache.clear()
+  }
+
+  private async closeHandle(
+    filePath: string,
+    handle: PooledHandle
+  ): Promise<void> {
+    // Fsync if dirty before closing
+    if (handle.dirty) {
+      await new Promise<void>((resolve, reject) => {
+        const fd = (handle.stream as any).fd as number
+        fs.fdatasync(fd, (err) => {
+          if (err) reject(err)
+          else {
+            this.dirty.delete(filePath)
+            resolve()
+          }
+        })
+      })
+    }
+
+    // Close the stream
+    return new Promise<void>((resolve) => {
+      handle.stream.end(() => resolve())
+    })
   }
 }
 
 export interface FileBackedStreamStoreOptions {
   dataDir: string
   fsyncIntervalMs?: number
+  maxFileHandles?: number
 }
 
 /**
@@ -114,8 +162,9 @@ export class FileBackedStreamStore {
     // Initialize file manager
     this.fileManager = new StreamFileManager(path.join(this.dataDir, `streams`))
 
-    // Initialize file handle pool
-    this.fileHandlePool = new SimpleFileHandlePool()
+    // Initialize file handle pool with SIEVE cache
+    const maxFileHandles = options.maxFileHandles ?? 100
+    this.fileHandlePool = new FileHandlePool(maxFileHandles)
 
     // Start periodic fsync
     this.startFsyncTimer()
