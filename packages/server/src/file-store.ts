@@ -47,9 +47,9 @@ class FileHandlePool {
 
   constructor(maxSize: number) {
     this.cache = new SieveCache<string, PooledHandle>(maxSize, {
-      evictHook: (key: string, handle: PooledHandle) => {
+      evictHook: (_key: string, handle: PooledHandle) => {
         // Close the handle when evicted (sync version - fire and forget)
-        this.closeHandle(key, handle).catch((err: Error) => {
+        this.closeHandle(handle).catch((err: Error) => {
           console.error(`[FileHandlePool] Error closing evicted handle:`, err)
         })
       },
