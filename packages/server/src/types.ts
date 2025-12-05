@@ -87,6 +87,13 @@ export interface TestServerOptions {
    * Default: 30000 (30 seconds).
    */
   longPollTimeout?: number
+
+  /**
+   * Data directory for file-backed storage.
+   * If provided, enables file-backed mode using LMDB and append-only logs.
+   * If omitted, uses in-memory storage.
+   */
+  dataDir?: string
 }
 
 /**

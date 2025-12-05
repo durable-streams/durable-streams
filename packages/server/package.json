@@ -18,6 +18,10 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "@neophi/sieve-cache": "^1.0.0",
+    "lmdb": "^3.3.0"
+  },
   "devDependencies": {
     "tsdown": "^0.9.0",
     "typescript": "^5.0.0"

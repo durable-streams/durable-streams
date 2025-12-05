@@ -6,6 +6,8 @@
 
 export { DurableStreamTestServer } from "./server"
 export { StreamStore } from "./store"
+export { FileBackedStreamStore } from "./file-store"
+export { encodeStreamPath, decodeStreamPath } from "./path-encoding"
 export type {
   Stream,
   StreamMessage,

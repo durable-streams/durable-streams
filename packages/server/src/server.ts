@@ -4,6 +4,7 @@
 
 import { createServer } from "node:http"
 import { StreamStore } from "./store"
+import { FileBackedStreamStore } from "./file-store"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { TestServerOptions } from "./types"
 
@@ -21,20 +22,32 @@ const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
 
 /**
- * In-memory HTTP server for testing durable streams.
+ * HTTP server for testing durable streams.
+ * Supports both in-memory and file-backed storage modes.
  */
 export class DurableStreamTestServer {
-  readonly store: StreamStore
+  readonly store: StreamStore | FileBackedStreamStore
   private server: Server | null = null
-  private options: Required<TestServerOptions>
+  private options: Required<Omit<TestServerOptions, `dataDir`>> & {
+    dataDir?: string
+  }
   private _url: string | null = null
 
   constructor(options: TestServerOptions = {}) {
-    this.store = new StreamStore()
+    // Choose store based on dataDir option
+    if (options.dataDir) {
+      this.store = new FileBackedStreamStore({
+        dataDir: options.dataDir,
+      })
+    } else {
+      this.store = new StreamStore()
+    }
+
     this.options = {
       port: options.port ?? 0,
       host: options.host ?? `127.0.0.1`,
       longPollTimeout: options.longPollTimeout ?? 30_000,
+      dataDir: options.dataDir,
     }
   }
 
@@ -80,13 +93,23 @@ export class DurableStreamTestServer {
     }
 
     return new Promise((resolve, reject) => {
-      this.server!.close((err) => {
+      this.server!.close(async (err) => {
         if (err) {
           reject(err)
-        } else {
+          return
+        }
+
+        try {
+          // Close file-backed store if used
+          if (this.store instanceof FileBackedStreamStore) {
+            await this.store.close()
+          }
+
           this.server = null
           this._url = null
           resolve()
+        } catch (closeErr) {
+          reject(closeErr)
         }
       })
     })
@@ -227,12 +250,15 @@ export class DurableStreamTestServer {
 
     const isNew = !this.store.has(path)
 
-    this.store.create(path, {
-      contentType,
-      ttlSeconds,
-      expiresAt: expiresAtHeader,
-      initialData: body.length > 0 ? body : undefined,
-    })
+    // Support both sync (StreamStore) and async (FileBackedStreamStore) create
+    await Promise.resolve(
+      this.store.create(path, {
+        contentType,
+        ttlSeconds,
+        expiresAt: expiresAtHeader,
+        initialData: body.length > 0 ? body : undefined,
+      })
+    )
 
     const stream = this.store.get(path)!
 
@@ -383,7 +409,10 @@ export class DurableStreamTestServer {
       return
     }
 
-    const message = this.store.append(path, body, { seq, contentType })
+    // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+    const message = await Promise.resolve(
+      this.store.append(path, body, { seq, contentType })
+    )
 
     res.writeHead(200, {
       [STREAM_OFFSET_HEADER]: message.offset,
