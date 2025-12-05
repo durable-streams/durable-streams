@@ -32,15 +32,33 @@ describe(`Basic Stream Operations`, () => {
   )
 
   testWithServer(
-    `should fail to create duplicate stream`,
+    `should allow idempotent create with same config`,
     async ({ baseUrl, store, aborter }) => {
       const streamPath = `/duplicate-test`
       store.create(streamPath, { contentType: `text/plain` })
 
+      // Should succeed - idempotent create with matching config
+      const stream = await DurableStream.create({
+        url: `${baseUrl}${streamPath}`,
+        contentType: `text/plain`,
+        signal: aborter.signal,
+      })
+
+      expect(stream.url).toBe(`${baseUrl}${streamPath}`)
+    }
+  )
+
+  testWithServer(
+    `should reject create with different config`,
+    async ({ baseUrl, store, aborter }) => {
+      const streamPath = `/config-mismatch-test`
+      store.create(streamPath, { contentType: `text/plain` })
+
+      // Should fail - different content type
       await expect(
         DurableStream.create({
           url: `${baseUrl}${streamPath}`,
-          contentType: `text/plain`,
+          contentType: `application/json`,
           signal: aborter.signal,
         })
       ).rejects.toThrow(FetchError) // Backoff wrapper throws FetchError for 4xx

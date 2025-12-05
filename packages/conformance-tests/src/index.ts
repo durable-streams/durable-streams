@@ -711,6 +711,71 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
+  // Case-Insensitivity Tests
+  // ============================================================================
+
+  describe(`Case-Insensitivity`, () => {
+    test(`should treat content-type case-insensitively`, async () => {
+      const streamPath = `/v1/stream/case-content-type-test-${Date.now()}`
+
+      // Create with lowercase content-type
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with mixed case - should succeed
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `TEXT/PLAIN` },
+        body: `test`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should allow idempotent create with different case content-type`, async () => {
+      const streamPath = `/v1/stream/case-idempotent-test-${Date.now()}`
+
+      // Create with lowercase
+      const response1 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+      expect(response1.status).toBe(201)
+
+      // PUT again with uppercase - should be idempotent
+      const response2 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `APPLICATION/JSON` },
+      })
+      expect([200, 204]).toContain(response2.status)
+    })
+
+    test(`should accept headers with different casing`, async () => {
+      const streamPath = `/v1/stream/case-header-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with different header casing (lowercase)
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "content-type": `text/plain`,
+          "stream-seq": `001`,
+        },
+        body: `test`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+  })
+
+  // ============================================================================
   // Content-Type Validation
   // ============================================================================
 

@@ -198,10 +198,12 @@ export class DurableStreamTestServer {
     res: ServerResponse
   ): Promise<void> {
     const contentType = req.headers[`content-type`]
-    const ttlHeader = req.headers[STREAM_TTL_HEADER] as string | undefined
-    const expiresAtHeader = req.headers[STREAM_EXPIRES_AT_HEADER] as
+    const ttlHeader = req.headers[STREAM_TTL_HEADER.toLowerCase()] as
       | string
       | undefined
+    const expiresAtHeader = req.headers[
+      STREAM_EXPIRES_AT_HEADER.toLowerCase()
+    ] as string | undefined
 
     // Validate TTL and Expires-At headers
     if (ttlHeader && expiresAtHeader) {
@@ -369,7 +371,9 @@ export class DurableStreamTestServer {
     res: ServerResponse
   ): Promise<void> {
     const contentType = req.headers[`content-type`]
-    const seq = req.headers[STREAM_SEQ_HEADER] as string | undefined
+    const seq = req.headers[STREAM_SEQ_HEADER.toLowerCase()] as
+      | string
+      | undefined
 
     const body = await this.readBody(req)
 

@@ -28,9 +28,12 @@ export class StreamStore {
     const existing = this.streams.get(path)
     if (existing) {
       // Check if config matches (idempotent create)
+      // MIME types are case-insensitive per RFC 2045
+      const normalizeContentType = (ct: string | undefined) =>
+        (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        (options.contentType ?? `application/octet-stream`) ===
-        (existing.contentType ?? `application/octet-stream`)
+        normalizeContentType(options.contentType) ===
+        normalizeContentType(existing.contentType)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -102,11 +105,11 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
-    // Check content type match
+    // Check content type match (case-insensitive per RFC 2045)
     if (
       options.contentType &&
       stream.contentType &&
-      options.contentType !== stream.contentType
+      options.contentType.toLowerCase() !== stream.contentType.toLowerCase()
     ) {
       throw new Error(
         `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
