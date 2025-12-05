@@ -145,11 +145,9 @@ Your application server consumes from backend streaming systems, applies authori
 - Durable Streamss to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
-## Relationship to Server-Sent Events (SSE)
+## Why Not SSE?
 
-Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks the durability and robust resumability needed for production applications.
-
-**SSE limitations:**
+Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks the durability and robust resumability needed for production applications:
 
 - **No durable storage** - SSE is ephemeral; disconnect and data is lost. Servers must implement their own storage and replay logic
 - **Limited resumability** - SSE's `Last-Event-ID` mechanism requires servers to maintain per-client state and lacks standardized offset semantics
@@ -168,6 +166,25 @@ Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks
 - **Conformance tests** - Standardized test suite ensures consistent implementation behavior
 
 Durable Streams can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability and resumability layer on top.
+
+## Why Not WebSockets?
+
+WebSockets provide full-duplex communication, but are poorly suited for durable streaming:
+
+- **No built-in durability** - WebSockets are ephemeral connections with no persistence guarantees
+- **No offset-based resumption** - No standard mechanism for clients to resume from a specific position after reconnection
+- **Connection state complexity** - Servers must manage long-lived stateful connections for every client
+- **Poor CDN/proxy support** - WebSocket connections bypass HTTP caching infrastructure entirely
+- **Complex load balancing** - Sticky sessions or connection state synchronization required across servers
+- **Binary protocol overhead** - Custom framing and reconnection logic must be implemented for every application
+
+**Durable Streams provides:**
+
+- **Durable storage** - Data persists across server restarts and client disconnections
+- **Opaque offset semantics** - Lexicographically sortable offsets with standardized resumption behavior
+- **HTTP-native** - Leverages standard HTTP caching, load balancing, and CDN infrastructure
+- **Stateless servers** - No connection state to manage; clients track their own offsets
+- **Simple protocol** - Standard HTTP methods and headers, no custom framing required
 
 ## Implementations
 
