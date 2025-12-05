@@ -13,7 +13,8 @@ export class StreamStore {
 
   /**
    * Create a new stream.
-   * @throws Error if stream already exists
+   * @throws Error if stream already exists with different config
+   * @returns existing stream if config matches (idempotent)
    */
   create(
     path: string,
@@ -24,8 +25,24 @@ export class StreamStore {
       initialData?: Uint8Array
     } = {}
   ): Stream {
-    if (this.streams.has(path)) {
-      throw new Error(`Stream already exists: ${path}`)
+    const existing = this.streams.get(path)
+    if (existing) {
+      // Check if config matches (idempotent create)
+      const contentTypeMatches =
+        (options.contentType ?? `application/octet-stream`) ===
+        (existing.contentType ?? `application/octet-stream`)
+      const ttlMatches = options.ttlSeconds === existing.ttlSeconds
+      const expiresMatches = options.expiresAt === existing.expiresAt
+
+      if (contentTypeMatches && ttlMatches && expiresMatches) {
+        // Idempotent success - return existing stream
+        return existing
+      } else {
+        // Config mismatch - conflict
+        throw new Error(
+          `Stream already exists with different configuration: ${path}`
+        )
+      }
     }
 
     const stream: Stream = {

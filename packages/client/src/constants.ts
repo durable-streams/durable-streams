@@ -10,21 +10,21 @@
 
 /**
  * Response header containing the next offset to read from.
- * Format: "<read-seq>_<byte-offset>"
+ * Offsets are opaque tokens - clients MUST NOT interpret the format.
  */
-export const STREAM_OFFSET_HEADER = `stream-offset`
+export const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
 
 /**
  * Response header for cursor (used for CDN collapsing).
  * Echo this value in subsequent long-poll requests.
  */
-export const STREAM_CURSOR_HEADER = `stream-cursor`
+export const STREAM_CURSOR_HEADER = `Stream-Cursor`
 
 /**
  * Presence header indicating response ends at current end of stream.
  * When present (any value), indicates up-to-date.
  */
-export const STREAM_UP_TO_DATE_HEADER = `stream-up-to-date`
+export const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
 
 // ============================================================================
 // Request Headers
@@ -34,17 +34,17 @@ export const STREAM_UP_TO_DATE_HEADER = `stream-up-to-date`
  * Request header for writer coordination sequence.
  * Monotonic, lexicographic. If lower than last appended seq -> 409 Conflict.
  */
-export const STREAM_SEQ_HEADER = `stream-seq`
+export const STREAM_SEQ_HEADER = `Stream-Seq`
 
 /**
  * Request header for stream TTL in seconds (on create).
  */
-export const STREAM_TTL_HEADER = `stream-ttl`
+export const STREAM_TTL_HEADER = `Stream-TTL`
 
 /**
  * Request header for absolute stream expiry time (RFC3339, on create).
  */
-export const STREAM_EXPIRES_AT_HEADER = `stream-expires-at`
+export const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
 // ============================================================================
 // Query Parameters

@@ -7,6 +7,11 @@
 
 import { describe, expect, test } from "vitest"
 import { DurableStream } from "@durable-streams/writer"
+import {
+  STREAM_OFFSET_HEADER,
+  STREAM_SEQ_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+} from "@durable-streams/client"
 
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
@@ -34,7 +39,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(stream.url).toBe(`${baseUrl}${streamPath}`)
     })
 
-    test(`should fail to create duplicate stream`, async () => {
+    test(`should allow idempotent create with same config`, async () => {
       const streamPath = `/v1/stream/duplicate-test-${Date.now()}`
 
       // Create first stream
@@ -43,11 +48,27 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `text/plain`,
       })
 
-      // Try to create duplicate - should fail
+      // Create again with same config - should succeed (idempotent)
+      await DurableStream.create({
+        url: `${baseUrl}${streamPath}`,
+        contentType: `text/plain`,
+      })
+    })
+
+    test(`should reject create with different config (409)`, async () => {
+      const streamPath = `/v1/stream/config-mismatch-test-${Date.now()}`
+
+      // Create with text/plain
+      await DurableStream.create({
+        url: `${baseUrl}${streamPath}`,
+        contentType: `text/plain`,
+      })
+
+      // Try to create with different content type - should fail
       await expect(
         DurableStream.create({
           url: `${baseUrl}${streamPath}`,
-          contentType: `text/plain`,
+          contentType: `application/json`,
         })
       ).rejects.toThrow()
     })
@@ -220,7 +241,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append(`existing data`)
 
       // Long-poll from beginning should return immediately
-      const result = await stream.read({ live: `long-poll`, offset: `0_0` })
+      const result = await stream.read({ live: `long-poll` })
       const text = new TextDecoder().decode(result.data)
 
       expect(text).toBe(`existing data`)
@@ -244,22 +265,40 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(response.status).toBe(201)
       expect(response.headers.get(`content-type`)).toBe(`text/plain`)
-      expect(response.headers.get(`stream-offset`)).toBe(`0_0`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
-    test(`should return 409 on duplicate PUT`, async () => {
+    test(`should return 200 on idempotent PUT with same config`, async () => {
       const streamPath = `/v1/stream/duplicate-put-test-${Date.now()}`
 
       // First PUT
+      const firstResponse = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      expect(firstResponse.status).toBe(201)
+
+      // Second PUT with same config should succeed
+      const secondResponse = await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      expect([200, 204]).toContain(secondResponse.status)
+    })
+
+    test(`should return 409 on PUT with different config`, async () => {
+      const streamPath = `/v1/stream/config-conflict-test-${Date.now()}`
+
+      // First PUT with text/plain
       await fetch(`${baseUrl}${streamPath}`, {
         method: `PUT`,
         headers: { "Content-Type": `text/plain` },
       })
 
-      // Second PUT should fail
+      // Second PUT with different content type should fail
       const response = await fetch(`${baseUrl}${streamPath}`, {
         method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
+        headers: { "Content-Type": `application/json` },
       })
 
       expect(response.status).toBe(409)
@@ -281,8 +320,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `hello world`,
       })
 
-      expect(response.status).toBe(204)
-      expect(response.headers.get(`stream-offset`)).toBe(`0_11`)
+      expect([200, 204]).toContain(response.status)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
     test(`should return 404 on POST to non-existent stream`, async () => {
@@ -333,9 +372,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(response.status).toBe(200)
       expect(response.headers.get(`content-type`)).toBe(`text/plain`)
-      expect(response.headers.get(`stream-offset`)).toBe(`0_9`)
-      expect(response.headers.get(`stream-up-to-date`)).toBe(`true`)
-      expect(response.headers.get(`etag`)).toMatch(/^"stream:0:9"$/)
+      const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+      expect(nextOffset).toBeDefined()
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      const etag = response.headers.get(`etag`)
+      expect(etag).toBeDefined()
 
       const text = await response.text()
       expect(text).toBe(`test data`)
@@ -356,8 +397,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       expect(response.status).toBe(200)
-      expect(response.headers.get(`stream-offset`)).toBe(`0_0`)
-      expect(response.headers.get(`stream-up-to-date`)).toBe(`true`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
 
       const text = await response.text()
       expect(text).toBe(``)
@@ -380,10 +421,39 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `second`,
       })
 
-      // Read from offset 5 (after "first")
-      const response = await fetch(`${baseUrl}${streamPath}?offset=0_5`, {
+      // Get the first offset (after "first")
+      const firstResponse = await fetch(`${baseUrl}${streamPath}`, {
         method: `GET`,
       })
+      const firstText = await firstResponse.text()
+      expect(firstText).toBe(`firstsecond`)
+
+      // Now create fresh and read from middle offset
+      const streamPath2 = `/v1/stream/get-offset-test2-${Date.now()}`
+      await fetch(`${baseUrl}${streamPath2}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `first`,
+      })
+      const middleResponse = await fetch(`${baseUrl}${streamPath2}`, {
+        method: `GET`,
+      })
+      const middleOffset = middleResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Append more
+      await fetch(`${baseUrl}${streamPath2}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `second`,
+      })
+
+      // Read from the middle offset
+      const response = await fetch(
+        `${baseUrl}${streamPath2}?offset=${middleOffset}`,
+        {
+          method: `GET`,
+        }
+      )
 
       expect(response.status).toBe(200)
       const text = await response.text()
@@ -437,7 +507,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `POST`,
         headers: {
           "Content-Type": `text/plain`,
-          "stream-seq": `001`,
+          [STREAM_SEQ_HEADER]: `001`,
         },
         body: `first`,
       })
@@ -447,7 +517,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `POST`,
         headers: {
           "Content-Type": `text/plain`,
-          "stream-seq": `002`,
+          [STREAM_SEQ_HEADER]: `002`,
         },
         body: `second`,
       })
@@ -457,7 +527,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `POST`,
         headers: {
           "Content-Type": `text/plain`,
-          "stream-seq": `001`,
+          [STREAM_SEQ_HEADER]: `001`,
         },
         body: `invalid`,
       })

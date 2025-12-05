@@ -7,13 +7,13 @@ import { StreamStore } from "./store"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { TestServerOptions } from "./types"
 
-// Protocol headers
-const STREAM_OFFSET_HEADER = `stream-offset`
-const STREAM_CURSOR_HEADER = `stream-cursor`
-const STREAM_UP_TO_DATE_HEADER = `stream-up-to-date`
-const STREAM_SEQ_HEADER = `stream-seq`
-const STREAM_TTL_HEADER = `stream-ttl`
-const STREAM_EXPIRES_AT_HEADER = `stream-expires-at`
+// Protocol headers (aligned with PROTOCOL.md)
+const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
+const STREAM_CURSOR_HEADER = `Stream-Cursor`
+const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
+const STREAM_SEQ_HEADER = `Stream-Seq`
+const STREAM_TTL_HEADER = `Stream-TTL`
+const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
@@ -129,11 +129,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, ${STREAM_SEQ_HEADER}, ${STREAM_TTL_HEADER}, ${STREAM_EXPIRES_AT_HEADER}`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `${STREAM_OFFSET_HEADER}, ${STREAM_CURSOR_HEADER}, ${STREAM_UP_TO_DATE_HEADER}, etag, content-type`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type`
     )
 
     // Handle CORS preflight
@@ -169,9 +169,11 @@ export class DurableStreamTestServer {
         if (err.message.includes(`not found`)) {
           res.writeHead(404, { "content-type": `text/plain` })
           res.end(`Stream not found`)
-        } else if (err.message.includes(`already exists`)) {
+        } else if (
+          err.message.includes(`already exists with different configuration`)
+        ) {
           res.writeHead(409, { "content-type": `text/plain` })
-          res.end(`Stream already exists`)
+          res.end(`Stream already exists with different configuration`)
         } else if (err.message.includes(`Sequence conflict`)) {
           res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Sequence conflict`)
@@ -204,6 +206,8 @@ export class DurableStreamTestServer {
     // Read body if present
     const body = await this.readBody(req)
 
+    const isNew = !this.store.has(path)
+
     this.store.create(path, {
       contentType,
       ttlSeconds: ttlHeader ? parseInt(ttlHeader, 10) : undefined,
@@ -213,7 +217,8 @@ export class DurableStreamTestServer {
 
     const stream = this.store.get(path)!
 
-    res.writeHead(201, {
+    // Return 201 for new streams, 200 for idempotent creates
+    res.writeHead(isNew ? 201 : 200, {
       "content-type": contentType ?? `application/octet-stream`,
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
     })
