@@ -1022,4 +1022,107 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response2.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
     })
   })
+
+  // ============================================================================
+  // Read-Your-Writes Consistency
+  // ============================================================================
+
+  describe(`Read-Your-Writes Consistency`, () => {
+    test(`should immediately read message after append`, async () => {
+      const streamPath = `/v1/stream/ryw-test-${Date.now()}`
+
+      // Create stream and append
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Immediately read - should see the data
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+
+      const text = await response.text()
+      expect(text).toBe(`initial`)
+    })
+
+    test(`should immediately read multiple appends`, async () => {
+      const streamPath = `/v1/stream/ryw-multi-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append multiple messages
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `msg1`,
+      })
+
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `msg2`,
+      })
+
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `msg3`,
+      })
+
+      // Immediately read - should see all messages
+      const response = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+
+      const text = await response.text()
+      expect(text).toBe(`msg1msg2msg3`)
+    })
+
+    test(`should serve offset-based reads immediately after append`, async () => {
+      const streamPath = `/v1/stream/ryw-offset-test-${Date.now()}`
+
+      // Create stream with first message
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `first`,
+      })
+
+      // Get offset
+      const response1 = await fetch(`${baseUrl}${streamPath}`, {
+        method: `GET`,
+      })
+      const offset1 = response1.headers.get(STREAM_OFFSET_HEADER)!
+
+      // Append more messages immediately
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `second`,
+      })
+
+      await fetch(`${baseUrl}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `third`,
+      })
+
+      // Immediately read from offset1 - should see second and third
+      const response2 = await fetch(
+        `${baseUrl}${streamPath}?offset=${offset1}`,
+        {
+          method: `GET`,
+        }
+      )
+
+      const text = await response2.text()
+      expect(text).toBe(`secondthird`)
+    })
+  })
 }

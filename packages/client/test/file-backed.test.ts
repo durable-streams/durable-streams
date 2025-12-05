@@ -1,6 +1,6 @@
 /**
- * Tests for file-backed storage implementation.
- * Verifies correctness fixes from external review.
+ * Implementation-specific tests for file-backed storage.
+ * General correctness tests are in the conformance suite.
  */
 
 import * as fs from "node:fs"
@@ -13,7 +13,6 @@ import {
   encodeStreamPath,
 } from "@durable-streams/server"
 import { decode, encode } from "./support/test-helpers"
-import type { FileBackedStreamStore } from "@durable-streams/server"
 
 // ============================================================================
 // Test fixture for file-backed server
@@ -21,14 +20,12 @@ import type { FileBackedStreamStore } from "@durable-streams/server"
 
 let dataDir: string
 let server: DurableStreamTestServer
-let store: FileBackedStreamStore
 
 beforeEach(async () => {
   // Create temp directory for each test
   dataDir = fs.mkdtempSync(path.join(tmpdir(), `durable-stream-test-`))
   server = new DurableStreamTestServer({ dataDir, port: 0 })
   await server.start()
-  store = server.store as FileBackedStreamStore
 })
 
 afterEach(async () => {
@@ -38,7 +35,7 @@ afterEach(async () => {
 })
 
 // ============================================================================
-// Path Encoding Tests
+// Path Encoding Tests (Implementation Detail)
 // ============================================================================
 
 describe(`Path Encoding`, () => {
@@ -75,18 +72,17 @@ describe(`Path Encoding`, () => {
 })
 
 // ============================================================================
-// Server Close Tests
+// Server Close Tests (Server Implementation Detail)
 // ============================================================================
 
 describe(`Server Close`, () => {
   test(`should handle store.close() errors gracefully`, () => {
     const testServer = new DurableStreamTestServer({ dataDir, port: 0 })
     return testServer.start().then(() => {
-      // Mock store.close() to throw
+      // Mock store.close() to reject
       const originalClose = testServer.store.close
-      testServer.store.close = async () => {
-        throw new Error(`Close failed intentionally`)
-      }
+      testServer.store.close = () =>
+        Promise.reject(new Error(`Close failed intentionally`))
 
       // Should reject with the error (not hang)
       return expect(testServer.stop())
@@ -100,144 +96,7 @@ describe(`Server Close`, () => {
 })
 
 // ============================================================================
-// Clear + Recreate Tests
-// ============================================================================
-
-describe(`Clear and Recreate`, () => {
-  test(`should not replay old messages after clear + recreate`, () => {
-    store.create(`/test`, { contentType: `text/plain` })
-    store.append(`/test`, encode(`old message`))
-
-    // Clear all streams
-    store.clear()
-
-    // Recreate with same path
-    store.create(`/test`, { contentType: `text/plain` })
-    store.append(`/test`, encode(`new message`))
-
-    const { messages } = store.read(`/test`)
-
-    expect(messages).toHaveLength(1)
-    expect(decode(messages[0].data)).toBe(`new message`)
-  })
-
-  test(`should handle multiple clear cycles without zombie data`, () => {
-    for (let i = 0; i < 3; i++) {
-      store.create(`/cycle`, { contentType: `text/plain` })
-      store.append(`/cycle`, encode(`cycle ${i}`))
-
-      const { messages } = store.read(`/cycle`)
-      expect(messages).toHaveLength(1)
-      expect(decode(messages[0].data)).toBe(`cycle ${i}`)
-
-      store.clear()
-    }
-  })
-})
-
-// ============================================================================
-// Read-Your-Writes Tests (In-Memory Buffer)
-// ============================================================================
-
-describe(`Read-Your-Writes Consistency`, () => {
-  test(`should read message immediately after append`, () => {
-    store.create(`/test`, { contentType: `text/plain` })
-    const msg = store.append(`/test`, encode(`hello`))
-
-    // Read immediately (before any fsync)
-    const { messages } = store.read(`/test`)
-
-    expect(messages).toHaveLength(1)
-    expect(messages[0].offset).toBe(msg.offset)
-    expect(decode(messages[0].data)).toBe(`hello`)
-  })
-
-  test(`should read multiple appends immediately`, () => {
-    store.create(`/test`, { contentType: `text/plain` })
-
-    store.append(`/test`, encode(`msg1`))
-    store.append(`/test`, encode(`msg2`))
-    store.append(`/test`, encode(`msg3`))
-
-    // All should be readable immediately
-    const { messages } = store.read(`/test`)
-
-    expect(messages).toHaveLength(3)
-    expect(decode(messages[0].data)).toBe(`msg1`)
-    expect(decode(messages[1].data)).toBe(`msg2`)
-    expect(decode(messages[2].data)).toBe(`msg3`)
-  })
-
-  test(`should notify long-poll immediately from buffer`, async () => {
-    store.create(`/test`, { contentType: `text/plain` })
-    store.append(`/test`, encode(`msg1`))
-
-    const offset = store.getCurrentOffset(`/test`)!
-
-    // Start long-poll at current offset
-    const pollPromise = store.waitForMessages(`/test`, offset, 5000)
-
-    // Append immediately (still in buffer, not fsynced)
-    store.append(`/test`, encode(`msg2`))
-
-    // Long-poll should resolve immediately from buffer
-    const result = await pollPromise
-    expect(result.timedOut).toBe(false)
-    expect(result.messages).toHaveLength(1)
-    expect(decode(result.messages[0].data)).toBe(`msg2`)
-  })
-
-  test(`should clear buffer on delete`, () => {
-    store.create(`/test`, { contentType: `text/plain` })
-    store.append(`/test`, encode(`data`))
-
-    // Buffer should have messages
-    const bufferBefore = (store as any).messageBuffers.get(`/test`)
-    expect(bufferBefore).toHaveLength(1)
-
-    store.delete(`/test`)
-
-    // Buffer should be cleared
-    const bufferAfter = (store as any).messageBuffers.has(`/test`)
-    expect(bufferAfter).toBe(false)
-  })
-
-  test(`should clear buffer on clear()`, () => {
-    store.create(`/test1`, { contentType: `text/plain` })
-    store.create(`/test2`, { contentType: `text/plain` })
-    store.append(`/test1`, encode(`data1`))
-    store.append(`/test2`, encode(`data2`))
-
-    // Buffers should have messages
-    expect((store as any).messageBuffers.size).toBeGreaterThan(0)
-
-    store.clear()
-
-    // All buffers should be cleared
-    expect((store as any).messageBuffers.size).toBe(0)
-  })
-
-  test(`should serve offset-based reads from buffer + disk`, () => {
-    store.create(`/test`, { contentType: `text/plain` })
-    store.append(`/test`, encode(`msg1`))
-
-    const offset1 = store.getCurrentOffset(`/test`)!
-
-    // Append more
-    store.append(`/test`, encode(`msg2`))
-    store.append(`/test`, encode(`msg3`))
-
-    // Read from offset1 - should get msg2 and msg3 from buffer
-    const { messages } = store.read(`/test`, offset1)
-
-    expect(messages).toHaveLength(2)
-    expect(decode(messages[0].data)).toBe(`msg2`)
-    expect(decode(messages[1].data)).toBe(`msg3`)
-  })
-})
-
-// ============================================================================
-// Recovery and Crash Consistency Tests
+// Recovery and Crash Consistency Tests (File-Backed Specific)
 // ============================================================================
 
 describe(`Recovery and Crash Consistency`, () => {
