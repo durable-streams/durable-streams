@@ -10,6 +10,7 @@ import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
+import { formatJsonResponse, processJsonAppend } from "./store"
 import type { Database } from "lmdb"
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
@@ -504,13 +505,19 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Process JSON mode data
+    let processedData = data
+    if (streamMeta.contentType?.toLowerCase() === `application/json`) {
+      processedData = processJsonAppend(data)
+    }
+
     // Parse current offset
     const parts = streamMeta.currentOffset.split(`_`).map(Number)
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
     // Calculate new offset (only data bytes, not framing)
-    const newByteOffset = byteOffset + data.length
+    const newByteOffset = byteOffset + processedData.length
     const newOffset = `${readSeq}_${newByteOffset}`
 
     // Get segment file path (directory was created in create())
@@ -526,14 +533,14 @@ export class FileBackedStreamStore {
 
     // 1. Write message with framing: [4 bytes length][data][\n]
     const lengthBuf = Buffer.allocUnsafe(4)
-    lengthBuf.writeUInt32BE(data.length, 0)
+    lengthBuf.writeUInt32BE(processedData.length, 0)
     stream.write(lengthBuf)
-    stream.write(data)
+    stream.write(processedData)
     stream.write(`\n`)
 
     // 2. Create message and add to in-memory buffer for read-your-writes consistency
     const message: StreamMessage = {
-      data,
+      data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
     }
@@ -552,7 +559,7 @@ export class FileBackedStreamStore {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
-      totalBytes: streamMeta.totalBytes + data.length + 5, // +4 for length, +1 for newline
+      totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
     }
     this.db.putSync(key, updatedMeta)
 
@@ -708,6 +715,35 @@ export class FileBackedStreamStore {
 
       this.pendingLongPolls.push(pending)
     })
+  }
+
+  /**
+   * Format messages for response.
+   * For JSON mode, wraps concatenated data in array brackets.
+   */
+  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
+    const key = `stream:${path}`
+    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+
+    if (!streamMeta) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Concatenate all message data
+    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
+    const concatenated = new Uint8Array(totalSize)
+    let offset = 0
+    for (const msg of messages) {
+      concatenated.set(msg.data, offset)
+      offset += msg.data.length
+    }
+
+    // For JSON mode, wrap in array brackets
+    if (streamMeta.contentType?.toLowerCase() === `application/json`) {
+      return formatJsonResponse(concatenated)
+    }
+
+    return concatenated
   }
 
   getCurrentOffset(streamPath: string): string | undefined {

@@ -5,6 +5,59 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Process JSON data for append in JSON mode.
+ * - Validates JSON
+ * - Extracts array elements if data is an array
+ * - Always appends trailing comma for easy concatenation
+ */
+export function processJsonAppend(data: Uint8Array): Uint8Array {
+  const text = new TextDecoder().decode(data)
+
+  // Validate JSON
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error(`Invalid JSON`)
+  }
+
+  // If it's an array, extract elements and join with commas
+  let result: string
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      return new Uint8Array(0)
+    }
+    const elements = parsed.map((item) => JSON.stringify(item))
+    result = elements.join(`,`) + `,`
+  } else {
+    // Single value - add trailing comma
+    result = text.trim() + `,`
+  }
+
+  return new TextEncoder().encode(result)
+}
+
+/**
+ * Format JSON mode response by wrapping in array brackets.
+ * Strips trailing comma before wrapping.
+ */
+export function formatJsonResponse(data: Uint8Array): Uint8Array {
+  if (data.length === 0) {
+    return new TextEncoder().encode(`[]`)
+  }
+
+  let text = new TextDecoder().decode(data)
+  // Strip trailing comma if present
+  text = text.trimEnd()
+  if (text.endsWith(`,`)) {
+    text = text.slice(0, -1)
+  }
+
+  const wrapped = `[${text}]`
+  return new TextEncoder().encode(wrapped)
+}
+
+/**
  * In-memory store for durable streams.
  */
 export class StreamStore {
@@ -171,6 +224,33 @@ export class StreamStore {
   }
 
   /**
+   * Format messages for response.
+   * For JSON mode, wraps concatenated data in array brackets.
+   */
+  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Concatenate all message data
+    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
+    const concatenated = new Uint8Array(totalSize)
+    let offset = 0
+    for (const msg of messages) {
+      concatenated.set(msg.data, offset)
+      offset += msg.data.length
+    }
+
+    // For JSON mode, wrap in array brackets
+    if (stream.contentType?.toLowerCase() === `application/json`) {
+      return formatJsonResponse(concatenated)
+    }
+
+    return concatenated
+  }
+
+  /**
    * Wait for new messages (long-poll).
    */
   async waitForMessages(
@@ -243,17 +323,23 @@ export class StreamStore {
   // ============================================================================
 
   private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
+    // Process JSON mode data
+    let processedData = data
+    if (stream.contentType?.toLowerCase() === `application/json`) {
+      processedData = processJsonAppend(data)
+    }
+
     // Parse current offset
     const parts = stream.currentOffset.split(`_`).map(Number)
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
     // Calculate new offset
-    const newByteOffset = byteOffset + data.length
+    const newByteOffset = byteOffset + processedData.length
     const newOffset = `${readSeq}_${newByteOffset}`
 
     const message: StreamMessage = {
-      data,
+      data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
     }

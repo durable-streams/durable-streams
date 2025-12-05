@@ -375,14 +375,8 @@ export class DurableStreamTestServer {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
 
-    // Concatenate all message data
-    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
-    const responseData = new Uint8Array(totalSize)
-    let offset2 = 0
-    for (const msg of messages) {
-      responseData.set(msg.data, offset2)
-      offset2 += msg.data.length
-    }
+    // Format response (wraps JSON in array brackets)
+    const responseData = this.store.formatResponse(path, messages)
 
     res.writeHead(200, headers)
     res.end(Buffer.from(responseData))
