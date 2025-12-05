@@ -726,8 +726,8 @@ export class DurableStream {
   }
 
   /**
-   * Convenience: interpret data as JSON messages.
-   * Parses each chunk's data as JSON and yields the parsed values.
+   * Convenience: interpret data as JSON messages (for application/json streams).
+   * Parses the array-wrapped response and yields individual elements.
    */
   async *json<T = unknown>(opts?: ReadOptions): AsyncIterable<T> {
     const decoder = new TextDecoder()
@@ -735,10 +735,16 @@ export class DurableStream {
     for await (const chunk of this.follow(opts)) {
       if (chunk.data.length > 0) {
         const text = decoder.decode(chunk.data)
-        // Handle potential newline-delimited JSON
-        const lines = text.split(`\n`).filter((l) => l.trim())
-        for (const line of lines) {
-          yield JSON.parse(line) as T
+        const parsed = JSON.parse(text)
+
+        // JSON mode always returns an array
+        if (Array.isArray(parsed)) {
+          for (const item of parsed) {
+            yield item as T
+          }
+        } else {
+          // Single value (shouldn't happen in JSON mode, but handle gracefully)
+          yield parsed as T
         }
       }
     }
