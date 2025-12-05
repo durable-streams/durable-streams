@@ -21,7 +21,7 @@ While durable streams exist throughout backend infrastructure (database WALs, Ka
 
 Applications typically implement ad-hoc solutions for resumable streaming—combinations of databases, queues, polling mechanisms, and custom offset tracking. Most implementations handle reconnection poorly: streaming responses break when clients switch tabs, experience brief network interruptions, or refresh pages.
 
-**Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at Electric for real-time Postgres sync.
+**Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at [Electric](https://electric-sql.com/) for real-time Postgres sync.
 
 The protocol provides:
 
