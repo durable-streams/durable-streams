@@ -99,17 +99,73 @@ const result = await stream.read()
 ### Resume from an offset
 
 ```typescript
-// Read from a specific offset
-const result = await stream.read({ offset: "0_100" })
+// Read and save the offset
+const result = await stream.read()
+const savedOffset = result.offset // Save this for later
+
+// Resume from saved offset
+const resumed = await stream.read({ offset: savedOffset })
 
 // Resume live tail from where you left off
 for await (const chunk of stream.follow({
-  offset: result.offset,
+  offset: resumed.offset,
   live: "long-poll",
 })) {
   console.log(new TextDecoder().decode(chunk.data))
 }
 ```
+
+## Protocol in 60 Seconds
+
+Here's the protocol in action with raw HTTP:
+
+**Create a stream:**
+
+```bash
+curl -X PUT https://your-server.com/v1/stream/my-stream \
+  -H "Content-Type: application/json"
+```
+
+**Append data:**
+
+```bash
+curl -X POST https://your-server.com/v1/stream/my-stream \
+  -H "Content-Type: application/json" \
+  -d '{"event":"user.created","userId":"123"}'
+
+# Server returns:
+# Stream-Next-Offset: abc123xyz
+```
+
+**Read from beginning:**
+
+```bash
+curl "https://your-server.com/v1/stream/my-stream?offset=-1"
+
+# Server returns:
+# Stream-Next-Offset: abc123xyz
+# Cache-Control: public, max-age=60
+# [response body with data]
+```
+
+**Resume from offset:**
+
+```bash
+curl "https://your-server.com/v1/stream/my-stream?offset=abc123xyz"
+```
+
+**Live tail (long-poll):**
+
+```bash
+curl "https://your-server.com/v1/stream/my-stream?offset=abc123xyz&live=long-poll"
+# Waits for new data, returns when available or times out
+```
+
+The key headers:
+
+- `Stream-Next-Offset` - Resume point for next read (exactly-once delivery)
+- `Cache-Control` - Enables CDN/browser caching for historical reads
+- `Content-Type` - Set at stream creation, preserved for all reads
 
 ## Message Framing
 
@@ -197,11 +253,11 @@ Offsets are opaque tokens that identify positions within a stream:
 // Start from beginning
 const result = await stream.read({ offset: "-1" })
 
-// Resume from last position
+// Resume from last position (always use returned offset)
 const next = await stream.read({ offset: result.offset })
 ```
 
-Offset format is implementation-defined (e.g., `"0_100"` might encode chunk ID and byte position, but clients should never rely on this).
+The only special offset value is `"-1"` for stream start. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
 
 ## Protocol
 
@@ -219,11 +275,47 @@ Durable Streams is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PR
 
 **Key features:**
 
+- Exactly-once delivery guarantee with offset-based resumption
 - Opaque, lexicographically sortable offsets for resumption
 - Optional sequence numbers for writer coordination
 - TTL and expiry time support
 - Content-type preservation
 - CDN-friendly caching and request collapsing
+
+### CDN Caching
+
+Historical reads (catch-up from known offsets) are fully cacheable at CDNs and in browsers:
+
+```bash
+# Request
+GET /v1/stream/my-stream?offset=abc123
+
+# Response
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=60, stale-while-revalidate=300
+ETag: "stream-id:abc123:xyz789"
+Stream-Next-Offset: xyz789
+Content-Type: application/json
+
+[response body]
+```
+
+**How it works:**
+
+- **Offset-based URLs** - Same offset = same data, perfect for caching
+- **Cache-Control** - Historical data cached for 60s, stale content served during revalidation
+- **ETag** - Efficient revalidation for unchanged data
+- **Request collapsing** - Multiple clients requesting same offset collapsed to single upstream request
+
+**With authentication:**
+Use `Cache-Control: private` instead of `public` and configure CDN to vary cache by auth token/user:
+
+```
+Cache-Control: private, max-age=60
+Vary: Authorization
+```
+
+Or use signed URLs with auth in query parameters for public caching.
 
 ## Relationship to Backend Streaming Systems
 
@@ -258,7 +350,7 @@ Your application server consumes from backend streaming systems, applies authori
 Server-Sent Events (SSE) provides basic real-time streaming over HTTP, but lacks the durability and robust resumability needed for production applications:
 
 - **No durable storage** - SSE is ephemeral; disconnect and data is lost. Servers must implement their own storage and replay logic
-- **Limited resumability** - SSE's `Last-Event-ID` mechanism requires servers to maintain per-client state and lacks standardized offset semantics
+- **Limited resumability** - SSE's `Last-Event-ID` mechanism lacks standardized offset semantics and requires custom server-side replay implementation
 - **No catch-up protocol** - No defined way to efficiently retrieve historical data before switching to live mode
 - **Text-only** - SSE is text-only
 - **No caching support** - Without durable offsets, CDN and browser caching are difficult to implement correctly
@@ -348,6 +440,9 @@ See [@durable-streams/server](./packages/server) for more details.
 
 ```bash
 npm install -g @durable-streams/cli
+
+# Set the server URL (defaults to http://localhost:8787)
+export STREAM_URL=https://your-server.com
 ```
 
 ```bash
