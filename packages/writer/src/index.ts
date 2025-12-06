@@ -18,7 +18,6 @@ export {
   FetchError,
   InvalidSignalError,
   MissingStreamUrlError,
-  type ErrorDetails,
 } from "@durable-streams/client"
 
 export * from "./writer"
