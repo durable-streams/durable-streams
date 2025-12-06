@@ -481,7 +481,8 @@ export class DurableStream {
   follow(opts?: ReadOptions): AsyncIterable<StreamChunk> {
     const stream = this
     const liveMode = opts?.live
-    let currentOffset = opts?.offset
+    // Default to -1 (start from beginning) if no offset provided
+    let currentOffset = opts?.offset ?? `-1`
     let currentCursor = opts?.cursor
     let isUpToDate = false
 
@@ -785,9 +786,10 @@ export class DurableStream {
 
     // Add read options to URL
     if (readOpts) {
-      if (readOpts.offset) {
-        fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, readOpts.offset)
-      }
+      // Always include offset, default to -1 (start from beginning)
+      const offset = readOpts.offset ?? `-1`
+      fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
+
       if (readOpts.live) {
         fetchUrl.searchParams.set(LIVE_QUERY_PARAM, readOpts.live)
       }
