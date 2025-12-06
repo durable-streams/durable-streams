@@ -1331,7 +1331,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Note: Must explicitly set to undefined to prevent fetch from auto-adding it
       const response = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
-        headers: { "Content-Type": undefined },
+        headers: { "Content-Type": undefined } as unknown as HeadersInit,
         body: `data`,
       })
 
