@@ -664,7 +664,7 @@ export class FileBackedStreamStore {
         if (messageOffset > startByte) {
           messages.push({
             data: new Uint8Array(messageData),
-            offset: `${currentSeq}_${messageOffset}`,
+            offset: `${String(currentSeq).padStart(16, `0`)}_${String(messageOffset).padStart(16, `0`)}`,
             timestamp: 0, // Not stored in MVP
           })
         }
