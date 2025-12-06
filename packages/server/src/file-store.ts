@@ -293,15 +293,15 @@ export class FileBackedStreamStore {
         currentDataOffset += messageLength
       }
 
-      // Return offset in format "readSeq_byteOffset"
-      return `0_${currentDataOffset}`
+      // Return offset in format "readSeq_byteOffset" with zero-padding
+      return `0000000000000000_${String(currentDataOffset).padStart(16, `0`)}`
     } catch (err) {
       console.error(
         `[FileBackedStreamStore] Error scanning file ${segmentPath}:`,
         err
       )
       // Return empty offset on error
-      return `0_0`
+      return `0000000000000000_0000000000000000`
     }
   }
 
@@ -372,7 +372,7 @@ export class FileBackedStreamStore {
     const streamMeta: StreamMetadata = {
       path: streamPath,
       contentType: options.contentType,
-      currentOffset: `0_0`,
+      currentOffset: `0000000000000000_0000000000000000`,
       lastSeq: undefined,
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
@@ -509,9 +509,9 @@ export class FileBackedStreamStore {
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset (only data bytes, not framing)
+    // Calculate new offset with zero-padding for lexicographic sorting
     const newByteOffset = byteOffset + data.length
-    const newOffset = `${readSeq}_${newByteOffset}`
+    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     // Get segment file path (directory was created in create())
     const streamDir = path.join(
@@ -574,21 +574,32 @@ export class FileBackedStreamStore {
       throw new Error(`Stream not found: ${streamPath}`)
     }
 
-    // Early return for empty stream
-    if (streamMeta.currentOffset === `0_0`) {
-      return { messages: [], upToDate: true }
-    }
-
     // Parse offsets
-    const startOffset = offset ?? `0_0`
+    const startOffset = offset ?? `0000000000000000_0000000000000000`
     const startParts = startOffset.split(`_`).map(Number)
     const startByte = startParts[1] ?? 0
     const currentParts = streamMeta.currentOffset.split(`_`).map(Number)
     const currentSeq = currentParts[0] ?? 0
     const currentByte = currentParts[1] ?? 0
 
-    // If start offset is at or past current offset, return empty
-    if (startByte >= currentByte) {
+    // Check if there are buffered messages first (for read-your-writes during append)
+    const buffer = this.messageBuffers.get(streamPath) ?? []
+    const hasBufferedMessages = buffer.some((msg) => {
+      const msgParts = msg.offset.split(`_`).map(Number)
+      const msgByte = msgParts[1] ?? 0
+      return msgByte > startByte
+    })
+
+    // Early return if no data available (neither on disk nor in buffer)
+    if (
+      streamMeta.currentOffset === `0000000000000000_0000000000000000` &&
+      !hasBufferedMessages
+    ) {
+      return { messages: [], upToDate: true }
+    }
+
+    // If start offset is at or past current offset AND no buffered messages, return empty
+    if (startByte >= currentByte && !hasBufferedMessages) {
       return { messages: [], upToDate: true }
     }
 
@@ -655,7 +666,7 @@ export class FileBackedStreamStore {
     }
 
     // Merge in-memory buffer messages (for read-your-writes consistency)
-    const buffer = this.messageBuffers.get(streamPath) ?? []
+    // Note: buffer already retrieved earlier for early-return check
     const bufferMessages = buffer.filter((msg) => {
       // Parse message offset to compare with start offset
       const msgParts = msg.offset.split(`_`).map(Number)

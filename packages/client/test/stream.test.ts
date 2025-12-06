@@ -232,7 +232,7 @@ describe(`DurableStream`, () => {
       await stream.read({ live: `long-poll` })
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `https://example.com/stream?live=long-poll`,
+        `https://example.com/stream?offset=-1&live=long-poll`,
         expect.anything()
       )
     })

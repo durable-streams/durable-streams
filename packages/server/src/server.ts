@@ -220,7 +220,17 @@ export class DurableStreamTestServer {
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
-    const contentType = req.headers[`content-type`]
+    let contentType = req.headers[`content-type`]
+
+    // Sanitize content-type: if empty or invalid, use default
+    if (
+      !contentType ||
+      contentType.trim() === `` ||
+      !/^[\w-]+\/[\w-]+/.test(contentType)
+    ) {
+      contentType = `application/octet-stream`
+    }
+
     const ttlHeader = req.headers[STREAM_TTL_HEADER.toLowerCase()] as
       | string
       | undefined
@@ -237,10 +247,29 @@ export class DurableStreamTestServer {
 
     let ttlSeconds: number | undefined
     if (ttlHeader) {
+      // Strict TTL validation: must be a positive integer without leading zeros,
+      // plus signs, decimals, whitespace, or non-decimal notation
+      const ttlPattern = /^(0|[1-9]\d*)$/
+      if (!ttlPattern.test(ttlHeader)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-TTL value`)
+        return
+      }
+
       ttlSeconds = parseInt(ttlHeader, 10)
       if (isNaN(ttlSeconds) || ttlSeconds < 0) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Stream-TTL value`)
+        return
+      }
+    }
+
+    // Validate Expires-At timestamp format (ISO 8601)
+    if (expiresAtHeader) {
+      const timestamp = new Date(expiresAtHeader)
+      if (isNaN(timestamp.getTime())) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-Expires-At timestamp`)
         return
       }
     }
@@ -263,10 +292,17 @@ export class DurableStreamTestServer {
     const stream = this.store.get(path)!
 
     // Return 201 for new streams, 200 for idempotent creates
-    res.writeHead(isNew ? 201 : 200, {
-      "content-type": contentType ?? `application/octet-stream`,
+    const headers: Record<string, string> = {
+      "content-type": contentType,
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
-    })
+    }
+
+    // Add Location header for 201 Created responses
+    if (isNew) {
+      headers[`location`] = `${this._url}${path}`
+    }
+
+    res.writeHead(isNew ? 201 : 200, headers)
     res.end()
   }
 
@@ -316,13 +352,38 @@ export class DurableStreamTestServer {
     const live = url.searchParams.get(LIVE_QUERY_PARAM)
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
 
-    // Validate offset format (must not contain commas or spaces)
-    if (offset) {
-      if (offset.includes(`,`) || offset.includes(` `)) {
+    // Validate offset parameter
+    if (offset !== undefined) {
+      // Reject empty offset
+      if (offset === ``) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Empty offset parameter`)
+        return
+      }
+
+      // Reject multiple offset parameters
+      const allOffsets = url.searchParams.getAll(OFFSET_QUERY_PARAM)
+      if (allOffsets.length > 1) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Multiple offset parameters not allowed`)
+        return
+      }
+
+      // Validate offset format: must be "-1" or match our offset format (digits_digits)
+      // This prevents path traversal, injection attacks, and invalid characters
+      const validOffsetPattern = /^(-1|\d+_\d+)$/
+      if (!validOffsetPattern.test(offset)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid offset format`)
         return
       }
+    }
+
+    // Require offset parameter for long-poll per protocol spec
+    if (live === `long-poll` && !offset) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Long-poll requires offset parameter`)
+      return
     }
 
     // Read current messages
