@@ -3,7 +3,6 @@ import { useState, useEffect, useRef } from 'react'
 import { DurableStream } from '@durable-streams/writer'
 import '../styles.css'
 
-// @ts-expect-error - TanStack Router type mismatch with current setup
 export const Route = createFileRoute('/')({
   component: Index,
 })
