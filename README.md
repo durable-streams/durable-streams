@@ -44,6 +44,39 @@ This monorepo contains:
 - **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
+## Try It Out Locally
+
+The fastest way to experience Durable Streams is to run the local server and CLI:
+
+```bash
+# Clone and install
+git clone https://github.com/durable-streams/durable-streams.git
+cd durable-streams
+pnpm install
+
+# Terminal 1: Start the local server
+pnpm start:dev
+
+# Terminal 2: Link the CLI globally (one-time setup)
+pnpm link:dev
+
+# Set the server URL
+export STREAM_URL=http://localhost:8787
+
+# Create a stream
+durable-stream-dev create my-stream
+
+# Terminal 3: Start reading (will show data as it arrives)
+durable-stream-dev read my-stream
+
+# Back in Terminal 2: Write data and watch it appear in Terminal 3
+durable-stream-dev write my-stream "Hello, world!"
+durable-stream-dev write my-stream "More data..."
+echo "Piped content!" | durable-stream-dev write my-stream
+```
+
+See the [CLI README](./packages/cli/README.md) for more details.
+
 ## Quick Start
 
 ### Read-only client (typical browser/mobile usage)
