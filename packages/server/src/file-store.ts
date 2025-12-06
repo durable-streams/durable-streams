@@ -293,15 +293,15 @@ export class FileBackedStreamStore {
         currentDataOffset += messageLength
       }
 
-      // Return offset in format "readSeq_byteOffset"
-      return `0_${currentDataOffset}`
+      // Return offset in format "readSeq_byteOffset" with zero-padding
+      return `0000000000000000_${String(currentDataOffset).padStart(16, `0`)}`
     } catch (err) {
       console.error(
         `[FileBackedStreamStore] Error scanning file ${segmentPath}:`,
         err
       )
       // Return empty offset on error
-      return `0_0`
+      return `0000000000000000_0000000000000000`
     }
   }
 
@@ -372,7 +372,7 @@ export class FileBackedStreamStore {
     const streamMeta: StreamMetadata = {
       path: streamPath,
       contentType: options.contentType,
-      currentOffset: `0_0`,
+      currentOffset: `0000000000000000_0000000000000000`,
       lastSeq: undefined,
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
@@ -509,9 +509,9 @@ export class FileBackedStreamStore {
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset (only data bytes, not framing)
+    // Calculate new offset with zero-padding for lexicographic sorting
     const newByteOffset = byteOffset + data.length
-    const newOffset = `${readSeq}_${newByteOffset}`
+    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     // Get segment file path (directory was created in create())
     const streamDir = path.join(
@@ -575,12 +575,12 @@ export class FileBackedStreamStore {
     }
 
     // Early return for empty stream
-    if (streamMeta.currentOffset === `0_0`) {
+    if (streamMeta.currentOffset === `0000000000000000_0000000000000000`) {
       return { messages: [], upToDate: true }
     }
 
     // Parse offsets
-    const startOffset = offset ?? `0_0`
+    const startOffset = offset ?? `0000000000000000_0000000000000000`
     const startParts = startOffset.split(`_`).map(Number)
     const startByte = startParts[1] ?? 0
     const currentParts = streamMeta.currentOffset.split(`_`).map(Number)

@@ -22,7 +22,8 @@
       "Bash(node --input-type=module -e:*)",
       "Bash(pnpm --filter @durable-streams/server test:run:*)",
       "WebFetch(domain:electric-sql.com)",
-      "Bash(pnpm --filter @durable-streams/conformance-tests build)"
+      "Bash(pnpm --filter @durable-streams/conformance-tests build)",
+      "Bash(pnpm exec vitest:*)"
     ],
     "deny": [],
     "ask": []

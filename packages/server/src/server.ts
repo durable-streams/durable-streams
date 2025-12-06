@@ -264,6 +264,16 @@ export class DurableStreamTestServer {
       }
     }
 
+    // Validate Expires-At timestamp format (ISO 8601)
+    if (expiresAtHeader) {
+      const timestamp = new Date(expiresAtHeader)
+      if (isNaN(timestamp.getTime())) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-Expires-At timestamp`)
+        return
+      }
+    }
+
     // Read body if present
     const body = await this.readBody(req)
 
@@ -359,14 +369,10 @@ export class DurableStreamTestServer {
         return
       }
 
-      // Validate offset format (must not contain query-reserved characters)
-      if (
-        offset.includes(`,`) ||
-        offset.includes(` `) ||
-        offset.includes(`?`) ||
-        offset.includes(`&`) ||
-        offset.includes(`=`)
-      ) {
+      // Validate offset format: must be "-1" or match our offset format (digits_digits)
+      // This prevents path traversal, injection attacks, and invalid characters
+      const validOffsetPattern = /^(-1|\d+_\d+)$/
+      if (!validOffsetPattern.test(offset)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid offset format`)
         return

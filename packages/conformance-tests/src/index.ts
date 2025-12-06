@@ -1357,9 +1357,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test data`,
       })
 
-      // Should work fine with unknown params
+      // Should work fine with unknown params (use -1 to start from beginning)
       const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=0&foo=bar&baz=qux`,
+        `${getBaseUrl()}${streamPath}?offset=-1&foo=bar&baz=qux`,
         {
           method: `GET`,
         }
@@ -1526,7 +1526,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Long-poll with cursor param should not error
       const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=0&live=long-poll&cursor=test-cursor-123`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll&cursor=test-cursor-123`,
         {
           method: `GET`,
         }

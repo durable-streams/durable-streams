@@ -52,7 +52,7 @@ export class StreamStore {
       path,
       contentType: options.contentType,
       messages: [],
-      currentOffset: `0_0`,
+      currentOffset: `0000000000000000_0000000000000000`,
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
       createdAt: Date.now(),
@@ -146,8 +146,8 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
-    if (!offset || offset === `0_0`) {
-      // Read from beginning
+    // No offset or -1 means start from beginning
+    if (!offset || offset === `-1`) {
       return {
         messages: [...stream.messages],
         upToDate: true,
@@ -248,9 +248,9 @@ export class StreamStore {
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset
+    // Calculate new offset with zero-padding for lexicographic sorting
     const newByteOffset = byteOffset + data.length
-    const newOffset = `${readSeq}_${newByteOffset}`
+    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     const message: StreamMessage = {
       data,
@@ -266,8 +266,9 @@ export class StreamStore {
 
   private findOffsetIndex(stream: Stream, offset: string): number {
     // Find the first message with an offset greater than the given offset
+    // Use lexicographic comparison as required by protocol
     for (let i = 0; i < stream.messages.length; i++) {
-      if (this.compareOffsets(stream.messages[i]!.offset, offset) > 0) {
+      if (stream.messages[i]!.offset > offset) {
         return i
       }
     }
@@ -275,17 +276,10 @@ export class StreamStore {
   }
 
   private compareOffsets(a: string, b: string): number {
-    const aParts = a.split(`_`).map(Number)
-    const bParts = b.split(`_`).map(Number)
-    const aSeq = aParts[0]!
-    const aOffset = aParts[1]!
-    const bSeq = bParts[0]!
-    const bOffset = bParts[1]!
-
-    if (aSeq !== bSeq) {
-      return aSeq - bSeq
-    }
-    return aOffset - bOffset
+    // Lexicographic comparison for protocol compliance
+    if (a > b) return 1
+    if (a < b) return -1
+    return 0
   }
 
   private notifyLongPolls(path: string): void {
