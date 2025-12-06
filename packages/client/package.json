@@ -31,7 +31,6 @@
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
-    "@durable-streams/writer": "workspace:*",
     "tsdown": "^0.9.0"
   },
   "scripts": {

@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, vi } from "vitest"
-import { DurableStream, FetchError } from "@durable-streams/writer"
+import { DurableStream, FetchError } from "../src/index"
 import {
   testWithServer,
   testWithStream,

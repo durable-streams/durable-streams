@@ -4,7 +4,7 @@ import {
   FetchError,
   InvalidSignalError,
   MissingStreamUrlError,
-} from "@durable-streams/writer"
+} from "../src/index"
 import type { Mock } from "vitest"
 
 describe(`DurableStream`, () => {

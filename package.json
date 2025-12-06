@@ -21,16 +21,6 @@
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
     "changeset:publish": "pnpm build && changeset publish"
   },
-  "pnpm": {
-    "overrides": {
-      "@durable-streams/client": "workspace:*",
-      "@durable-streams/server": "workspace:*",
-      "@durable-streams/writer": "workspace:*",
-      "@durable-streams/conformance-tests": "workspace:*",
-      "@durable-streams/benchmarks": "workspace:*",
-      "@durable-streams/cli": "workspace:*"
-    }
-  },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
     "@svitejs/changesets-changelog-github-compact": "^1.2.0",
