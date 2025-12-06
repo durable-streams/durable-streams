@@ -227,10 +227,15 @@ export class DurableStream extends BaseStream {
         })
       }
     } catch (error) {
-      // Reject all
+      // Reject current batch
       for (const msg of batch) {
         msg.reject(error as Error)
       }
+      // Also reject buffered messages (don't leave promises hanging)
+      for (const msg of this.buffer) {
+        msg.reject(error as Error)
+      }
+      this.buffer = []
       throw error
     }
   }
@@ -252,9 +257,21 @@ export class DurableStream extends BaseStream {
     // Batch data
     let batchedBody: BodyInit
     if (isJson) {
-      // For JSON mode: batch as array, server will flatten arrays via processJsonAppend
-      const values = batch.map((m) => m.data)
-      batchedBody = JSON.stringify(batch.length === 1 ? values[0] : values)
+      // For JSON mode: flatten arrays (arrays are semantic batches)
+      // If msg.data is an array, spread its elements; otherwise push the value
+      const values: Array<unknown> = []
+      for (const msg of batch) {
+        if (Array.isArray(msg.data)) {
+          values.push(...msg.data)
+        } else {
+          values.push(msg.data)
+        }
+      }
+      batchedBody = JSON.stringify(
+        batch.length === 1 && !Array.isArray(batch[0]!.data)
+          ? values[0]
+          : values
+      )
     } else {
       const totalSize = batch.reduce((sum, m) => {
         const size =
