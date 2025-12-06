@@ -18,6 +18,7 @@ export function normalizeContentType(contentType: string | undefined): string {
  * - Validates JSON
  * - Extracts array elements if data is an array
  * - Always appends trailing comma for easy concatenation
+ * @throws Error if JSON is invalid or array is empty
  */
 export function processJsonAppend(data: Uint8Array): Uint8Array {
   const text = new TextDecoder().decode(data)
@@ -34,7 +35,7 @@ export function processJsonAppend(data: Uint8Array): Uint8Array {
   let result: string
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
-      return new Uint8Array(0)
+      throw new Error(`Empty arrays are not allowed`)
     }
     const elements = parsed.map((item) => JSON.stringify(item))
     result = elements.join(`,`) + `,`
@@ -155,6 +156,7 @@ export class StreamStore {
    * Append data to a stream.
    * @throws Error if stream doesn't exist
    * @throws Error if seq is lower than lastSeq
+   * @throws Error if JSON mode and array is empty
    */
   append(
     path: string,
@@ -166,15 +168,15 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
-    // Check content type match (case-insensitive per RFC 2045)
-    if (
-      options.contentType &&
-      stream.contentType &&
-      options.contentType.toLowerCase() !== stream.contentType.toLowerCase()
-    ) {
-      throw new Error(
-        `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
-      )
+    // Check content type match using normalization (handles charset parameters)
+    if (options.contentType && stream.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(stream.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
+        )
+      }
     }
 
     // Check sequence for writer coordination
@@ -331,7 +333,7 @@ export class StreamStore {
   // ============================================================================
 
   private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
-    // Process JSON mode data
+    // Process JSON mode data (throws on invalid JSON or empty arrays)
     let processedData = data
     if (normalizeContentType(stream.contentType) === `application/json`) {
       processedData = processJsonAppend(data)

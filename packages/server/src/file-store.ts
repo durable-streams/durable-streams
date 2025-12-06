@@ -491,15 +491,15 @@ export class FileBackedStreamStore {
       throw new Error(`Stream not found: ${streamPath}`)
     }
 
-    // Check content type match (case-insensitive per RFC 2045)
-    if (
-      options.contentType &&
-      streamMeta.contentType &&
-      options.contentType.toLowerCase() !== streamMeta.contentType.toLowerCase()
-    ) {
-      throw new Error(
-        `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
-      )
+    // Check content type match using normalization (handles charset parameters)
+    if (options.contentType && streamMeta.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(streamMeta.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
+        )
+      }
     }
 
     // Check sequence for writer coordination
@@ -514,7 +514,7 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Process JSON mode data
+    // Process JSON mode data (throws on invalid JSON or empty arrays)
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
       processedData = processJsonAppend(data)
