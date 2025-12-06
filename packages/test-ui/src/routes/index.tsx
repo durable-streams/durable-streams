@@ -54,9 +54,13 @@ function Index() {
         url: `${SERVER_URL}/v1/stream/__registry__`,
       })
 
-      // Check if registry exists first
+      // Check if registry exists, create it if it doesn't
       const exists = await registryStream.head().catch(() => null)
       if (!exists) {
+        await DurableStream.create({
+          url: `${SERVER_URL}/v1/stream/__registry__`,
+          contentType: 'application/json',
+        })
         return
       }
 
