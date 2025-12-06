@@ -23,8 +23,11 @@
     "lmdb": "^3.3.0"
   },
   "devDependencies": {
+    "@durable-streams/conformance-tests": "workspace:*",
+    "@types/node": "^22.0.0",
     "tsdown": "^0.9.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "vitest": "^3.2.4"
   },
   "files": [
     "dist",

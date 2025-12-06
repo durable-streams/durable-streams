@@ -173,11 +173,11 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 - `Stream-Seq: <string>` (optional)
   - A monotonic, lexicographic writer sequence number for coordination.
   - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
-  - If provided and lower than the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`.
+  - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
 
 #### Request Body
 
-- Bytes to append to the stream.
+- Bytes to append to the stream. Servers **MUST** reject POST requests with an empty body (Content-Length: 0 or no body) with `400 Bad Request`. Empty appends have no semantic meaning and are likely client errors.
 
 #### Response Codes
 
@@ -273,9 +273,10 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
   - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
-- `Stream-Up-To-Date` (optional / presence header)
-  - A presence header that indicates that the response includes all data available in the stream up to the time the response was generated.
-  - If present, clients **MAY** use this to safely apply accumulated messages and transition to live mode. The value, if provided, **SHOULD** be `true` and is otherwise ignored.
+- `Stream-Up-To-Date: true`
+  - **MUST** be present and set to `true` when the response includes all data available in the stream at the time the response was generated (i.e., when the requested offset has reached the tail and no more data exists).
+  - **SHOULD NOT** be present when returning partial data due to server-defined chunk size limits (when more data exists beyond what was returned).
+  - Clients **MAY** use this header to determine when they have caught up and can transition to live tailing mode.
 
 #### Response Body
 
@@ -391,7 +392,7 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 2. **Lexicographically Sortable**: For any two valid offsets for the same stream, a lexicographic comparison determines their relative position in the stream. Clients **MAY** compare offsets lexicographically to determine ordering.
 3. **Persistent**: Offsets remain valid for the lifetime of the stream (until deletion or expiration)
 
-**Format**: Offset tokens are opaque, case-sensitive ASCII strings consisting of characters from the set `[A-Za-z0-9_=-]`. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain multiple comma-separated values. This format ensures safe embedding in URLs without extra escaping and provides a stable basis for lexicographic comparison.
+**Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
