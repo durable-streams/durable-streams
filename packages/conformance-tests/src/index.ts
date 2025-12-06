@@ -1328,12 +1328,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Try to append without Content-Type - should fail
+      // Note: Must explicitly set to undefined to prevent fetch from auto-adding it
       const response = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
+        headers: { "Content-Type": undefined },
         body: `data`,
       })
 
-      expect([400, 409]).toContain(response.status)
+      expect(response.status).toBe(400)
     })
 
     test(`should accept PUT without Content-Type (use default)`, async () => {
