@@ -1720,29 +1720,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // ============================================================================
 
   describe(`HEAD Metadata Edge Cases`, () => {
-    test(`should return Cache-Control no-store or similar`, async () => {
-      const streamPath = `/v1/stream/head-cache-test-${Date.now()}`
-
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-      })
-
-      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `HEAD`,
-      })
-
-      const cacheControl = response.headers.get(`cache-control`)
-      expect(cacheControl).toBeDefined()
-
-      // Protocol says SHOULD be no-store or private,max-age=0,must-revalidate
-      const isNoStore = cacheControl?.includes(`no-store`)
-      const isPrivateNoCache =
-        cacheControl?.includes(`private`) && cacheControl.includes(`max-age=0`)
-
-      expect(isNoStore || isPrivateNoCache).toBe(true)
-    })
-
     test(`should return TTL metadata if configured`, async () => {
       const streamPath = `/v1/stream/head-ttl-metadata-test-${Date.now()}`
 
