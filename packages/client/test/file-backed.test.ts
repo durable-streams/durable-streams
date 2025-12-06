@@ -114,7 +114,7 @@ describe(`Recovery and Crash Consistency`, () => {
     // Manually corrupt LMDB to have a higher offset (simulating crash)
     const key = `stream:/test`
     const meta = (server1.store as any).db.get(key)
-    meta.currentOffset = `0_1000` // Way ahead of actual file (which is 0_4)
+    meta.currentOffset = `0000000000000000_0000000000001000` // Way ahead of actual file
     ;(server1.store as any).db.put(key, meta)
 
     await server1.stop()
@@ -124,7 +124,9 @@ describe(`Recovery and Crash Consistency`, () => {
     await server2.start()
 
     const reconciledMeta = (server2.store as any).db.get(key)
-    expect(reconciledMeta.currentOffset).toBe(`0_4`) // Actual file offset for "msg1"
+    expect(reconciledMeta.currentOffset).toBe(
+      `0000000000000000_0000000000000004`
+    ) // Actual file offset for "msg1"
 
     // Should be able to append more
     server2.store.append(`/test`, encode(`msg2`))
