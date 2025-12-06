@@ -6,18 +6,23 @@
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "durable-stream": "./dist/index.js"
+    "durable-stream": "./dist/index.js",
+    "durable-stream-dev": "./bin/durable-stream-dev.mjs"
   },
   "scripts": {
     "build": "tsdown",
-    "dev": "tsdown --watch"
+    "dev": "tsdown --watch",
+    "start:dev": "tsx --watch example-server.ts",
+    "link:dev": "pnpm link --global"
   },
   "dependencies": {
     "@durable-streams/writer": "workspace:*"
   },
   "devDependencies": {
+    "@durable-streams/server": "workspace:*",
     "@types/node": "^22.15.21",
     "tsdown": "^0.9.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.5.2"
   }
 }

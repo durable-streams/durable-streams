@@ -7,6 +7,8 @@
     "node": ">=22"
   },
   "scripts": {
+    "start:dev": "pnpm --filter @durable-streams/cli start:dev",
+    "link:dev": "pnpm --filter @durable-streams/cli link:dev",
     "build": "pnpm -r build",
     "dev": "pnpm -r --parallel dev",
     "test": "vitest",
