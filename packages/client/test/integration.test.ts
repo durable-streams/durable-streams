@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, vi } from "vitest"
-import { DurableStream, FetchError } from "../src"
+import { DurableStream, FetchError } from "@durable-streams/writer"
 import {
   testWithServer,
   testWithStream,
@@ -954,7 +954,7 @@ describe(`ReadableStream Conversion`, () => {
 
       expect(done).toBe(false)
       expect(value).toBeDefined()
-      expect(decode(value!)).toBe(`byte data`)
+      expect(decode(value)).toBe(`byte data`)
       expect(requestCount).toBeGreaterThanOrEqual(1)
 
       reader.releaseLock()

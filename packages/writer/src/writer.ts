@@ -6,6 +6,7 @@
 
 import {
   DurableStream as BaseStream,
+  FetchError,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_SEQ_HEADER,
   STREAM_TTL_HEADER,
@@ -117,10 +118,21 @@ export class DurableStream extends BaseStream {
     })
 
     if (!response.ok) {
-      if (response.status === 409) {
-        throw new Error(`Stream already exists: ${opts.url}`)
-      }
-      throw new Error(`Failed to create stream: ${response.statusText}`)
+      const text = await response.text()
+      const headers: Record<string, string> = {}
+      response.headers.forEach((v, k) => {
+        headers[k] = v
+      })
+      throw new FetchError(
+        response.status,
+        text,
+        undefined,
+        headers,
+        opts.url,
+        response.status === 409
+          ? `Stream already exists`
+          : `Failed to create stream`
+      )
     }
 
     // Update content type from response
@@ -151,7 +163,19 @@ export class DurableStream extends BaseStream {
     })
 
     if (!response.ok && response.status !== 404) {
-      throw new Error(`Failed to delete stream: ${response.statusText}`)
+      const text = await response.text()
+      const headers: Record<string, string> = {}
+      response.headers.forEach((v, k) => {
+        headers[k] = v
+      })
+      throw new FetchError(
+        response.status,
+        text,
+        undefined,
+        headers,
+        this.url,
+        `Failed to delete stream`
+      )
     }
   }
 
@@ -228,8 +252,9 @@ export class DurableStream extends BaseStream {
     // Batch data
     let batchedBody: BodyInit
     if (isJson) {
+      // For JSON mode: batch as array, server will flatten arrays via processJsonAppend
       const values = batch.map((m) => m.data)
-      batchedBody = JSON.stringify(values)
+      batchedBody = JSON.stringify(batch.length === 1 ? values[0] : values)
     } else {
       const totalSize = batch.reduce((sum, m) => {
         const size =
@@ -268,16 +293,31 @@ export class DurableStream extends BaseStream {
     })
 
     if (!response.ok) {
+      const text = await response.text()
+      const headers: Record<string, string> = {}
+      response.headers.forEach((v, k) => {
+        headers[k] = v
+      })
+
+      let message: string
       if (response.status === 404) {
-        throw new Error(`Stream not found: ${this.url}`)
+        message = `Stream not found`
+      } else if (response.status === 409) {
+        message = `Sequence conflict`
+      } else if (response.status === 400) {
+        message = `Bad request (possibly content-type mismatch)`
+      } else {
+        message = `Failed to append`
       }
-      if (response.status === 409) {
-        throw new Error(`Sequence conflict`)
-      }
-      if (response.status === 400) {
-        throw new Error(`Bad request (possibly content-type mismatch)`)
-      }
-      throw new Error(`Failed to append: ${response.statusText}`)
+
+      throw new FetchError(
+        response.status,
+        text,
+        undefined,
+        headers,
+        this.url,
+        message
+      )
     }
   }
 
