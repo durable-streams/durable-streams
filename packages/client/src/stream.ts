@@ -17,10 +17,7 @@ import {
   OFFSET_QUERY_PARAM,
   SSE_COMPATIBLE_CONTENT_TYPES,
   STREAM_CURSOR_HEADER,
-  STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
-  STREAM_SEQ_HEADER,
-  STREAM_TTL_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import {
@@ -31,8 +28,6 @@ import {
 } from "./fetch"
 import type { EventSourceMessage } from "@microsoft/fetch-event-source"
 import type {
-  AppendOptions,
-  CreateOptions,
   HeadResult,
   MaybePromise,
   Offset,
@@ -152,21 +147,6 @@ export class DurableStream {
   // ============================================================================
 
   /**
-   * Create a new stream (create-only PUT) and return a handle.
-   * Fails with DurableStreamError(code="CONFLICT_EXISTS") if it already exists.
-   */
-  static async create(opts: CreateOptions): Promise<DurableStream> {
-    const stream = new DurableStream(opts)
-    await stream.create({
-      contentType: opts.contentType,
-      ttlSeconds: opts.ttlSeconds,
-      expiresAt: opts.expiresAt,
-      body: opts.body,
-    })
-    return stream
-  }
-
-  /**
    * Validate that a stream exists and fetch metadata via HEAD.
    * Returns a handle with contentType populated (if sent by server).
    */
@@ -182,14 +162,6 @@ export class DurableStream {
   static async head(opts: StreamOptions): Promise<HeadResult> {
     const stream = new DurableStream(opts)
     return stream.head()
-  }
-
-  /**
-   * Delete a stream without creating a handle.
-   */
-  static async delete(opts: StreamOptions): Promise<void> {
-    const stream = new DurableStream(opts)
-    return stream.delete()
   }
 
   // ============================================================================
@@ -235,191 +207,6 @@ export class DurableStream {
       offset,
       etag,
       cacheControl,
-    }
-  }
-
-  /**
-   * Create this stream (create-only PUT) using the URL/auth from the handle.
-   */
-  async create(opts?: Omit<CreateOptions, keyof StreamOptions>): Promise<this> {
-    const { requestHeaders, fetchUrl } = await this.#buildRequest()
-
-    if (opts?.contentType) {
-      requestHeaders[`content-type`] = opts.contentType
-    }
-    if (opts?.ttlSeconds !== undefined) {
-      requestHeaders[STREAM_TTL_HEADER] = String(opts.ttlSeconds)
-    }
-    if (opts?.expiresAt) {
-      requestHeaders[STREAM_EXPIRES_AT_HEADER] = opts.expiresAt
-    }
-
-    const body = encodeBody(opts?.body)
-
-    const response = await this.#fetchClient(fetchUrl.toString(), {
-      method: `PUT`,
-      headers: requestHeaders,
-      body,
-      signal: this.#options.signal,
-    })
-
-    if (!response.ok) {
-      if (response.status === 409) {
-        throw new DurableStreamError(
-          `Stream already exists: ${this.url}`,
-          `CONFLICT_EXISTS`,
-          409
-        )
-      }
-      throw await DurableStreamError.fromResponse(response, this.url)
-    }
-
-    // Update content type from response or options
-    const responseContentType = response.headers.get(`content-type`)
-    if (responseContentType) {
-      this.contentType = responseContentType
-    } else if (opts?.contentType) {
-      this.contentType = opts.contentType
-    }
-
-    return this
-  }
-
-  /**
-   * Delete this stream.
-   */
-  async delete(opts?: { signal?: AbortSignal }): Promise<void> {
-    const { requestHeaders, fetchUrl } = await this.#buildRequest()
-
-    const response = await this.#fetchClient(fetchUrl.toString(), {
-      method: `DELETE`,
-      headers: requestHeaders,
-      signal: opts?.signal ?? this.#options.signal,
-    })
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new DurableStreamError(
-          `Stream not found: ${this.url}`,
-          `NOT_FOUND`,
-          404
-        )
-      }
-      throw await DurableStreamError.fromResponse(response, this.url)
-    }
-  }
-
-  /**
-   * Append a single payload to the stream.
-   *
-   * - `body` may be Uint8Array, string, or any Fetch BodyInit.
-   * - Strings are encoded as UTF-8.
-   * - `seq` (if provided) is sent as stream-seq (writer coordination).
-   */
-  async append(
-    body: BodyInit | Uint8Array | string,
-    opts?: AppendOptions
-  ): Promise<void> {
-    const { requestHeaders, fetchUrl } = await this.#buildRequest()
-
-    if (opts?.contentType) {
-      requestHeaders[`content-type`] = opts.contentType
-    } else if (this.contentType) {
-      requestHeaders[`content-type`] = this.contentType
-    }
-
-    if (opts?.seq) {
-      requestHeaders[STREAM_SEQ_HEADER] = opts.seq
-    }
-
-    const encodedBody = encodeBody(body)
-
-    const response = await this.#fetchClient(fetchUrl.toString(), {
-      method: `POST`,
-      headers: requestHeaders,
-      body: encodedBody,
-      signal: opts?.signal ?? this.#options.signal,
-    })
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new DurableStreamError(
-          `Stream not found: ${this.url}`,
-          `NOT_FOUND`,
-          404
-        )
-      }
-      if (response.status === 409) {
-        throw new DurableStreamError(
-          `Sequence conflict: seq is lower than last appended`,
-          `CONFLICT_SEQ`,
-          409
-        )
-      }
-      if (response.status === 400) {
-        throw new DurableStreamError(
-          `Bad request (possibly content-type mismatch)`,
-          `BAD_REQUEST`,
-          400
-        )
-      }
-      throw await DurableStreamError.fromResponse(response, this.url)
-    }
-  }
-
-  /**
-   * Append a streaming body to the stream.
-   *
-   * - `source` yields Uint8Array or string chunks.
-   * - Strings are encoded as UTF-8; no delimiters are added.
-   * - Internally uses chunked transfer or HTTP/2 streaming.
-   */
-  async appendStream(
-    source:
-      | ReadableStream<Uint8Array | string>
-      | AsyncIterable<Uint8Array | string>,
-    opts?: AppendOptions
-  ): Promise<void> {
-    const { requestHeaders, fetchUrl } = await this.#buildRequest()
-
-    if (opts?.contentType) {
-      requestHeaders[`content-type`] = opts.contentType
-    } else if (this.contentType) {
-      requestHeaders[`content-type`] = this.contentType
-    }
-
-    if (opts?.seq) {
-      requestHeaders[STREAM_SEQ_HEADER] = opts.seq
-    }
-
-    // Convert to ReadableStream if needed
-    const body = toReadableStream(source)
-
-    const response = await this.#fetchClient(fetchUrl.toString(), {
-      method: `POST`,
-      headers: requestHeaders,
-      body,
-      // @ts-expect-error - duplex is needed for streaming but not in types
-      duplex: `half`,
-      signal: opts?.signal ?? this.#options.signal,
-    })
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        throw new DurableStreamError(
-          `Stream not found: ${this.url}`,
-          `NOT_FOUND`,
-          404
-        )
-      }
-      if (response.status === 409) {
-        throw new DurableStreamError(
-          `Sequence conflict: seq is lower than last appended`,
-          `CONFLICT_SEQ`,
-          409
-        )
-      }
-      throw await DurableStreamError.fromResponse(response, this.url)
     }
   }
 
@@ -1133,75 +920,6 @@ async function resolveValue<T>(value: T | (() => MaybePromise<T>)): Promise<T> {
     return (value as () => MaybePromise<T>)()
   }
   return value
-}
-
-/**
- * Encode a body value to the appropriate format.
- * Strings are encoded as UTF-8.
- */
-function encodeBody(
-  body: BodyInit | Uint8Array | string | undefined
-): BodyInit | undefined {
-  if (body === undefined) {
-    return undefined
-  }
-  if (typeof body === `string`) {
-    return new TextEncoder().encode(body)
-  }
-  if (body instanceof Uint8Array) {
-    // Cast to ensure compatible BodyInit type
-    return body as unknown as BodyInit
-  }
-  return body
-}
-
-/**
- * Convert an async iterable to a ReadableStream.
- */
-function toReadableStream(
-  source:
-    | ReadableStream<Uint8Array | string>
-    | AsyncIterable<Uint8Array | string>
-): ReadableStream<Uint8Array> {
-  // If it's already a ReadableStream, transform it
-  if (source instanceof ReadableStream) {
-    return source.pipeThrough(
-      new TransformStream<Uint8Array | string, Uint8Array>({
-        transform(chunk, controller) {
-          if (typeof chunk === `string`) {
-            controller.enqueue(new TextEncoder().encode(chunk))
-          } else {
-            controller.enqueue(chunk)
-          }
-        },
-      })
-    )
-  }
-
-  // Convert async iterable to ReadableStream
-  const encoder = new TextEncoder()
-  const iterator = source[Symbol.asyncIterator]()
-
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      try {
-        const { done, value } = await iterator.next()
-        if (done) {
-          controller.close()
-        } else if (typeof value === `string`) {
-          controller.enqueue(encoder.encode(value))
-        } else {
-          controller.enqueue(value)
-        }
-      } catch (e) {
-        controller.error(e)
-      }
-    },
-
-    cancel() {
-      iterator.return?.()
-    },
-  })
 }
 
 /**
