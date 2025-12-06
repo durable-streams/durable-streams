@@ -10,7 +10,11 @@ import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
-import { formatJsonResponse, processJsonAppend } from "./store"
+import {
+  formatJsonResponse,
+  normalizeContentType,
+  processJsonAppend,
+} from "./store"
 import type { Database } from "lmdb"
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
@@ -507,7 +511,7 @@ export class FileBackedStreamStore {
 
     // Process JSON mode data
     let processedData = data
-    if (streamMeta.contentType?.toLowerCase() === `application/json`) {
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
       processedData = processJsonAppend(data)
     }
 
@@ -739,7 +743,7 @@ export class FileBackedStreamStore {
     }
 
     // For JSON mode, wrap in array brackets
-    if (streamMeta.contentType?.toLowerCase() === `application/json`) {
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
       return formatJsonResponse(concatenated)
     }
 

@@ -14,6 +14,15 @@ import fastq from "fastq"
 import type { queueAsPromised } from "fastq"
 
 /**
+ * Normalize content-type by extracting the media type (before any semicolon).
+ * Handles cases like "application/json; charset=utf-8".
+ */
+function normalizeContentType(contentType: string | undefined): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0].trim().toLowerCase()
+}
+
+/**
  * Options for creating a stream.
  */
 export interface CreateOptions {
@@ -26,7 +35,6 @@ export interface CreateOptions {
   params?: Record<string, string>
   headers?: Record<string, string>
   signal?: AbortSignal
-  maxQueueSize?: number
 }
 
 /**
@@ -35,7 +43,6 @@ export interface CreateOptions {
 export interface AppendOptions {
   seq?: string
   contentType?: string
-  signal?: AbortSignal
 }
 
 interface QueuedMessage {
@@ -70,11 +77,11 @@ interface QueuedMessage {
 export class DurableStream extends BaseStream {
   private queue: queueAsPromised<Array<QueuedMessage>>
   private buffer: Array<QueuedMessage> = []
-  private maxQueueSize: number
+  private options: CreateOptions
 
   constructor(opts: CreateOptions) {
     super(opts)
-    this.maxQueueSize = opts.maxQueueSize ?? 1000
+    this.options = opts
     this.queue = fastq.promise(this.worker.bind(this), 1)
   }
 
@@ -129,7 +136,7 @@ export class DurableStream extends BaseStream {
    * Delete a stream.
    */
   static async delete(opts: { url: string }): Promise<void> {
-    const stream = new DurableStream({ ...opts, maxQueueSize: 0 })
+    const stream = new DurableStream(opts)
     await stream.delete()
   }
 
@@ -155,11 +162,6 @@ export class DurableStream extends BaseStream {
    * Batches messages while POST is in-flight.
    */
   async append(body: unknown, opts?: AppendOptions): Promise<void> {
-    // Backpressure
-    while (this.buffer.length + this.queue.length() >= this.maxQueueSize) {
-      await new Promise((resolve) => setTimeout(resolve, 10))
-    }
-
     // Add to buffer
     return new Promise<void>((resolve, reject) => {
       this.buffer.push({
@@ -210,14 +212,16 @@ export class DurableStream extends BaseStream {
   private async sendBatch(batch: Array<QueuedMessage>): Promise<void> {
     if (batch.length === 0) return
 
-    // Highest seq
-    const highestSeq = batch
-      .map((m) => m.seq)
-      .filter((s): s is string => s !== undefined)
-      .sort()
-      .pop()
+    // Get last non-undefined seq (queue preserves append order)
+    let highestSeq: string | undefined
+    for (let i = batch.length - 1; i >= 0; i--) {
+      if (batch[i].seq !== undefined) {
+        highestSeq = batch[i].seq
+        break
+      }
+    }
 
-    const isJson = this.contentType?.toLowerCase() === `application/json`
+    const isJson = normalizeContentType(this.contentType) === `application/json`
 
     // Batch data
     let batchedBody: BodyInit
@@ -276,32 +280,53 @@ export class DurableStream extends BaseStream {
   }
 
   /**
-   * Helper to make authenticated requests.
+   * Helper to make authenticated requests with proper params, headers, and signal support.
    */
   private async fetch(opts: {
     method: string
     headers?: Record<string, string>
     body?: BodyInit
+    signal?: AbortSignal
   }): Promise<Response> {
-    const headers: Record<string, string> = {
-      ...opts.headers,
+    // Build URL with params
+    const fetchUrl = new URL(this.url)
+    if (this.options.params) {
+      for (const [key, value] of Object.entries(this.options.params)) {
+        fetchUrl.searchParams.set(key, value)
+      }
     }
 
-    // Handle auth if present
-    const auth = (this as any).options?.auth
-    if (auth) {
-      if (`token` in auth) {
-        headers[`authorization`] = `Bearer ${auth.token}`
-      } else if (`getToken` in auth) {
-        const token = await auth.getToken()
+    // Build headers
+    const headers: Record<string, string> = {}
+
+    // Merge constructor headers
+    if (this.options.headers) {
+      Object.assign(headers, this.options.headers)
+    }
+
+    // Handle auth
+    if (this.options.auth) {
+      if (`token` in this.options.auth) {
+        headers[`authorization`] = `Bearer ${this.options.auth.token}`
+      } else if (`getToken` in this.options.auth) {
+        const token = await this.options.auth.getToken()
         headers[`authorization`] = `Bearer ${token}`
       }
     }
 
-    return fetch(this.url, {
+    // Merge request-specific headers (these override constructor headers)
+    if (opts.headers) {
+      Object.assign(headers, opts.headers)
+    }
+
+    // Use custom fetch if provided, otherwise use global
+    const fetchImpl = this.options.fetch ?? fetch
+
+    return fetchImpl(fetchUrl.toString(), {
       method: opts.method,
       headers,
       body: opts.body,
+      signal: opts.signal ?? this.options.signal,
     })
   }
 }

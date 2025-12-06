@@ -5,6 +5,15 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Normalize content-type by extracting the media type (before any semicolon).
+ * Handles cases like "application/json; charset=utf-8".
+ */
+export function normalizeContentType(contentType: string | undefined): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0].trim().toLowerCase()
+}
+
+/**
  * Process JSON data for append in JSON mode.
  * - Validates JSON
  * - Extracts array elements if data is an array
@@ -81,12 +90,11 @@ export class StreamStore {
     const existing = this.streams.get(path)
     if (existing) {
       // Check if config matches (idempotent create)
-      // MIME types are case-insensitive per RFC 2045
-      const normalizeContentType = (ct: string | undefined) =>
-        (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        normalizeContentType(options.contentType) ===
-        normalizeContentType(existing.contentType)
+        (normalizeContentType(options.contentType) ||
+          `application/octet-stream`) ===
+        (normalizeContentType(existing.contentType) ||
+          `application/octet-stream`)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -243,7 +251,7 @@ export class StreamStore {
     }
 
     // For JSON mode, wrap in array brackets
-    if (stream.contentType?.toLowerCase() === `application/json`) {
+    if (normalizeContentType(stream.contentType) === `application/json`) {
       return formatJsonResponse(concatenated)
     }
 
@@ -325,7 +333,7 @@ export class StreamStore {
   private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
     // Process JSON mode data
     let processedData = data
-    if (stream.contentType?.toLowerCase() === `application/json`) {
+    if (normalizeContentType(stream.contentType) === `application/json`) {
       processedData = processJsonAppend(data)
     }
 

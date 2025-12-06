@@ -203,6 +203,9 @@ export class DurableStreamTestServer {
         } else if (err.message.includes(`Content-type mismatch`)) {
           res.writeHead(400, { "content-type": `text/plain` })
           res.end(`Content-type mismatch`)
+        } else if (err.message.includes(`Invalid JSON`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Invalid JSON`)
         } else {
           throw err
         }
