@@ -11,6 +11,7 @@ import {
   STREAM_TTL_HEADER,
 } from "@durable-streams/client"
 import fastq from "fastq"
+import type { Auth, HeadersRecord, ParamsRecord } from "@durable-streams/client"
 import type { queueAsPromised } from "fastq"
 
 /**
@@ -19,7 +20,7 @@ import type { queueAsPromised } from "fastq"
  */
 function normalizeContentType(contentType: string | undefined): string {
   if (!contentType) return ``
-  return contentType.split(`;`)[0].trim().toLowerCase()
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
 
 /**
@@ -31,10 +32,11 @@ export interface CreateOptions {
   ttlSeconds?: number
   expiresAt?: string
   body?: BodyInit | Uint8Array | string
-  auth?: { token: string } | { getToken: () => Promise<string> | string }
-  params?: Record<string, string>
-  headers?: Record<string, string>
+  auth?: Auth
+  params?: ParamsRecord
+  headers?: HeadersRecord
   signal?: AbortSignal
+  fetch?: typeof globalThis.fetch
 }
 
 /**
@@ -102,10 +104,10 @@ export class DurableStream extends BaseStream {
       headers[STREAM_EXPIRES_AT_HEADER] = opts.expiresAt
     }
 
-    const body = opts.body
+    const body: BodyInit | undefined = opts.body
       ? typeof opts.body === `string`
         ? new TextEncoder().encode(opts.body)
-        : opts.body
+        : (opts.body as BodyInit)
       : undefined
 
     const response = await stream.fetch({
@@ -215,8 +217,8 @@ export class DurableStream extends BaseStream {
     // Get last non-undefined seq (queue preserves append order)
     let highestSeq: string | undefined
     for (let i = batch.length - 1; i >= 0; i--) {
-      if (batch[i].seq !== undefined) {
-        highestSeq = batch[i].seq
+      if (batch[i]!.seq !== undefined) {
+        highestSeq = batch[i]!.seq
         break
       }
     }
@@ -292,25 +294,34 @@ export class DurableStream extends BaseStream {
     const fetchUrl = new URL(this.url)
     if (this.options.params) {
       for (const [key, value] of Object.entries(this.options.params)) {
-        fetchUrl.searchParams.set(key, value)
+        if (value !== undefined) {
+          const resolvedValue =
+            typeof value === `function` ? await value() : value
+          fetchUrl.searchParams.set(key, resolvedValue)
+        }
       }
     }
 
     // Build headers
     const headers: Record<string, string> = {}
 
-    // Merge constructor headers
-    if (this.options.headers) {
-      Object.assign(headers, this.options.headers)
-    }
-
     // Handle auth
     if (this.options.auth) {
       if (`token` in this.options.auth) {
-        headers[`authorization`] = `Bearer ${this.options.auth.token}`
-      } else if (`getToken` in this.options.auth) {
-        const token = await this.options.auth.getToken()
-        headers[`authorization`] = `Bearer ${token}`
+        const headerName = this.options.auth.headerName ?? `authorization`
+        headers[headerName] = `Bearer ${this.options.auth.token}`
+      } else if (`headers` in this.options.auth) {
+        Object.assign(headers, this.options.auth.headers)
+      } else if (`getHeaders` in this.options.auth) {
+        const authHeaders = await this.options.auth.getHeaders()
+        Object.assign(headers, authHeaders)
+      }
+    }
+
+    // Merge constructor headers
+    if (this.options.headers) {
+      for (const [key, value] of Object.entries(this.options.headers)) {
+        headers[key] = typeof value === `function` ? await value() : value
       }
     }
 

@@ -10,7 +10,7 @@ import type { PendingLongPoll, Stream, StreamMessage } from "./types"
  */
 export function normalizeContentType(contentType: string | undefined): string {
   if (!contentType) return ``
-  return contentType.split(`;`)[0].trim().toLowerCase()
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
 
 /**
