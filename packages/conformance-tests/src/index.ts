@@ -1205,7 +1205,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Verify offsets are lexicographically increasing
       for (let i = 1; i < offsets.length; i++) {
-        expect(offsets[i] > offsets[i - 1]).toBe(true)
+        expect(offsets[i]! > offsets[i - 1]!).toBe(true)
       }
     })
 
@@ -1423,11 +1423,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       while (iterations < maxIterations) {
         iterations++
 
-        const url = currentOffset
+        const url: string = currentOffset
           ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
           : `${getBaseUrl()}${streamPath}`
 
-        const response = await fetch(url, { method: `GET` })
+        const response: Response = await fetch(url, { method: `GET` })
         expect(response.status).toBe(200)
 
         const buffer = await response.arrayBuffer()
@@ -1437,7 +1437,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           accumulated.push(...Array.from(data))
         }
 
-        const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+        const nextOffset: string | null =
+          response.headers.get(STREAM_OFFSET_HEADER)
         const upToDate = response.headers.get(STREAM_UP_TO_DATE_HEADER)
 
         if (upToDate === `true` && data.length === 0) {
@@ -1810,11 +1811,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       while (iterations < maxIterations) {
         iterations++
 
-        const url = currentOffset
+        const url: string = currentOffset
           ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
           : `${getBaseUrl()}${streamPath}`
 
-        const response = await fetch(url, { method: `GET` })
+        const response: Response = await fetch(url, { method: `GET` })
         expect(response.status).toBe(200)
 
         const buffer = await response.arrayBuffer()
@@ -1824,7 +1825,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           accumulated.push(...Array.from(data))
         }
 
-        const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+        const nextOffset: string | null =
+          response.headers.get(STREAM_OFFSET_HEADER)
         const upToDate = response.headers.get(STREAM_UP_TO_DATE_HEADER)
 
         if (upToDate === `true` && data.length === 0) {
@@ -1924,11 +1926,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       while (iterations < 1000) {
         iterations++
 
-        const url = currentOffset
+        const url: string = currentOffset
           ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
           : `${getBaseUrl()}${streamPath}`
 
-        const response = await fetch(url, { method: `GET` })
+        const response: Response = await fetch(url, { method: `GET` })
         const buffer = await response.arrayBuffer()
         const data = new Uint8Array(buffer)
 
@@ -1936,7 +1938,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           accumulated.push(...Array.from(data))
         }
 
-        const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+        const nextOffset: string | null =
+          response.headers.get(STREAM_OFFSET_HEADER)
         const upToDate = response.headers.get(STREAM_UP_TO_DATE_HEADER)
 
         if (upToDate === `true` && data.length === 0) {
@@ -1988,7 +1991,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Now read from random offsets multiple times
       for (let i = 0; i < 5; i++) {
         const randomIdx = Math.floor(Math.random() * offsets.length)
-        const offset = offsets[randomIdx]
+        const offset = offsets[randomIdx]!
 
         // Read twice from same offset
         const response1 = await fetch(
