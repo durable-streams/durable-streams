@@ -204,6 +204,19 @@ importers:
         specifier: ^7.2.4
         version: 7.2.7(@types/node@22.19.1)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
+  packages/wrapper-sdk:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
+      '@durable-streams/writer':
+        specifier: workspace:*
+        version: link:../writer
+    devDependencies:
+      '@durable-streams/server':
+        specifier: workspace:*
+        version: link:../server
+
   packages/writer:
     dependencies:
       '@durable-streams/client':
