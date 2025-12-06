@@ -2370,5 +2370,112 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(results).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     })
+
+    test(`should reject empty JSON arrays with 400`, async () => {
+      const streamPath = `/v1/stream/json-empty-array-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to append empty array
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[]`,
+      })
+
+      expect(response.status).toBe(400)
+      expect(response.ok).toBe(false)
+    })
+
+    test(`should flatten exactly one level of nested arrays`, async () => {
+      const streamPath = `/v1/stream/json-nested-arrays-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append nested array - should flatten one level
+      await stream.append([
+        [1, 2],
+        [3, 4],
+      ])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should store 2 messages (the inner arrays), not 1 or 4
+      expect(data).toEqual([
+        [1, 2],
+        [3, 4],
+      ])
+    })
+
+    test(`should store arrays as values when double-wrapped`, async () => {
+      const streamPath = `/v1/stream/json-wrapped-array-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append double-wrapped array - should store as single array value
+      await stream.append([[1, 2, 3]])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should store 1 message containing the array
+      expect(data).toEqual([[1, 2, 3]])
+      expect(data.length).toBe(1)
+    })
+
+    test(`should flatten primitive arrays correctly`, async () => {
+      const streamPath = `/v1/stream/json-primitive-array-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append array of primitives
+      await stream.append([1, 2, 3])
+      await stream.append([`a`, `b`, `c`])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should flatten to individual primitive values
+      expect(data).toEqual([1, 2, 3, `a`, `b`, `c`])
+    })
+
+    test(`should handle mixed batching - single values, arrays, and nested arrays`, async () => {
+      const streamPath = `/v1/stream/json-mixed-batching-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ single: 1 }) // 1 message
+      await stream.append([{ batch: 2 }, { batch: 3 }]) // 2 messages (flattened)
+      await stream.append([[`nested`, `array`]]) // 1 message (wrapped array)
+      await stream.append(42) // 1 message
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(data).toEqual([
+        { single: 1 },
+        { batch: 2 },
+        { batch: 3 },
+        [`nested`, `array`],
+        42,
+      ])
+      expect(data.length).toBe(5)
+    })
   })
 }

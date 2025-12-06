@@ -206,6 +206,9 @@ export class DurableStreamTestServer {
         } else if (err.message.includes(`Invalid JSON`)) {
           res.writeHead(400, { "content-type": `text/plain` })
           res.end(`Invalid JSON`)
+        } else if (err.message.includes(`Empty arrays are not allowed`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Empty arrays are not allowed`)
         } else {
           throw err
         }
