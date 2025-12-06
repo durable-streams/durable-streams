@@ -467,6 +467,13 @@ export class DurableStreamTestServer {
       return
     }
 
+    // Content-Type is required per protocol
+    if (!contentType) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Content-Type header is required`)
+      return
+    }
+
     // Support both sync (StreamStore) and async (FileBackedStreamStore) append
     const message = await Promise.resolve(
       this.store.append(path, body, { seq, contentType })

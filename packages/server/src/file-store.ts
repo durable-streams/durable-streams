@@ -423,7 +423,9 @@ export class FileBackedStreamStore {
 
     // Append initial data if provided
     if (options.initialData && options.initialData.length > 0) {
-      await this.append(streamPath, options.initialData)
+      await this.append(streamPath, options.initialData, {
+        contentType: options.contentType,
+      })
       // Re-fetch updated metadata
       const updated = this.db.get(key) as StreamMetadata
       return this.streamMetaToStream(updated)
