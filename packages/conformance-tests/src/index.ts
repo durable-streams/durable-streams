@@ -86,7 +86,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.delete()
 
       // Verify it's gone by trying to read
-      await expect(stream.read()).rejects.toThrow()
+      await expect(async () => {
+        for await (const _chunk of stream.read({ live: false })) {
+          // Should throw before yielding
+        }
+      }).rejects.toThrow()
     })
 
     test(`should properly isolate recreated stream after delete`, async () => {
@@ -167,8 +171,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       await stream.append(`hello world`)
 
-      const result = await stream.read()
-      const text = new TextDecoder().decode(result.data)
+      let text = ``
+      for await (const chunk of stream.read({ live: false })) {
+        text += new TextDecoder().decode(chunk.data)
+      }
       expect(text).toBe(`hello world`)
     })
 
@@ -183,8 +189,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append(`chunk2`)
       await stream.append(`chunk3`)
 
-      const result = await stream.read()
-      const text = new TextDecoder().decode(result.data)
+      let text = ``
+      for await (const chunk of stream.read({ live: false })) {
+        text += new TextDecoder().decode(chunk.data)
+      }
       expect(text).toBe(`chunk1chunk2chunk3`)
     })
 
@@ -215,10 +223,15 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `text/plain`,
       })
 
-      const result = await stream.read()
+      let dataLength = 0
+      let sawUpToDate = false
+      for await (const chunk of stream.read({ live: false })) {
+        dataLength += chunk.data.length
+        if (chunk.upToDate) sawUpToDate = true
+      }
 
-      expect(result.data).toHaveLength(0)
-      expect(result.upToDate).toBe(true)
+      expect(dataLength).toBe(0)
+      expect(sawUpToDate).toBe(true)
     })
 
     test(`should read stream with data`, async () => {
@@ -230,11 +243,15 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       await stream.append(`hello`)
 
-      const result = await stream.read()
-      const text = new TextDecoder().decode(result.data)
+      let text = ``
+      let sawUpToDate = false
+      for await (const chunk of stream.read({ live: false })) {
+        text += new TextDecoder().decode(chunk.data)
+        if (chunk.upToDate) sawUpToDate = true
+      }
 
       expect(text).toBe(`hello`)
-      expect(result.upToDate).toBe(true)
+      expect(sawUpToDate).toBe(true)
     })
 
     test(`should read from offset`, async () => {
@@ -245,12 +262,20 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       await stream.append(`first`)
-      const firstResult = await stream.read()
+      let firstOffset = ``
+      for await (const chunk of stream.read({ live: false })) {
+        firstOffset = chunk.offset
+      }
 
       await stream.append(`second`)
 
-      const result = await stream.read({ offset: firstResult.offset })
-      const text = new TextDecoder().decode(result.data)
+      let text = ``
+      for await (const chunk of stream.read({
+        offset: firstOffset,
+        live: false,
+      })) {
+        text += new TextDecoder().decode(chunk.data)
+      }
 
       expect(text).toBe(`second`)
     })
@@ -270,9 +295,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       const receivedData: Array<string> = []
 
-      // Start following in long-poll mode
-      const followPromise = (async () => {
-        for await (const chunk of stream.follow({
+      // Start reading in long-poll mode
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({
           live: `long-poll`,
         })) {
           if (chunk.data.length > 0) {
@@ -290,7 +315,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Append data while long-poll is waiting
       await stream.append(`new data`)
 
-      await followPromise
+      await readPromise
 
       expect(receivedData).toContain(`new data`)
     }, 10000)
@@ -305,9 +330,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Add data first
       await stream.append(`existing data`)
 
-      // Long-poll from beginning should return immediately
-      const result = await stream.read({ live: `long-poll` })
-      const text = new TextDecoder().decode(result.data)
+      // Read should return existing data immediately
+      let text = ``
+      for await (const chunk of stream.read({ live: false })) {
+        text += new TextDecoder().decode(chunk.data)
+      }
 
       expect(text).toBe(`existing data`)
     })

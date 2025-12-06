@@ -184,13 +184,22 @@ describe(`Append Operations`, () => {
 })
 
 // ============================================================================
-// Read Operations
+// Read Operations (Catch-up)
 // ============================================================================
 
-describe(`Read Operations`, () => {
+describe(`Read Operations (Catch-up)`, () => {
   testWithStream(`should read empty stream`, async ({ streamUrl, aborter }) => {
     const stream = new DurableStream({ url: streamUrl, signal: aborter.signal })
-    const result = await stream.read()
+
+    // read() returns an async iterable, collect first chunk with live: false
+    let result
+    for await (const chunk of stream.read({
+      live: false,
+      signal: aborter.signal,
+    })) {
+      result = chunk
+      break
+    }
 
     expect(result.data).toHaveLength(0)
     expect(result.upToDate).toBe(true)
@@ -205,7 +214,15 @@ describe(`Read Operations`, () => {
         url: streamUrl,
         signal: aborter.signal,
       })
-      const result = await stream.read()
+
+      let result
+      for await (const chunk of stream.read({
+        live: false,
+        signal: aborter.signal,
+      })) {
+        result = chunk
+        break
+      }
 
       expect(decode(result.data)).toBe(`hello`)
       expect(result.upToDate).toBe(true)
@@ -225,7 +242,16 @@ describe(`Read Operations`, () => {
         url: streamUrl,
         signal: aborter.signal,
       })
-      const result = await stream.read({ offset: firstOffset })
+
+      let result
+      for await (const chunk of stream.read({
+        offset: firstOffset,
+        live: false,
+        signal: aborter.signal,
+      })) {
+        result = chunk
+        break
+      }
 
       expect(decode(result.data)).toBe(`second`)
     }
@@ -233,12 +259,12 @@ describe(`Read Operations`, () => {
 })
 
 // ============================================================================
-// Follow (Streaming) Operations
+// Read (Streaming) Operations
 // ============================================================================
 
-describe(`Follow Operations`, () => {
+describe(`Read Operations (Streaming)`, () => {
   testWithStream(
-    `should follow an empty stream and get up-to-date`,
+    `should read an empty stream and get up-to-date`,
     async ({ streamUrl, aborter }) => {
       const stream = new DurableStream({
         url: streamUrl,
@@ -258,7 +284,7 @@ describe(`Follow Operations`, () => {
   )
 
   testWithStream(
-    `should follow and receive existing data`,
+    `should read and receive existing data`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       store.append(streamPath, encode(`existing data`))
 
@@ -280,7 +306,7 @@ describe(`Follow Operations`, () => {
   )
 
   testWithStream(
-    `should follow and receive new data via long-poll`,
+    `should read and receive new data via long-poll`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       let requestCount = 0
       const fetchWrapper = async (
@@ -298,9 +324,9 @@ describe(`Follow Operations`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start following - will make initial request then wait in long-poll
-      const followPromise = (async () => {
-        for await (const chunk of stream.follow({
+      // Start reading - will make initial request then wait in long-poll
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({
           live: `long-poll`,
           signal: aborter.signal,
         })) {
@@ -318,7 +344,7 @@ describe(`Follow Operations`, () => {
       // Append data while client is waiting in long-poll
       store.append(streamPath, encode(`new data`))
 
-      await followPromise
+      await readPromise
 
       // Should have received the data
       expect(receivedData).toContain(`new data`)
@@ -326,7 +352,7 @@ describe(`Follow Operations`, () => {
   )
 
   testWithStream(
-    `should catchup mode stop after up-to-date`,
+    `should live: false mode stop after up-to-date`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       // Start with some existing data
       store.append(streamPath, encode(`data1`))
@@ -340,10 +366,10 @@ describe(`Follow Operations`, () => {
       let sawUpToDate = false
       let receivedFirstData = false
 
-      // Start catchup - should get existing data and stop
-      const catchupPromise = (async () => {
-        for await (const chunk of stream.follow({
-          live: `catchup`,
+      // Start reading with live: false - should get existing data and stop
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({
+          live: false,
           signal: aborter.signal,
         })) {
           if (chunk.data.length > 0) {
@@ -360,10 +386,10 @@ describe(`Follow Operations`, () => {
       // Wait until we've received the first data chunk
       await vi.waitFor(() => expect(receivedFirstData).toBe(true))
 
-      // Add more data while catchup is running
+      // Add more data while reading is running
       store.append(streamPath, encode(`data2`))
 
-      await catchupPromise
+      await readPromise
 
       // Should have caught up to all data and stopped
       expect(sawUpToDate).toBe(true)
@@ -380,14 +406,14 @@ describe(`Follow Operations`, () => {
         signal: aborter.signal,
       })
 
-      // Start following the empty stream
+      // Start reading the empty stream
       const firstSessionData: Array<string> = []
       let savedOffset = ``
       let upToDateReceived = false
       const aborter1 = new AbortController()
 
       const firstSessionPromise = (async () => {
-        for await (const chunk of stream1.follow({ signal: aborter1.signal })) {
+        for await (const chunk of stream1.read({ signal: aborter1.signal })) {
           if (chunk.upToDate) {
             upToDateReceived = true
           }
@@ -426,9 +452,9 @@ describe(`Follow Operations`, () => {
       })
 
       const secondSessionData: Array<string> = []
-      for await (const chunk of stream2.follow({
+      for await (const chunk of stream2.read({
         offset: savedOffset,
-        live: `catchup`,
+        live: false,
         signal: aborter.signal,
       })) {
         if (chunk.data.length > 0) {
@@ -468,9 +494,9 @@ describe(`Long-Poll Behavior`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start following - will make initial request, then wait in long-poll
-      const followPromise = (async () => {
-        for await (const chunk of stream.follow({
+      // Start reading - will make initial request, then wait in long-poll
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({
           live: `long-poll`,
           signal: aborter.signal,
         })) {
@@ -497,7 +523,7 @@ describe(`Long-Poll Behavior`, () => {
       // Append more data
       store.append(streamPath, encode(`long-poll-data-2`))
 
-      await followPromise
+      await readPromise
 
       // Should have made multiple requests
       expect(requestCount).toBeGreaterThanOrEqual(2)
@@ -521,7 +547,12 @@ describe(`Error Handling`, () => {
         signal: aborter.signal,
       })
 
-      await expect(stream.read()).rejects.toThrow(FetchError)
+      // read() returns an async iterable, so we need to iterate to trigger the fetch
+      await expect(async () => {
+        for await (const _chunk of stream.read({ signal: aborter.signal })) {
+          // Should throw before yielding any chunks
+        }
+      }).rejects.toThrow(FetchError)
     }
   )
 
@@ -541,7 +572,7 @@ describe(`Error Handling`, () => {
       })
 
       try {
-        for await (const _chunk of stream.follow({ signal: aborter.signal })) {
+        for await (const _chunk of stream.read({ signal: aborter.signal })) {
           // Should error
         }
       } catch {
@@ -583,9 +614,9 @@ describe(`Error Handling`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start following - will fail twice with 400, onError returns {} to retry
-      const followPromise = (async () => {
-        for await (const chunk of stream.follow({ signal: aborter.signal })) {
+      // Start reading - will fail twice with 400, onError returns {} to retry
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({ signal: aborter.signal })) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
@@ -599,10 +630,10 @@ describe(`Error Handling`, () => {
       // Wait for both errors to occur (retries after 400s)
       await vi.waitFor(() => expect(errorCount).toBeGreaterThanOrEqual(2))
 
-      // Append data while client is following after successful retry
+      // Append data while client is reading after successful retry
       store.append(streamPath, encode(`retry-data`))
 
-      await followPromise
+      await readPromise
 
       // Should have called onError at least twice (for the 400 errors)
       expect(errorCount).toBeGreaterThanOrEqual(2)
@@ -642,7 +673,13 @@ describe(`Headers and Authentication`, () => {
         },
       })
 
-      await stream.read()
+      // read() returns an async iterable, we need to iterate to trigger fetch
+      for await (const _chunk of stream.read({
+        live: false,
+        signal: aborter.signal,
+      })) {
+        break
+      }
 
       expect(capturedHeaders.length).toBeGreaterThan(0)
       expect(capturedHeaders[0]).toMatchObject({
@@ -672,7 +709,13 @@ describe(`Headers and Authentication`, () => {
       auth: { token: `my-secret-token` },
     })
 
-    await stream.read()
+    // read() returns an async iterable, we need to iterate to trigger fetch
+    for await (const _chunk of stream.read({
+      live: false,
+      signal: aborter.signal,
+    })) {
+      break
+    }
 
     expect(capturedHeaders[0]).toMatchObject({
       authorization: `Bearer my-secret-token`,
@@ -680,7 +723,7 @@ describe(`Headers and Authentication`, () => {
   })
 
   testWithStream(
-    `should update headers on retry via onError in follow()`,
+    `should update headers on retry via onError in read()`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       const capturedHeaders: Array<Record<string, string>> = []
       let requestCount = 0
@@ -720,9 +763,9 @@ describe(`Headers and Authentication`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start following - first request will fail with 401, retry with new token
-      const followPromise = (async () => {
-        for await (const chunk of stream.follow({ signal: aborter.signal })) {
+      // Start reading - first request will fail with 401, retry with new token
+      const readPromise = (async () => {
+        for await (const chunk of stream.read({ signal: aborter.signal })) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
@@ -736,10 +779,10 @@ describe(`Headers and Authentication`, () => {
       // Wait for retry with new token (request count increases after 401)
       await vi.waitFor(() => expect(requestCount).toBeGreaterThanOrEqual(2))
 
-      // Append data while client is following with new token
+      // Append data while client is reading with new token
       store.append(streamPath, encode(`auth-data`))
 
-      await followPromise
+      await readPromise
 
       // Should have received the data after auth refresh
       expect(receivedData).toContain(`auth-data`)
@@ -788,7 +831,13 @@ describe(`Query Parameters`, () => {
         },
       })
 
-      await stream.read()
+      // read() returns an async iterable, we need to iterate to trigger fetch
+      for await (const _chunk of stream.read({
+        live: false,
+        signal: aborter.signal,
+      })) {
+        break
+      }
 
       const url = new URL(capturedUrls[0]!)
       expect(url.searchParams.get(`custom_param`)).toBe(`custom_value`)
@@ -803,7 +852,7 @@ describe(`Query Parameters`, () => {
 
 describe(`Abort Signal Handling`, () => {
   testWithStream(
-    `should abort follow on signal abort`,
+    `should abort read on signal abort (default live mode)`,
     async ({ streamUrl }) => {
       const aborter = new AbortController()
       let upToDateReceived = false
@@ -813,9 +862,9 @@ describe(`Abort Signal Handling`, () => {
         signal: aborter.signal,
       })
 
-      const followPromise = (async () => {
+      const readPromise = (async () => {
         const chunks: Array<unknown> = []
-        for await (const chunk of stream.follow({ signal: aborter.signal })) {
+        for await (const chunk of stream.read({ signal: aborter.signal })) {
           chunks.push(chunk)
           if (chunk.upToDate) {
             upToDateReceived = true
@@ -829,7 +878,7 @@ describe(`Abort Signal Handling`, () => {
       aborter.abort()
 
       // Should complete without throwing
-      const chunks = await followPromise
+      const chunks = await readPromise
       expect(Array.isArray(chunks)).toBe(true)
     }
   )
@@ -841,8 +890,14 @@ describe(`Abort Signal Handling`, () => {
     // Abort immediately
     aborter.abort()
 
-    // Read with aborted signal should throw
-    await expect(stream.read({ signal: aborter.signal })).rejects.toThrow()
+    // Read with aborted signal should complete immediately (not throw)
+    // because the iterator checks for abort and returns done: true
+    const chunks: Array<unknown> = []
+    for await (const chunk of stream.read({ signal: aborter.signal })) {
+      chunks.push(chunk)
+    }
+    // Should have no chunks since we aborted before starting
+    expect(chunks).toHaveLength(0)
   })
 })
 
@@ -852,7 +907,7 @@ describe(`Abort Signal Handling`, () => {
 
 describe(`ReadableStream Conversion`, () => {
   testWithStream(
-    `should convert follow to ReadableStream and receive async data`,
+    `should convert read to ReadableStream and receive async data`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       let requestCount = 0
       const fetchWrapper = async (
@@ -907,7 +962,7 @@ describe(`ReadableStream Conversion`, () => {
   )
 
   testWithStream(
-    `should convert follow to byte stream and receive async data`,
+    `should convert read to byte stream and receive async data`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       let requestCount = 0
       let sawEmptyChunk = false

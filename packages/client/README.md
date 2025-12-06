@@ -16,7 +16,7 @@ A `DurableStream` instance is a **handle to a remote stream**, similar to a file
 
 - It refers to one stream URL
 - It carries the auth and transport configuration needed to talk to that stream
-- It exposes methods to: create/delete the stream, append data, read a slice, follow the stream as it grows
+- It exposes methods to: create/delete the stream, append data, and read from the stream
 
 The handle is **lightweight** and **reusable**. It does not represent a single read session.
 
@@ -40,7 +40,7 @@ await stream.append(JSON.stringify({ type: "message", text: "Hello" }), {
 })
 ```
 
-### Follow from "now"
+### Read with live updates (default)
 
 ```typescript
 const stream = await DurableStream.connect({
@@ -48,11 +48,8 @@ const stream = await DurableStream.connect({
   auth: { token: process.env.DS_TOKEN! },
 })
 
-// HEAD gives you the current tail offset if the server exposes it
-const { offset } = await stream.head()
-
-// Follow only new data from that point on
-for await (const chunk of stream.follow({ offset })) {
+// Read from the stream with live updates (default behavior)
+for await (const chunk of stream.read()) {
   // chunk.data is Uint8Array
   const text = new TextDecoder().decode(chunk.data)
   console.log("chunk:", text)
@@ -65,6 +62,28 @@ for await (const chunk of stream.follow({ offset })) {
     flush()
   }
 }
+```
+
+### Read from "now" (skip existing data)
+
+```typescript
+// HEAD gives you the current tail offset if the server exposes it
+const { offset } = await stream.head()
+
+// Read only new data from that point on
+for await (const chunk of stream.read({ offset })) {
+  console.log("new data:", new TextDecoder().decode(chunk.data))
+}
+```
+
+### Read catch-up only (no live updates)
+
+```typescript
+// Read existing data only, stop when up-to-date
+for await (const chunk of stream.read({ live: false })) {
+  console.log("existing data:", new TextDecoder().decode(chunk.data))
+}
+// Iteration completes when stream is up-to-date
 ```
 
 ### Pipe via ReadableStream
@@ -120,8 +139,7 @@ class DurableStream {
     source: AsyncIterable<Uint8Array | string>,
     opts?: AppendOptions
   ): Promise<void>
-  read(opts?: ReadOptions): Promise<ReadResult>
-  follow(opts?: ReadOptions): AsyncIterable<StreamChunk>
+  read(opts?: ReadOptions): AsyncIterable<StreamChunk>
   toReadableStream(opts?: ReadOptions): ReadableStream<StreamChunk>
   toByteStream(opts?: ReadOptions): ReadableStream<Uint8Array>
   json<T>(opts?: ReadOptions): AsyncIterable<T>
@@ -180,17 +198,17 @@ const stream = new DurableStream({
 ### Live Modes
 
 ```typescript
-// Default: catch-up then auto-select SSE or long-poll
-for await (const chunk of stream.follow()) { ... }
+// Default: catch-up then auto-select SSE or long-poll for live updates
+for await (const chunk of stream.read()) { ... }
 
-// Catch-up only (stop at upToDate)
-for await (const chunk of stream.follow({ live: 'catchup' })) { ... }
+// Catch-up only (no live updates, stop at upToDate)
+for await (const chunk of stream.read({ live: false })) { ... }
 
-// Long-poll only (skip catch-up)
-for await (const chunk of stream.follow({ live: 'long-poll' })) { ... }
+// Long-poll mode for live updates
+for await (const chunk of stream.read({ live: 'long-poll' })) { ... }
 
-// SSE only (throws if content-type doesn't support SSE)
-for await (const chunk of stream.follow({ live: 'sse' })) { ... }
+// SSE mode for live updates (throws if content-type doesn't support SSE)
+for await (const chunk of stream.read({ live: 'sse' })) { ... }
 ```
 
 ## Types

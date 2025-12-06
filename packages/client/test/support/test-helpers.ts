@@ -6,7 +6,7 @@
 import type { DurableStream, StreamChunk } from "../../src"
 
 /**
- * Process chunks from a follow() iterator with a handler.
+ * Process chunks from a read() iterator with a handler.
  * Resolves when handler calls resolve(), rejects on error.
  */
 export async function forEachChunk(
@@ -25,7 +25,7 @@ export async function forEachChunk(
   }
 
   try {
-    for await (const chunk of stream.follow({ signal: controller.signal })) {
+    for await (const chunk of stream.read({ signal: controller.signal })) {
       await handler(resolveOnce, chunk, chunkIdx)
       chunkIdx++
     }
@@ -68,7 +68,7 @@ export async function collectChunks(
   const timeoutId = setTimeout(() => aborter.abort(), timeout)
 
   try {
-    for await (const chunk of stream.follow({ signal: aborter.signal })) {
+    for await (const chunk of stream.read({ signal: aborter.signal })) {
       chunks.push(chunk)
 
       if (chunks.length >= maxChunks) {
@@ -117,7 +117,7 @@ export async function waitForUpToDate(
   const timeoutId = setTimeout(() => aborter.abort(), timeout)
 
   try {
-    for await (const chunk of stream.follow({ signal: aborter.signal })) {
+    for await (const chunk of stream.read({ signal: aborter.signal })) {
       chunks.push(chunk)
 
       if (chunks.length >= numChunksExpected && chunk.upToDate) {

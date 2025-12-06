@@ -86,7 +86,7 @@ export interface DurableStreamOptions extends StreamOptions {
  *
  * This is a lightweight, reusable handle - not a persistent connection.
  * It does not automatically start reading or listening.
- * Create sessions as needed via read(), follow(), or toReadableStream().
+ * Create sessions as needed via read() or toReadableStream().
  *
  * @example
  * ```typescript
@@ -96,11 +96,13 @@ export interface DurableStreamOptions extends StreamOptions {
  *   auth: { token: "my-token" }
  * });
  *
- * // One-shot read
- * const result = await stream.read({ offset: savedOffset });
+ * // Read with live updates (default)
+ * for await (const chunk of stream.read()) {
+ *   console.log(new TextDecoder().decode(chunk.data));
+ * }
  *
- * // Follow for live updates
- * for await (const chunk of stream.follow()) {
+ * // Read catch-up only (no live updates)
+ * for await (const chunk of stream.read({ live: false })) {
  *   console.log(new TextDecoder().decode(chunk.data));
  * }
  * ```
@@ -424,12 +426,12 @@ export class DurableStream {
   }
 
   /**
-   * One-shot read.
+   * Internal one-shot read.
    *
    * Performs a single GET from the specified offset/mode and returns a chunk.
-   * Caller is responsible for persisting the returned offset if they want to resume.
+   * Used internally by read() for catch-up and long-poll iterations.
    */
-  async read(opts?: ReadOptions): Promise<ReadResult> {
+  async #fetchOnce(opts?: ReadOptions): Promise<ReadResult> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest(opts)
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
@@ -464,9 +466,9 @@ export class DurableStream {
   }
 
   /**
-   * Follow the stream as an AsyncIterable of chunks.
+   * Read from the stream as an AsyncIterable of chunks.
    *
-   * Default behaviour:
+   * Default behaviour (live: undefined or live: true):
    * - From `offset` (or start if omitted), repeatedly perform catch-up reads
    *   until a chunk with upToDate=true.
    * - Then switch to live mode:
@@ -474,11 +476,24 @@ export class DurableStream {
    *   - otherwise long-poll.
    *
    * Explicit live override:
-   * - live="catchup": only catch-up, stop at upToDate.
-   * - live="long-poll": start long-polling immediately from offset.
-   * - live="sse": start SSE immediately (throws if SSE not supported).
+   * - live=false: only catch-up, stop at upToDate (no live updates).
+   * - live="long-poll": use long-polling for live updates.
+   * - live="sse": use SSE for live updates (throws if SSE not supported).
+   *
+   * @example
+   * ```typescript
+   * // Default: catch-up then live updates
+   * for await (const chunk of stream.read()) {
+   *   console.log(chunk.data)
+   * }
+   *
+   * // Catch-up only (no live updates)
+   * for await (const chunk of stream.read({ live: false })) {
+   *   console.log(chunk.data)
+   * }
+   * ```
    */
-  follow(opts?: ReadOptions): AsyncIterable<StreamChunk> {
+  read(opts?: ReadOptions): AsyncIterable<StreamChunk> {
     const stream = this
     const liveMode = opts?.live
     // Default to -1 (start from beginning) if no offset provided
@@ -518,14 +533,15 @@ export class DurableStream {
               }
 
               // Determine which mode to use
-              if (liveMode === `catchup`) {
+              // live: false means catch-up only (no live updates)
+              if (liveMode === false) {
                 // Only do catch-up reads
                 if (isUpToDate) {
                   cleanup()
                   return { done: true, value: undefined }
                 }
 
-                const chunk = await stream.read({
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   signal,
@@ -549,8 +565,8 @@ export class DurableStream {
               }
 
               if (liveMode === `long-poll`) {
-                // Long-poll mode - skip catch-up
-                const chunk = await stream.read({
+                // Long-poll mode - skip catch-up, go straight to live
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   live: `long-poll`,
@@ -563,10 +579,10 @@ export class DurableStream {
                 return { done: false, value: chunk }
               }
 
-              // Default mode: catch-up then auto-select live mode
+              // Default mode (live: undefined or live: true): catch-up then auto-select live mode
               if (!isUpToDate) {
                 // Catch-up phase
-                const chunk = await stream.read({
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   signal,
@@ -595,7 +611,7 @@ export class DurableStream {
                 return sseIterator.next()
               } else {
                 // Long-poll
-                const chunk = await stream.read({
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   live: `long-poll`,
@@ -662,19 +678,19 @@ export class DurableStream {
   }
 
   /**
-   * Wrap follow() in a Web ReadableStream for piping.
+   * Wrap read() in a Web ReadableStream for piping.
    *
    * Backpressure:
-   * - One chunk is pulled from follow() per pull() call, so standard
+   * - One chunk is pulled from read() per pull() call, so standard
    *   Web Streams backpressure semantics apply.
    *
    * Cancellation:
-   * - rs.cancel() will stop follow() and abort any in-flight request.
+   * - rs.cancel() will stop read() and abort any in-flight request.
    */
   toReadableStream(
     opts?: ReadOptions & { signal?: AbortSignal }
   ): ReadableStream<StreamChunk> {
-    const iterator = this.follow(opts)[Symbol.asyncIterator]()
+    const iterator = this.read(opts)[Symbol.asyncIterator]()
 
     return new ReadableStream<StreamChunk>({
       async pull(controller) {
@@ -697,14 +713,14 @@ export class DurableStream {
   }
 
   /**
-   * Wrap follow() in a Web ReadableStream<Uint8Array> for piping raw bytes.
+   * Wrap read() in a Web ReadableStream<Uint8Array> for piping raw bytes.
    *
    * This is the native format for many web stream APIs.
    */
   toByteStream(
     opts?: ReadOptions & { signal?: AbortSignal }
   ): ReadableStream<Uint8Array> {
-    const iterator = this.follow(opts)[Symbol.asyncIterator]()
+    const iterator = this.read(opts)[Symbol.asyncIterator]()
 
     return new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -733,7 +749,7 @@ export class DurableStream {
   async *json<T = unknown>(opts?: ReadOptions): AsyncIterable<T> {
     const decoder = new TextDecoder()
 
-    for await (const chunk of this.follow(opts)) {
+    for await (const chunk of this.read(opts)) {
       if (chunk.data.length > 0) {
         const text = decoder.decode(chunk.data)
         // Handle potential newline-delimited JSON
@@ -753,7 +769,7 @@ export class DurableStream {
   ): AsyncIterable<string> {
     const decoder = opts?.decoder ?? new TextDecoder()
 
-    for await (const chunk of this.follow(opts)) {
+    for await (const chunk of this.read(opts)) {
       if (chunk.data.length > 0) {
         yield decoder.decode(chunk.data, { stream: true })
       }
@@ -790,7 +806,9 @@ export class DurableStream {
       const offset = readOpts.offset ?? `-1`
       fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
-      if (readOpts.live) {
+      // Only set live param for string values (long-poll, sse)
+      // Boolean values are handled by the read() iterator logic
+      if (readOpts.live && typeof readOpts.live === `string`) {
         fetchUrl.searchParams.set(LIVE_QUERY_PARAM, readOpts.live)
       }
       if (readOpts.cursor) {
