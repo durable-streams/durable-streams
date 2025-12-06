@@ -88,12 +88,19 @@ class FileHandlePool {
 
       // If fd is null, stream hasn't been opened yet - wait for open event
       if (typeof fd !== `number`) {
-        handle.stream.once(`open`, (openedFd: number) => {
+        const onOpen = (openedFd: number): void => {
+          handle.stream.off(`error`, onError)
           fs.fdatasync(openedFd, (err) => {
             if (err) reject(err)
             else resolve()
           })
-        })
+        }
+        const onError = (err: Error): void => {
+          handle.stream.off(`open`, onOpen)
+          reject(err)
+        }
+        handle.stream.once(`open`, onOpen)
+        handle.stream.once(`error`, onError)
         return
       }
 
