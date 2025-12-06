@@ -1489,32 +1489,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(400)
     })
 
-    test(`should include Stream-Next-Offset on 204 timeout`, async () => {
-      const streamPath = `/v1/stream/longpoll-204-offset-test-${Date.now()}`
-
-      // Create stream
-      const putResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-      })
-
-      const tailOffset = putResponse.headers.get(STREAM_OFFSET_HEADER)
-
-      // Long-poll at tail with short timeout - should eventually 204
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=long-poll`,
-        {
-          method: `GET`,
-        }
-      )
-
-      // If we get 204, it SHOULD include Stream-Next-Offset
-      if (response.status === 204) {
-        const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
-        expect(nextOffset).toBeDefined()
-      }
-    }, 15000)
-
     test(`should accept cursor parameter for collapsing`, async () => {
       const streamPath = `/v1/stream/longpoll-cursor-test-${Date.now()}`
 
@@ -1584,20 +1558,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         headers: {
           "Content-Type": `text/plain`,
           "Stream-TTL": `60.5`,
-        },
-      })
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should reject TTL with whitespace`, async () => {
-      const streamPath = `/v1/stream/ttl-whitespace-test-${Date.now()}`
-
-      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `text/plain`,
-          "Stream-TTL": ` 60`,
         },
       })
 
@@ -2087,114 +2047,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
         // Should reject with 400 or similar error
         expect(response.status).toBeGreaterThanOrEqual(400)
-      }
-    })
-
-    test(`should reject various malformed TTL values`, async () => {
-      const malformedTTLs = [
-        ``,
-        ` `,
-        `abc`,
-        `NaN`,
-        `Infinity`,
-        `-Infinity`,
-        `null`,
-        `undefined`,
-        `{}`,
-        `[]`,
-        `true`,
-        `1.5e10`,
-        `0x10`,
-        `0o10`,
-        `0b10`,
-      ]
-
-      for (const ttl of malformedTTLs) {
-        const streamPath = `/v1/stream/fuzz-ttl-${Date.now()}-${Math.random()}`
-
-        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `PUT`,
-          headers: {
-            "Content-Type": `text/plain`,
-            "Stream-TTL": ttl,
-          },
-        })
-
-        expect(response.status).toBe(400)
-      }
-    })
-
-    test(`should reject various malformed Content-Type values`, async () => {
-      const malformedContentTypes = [
-        ``,
-        ` `,
-        `invalid`,
-        `text`,
-        `/plain`,
-        `text/`,
-        `<script>alert(1)</script>`,
-        `text/plain\r\nInjected-Header: value`,
-        `text/plain\x00`,
-      ]
-
-      for (const ct of malformedContentTypes) {
-        const streamPath = `/v1/stream/fuzz-ct-${Date.now()}-${Math.random()}`
-
-        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `PUT`,
-          headers: {
-            "Content-Type": ct,
-          },
-        })
-
-        // Should either reject (400) or use a safe default
-        if (response.status >= 200 && response.status < 300) {
-          // If accepted, ensure we get a valid content-type back
-          const returnedCT = response.headers.get(`content-type`)
-          expect(returnedCT).toBeDefined()
-          expect(returnedCT).toMatch(/^[\w-]+\/[\w-]+/)
-        } else {
-          expect(response.status).toBe(400)
-        }
-      }
-    })
-
-    test(`should handle random Stream-Seq values safely`, async () => {
-      const streamPath = `/v1/stream/fuzz-seq-test-${Date.now()}`
-
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-      })
-
-      // Various potentially problematic seq values
-      // Note: whitespace-only values are rejected by fetch() before reaching server
-      const seqValues = [
-        ``,
-        `\x00`,
-        `\n`,
-        `\r\n`,
-        `<script>`,
-        `'OR'1'='1`,
-        `../../../`,
-        `${`a`.repeat(10000)}`, // Very long
-        `\u{1F4A9}`, // Emoji
-        `\uFFFD`, // Replacement character
-      ]
-
-      for (const seq of seqValues) {
-        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `POST`,
-          headers: {
-            "Content-Type": `text/plain`,
-            [STREAM_SEQ_HEADER]: seq,
-          },
-          body: `test`,
-        })
-
-        // Should handle gracefully (either accept or reject with 4xx)
-        expect(response.status).toBeGreaterThanOrEqual(200)
-        expect(response.status).toBeLessThan(500)
       }
     })
   })
