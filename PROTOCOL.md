@@ -400,7 +400,7 @@ Clients **MUST** use the `Stream-Next-Offset` value returned in responses for su
 
 ## 7. Content Types
 
-The protocol supports arbitrary MIME content types. The system operates at the byte level, leaving message framing and interpretation to clients.
+The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
 
 **Restriction:**
 
@@ -408,10 +408,53 @@ The protocol supports arbitrary MIME content types. The system operates at the b
 
 Clients **MAY** use any content type for their streams, including:
 
+- `application/json` for JSON mode with message boundary preservation
 - `application/ndjson` for newline-delimited JSON
 - `application/x-protobuf` for Protocol Buffer messages
 - `text/plain` for plain text
 - Custom types for application-specific formats
+
+### 7.1. JSON Mode
+
+Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
+
+#### Message Boundaries
+
+For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
+
+#### Array Flattening for Batch Operations
+
+When a POST request body contains a JSON array, servers **MUST** flatten exactly one level of the array, treating each element as a separate message. This enables clients to batch multiple messages in a single HTTP request while preserving individual message semantics.
+
+**Examples (direct POST to server):**
+
+- POST body `{"event": "created"}` stores one message: `{"event": "created"}`
+- POST body `[{"event": "a"}, {"event": "b"}]` stores two messages: `{"event": "a"}`, `{"event": "b"}`
+- POST body `[[1,2], [3,4]]` stores two messages: `[1,2]`, `[3,4]`
+- POST body `[[[1,2,3]]]` stores one message: `[[1,2,3]]`
+
+**Note:** Client libraries **MAY** automatically wrap individual values in arrays for batching. For example, a client calling `append({"x": 1})` might send POST body `[{"x": 1}]` to the server, which flattens it to store one message: `{"x": 1}`.
+
+#### Empty Arrays
+
+Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays represent no-op operations with no semantic meaning.
+
+#### JSON Validation
+
+Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
+
+#### Response Format
+
+GET responses for `application/json` streams **MUST** return `Content-Type: application/json` with a body containing a JSON array of all messages in the requested range:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+[{"event":"created"},{"event":"updated"}]
+```
+
+If no messages exist in the range, servers **MUST** return an empty JSON array `[]`.
 
 ## 8. Caching and Collapsing
 

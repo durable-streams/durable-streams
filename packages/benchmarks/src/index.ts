@@ -312,21 +312,11 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         const startTime = performance.now()
 
-        // Create a readable stream that generates a fixed number of chunks
-        let chunksGenerated = 0
-        const messageStream = new ReadableStream({
-          pull(controller) {
-            if (chunksGenerated >= totalChunks) {
-              controller.close()
-              return
-            }
-            controller.enqueue(chunk)
-            chunksGenerated++
-          },
-        })
-
-        // Stream all data through a single connection
-        await stream.appendStream(messageStream)
+        const appends = []
+        for (let i = 0; i < totalChunks; i++) {
+          appends.push(stream.append(chunk))
+        }
+        await Promise.all(appends)
 
         const endTime = performance.now()
 

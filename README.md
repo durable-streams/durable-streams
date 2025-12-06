@@ -237,7 +237,7 @@ const messages = text.split("\n").filter(Boolean).map(JSON.parse)
 
 ### JSON Mode
 
-When creating a stream with `contentType: "application/json"`, the server guarantees message boundaries. Each read returns a complete JSON array of the messages appended since the last offset.
+When creating a stream with `contentType: "application/json"`, the server preserves message boundaries and returns reads as JSON arrays.
 
 ```typescript
 // Create a JSON-mode stream
@@ -247,22 +247,23 @@ const stream = await DurableStream.create({
 })
 
 // Append individual JSON values
-await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
-await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+await stream.append({ event: "user.created", userId: "123" })
+await stream.append({ event: "user.updated", userId: "123" })
 
-// Read returns parsed JSON array automatically
-const result = await stream.read()
-// result.data = [
-//   { event: "user.created", userId: "123" },
-//   { event: "user.updated", userId: "123" }
-// ]
+// Read returns parsed JSON array
+for await (const message of stream.json()) {
+  console.log(message)
+  // { event: "user.created", userId: "123" }
+  // { event: "user.updated", userId: "123" }
+}
 ```
 
 In JSON mode:
 
-- Each append must be a valid JSON value
-- The server batches appends into JSON arrays for reads
-- Message boundaries are preserved
+- Each `append()` stores one message
+- Supports all JSON types: objects, arrays, strings, numbers, booleans, null
+- Message boundaries are preserved across reads
+- Reads return JSON arrays of all messages
 - Ideal for structured event streams
 
 ## Offset Semantics
