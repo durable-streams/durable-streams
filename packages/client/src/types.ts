@@ -144,8 +144,10 @@ export interface AppendOptions {
 
 /**
  * Live mode for reading from a stream.
+ * - "long-poll": Use long-polling for live updates
+ * - "sse": Use Server-Sent Events for live updates (throws if unsupported)
  */
-export type LiveMode = `catchup` | `long-poll` | `sse`
+export type LiveMode = `long-poll` | `sse`
 
 /**
  * Options for reading from a stream.
@@ -159,12 +161,12 @@ export interface ReadOptions {
 
   /**
    * Live mode behavior:
-   * - undefined (default for follow()): Start catch-up, then auto-select SSE or long-poll
-   * - "catchup": Only catch-up, stop after up-to-date
-   * - "long-poll": Skip catch-up, start long-polling immediately
-   * - "sse": Skip catch-up, start SSE immediately (throws if unsupported)
+   * - undefined/true (default): Catch-up then auto-select SSE or long-poll for live updates
+   * - false: Only catch-up, stop after up-to-date (no live updates)
+   * - "long-poll": Use long-polling for live updates
+   * - "sse": Use SSE for live updates (throws if unsupported)
    */
-  live?: LiveMode
+  live?: boolean | LiveMode
 
   /**
    * Override cursor for the request.

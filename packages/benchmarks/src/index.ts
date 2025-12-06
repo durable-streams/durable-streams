@@ -157,7 +157,7 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Warmup: append and receive once (don't measure)
         const warmupPromise = (async () => {
-          for await (const chunk of stream.follow({
+          for await (const chunk of stream.read({
             offset,
             live: `long-poll`,
           })) {
@@ -172,8 +172,8 @@ export function runBenchmarks(options: BenchmarkOptions): void {
         await warmupPromise
 
         // Actual measurement: append and receive second time
-        const followPromise = (async () => {
-          for await (const chunk of stream.follow({
+        const readPromise = (async () => {
+          for await (const chunk of stream.read({
             offset,
             live: `long-poll`,
           })) {
@@ -185,7 +185,7 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         const startTime = performance.now()
         await stream.append(message)
-        await followPromise
+        await readPromise
         const endTime = performance.now()
 
         // Cleanup
@@ -331,8 +331,10 @@ export function runBenchmarks(options: BenchmarkOptions): void {
         const endTime = performance.now()
 
         // Read back to verify
-        const result = await stream.read()
-        const bytesRead = result.data.length
+        let bytesRead = 0
+        for await (const chunk of stream.read({ live: false })) {
+          bytesRead += chunk.data.length
+        }
 
         const elapsedSeconds = (endTime - startTime) / 1000
         const mbPerSecond = bytesRead / (1024 * 1024) / elapsedSeconds
