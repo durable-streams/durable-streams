@@ -204,7 +204,7 @@ const messages = text.split("\n").filter(Boolean).map(JSON.parse)
 
 ### JSON Mode
 
-When creating a stream with `contentType: "application/json"`, the server guarantees message boundaries. Each read returns a complete JSON array of the messages appended since the last offset.
+When creating a stream with `contentType: "application/json"`, the server preserves message boundaries and returns reads as JSON arrays.
 
 ```typescript
 // Create a JSON-mode stream
@@ -214,22 +214,40 @@ const stream = await DurableStream.create({
 })
 
 // Append individual JSON values
-await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
-await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+await stream.append({ event: "user.created", userId: "123" })
+await stream.append({ event: "user.updated", userId: "123" })
 
-// Read returns parsed JSON array automatically
-const result = await stream.read()
-// result.data = [
-//   { event: "user.created", userId: "123" },
-//   { event: "user.updated", userId: "123" }
-// ]
+// Read returns parsed JSON array
+for await (const message of stream.json()) {
+  console.log(message)
+  // { event: "user.created", userId: "123" }
+  // { event: "user.updated", userId: "123" }
+}
+```
+
+**Batching with arrays:**
+
+Arrays are treated as semantic batches - the server flattens one level automatically, allowing you to send multiple messages in a single append:
+
+```typescript
+// Send multiple messages at once - array is flattened one level
+await stream.append([
+  { event: "user.deleted", userId: "456" },
+  { event: "user.deleted", userId: "789" },
+])
+// This stores 2 individual messages, not 1 array
+
+// To store an actual array as a message, wrap it in another array
+await stream.append([[1, 2, 3]]) // Stores one message: [1, 2, 3]
 ```
 
 In JSON mode:
 
-- Each append must be a valid JSON value
-- The server batches appends into JSON arrays for reads
-- Message boundaries are preserved
+- Each append must be valid JSON (objects, arrays, primitives)
+- Message boundaries are preserved across reads
+- Arrays are flattened one level (use `[[...]]` to store an array as a value)
+- Empty arrays are rejected with 400 error
+- Reads return JSON arrays of all messages
 - Ideal for structured event streams
 
 ## Offset Semantics
