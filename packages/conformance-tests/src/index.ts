@@ -2203,7 +2203,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(data).toEqual([{ message: `hello` }])
     })
 
-    test(`should flatten array of values into single array`, async () => {
+    test(`should store arrays as single messages`, async () => {
       const streamPath = `/v1/stream/json-array-test-${Date.now()}`
 
       const stream = await DurableStream.create({
@@ -2211,14 +2211,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      // Append array of values
+      // Append array - should be stored as ONE message containing the array
       await stream.append([{ id: 1 }, { id: 2 }, { id: 3 }])
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
 
       expect(Array.isArray(data)).toBe(true)
-      expect(data).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
+      expect(data).toEqual([[{ id: 1 }, { id: 2 }, { id: 3 }]])
     })
 
     test(`should concatenate multiple appends into single array`, async () => {
@@ -2262,10 +2262,13 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
 
+      // Array is stored as ONE message
       expect(data).toEqual([
         { type: `single` },
-        { type: `array`, id: 1 },
-        { type: `array`, id: 2 },
+        [
+          { type: `array`, id: 1 },
+          { type: `array`, id: 2 },
+        ],
         { type: `single-again` },
       ])
     })
@@ -2313,9 +2316,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         true,
         null,
         { object: `value` },
-        1,
-        2,
-        3,
+        [1, 2, 3],
       ])
     })
 
@@ -2390,7 +2391,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.ok).toBe(false)
     })
 
-    test(`should flatten exactly one level of nested arrays`, async () => {
+    test(`should store nested arrays as single messages`, async () => {
       const streamPath = `/v1/stream/json-nested-arrays-test-${Date.now()}`
 
       const stream = await DurableStream.create({
@@ -2398,7 +2399,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      // Append nested array - should flatten one level
+      // Append nested array - stored as ONE message
       await stream.append([
         [1, 2],
         [3, 4],
@@ -2407,10 +2408,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
 
-      // Should store 2 messages (the inner arrays), not 1 or 4
+      // Should store 1 message containing the nested array
       expect(data).toEqual([
-        [1, 2],
-        [3, 4],
+        [
+          [1, 2],
+          [3, 4],
+        ],
       ])
     })
 
@@ -2422,18 +2425,18 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      // Append double-wrapped array - should store as single array value
+      // Append double-wrapped array - stored as ONE message containing the array
       await stream.append([[1, 2, 3]])
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
 
-      // Should store 1 message containing the array
-      expect(data).toEqual([[1, 2, 3]])
+      // Should store 1 message containing the single-wrapped array
+      expect(data).toEqual([[[1, 2, 3]]])
       expect(data.length).toBe(1)
     })
 
-    test(`should flatten primitive arrays correctly`, async () => {
+    test(`should store primitive arrays as single messages`, async () => {
       const streamPath = `/v1/stream/json-primitive-array-test-${Date.now()}`
 
       const stream = await DurableStream.create({
@@ -2441,15 +2444,18 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      // Append array of primitives
+      // Each append stores ONE message
       await stream.append([1, 2, 3])
       await stream.append([`a`, `b`, `c`])
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
 
-      // Should flatten to individual primitive values
-      expect(data).toEqual([1, 2, 3, `a`, `b`, `c`])
+      // Should store 2 messages (2 arrays)
+      expect(data).toEqual([
+        [1, 2, 3],
+        [`a`, `b`, `c`],
+      ])
     })
 
     test(`should handle mixed batching - single values, arrays, and nested arrays`, async () => {
@@ -2461,8 +2467,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       await stream.append({ single: 1 }) // 1 message
-      await stream.append([{ batch: 2 }, { batch: 3 }]) // 2 messages (flattened)
-      await stream.append([[`nested`, `array`]]) // 1 message (wrapped array)
+      await stream.append([{ batch: 2 }, { batch: 3 }]) // 1 message (array)
+      await stream.append([[`nested`, `array`]]) // 1 message (nested array)
       await stream.append(42) // 1 message
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
@@ -2470,12 +2476,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(data).toEqual([
         { single: 1 },
-        { batch: 2 },
-        { batch: 3 },
-        [`nested`, `array`],
+        [{ batch: 2 }, { batch: 3 }],
+        [[`nested`, `array`]],
         42,
       ])
-      expect(data.length).toBe(5)
+      expect(data.length).toBe(4)
     })
   })
 }

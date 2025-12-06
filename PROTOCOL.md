@@ -420,18 +420,20 @@ Streams created with `Content-Type: application/json` have special semantics for
 
 #### Message Boundaries
 
-For `application/json` streams, servers **MUST** preserve message boundaries. Each appended JSON value is stored as a distinct message, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
+For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
 
-#### Array Flattening (One-Level Semantic Batching)
+#### Array Flattening for Batch Operations
 
-When a client appends a JSON array to an `application/json` stream, servers **MUST** flatten exactly one level of the array, treating each element as a separate message. This enables efficient batching while preserving message semantics.
+When a POST request body contains a JSON array, servers **MUST** flatten exactly one level of the array, treating each element as a separate message. This enables clients to batch multiple messages in a single HTTP request while preserving individual message semantics.
 
-**Examples:**
+**Examples (direct POST to server):**
 
-- Appending `{"event": "created"}` stores one message: `{"event": "created"}`
-- Appending `[1, 2, 3]` stores three messages: `1`, `2`, `3`
-- Appending `[[1,2], [3,4]]` stores two messages: `[1,2]`, `[3,4]`
-- To store an array as a single message, wrap it: appending `[[1,2,3]]` stores one message: `[1,2,3]`
+- POST body `{"event": "created"}` stores one message: `{"event": "created"}`
+- POST body `[{"event": "a"}, {"event": "b"}]` stores two messages: `{"event": "a"}`, `{"event": "b"}`
+- POST body `[[1,2], [3,4]]` stores two messages: `[1,2]`, `[3,4]`
+- POST body `[[[1,2,3]]]` stores one message: `[[1,2,3]]`
+
+**Note:** Client libraries **MAY** automatically wrap individual values in arrays for batching. For example, a client calling `append({"x": 1})` might send POST body `[{"x": 1}]` to the server, which flattens it to store one message: `{"x": 1}`.
 
 #### Empty Arrays
 
