@@ -86,9 +86,14 @@ class FileHandlePool {
       // Cast to any to access fd property (exists at runtime but not in types)
       const fd = (handle.stream as any).fd
 
-      // If fd is null, stream hasn't been opened yet - skip fsync
+      // If fd is null, stream hasn't been opened yet - wait for open event
       if (typeof fd !== `number`) {
-        resolve()
+        handle.stream.once(`open`, (openedFd: number) => {
+          fs.fdatasync(openedFd, (err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        })
         return
       }
 
