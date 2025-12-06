@@ -146,6 +146,19 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
+  packages/wrapper-sdk:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
+      '@durable-streams/writer':
+        specifier: workspace:*
+        version: link:../writer
+    devDependencies:
+      '@durable-streams/server':
+        specifier: workspace:*
+        version: link:../server
+
   packages/writer:
     dependencies:
       '@durable-streams/client':
