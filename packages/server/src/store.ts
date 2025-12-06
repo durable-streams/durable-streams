@@ -275,13 +275,6 @@ export class StreamStore {
     return -1 // No messages after the offset
   }
 
-  private compareOffsets(a: string, b: string): number {
-    // Lexicographic comparison for protocol compliance
-    if (a > b) return 1
-    if (a < b) return -1
-    return 0
-  }
-
   private notifyLongPolls(path: string): void {
     const toNotify = this.pendingLongPolls.filter((p) => p.path === path)
 
