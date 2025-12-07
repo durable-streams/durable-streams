@@ -600,29 +600,19 @@ export class DurableStream {
                 return { done: false, value: chunk }
               }
 
-              // Live phase - auto-select SSE or long-poll
-              if (stream.#isSSECompatible()) {
-                // Create SSE iterator and delegate
-                sseIterator = stream.#createSSEIterator(
-                  currentOffset,
-                  currentCursor,
-                  signal
-                )
-                return sseIterator.next()
-              } else {
-                // Long-poll
-                const chunk = await stream.#fetchOnce({
-                  offset: currentOffset,
-                  cursor: currentCursor,
-                  live: `long-poll`,
-                  signal,
-                })
+              // Live phase - always use long-poll
+              // (SSE is only used when explicitly requested with live: "sse")
+              const chunk = await stream.#fetchOnce({
+                offset: currentOffset,
+                cursor: currentCursor,
+                live: `long-poll`,
+                signal,
+              })
 
-                currentOffset = chunk.offset
-                currentCursor = chunk.cursor
+              currentOffset = chunk.offset
+              currentCursor = chunk.cursor
 
-                return { done: false, value: chunk }
-              }
+              return { done: false, value: chunk }
             } catch (e) {
               if (e instanceof FetchBackoffAbortError) {
                 cleanup()
