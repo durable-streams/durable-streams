@@ -1,30 +1,30 @@
-import { createFileRoute } from '@tanstack/react-router'
-import { useState, useRef, useEffect } from 'react'
-import { DurableStream } from '@durable-streams/writer'
+import { createFileRoute } from "@tanstack/react-router"
+import { useEffect, useRef, useState } from "react"
+import { DurableStream } from "@durable-streams/writer"
 
-export const Route = createFileRoute('/stream/$streamPath')({
+export const Route = createFileRoute(`/stream/$streamPath`)({
   component: StreamViewer,
 })
 
 function StreamViewer() {
   const { streamPath } = Route.useParams()
-  const [messages, setMessages] = useState<{ offset: string; data: string }[]>([])
-  const [writeInput, setWriteInput] = useState('')
+  const [messages, setMessages] = useState<
+    Array<{ offset: string; data: string }>
+  >([])
+  const [writeInput, setWriteInput] = useState(``)
   const [error, setError] = useState<string | null>(null)
-  const [isFollowing, setIsFollowing] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  const SERVER_URL = 'http://localhost:8787'
+  const SERVER_URL = `http://${window.location.hostname}:8787`
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    messagesEndRef.current?.scrollIntoView({ behavior: `smooth` })
   }, [messages])
 
   useEffect(() => {
     const controller = new AbortController()
     abortControllerRef.current = controller
-    setIsFollowing(true)
     setMessages([])
     setError(null)
 
@@ -34,16 +34,23 @@ function StreamViewer() {
           url: `${SERVER_URL}/v1/stream/${streamPath}`,
         })
 
-        for await (const chunk of stream.follow({ offset: '-1', signal: controller.signal })) {
+        for await (const chunk of stream.read({
+          offset: `-1`,
+          live: `long-poll`,
+          signal: controller.signal,
+        })) {
           const text = new TextDecoder().decode(chunk.data)
-          setMessages((prev) => [...prev, { offset: chunk.offset, data: text }])
+          if (text !== ``) {
+            setMessages((prev) => [
+              ...prev,
+              { offset: chunk.offset, data: text },
+            ])
+          }
         }
       } catch (err: any) {
-        if (err.name !== 'AbortError') {
+        if (err.name !== `AbortError`) {
           setError(`Failed to follow stream: ${err.message}`)
         }
-      } finally {
-        setIsFollowing(false)
       }
     }
 
@@ -63,19 +70,18 @@ function StreamViewer() {
       const stream = new DurableStream({
         url: `${SERVER_URL}/v1/stream/${streamPath}`,
       })
-      await stream.append(writeInput + '\n')
-      setWriteInput('')
+      await stream.append(writeInput + `\n`)
+      setWriteInput(``)
     } catch (err: any) {
       setError(`Failed to write to stream: ${err.message}`)
     }
   }
 
   return (
-    <>
+    <div className="stream-view">
       {error && <div className="error">{error}</div>}
       <div className="header">
         <h2>{streamPath}</h2>
-        <span className="status">{isFollowing ? 'Following' : 'Disconnected'}</span>
       </div>
       <div className="messages">
         {messages.map((msg, i) => (
@@ -91,7 +97,7 @@ function StreamViewer() {
           value={writeInput}
           onChange={(e) => setWriteInput(e.target.value)}
           onKeyPress={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key === `Enter` && !e.shiftKey) {
               e.preventDefault()
               void writeToStream()
             }
@@ -99,6 +105,6 @@ function StreamViewer() {
         />
         <button onClick={writeToStream}>Send</button>
       </div>
-    </>
+    </div>
   )
 }

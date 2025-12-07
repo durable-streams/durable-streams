@@ -138,6 +138,13 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  height: 100vh;
+}
+
+.stream-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 .header {
@@ -147,6 +154,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
 }
 
 .header h2 {
@@ -169,6 +177,7 @@ body {
   border-bottom: 1px solid rgba(255, 0, 0, 0.3);
   color: #ff6b6b;
   font-size: 14px;
+  flex-shrink: 0;
 }
 
 .messages {
@@ -200,6 +209,7 @@ body {
   border-top: 1px solid #333;
   display: flex;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .write-section textarea {
@@ -261,4 +271,57 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
+}
+
+/* Mobile menu toggle */
+.menu-toggle {
+  display: none;
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  z-index: 1001;
+  background: #0066cc;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  font-size: 24px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.menu-toggle:hover {
+  background: #0052a3;
+}
+
+/* Mobile styles */
+@media (max-width: 768px) {
+  .menu-toggle {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: -100%;
+    top: 0;
+    width: 80%;
+    max-width: 300px;
+    height: 100vh;
+    z-index: 1000;
+    transition: left 0.3s ease;
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.3);
+  }
+
+  .sidebar.open {
+    left: 0;
+  }
+
+  .main {
+    width: 100%;
+  }
+
+  .header {
+    padding-left: 80px;
+  }
 }
