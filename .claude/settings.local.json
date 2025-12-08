@@ -23,7 +23,11 @@
       "Bash(pnpm --filter @durable-streams/server test:run:*)",
       "WebFetch(domain:electric-sql.com)",
       "Bash(pnpm --filter @durable-streams/conformance-tests build)",
-      "Bash(pnpm exec vitest:*)"
+      "Bash(pnpm exec vitest:*)",
+      "Bash(pnpm --dir /Users/kylemathews/programs/ds-worktrees/conformance-tests/packages/test-ui add @durable-streams/writer @durable-streams/client)",
+      "Bash(pnpm --filter @durable-streams/test-ui build:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

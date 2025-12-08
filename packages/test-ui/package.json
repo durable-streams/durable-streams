@@ -1,0 +1,27 @@
+{
+  "name": "@durable-streams/test-ui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:^",
+    "@durable-streams/writer": "workspace:^",
+    "@tanstack/react-router": "^1.139.14",
+    "@tanstack/router-devtools": "^1.139.15",
+    "@tanstack/router-plugin": "^1.139.14",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  }
+}

@@ -1,0 +1,6 @@
+dist
+node_modules
+src/counter.ts
+src/main.ts
+src/routeTree.gen.ts
+vite.config.ts

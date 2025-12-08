@@ -69,6 +69,38 @@ export interface Stream {
 }
 
 /**
+ * Event data for stream lifecycle hooks.
+ */
+export interface StreamLifecycleEvent {
+  /**
+   * Type of event.
+   */
+  type: `created` | `deleted`
+
+  /**
+   * Stream path.
+   */
+  path: string
+
+  /**
+   * Content type (only for 'created' events).
+   */
+  contentType?: string
+
+  /**
+   * Timestamp of the event.
+   */
+  timestamp: number
+}
+
+/**
+ * Hook function called when a stream is created or deleted.
+ */
+export type StreamLifecycleHook = (
+  event: StreamLifecycleEvent
+) => void | Promise<void>
+
+/**
  * Options for creating the test server.
  */
 export interface TestServerOptions {
@@ -94,6 +126,16 @@ export interface TestServerOptions {
    * If omitted, uses in-memory storage.
    */
   dataDir?: string
+
+  /**
+   * Hook called when a stream is created.
+   */
+  onStreamCreated?: StreamLifecycleHook
+
+  /**
+   * Hook called when a stream is deleted.
+   */
+  onStreamDeleted?: StreamLifecycleHook
 }
 
 /**

@@ -5,12 +5,20 @@
  *   pnpm start:dev
  */
 
-import { DurableStreamTestServer } from "@durable-streams/server"
+import {
+  DurableStreamTestServer,
+  createRegistryHooks,
+} from "@durable-streams/server"
 
 const server = new DurableStreamTestServer({
   port: 8787,
-  host: `127.0.0.1`,
+  host: `0.0.0.0`,
 })
+
+// Add hooks to maintain a __registry__ stream for observability
+const hooks = createRegistryHooks(server.store)
+;(server as any).options.onStreamCreated = hooks.onStreamCreated
+;(server as any).options.onStreamDeleted = hooks.onStreamDeleted
 
 const url = await server.start()
 console.log(`✓ Durable Streams server running at ${url}`)
