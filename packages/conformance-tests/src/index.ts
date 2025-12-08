@@ -2394,11 +2394,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append({ id: 3 })
 
       const results = []
-      for await (const item of stream.json()) {
+      for await (const item of stream.json({ live: false })) {
         results.push(item)
       }
 
-      expect(results).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
+      // All three objects are batched together by the writer
+      expect(results).toEqual([[{ id: 1 }, { id: 2 }, { id: 3 }]])
     })
 
     test(`should reject empty JSON arrays with 400`, async () => {
