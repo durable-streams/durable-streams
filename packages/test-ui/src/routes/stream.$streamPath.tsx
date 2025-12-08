@@ -2,12 +2,24 @@ import { createFileRoute } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 import { DurableStream } from "@durable-streams/writer"
 
+const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hostname : `localhost`}:8787`
+
 export const Route = createFileRoute(`/stream/$streamPath`)({
+  loader: async ({ params }) => {
+    const stream = new DurableStream({
+      url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
+    })
+    const metadata = await stream.head()
+    return {
+      contentType: metadata.contentType || null,
+    }
+  },
   component: StreamViewer,
 })
 
 function StreamViewer() {
   const { streamPath } = Route.useParams()
+  const { contentType } = Route.useLoaderData()
   const [messages, setMessages] = useState<
     Array<{ offset: string; data: string }>
   >([])
@@ -16,7 +28,8 @@ function StreamViewer() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  const SERVER_URL = `http://${window.location.hostname}:8787`
+  const isRegistryStream = streamPath === `__registry__`
+  const isJsonStream = contentType?.includes(`application/json`)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: `smooth` })
@@ -82,7 +95,6 @@ function StreamViewer() {
       {error && <div className="error">{error}</div>}
       <div className="header">
         <h2>{streamPath}</h2>
-        <div className="status">LIVE</div>
       </div>
       <div className="messages">
         {messages.length === 0 && (
@@ -100,27 +112,35 @@ function StreamViewer() {
             Listening for new messages...
           </div>
         )}
-        {messages.map((msg, i) => (
-          <div key={i} className="message">
-            <pre>{msg.data}</pre>
+        {isJsonStream ? (
+          messages.map((msg, i) => (
+            <div key={i} className="message">
+              <pre>{msg.data}</pre>
+            </div>
+          ))
+        ) : (
+          <div className="message">
+            <pre>{messages.map((msg) => msg.data).join(``)}</pre>
           </div>
-        ))}
+        )}
         <div ref={messagesEndRef} />
       </div>
-      <div className="write-section">
-        <textarea
-          placeholder="Type your message (Shift+Enter for new line)..."
-          value={writeInput}
-          onChange={(e) => setWriteInput(e.target.value)}
-          onKeyPress={(e) => {
-            if (e.key === `Enter` && !e.shiftKey) {
-              e.preventDefault()
-              void writeToStream()
-            }
-          }}
-        />
-        <button onClick={writeToStream}>▸ Send</button>
-      </div>
+      {!isRegistryStream && (
+        <div className="write-section">
+          <textarea
+            placeholder="Type your message (Shift+Enter for new line)..."
+            value={writeInput}
+            onChange={(e) => setWriteInput(e.target.value)}
+            onKeyPress={(e) => {
+              if (e.key === `Enter` && !e.shiftKey) {
+                e.preventDefault()
+                void writeToStream()
+              }
+            }}
+          />
+          <button onClick={writeToStream}>▸ Send</button>
+        </div>
+      )}
     </div>
   )
 }

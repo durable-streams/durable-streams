@@ -134,11 +134,10 @@ function RootLayout() {
         ☰
       </button>
       <div className={`sidebar ${sidebarOpen ? `open` : ``}`}>
-        <h2>Streams</h2>
         <div className="create-stream">
           <input
             type="text"
-            placeholder="Stream path"
+            placeholder="New stream path"
             value={newStreamPath}
             onChange={(e) => setNewStreamPath(e.target.value)}
             onKeyPress={(e) => e.key === `Enter` && void createStream()}
