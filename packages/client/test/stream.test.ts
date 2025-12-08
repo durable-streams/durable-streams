@@ -176,6 +176,7 @@ describe(`DurableStream`, () => {
           headers: {
             "content-type": `text/plain`,
             "Stream-Next-Offset": `1_11`,
+            "Stream-Up-To-Date": `true`,
           },
         })
       )
@@ -185,10 +186,15 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      const result = await stream.read()
+      // read() returns an async iterable, get first chunk with live: false
+      let result
+      for await (const chunk of stream.read({ live: false })) {
+        result = chunk
+        break
+      }
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `https://example.com/stream`,
+        `https://example.com/stream?offset=-1`,
         expect.objectContaining({ method: `GET` })
       )
       expect(new TextDecoder().decode(result.data)).toBe(responseData)
@@ -199,7 +205,10 @@ describe(`DurableStream`, () => {
       mockFetch.mockResolvedValue(
         new Response(`data`, {
           status: 200,
-          headers: { "Stream-Next-Offset": `2_5` },
+          headers: {
+            "Stream-Next-Offset": `2_5`,
+            "Stream-Up-To-Date": `true`,
+          },
         })
       )
 
@@ -208,7 +217,9 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      await stream.read({ offset: `1_11` })
+      for await (const _chunk of stream.read({ offset: `1_11`, live: false })) {
+        break
+      }
 
       expect(mockFetch).toHaveBeenCalledWith(
         `https://example.com/stream?offset=1_11`,
@@ -229,7 +240,18 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      await stream.read({ live: `long-poll` })
+      const aborter = new AbortController()
+      // Start reading with long-poll mode, then abort to end the test
+      const readPromise = (async () => {
+        for await (const _chunk of stream.read({
+          live: `long-poll`,
+          signal: aborter.signal,
+        })) {
+          aborter.abort()
+          break
+        }
+      })()
+      await readPromise
 
       expect(mockFetch).toHaveBeenCalledWith(
         `https://example.com/stream?offset=-1&live=long-poll`,
@@ -253,7 +275,11 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      const result = await stream.read()
+      let result
+      for await (const chunk of stream.read({ live: false })) {
+        result = chunk
+        break
+      }
 
       expect(result.upToDate).toBe(true)
     })
@@ -271,7 +297,11 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      await expect(stream.read()).rejects.toThrow(FetchError)
+      await expect(async () => {
+        for await (const _chunk of stream.read({ live: false })) {
+          // Should throw before yielding
+        }
+      }).rejects.toThrow(FetchError)
     })
   })
 

@@ -8,11 +8,11 @@ const STREAM_URL = process.env.STREAM_URL || `http://localhost:8787`
 function printUsage() {
   console.error(`
 Usage:
-  stream write <stream_id> <content>    Write content to a stream
-  cat file.txt | stream write <stream_id>    Write stdin to a stream
-  stream read <stream_id>                Follow a stream and write to stdout
-  stream create <stream_id>              Create a new stream
-  stream delete <stream_id>              Delete a stream
+  durable-stream create <stream_id>              Create a new stream
+  durable-stream write <stream_id> <content>     Write content to a stream
+  cat file.txt | durable-stream write <stream_id>    Write stdin to a stream
+  durable-stream read <stream_id>                Follow a stream and write to stdout
+  durable-stream delete <stream_id>              Delete a stream
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:8787)
@@ -82,8 +82,9 @@ async function readStream(streamId: string) {
   try {
     const stream = new DurableStream({ url })
 
-    // Follow the stream and write to stdout
-    for await (const chunk of stream.follow({ live: `long-poll` })) {
+    // Read from the stream and write to stdout
+    // Default behavior: catch-up first, then auto-select live mode
+    for await (const chunk of stream.read()) {
       if (chunk.data.length > 0) {
         stdout.write(chunk.data)
       }

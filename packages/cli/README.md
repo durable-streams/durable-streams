@@ -4,9 +4,57 @@ A command-line tool for interacting with durable streams.
 
 ## Installation
 
+### Local Development
+
 ```bash
+# Install dependencies
 pnpm install
+
+# Build the CLI (for production bin)
 pnpm build
+```
+
+### Global Installation for Development
+
+For development, you can link the CLI globally with live TypeScript execution (no rebuild needed):
+
+```bash
+# From the CLI package directory
+pnpm link:dev
+
+# Now you can use durable-stream-dev anywhere
+# Changes to src/index.ts are immediately available
+durable-stream-dev create my-stream
+```
+
+This uses `tsx` to run the TypeScript source directly, so you see changes immediately without rebuilding.
+
+## Quick Start
+
+The easiest way to get started is to run the local development server and use the CLI:
+
+### Terminal 1: Start the local server
+
+```bash
+pnpm start:dev
+```
+
+This will start a Durable Streams server at `http://localhost:8787` with live reloading.
+
+### Terminal 2: Use the CLI
+
+```bash
+# Set the server URL (optional, defaults to http://localhost:8787)
+export STREAM_URL=http://localhost:8787
+
+# Create a stream
+durable-stream-dev create my-stream
+
+# Write to the stream
+durable-stream-dev write my-stream "Hello, world!"
+
+# Read from the stream (follows live)
+durable-stream-dev read my-stream
 ```
 
 ## Usage
@@ -20,61 +68,65 @@ pnpm build
 #### Create a stream
 
 ```bash
-node dist/index.js create my-stream
+durable-stream-dev create <stream_id>
 ```
 
 #### Write to a stream
 
 ```bash
 # Write content as arguments
-node dist/index.js write my-stream "Hello, world!"
+durable-stream-dev write <stream_id> "Hello, world!"
 
 # Pipe content from stdin
-echo "Hello from stdin" | node dist/index.js write my-stream
-cat file.txt | node dist/index.js write my-stream
+echo "Hello from stdin" | durable-stream-dev write <stream_id>
+cat file.txt | durable-stream-dev write <stream_id>
 ```
 
-#### Read from a stream (follows live)
+#### Read from a stream
 
 ```bash
 # Follows the stream and outputs new data to stdout
-node dist/index.js read my-stream
+durable-stream-dev read <stream_id>
 ```
 
 #### Delete a stream
 
 ```bash
-node dist/index.js delete my-stream
+durable-stream-dev delete <stream_id>
 ```
 
-## Example Workflow
+## Complete Example Workflow
 
 ```bash
-# Terminal 1: Start the server
-cd ../durable-streams-server
-pnpm dev
+# Terminal 1: Start the local development server
+pnpm start:dev
 
-# Terminal 2: Create and write to a stream
+# Terminal 2: Set up the stream
 export STREAM_URL=http://localhost:8787
-node dist/index.js create test-stream
-node dist/index.js write test-stream "First message"
+durable-stream-dev create test-stream
 
-# Terminal 3: Follow the stream
+# Terminal 3: Start reading (will show data as it arrives)
 export STREAM_URL=http://localhost:8787
-node dist/index.js read test-stream
-# You'll see "First message" and then it will wait for new data
+durable-stream-dev read test-stream
 
-# Back in Terminal 2: Write more data
-node dist/index.js write test-stream "Second message"
-# Terminal 3 will immediately show "Second message"
+# Back in Terminal 2: Write data and watch it appear in Terminal 3
+durable-stream-dev write test-stream "First message"
+durable-stream-dev write test-stream "Second message"
+echo "Piped content!" | durable-stream-dev write test-stream
 ```
 
 ## Development
 
 ```bash
-# Watch mode
+# Start the example server with live reloading
+pnpm start:dev
+
+# Watch mode for CLI development (rebuilds dist/)
 pnpm dev
 
 # Build
 pnpm build
+
+# Link globally for development (uses tsx, no rebuild needed)
+pnpm link:dev
 ```

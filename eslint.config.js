@@ -29,7 +29,7 @@ export default [
     },
     rules: {
       "prettier/prettier": `error`,
-      "stylistic/quotes": [`error`, `backtick`],
+      "stylistic/quotes": [`error`, `backtick`, { avoidEscape: true }],
       "pnpm/enforce-catalog": `off`,
       "pnpm/json-enforce-catalog": `off`,
       ...prettierConfig.rules,

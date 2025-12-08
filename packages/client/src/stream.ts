@@ -17,7 +17,10 @@ import {
   OFFSET_QUERY_PARAM,
   SSE_COMPATIBLE_CONTENT_TYPES,
   STREAM_CURSOR_HEADER,
+  STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SEQ_HEADER,
+  STREAM_TTL_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import {
@@ -28,6 +31,8 @@ import {
 } from "./fetch"
 import type { EventSourceMessage } from "@microsoft/fetch-event-source"
 import type {
+  AppendOptions,
+  CreateOptions,
   HeadResult,
   MaybePromise,
   Offset,
@@ -81,7 +86,7 @@ export interface DurableStreamOptions extends StreamOptions {
  *
  * This is a lightweight, reusable handle - not a persistent connection.
  * It does not automatically start reading or listening.
- * Create sessions as needed via read(), follow(), or toReadableStream().
+ * Create sessions as needed via read() or toReadableStream().
  *
  * @example
  * ```typescript
@@ -91,11 +96,13 @@ export interface DurableStreamOptions extends StreamOptions {
  *   auth: { token: "my-token" }
  * });
  *
- * // One-shot read
- * const result = await stream.read({ offset: savedOffset });
+ * // Read with live updates (default)
+ * for await (const chunk of stream.read()) {
+ *   console.log(new TextDecoder().decode(chunk.data));
+ * }
  *
- * // Follow for live updates
- * for await (const chunk of stream.follow()) {
+ * // Read catch-up only (no live updates)
+ * for await (const chunk of stream.read({ live: false })) {
  *   console.log(new TextDecoder().decode(chunk.data));
  * }
  * ```
@@ -147,6 +154,21 @@ export class DurableStream {
   // ============================================================================
 
   /**
+   * Create a new stream (create-only PUT) and return a handle.
+   * Fails with DurableStreamError(code="CONFLICT_EXISTS") if it already exists.
+   */
+  static async create(opts: CreateOptions): Promise<DurableStream> {
+    const stream = new DurableStream(opts)
+    await stream.create({
+      contentType: opts.contentType,
+      ttlSeconds: opts.ttlSeconds,
+      expiresAt: opts.expiresAt,
+      body: opts.body,
+    })
+    return stream
+  }
+
+  /**
    * Validate that a stream exists and fetch metadata via HEAD.
    * Returns a handle with contentType populated (if sent by server).
    */
@@ -162,6 +184,14 @@ export class DurableStream {
   static async head(opts: StreamOptions): Promise<HeadResult> {
     const stream = new DurableStream(opts)
     return stream.head()
+  }
+
+  /**
+   * Delete a stream without creating a handle.
+   */
+  static async delete(opts: StreamOptions): Promise<void> {
+    const stream = new DurableStream(opts)
+    return stream.delete()
   }
 
   // ============================================================================
@@ -211,12 +241,197 @@ export class DurableStream {
   }
 
   /**
-   * One-shot read.
+   * Create this stream (create-only PUT) using the URL/auth from the handle.
+   */
+  async create(opts?: Omit<CreateOptions, keyof StreamOptions>): Promise<this> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    if (opts?.contentType) {
+      requestHeaders[`content-type`] = opts.contentType
+    }
+    if (opts?.ttlSeconds !== undefined) {
+      requestHeaders[STREAM_TTL_HEADER] = String(opts.ttlSeconds)
+    }
+    if (opts?.expiresAt) {
+      requestHeaders[STREAM_EXPIRES_AT_HEADER] = opts.expiresAt
+    }
+
+    const body = encodeBody(opts?.body)
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `PUT`,
+      headers: requestHeaders,
+      body,
+      signal: this.#options.signal,
+    })
+
+    if (!response.ok) {
+      if (response.status === 409) {
+        throw new DurableStreamError(
+          `Stream already exists: ${this.url}`,
+          `CONFLICT_EXISTS`,
+          409
+        )
+      }
+      throw await DurableStreamError.fromResponse(response, this.url)
+    }
+
+    // Update content type from response or options
+    const responseContentType = response.headers.get(`content-type`)
+    if (responseContentType) {
+      this.contentType = responseContentType
+    } else if (opts?.contentType) {
+      this.contentType = opts.contentType
+    }
+
+    return this
+  }
+
+  /**
+   * Delete this stream.
+   */
+  async delete(opts?: { signal?: AbortSignal }): Promise<void> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `DELETE`,
+      headers: requestHeaders,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new DurableStreamError(
+          `Stream not found: ${this.url}`,
+          `NOT_FOUND`,
+          404
+        )
+      }
+      throw await DurableStreamError.fromResponse(response, this.url)
+    }
+  }
+
+  /**
+   * Append a single payload to the stream.
+   *
+   * - `body` may be Uint8Array, string, or any Fetch BodyInit.
+   * - Strings are encoded as UTF-8.
+   * - `seq` (if provided) is sent as stream-seq (writer coordination).
+   */
+  async append(
+    body: BodyInit | Uint8Array | string,
+    opts?: AppendOptions
+  ): Promise<void> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    if (opts?.contentType) {
+      requestHeaders[`content-type`] = opts.contentType
+    } else if (this.contentType) {
+      requestHeaders[`content-type`] = this.contentType
+    }
+
+    if (opts?.seq) {
+      requestHeaders[STREAM_SEQ_HEADER] = opts.seq
+    }
+
+    const encodedBody = encodeBody(body)
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `POST`,
+      headers: requestHeaders,
+      body: encodedBody,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new DurableStreamError(
+          `Stream not found: ${this.url}`,
+          `NOT_FOUND`,
+          404
+        )
+      }
+      if (response.status === 409) {
+        throw new DurableStreamError(
+          `Sequence conflict: seq is lower than last appended`,
+          `CONFLICT_SEQ`,
+          409
+        )
+      }
+      if (response.status === 400) {
+        throw new DurableStreamError(
+          `Bad request (possibly content-type mismatch)`,
+          `BAD_REQUEST`,
+          400
+        )
+      }
+      throw await DurableStreamError.fromResponse(response, this.url)
+    }
+  }
+
+  /**
+   * Append a streaming body to the stream.
+   *
+   * - `source` yields Uint8Array or string chunks.
+   * - Strings are encoded as UTF-8; no delimiters are added.
+   * - Internally uses chunked transfer or HTTP/2 streaming.
+   */
+  async appendStream(
+    source:
+      | ReadableStream<Uint8Array | string>
+      | AsyncIterable<Uint8Array | string>,
+    opts?: AppendOptions
+  ): Promise<void> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    if (opts?.contentType) {
+      requestHeaders[`content-type`] = opts.contentType
+    } else if (this.contentType) {
+      requestHeaders[`content-type`] = this.contentType
+    }
+
+    if (opts?.seq) {
+      requestHeaders[STREAM_SEQ_HEADER] = opts.seq
+    }
+
+    // Convert to ReadableStream if needed
+    const body = toReadableStream(source)
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `POST`,
+      headers: requestHeaders,
+      body,
+      // @ts-expect-error - duplex is needed for streaming but not in types
+      duplex: `half`,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new DurableStreamError(
+          `Stream not found: ${this.url}`,
+          `NOT_FOUND`,
+          404
+        )
+      }
+      if (response.status === 409) {
+        throw new DurableStreamError(
+          `Sequence conflict: seq is lower than last appended`,
+          `CONFLICT_SEQ`,
+          409
+        )
+      }
+      throw await DurableStreamError.fromResponse(response, this.url)
+    }
+  }
+
+  /**
+   * Internal one-shot read.
    *
    * Performs a single GET from the specified offset/mode and returns a chunk.
-   * Caller is responsible for persisting the returned offset if they want to resume.
+   * Used internally by read() for catch-up and long-poll iterations.
    */
-  async read(opts?: ReadOptions): Promise<ReadResult> {
+  async #fetchOnce(opts?: ReadOptions): Promise<ReadResult> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest(opts)
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
@@ -251,9 +466,9 @@ export class DurableStream {
   }
 
   /**
-   * Follow the stream as an AsyncIterable of chunks.
+   * Read from the stream as an AsyncIterable of chunks.
    *
-   * Default behaviour:
+   * Default behaviour (live: undefined or live: true):
    * - From `offset` (or start if omitted), repeatedly perform catch-up reads
    *   until a chunk with upToDate=true.
    * - Then switch to live mode:
@@ -261,11 +476,24 @@ export class DurableStream {
    *   - otherwise long-poll.
    *
    * Explicit live override:
-   * - live="catchup": only catch-up, stop at upToDate.
-   * - live="long-poll": start long-polling immediately from offset.
-   * - live="sse": start SSE immediately (throws if SSE not supported).
+   * - live=false: only catch-up, stop at upToDate (no live updates).
+   * - live="long-poll": use long-polling for live updates.
+   * - live="sse": use SSE for live updates (throws if SSE not supported).
+   *
+   * @example
+   * ```typescript
+   * // Default: catch-up then live updates
+   * for await (const chunk of stream.read()) {
+   *   console.log(chunk.data)
+   * }
+   *
+   * // Catch-up only (no live updates)
+   * for await (const chunk of stream.read({ live: false })) {
+   *   console.log(chunk.data)
+   * }
+   * ```
    */
-  follow(opts?: ReadOptions): AsyncIterable<StreamChunk> {
+  read(opts?: ReadOptions): AsyncIterable<StreamChunk> {
     const stream = this
     const liveMode = opts?.live
     // Default to -1 (start from beginning) if no offset provided
@@ -305,14 +533,15 @@ export class DurableStream {
               }
 
               // Determine which mode to use
-              if (liveMode === `catchup`) {
+              // live: false means catch-up only (no live updates)
+              if (liveMode === false) {
                 // Only do catch-up reads
                 if (isUpToDate) {
                   cleanup()
                   return { done: true, value: undefined }
                 }
 
-                const chunk = await stream.read({
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   signal,
@@ -336,8 +565,8 @@ export class DurableStream {
               }
 
               if (liveMode === `long-poll`) {
-                // Long-poll mode - skip catch-up
-                const chunk = await stream.read({
+                // Long-poll mode - skip catch-up, go straight to live
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   live: `long-poll`,
@@ -350,10 +579,10 @@ export class DurableStream {
                 return { done: false, value: chunk }
               }
 
-              // Default mode: catch-up then auto-select live mode
+              // Default mode (live: undefined or live: true): catch-up then auto-select live mode
               if (!isUpToDate) {
                 // Catch-up phase
-                const chunk = await stream.read({
+                const chunk = await stream.#fetchOnce({
                   offset: currentOffset,
                   cursor: currentCursor,
                   signal,
@@ -371,29 +600,19 @@ export class DurableStream {
                 return { done: false, value: chunk }
               }
 
-              // Live phase - auto-select SSE or long-poll
-              if (stream.#isSSECompatible()) {
-                // Create SSE iterator and delegate
-                sseIterator = stream.#createSSEIterator(
-                  currentOffset,
-                  currentCursor,
-                  signal
-                )
-                return sseIterator.next()
-              } else {
-                // Long-poll
-                const chunk = await stream.read({
-                  offset: currentOffset,
-                  cursor: currentCursor,
-                  live: `long-poll`,
-                  signal,
-                })
+              // Live phase - always use long-poll
+              // (SSE is only used when explicitly requested with live: "sse")
+              const chunk = await stream.#fetchOnce({
+                offset: currentOffset,
+                cursor: currentCursor,
+                live: `long-poll`,
+                signal,
+              })
 
-                currentOffset = chunk.offset
-                currentCursor = chunk.cursor
+              currentOffset = chunk.offset
+              currentCursor = chunk.cursor
 
-                return { done: false, value: chunk }
-              }
+              return { done: false, value: chunk }
             } catch (e) {
               if (e instanceof FetchBackoffAbortError) {
                 cleanup()
@@ -449,19 +668,19 @@ export class DurableStream {
   }
 
   /**
-   * Wrap follow() in a Web ReadableStream for piping.
+   * Wrap read() in a Web ReadableStream for piping.
    *
    * Backpressure:
-   * - One chunk is pulled from follow() per pull() call, so standard
+   * - One chunk is pulled from read() per pull() call, so standard
    *   Web Streams backpressure semantics apply.
    *
    * Cancellation:
-   * - rs.cancel() will stop follow() and abort any in-flight request.
+   * - rs.cancel() will stop read() and abort any in-flight request.
    */
   toReadableStream(
     opts?: ReadOptions & { signal?: AbortSignal }
   ): ReadableStream<StreamChunk> {
-    const iterator = this.follow(opts)[Symbol.asyncIterator]()
+    const iterator = this.read(opts)[Symbol.asyncIterator]()
 
     return new ReadableStream<StreamChunk>({
       async pull(controller) {
@@ -484,14 +703,14 @@ export class DurableStream {
   }
 
   /**
-   * Wrap follow() in a Web ReadableStream<Uint8Array> for piping raw bytes.
+   * Wrap read() in a Web ReadableStream<Uint8Array> for piping raw bytes.
    *
    * This is the native format for many web stream APIs.
    */
   toByteStream(
     opts?: ReadOptions & { signal?: AbortSignal }
   ): ReadableStream<Uint8Array> {
-    const iterator = this.follow(opts)[Symbol.asyncIterator]()
+    const iterator = this.read(opts)[Symbol.asyncIterator]()
 
     return new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -514,25 +733,19 @@ export class DurableStream {
   }
 
   /**
-   * Convenience: interpret data as JSON messages (for application/json streams).
-   * Parses the array-wrapped response and yields individual elements.
+   * Convenience: interpret data as JSON messages.
+   * Parses each chunk's data as JSON and yields the parsed values.
    */
   async *json<T = unknown>(opts?: ReadOptions): AsyncIterable<T> {
     const decoder = new TextDecoder()
 
-    for await (const chunk of this.follow(opts)) {
+    for await (const chunk of this.read(opts)) {
       if (chunk.data.length > 0) {
         const text = decoder.decode(chunk.data)
-        const parsed = JSON.parse(text)
-
-        // JSON mode always returns an array
-        if (Array.isArray(parsed)) {
-          for (const item of parsed) {
-            yield item as T
-          }
-        } else {
-          // Single value (shouldn't happen in JSON mode, but handle gracefully)
-          yield parsed as T
+        // Handle potential newline-delimited JSON
+        const lines = text.split(`\n`).filter((l) => l.trim())
+        for (const line of lines) {
+          yield JSON.parse(line) as T
         }
       }
     }
@@ -546,7 +759,7 @@ export class DurableStream {
   ): AsyncIterable<string> {
     const decoder = opts?.decoder ?? new TextDecoder()
 
-    for await (const chunk of this.follow(opts)) {
+    for await (const chunk of this.read(opts)) {
       if (chunk.data.length > 0) {
         yield decoder.decode(chunk.data, { stream: true })
       }
@@ -583,7 +796,9 @@ export class DurableStream {
       const offset = readOpts.offset ?? `-1`
       fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
-      if (readOpts.live) {
+      // Only set live param for string values (long-poll, sse)
+      // Boolean values are handled by the read() iterator logic
+      if (readOpts.live && typeof readOpts.live === `string`) {
         fetchUrl.searchParams.set(LIVE_QUERY_PARAM, readOpts.live)
       }
       if (readOpts.cursor) {
@@ -922,6 +1137,75 @@ async function resolveValue<T>(value: T | (() => MaybePromise<T>)): Promise<T> {
     return (value as () => MaybePromise<T>)()
   }
   return value
+}
+
+/**
+ * Encode a body value to the appropriate format.
+ * Strings are encoded as UTF-8.
+ */
+function encodeBody(
+  body: BodyInit | Uint8Array | string | undefined
+): BodyInit | undefined {
+  if (body === undefined) {
+    return undefined
+  }
+  if (typeof body === `string`) {
+    return new TextEncoder().encode(body)
+  }
+  if (body instanceof Uint8Array) {
+    // Cast to ensure compatible BodyInit type
+    return body as unknown as BodyInit
+  }
+  return body
+}
+
+/**
+ * Convert an async iterable to a ReadableStream.
+ */
+function toReadableStream(
+  source:
+    | ReadableStream<Uint8Array | string>
+    | AsyncIterable<Uint8Array | string>
+): ReadableStream<Uint8Array> {
+  // If it's already a ReadableStream, transform it
+  if (source instanceof ReadableStream) {
+    return source.pipeThrough(
+      new TransformStream<Uint8Array | string, Uint8Array>({
+        transform(chunk, controller) {
+          if (typeof chunk === `string`) {
+            controller.enqueue(new TextEncoder().encode(chunk))
+          } else {
+            controller.enqueue(chunk)
+          }
+        },
+      })
+    )
+  }
+
+  // Convert async iterable to ReadableStream
+  const encoder = new TextEncoder()
+  const iterator = source[Symbol.asyncIterator]()
+
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await iterator.next()
+        if (done) {
+          controller.close()
+        } else if (typeof value === `string`) {
+          controller.enqueue(encoder.encode(value))
+        } else {
+          controller.enqueue(value)
+        }
+      } catch (e) {
+        controller.error(e)
+      }
+    },
+
+    cancel() {
+      iterator.return?.()
+    },
+  })
 }
 
 /**
