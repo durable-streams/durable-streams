@@ -121,7 +121,7 @@ describe(`Recovery and Crash Consistency`, () => {
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`msg1`))
+    await server1.store.append(`/test`, encode(`msg1`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -144,7 +144,7 @@ describe(`Recovery and Crash Consistency`, () => {
     ) // Actual file offset for "msg1"
 
     // Should be able to append more
-    server2.store.append(`/test`, encode(`msg2`))
+    await server2.store.append(`/test`, encode(`msg2`))
     const { messages } = server2.store.read(`/test`)
     expect(messages).toHaveLength(2)
 
@@ -160,8 +160,8 @@ describe(`Recovery and Crash Consistency`, () => {
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`complete1`))
-    server1.store.append(`/test`, encode(`complete2`))
+    await server1.store.append(`/test`, encode(`complete1`))
+    await server1.store.append(`/test`, encode(`complete2`))
 
     // Wait for fsync to disk
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -204,7 +204,7 @@ describe(`Recovery and Crash Consistency`, () => {
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`data`))
+    await server1.store.append(`/test`, encode(`data`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -258,7 +258,7 @@ describe(`Recovery and Crash Consistency`, () => {
     await server1.start()
 
     server1.store.create(`/persist`, { contentType: `text/plain` })
-    server1.store.append(`/persist`, encode(`persisted message`))
+    await server1.store.append(`/persist`, encode(`persisted message`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
