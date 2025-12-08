@@ -1,14 +1,17 @@
 # Durable Streams Test UI
 
-A web-based testing interface for the Durable Streams protocol. This application provides a simple UI to create, delete, read from, and write to durable streams running on localhost:8787.
+![Durable Streams Test UI](https://github.com/user-attachments/assets/test-ui-screenshot.png)
+
+A warm, approachable web interface for testing the Durable Streams protocol. Create, monitor, and interact with durable streams through an intuitive visual interface.
 
 ## Features
 
-- **Stream Management**: Create and delete streams with different content types
-- **Live Reading**: Automatically follow streams in real-time with the `follow()` API
-- **Writing**: Write messages to streams with a simple textarea input
+- **Stream Management**: Create and delete streams with different content types (text/plain, application/json, binary)
+- **Real-Time Monitoring**: Live stream following with automatic catchup and reconnection
+- **Interactive Writing**: Send messages to streams with a simple, friendly interface
+- **Smart Display**: Automatically renders messages based on content type (continuous text vs. structured JSON)
 - **Stream Registry**: Automatic discovery of all streams via the `__registry__` system stream
-- **Dark Theme**: Clean, modern interface optimized for development
+- **Warm Workshop Design**: Cozy, human-centered aesthetic with terracotta and sage accents
 
 ## Quick Start
 
@@ -56,11 +59,21 @@ The UI uses the `stream.follow()` API which automatically:
 2. Switches to live mode (SSE or long-polling based on content-type)
 3. Handles reconnection and backoff automatically
 
-### Components
+### UI Components
 
-- **Left Sidebar**: Lists all streams with their content types
-- **Main Panel**: Shows messages from the selected stream
-- **Write Section**: Input box to append new messages
+- **Left Sidebar**:
+  - Warm terracotta header with "Durable Streams" branding
+  - Create stream form with path input and content-type selector
+  - List of all active streams with visual indicators
+  - Delete buttons with confirmation dialogs for safety
+- **Main Panel**:
+  - Stream title header
+  - Smart message display (continuous for text/plain, cards for application/json)
+  - Real-time updates as new messages arrive
+- **Write Section**:
+  - Multi-line textarea for composing messages
+  - Keyboard shortcuts (Enter to send, Shift+Enter for new line)
+  - Hidden for read-only streams like `__registry__`
 
 ## Development
 
@@ -79,7 +92,7 @@ packages/test-ui/
 │   ├── routes/
 │   │   ├── __root.tsx      # Root layout with router devtools
 │   │   └── index.tsx        # Main stream testing interface
-│   ├── styles.css           # Dark theme styles
+│   ├── styles.css           # Warm Workshop theme styles
 │   ├── main.tsx             # App entry point
 │   └── routeTree.gen.ts     # Generated route tree
 ├── index.html

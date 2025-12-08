@@ -41,12 +41,47 @@ This monorepo contains:
 - **[@durable-streams/writer](./packages/writer)** - TypeScript read/write client (includes create/append/delete operations)
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
+- **[@durable-streams/test-ui](./packages/test-ui)** - Visual web interface for testing and exploring streams
 - **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
 
-The fastest way to experience Durable Streams is to run the local server and CLI:
+![Durable Streams Test UI](https://github.com/user-attachments/assets/test-ui-screenshot.png)
+
+The fastest way to experience Durable Streams is to run the local server with either the **visual Test UI** or the **command-line CLI**:
+
+### Option 1: Visual Test UI (Recommended)
+
+Start the server and open the web-based testing interface:
+
+```bash
+# Clone and install
+git clone https://github.com/durable-streams/durable-streams.git
+cd durable-streams
+pnpm install
+
+# Terminal 1: Start the local server
+pnpm start:dev
+
+# Terminal 2: Launch the Test UI
+cd packages/test-ui
+pnpm dev
+```
+
+Open `http://localhost:3000` in your browser to access the warm, friendly interface where you can:
+
+- **Create and manage streams** with different content types (text/plain, application/json, binary)
+- **Write messages** using an intuitive textarea with keyboard shortcuts
+- **Watch real-time updates** as messages flow through your streams
+- **Monitor the stream registry** to see all active streams across CLI and UI clients
+- **Explore stream metadata** and content-type aware rendering
+
+The Test UI provides a cozy, visual way to understand how Durable Streams works. See the [Test UI README](./packages/test-ui/README.md) for more details.
+
+### Option 2: Command-Line CLI
+
+For terminal enthusiasts, use the CLI for quick scripting and integration:
 
 ```bash
 # Clone and install
@@ -75,7 +110,9 @@ durable-stream-dev write my-stream "More data..."
 echo "Piped content!" | durable-stream-dev write my-stream
 ```
 
-See the [CLI README](./packages/cli/README.md) for more details.
+The CLI is perfect for shell scripts, automation, and piping data. See the [CLI README](./packages/cli/README.md) for more details.
+
+**Try both!** The Test UI and CLI work together seamlessly—streams created in one are immediately visible in the other via the `__registry__` system stream.
 
 ## Quick Start
 
