@@ -35,6 +35,7 @@
     "**/build/**",
     "**/*.config.ts",
     "**/test/**",
-    "**/*.test.ts"
+    "**/*.test.ts",
+    "packages/test-ui/**"
   ]
 }
