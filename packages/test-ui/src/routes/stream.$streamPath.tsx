@@ -82,8 +82,24 @@ function StreamViewer() {
       {error && <div className="error">{error}</div>}
       <div className="header">
         <h2>{streamPath}</h2>
+        <div className="status">LIVE</div>
       </div>
       <div className="messages">
+        {messages.length === 0 && (
+          <div
+            style={{
+              display: `flex`,
+              alignItems: `center`,
+              justifyContent: `center`,
+              height: `100%`,
+              color: `var(--text-dim)`,
+              fontSize: `13px`,
+              fontStyle: `italic`,
+            }}
+          >
+            Listening for new messages...
+          </div>
+        )}
         {messages.map((msg, i) => (
           <div key={i} className="message">
             <pre>{msg.data}</pre>
@@ -93,7 +109,7 @@ function StreamViewer() {
       </div>
       <div className="write-section">
         <textarea
-          placeholder="Write message..."
+          placeholder="Type your message (Shift+Enter for new line)..."
           value={writeInput}
           onChange={(e) => setWriteInput(e.target.value)}
           onKeyPress={(e) => {
@@ -103,7 +119,7 @@ function StreamViewer() {
             }
           }}
         />
-        <button onClick={writeToStream}>Send</button>
+        <button onClick={writeToStream}>▸ Send</button>
       </div>
     </div>
   )

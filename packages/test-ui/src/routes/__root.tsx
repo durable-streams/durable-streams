@@ -104,6 +104,14 @@ function RootLayout() {
   }
 
   const deleteStream = async (path: string) => {
+    if (
+      !window.confirm(
+        `Delete stream "${path}"?\n\nThis action cannot be undone.`
+      )
+    ) {
+      return
+    }
+
     try {
       setError(null)
       const stream = new DurableStream({
@@ -163,6 +171,7 @@ function RootLayout() {
               </div>
               <button
                 className="delete-btn"
+                title={`Delete stream: ${stream.path}`}
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()

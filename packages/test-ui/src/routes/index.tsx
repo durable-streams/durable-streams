@@ -5,5 +5,5 @@ export const Route = createFileRoute(`/`)({
 })
 
 function Index() {
-  return <div className="placeholder">Select a stream to start</div>
+  return <div className="placeholder" />
 }
