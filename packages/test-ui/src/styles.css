@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Recursive:wght@400;600;700&family=Inter:wght@400;500;600&display=swap');
+@import url("https://fonts.googleapis.com/css2?family=Recursive:wght@400;600;700&family=Inter:wght@400;500;600&display=swap");
 
 :root {
   --bg-main: #f5f1e8;
@@ -47,7 +47,8 @@
 }
 
 @keyframes subtle-float {
-  0%, 100% {
+  0%,
+  100% {
     transform: translateY(0px);
   }
   50% {
@@ -56,7 +57,8 @@
 }
 
 @keyframes gentle-pulse {
-  0%, 100% {
+  0%,
+  100% {
     opacity: 1;
   }
   50% {
@@ -65,7 +67,12 @@
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:
+    "Inter",
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   background: var(--bg-main);
   color: var(--text-primary);
   font-size: 16px;
@@ -75,15 +82,23 @@ body {
 }
 
 body::before {
-  content: '';
+  content: "";
   position: fixed;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
   background-image:
-    radial-gradient(circle at 20% 80%, rgba(212, 112, 75, 0.03) 0%, transparent 50%),
-    radial-gradient(circle at 80% 20%, rgba(122, 154, 126, 0.03) 0%, transparent 50%);
+    radial-gradient(
+      circle at 20% 80%,
+      rgba(212, 112, 75, 0.03) 0%,
+      transparent 50%
+    ),
+    radial-gradient(
+      circle at 80% 20%,
+      rgba(122, 154, 126, 0.03) 0%,
+      transparent 50%
+    );
   pointer-events: none;
   z-index: 0;
 }
@@ -106,7 +121,7 @@ body::before {
 }
 
 .sidebar::before {
-  content: 'Durable Streams';
+  content: "Durable Streams";
   position: absolute;
   top: 0;
   left: 0;
@@ -150,7 +165,7 @@ body::before {
   border-radius: 6px;
   color: var(--text-primary);
   font-size: 15px;
-  font-family: 'Recursive', monospace;
+  font-family: "Recursive", monospace;
   transition: all 0.25s ease;
 }
 
@@ -221,11 +236,21 @@ body::before {
   box-shadow: 0 1px 3px var(--shadow-soft);
 }
 
-.stream-item:nth-child(1) { animation-delay: 0.05s; }
-.stream-item:nth-child(2) { animation-delay: 0.1s; }
-.stream-item:nth-child(3) { animation-delay: 0.15s; }
-.stream-item:nth-child(4) { animation-delay: 0.2s; }
-.stream-item:nth-child(5) { animation-delay: 0.25s; }
+.stream-item:nth-child(1) {
+  animation-delay: 0.05s;
+}
+.stream-item:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.stream-item:nth-child(3) {
+  animation-delay: 0.15s;
+}
+.stream-item:nth-child(4) {
+  animation-delay: 0.2s;
+}
+.stream-item:nth-child(5) {
+  animation-delay: 0.25s;
+}
 
 .stream-item:hover {
   border-color: var(--accent-secondary);
@@ -245,7 +270,7 @@ body::before {
 }
 
 .stream-item.active::before {
-  content: '';
+  content: "";
   position: absolute;
   left: 0;
   top: 0;
@@ -264,7 +289,7 @@ body::before {
   margin-bottom: 4px;
   color: var(--text-primary);
   font-size: 15px;
-  font-family: 'Recursive', monospace;
+  font-family: "Recursive", monospace;
 }
 
 .stream-type {
@@ -336,7 +361,7 @@ body::before {
   font-size: 20px;
   color: var(--text-primary);
   font-weight: 600;
-  font-family: 'Recursive', monospace;
+  font-family: "Recursive", monospace;
   letter-spacing: -0.02em;
 }
 
@@ -353,7 +378,7 @@ body::before {
 }
 
 .status::before {
-  content: '●';
+  content: "●";
   margin-right: 6px;
   animation: gentle-pulse 2s ease-in-out infinite;
 }
@@ -371,7 +396,7 @@ body::before {
 }
 
 .error::before {
-  content: '⚠ ';
+  content: "⚠ ";
   margin-right: 6px;
 }
 
@@ -393,12 +418,18 @@ body::before {
   box-shadow: 0 2px 6px var(--shadow-soft);
 }
 
-.message:nth-child(1) { animation-delay: 0.05s; }
-.message:nth-child(2) { animation-delay: 0.1s; }
-.message:nth-child(3) { animation-delay: 0.15s; }
+.message:nth-child(1) {
+  animation-delay: 0.05s;
+}
+.message:nth-child(2) {
+  animation-delay: 0.1s;
+}
+.message:nth-child(3) {
+  animation-delay: 0.15s;
+}
 
 .message pre {
-  font-family: 'Recursive', 'Monaco', monospace;
+  font-family: "Recursive", "Monaco", monospace;
   font-size: 15px;
   line-height: 1.7;
   white-space: pre-wrap;
@@ -422,7 +453,7 @@ body::before {
   border: 1px solid var(--border-medium);
   border-radius: 8px;
   color: var(--text-primary);
-  font-family: 'Recursive', monospace;
+  font-family: "Recursive", monospace;
   font-size: 15px;
   resize: vertical;
   min-height: 80px;
@@ -486,14 +517,14 @@ body::before {
 }
 
 .placeholder::before {
-  content: '📝';
+  content: "📝";
   font-size: 64px;
   animation: subtle-float 4s ease-in-out infinite;
   opacity: 0.6;
 }
 
 .placeholder::after {
-  content: 'Select a stream to begin';
+  content: "Select a stream to begin";
   font-size: 14px;
   font-weight: 500;
   letter-spacing: 0.3px;
