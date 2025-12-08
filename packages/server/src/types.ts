@@ -75,7 +75,7 @@ export interface StreamLifecycleEvent {
   /**
    * Type of event.
    */
-  type: 'created' | 'deleted'
+  type: `created` | `deleted`
 
   /**
    * Stream path.
@@ -96,7 +96,9 @@ export interface StreamLifecycleEvent {
 /**
  * Hook function called when a stream is created or deleted.
  */
-export type StreamLifecycleHook = (event: StreamLifecycleEvent) => void | Promise<void>
+export type StreamLifecycleHook = (
+  event: StreamLifecycleEvent
+) => void | Promise<void>
 
 /**
  * Options for creating the test server.

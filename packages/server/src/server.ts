@@ -6,7 +6,7 @@ import { createServer } from "node:http"
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
-import type { TestServerOptions, StreamLifecycleEvent } from "./types"
+import type { StreamLifecycleEvent, TestServerOptions } from "./types"
 
 // Protocol headers (aligned with PROTOCOL.md)
 const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
@@ -28,7 +28,9 @@ const CURSOR_QUERY_PARAM = `cursor`
 export class DurableStreamTestServer {
   readonly store: StreamStore | FileBackedStreamStore
   private server: Server | null = null
-  private options: Required<Omit<TestServerOptions, `dataDir` | `onStreamCreated` | `onStreamDeleted`>> & {
+  private options: Required<
+    Omit<TestServerOptions, `dataDir` | `onStreamCreated` | `onStreamDeleted`>
+  > & {
     dataDir?: string
     onStreamCreated?: (event: StreamLifecycleEvent) => void | Promise<void>
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>

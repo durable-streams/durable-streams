@@ -13,12 +13,14 @@ A web-based testing interface for the Durable Streams protocol. This application
 ## Quick Start
 
 1. **Start the development server** (in a separate terminal):
+
    ```bash
    cd packages/cli
    pnpm start:dev
    ```
 
 2. **Run the test UI**:
+
    ```bash
    cd packages/test-ui
    pnpm dev
@@ -33,12 +35,14 @@ A web-based testing interface for the Durable Streams protocol. This application
 The UI automatically tracks all streams via a special `__registry__` stream. When you start the development server with the registry hooks enabled, all stream lifecycle events (creates and deletes) are recorded to `/v1/stream/__registry__`.
 
 The registry stream contains newline-delimited JSON events:
+
 ```json
 {"type":"created","path":"/v1/stream/my-stream","contentType":"text/plain","timestamp":1234567890}
 {"type":"deleted","path":"/v1/stream/my-stream","timestamp":1234567891}
 ```
 
 This means:
+
 - **Streams created by the CLI** are visible in the UI
 - **Streams created by the UI** are recorded in the registry
 - **Page refreshes** restore the full stream list
@@ -47,6 +51,7 @@ This means:
 ### Real-Time Following
 
 The UI uses the `stream.follow()` API which automatically:
+
 1. Catches up on any missed messages (from offset `-1`, the beginning)
 2. Switches to live mode (SSE or long-polling based on content-type)
 3. Handles reconnection and backoff automatically
@@ -60,6 +65,7 @@ The UI uses the `stream.follow()` API which automatically:
 ## Development
 
 The test UI is built with:
+
 - **Vite** - Fast development and build tool
 - **React** - UI library
 - **TanStack Router** - Type-safe routing
@@ -86,7 +92,10 @@ packages/test-ui/
 The example server (`packages/cli/example-server.ts`) is configured with registry hooks:
 
 ```typescript
-import { DurableStreamTestServer, createRegistryHooks } from "@durable-streams/server"
+import {
+  DurableStreamTestServer,
+  createRegistryHooks,
+} from "@durable-streams/server"
 
 const server = new DurableStreamTestServer({
   port: 8787,

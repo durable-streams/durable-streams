@@ -30,7 +30,7 @@ export function createRegistryHooks(
   // Helper to extract stream name from full path
   const extractStreamName = (fullPath: string): string => {
     // Remove /v1/stream/ prefix if present
-    return fullPath.replace(/^\/v1\/stream\//, '')
+    return fullPath.replace(/^\/v1\/stream\//, ``)
   }
 
   return {
@@ -46,7 +46,9 @@ export function createRegistryHooks(
         timestamp: event.timestamp,
       })
 
-      await Promise.resolve(store.append(REGISTRY_PATH, Buffer.from(record + `\n`)))
+      await Promise.resolve(
+        store.append(REGISTRY_PATH, Buffer.from(record + `\n`))
+      )
     },
 
     onStreamDeleted: async (event) => {
@@ -60,7 +62,9 @@ export function createRegistryHooks(
         timestamp: event.timestamp,
       })
 
-      await Promise.resolve(store.append(REGISTRY_PATH, Buffer.from(record + `\n`)))
+      await Promise.resolve(
+        store.append(REGISTRY_PATH, Buffer.from(record + `\n`))
+      )
     },
   }
 }
