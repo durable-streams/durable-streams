@@ -1,3 +1,17 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)"
+      srcset="docs/img/icon-128.png"
+  />
+  <source media="(prefers-color-scheme: light)"
+      srcset="docs/img/icon-128.black.png"
+  />
+  <img alt="Memento polaroid icon"
+      src="docs/img/icon-128.png"
+      width="64"
+      height="64"
+  />
+</picture>
+
 # Durable Streams
 
 **The open protocol for real-time sync to client applications**
@@ -5,6 +19,9 @@
 HTTP-based durable streams for streaming data reliably to web browsers, mobile apps, and native clients with offset-based resumability.
 
 Durable Streams provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
+
+> [!TIP]
+> Read the [Annoucing Durable Streams](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams) post on the Electric blog.
 
 ## The Missing Primitive
 
