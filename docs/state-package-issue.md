@@ -1,8 +1,12 @@
-# RFC: @durable-streams/state - State Types and Materialization
+# RFC: @durable-streams/state - The State Protocol
 
 ## Summary
 
-Port Electric SQL's state types and materialization system to a new `@durable-streams/state` package. This package will provide:
+Implement the **State Protocol** as a new `@durable-streams/state` package. As described in the [Announcing Durable Streams blog post](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams):
+
+> **State Protocol** — A composable schema for state change events (insert/update/delete) that any protocol can adopt when it needs database-style sync semantics
+
+This package will provide:
 
 1. **Type-safe event definitions** for CRUD operations on entities
 2. **Event validation** at write time
@@ -11,7 +15,36 @@ Port Electric SQL's state types and materialization system to a new `@durable-st
 
 ## Background
 
-### Electric SQL's Approach
+### Architecture Vision
+
+From the blog post, the Durable Streams ecosystem is layered:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Application Protocols                        │
+│  (Presence, CRDTs, Real-time Collaboration, Custom Protocols)   │
+├─────────────────────────────────────────────────────────────────┤
+│                      Database Adapters                           │
+│              (Postgres, MySQL, SQLite replication)               │
+├─────────────────────────────────────────────────────────────────┤
+│                    AI Transport Plugins                          │
+│      (Vercel AI SDK, TanStack AI adapters for resumable         │
+│       token streaming and persistent agent sessions)             │
+├─────────────────────────────────────────────────────────────────┤
+│                      STATE PROTOCOL  ← This RFC                  │
+│    (Composable schema for insert/update/delete events)          │
+├─────────────────────────────────────────────────────────────────┤
+│                      DURABLE STREAMS                             │
+│         (Foundational transport layer over HTTP)                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+The State Protocol sits between raw durable streams and higher-level protocols. It provides:
+- **For database sync**: The event schema for streaming row changes (what Electric uses)
+- **For AI applications**: Could be used for structured agent state, tool outputs, etc.
+- **For application protocols**: A common foundation for any protocol needing entity CRUD semantics
+
+### Electric SQL's Implementation
 
 Electric SQL's TypeScript client (`@electric-sql/client`) has a well-designed system for handling database change events. Key concepts:
 
@@ -734,14 +767,30 @@ function TodoList() {
 
 ## Key Differences from Electric
 
-| Aspect | Electric SQL | @durable-streams/state |
-|--------|-------------|----------------------|
+| Aspect | Electric SQL (Current) | @durable-streams/state |
+|--------|------------------------|----------------------|
 | **Data source** | PostgreSQL tables via shape log | Any JSON events via durable stream |
 | **Key format** | Composite keys from PK columns | Simple string keys |
 | **Schema** | Derived from Postgres schema | Optional TypeScript definitions |
 | **Type parsing** | PostgreSQL type converters | JSON native types |
 | **Streaming** | ShapeStream with built-in materialization | Decoupled: events + separate materializer |
 | **Control messages** | up-to-date, must-refetch, snapshot-end | Extensible control events |
+| **Coupling** | Bundled with Electric transport | Composable, works with any durable stream |
+
+### Electric 2.0 Context
+
+From the blog post:
+
+> As we build Electric 2.0, we're separating the foundation from the ecosystem so each piece can be used independently or composed together
+
+The State Protocol is part of this separation:
+- **Electric 1.x**: Everything bundled together (transport + protocol + Postgres adapter)
+- **Electric 2.0**: Layered architecture where State Protocol can be used independently
+
+This means `@durable-streams/state` should be designed to:
+1. Work standalone for non-database use cases (AI, event sourcing, etc.)
+2. Be composable with database adapters for sync use cases
+3. Be framework-agnostic (React hooks come separately)
 
 ## Implementation Plan
 
@@ -799,8 +848,66 @@ function TodoList() {
    - Rollback on failure
    - Add in future version
 
+## Use Cases (from Blog Post)
+
+The State Protocol enables these patterns mentioned in the announcement:
+
+### Database Synchronization
+> Stream row changes with guaranteed ordering and resumability (the mechanism Electric uses to ship updates to clients)
+
+```typescript
+// Postgres adapter streams changes using State Protocol
+for await (const event of postgresStream.events<UserRow>()) {
+  if (event.headers.operation === "insert") {
+    localDb.insert(event.key, event.value)
+  } else if (event.headers.operation === "update") {
+    localDb.update(event.key, event.value)
+  } else if (event.headers.operation === "delete") {
+    localDb.delete(event.key)
+  }
+}
+```
+
+### Event Sourcing
+> Deliver immutable logs clients can replay from any point in time
+
+```typescript
+// Replay entire event history to rebuild state
+const state = await materializeAsync(
+  stream.events<Order>({ offset: "-1", live: false })
+)
+```
+
+### Agentic Apps
+> Stream tool outputs and progress events with replay and clean reconnect semantics
+
+```typescript
+// Agent session with structured state changes
+await stream.append(insert("step-1", {
+  type: "tool_call",
+  tool: "web_search",
+  input: { query: "weather NYC" },
+  status: "pending"
+}))
+
+await stream.append(update("step-1", {
+  type: "tool_call",
+  tool: "web_search",
+  input: { query: "weather NYC" },
+  status: "completed",
+  output: { temperature: 72, conditions: "sunny" }
+}))
+```
+
+### Real-time Collaboration
+> Deliver CRDT / OT updates with replayable history and clean reconnects
+
+The State Protocol could be composed with CRDT libraries where each operation is tracked as an insert/update/delete event.
+
 ## References
 
+- [Announcing Durable Streams (Blog Post)](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams)
 - [Electric SQL TypeScript Client](https://github.com/electric-sql/electric/tree/main/packages/typescript-client)
 - [Electric Shape API](https://electric-sql.com/docs/api/clients/typescript)
 - [Durable Streams Protocol](./PROTOCOL.md)
+- [Durable Streams GitHub](https://github.com/durable-streams/durable-streams)
