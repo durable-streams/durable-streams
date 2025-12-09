@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 import { DurableStream } from "@durable-streams/writer"
 
@@ -6,12 +6,21 @@ const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hos
 
 export const Route = createFileRoute(`/stream/$streamPath`)({
   loader: async ({ params }) => {
-    const stream = new DurableStream({
-      url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
-    })
-    const metadata = await stream.head()
-    return {
-      contentType: metadata.contentType || null,
+    try {
+      const streamMetadata = new DurableStream({
+        url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
+      })
+      const metadata = await streamMetadata.head()
+      const stream = new DurableStream({
+        url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
+        contentType: metadata.contentType || undefined,
+      })
+      return {
+        contentType: metadata.contentType || undefined,
+        stream,
+      }
+    } catch {
+      throw redirect({ to: `/` })
     }
   },
   component: StreamViewer,
@@ -19,7 +28,7 @@ export const Route = createFileRoute(`/stream/$streamPath`)({
 
 function StreamViewer() {
   const { streamPath } = Route.useParams()
-  const { contentType } = Route.useLoaderData()
+  const { contentType, stream } = Route.useLoaderData()
   const [messages, setMessages] = useState<
     Array<{ offset: string; data: string }>
   >([])
@@ -43,10 +52,6 @@ function StreamViewer() {
 
     const followStream = async () => {
       try {
-        const stream = new DurableStream({
-          url: `${SERVER_URL}/v1/stream/${streamPath}`,
-        })
-
         for await (const chunk of stream.read({
           offset: `-1`,
           live: `long-poll`,
@@ -80,9 +85,6 @@ function StreamViewer() {
 
     try {
       setError(null)
-      const stream = new DurableStream({
-        url: `${SERVER_URL}/v1/stream/${streamPath}`,
-      })
       await stream.append(writeInput + `\n`)
       setWriteInput(``)
     } catch (err: any) {
@@ -112,17 +114,19 @@ function StreamViewer() {
             Listening for new messages...
           </div>
         )}
-        {isJsonStream ? (
-          messages.map((msg, i) => (
-            <div key={i} className="message">
-              <pre>{msg.data}</pre>
+        {messages.length !== 0 ? (
+          isJsonStream ? (
+            messages.map((msg, i) => (
+              <div key={i} className="message">
+                <pre>{msg.data}</pre>
+              </div>
+            ))
+          ) : (
+            <div className="message">
+              <pre>{messages.map((msg) => msg.data).join(``)}</pre>
             </div>
-          ))
-        ) : (
-          <div className="message">
-            <pre>{messages.map((msg) => msg.data).join(``)}</pre>
-          </div>
-        )}
+          )
+        ) : null}
         <div ref={messagesEndRef} />
       </div>
       {!isRegistryStream && (

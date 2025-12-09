@@ -15,12 +15,12 @@ const server = new DurableStreamTestServer({
   host: `0.0.0.0`,
 })
 
+const url = await server.start()
+
 // Add hooks to maintain a __registry__ stream for observability
-const hooks = createRegistryHooks(server.store)
+const hooks = createRegistryHooks(server.store, url)
 ;(server as any).options.onStreamCreated = hooks.onStreamCreated
 ;(server as any).options.onStreamDeleted = hooks.onStreamDeleted
-
-const url = await server.start()
 console.log(`✓ Durable Streams server running at ${url}`)
 console.log(`\nYou can now use the CLI to interact with streams:`)
 console.log(`  export STREAM_URL=${url}`)

@@ -8,6 +8,13 @@ interface Stream {
   contentType?: string
 }
 
+interface RegistryEvent {
+  type: `created` | `deleted`
+  path: string
+  contentType?: string
+  timestamp: number
+}
+
 function RootLayout() {
   const [streams, setStreams] = useState<Array<Stream>>([])
   const [newStreamPath, setNewStreamPath] = useState(``)
@@ -36,40 +43,30 @@ function RootLayout() {
         })
       }
 
-      // Read all chunks from the registry
+      // Read all events from the registry
       const loadedStreams: Array<Stream> = []
 
       try {
-        for await (const chunk of registryStream.read({ offset: `-1` })) {
-          console.log(`Registry chunk:`, chunk)
-          if (chunk.data.length > 0) {
-            const text = new TextDecoder().decode(chunk.data)
-            console.log(`Registry text:`, text)
-            const lines = text.trim().split(`\n`).filter(Boolean)
+        for await (const chunk of registryStream.json<
+          RegistryEvent | Array<RegistryEvent>
+        >()) {
+          const events = Array.isArray(chunk) ? chunk : [chunk]
 
-            for (const line of lines) {
-              try {
-                const event = JSON.parse(line)
-                console.log(`Registry event:`, event)
-                if (event.type === `created`) {
-                  loadedStreams.push({
-                    path: event.path,
-                    contentType: event.contentType,
-                  })
-                } else if (event.type === `deleted`) {
-                  const index = loadedStreams.findIndex(
-                    (s) => s.path === event.path
-                  )
-                  if (index !== -1) {
-                    loadedStreams.splice(index, 1)
-                  }
-                }
-              } catch (e) {
-                console.error(`Error parsing registry line:`, line, e)
+          for (const event of events) {
+            if (event.type === `created`) {
+              loadedStreams.push({
+                path: event.path,
+                contentType: event.contentType,
+              })
+            } else {
+              const index = loadedStreams.findIndex(
+                (s) => s.path === event.path
+              )
+              if (index !== -1) {
+                loadedStreams.splice(index, 1)
               }
             }
           }
-          console.log(`Loaded streams:`, loadedStreams)
           setStreams(loadedStreams)
         }
       } catch (readErr) {
@@ -106,7 +103,7 @@ function RootLayout() {
   const deleteStream = async (path: string) => {
     if (
       !window.confirm(
-        `Delete stream "${path}"?\n\nThis action cannot be undone.`
+        `Delete stream "${decodeURIComponent(path)}"?\n\nThis action cannot be undone.`
       )
     ) {
       return
@@ -140,7 +137,7 @@ function RootLayout() {
             placeholder="New stream path"
             value={newStreamPath}
             onChange={(e) => setNewStreamPath(e.target.value)}
-            onKeyPress={(e) => e.key === `Enter` && void createStream()}
+            onKeyDown={(e) => e.key === `Enter` && void createStream()}
           />
           <select
             value={newStreamContentType}
@@ -163,14 +160,16 @@ function RootLayout() {
               onClick={() => setSidebarOpen(false)}
             >
               <div>
-                <div className="stream-path">{stream.path}</div>
+                <div className="stream-path">
+                  {decodeURIComponent(stream.path)}
+                </div>
                 <div className="stream-type">
-                  {stream.contentType || `unknown`}
+                  {stream.contentType?.toLowerCase() || `unknown`}
                 </div>
               </div>
               <button
                 className="delete-btn"
-                title={`Delete stream: ${stream.path}`}
+                title={`Delete stream: ${decodeURIComponent(stream.path)}`}
                 onClick={(e) => {
                   e.preventDefault()
                   e.stopPropagation()

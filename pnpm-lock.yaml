@@ -138,6 +138,9 @@ importers:
 
   packages/server:
     dependencies:
+      '@durable-streams/writer':
+        specifier: workspace:*
+        version: link:../writer
       '@neophi/sieve-cache':
         specifier: ^1.0.0
         version: 1.5.0
