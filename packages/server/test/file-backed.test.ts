@@ -76,22 +76,34 @@ describe(`Path Encoding`, () => {
 // ============================================================================
 
 describe(`Server Close`, () => {
-  test(`should handle store.close() errors gracefully`, () => {
-    const testServer = new DurableStreamTestServer({ dataDir, port: 0 })
-    return testServer.start().then(() => {
-      // Mock store.close() to reject
-      const originalClose = testServer.store.close
-      testServer.store.close = () =>
-        Promise.reject(new Error(`Close failed intentionally`))
+  test(`should handle store.close() errors gracefully`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
 
-      // Should reject with the error (not hang)
-      return expect(testServer.stop())
-        .rejects.toThrow(`Close failed intentionally`)
-        .finally(() => {
-          // Restore for cleanup
-          testServer.store.close = originalClose
-        })
-    })
+    const testServer = new DurableStreamTestServer({ dataDir, port: 0 })
+    await testServer.start()
+
+    // Mock store.close() to reject
+    const originalClose = testServer.store.close
+    testServer.store.close = () =>
+      Promise.reject(new Error(`Close failed intentionally`))
+
+    // Should reject with the error (not hang)
+    try {
+      await testServer.stop()
+      throw new Error(`Expected stop() to throw`)
+    } catch (err: unknown) {
+      expect(err).toBeInstanceOf(Error)
+      expect((err as Error).message).toBe(`Close failed intentionally`)
+    }
+
+    // Restore and cleanup - server might be partially stopped
+    testServer.store.close = originalClose
+    try {
+      await testServer.stop()
+    } catch {
+      // Ignore errors during cleanup
+    }
   })
 })
 
@@ -101,12 +113,15 @@ describe(`Server Close`, () => {
 
 describe(`Recovery and Crash Consistency`, () => {
   test(`should reconcile LMDB offset to file on recovery`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
+
     // Create initial server and append data
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`msg1`))
+    await server1.store.append(`/test`, encode(`msg1`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -129,7 +144,7 @@ describe(`Recovery and Crash Consistency`, () => {
     ) // Actual file offset for "msg1"
 
     // Should be able to append more
-    server2.store.append(`/test`, encode(`msg2`))
+    await server2.store.append(`/test`, encode(`msg2`))
     const { messages } = server2.store.read(`/test`)
     expect(messages).toHaveLength(2)
 
@@ -137,13 +152,16 @@ describe(`Recovery and Crash Consistency`, () => {
   })
 
   test(`should handle truncated message in file`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
+
     // Create server and append multiple messages
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`complete1`))
-    server1.store.append(`/test`, encode(`complete2`))
+    await server1.store.append(`/test`, encode(`complete1`))
+    await server1.store.append(`/test`, encode(`complete2`))
 
     // Wait for fsync to disk
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -178,12 +196,15 @@ describe(`Recovery and Crash Consistency`, () => {
   })
 
   test(`should remove stream from LMDB when file is missing`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
+
     // Create server and stream
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
     server1.store.create(`/test`, { contentType: `text/plain` })
-    server1.store.append(`/test`, encode(`data`))
+    await server1.store.append(`/test`, encode(`data`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
@@ -206,6 +227,9 @@ describe(`Recovery and Crash Consistency`, () => {
   })
 
   test(`should handle empty file gracefully`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
+
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
@@ -227,11 +251,14 @@ describe(`Recovery and Crash Consistency`, () => {
   })
 
   test(`should persist data across restart`, async () => {
+    // Stop global server to avoid LMDB conflicts
+    await server.stop()
+
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
     server1.store.create(`/persist`, { contentType: `text/plain` })
-    server1.store.append(`/persist`, encode(`persisted message`))
+    await server1.store.append(`/persist`, encode(`persisted message`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))

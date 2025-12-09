@@ -1355,12 +1355,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Try to append without Content-Type - should fail
+      // Note: Must explicitly set to undefined to prevent fetch from auto-adding it
       const response = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
+        headers: { "Content-Type": undefined } as unknown as HeadersInit,
         body: `data`,
       })
 
-      expect([400, 409]).toContain(response.status)
+      expect(response.status).toBe(400)
     })
 
     test(`should accept PUT without Content-Type (use default)`, async () => {
@@ -2181,6 +2183,334 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       const text = await response2.text()
       expect(text).toBe(`secondthird`)
+    })
+  })
+
+  // ============================================================================
+  // JSON Mode
+  // ============================================================================
+
+  describe(`JSON Mode`, () => {
+    test(`should handle content-type with charset parameter`, async () => {
+      const streamPath = `/v1/stream/json-charset-test-${Date.now()}`
+
+      // Create with charset parameter
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json; charset=utf-8` },
+      })
+
+      // Append JSON
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json; charset=utf-8` },
+        body: JSON.stringify({ message: `hello` }),
+      })
+
+      // Read and verify it's treated as JSON mode
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(Array.isArray(data)).toBe(true)
+      expect(data).toEqual([{ message: `hello` }])
+    })
+
+    test(`should wrap single JSON value in array`, async () => {
+      const streamPath = `/v1/stream/json-single-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ message: `hello` })
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(Array.isArray(data)).toBe(true)
+      expect(data).toEqual([{ message: `hello` }])
+    })
+
+    test(`should store arrays as single messages`, async () => {
+      const streamPath = `/v1/stream/json-array-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append array - should be stored as ONE message containing the array
+      await stream.append([{ id: 1 }, { id: 2 }, { id: 3 }])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(Array.isArray(data)).toBe(true)
+      expect(data).toEqual([[{ id: 1 }, { id: 2 }, { id: 3 }]])
+    })
+
+    test(`should concatenate multiple appends into single array`, async () => {
+      const streamPath = `/v1/stream/json-concat-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ event: `first` })
+      await stream.append({ event: `second` })
+      await stream.append({ event: `third` })
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(Array.isArray(data)).toBe(true)
+      expect(data).toEqual([
+        { event: `first` },
+        { event: `second` },
+        { event: `third` },
+      ])
+    })
+
+    test(`should handle mixed single values and arrays`, async () => {
+      const streamPath = `/v1/stream/json-mixed-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ type: `single` })
+      await stream.append([
+        { type: `array`, id: 1 },
+        { type: `array`, id: 2 },
+      ])
+      await stream.append({ type: `single-again` })
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Array is stored as ONE message
+      expect(data).toEqual([
+        { type: `single` },
+        [
+          { type: `array`, id: 1 },
+          { type: `array`, id: 2 },
+        ],
+        { type: `single-again` },
+      ])
+    })
+
+    test(`should reject invalid JSON with 400`, async () => {
+      const streamPath = `/v1/stream/json-invalid-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to append invalid JSON
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `{ invalid json }`,
+      })
+
+      expect(response.status).toBe(400)
+      expect(response.ok).toBe(false)
+    })
+
+    test(`should handle various JSON value types`, async () => {
+      const streamPath = `/v1/stream/json-types-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append(`string value`)
+      await stream.append(42)
+      await stream.append(true)
+      await stream.append(null)
+      await stream.append({ object: `value` })
+      await stream.append([1, 2, 3])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(data).toEqual([
+        `string value`,
+        42,
+        true,
+        null,
+        { object: `value` },
+        [1, 2, 3],
+      ])
+    })
+
+    test(`should preserve JSON structure and nesting`, async () => {
+      const streamPath = `/v1/stream/json-nested-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({
+        user: {
+          id: 123,
+          name: `Alice`,
+          tags: [`admin`, `verified`],
+        },
+        timestamp: `2024-01-01T00:00:00Z`,
+      })
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(data).toEqual([
+        {
+          user: {
+            id: 123,
+            name: `Alice`,
+            tags: [`admin`, `verified`],
+          },
+          timestamp: `2024-01-01T00:00:00Z`,
+        },
+      ])
+    })
+
+    test(`should work with client json() iterator`, async () => {
+      const streamPath = `/v1/stream/json-iterator-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ id: 1 })
+      await stream.append({ id: 2 })
+      await stream.append({ id: 3 })
+
+      const results = []
+      for await (const item of stream.json({ live: false })) {
+        results.push(item)
+      }
+
+      // All three objects are batched together by the writer
+      expect(results).toEqual([[{ id: 1 }, { id: 2 }, { id: 3 }]])
+    })
+
+    test(`should reject empty JSON arrays with 400`, async () => {
+      const streamPath = `/v1/stream/json-empty-array-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to append empty array
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[]`,
+      })
+
+      expect(response.status).toBe(400)
+      expect(response.ok).toBe(false)
+    })
+
+    test(`should store nested arrays as single messages`, async () => {
+      const streamPath = `/v1/stream/json-nested-arrays-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append nested array - stored as ONE message
+      await stream.append([
+        [1, 2],
+        [3, 4],
+      ])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should store 1 message containing the nested array
+      expect(data).toEqual([
+        [
+          [1, 2],
+          [3, 4],
+        ],
+      ])
+    })
+
+    test(`should store arrays as values when double-wrapped`, async () => {
+      const streamPath = `/v1/stream/json-wrapped-array-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Append double-wrapped array - stored as ONE message containing the array
+      await stream.append([[1, 2, 3]])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should store 1 message containing the single-wrapped array
+      expect(data).toEqual([[[1, 2, 3]]])
+      expect(data.length).toBe(1)
+    })
+
+    test(`should store primitive arrays as single messages`, async () => {
+      const streamPath = `/v1/stream/json-primitive-array-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      // Each append stores ONE message
+      await stream.append([1, 2, 3])
+      await stream.append([`a`, `b`, `c`])
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      // Should store 2 messages (2 arrays)
+      expect(data).toEqual([
+        [1, 2, 3],
+        [`a`, `b`, `c`],
+      ])
+    })
+
+    test(`should handle mixed batching - single values, arrays, and nested arrays`, async () => {
+      const streamPath = `/v1/stream/json-mixed-batching-test-${Date.now()}`
+
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/json`,
+      })
+
+      await stream.append({ single: 1 }) // 1 message
+      await stream.append([{ batch: 2 }, { batch: 3 }]) // 1 message (array)
+      await stream.append([[`nested`, `array`]]) // 1 message (nested array)
+      await stream.append(42) // 1 message
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await response.json()
+
+      expect(data).toEqual([
+        { single: 1 },
+        [{ batch: 2 }, { batch: 3 }],
+        [[`nested`, `array`]],
+        42,
+      ])
+      expect(data.length).toBe(4)
     })
   })
 }

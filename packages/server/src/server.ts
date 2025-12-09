@@ -209,6 +209,12 @@ export class DurableStreamTestServer {
         } else if (err.message.includes(`Content-type mismatch`)) {
           res.writeHead(400, { "content-type": `text/plain` })
           res.end(`Content-type mismatch`)
+        } else if (err.message.includes(`Invalid JSON`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Invalid JSON`)
+        } else if (err.message.includes(`Empty arrays are not allowed`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Empty arrays are not allowed`)
         } else {
           throw err
         }
@@ -454,14 +460,8 @@ export class DurableStreamTestServer {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
 
-    // Concatenate all message data
-    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
-    const responseData = new Uint8Array(totalSize)
-    let offset2 = 0
-    for (const msg of messages) {
-      responseData.set(msg.data, offset2)
-      offset2 += msg.data.length
-    }
+    // Format response (wraps JSON in array brackets)
+    const responseData = this.store.formatResponse(path, messages)
 
     res.writeHead(200, headers)
     res.end(Buffer.from(responseData))
@@ -485,6 +485,13 @@ export class DurableStreamTestServer {
     if (body.length === 0) {
       res.writeHead(400, { "content-type": `text/plain` })
       res.end(`Empty body`)
+      return
+    }
+
+    // Content-Type is required per protocol
+    if (!contentType) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Content-Type header is required`)
       return
     }
 

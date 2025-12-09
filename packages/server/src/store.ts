@@ -5,6 +5,69 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Normalize content-type by extracting the media type (before any semicolon).
+ * Handles cases like "application/json; charset=utf-8".
+ */
+export function normalizeContentType(contentType: string | undefined): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
+}
+
+/**
+ * Process JSON data for append in JSON mode.
+ * - Validates JSON
+ * - Extracts array elements if data is an array
+ * - Always appends trailing comma for easy concatenation
+ * @throws Error if JSON is invalid or array is empty
+ */
+export function processJsonAppend(data: Uint8Array): Uint8Array {
+  const text = new TextDecoder().decode(data)
+
+  // Validate JSON
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new Error(`Invalid JSON`)
+  }
+
+  // If it's an array, extract elements and join with commas
+  let result: string
+  if (Array.isArray(parsed)) {
+    if (parsed.length === 0) {
+      throw new Error(`Empty arrays are not allowed`)
+    }
+    const elements = parsed.map((item) => JSON.stringify(item))
+    result = elements.join(`,`) + `,`
+  } else {
+    // Single value - add trailing comma
+    result = text.trim() + `,`
+  }
+
+  return new TextEncoder().encode(result)
+}
+
+/**
+ * Format JSON mode response by wrapping in array brackets.
+ * Strips trailing comma before wrapping.
+ */
+export function formatJsonResponse(data: Uint8Array): Uint8Array {
+  if (data.length === 0) {
+    return new TextEncoder().encode(`[]`)
+  }
+
+  let text = new TextDecoder().decode(data)
+  // Strip trailing comma if present
+  text = text.trimEnd()
+  if (text.endsWith(`,`)) {
+    text = text.slice(0, -1)
+  }
+
+  const wrapped = `[${text}]`
+  return new TextEncoder().encode(wrapped)
+}
+
+/**
  * In-memory store for durable streams.
  */
 export class StreamStore {
@@ -28,12 +91,11 @@ export class StreamStore {
     const existing = this.streams.get(path)
     if (existing) {
       // Check if config matches (idempotent create)
-      // MIME types are case-insensitive per RFC 2045
-      const normalizeContentType = (ct: string | undefined) =>
-        (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        normalizeContentType(options.contentType) ===
-        normalizeContentType(existing.contentType)
+        (normalizeContentType(options.contentType) ||
+          `application/octet-stream`) ===
+        (normalizeContentType(existing.contentType) ||
+          `application/octet-stream`)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -94,6 +156,7 @@ export class StreamStore {
    * Append data to a stream.
    * @throws Error if stream doesn't exist
    * @throws Error if seq is lower than lastSeq
+   * @throws Error if JSON mode and array is empty
    */
   append(
     path: string,
@@ -105,15 +168,15 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
-    // Check content type match (case-insensitive per RFC 2045)
-    if (
-      options.contentType &&
-      stream.contentType &&
-      options.contentType.toLowerCase() !== stream.contentType.toLowerCase()
-    ) {
-      throw new Error(
-        `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
-      )
+    // Check content type match using normalization (handles charset parameters)
+    if (options.contentType && stream.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(stream.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
+        )
+      }
     }
 
     // Check sequence for writer coordination
@@ -168,6 +231,33 @@ export class StreamStore {
       messages: stream.messages.slice(offsetIndex),
       upToDate: true,
     }
+  }
+
+  /**
+   * Format messages for response.
+   * For JSON mode, wraps concatenated data in array brackets.
+   */
+  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Concatenate all message data
+    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
+    const concatenated = new Uint8Array(totalSize)
+    let offset = 0
+    for (const msg of messages) {
+      concatenated.set(msg.data, offset)
+      offset += msg.data.length
+    }
+
+    // For JSON mode, wrap in array brackets
+    if (normalizeContentType(stream.contentType) === `application/json`) {
+      return formatJsonResponse(concatenated)
+    }
+
+    return concatenated
   }
 
   /**
@@ -243,17 +333,23 @@ export class StreamStore {
   // ============================================================================
 
   private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
+    // Process JSON mode data (throws on invalid JSON or empty arrays)
+    let processedData = data
+    if (normalizeContentType(stream.contentType) === `application/json`) {
+      processedData = processJsonAppend(data)
+    }
+
     // Parse current offset
     const parts = stream.currentOffset.split(`_`).map(Number)
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
     // Calculate new offset with zero-padding for lexicographic sorting
-    const newByteOffset = byteOffset + data.length
+    const newByteOffset = byteOffset + processedData.length
     const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     const message: StreamMessage = {
-      data,
+      data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
     }

@@ -14,6 +14,10 @@ export {
   type HeadResult,
   type StreamChunk,
   type Offset,
+  // Re-export errors
+  FetchError,
+  InvalidSignalError,
+  MissingStreamUrlError,
 } from "@durable-streams/client"
 
 export * from "./writer"

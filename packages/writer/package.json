@@ -34,7 +34,8 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
-    "@durable-streams/client": "workspace:*"
+    "@durable-streams/client": "workspace:*",
+    "fastq": "^1.19.1"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*"

@@ -10,6 +10,11 @@ import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
+import {
+  formatJsonResponse,
+  normalizeContentType,
+  processJsonAppend,
+} from "./store"
 import type { Database } from "lmdb"
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
@@ -81,9 +86,21 @@ class FileHandlePool {
       // Cast to any to access fd property (exists at runtime but not in types)
       const fd = (handle.stream as any).fd
 
-      // If fd is null, stream hasn't been opened yet - skip fsync
+      // If fd is null, stream hasn't been opened yet - wait for open event
       if (typeof fd !== `number`) {
-        resolve()
+        const onOpen = (openedFd: number): void => {
+          handle.stream.off(`error`, onError)
+          fs.fdatasync(openedFd, (err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        }
+        const onError = (err: Error): void => {
+          handle.stream.off(`open`, onOpen)
+          reject(err)
+        }
+        handle.stream.once(`open`, onOpen)
+        handle.stream.once(`error`, onError)
         return
       }
 
@@ -406,7 +423,9 @@ export class FileBackedStreamStore {
 
     // Append initial data if provided
     if (options.initialData && options.initialData.length > 0) {
-      await this.append(streamPath, options.initialData)
+      await this.append(streamPath, options.initialData, {
+        contentType: options.contentType,
+      })
       // Re-fetch updated metadata
       const updated = this.db.get(key) as StreamMetadata
       return this.streamMetaToStream(updated)
@@ -481,15 +500,15 @@ export class FileBackedStreamStore {
       throw new Error(`Stream not found: ${streamPath}`)
     }
 
-    // Check content type match (case-insensitive per RFC 2045)
-    if (
-      options.contentType &&
-      streamMeta.contentType &&
-      options.contentType.toLowerCase() !== streamMeta.contentType.toLowerCase()
-    ) {
-      throw new Error(
-        `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
-      )
+    // Check content type match using normalization (handles charset parameters)
+    if (options.contentType && streamMeta.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(streamMeta.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
+        )
+      }
     }
 
     // Check sequence for writer coordination
@@ -504,13 +523,19 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Process JSON mode data (throws on invalid JSON or empty arrays)
+    let processedData = data
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+      processedData = processJsonAppend(data)
+    }
+
     // Parse current offset
     const parts = streamMeta.currentOffset.split(`_`).map(Number)
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset with zero-padding for lexicographic sorting
-    const newByteOffset = byteOffset + data.length
+    // Calculate new offset with zero-padding for lexicographic sorting (only data bytes, not framing)
+    const newByteOffset = byteOffset + processedData.length
     const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     // Get segment file path (directory was created in create())
@@ -526,14 +551,14 @@ export class FileBackedStreamStore {
 
     // 1. Write message with framing: [4 bytes length][data][\n]
     const lengthBuf = Buffer.allocUnsafe(4)
-    lengthBuf.writeUInt32BE(data.length, 0)
+    lengthBuf.writeUInt32BE(processedData.length, 0)
     stream.write(lengthBuf)
-    stream.write(data)
+    stream.write(processedData)
     stream.write(`\n`)
 
     // 2. Create message and add to in-memory buffer for read-your-writes consistency
     const message: StreamMessage = {
-      data,
+      data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
     }
@@ -552,7 +577,7 @@ export class FileBackedStreamStore {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
-      totalBytes: streamMeta.totalBytes + data.length + 5, // +4 for length, +1 for newline
+      totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
     }
     this.db.putSync(key, updatedMeta)
 
@@ -653,7 +678,7 @@ export class FileBackedStreamStore {
         if (messageOffset > startByte) {
           messages.push({
             data: new Uint8Array(messageData),
-            offset: `${currentSeq}_${messageOffset}`,
+            offset: `${String(currentSeq).padStart(16, `0`)}_${String(messageOffset).padStart(16, `0`)}`,
             timestamp: 0, // Not stored in MVP
           })
         }
@@ -719,6 +744,35 @@ export class FileBackedStreamStore {
 
       this.pendingLongPolls.push(pending)
     })
+  }
+
+  /**
+   * Format messages for response.
+   * For JSON mode, wraps concatenated data in array brackets.
+   */
+  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
+    const key = `stream:${path}`
+    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+
+    if (!streamMeta) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Concatenate all message data
+    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
+    const concatenated = new Uint8Array(totalSize)
+    let offset = 0
+    for (const msg of messages) {
+      concatenated.set(msg.data, offset)
+      offset += msg.data.length
+    }
+
+    // For JSON mode, wrap in array brackets
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+      return formatJsonResponse(concatenated)
+    }
+
+    return concatenated
   }
 
   getCurrentOffset(streamPath: string): string | undefined {

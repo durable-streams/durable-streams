@@ -270,22 +270,23 @@ const stream = await DurableStream.create({
 })
 
 // Append individual JSON values
-await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
-await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+await stream.append({ event: "user.created", userId: "123" })
+await stream.append({ event: "user.updated", userId: "123" })
 
-// Read returns parsed JSON array automatically
-const result = await stream.read({ live: "catchup" })
-// result.data = [
-//   { event: "user.created", userId: "123" },
-//   { event: "user.updated", userId: "123" }
-// ]
+// Read returns parsed JSON array
+for await (const message of stream.json({ live: "catchup" })) {
+  console.log(message)
+  // { event: "user.created", userId: "123" }
+  // { event: "user.updated", userId: "123" }
+}
 ```
 
 In JSON mode:
 
-- Each append must be a valid JSON value
-- The server batches appends into JSON arrays for reads
-- Message boundaries are preserved
+- Each `append()` stores one message
+- Supports all JSON types: objects, arrays, strings, numbers, booleans, null
+- Message boundaries are preserved across reads
+- Reads return JSON arrays of all messages
 - Ideal for structured event streams
 
 ## Offset Semantics

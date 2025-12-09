@@ -206,6 +206,9 @@ importers:
       '@durable-streams/client':
         specifier: workspace:*
         version: link:../client
+      fastq:
+        specifier: ^1.19.1
+        version: 1.19.1
     devDependencies:
       '@durable-streams/server':
         specifier: workspace:*
