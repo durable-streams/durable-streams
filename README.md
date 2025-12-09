@@ -130,11 +130,6 @@ const stream = new DurableStream({
 // Catch-up read - get all existing data
 const result = await stream.read()
 console.log(new TextDecoder().decode(result.data))
-
-// Live tail - follow new data as it arrives
-for await (const chunk of stream.follow({ live: "long-poll" })) {
-  console.log(new TextDecoder().decode(chunk.data))
-}
 ```
 
 ### Read/write client
@@ -171,14 +166,6 @@ const savedOffset = result.offset // Save this for later
 
 // Resume from saved offset
 const resumed = await stream.read({ offset: savedOffset })
-
-// Resume live tail from where you left off
-for await (const chunk of stream.follow({
-  offset: resumed.offset,
-  live: "long-poll",
-})) {
-  console.log(new TextDecoder().decode(chunk.data))
-}
 ```
 
 ## Protocol in 60 Seconds
@@ -494,10 +481,9 @@ for (const change of db.changes()) {
 }
 
 // Client: receive and apply changes (works in browsers, React Native, native apps)
-for await (const chunk of stream.follow({ live: "long-poll" })) {
-  const change = JSON.parse(new TextDecoder().decode(chunk.data))
-  applyChange(change)
-}
+const result = await stream.read({ offset: lastSeenOffset })
+const changes = parseChanges(result.data)
+changes.forEach(applyChange)
 ```
 
 ### Event Sourcing
@@ -526,12 +512,8 @@ for await (const token of llm.stream(prompt)) {
 }
 
 // Client can resume from any point (switch devices, refresh page, reconnect)
-for await (const chunk of stream.follow({
-  offset: lastSeenOffset,
-  live: "sse",
-})) {
-  renderToken(new TextDecoder().decode(chunk.data))
-}
+const result = await stream.read({ offset: lastSeenOffset })
+renderTokens(new TextDecoder().decode(result.data))
 ```
 
 ## Testing Your Implementation
