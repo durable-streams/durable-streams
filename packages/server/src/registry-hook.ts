@@ -3,6 +3,7 @@
  * This stream records all create/delete events for observability.
  */
 
+import { DurableStream } from "@durable-streams/writer"
 import type { StreamLifecycleHook } from "./types"
 import type { StreamStore } from "./store"
 import type { FileBackedStreamStore } from "./file-store"
@@ -14,14 +15,20 @@ const REGISTRY_PATH = `/v1/stream/__registry__`
  * Any client can read this stream to discover all streams and their lifecycle events.
  */
 export function createRegistryHooks(
-  store: StreamStore | FileBackedStreamStore
+  store: StreamStore | FileBackedStreamStore,
+  serverUrl: string
 ): {
   onStreamCreated: StreamLifecycleHook
   onStreamDeleted: StreamLifecycleHook
 } {
-  const ensureRegistryExists = () => {
+  const registryStream = new DurableStream({
+    url: `${serverUrl}${REGISTRY_PATH}`,
+  })
+
+  const ensureRegistryExists = async () => {
     if (!store.has(REGISTRY_PATH)) {
-      store.create(REGISTRY_PATH, {
+      await DurableStream.create({
+        url: `${serverUrl}${REGISTRY_PATH}`,
         contentType: `application/json`,
       })
     }
@@ -35,36 +42,28 @@ export function createRegistryHooks(
 
   return {
     onStreamCreated: async (event) => {
-      ensureRegistryExists()
+      await ensureRegistryExists()
 
       const streamName = extractStreamName(event.path)
 
-      const record = JSON.stringify({
+      await registryStream.append({
         type: event.type,
         path: streamName,
         contentType: event.contentType,
         timestamp: event.timestamp,
       })
-
-      await Promise.resolve(
-        store.append(REGISTRY_PATH, Buffer.from(record + `\n`))
-      )
     },
 
     onStreamDeleted: async (event) => {
-      ensureRegistryExists()
+      await ensureRegistryExists()
 
       const streamName = extractStreamName(event.path)
 
-      const record = JSON.stringify({
+      await registryStream.append({
         type: event.type,
         path: streamName,
         timestamp: event.timestamp,
       })
-
-      await Promise.resolve(
-        store.append(REGISTRY_PATH, Buffer.from(record + `\n`))
-      )
     },
   }
 }

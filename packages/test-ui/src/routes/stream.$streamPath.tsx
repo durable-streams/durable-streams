@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 import { DurableStream } from "@durable-streams/writer"
 
@@ -6,12 +6,16 @@ const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hos
 
 export const Route = createFileRoute(`/stream/$streamPath`)({
   loader: async ({ params }) => {
-    const stream = new DurableStream({
-      url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
-    })
-    const metadata = await stream.head()
-    return {
-      contentType: metadata.contentType || null,
+    try {
+      const stream = new DurableStream({
+        url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
+      })
+      const metadata = await stream.head()
+      return {
+        contentType: metadata.contentType || null,
+      }
+    } catch {
+      throw redirect({ to: `/` })
     }
   },
   component: StreamViewer,

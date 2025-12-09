@@ -49,19 +49,24 @@ function RootLayout() {
 
             for (const line of lines) {
               try {
-                const event = JSON.parse(line)
-                console.log(`Registry event:`, event)
-                if (event.type === `created`) {
-                  loadedStreams.push({
-                    path: event.path,
-                    contentType: event.contentType,
-                  })
-                } else if (event.type === `deleted`) {
-                  const index = loadedStreams.findIndex(
-                    (s) => s.path === event.path
-                  )
-                  if (index !== -1) {
-                    loadedStreams.splice(index, 1)
+                const parsed = JSON.parse(line)
+                console.log(`Registry event:`, parsed)
+
+                const events = Array.isArray(parsed) ? parsed : [parsed]
+
+                for (const event of events) {
+                  if (event.type === `created`) {
+                    loadedStreams.push({
+                      path: event.path,
+                      contentType: event.contentType,
+                    })
+                  } else if (event.type === `deleted`) {
+                    const index = loadedStreams.findIndex(
+                      (s) => s.path === event.path
+                    )
+                    if (index !== -1) {
+                      loadedStreams.splice(index, 1)
+                    }
                   }
                 }
               } catch (e) {
