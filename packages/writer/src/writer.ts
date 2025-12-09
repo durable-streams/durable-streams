@@ -119,15 +119,15 @@ export class DurableStream extends BaseStream {
 
     if (!response.ok) {
       const text = await response.text()
-      const headers: Record<string, string> = {}
+      const responseHeaders: Record<string, string> = {}
       response.headers.forEach((v, k) => {
-        headers[k] = v
+        responseHeaders[k] = v
       })
       throw new FetchError(
         response.status,
         text,
         undefined,
-        headers,
+        responseHeaders,
         opts.url,
         response.status === 409
           ? `Stream already exists`
@@ -252,7 +252,8 @@ export class DurableStream extends BaseStream {
       }
     }
 
-    const isJson = normalizeContentType(this.contentType) === `application/json`
+    const isJson =
+      normalizeContentType(this.options.contentType) === `application/json`
 
     // Batch data
     let batchedBody: BodyInit
@@ -286,8 +287,8 @@ export class DurableStream extends BaseStream {
 
     // Send
     const headers: Record<string, string> = {}
-    if (this.contentType) {
-      headers[`content-type`] = this.contentType
+    if (this.options.contentType) {
+      headers[`content-type`] = this.options.contentType
     }
     if (highestSeq) {
       headers[STREAM_SEQ_HEADER] = highestSeq
@@ -301,9 +302,9 @@ export class DurableStream extends BaseStream {
 
     if (!response.ok) {
       const text = await response.text()
-      const headers: Record<string, string> = {}
+      const responseHeaders: Record<string, string> = {}
       response.headers.forEach((v, k) => {
-        headers[k] = v
+        responseHeaders[k] = v
       })
 
       let message: string
@@ -312,7 +313,7 @@ export class DurableStream extends BaseStream {
       } else if (response.status === 409) {
         message = `Sequence conflict`
       } else if (response.status === 400) {
-        message = `Bad request (possibly content-type mismatch)`
+        message = `Bad request (possibly content-type mismatch), ${text}`
       } else {
         message = `Failed to append`
       }
@@ -321,7 +322,7 @@ export class DurableStream extends BaseStream {
         response.status,
         text,
         undefined,
-        headers,
+        responseHeaders,
         this.url,
         message
       )

@@ -23,6 +23,7 @@ export function createRegistryHooks(
 } {
   const registryStream = new DurableStream({
     url: `${serverUrl}${REGISTRY_PATH}`,
+    contentType: `application/json`,
   })
 
   const ensureRegistryExists = async () => {
