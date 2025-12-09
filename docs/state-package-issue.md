@@ -1,0 +1,806 @@
+# RFC: @durable-streams/state - State Types and Materialization
+
+## Summary
+
+Port Electric SQL's state types and materialization system to a new `@durable-streams/state` package. This package will provide:
+
+1. **Type-safe event definitions** for CRUD operations on entities
+2. **Event validation** at write time
+3. **State materialization** - replaying events to reconstruct current state
+4. **TypeScript-first API** with strong type inference
+
+## Background
+
+### Electric SQL's Approach
+
+Electric SQL's TypeScript client (`@electric-sql/client`) has a well-designed system for handling database change events. Key concepts:
+
+**Message Types** (`types.ts`):
+- `ChangeMessage<T>` - Represents insert/update/delete operations with:
+  - `key: string` - Entity identifier
+  - `value: T` - The row data (for insert/update)
+  - `old_value?: T` - Previous values (for update/delete)
+  - `headers: { operation: "insert" | "update" | "delete" }`
+- `ControlMessage` - Stream control signals (up-to-date, must-refetch)
+- `Value<T>` - Extensible value types (string, number, boolean, null, arrays, objects)
+- `Row<T>` - Record<string, Value<T>>
+
+**Shape Materialization** (`shape.ts`):
+```typescript
+class Shape<T> {
+  #data: Map<string, T>  // Materialized state
+  #status: "syncing" | "up-to-date"
+
+  // Applies change messages to materialize state
+  #applyChange(change: ChangeMessage<T>) {
+    switch (change.headers.operation) {
+      case "insert":
+      case "update":
+        this.#data.set(change.key, change.value)
+        break
+      case "delete":
+        this.#data.delete(change.key)
+        break
+    }
+  }
+}
+```
+
+**Type Parsing** (`parser.ts`):
+- Schema-aware parsing with type converters
+- Handles PostgreSQL types (int2, int4, int8, bool, float4, float8, json, jsonb)
+- Array parsing for PostgreSQL array syntax
+- Null handling with nullability constraints
+
+### Durable Streams Current State
+
+Durable streams currently provides:
+- Raw byte streams or JSON mode
+- No structured event types
+- No materialization layer
+- Writers send arbitrary JSON values
+
+## Proposed Design
+
+### Package Structure
+
+```
+packages/state/
+├── src/
+│   ├── index.ts           # Public exports
+│   ├── types.ts           # Core type definitions
+│   ├── operations.ts      # CRUD operation builders
+│   ├── schema.ts          # Schema definition helpers
+│   ├── materialize.ts     # State materialization
+│   ├── validate.ts        # Event validation
+│   └── parser.ts          # Optional type parsing
+├── package.json
+└── README.md
+```
+
+### Core Types
+
+```typescript
+// types.ts
+
+/**
+ * Supported value types (extensible via generics)
+ */
+export type Value<Extensions = never> =
+  | string
+  | number
+  | boolean
+  | bigint
+  | null
+  | Value<Extensions>[]
+  | { [key: string]: Value<Extensions> }
+  | Extensions
+
+/**
+ * A row/entity record
+ */
+export type Row<T = Record<string, Value>> = T
+
+/**
+ * CRUD operation types
+ */
+export type Operation = "insert" | "update" | "delete"
+
+/**
+ * Event headers containing operation metadata
+ */
+export interface EventHeaders {
+  operation: Operation
+  /** ISO 8601 timestamp */
+  timestamp?: string
+  /** Optional transaction/batch ID */
+  txId?: string
+}
+
+/**
+ * A change event for an entity
+ */
+export interface ChangeEvent<T extends Row = Row> {
+  /** Unique identifier for the entity (e.g., primary key) */
+  key: string
+  /** Current values (required for insert/update) */
+  value?: T
+  /** Previous values (optional, for update/delete) */
+  old_value?: T
+  /** Event metadata */
+  headers: EventHeaders
+}
+
+/**
+ * Control events for stream management
+ */
+export interface ControlEvent {
+  type: "up-to-date" | "snapshot-start" | "snapshot-end" | "reset"
+  /** Stream position when this control event was emitted */
+  offset?: string
+}
+
+/**
+ * Union of all event types
+ */
+export type StreamEvent<T extends Row = Row> =
+  | ChangeEvent<T>
+  | ControlEvent
+
+/**
+ * Type guard for change events
+ */
+export function isChangeEvent<T extends Row>(
+  event: StreamEvent<T>
+): event is ChangeEvent<T> {
+  return "key" in event && "headers" in event
+}
+
+/**
+ * Type guard for control events
+ */
+export function isControlEvent<T extends Row>(
+  event: StreamEvent<T>
+): event is ControlEvent {
+  return "type" in event && !("key" in event)
+}
+```
+
+### Operation Builders
+
+```typescript
+// operations.ts
+
+/**
+ * Create an insert event
+ */
+export function insert<T extends Row>(
+  key: string,
+  value: T,
+  options?: { timestamp?: string; txId?: string }
+): ChangeEvent<T> {
+  return {
+    key,
+    value,
+    headers: {
+      operation: "insert",
+      timestamp: options?.timestamp ?? new Date().toISOString(),
+      txId: options?.txId,
+    },
+  }
+}
+
+/**
+ * Create an update event
+ */
+export function update<T extends Row>(
+  key: string,
+  value: T,
+  old_value?: T,
+  options?: { timestamp?: string; txId?: string }
+): ChangeEvent<T> {
+  return {
+    key,
+    value,
+    old_value,
+    headers: {
+      operation: "update",
+      timestamp: options?.timestamp ?? new Date().toISOString(),
+      txId: options?.txId,
+    },
+  }
+}
+
+/**
+ * Create a delete event
+ */
+export function del<T extends Row>(
+  key: string,
+  old_value?: T,
+  options?: { timestamp?: string; txId?: string }
+): ChangeEvent<T> {
+  return {
+    key,
+    old_value,
+    headers: {
+      operation: "delete",
+      timestamp: options?.timestamp ?? new Date().toISOString(),
+      txId: options?.txId,
+    },
+  }
+}
+
+/**
+ * Create a control event
+ */
+export function control(
+  type: ControlEvent["type"],
+  offset?: string
+): ControlEvent {
+  return { type, offset }
+}
+```
+
+### Schema Definition
+
+```typescript
+// schema.ts
+
+/**
+ * Column type definitions (inspired by Electric's column info)
+ */
+export interface ColumnDef {
+  type: string
+  nullable?: boolean
+  primaryKey?: boolean
+  default?: Value
+}
+
+/**
+ * Schema definition for an entity type
+ */
+export interface Schema<T extends Row = Row> {
+  /** Column definitions */
+  columns: Record<keyof T, ColumnDef>
+  /** Primary key column(s) */
+  primaryKey: keyof T | (keyof T)[]
+}
+
+/**
+ * Define a schema for an entity type
+ */
+export function defineSchema<T extends Row>(
+  columns: Record<keyof T, ColumnDef>,
+  primaryKey: keyof T | (keyof T)[]
+): Schema<T> {
+  return { columns, primaryKey }
+}
+
+// Example usage:
+const userSchema = defineSchema<User>({
+  id: { type: "string", primaryKey: true },
+  name: { type: "string" },
+  email: { type: "string" },
+  createdAt: { type: "timestamp", nullable: false },
+}, "id")
+```
+
+### State Materialization
+
+```typescript
+// materialize.ts
+
+/**
+ * Options for state materialization
+ */
+export interface MaterializeOptions<T extends Row> {
+  /** Schema for validation (optional) */
+  schema?: Schema<T>
+  /** Custom key extractor (default: uses event.key) */
+  keyFn?: (event: ChangeEvent<T>) => string
+  /** Called when state changes */
+  onChange?: (state: Map<string, T>, event: ChangeEvent<T>) => void
+}
+
+/**
+ * Materialized state container
+ *
+ * Tracks the current state of entities by applying change events.
+ * Similar to Electric's Shape class but decoupled from streaming.
+ */
+export class MaterializedState<T extends Row = Row> {
+  #data: Map<string, T> = new Map()
+  #options: MaterializeOptions<T>
+
+  constructor(options: MaterializeOptions<T> = {}) {
+    this.#options = options
+  }
+
+  /**
+   * Apply a single change event
+   */
+  apply(event: ChangeEvent<T>): void {
+    const key = this.#options.keyFn?.(event) ?? event.key
+
+    switch (event.headers.operation) {
+      case "insert":
+        if (!event.value) throw new Error("Insert event requires value")
+        this.#data.set(key, event.value)
+        break
+
+      case "update":
+        if (!event.value) throw new Error("Update event requires value")
+        this.#data.set(key, event.value)
+        break
+
+      case "delete":
+        this.#data.delete(key)
+        break
+    }
+
+    this.#options.onChange?.(this.#data, event)
+  }
+
+  /**
+   * Apply multiple events (e.g., from stream replay)
+   */
+  applyBatch(events: ChangeEvent<T>[]): void {
+    for (const event of events) {
+      this.apply(event)
+    }
+  }
+
+  /**
+   * Reset state (e.g., on must-refetch)
+   */
+  clear(): void {
+    this.#data.clear()
+  }
+
+  /**
+   * Get current state as Map
+   */
+  get data(): Map<string, T> {
+    return this.#data
+  }
+
+  /**
+   * Get current state as array
+   */
+  get rows(): T[] {
+    return Array.from(this.#data.values())
+  }
+
+  /**
+   * Get a single entity by key
+   */
+  get(key: string): T | undefined {
+    return this.#data.get(key)
+  }
+
+  /**
+   * Check if entity exists
+   */
+  has(key: string): boolean {
+    return this.#data.has(key)
+  }
+
+  /**
+   * Get number of entities
+   */
+  get size(): number {
+    return this.#data.size
+  }
+}
+
+/**
+ * Helper to materialize events from a stream
+ */
+export function materialize<T extends Row>(
+  events: Iterable<StreamEvent<T>>,
+  options?: MaterializeOptions<T>
+): MaterializedState<T> {
+  const state = new MaterializedState<T>(options)
+
+  for (const event of events) {
+    if (isChangeEvent(event)) {
+      state.apply(event)
+    } else if (event.type === "reset") {
+      state.clear()
+    }
+  }
+
+  return state
+}
+
+/**
+ * Async version for stream replay
+ */
+export async function materializeAsync<T extends Row>(
+  events: AsyncIterable<StreamEvent<T>>,
+  options?: MaterializeOptions<T>
+): Promise<MaterializedState<T>> {
+  const state = new MaterializedState<T>(options)
+
+  for await (const event of events) {
+    if (isChangeEvent(event)) {
+      state.apply(event)
+    } else if (event.type === "reset") {
+      state.clear()
+    }
+  }
+
+  return state
+}
+```
+
+### Event Validation
+
+```typescript
+// validate.ts
+
+export interface ValidationError {
+  path: string
+  message: string
+  value?: unknown
+}
+
+export interface ValidationResult {
+  valid: boolean
+  errors: ValidationError[]
+}
+
+/**
+ * Validate a change event against a schema
+ */
+export function validateEvent<T extends Row>(
+  event: ChangeEvent<T>,
+  schema: Schema<T>
+): ValidationResult {
+  const errors: ValidationError[] = []
+
+  // Validate key exists
+  if (!event.key) {
+    errors.push({ path: "key", message: "Key is required" })
+  }
+
+  // Validate operation
+  if (!["insert", "update", "delete"].includes(event.headers.operation)) {
+    errors.push({
+      path: "headers.operation",
+      message: `Invalid operation: ${event.headers.operation}`
+    })
+  }
+
+  // Validate value for insert/update
+  if (event.headers.operation !== "delete") {
+    if (!event.value) {
+      errors.push({
+        path: "value",
+        message: `Value required for ${event.headers.operation}`
+      })
+    } else {
+      // Validate against schema columns
+      for (const [col, def] of Object.entries(schema.columns)) {
+        const value = (event.value as Record<string, unknown>)[col]
+
+        if (value === undefined || value === null) {
+          if (!def.nullable && def.default === undefined) {
+            errors.push({
+              path: `value.${col}`,
+              message: `Required column "${col}" is missing or null`,
+            })
+          }
+        } else {
+          // Type validation could be added here
+        }
+      }
+    }
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+  }
+}
+
+/**
+ * Create a validated event builder
+ */
+export function createEventBuilder<T extends Row>(schema: Schema<T>) {
+  return {
+    insert(key: string, value: T): ChangeEvent<T> {
+      const event = insert(key, value)
+      const result = validateEvent(event, schema)
+      if (!result.valid) {
+        throw new Error(`Invalid insert event: ${JSON.stringify(result.errors)}`)
+      }
+      return event
+    },
+
+    update(key: string, value: T, old_value?: T): ChangeEvent<T> {
+      const event = update(key, value, old_value)
+      const result = validateEvent(event, schema)
+      if (!result.valid) {
+        throw new Error(`Invalid update event: ${JSON.stringify(result.errors)}`)
+      }
+      return event
+    },
+
+    delete(key: string, old_value?: T): ChangeEvent<T> {
+      const event = del(key, old_value)
+      return event
+    },
+  }
+}
+```
+
+### Integration with @durable-streams/writer
+
+```typescript
+// Example: StateStream class that combines writer + state
+import { DurableStream } from "@durable-streams/writer"
+import {
+  ChangeEvent,
+  MaterializedState,
+  isChangeEvent,
+  insert,
+  update,
+  del
+} from "@durable-streams/state"
+
+export class StateStream<T extends Row> {
+  #stream: DurableStream
+  #state: MaterializedState<T>
+
+  constructor(stream: DurableStream, options?: MaterializeOptions<T>) {
+    this.#stream = stream
+    this.#state = new MaterializedState<T>(options)
+  }
+
+  /**
+   * Insert an entity
+   */
+  async insert(key: string, value: T): Promise<void> {
+    const event = insert(key, value)
+    await this.#stream.append(event)
+    this.#state.apply(event)
+  }
+
+  /**
+   * Update an entity
+   */
+  async update(key: string, value: T): Promise<void> {
+    const old_value = this.#state.get(key)
+    const event = update(key, value, old_value)
+    await this.#stream.append(event)
+    this.#state.apply(event)
+  }
+
+  /**
+   * Delete an entity
+   */
+  async delete(key: string): Promise<void> {
+    const old_value = this.#state.get(key)
+    const event = del(key, old_value)
+    await this.#stream.append(event)
+    this.#state.apply(event)
+  }
+
+  /**
+   * Get current state
+   */
+  get state(): MaterializedState<T> {
+    return this.#state
+  }
+
+  /**
+   * Replay from stream to rebuild state
+   */
+  async replay(): Promise<void> {
+    this.#state.clear()
+
+    for await (const message of this.#stream.json<ChangeEvent<T>>({ live: false })) {
+      if (isChangeEvent(message)) {
+        this.#state.apply(message)
+      }
+    }
+  }
+}
+```
+
+## Usage Examples
+
+### Basic CRUD Operations
+
+```typescript
+import { insert, update, del, materialize } from "@durable-streams/state"
+
+interface Todo {
+  id: string
+  title: string
+  completed: boolean
+}
+
+// Create events
+const events = [
+  insert("1", { id: "1", title: "Buy milk", completed: false }),
+  insert("2", { id: "2", title: "Walk dog", completed: false }),
+  update("1", { id: "1", title: "Buy milk", completed: true }),
+  del("2"),
+]
+
+// Materialize to current state
+const state = materialize(events)
+console.log(state.rows) // [{ id: "1", title: "Buy milk", completed: true }]
+```
+
+### With Schema Validation
+
+```typescript
+import { defineSchema, createEventBuilder } from "@durable-streams/state"
+
+interface User {
+  id: string
+  email: string
+  name: string
+}
+
+const userSchema = defineSchema<User>({
+  id: { type: "string", primaryKey: true },
+  email: { type: "string", nullable: false },
+  name: { type: "string", nullable: false },
+}, "id")
+
+const users = createEventBuilder(userSchema)
+
+// This will throw if validation fails
+const event = users.insert("user-1", {
+  id: "user-1",
+  email: "alice@example.com",
+  name: "Alice",
+})
+```
+
+### With Durable Stream
+
+```typescript
+import { DurableStream } from "@durable-streams/writer"
+import { MaterializedState, isChangeEvent, ChangeEvent } from "@durable-streams/state"
+
+interface Message {
+  id: string
+  text: string
+  userId: string
+}
+
+// Create stream and state
+const stream = await DurableStream.create({
+  url: "https://streams.example.com/chat/room-1",
+  contentType: "application/json",
+})
+
+const state = new MaterializedState<Message>()
+
+// Write events
+await stream.append(insert("msg-1", { id: "msg-1", text: "Hello!", userId: "user-1" }))
+await stream.append(insert("msg-2", { id: "msg-2", text: "Hi there!", userId: "user-2" }))
+
+// Replay to rebuild state
+for await (const event of stream.json<ChangeEvent<Message>>({ live: false })) {
+  if (isChangeEvent(event)) {
+    state.apply(event)
+  }
+}
+
+console.log(state.rows)
+// [
+//   { id: "msg-1", text: "Hello!", userId: "user-1" },
+//   { id: "msg-2", text: "Hi there!", userId: "user-2" }
+// ]
+```
+
+### React Integration (Future)
+
+```typescript
+// @durable-streams/react (future package)
+import { useStream } from "@durable-streams/react"
+
+function TodoList() {
+  const { state, insert, update, del, isLoading, error } = useStream<Todo>({
+    url: "https://streams.example.com/todos",
+  })
+
+  if (isLoading) return <div>Loading...</div>
+  if (error) return <div>Error: {error.message}</div>
+
+  return (
+    <ul>
+      {state.rows.map(todo => (
+        <li key={todo.id}>
+          <input
+            type="checkbox"
+            checked={todo.completed}
+            onChange={() => update(todo.id, { ...todo, completed: !todo.completed })}
+          />
+          {todo.title}
+          <button onClick={() => del(todo.id)}>Delete</button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+```
+
+## Key Differences from Electric
+
+| Aspect | Electric SQL | @durable-streams/state |
+|--------|-------------|----------------------|
+| **Data source** | PostgreSQL tables via shape log | Any JSON events via durable stream |
+| **Key format** | Composite keys from PK columns | Simple string keys |
+| **Schema** | Derived from Postgres schema | Optional TypeScript definitions |
+| **Type parsing** | PostgreSQL type converters | JSON native types |
+| **Streaming** | ShapeStream with built-in materialization | Decoupled: events + separate materializer |
+| **Control messages** | up-to-date, must-refetch, snapshot-end | Extensible control events |
+
+## Implementation Plan
+
+### Phase 1: Core Types
+- [ ] Define `ChangeEvent`, `ControlEvent`, `StreamEvent` types
+- [ ] Implement type guards (`isChangeEvent`, `isControlEvent`)
+- [ ] Create operation builders (`insert`, `update`, `del`, `control`)
+- [ ] Add comprehensive JSDoc documentation
+
+### Phase 2: Materialization
+- [ ] Implement `MaterializedState` class
+- [ ] Add `materialize()` and `materializeAsync()` helpers
+- [ ] Support custom key extraction
+- [ ] Add change notification callbacks
+
+### Phase 3: Schema & Validation
+- [ ] Schema definition helpers
+- [ ] Event validation functions
+- [ ] Validated event builders
+
+### Phase 4: Integration
+- [ ] Add usage examples with `@durable-streams/writer`
+- [ ] Create `StateStream` wrapper class (optional)
+- [ ] Document patterns for common use cases
+
+### Phase 5: Testing
+- [ ] Unit tests for all core functionality
+- [ ] Integration tests with durable streams
+- [ ] Type inference tests (test-d.ts)
+- [ ] Performance benchmarks for materialization
+
+## Open Questions
+
+1. **Should schemas be runtime-validated or compile-time only?**
+   - Runtime validation adds overhead but catches more errors
+   - Could make validation opt-in via a `validate: true` option
+
+2. **How to handle partial updates?**
+   - Electric sends full row values
+   - Should we support patch-style updates?
+   - Suggestion: Support both `update` (full) and `patch` (partial) operations
+
+3. **Should we include snapshot support?**
+   - Electric has complex snapshot tracking for deduplication
+   - Durable streams already handles this at the protocol level
+   - Probably not needed initially
+
+4. **Key generation strategies?**
+   - Auto-generated UUIDs?
+   - Compound keys from multiple fields?
+   - Leave to user for now
+
+5. **Optimistic updates?**
+   - Apply locally before server confirmation
+   - Rollback on failure
+   - Add in future version
+
+## References
+
+- [Electric SQL TypeScript Client](https://github.com/electric-sql/electric/tree/main/packages/typescript-client)
+- [Electric Shape API](https://electric-sql.com/docs/api/clients/typescript)
+- [Durable Streams Protocol](./PROTOCOL.md)
