@@ -11,6 +11,7 @@ Durable Streams provides a simple, production-proven protocol for creating and c
 Modern applications frequently need ordered, durable sequences of data that can be replayed from arbitrary points and tailed in real time. Common patterns include:
 
 - **AI conversation streaming** - Stream LLM token responses with resume capability across reconnections
+- **Agentic apps** - Stream tool outputs and progress events with replay and clean reconnect semantics
 - **Database synchronization** - Stream database changes to web, mobile, and native clients
 - **Collaborative editing** - Sync CRDTs and operational transforms across devices
 - **Real-time updates** - Push application state to clients with guaranteed delivery
@@ -19,9 +20,11 @@ Modern applications frequently need ordered, durable sequences of data that can 
 
 While durable streams exist throughout backend infrastructure (database WALs, Kafka topics, event stores), they aren't available as a first-class primitive for client applications. There's no simple, HTTP-based durable stream that sits alongside databases and object storage as a standard cloud primitive.
 
-Applications typically implement ad-hoc solutions for resumable streaming—combinations of databases, queues, polling mechanisms, and custom offset tracking. Most implementations handle reconnection poorly: streaming responses break when clients switch tabs, experience brief network interruptions, or refresh pages.
+WebSocket and SSE connections are easy to start, but they're fragile in practice: tabs get suspended, networks flap, devices switch, pages refresh. When that happens, you either lose in-flight data or build a bespoke backend storage and client resume protocol on top.
 
-**Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at [Electric](https://electric-sql.com/) for real-time Postgres sync.
+AI products make this painfully visible. Token streaming is the UI for chat and copilots, and agentic apps stream progress events, tool outputs, and partial results over long-running sessions. When the stream fails, the product fails—even if the model did the right thing.
+
+**Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at [Electric](https://electric-sql.com/) for real-time Postgres sync, reliably delivering millions of state changes every day.
 
 The protocol provides:
 
@@ -351,6 +354,15 @@ Content-Type: application/json
 - **Cache-Control** - Historical data cached for 60s, stale content served during revalidation
 - **ETag** - Efficient revalidation for unchanged data
 - **Request collapsing** - Multiple clients requesting same offset collapsed to single upstream request
+
+## Performance
+
+Durable Streams is built for production scale:
+
+- **Low latency** - Sub-15ms end-to-end delivery in production deployments
+- **High concurrency** - Tested with millions of concurrent clients subscribed to a single stream without degradation
+- **Minimal overhead** - The protocol itself adds minimal overhead; throughput scales with your infrastructure
+- **Horizontal scaling** - Offset-based design enables aggressive caching at CDN edges, so read-heavy workloads (common in sync and AI scenarios) scale horizontally without overwhelming origin servers
 
 ## Relationship to Backend Streaming Systems
 
