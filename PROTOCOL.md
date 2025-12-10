@@ -472,7 +472,7 @@ For **streams that may contain user-specific or confidential data**, servers **S
 Cache-Control: private, max-age=60, stale-while-revalidate=300
 ```
 
-This enables CDN/proxy caching while allowing stale content to be served during revalidation.
+This disables CDN/proxy caching while allowing stale content to be served during revalidation.
 
 **ETag Usage:**
 
