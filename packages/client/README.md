@@ -40,7 +40,7 @@ await stream.append(JSON.stringify({ type: "message", text: "Hello" }), {
 })
 ```
 
-### Read with live updates (default)
+### Read as bytes (streaming)
 
 ```typescript
 const stream = await DurableStream.connect({
@@ -48,66 +48,59 @@ const stream = await DurableStream.connect({
   auth: { token: process.env.DS_TOKEN! },
 })
 
-// Read from the stream with live updates (default behavior)
-for await (const chunk of stream.read()) {
-  // chunk.data is Uint8Array
-  const text = new TextDecoder().decode(chunk.data)
-  console.log("chunk:", text)
+// Like response.body - get ReadableStream of bytes
+for await (const chunk of stream.body()) {
+  console.log("chunk:", chunk) // Uint8Array
 
-  // Persist the offset if you want to resume later:
-  saveOffset(chunk.offset)
+  // Check stream.offset to persist position
+  saveOffset(stream.offset)
+}
+```
 
-  if (chunk.upToDate) {
-    // Safe to flush/apply accumulated messages
-    flush()
-  }
+### Read as text
+
+```typescript
+// Like response.text() - read all as text (catch-up only)
+const text = await stream.text()
+console.log(text)
+
+// Or stream text chunks
+for await (const chunk of stream.textStream()) {
+  console.log("text:", chunk)
+}
+```
+
+### Read as JSON
+
+```typescript
+// Like response.json() - read all as JSON (catch-up only)
+const data = await stream.json()
+console.log(data)
+
+// Or stream JSON items
+for await (const item of stream.jsonStream()) {
+  console.log("item:", item)
 }
 ```
 
 ### Read from "now" (skip existing data)
 
 ```typescript
-// HEAD gives you the current tail offset if the server exposes it
+// HEAD gives you the current tail offset
 const { offset } = await stream.head()
 
 // Read only new data from that point on
-for await (const chunk of stream.read({ offset })) {
-  console.log("new data:", new TextDecoder().decode(chunk.data))
+for await (const chunk of stream.body({ offset })) {
+  console.log("new data:", chunk)
 }
 ```
 
-### Read catch-up only (no live updates)
+### Catch-up only (no live updates)
 
 ```typescript
-// Read existing data only, stop when up-to-date
-for await (const chunk of stream.read({ live: false })) {
-  console.log("existing data:", new TextDecoder().decode(chunk.data))
-}
-// Iteration completes when stream is up-to-date
-```
-
-### Pipe via ReadableStream
-
-```typescript
-const rs = stream.toReadableStream({ offset: savedOffset })
-
-await rs
-  .pipeThrough(
-    new TransformStream({
-      transform(chunk, controller) {
-        controller.enqueue(chunk.data)
-      },
-    })
-  )
-  .pipeTo(someWritableStream)
-```
-
-### Get raw bytes
-
-```typescript
-// toByteStream() returns ReadableStream<Uint8Array>
-const byteStream = stream.toByteStream({ offset: savedOffset })
-await byteStream.pipeTo(destination)
+// Stop when up-to-date instead of waiting for new data
+const text = await stream.text()
+console.log("all existing data:", text)
 ```
 
 ## API
@@ -139,11 +132,15 @@ class DurableStream {
     source: AsyncIterable<Uint8Array | string>,
     opts?: AppendOptions
   ): Promise<void>
-  read(opts?: ReadOptions): AsyncIterable<StreamChunk>
-  toReadableStream(opts?: ReadOptions): ReadableStream<StreamChunk>
-  toByteStream(opts?: ReadOptions): ReadableStream<Uint8Array>
-  json<T>(opts?: ReadOptions): AsyncIterable<T>
-  text(opts?: ReadOptions): AsyncIterable<string>
+  body(opts?: ReadOptions): ReadableStream<Uint8Array>
+  textStream(opts?: ReadOptions): ReadableStream<string>
+  jsonStream<T>(opts?: ReadOptions): ReadableStream<T>
+  subscribeJson<T>(
+    callback: (data: Array<T>, metadata) => void,
+    opts?: ReadOptions
+  ): () => void
+  json(): Promise<Array<unknown>>
+  text(): Promise<string>
 }
 ```
 
@@ -198,17 +195,17 @@ const stream = new DurableStream({
 ### Live Modes
 
 ```typescript
-// Default: catch-up then auto-select SSE or long-poll for live updates
-for await (const chunk of stream.read()) { ... }
+// Default: catch-up then live updates via long-poll
+for await (const chunk of stream.body()) { ... }
 
-// Catch-up only (no live updates, stop at upToDate)
-for await (const chunk of stream.read({ live: false })) { ... }
+// Catch-up only (no live updates, stop when up-to-date)
+for await (const chunk of stream.body({ live: false })) { ... }
 
-// Long-poll mode for live updates
-for await (const chunk of stream.read({ live: 'long-poll' })) { ... }
+// Force long-poll mode for live updates
+for await (const chunk of stream.body({ live: 'long-poll' })) { ... }
 
-// SSE mode for live updates (throws if content-type doesn't support SSE)
-for await (const chunk of stream.read({ live: 'sse' })) { ... }
+// Force SSE mode for live updates (throws if content-type doesn't support SSE)
+for await (const chunk of stream.body({ live: 'sse' })) { ... }
 ```
 
 ## Types
@@ -216,7 +213,7 @@ for await (const chunk of stream.read({ live: 'sse' })) { ... }
 Key types exported from the package:
 
 - `Offset` - Opaque string for stream position
-- `StreamChunk` / `ReadResult` - Data returned from reads
+- `ResponseMetadata` - Metadata from stream responses
 - `HeadResult` - Metadata from HEAD requests
 - `DurableStreamError` - Protocol-level errors with codes
 - `FetchError` - Transport/network errors

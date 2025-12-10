@@ -212,51 +212,6 @@ export interface HeadResult {
 }
 
 /**
- * Result from a read operation.
- */
-export interface ReadResult {
-  /**
-   * The data read from the stream.
-   * - For JSON-mode streams (application/json): parsed JSON array
-   * - For other streams: raw bytes (Uint8Array)
-   */
-  data: Uint8Array | Array<unknown>
-
-  /**
-   * Next offset to read from.
-   * This is the HTTP stream-offset header value.
-   */
-  offset: Offset
-
-  /**
-   * Cursor for CDN collapsing (stream-cursor header).
-   */
-  cursor?: string
-
-  /**
-   * True if stream-up-to-date header was present.
-   * Indicates the response ends at the current end of the stream.
-   */
-  upToDate: boolean
-
-  /**
-   * ETag for caching.
-   */
-  etag?: string
-
-  /**
-   * Content type of the data.
-   */
-  contentType?: string
-}
-
-/**
- * A chunk returned from follow() or toReadableStream().
- * Same structure as ReadResult.
- */
-export interface StreamChunk extends ReadResult {}
-
-/**
  * Metadata extracted from a stream response.
  * Contains headers and control information from the stream server.
  */

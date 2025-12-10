@@ -28,6 +28,15 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      // TODO: Re-enable writer tests after updating to new API
+      // See: https://github.com/durable-streams/durable-streams/issues/26
+      // defineProject({
+      //   test: {
+      //     name: "writer",
+      //     include: ["packages/writer/**/*.test.ts"],
+      //   },
+      //   resolve: { alias },
+      // }),
     ],
     coverage: {
       provider: `v8`,

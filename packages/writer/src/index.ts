@@ -10,10 +10,9 @@ export {
   type DurableStreamOptions,
   type StreamOptions,
   type ReadOptions,
-  type ReadResult,
   type HeadResult,
-  type StreamChunk,
   type Offset,
+  type ResponseMetadata,
   // Re-export errors
   FetchError,
   InvalidSignalError,

@@ -157,12 +157,12 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Warmup: append and receive once (don't measure)
         const warmupPromise = (async () => {
-          for await (const chunk of stream.read({
+          for await (const chunk of stream.body({
             offset,
             live: `long-poll`,
           })) {
-            if (chunk.data.length > 0) {
-              offset = chunk.offset
+            if (chunk.length > 0) {
+              offset = stream.offset
               return
             }
           }
@@ -173,11 +173,11 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Actual measurement: append and receive second time
         const readPromise = (async () => {
-          for await (const chunk of stream.read({
+          for await (const chunk of stream.body({
             offset,
             live: `long-poll`,
           })) {
-            if (chunk.data.length > 0) {
+            if (chunk.length > 0) {
               return
             }
           }
@@ -322,8 +322,8 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Read back to verify
         let bytesRead = 0
-        for await (const chunk of stream.read({ live: false })) {
-          bytesRead += chunk.data.length
+        for await (const chunk of stream.body({ live: false })) {
+          bytesRead += chunk.length
         }
 
         const elapsedSeconds = (endTime - startTime) / 1000

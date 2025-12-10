@@ -20,13 +20,12 @@ export type {
   AppendOptions,
   ReadOptions,
   HeadResult,
-  ReadResult,
-  StreamChunk,
   LiveMode,
   DurableStreamErrorCode,
   RetryOpts,
   StreamErrorHandler,
   MaybePromise,
+  ResponseMetadata,
 } from "./types"
 
 // Errors

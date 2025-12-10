@@ -922,10 +922,10 @@ describe(`ReadableStream Conversion`, () => {
         signal: aborter.signal,
         fetch: fetchWrapper,
       })
-      const readableStream = stream.toReadableStream({ signal: aborter.signal })
+      const readableStream = stream.body({ signal: aborter.signal })
 
       const reader = readableStream.getReader()
-      let sawUpToDate = false
+      let sawEmptyChunk = false
 
       // Read chunks until we get one with actual data
       // (first chunk may be empty up-to-date marker)
@@ -934,17 +934,17 @@ describe(`ReadableStream Conversion`, () => {
         while (true) {
           const { value, done } = await reader.read()
           if (done) return { value: undefined, done: true }
-          if (value.upToDate) {
-            sawUpToDate = true
+          if (value.length === 0) {
+            sawEmptyChunk = true
           }
-          if (value.data.length > 0) {
+          if (value.length > 0) {
             return { value, done: false }
           }
         }
       })()
 
       // Wait until stream is up-to-date (first request completed)
-      await vi.waitFor(() => expect(sawUpToDate).toBe(true))
+      await vi.waitFor(() => expect(sawEmptyChunk).toBe(true))
 
       // Append data while reader is waiting in long-poll
       store.append(streamPath, encode(`stream data`))
@@ -953,7 +953,7 @@ describe(`ReadableStream Conversion`, () => {
 
       expect(done).toBe(false)
       expect(value).toBeDefined()
-      expect(decode(value!.data)).toBe(`stream data`)
+      expect(decode(value!)).toBe(`stream data`)
       expect(requestCount).toBeGreaterThanOrEqual(1)
 
       reader.releaseLock()
@@ -979,7 +979,7 @@ describe(`ReadableStream Conversion`, () => {
         signal: aborter.signal,
         fetch: fetchWrapper,
       })
-      const byteStream = stream.toByteStream({ signal: aborter.signal })
+      const byteStream = stream.body({ signal: aborter.signal })
 
       const reader = byteStream.getReader()
 

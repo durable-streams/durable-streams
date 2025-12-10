@@ -38,7 +38,6 @@ import type {
   Offset,
   ReadOptions,
   ResponseMetadata,
-  StreamChunk,
   StreamErrorHandler,
   StreamOptions,
 } from "./types"
@@ -86,7 +85,6 @@ export interface DurableStreamOptions extends StreamOptions {
  *
  * This is a lightweight, reusable handle - not a persistent connection.
  * It does not automatically start reading or listening.
- * Create sessions as needed via read() or toReadableStream().
  *
  * @example
  * ```typescript
@@ -96,15 +94,18 @@ export interface DurableStreamOptions extends StreamOptions {
  *   auth: { token: "my-token" }
  * });
  *
- * // Read with live updates (default)
- * for await (const chunk of stream.read()) {
- *   console.log(new TextDecoder().decode(chunk.data));
+ * // Read as bytes with live updates
+ * for await (const chunk of stream.body()) {
+ *   console.log(chunk); // Uint8Array
  * }
  *
- * // Read catch-up only (no live updates)
- * for await (const chunk of stream.read({ live: false })) {
- *   console.log(new TextDecoder().decode(chunk.data));
- * }
+ * // Read as text (catch-up only)
+ * const text = await stream.text();
+ * console.log(text);
+ *
+ * // Read as JSON
+ * const data = await stream.json();
+ * console.log(data);
  * ```
  */
 export class DurableStream {
@@ -683,7 +684,9 @@ export class DurableStream {
             }
           },
 
-          async return(): Promise<IteratorResult<StreamChunk>> {
+          async return(): Promise<
+            IteratorResult<{ response: Response; metadata: ResponseMetadata }>
+          > {
             // Clean up SSE iterator if it exists
             if (sseIterator?.return) {
               await sseIterator.return()
@@ -858,7 +861,9 @@ export class DurableStream {
    */
   textStream(opts?: ReadOptions): ReadableStream<string> {
     // Pipe body through text decoder stream (maintains backpressure)
-    return this.body(opts).pipeThrough(new TextDecoderStream())
+    return this.body(opts).pipeThrough(
+      new TextDecoderStream() as ReadableWritablePair<string, Uint8Array>
+    )
   }
 
   /**
@@ -907,75 +912,6 @@ export class DurableStream {
     } finally {
       reader.releaseLock()
     }
-  }
-
-  /**
-   * Wrap read() in a Web ReadableStream for piping.
-   *
-   * Backpressure:
-   * - One chunk is pulled from read() per pull() call, so standard
-   *   Web Streams backpressure semantics apply.
-   *
-   * Cancellation:
-   * - rs.cancel() will stop read() and abort any in-flight request.
-   */
-  toReadableStream(
-    opts?: ReadOptions & { signal?: AbortSignal }
-  ): ReadableStream<StreamChunk> {
-    const iterator = this.#read(opts)[Symbol.asyncIterator]()
-
-    return new ReadableStream<StreamChunk>({
-      async pull(controller) {
-        try {
-          const { done, value } = await iterator.next()
-          if (done) {
-            controller.close()
-          } else {
-            controller.enqueue(value)
-          }
-        } catch (e) {
-          controller.error(e)
-        }
-      },
-
-      cancel() {
-        iterator.return?.()
-      },
-    })
-  }
-
-  /**
-   * Wrap read() in a Web ReadableStream<Uint8Array> for piping raw bytes.
-   *
-   * This is the native format for many web stream APIs.
-   * Note: Only works with non-JSON streams. For JSON streams, data is parsed as arrays.
-   */
-  toByteStream(
-    opts?: ReadOptions & { signal?: AbortSignal }
-  ): ReadableStream<Uint8Array> {
-    const iterator = this.#read(opts)[Symbol.asyncIterator]()
-
-    return new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          const { done, value } = await iterator.next()
-          if (done) {
-            controller.close()
-          } else {
-            // Only enqueue if it's actually Uint8Array (not parsed JSON)
-            if (value.data instanceof Uint8Array) {
-              controller.enqueue(value.data)
-            }
-          }
-        } catch (e) {
-          controller.error(e)
-        }
-      },
-
-      cancel() {
-        iterator.return?.()
-      },
-    })
   }
 
   // ============================================================================
@@ -1053,7 +989,7 @@ export class DurableStream {
   }
 
   /**
-   * Parse a read response into a ReadResult.
+   * Extract metadata from a response.
    */
   #extractResponseMetadata(response: Response): ResponseMetadata {
     const offset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
@@ -1100,7 +1036,7 @@ export class DurableStream {
     initialOffset: Offset | undefined,
     initialCursor: string | undefined,
     signal: AbortSignal
-  ): AsyncIterator<StreamChunk> {
+  ): AsyncIterator<{ response: Response; metadata: ResponseMetadata }> {
     // Check SSE compatibility
     if (!this.#isSSECompatible()) {
       throw new DurableStreamError(
@@ -1111,11 +1047,20 @@ export class DurableStream {
     }
 
     // Queue of complete chunks waiting to be consumed
-    const chunkQueue: Array<StreamChunk> = []
+    const chunkQueue: Array<{
+      response: Response
+      metadata: ResponseMetadata
+    }> = []
 
     // Pending resolve for when next() is waiting for data
-    let pendingResolve: ((result: IteratorResult<StreamChunk>) => void) | null =
-      null
+    let pendingResolve:
+      | ((
+          result: IteratorResult<{
+            response: Response
+            metadata: ResponseMetadata
+          }>
+        ) => void)
+      | null = null
 
     // Track current offset/cursor
     let currentOffset = initialOffset
@@ -1187,30 +1132,44 @@ export class DurableStream {
                   offset += buf.length
                 }
 
-                // Create complete chunk
-                const chunk: StreamChunk = {
-                  data: combinedData,
-                  offset: newOffset ?? currentOffset ?? ``,
+                // Create response and metadata
+                const responseOffset = newOffset ?? currentOffset ?? ``
+                const response = new Response(combinedData, {
+                  status: 200,
+                  headers: {
+                    [STREAM_OFFSET_HEADER]: responseOffset,
+                    ...(newCursor ? { [STREAM_CURSOR_HEADER]: newCursor } : {}),
+                    [STREAM_UP_TO_DATE_HEADER]: `true`,
+                    ...(stream.contentType
+                      ? { "content-type": stream.contentType }
+                      : {}),
+                  },
+                })
+
+                const metadata: ResponseMetadata = {
+                  offset: responseOffset,
                   cursor: newCursor,
                   upToDate: true,
                   contentType: stream.contentType,
                 }
 
                 // Update state
-                currentOffset = chunk.offset
-                currentCursor = chunk.cursor
+                currentOffset = metadata.offset
+                currentCursor = metadata.cursor
 
                 // Clear buffer
                 dataBuffer = []
+
+                const result = { response, metadata }
 
                 // If someone is waiting for data, resolve immediately
                 if (pendingResolve) {
                   const resolve = pendingResolve
                   pendingResolve = null
-                  resolve({ done: false, value: chunk })
+                  resolve({ done: false, value: result })
                 } else {
                   // Otherwise queue it
-                  chunkQueue.push(chunk)
+                  chunkQueue.push(result)
                 }
               } catch {
                 // Ignore malformed control messages
@@ -1262,7 +1221,9 @@ export class DurableStream {
     signal.addEventListener(`abort`, abortHandler, { once: true })
 
     return {
-      async next(): Promise<IteratorResult<StreamChunk>> {
+      async next(): Promise<
+        IteratorResult<{ response: Response; metadata: ResponseMetadata }>
+      > {
         // If there's queued data, return it immediately
         if (chunkQueue.length > 0) {
           return { done: false, value: chunkQueue.shift()! }
@@ -1284,7 +1245,9 @@ export class DurableStream {
         })
       },
 
-      async return(): Promise<IteratorResult<StreamChunk>> {
+      async return(): Promise<
+        IteratorResult<{ response: Response; metadata: ResponseMetadata }>
+      > {
         signal.removeEventListener(`abort`, abortHandler)
         connectionAbort.abort()
         connectionClosed = true
