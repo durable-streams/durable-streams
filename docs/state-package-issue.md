@@ -274,49 +274,135 @@ export function control(
 }
 ```
 
-### Schema Definition
+### Schema Definition with Standard Schema
+
+We use [Standard Schema](https://standardschema.dev/) (`@standard-schema/spec`) for type definitions and validation. This is the same interface used by TanStack DB, TanStack Form, tRPC, and others - providing seamless interoperability with Zod, Valibot, and ArkType.
 
 ```typescript
 // schema.ts
+import type { StandardSchemaV1 } from "@standard-schema/spec"
 
 /**
- * Column type definitions (inspired by Electric's column info)
+ * A stream schema defines multiple entity types that can flow through a single stream.
+ * Unlike Electric (one shape = one type), durable streams support heterogeneous events.
  */
-export interface ColumnDef {
-  type: string
-  nullable?: boolean
-  primaryKey?: boolean
-  default?: Value
+export interface StreamSchema<TTypes extends Record<string, StandardSchemaV1>> {
+  /** Map of entity type name → Standard Schema validator */
+  types: TTypes
+  /** Optional getKey function per type (defaults to using `id` field) */
+  getKey?: Partial<Record<keyof TTypes, (value: unknown) => string>>
 }
 
 /**
- * Schema definition for an entity type
+ * Define a stream schema with multiple entity types
  */
-export interface Schema<T extends Row = Row> {
-  /** Column definitions */
-  columns: Record<keyof T, ColumnDef>
-  /** Primary key column(s) */
-  primaryKey: keyof T | (keyof T)[]
+export function defineStreamSchema<
+  TTypes extends Record<string, StandardSchemaV1>
+>(config: {
+  types: TTypes
+  getKey?: Partial<Record<keyof TTypes, (value: unknown) => string>>
+}): StreamSchema<TTypes> {
+  return config
 }
 
-/**
- * Define a schema for an entity type
- */
-export function defineSchema<T extends Row>(
-  columns: Record<keyof T, ColumnDef>,
-  primaryKey: keyof T | (keyof T)[]
-): Schema<T> {
-  return { columns, primaryKey }
-}
+// Example usage with Zod:
+import { z } from "zod"
 
-// Example usage:
-const userSchema = defineSchema<User>({
-  id: { type: "string", primaryKey: true },
-  name: { type: "string" },
-  email: { type: "string" },
-  createdAt: { type: "timestamp", nullable: false },
-}, "id")
+const messageSchema = z.object({
+  id: z.string(),
+  text: z.string(),
+  userId: z.string(),
+  createdAt: z.string().datetime(),
+})
+
+const userSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string().email(),
+})
+
+const toolCallSchema = z.object({
+  id: z.string(),
+  tool: z.string(),
+  input: z.record(z.unknown()),
+  output: z.record(z.unknown()).optional(),
+  status: z.enum(["pending", "running", "completed", "failed"]),
+})
+
+// Define a stream that can carry multiple entity types
+const chatStreamSchema = defineStreamSchema({
+  types: {
+    messages: messageSchema,
+    users: userSchema,
+    tool_calls: toolCallSchema,
+  },
+})
+
+// Infer types from schema
+type Message = z.infer<typeof messageSchema>
+type User = z.infer<typeof userSchema>
+type ToolCall = z.infer<typeof toolCallSchema>
 ```
+
+### Multi-Type Streams
+
+Unlike Electric (one shape = one table = one type), durable streams support **multiple entity types per stream**. Each change event includes a `type` field to discriminate:
+
+```typescript
+/**
+ * A change event for a typed entity
+ * The `type` field identifies which schema to use for validation
+ */
+export interface ChangeEvent<T extends Row = Row> {
+  /** Entity type discriminator - identifies which schema applies */
+  type: string  // e.g., "messages", "users", "tool_calls"
+
+  /** Unique identifier within the type */
+  key: string
+
+  /** Current values (for insert/update) */
+  value?: T
+
+  /** Previous values (for update/delete) */
+  old_value?: T
+
+  /** Event metadata */
+  headers: {
+    operation: "insert" | "update" | "delete"
+    timestamp?: string
+    txid?: string  // Transaction ID for optimistic mutation confirmation
+  }
+}
+
+// Type-safe operation builders that include the type field
+export function insert<K extends keyof TTypes>(
+  type: K,
+  key: string,
+  value: InferOutput<TTypes[K]>,
+  options?: { txid?: string }
+): ChangeEvent<InferOutput<TTypes[K]>>
+
+export function update<K extends keyof TTypes>(
+  type: K,
+  key: string,
+  value: InferOutput<TTypes[K]>,
+  old_value?: InferOutput<TTypes[K]>,
+  options?: { txid?: string }
+): ChangeEvent<InferOutput<TTypes[K]>>
+
+export function del<K extends keyof TTypes>(
+  type: K,
+  key: string,
+  old_value?: InferOutput<TTypes[K]>,
+  options?: { txid?: string }
+): ChangeEvent<InferOutput<TTypes[K]>>
+```
+
+**Benefits of multi-type streams:**
+- Agent sessions with mixed events (messages, tool calls, state changes)
+- Event sourcing with domain events
+- Chat rooms with messages + presence + reactions
+- Reduced stream count - one stream per logical unit (session, room, document)
 
 ### State Materialization
 
