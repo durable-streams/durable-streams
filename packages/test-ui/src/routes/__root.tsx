@@ -47,13 +47,7 @@ function RootLayout() {
       const loadedStreams: Array<Stream> = []
 
       try {
-        const reader = registryStream.jsonStream({ live: false }).getReader()
-
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
+        for await (const value of registryStream.jsonStream({ live: false })) {
           const event = value as RegistryEvent
           if (event.type === `created`) {
             loadedStreams.push({
@@ -68,7 +62,6 @@ function RootLayout() {
           }
         }
 
-        reader.releaseLock()
         setStreams(loadedStreams)
       } catch (readErr) {
         console.error(`Error reading registry stream:`, readErr)

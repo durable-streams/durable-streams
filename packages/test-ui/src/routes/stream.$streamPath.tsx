@@ -54,53 +54,29 @@ function StreamViewer() {
       try {
         if (isJsonStream) {
           // Use jsonStream for JSON content
-          const reader = stream
-            .jsonStream({
-              offset: `-1`,
-              live: `long-poll`,
-              signal: controller.signal,
-            })
-            .getReader()
-
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-
-              setMessages((prev) => [
-                ...prev,
-                { offset: stream.offset || `-1`, data: JSON.stringify(value) },
-              ])
-            }
-          } finally {
-            reader.releaseLock()
+          for await (const value of stream.jsonStream({
+            offset: `-1`,
+            live: `long-poll`,
+            signal: controller.signal,
+          })) {
+            setMessages((prev) => [
+              ...prev,
+              { offset: stream.offset || `-1`, data: JSON.stringify(value) },
+            ])
           }
         } else {
           // Use textStream for text/binary content
-          const reader = stream
-            .textStream({
-              offset: `-1`,
-              live: `long-poll`,
-              signal: controller.signal,
-            })
-            .getReader()
-
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
-
-              if (value !== ``) {
-                setMessages((prev) => [
-                  ...prev,
-                  { offset: stream.offset || `-1`, data: value },
-                ])
-              }
+          for await (const value of stream.textStream({
+            offset: `-1`,
+            live: `long-poll`,
+            signal: controller.signal,
+          })) {
+            if (value !== ``) {
+              setMessages((prev) => [
+                ...prev,
+                { offset: stream.offset || `-1`, data: value },
+              ])
             }
-          } finally {
-            reader.releaseLock()
           }
         }
       } catch (err: any) {
