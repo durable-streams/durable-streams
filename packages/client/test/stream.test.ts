@@ -645,4 +645,225 @@ describe(`DurableStream`, () => {
       await expect(stream.delete()).rejects.toThrow(FetchError)
     })
   })
+
+  describe(`appendStream`, () => {
+    it(`should append streaming data with POST request`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      // Create an async iterable source
+      async function* generateChunks() {
+        yield `chunk1`
+        yield `chunk2`
+        yield `chunk3`
+      }
+
+      await stream.appendStream(generateChunks())
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          method: `POST`,
+        })
+      )
+      // Verify body is a ReadableStream
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      expect(callArgs.body).toBeInstanceOf(ReadableStream)
+    })
+
+    it(`should include content-type when provided in options`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      async function* generateChunks() {
+        yield `data`
+      }
+
+      await stream.appendStream(generateChunks(), { contentType: `text/plain` })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "content-type": `text/plain`,
+          }),
+        })
+      )
+    })
+
+    it(`should include seq header when provided`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      async function* generateChunks() {
+        yield `data`
+      }
+
+      await stream.appendStream(generateChunks(), { seq: `writer-1-001` })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "Stream-Seq": `writer-1-001`,
+          }),
+        })
+      )
+    })
+
+    it(`should throw on 404`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 404,
+          statusText: `Not Found`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      async function* generateChunks() {
+        yield `data`
+      }
+
+      await expect(stream.appendStream(generateChunks())).rejects.toThrow(
+        FetchError
+      )
+    })
+
+    it(`should throw on seq conflict (409)`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 409,
+          statusText: `Conflict`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      async function* generateChunks() {
+        yield `data`
+      }
+
+      await expect(
+        stream.appendStream(generateChunks(), { seq: `old-seq` })
+      ).rejects.toThrow()
+    })
+
+    it(`should accept ReadableStream as source`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      const readable = new ReadableStream({
+        start(controller) {
+          controller.enqueue(`chunk1`)
+          controller.enqueue(`chunk2`)
+          controller.close()
+        },
+      })
+
+      await stream.appendStream(readable)
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      expect(callArgs.body).toBeInstanceOf(ReadableStream)
+    })
+  })
+
+  describe(`static delete`, () => {
+    it(`should delete stream without creating instance`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      await DurableStream.delete({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: `DELETE` })
+      )
+    })
+
+    it(`should throw on 404`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 404,
+          statusText: `Not Found`,
+        })
+      )
+
+      await expect(
+        DurableStream.delete({
+          url: `https://example.com/stream`,
+          fetch: mockFetch,
+        })
+      ).rejects.toThrow(FetchError)
+    })
+
+    it(`should include auth headers`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      await DurableStream.delete({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        auth: { token: `my-token` },
+      })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: `Bearer my-token`,
+          }),
+        })
+      )
+    })
+  })
 })
