@@ -52,11 +52,12 @@ function StreamViewer() {
 
     const followStream = async () => {
       try {
-        for await (const chunk of stream.read({
+        const response = await stream.stream({
           offset: `-1`,
           live: `long-poll`,
           signal: controller.signal,
-        })) {
+        })
+        for await (const chunk of response.byteChunks()) {
           const text = new TextDecoder().decode(chunk.data)
           if (text !== ``) {
             setMessages((prev) => [
