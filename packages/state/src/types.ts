@@ -34,20 +34,20 @@ export type ChangeHeaders = {
 }
 
 /**
- * A change message represents a state change event (insert/update/delete)
+ * A change event represents a state change event (insert/update/delete)
  */
-export type ChangeMessage<T = unknown> = {
+export type ChangeEvent<T = unknown> = {
   type: string
   key: string
-  value: T
+  value?: T
   old_value?: T
   headers: ChangeHeaders
 }
 
 /**
- * Control message types for stream management
+ * Control event types for stream management
  */
-export type ControlMessage = {
+export type ControlEvent = {
   headers: {
     control: `up-to-date` | `snapshot-start` | `snapshot-end` | `reset`
     offset?: string
@@ -55,24 +55,24 @@ export type ControlMessage = {
 }
 
 /**
- * A message is either a change event or a control event
+ * A state event is either a change event or a control event
  */
-export type Message<T = unknown> = ChangeMessage<T> | ControlMessage
+export type StateEvent<T = unknown> = ChangeEvent<T> | ControlEvent
 
 /**
- * Type guard to check if a message is a change event
+ * Type guard to check if an event is a change event
  */
 export function isChangeEvent<T = unknown>(
-  msg: Message<T>
-): msg is ChangeMessage<T> {
-  return `operation` in msg.headers
+  event: StateEvent<T>
+): event is ChangeEvent<T> {
+  return `operation` in event.headers
 }
 
 /**
- * Type guard to check if a message is a control event
+ * Type guard to check if an event is a control event
  */
 export function isControlEvent<T = unknown>(
-  msg: Message<T>
-): msg is ControlMessage {
-  return `control` in msg.headers
+  event: StateEvent<T>
+): event is ControlEvent {
+  return `control` in event.headers
 }

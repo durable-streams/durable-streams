@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
 import { MaterializedState } from "../src/index"
-import type { ChangeMessage } from "../src/index"
+import type { ChangeEvent } from "../src/index"
 
 describe(`Stream Integration`, () => {
   let server: DurableStreamTestServer
@@ -52,7 +52,7 @@ describe(`Stream Integration`, () => {
 
     // Read back and materialize
     const state = new MaterializedState()
-    const res = await stream.stream<ChangeMessage>({ live: false })
+    const res = await stream.stream<ChangeEvent>({ live: false })
     const events = await res.json()
 
     for (const event of events) {
@@ -90,7 +90,7 @@ describe(`Stream Integration`, () => {
     // Stream and materialize one at a time
     const state = new MaterializedState()
 
-    const res = await stream.stream<ChangeMessage>({ live: false })
+    const res = await stream.stream<ChangeEvent>({ live: false })
     for await (const event of res.jsonStream()) {
       state.apply(event)
     }
@@ -140,7 +140,7 @@ describe(`Stream Integration`, () => {
 
     // Read and materialize
     const state = new MaterializedState()
-    const res = await stream.stream<ChangeMessage>({ live: false })
+    const res = await stream.stream<ChangeEvent>({ live: false })
     const events = await res.json()
 
     for (const event of events) {
@@ -194,7 +194,7 @@ describe(`Stream Integration`, () => {
 
     // Read and materialize
     const state = new MaterializedState()
-    const res = await stream.stream<ChangeMessage>({ live: false })
+    const res = await stream.stream<ChangeEvent>({ live: false })
     const events = await res.json()
 
     for (const event of events) {
@@ -234,7 +234,7 @@ describe(`Stream Integration`, () => {
 
     // Read and materialize initial state
     const state = new MaterializedState()
-    const initialRes = await stream.stream<ChangeMessage>({ live: false })
+    const initialRes = await stream.stream<ChangeEvent>({ live: false })
     const initialEvents = await initialRes.json()
 
     for (const event of initialEvents) {
@@ -264,7 +264,7 @@ describe(`Stream Integration`, () => {
     })
 
     // Resume from saved offset and materialize new events
-    const resumeRes = await stream.stream<ChangeMessage>({
+    const resumeRes = await stream.stream<ChangeEvent>({
       offset: savedOffset,
       live: false,
     })

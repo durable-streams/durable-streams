@@ -1,4 +1,4 @@
-import type { ChangeMessage } from "./types"
+import type { ChangeEvent } from "./types"
 
 /**
  * MaterializedState maintains an in-memory view of state from change events.
@@ -16,7 +16,7 @@ export class MaterializedState {
   /**
    * Apply a single change event to update the materialized state
    */
-  apply(event: ChangeMessage): void {
+  apply(event: ChangeEvent): void {
     const { type, key, value, headers } = event
 
     // Get or create the type map
@@ -43,7 +43,7 @@ export class MaterializedState {
   /**
    * Apply a batch of change events
    */
-  applyBatch(events: Array<ChangeMessage>): void {
+  applyBatch(events: Array<ChangeEvent>): void {
     for (const event of events) {
       this.apply(event)
     }
