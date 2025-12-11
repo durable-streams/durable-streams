@@ -118,6 +118,7 @@ describe(`Append Operations`, () => {
     async ({ streamUrl, store, streamPath, aborter }) => {
       const stream = new DurableStream({
         url: streamUrl,
+        contentType: `application/octet-stream`,
         signal: aborter.signal,
       })
       await stream.append(`hello world`)
@@ -133,6 +134,7 @@ describe(`Append Operations`, () => {
     async ({ streamUrl, store, streamPath, aborter }) => {
       const stream = new DurableStream({
         url: streamUrl,
+        contentType: `application/octet-stream`,
         signal: aborter.signal,
       })
       const binaryData = new Uint8Array([0x00, 0xff, 0x42, 0x13, 0x37])
@@ -149,6 +151,7 @@ describe(`Append Operations`, () => {
     async ({ streamUrl, store, streamPath, aborter }) => {
       const stream = new DurableStream({
         url: streamUrl,
+        contentType: `application/octet-stream`,
         signal: aborter.signal,
       })
 
@@ -169,6 +172,7 @@ describe(`Append Operations`, () => {
     async ({ streamUrl, aborter }) => {
       const stream = new DurableStream({
         url: streamUrl,
+        contentType: `application/octet-stream`,
         signal: aborter.signal,
       })
 
@@ -179,6 +183,81 @@ describe(`Append Operations`, () => {
       await expect(stream.append(`invalid`, { seq: `001` })).rejects.toThrow(
         FetchError // Backoff wrapper throws FetchError for 409
       )
+    }
+  )
+
+  testWithStream(
+    `should append promise-valued data (await before buffering)`,
+    async ({ streamUrl, store, streamPath, aborter }) => {
+      const stream = new DurableStream({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+        signal: aborter.signal,
+      })
+
+      // Append a promise that resolves to a string
+      await stream.append(Promise.resolve(`promised data`))
+
+      const { messages } = store.read(streamPath)
+      expect(messages).toHaveLength(1)
+      expect(decode(messages[0]!.data)).toBe(`promised data`)
+    }
+  )
+
+  testWithStream(
+    `should append delayed promise-valued data`,
+    async ({ streamUrl, store, streamPath, aborter }) => {
+      const stream = new DurableStream({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+        signal: aborter.signal,
+      })
+
+      // Append a promise that resolves after a delay
+      const delayedPromise = new Promise<string>((resolve) => {
+        setTimeout(() => resolve(`delayed data`), 50)
+      })
+      await stream.append(delayedPromise)
+
+      const { messages } = store.read(streamPath)
+      expect(messages).toHaveLength(1)
+      expect(decode(messages[0]!.data)).toBe(`delayed data`)
+    }
+  )
+
+  testWithStream(
+    `should reject when promise rejects`,
+    async ({ streamUrl, aborter }) => {
+      const stream = new DurableStream({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+        signal: aborter.signal,
+      })
+
+      // Append a promise that rejects
+      const failingPromise = Promise.reject(new Error(`Promise failed`))
+
+      await expect(stream.append(failingPromise)).rejects.toThrow(
+        `Promise failed`
+      )
+    }
+  )
+
+  testWithStream(
+    `should append binary data from promise`,
+    async ({ streamUrl, store, streamPath, aborter }) => {
+      const stream = new DurableStream({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+        signal: aborter.signal,
+      })
+
+      const binaryData = new Uint8Array([0x00, 0xff, 0x42])
+      await stream.append(Promise.resolve(binaryData))
+
+      const { messages } = store.read(streamPath)
+      expect(messages).toHaveLength(1)
+      expect(messages[0]!.data).toEqual(binaryData)
     }
   )
 })

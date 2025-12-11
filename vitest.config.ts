@@ -28,6 +28,13 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      defineProject({
+        test: {
+          name: "writer",
+          include: ["packages/writer/**/*.test.ts"],
+        },
+        resolve: { alias },
+      }),
     ],
     coverage: {
       provider: `v8`,

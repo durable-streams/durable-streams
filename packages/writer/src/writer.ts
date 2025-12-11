@@ -48,6 +48,18 @@ export interface AppendOptions {
   contentType?: string
 }
 
+/**
+ * Check if a value is a Promise or Promise-like (thenable).
+ */
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    typeof value === `object` &&
+    `then` in value &&
+    typeof (value as PromiseLike<unknown>).then === `function`
+  )
+}
+
 interface QueuedMessage {
   data: unknown
   seq?: string
@@ -182,16 +194,24 @@ export class DurableStream extends BaseStream {
   /**
    * Append data with automatic batching.
    *
-   * For JSON mode: Pass any JavaScript value.
-   * For byte mode: Pass Uint8Array or string.
+   * For JSON mode: Pass any JavaScript value (including Promises).
+   * For byte mode: Pass Uint8Array or string (or Promises resolving to them).
+   *
+   * If the body is a Promise, it will be awaited before the value is queued.
+   * This allows patterns like:
+   *   await stream.append(fetchData())
+   *   await stream.append(Promise.all([a, b, c]))
    *
    * Batches messages while POST is in-flight.
    */
   async append(body: unknown, opts?: AppendOptions): Promise<void> {
+    // Await promises before buffering
+    const resolvedBody = isPromiseLike(body) ? await body : body
+
     // Add to buffer
     return new Promise<void>((resolve, reject) => {
       this.buffer.push({
-        data: body,
+        data: resolvedBody,
         seq: opts?.seq,
         resolve,
         reject,
