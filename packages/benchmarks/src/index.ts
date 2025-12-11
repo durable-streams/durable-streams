@@ -10,7 +10,7 @@
 
 import { writeFileSync } from "node:fs"
 import { afterAll, bench, describe } from "vitest"
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 
 export interface BenchmarkOptions {
   /** Base URL of the server to benchmark */

@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durable-streams/writer": "workspace:*",
+    "@durable-streams/client": "workspace:*",
     "@neophi/sieve-cache": "^1.0.0",
     "lmdb": "^3.3.0"
   },

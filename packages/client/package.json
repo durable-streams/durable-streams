@@ -27,7 +27,8 @@
   "types": "./dist/index.d.ts",
   "sideEffects": false,
   "dependencies": {
-    "@microsoft/fetch-event-source": "^2.0.1"
+    "@microsoft/fetch-event-source": "^2.0.1",
+    "fastq": "^1.19.1"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",

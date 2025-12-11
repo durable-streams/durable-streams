@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { stderr, stdin, stdout } from "node:process"
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:8787`
 

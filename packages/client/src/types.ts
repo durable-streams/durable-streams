@@ -256,6 +256,15 @@ export interface StreamHandleOptions {
    * Error handler for recoverable errors.
    */
   onError?: StreamErrorHandler
+
+  /**
+   * Enable automatic batching for append() calls.
+   * When true, multiple append() calls made while a POST is in-flight
+   * will be batched together into a single request.
+   *
+   * @default true
+   */
+  batching?: boolean
 }
 
 /**
@@ -276,6 +285,15 @@ export interface CreateOptions extends StreamHandleOptions {
    * Initial body to append on creation.
    */
   body?: BodyInit | Uint8Array | string
+
+  /**
+   * Enable automatic batching for append() calls.
+   * When true, multiple append() calls made while a POST is in-flight
+   * will be batched together into a single request.
+   *
+   * @default true
+   */
+  batching?: boolean
 }
 
 /**

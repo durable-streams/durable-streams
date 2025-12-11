@@ -6,8 +6,8 @@
  */
 
 import { describe, expect, test } from "vitest"
-import { DurableStream } from "@durable-streams/writer"
 import {
+  DurableStream,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
   STREAM_UP_TO_DATE_HEADER,
