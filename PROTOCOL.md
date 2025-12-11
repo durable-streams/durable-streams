@@ -175,6 +175,17 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
   - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
 
+- `If-Match: <offset>` (optional)
+  - Enables optimistic concurrency control (OCC) for the append operation.
+  - The value **MUST** be the expected current tail offset of the stream (i.e., the `Stream-Next-Offset` value from a previous response).
+  - The value **MAY** be quoted (e.g., `If-Match: "abc123"`) or unquoted (e.g., `If-Match: abc123`). Servers **MUST** accept both formats by stripping surrounding quotes when comparing. Quoted form is recommended per RFC 9110.
+  - If the stream's current tail offset does not match the provided value, the server **MUST** return `412 Precondition Failed`.
+  - The special value `*` (asterisk) means "match any existing resource". When `If-Match: *` is provided, the server **MUST** return `412 Precondition Failed` if the stream does not exist, or succeed if it does. Servers **MAY** reject `*` with `400 Bad Request` if they choose not to support this wildcard.
+  - If multiple values are provided (e.g., `If-Match: "a", "b"`), servers **SHOULD** return `400 Bad Request`. Multi-value `If-Match` is not meaningful for stream appends.
+  - **Evaluation order**: When both `If-Match` and `Stream-Seq` are present, servers **MUST** evaluate `If-Match` first. If it fails, return `412` without checking `Stream-Seq`. Only if `If-Match` succeeds should `Stream-Seq` be validated (returning `409` on regression).
+  - This allows clients to detect concurrent modifications and implement compare-and-swap semantics.
+  - **Use case**: When multiple writers may append to the same stream, `If-Match` ensures an append only succeeds if no other writer has modified the stream since the client last observed it.
+
 #### Request Body
 
 - Bytes to append to the stream. Servers **MUST** reject POST requests with an empty body (Content-Length: 0 or no body) with `400 Bad Request`. Empty appends have no semantic meaning and are likely client errors.
@@ -182,16 +193,23 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Codes
 
 - `204 No Content` (recommended) or `200 OK`: Append successful
-- `404 Not Found`: Stream does not exist
+- `404 Not Found`: Stream does not exist **and** no `If-Match` header is present (when `If-Match` is present, use `412` for non-existent streams per HTTP conditional semantics)
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
 - `409 Conflict`: Sequence regression detected (if `Stream-Seq` provided) or content type mismatch
-- `400 Bad Request`: Invalid headers or parameters
+- `412 Precondition Failed`: `If-Match` header provided but precondition failed (offset mismatch, or `If-Match: *` on non-existent stream)
+- `400 Bad Request`: Invalid headers or parameters (including multi-value `If-Match`)
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+- `ETag: "<offset>"` (optional): The new tail offset as a quoted string (per RFC 9110), suitable for use in a subsequent `If-Match` header. Servers **MAY** include this to simplify OCC workflows. If provided, the ETag value **MUST** be a strong ETag (no `W/` prefix) since append-only streams require byte-level precision.
+  - **Note**: This is a **write-side OCC ETag** representing the stream's tail version. It is distinct from the read-side cache ETag (see Section 5.5). Clients **MUST NOT** use this ETag with `If-None-Match` for read caching.
+
+#### Response Headers (on 412 Precondition Failed)
+
+- `Stream-Next-Offset: <offset>`: The stream's actual current tail offset. Clients **MAY** use this value to retry with an updated `If-Match` header or to detect how far the stream has advanced.
 
 ### 5.3. Delete Stream
 
@@ -268,7 +286,8 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
-  - Entity tag for cache validation
+  - Entity tag for cache validation on read responses
+  - **Note**: This ETag format is for **read-side caching** only (use with `If-None-Match` for 304 responses). It is distinct from the tail-offset ETag returned on successful appends (see Section 5.2). Clients **MUST NOT** use read-side ETags with `If-Match` for write-side OCC.
 - `Stream-Cursor: <cursor>` (optional)
   - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
 - `Stream-Next-Offset: <offset>`
@@ -535,6 +554,10 @@ Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many R
 ### 10.6. Sequence Validation
 
 The optional `Stream-Seq` header provides protection against out-of-order writes in multi-writer scenarios. Servers **MUST** reject sequence regressions to maintain stream integrity.
+
+### 10.7. Optimistic Concurrency Control
+
+The optional `If-Match` header on append requests provides optimistic concurrency control, preventing lost updates in multi-writer scenarios. When multiple clients may write to the same stream concurrently, clients **SHOULD** use `If-Match` with the expected tail offset to ensure their append succeeds only if no other writer has modified the stream. On `412 Precondition Failed`, clients can read the latest state and retry or merge changes as appropriate for their application semantics.
 
 ### 10.8. TLS
 
