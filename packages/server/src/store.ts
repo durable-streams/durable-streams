@@ -313,12 +313,26 @@ export class StreamStore {
    * Clear all streams.
    */
   clear(): void {
-    // Cancel all pending long-polls
+    // Cancel all pending long-polls and resolve them with timeout
     for (const pending of this.pendingLongPolls) {
       clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
     }
     this.pendingLongPolls = []
     this.streams.clear()
+  }
+
+  /**
+   * Cancel all pending long-polls (used during shutdown).
+   */
+  cancelAllWaits(): void {
+    for (const pending of this.pendingLongPolls) {
+      clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
+    }
+    this.pendingLongPolls = []
   }
 
   /**
