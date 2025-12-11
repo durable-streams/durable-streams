@@ -234,13 +234,466 @@ const res = await stream({
 })
 ```
 
+## StreamResponse Methods
+
+The `StreamResponse` object provides multiple ways to consume stream data. All methods respect the `live` mode setting.
+
+### Promise Helpers
+
+These methods accumulate data until the stream is up-to-date, then resolve.
+
+#### `body(): Promise<Uint8Array>`
+
+Accumulates all bytes until up-to-date.
+
+```typescript
+const res = await stream({ url, live: false })
+const bytes = await res.body()
+console.log("Total bytes:", bytes.length)
+
+// Process as needed
+const text = new TextDecoder().decode(bytes)
+```
+
+#### `json(): Promise<Array<TJson>>`
+
+Accumulates all JSON items until up-to-date. Only works with JSON content.
+
+```typescript
+const res = await stream<{ id: number; name: string }>({
+  url,
+  live: false,
+})
+const items = await res.json()
+
+for (const item of items) {
+  console.log(`User ${item.id}: ${item.name}`)
+}
+```
+
+#### `text(): Promise<string>`
+
+Accumulates all text until up-to-date.
+
+```typescript
+const res = await stream({ url, live: false })
+const text = await res.text()
+console.log("Full content:", text)
+```
+
+### Async Iterators
+
+Async iterators provide backpressure-aware consumption. The next chunk is only fetched when you're ready.
+
+#### `byteChunks(): AsyncIterable<ByteChunk>`
+
+Iterates raw byte chunks with metadata.
+
+```typescript
+const res = await stream({ url, live: "auto" })
+
+for await (const chunk of res.byteChunks()) {
+  console.log("Received bytes:", chunk.data.length)
+  console.log("Offset:", chunk.offset)
+  console.log("Up to date:", chunk.upToDate)
+
+  // Process the data
+  const text = new TextDecoder().decode(chunk.data)
+  await saveToDatabase(text, chunk.offset)
+}
+```
+
+#### `jsonBatches(): AsyncIterable<JsonBatch<TJson>>`
+
+Iterates JSON batches (arrays of items per response) with metadata. Efficient for batch processing.
+
+```typescript
+const res = await stream<{ event: string }>({ url, live: "auto" })
+
+for await (const batch of res.jsonBatches()) {
+  console.log(`Received ${batch.items.length} items`)
+  console.log("Batch offset:", batch.offset)
+
+  // Process all items in the batch
+  await processBatch(batch.items)
+  await saveCheckpoint(batch.offset)
+}
+```
+
+#### `jsonItems(): AsyncIterable<TJson>`
+
+Iterates individual JSON items (flattened from batches). Most ergonomic for item-by-item processing.
+
+```typescript
+const res = await stream<{ type: string; payload: unknown }>({
+  url,
+  live: "auto",
+})
+
+for await (const item of res.jsonItems()) {
+  switch (item.type) {
+    case "message":
+      handleMessage(item.payload)
+      break
+    case "notification":
+      handleNotification(item.payload)
+      break
+  }
+  // Save offset after each item
+  saveOffset(res.offset)
+}
+```
+
+#### `textChunks(): AsyncIterable<TextChunk>`
+
+Iterates text chunks with metadata.
+
+```typescript
+const res = await stream({ url, live: "auto" })
+
+for await (const chunk of res.textChunks()) {
+  console.log("Text:", chunk.text)
+  console.log("Offset:", chunk.offset)
+
+  // Append to log file
+  await appendToLog(chunk.text)
+}
+```
+
+#### Default Iterator `[Symbol.asyncIterator]`
+
+The response itself is iterable, yielding `ByteChunk` objects:
+
+```typescript
+const res = await stream({ url, live: false })
+
+for await (const chunk of res) {
+  console.log("Chunk:", chunk.data)
+}
+```
+
+### ReadableStreams
+
+Web Streams API for piping to other streams or using with streaming APIs.
+
+#### `bodyStream(): ReadableStream<Uint8Array>`
+
+Raw bytes as a ReadableStream.
+
+```typescript
+const res = await stream({ url, live: false })
+const readable = res.bodyStream()
+
+// Pipe to a file (Node.js)
+import { Writable } from "node:stream"
+import { pipeline } from "node:stream/promises"
+
+await pipeline(Readable.fromWeb(readable), fs.createWriteStream("output.bin"))
+
+// Or read manually
+const reader = readable.getReader()
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  console.log("Received:", value)
+}
+```
+
+#### `jsonStream(): ReadableStream<TJson>`
+
+Individual JSON items as a ReadableStream.
+
+```typescript
+const res = await stream<{ id: number }>({ url, live: false })
+const readable = res.jsonStream()
+
+const reader = readable.getReader()
+while (true) {
+  const { done, value } = await reader.read()
+  if (done) break
+  console.log("Item:", value)
+}
+```
+
+#### `textStream(): ReadableStream<string>`
+
+Text chunks as a ReadableStream.
+
+```typescript
+const res = await stream({ url, live: false })
+const readable = res.textStream()
+
+// Use with Response API
+const textResponse = new Response(readable)
+const fullText = await textResponse.text()
+```
+
+### Subscribers
+
+Subscribers provide callback-based consumption with backpressure. The next chunk isn't fetched until your callback's promise resolves.
+
+#### `subscribeJson(callback): () => void`
+
+Subscribe to JSON batches. Returns an unsubscribe function.
+
+```typescript
+const res = await stream<{ event: string }>({ url, live: "auto" })
+
+const unsubscribe = res.subscribeJson(async (batch) => {
+  // Process items - next batch waits until this resolves
+  for (const item of batch.items) {
+    await processEvent(item)
+  }
+  await saveCheckpoint(batch.offset)
+})
+
+// Later: stop receiving updates
+setTimeout(() => {
+  unsubscribe()
+}, 60000)
+```
+
+#### `subscribeBytes(callback): () => void`
+
+Subscribe to byte chunks.
+
+```typescript
+const res = await stream({ url, live: "auto" })
+
+const unsubscribe = res.subscribeBytes(async (chunk) => {
+  await writeToFile(chunk.data)
+  console.log("Written", chunk.data.length, "bytes")
+})
+```
+
+#### `subscribeText(callback): () => void`
+
+Subscribe to text chunks.
+
+```typescript
+const res = await stream({ url, live: "auto" })
+
+const unsubscribe = res.subscribeText(async (chunk) => {
+  await appendToLog(chunk.text)
+})
+```
+
+### Lifecycle
+
+#### `cancel(reason?: unknown): void`
+
+Cancel the stream session. Aborts any pending requests.
+
+```typescript
+const res = await stream({ url, live: "auto" })
+
+// Start consuming
+const consumer = (async () => {
+  for await (const chunk of res.byteChunks()) {
+    console.log("Chunk:", chunk)
+  }
+})()
+
+// Cancel after 10 seconds
+setTimeout(() => {
+  res.cancel("Timeout")
+}, 10000)
+```
+
+#### `closed: Promise<void>`
+
+Promise that resolves when the session is complete or cancelled.
+
+```typescript
+const res = await stream({ url, live: false })
+
+// Start consuming in background
+const consumer = res.text()
+
+// Wait for completion
+await res.closed
+console.log("Stream fully consumed")
+```
+
+### State Properties
+
+```typescript
+const res = await stream({ url })
+
+res.url // The stream URL
+res.contentType // Content-Type from response headers
+res.live // The live mode ("auto", "long-poll", "sse", or false)
+res.startOffset // The starting offset passed to stream()
+res.offset // Current offset (updates as data is consumed)
+res.cursor // Cursor for collapsing (if provided by server)
+res.upToDate // Whether we've caught up to the stream head
+```
+
+---
+
+## DurableStream Methods
+
+### Static Methods
+
+#### `DurableStream.create(opts): Promise<DurableStream>`
+
+Create a new stream on the server.
+
+```typescript
+const handle = await DurableStream.create({
+  url: "https://streams.example.com/my-stream",
+  auth: { token: "my-token" },
+  contentType: "application/json",
+  ttlSeconds: 3600, // Optional: auto-delete after 1 hour
+})
+
+await handle.append('{"hello": "world"}')
+```
+
+#### `DurableStream.connect(opts): Promise<DurableStream>`
+
+Connect to an existing stream (validates it exists via HEAD).
+
+```typescript
+const handle = await DurableStream.connect({
+  url: "https://streams.example.com/my-stream",
+  auth: { token: "my-token" },
+})
+
+console.log("Content-Type:", handle.contentType)
+```
+
+#### `DurableStream.head(opts): Promise<HeadResult>`
+
+Get stream metadata without creating a handle.
+
+```typescript
+const metadata = await DurableStream.head({
+  url: "https://streams.example.com/my-stream",
+  auth: { token: "my-token" },
+})
+
+console.log("Offset:", metadata.offset)
+console.log("Content-Type:", metadata.contentType)
+```
+
+#### `DurableStream.delete(opts): Promise<void>`
+
+Delete a stream without creating a handle.
+
+```typescript
+await DurableStream.delete({
+  url: "https://streams.example.com/my-stream",
+  auth: { token: "my-token" },
+})
+```
+
+### Instance Methods
+
+#### `head(opts?): Promise<HeadResult>`
+
+Get metadata for this stream.
+
+```typescript
+const handle = new DurableStream({ url, auth })
+const metadata = await handle.head()
+
+console.log("Current offset:", metadata.offset)
+```
+
+#### `create(opts?): Promise<this>`
+
+Create this stream on the server.
+
+```typescript
+const handle = new DurableStream({ url, auth })
+await handle.create({
+  contentType: "text/plain",
+  ttlSeconds: 7200,
+})
+```
+
+#### `delete(opts?): Promise<void>`
+
+Delete this stream.
+
+```typescript
+const handle = new DurableStream({ url, auth })
+await handle.delete()
+```
+
+#### `append(body, opts?): Promise<void>`
+
+Append data to the stream.
+
+```typescript
+const handle = await DurableStream.connect({ url, auth })
+
+// Append string
+await handle.append("Hello, world!")
+
+// Append with sequence number for ordering
+await handle.append("Message 1", { seq: "writer-1-001" })
+await handle.append("Message 2", { seq: "writer-1-002" })
+
+// Append JSON (as string)
+await handle.append(JSON.stringify({ event: "click", x: 100, y: 200 }))
+```
+
+#### `appendStream(source, opts?): Promise<void>`
+
+Append streaming data from an async iterable or ReadableStream.
+
+```typescript
+const handle = await DurableStream.connect({ url, auth })
+
+// From async generator
+async function* generateData() {
+  for (let i = 0; i < 100; i++) {
+    yield `Line ${i}\n`
+  }
+}
+await handle.appendStream(generateData())
+
+// From ReadableStream
+const readable = new ReadableStream({
+  start(controller) {
+    controller.enqueue("chunk 1")
+    controller.enqueue("chunk 2")
+    controller.close()
+  },
+})
+await handle.appendStream(readable)
+```
+
+#### `stream(opts?): Promise<StreamResponse>`
+
+Start a read session (same as standalone `stream()` function).
+
+```typescript
+const handle = await DurableStream.connect({ url, auth })
+
+const res = await handle.stream<{ message: string }>({
+  offset: savedOffset,
+  live: "auto",
+})
+
+for await (const item of res.jsonItems()) {
+  console.log(item.message)
+}
+```
+
+---
+
 ## Types
 
 Key types exported from the package:
 
 - `Offset` - Opaque string for stream position
 - `StreamResponse` - Response object from stream()
-- `ByteChunk` / `JsonBatch` / `TextChunk` - Data types for consumption
+- `ByteChunk` - `{ data: Uint8Array, offset: Offset, upToDate: boolean, cursor?: string }`
+- `JsonBatch<T>` - `{ items: T[], offset: Offset, upToDate: boolean, cursor?: string }`
+- `TextChunk` - `{ text: string, offset: Offset, upToDate: boolean, cursor?: string }`
 - `HeadResult` - Metadata from HEAD requests
 - `DurableStreamError` - Protocol-level errors with codes
 - `FetchError` - Transport/network errors
