@@ -46,15 +46,32 @@ export type ParamsRecord = {
   [key: string]: string | (() => MaybePromise<string>) | undefined
 }
 
+// ============================================================================
+// Live Mode Types
+// ============================================================================
+
 /**
- * Base options for all stream operations.
+ * Live mode for reading from a stream.
+ * - false: Catch-up only, stop at first `upToDate`
+ * - "auto": Behavior driven by consumption method (default)
+ * - "long-poll": Explicit long-poll mode for live updates
+ * - "sse": Explicit server-sent events for live updates
+ */
+export type LiveMode = false | `auto` | `long-poll` | `sse`
+
+// ============================================================================
+// Stream Options (Read API)
+// ============================================================================
+
+/**
+ * Options for the stream() function (read-only API).
  */
 export interface StreamOptions {
   /**
    * The full URL to the durable stream.
    * E.g., "https://streams.example.com/my-account/chat/room-1"
    */
-  url: string
+  url: string | URL
 
   /**
    * Authentication configuration.
@@ -71,11 +88,125 @@ export interface StreamOptions {
    * Function values are resolved when needed, making this useful
    * for dynamic headers like authentication tokens.
    */
+  headers?: HeadersInit
+
+  /**
+   * AbortSignal for cancellation.
+   */
+  signal?: AbortSignal
+
+  /**
+   * Custom fetch implementation (for auth layers, proxies, etc.).
+   * Defaults to globalThis.fetch.
+   */
+  fetchClient?: typeof globalThis.fetch
+
+  /**
+   * Starting offset (query param ?offset=...).
+   * If omitted, reads from the start of the stream.
+   */
+  offset?: Offset
+
+  /**
+   * Live mode behavior:
+   * - false: Catch-up only, stop at first `upToDate`
+   * - "auto" (default): Behavior driven by consumption method
+   * - "long-poll": Explicit long-poll mode for live updates
+   * - "sse": Explicit server-sent events for live updates
+   */
+  live?: LiveMode
+
+  /**
+   * Hint: treat content as JSON even if Content-Type doesn't say so.
+   */
+  json?: boolean
+
+  /**
+   * Error handler for recoverable errors (following Electric client pattern).
+   */
+  onError?: StreamErrorHandler
+}
+
+// ============================================================================
+// Chunk & Batch Types
+// ============================================================================
+
+/**
+ * Metadata for a JSON batch or chunk.
+ */
+export interface JsonBatchMeta {
+  /**
+   * Last Stream-Next-Offset for this batch.
+   */
+  offset: Offset
+
+  /**
+   * True if this batch ends at the current end of the stream.
+   */
+  upToDate: boolean
+
+  /**
+   * Last Stream-Cursor / streamCursor, if present.
+   */
+  cursor?: string
+}
+
+/**
+ * A batch of parsed JSON items with metadata.
+ */
+export interface JsonBatch<T = unknown> extends JsonBatchMeta {
+  /**
+   * The parsed JSON items in this batch.
+   */
+  items: ReadonlyArray<T>
+}
+
+/**
+ * A chunk of raw bytes with metadata.
+ */
+export interface ByteChunk extends JsonBatchMeta {
+  /**
+   * The raw byte data.
+   */
+  data: Uint8Array
+}
+
+/**
+ * A chunk of text with metadata.
+ */
+export interface TextChunk extends JsonBatchMeta {
+  /**
+   * The text content.
+   */
+  text: string
+}
+
+// ============================================================================
+// StreamHandle Options (Read/Write API)
+// ============================================================================
+
+/**
+ * Base options for StreamHandle operations.
+ */
+export interface StreamHandleOptions {
+  /**
+   * The full URL to the durable stream.
+   * E.g., "https://streams.example.com/my-account/chat/room-1"
+   */
+  url: string | URL
+
+  /**
+   * Authentication configuration.
+   */
+  auth?: Auth
+
+  /**
+   * Additional headers to include in requests.
+   */
   headers?: HeadersRecord
 
   /**
    * Additional query parameters to include in requests.
-   * Values can be strings or functions (sync or async) that return strings.
    */
   params?: ParamsRecord
 
@@ -87,21 +218,24 @@ export interface StreamOptions {
 
   /**
    * Default AbortSignal for operations.
-   * Individual operations can override this.
    */
   signal?: AbortSignal
+
+  /**
+   * The content type for the stream.
+   */
+  contentType?: string
+
+  /**
+   * Error handler for recoverable errors.
+   */
+  onError?: StreamErrorHandler
 }
 
 /**
  * Options for creating a new stream.
  */
-export interface CreateOptions extends StreamOptions {
-  /**
-   * The content type for the stream.
-   * This is set once on creation and cannot be changed.
-   */
-  contentType?: string
-
+export interface CreateOptions extends StreamHandleOptions {
   /**
    * Time-to-live in seconds (relative TTL).
    */
@@ -143,14 +277,14 @@ export interface AppendOptions {
 }
 
 /**
- * Live mode for reading from a stream.
- * - "long-poll": Use long-polling for live updates
- * - "sse": Use Server-Sent Events for live updates (throws if unsupported)
+ * Legacy live mode type (internal use only).
+ * @internal
  */
-export type LiveMode = `long-poll` | `sse`
+export type LegacyLiveMode = `long-poll` | `sse`
 
 /**
- * Options for reading from a stream.
+ * Options for reading from a stream (internal iterator options).
+ * @internal
  */
 export interface ReadOptions {
   /**
@@ -166,7 +300,7 @@ export interface ReadOptions {
    * - "long-poll": Use long-polling for live updates
    * - "sse": Use SSE for live updates (throws if unsupported)
    */
-  live?: boolean | LiveMode
+  live?: boolean | LegacyLiveMode
 
   /**
    * Override cursor for the request.
@@ -311,3 +445,178 @@ export type RetryOpts = {
 export type StreamErrorHandler = (
   error: Error
 ) => void | RetryOpts | Promise<void | RetryOpts>
+
+// ============================================================================
+// StreamResponse Interface
+// ============================================================================
+
+/**
+ * A streaming session returned by stream() or StreamHandle.stream().
+ *
+ * Represents a live session with fixed `url`, `offset`, and `live` parameters.
+ * Supports multiple consumption styles: Promise helpers, ReadableStreams,
+ * AsyncIterators, and Subscribers.
+ *
+ * @typeParam TJson - The type of JSON items in the stream.
+ */
+export interface StreamResponse<
+  TJson = unknown,
+> extends AsyncIterable<ByteChunk> {
+  // --- Static session info (known after first response) ---
+
+  /**
+   * The stream URL.
+   */
+  readonly url: string
+
+  /**
+   * The stream's content type.
+   */
+  readonly contentType?: string
+
+  /**
+   * The live mode for this session.
+   */
+  readonly live: LiveMode
+
+  /**
+   * The starting offset for this session.
+   */
+  readonly startOffset: Offset
+
+  // --- Evolving state as data arrives ---
+
+  /**
+   * Last seen Stream-Next-Offset.
+   */
+  offset: Offset
+
+  /**
+   * Last seen Stream-Cursor / streamCursor.
+   */
+  cursor?: string
+
+  /**
+   * Last observed upToDate flag.
+   */
+  upToDate: boolean
+
+  // =================================
+  // 1) Accumulating helpers (Promise)
+  // =================================
+  // Accumulate until first `upToDate`, then resolve and stop.
+
+  /**
+   * Accumulate raw bytes until first `upToDate` batch, then resolve.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  body: () => Promise<Uint8Array>
+
+  /**
+   * Accumulate JSON *items* across batches into a single array, resolve at `upToDate`.
+   * Only valid in JSON-mode; throws otherwise.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  json: () => Promise<Array<TJson>>
+
+  /**
+   * Accumulate text chunks into a single string, resolve at `upToDate`.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  text: () => Promise<string>
+
+  // =====================
+  // 2) ReadableStreams
+  // =====================
+
+  /**
+   * Raw bytes as a ReadableStream<Uint8Array>.
+   */
+  bodyStream: () => ReadableStream<Uint8Array>
+
+  /**
+   * Individual JSON items (flattened) as a ReadableStream<TJson>.
+   * Built on jsonBatches().
+   */
+  jsonStream: () => ReadableStream<TJson>
+
+  /**
+   * Text chunks as ReadableStream<string>.
+   */
+  textStream: () => ReadableStream<string>
+
+  // =====================
+  // 3) Async iterators
+  // =====================
+
+  /**
+   * Default async iterator: raw byte chunks.
+   * Enables `for await (const chunk of response)`.
+   */
+  [Symbol.asyncIterator]: () => AsyncIterator<ByteChunk>
+
+  /**
+   * Explicit raw byte chunks + metadata.
+   */
+  byteChunks: () => AsyncIterable<ByteChunk>
+
+  /**
+   * JSON batches (zero-overhead arrays) + metadata.
+   * Core primitive for JSON-mode streams.
+   */
+  jsonBatches: () => AsyncIterable<JsonBatch<TJson>>
+
+  /**
+   * Flattened JSON items (per-message) for ergonomic consumption.
+   */
+  jsonItems: () => AsyncIterable<TJson>
+
+  /**
+   * Text chunks + metadata.
+   */
+  textChunks: () => AsyncIterable<TextChunk>
+
+  // =====================
+  // 4) Subscriber APIs
+  // =====================
+  // Subscribers return Promise<void> for backpressure control.
+
+  /**
+   * Zero-overhead JSON batches; multiple subscribers share the same parsed arrays.
+   * Returns unsubscribe function.
+   */
+  subscribeJson: (
+    subscriber: (batch: JsonBatch<TJson>) => Promise<void>
+  ) => () => void
+
+  /**
+   * Raw byte chunks; multiple subscribers share the same Uint8Array.
+   * Returns unsubscribe function.
+   */
+  subscribeBytes: (
+    subscriber: (chunk: ByteChunk) => Promise<void>
+  ) => () => void
+
+  /**
+   * Text chunks; multiple subscribers share the same string instances.
+   * Returns unsubscribe function.
+   */
+  subscribeText: (subscriber: (chunk: TextChunk) => Promise<void>) => () => void
+
+  // =====================
+  // 5) Lifecycle
+  // =====================
+
+  /**
+   * Cancel the underlying session (abort HTTP, close SSE, stop long-polls).
+   */
+  cancel: (reason?: unknown) => void
+
+  /**
+   * Resolves when the session has fully closed:
+   * - `live:false` and up-to-date reached,
+   * - manual cancellation,
+   * - terminal error.
+   */
+  readonly closed: Promise<void>
+}

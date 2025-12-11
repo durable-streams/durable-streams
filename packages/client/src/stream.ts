@@ -1,5 +1,5 @@
 /**
- * DurableStream - A handle to a remote durable stream.
+ * StreamHandle - A handle to a remote durable stream for read/write operations.
  *
  * Following the Electric Durable Stream Protocol specification.
  */
@@ -29,6 +29,7 @@ import {
   createFetchWithBackoff,
   createFetchWithConsumedBody,
 } from "./fetch"
+import { stream as streamFn } from "./stream-api"
 import type { EventSourceMessage } from "@microsoft/fetch-event-source"
 import type {
   AppendOptions,
@@ -40,74 +41,70 @@ import type {
   ReadResult,
   StreamChunk,
   StreamErrorHandler,
+  StreamHandleOptions,
   StreamOptions,
+  StreamResponse,
 } from "./types"
 
 import type { BackoffOptions } from "./fetch"
 
 /**
- * Options for DurableStream constructor.
+ * Options for StreamHandle constructor.
+ * @deprecated Use StreamHandleOptions instead
  */
-export interface DurableStreamOptions extends StreamOptions {
+export interface DurableStreamOptions extends StreamHandleOptions {
+  /**
+   * Additional query parameters to include in requests.
+   */
+  params?: {
+    [key: string]: string | (() => MaybePromise<string>) | undefined
+  }
+}
+
+/**
+ * Options for StreamHandle constructor.
+ */
+export interface StreamHandleConstructorOptions extends StreamHandleOptions {
+  /**
+   * Additional query parameters to include in requests.
+   */
+  params?: {
+    [key: string]: string | (() => MaybePromise<string>) | undefined
+  }
+
   /**
    * Backoff options for retry behavior.
    */
   backoffOptions?: BackoffOptions
-
-  /**
-   * Error handler for recoverable errors.
-   *
-   * **Automatic retries**: The client automatically retries 5xx server errors, network
-   * errors, and 429 rate limits with exponential backoff. The `onError` callback is
-   * only invoked after these automatic retries are exhausted, or for non-retryable errors.
-   *
-   * **Return value behavior** (following Electric client pattern):
-   * - Return `{}` to retry with the same params/headers
-   * - Return `{ params }` to retry with merged params
-   * - Return `{ headers }` to retry with merged headers
-   * - Return `void`/`undefined` to stop the stream and propagate the error
-   *
-   * @example
-   * ```typescript
-   * // Refresh auth token on 401
-   * onError: async (error) => {
-   *   if (error instanceof FetchError && error.status === 401) {
-   *     const newToken = await refreshAuthToken()
-   *     return { headers: { Authorization: `Bearer ${newToken}` } }
-   *   }
-   * }
-   * ```
-   */
-  onError?: StreamErrorHandler
 }
 
 /**
- * A handle to a remote durable stream.
+ * A handle to a remote durable stream for read/write operations.
  *
  * This is a lightweight, reusable handle - not a persistent connection.
  * It does not automatically start reading or listening.
- * Create sessions as needed via read() or toReadableStream().
+ * Create sessions as needed via stream() or the legacy read() method.
  *
  * @example
  * ```typescript
- * // Create a handle without any network IO
- * const stream = new DurableStream({
+ * // Create a new stream
+ * const handle = await StreamHandle.create({
  *   url: "https://streams.example.com/my-stream",
- *   auth: { token: "my-token" }
+ *   auth: { token: "my-token" },
+ *   contentType: "application/json"
  * });
  *
- * // Read with live updates (default)
- * for await (const chunk of stream.read()) {
- *   console.log(new TextDecoder().decode(chunk.data));
- * }
+ * // Write data
+ * await handle.append({ message: "hello" });
  *
- * // Read catch-up only (no live updates)
- * for await (const chunk of stream.read({ live: false })) {
- *   console.log(new TextDecoder().decode(chunk.data));
+ * // Read with the new API
+ * const res = await handle.stream<{ message: string }>();
+ * for await (const item of res.jsonItems()) {
+ *   console.log(item.message);
  * }
  * ```
  */
-export class DurableStream {
+export class StreamHandle {
   /**
    * The URL of the durable stream.
    */
@@ -118,7 +115,7 @@ export class DurableStream {
    */
   contentType?: string
 
-  #options: DurableStreamOptions
+  #options: StreamHandleConstructorOptions
   readonly #fetchClient: typeof fetch
   readonly #sseFetchClient: typeof fetch
   #onError?: StreamErrorHandler
@@ -127,10 +124,11 @@ export class DurableStream {
    * Create a cold handle to a stream.
    * No network IO is performed by the constructor.
    */
-  constructor(opts: DurableStreamOptions) {
+  constructor(opts: StreamHandleConstructorOptions | DurableStreamOptions) {
     validateOptions(opts)
-    this.url = opts.url
-    this.#options = opts
+    const urlStr = opts.url instanceof URL ? opts.url.toString() : opts.url
+    this.url = urlStr
+    this.#options = { ...opts, url: urlStr }
     this.#onError = opts.onError
 
     const baseFetchClient =
@@ -157,41 +155,47 @@ export class DurableStream {
    * Create a new stream (create-only PUT) and return a handle.
    * Fails with DurableStreamError(code="CONFLICT_EXISTS") if it already exists.
    */
-  static async create(opts: CreateOptions): Promise<DurableStream> {
-    const stream = new DurableStream(opts)
-    await stream.create({
+  static async create(opts: CreateOptions): Promise<StreamHandle> {
+    const handle = new StreamHandle(opts)
+    await handle.create({
       contentType: opts.contentType,
       ttlSeconds: opts.ttlSeconds,
       expiresAt: opts.expiresAt,
       body: opts.body,
     })
-    return stream
+    return handle
   }
 
   /**
    * Validate that a stream exists and fetch metadata via HEAD.
    * Returns a handle with contentType populated (if sent by server).
    */
-  static async connect(opts: StreamOptions): Promise<DurableStream> {
-    const stream = new DurableStream(opts)
-    await stream.head()
-    return stream
+  static async connect(
+    opts: StreamHandleConstructorOptions | StreamHandleOptions
+  ): Promise<StreamHandle> {
+    const handle = new StreamHandle(opts)
+    await handle.head()
+    return handle
   }
 
   /**
    * HEAD metadata for a stream without creating a handle.
    */
-  static async head(opts: StreamOptions): Promise<HeadResult> {
-    const stream = new DurableStream(opts)
-    return stream.head()
+  static async head(
+    opts: StreamHandleConstructorOptions | StreamHandleOptions
+  ): Promise<HeadResult> {
+    const handle = new StreamHandle(opts)
+    return handle.head()
   }
 
   /**
    * Delete a stream without creating a handle.
    */
-  static async delete(opts: StreamOptions): Promise<void> {
-    const stream = new DurableStream(opts)
-    return stream.delete()
+  static async delete(
+    opts: StreamHandleConstructorOptions | StreamHandleOptions
+  ): Promise<void> {
+    const handle = new StreamHandle(opts)
+    return handle.delete()
   }
 
   // ============================================================================
@@ -425,11 +429,55 @@ export class DurableStream {
     }
   }
 
+  // ============================================================================
+  // Read session factory (new API)
+  // ============================================================================
+
+  /**
+   * Start a fetch-like streaming session against this handle's URL/auth.
+   * The first request is made inside this method; it resolves when we have
+   * a valid first response, or rejects on errors.
+   *
+   * @example
+   * ```typescript
+   * const handle = await StreamHandle.connect({ url, auth });
+   * const res = await handle.stream<{ message: string }>();
+   *
+   * // Accumulate all JSON items
+   * const items = await res.json();
+   *
+   * // Or iterate live
+   * for await (const item of res.jsonItems()) {
+   *   console.log(item);
+   * }
+   * ```
+   */
+  async stream<TJson = unknown>(
+    options?: Omit<StreamOptions, `url` | `auth`>
+  ): Promise<StreamResponse<TJson>> {
+    return streamFn<TJson>({
+      url: this.url,
+      auth: this.#options.auth,
+      headers: options?.headers,
+      signal: options?.signal ?? this.#options.signal,
+      fetchClient: this.#options.fetch,
+      offset: options?.offset,
+      live: options?.live,
+      json: options?.json,
+      onError: options?.onError ?? this.#onError,
+    })
+  }
+
+  // ============================================================================
+  // Legacy read methods
+  // ============================================================================
+
   /**
    * Internal one-shot read.
    *
    * Performs a single GET from the specified offset/mode and returns a chunk.
    * Used internally by read() for catch-up and long-poll iterations.
+   * @internal
    */
   async #fetchOnce(opts?: ReadOptions): Promise<ReadResult> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest(opts)
@@ -467,6 +515,8 @@ export class DurableStream {
 
   /**
    * Read from the stream as an AsyncIterable of chunks.
+   *
+   * @deprecated Use the new `.stream()` method instead for the fetch-like API.
    *
    * Default behaviour (live: undefined or live: true):
    * - From `offset` (or start if omitted), repeatedly perform catch-up reads
@@ -1211,7 +1261,9 @@ function toReadableStream(
 /**
  * Validate stream options.
  */
-function validateOptions(options: Partial<DurableStreamOptions>): void {
+function validateOptions(
+  options: Partial<DurableStreamOptions | StreamHandleConstructorOptions>
+): void {
   if (!options.url) {
     throw new MissingStreamUrlError()
   }
@@ -1219,3 +1271,12 @@ function validateOptions(options: Partial<DurableStreamOptions>): void {
     throw new InvalidSignalError()
   }
 }
+
+// ============================================================================
+// Backward compatibility aliases
+// ============================================================================
+
+/**
+ * @deprecated Use StreamHandle instead. DurableStream is an alias for backward compatibility.
+ */
+export const DurableStream = StreamHandle

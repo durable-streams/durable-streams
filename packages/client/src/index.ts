@@ -6,30 +6,71 @@
  * @packageDocumentation
  */
 
-// Main class
-export { DurableStream, type DurableStreamOptions } from "./stream"
+// ============================================================================
+// Primary Read API (new)
+// ============================================================================
 
+// Standalone stream() function - the fetch-like read API
+export { stream } from "./stream-api"
+
+// StreamResponse implementation
+export { StreamResponseImpl } from "./response"
+
+// ============================================================================
+// Handle API (read/write)
+// ============================================================================
+
+// StreamHandle class (renamed from DurableStream)
+export {
+  StreamHandle,
+  DurableStream, // backward compatibility alias
+  type StreamHandleConstructorOptions,
+  type DurableStreamOptions,
+} from "./stream"
+
+// ============================================================================
 // Types
+// ============================================================================
+
 export type {
+  // Core types
   Offset,
   Auth,
   HeadersRecord,
   ParamsRecord,
+  MaybePromise,
+
+  // Stream options (new API)
   StreamOptions,
+  StreamHandleOptions,
+  LiveMode,
+
+  // Chunk & batch types (new API)
+  JsonBatchMeta,
+  JsonBatch,
+  ByteChunk,
+  TextChunk,
+  StreamResponse,
+
+  // Legacy types (still used internally)
   CreateOptions,
   AppendOptions,
   ReadOptions,
   HeadResult,
   ReadResult,
   StreamChunk,
-  LiveMode,
+  LegacyLiveMode,
+
+  // Error handling
   DurableStreamErrorCode,
   RetryOpts,
   StreamErrorHandler,
-  MaybePromise,
 } from "./types"
 
+// ============================================================================
 // Errors
+// ============================================================================
+
 export {
   FetchError,
   FetchBackoffAbortError,
@@ -38,7 +79,10 @@ export {
   InvalidSignalError,
 } from "./error"
 
+// ============================================================================
 // Fetch utilities
+// ============================================================================
+
 export {
   type BackoffOptions,
   BackoffDefaults,
@@ -46,7 +90,10 @@ export {
   createFetchWithConsumedBody,
 } from "./fetch"
 
+// ============================================================================
 // Constants (for advanced users)
+// ============================================================================
+
 export {
   STREAM_OFFSET_HEADER,
   STREAM_CURSOR_HEADER,
