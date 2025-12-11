@@ -206,10 +206,51 @@ export class StreamResponseImpl<
 
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
-            // If we have pending SSE data, create a synthetic response
-            if (pendingSSEData.length > 0) {
-              const data = pendingSSEData.shift()!
-              const syntheticResponse = new Response(data, {
+            // Keep reading events until we get data or stream ends
+            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+            while (true) {
+              // Read next SSE event
+              const { done, value: event } = await sseEventIterator.next()
+
+              if (done) {
+                // SSE stream ended - server may have closed after ~60s
+                // Try to reconnect if we should continue live
+                if (this.#shouldContinueLive() && this.#startSSE) {
+                  try {
+                    const newSSEResponse = await this.#startSSE(
+                      this.offset,
+                      this.cursor,
+                      this.#abortController.signal
+                    )
+                    if (newSSEResponse.body) {
+                      sseEventIterator = parseSSEStream(
+                        newSSEResponse.body,
+                        this.#abortController.signal
+                      )
+                      // Continue reading from new stream
+                      continue
+                    }
+                  } catch {
+                    // If reconnect fails, close the stream
+                  }
+                }
+                this.#markClosed()
+                controller.close()
+                return
+              }
+
+              if (event.type === `control`) {
+                // Update offset and cursor from control event
+                this.offset = event.streamNextOffset
+                if (event.streamCursor) {
+                  this.cursor = event.streamCursor
+                }
+                // Continue to get next event (control events don't produce data)
+                continue
+              }
+
+              // event.type === `data` - create a synthetic Response from SSE data
+              const syntheticResponse = new Response(event.data, {
                 status: 200,
                 headers: {
                   "content-type": this.contentType ?? `application/json`,
@@ -218,55 +259,6 @@ export class StreamResponseImpl<
               controller.enqueue(syntheticResponse)
               return
             }
-
-            // Read next SSE event
-            const { done, value: event } = await sseEventIterator.next()
-
-            if (done) {
-              // SSE stream ended - server may have closed after ~60s
-              // Try to reconnect if we should continue live
-              if (this.#shouldContinueLive() && this.#startSSE) {
-                try {
-                  const newSSEResponse = await this.#startSSE(
-                    this.offset,
-                    this.cursor,
-                    this.#abortController.signal
-                  )
-                  if (newSSEResponse.body) {
-                    sseEventIterator = parseSSEStream(
-                      newSSEResponse.body,
-                      this.#abortController.signal
-                    )
-                    // Recurse to process the new stream
-                    return
-                  }
-                } catch {
-                  // If reconnect fails, close the stream
-                }
-              }
-              this.#markClosed()
-              controller.close()
-              return
-            }
-
-            if (event.type === `control`) {
-              // Update offset and cursor from control event
-              this.offset = event.streamNextOffset
-              if (event.streamCursor) {
-                this.cursor = event.streamCursor
-              }
-              // Control events don't produce data - pull again
-              return
-            }
-
-            // event.type === `data` - create a synthetic Response from SSE data
-            const syntheticResponse = new Response(event.data, {
-              status: 200,
-              headers: {
-                "content-type": this.contentType ?? `application/json`,
-              },
-            })
-            controller.enqueue(syntheticResponse)
           }
 
           // Long-poll mode: continue with live updates if needed
@@ -467,57 +459,33 @@ export class StreamResponseImpl<
 
     return new ReadableStream<TJson>({
       pull: async (controller) => {
-        try {
-          // If we have pending items, yield the next one
-          const nextItem = pendingItems.shift()
-          if (nextItem !== undefined) {
-            controller.enqueue(nextItem)
-            return
-          }
+        // Drain pending items first
+        if (pendingItems.length > 0) {
+          controller.enqueue(pendingItems.shift()!)
+          return
+        }
 
-          // Get next response and parse JSON
-          const { done, value: response } = await reader.read()
-          if (done) {
-            this.#markClosed()
-            controller.close()
-            return
-          }
+        // Get next response
+        const { done, value: response } = await reader.read()
+        if (done) {
+          this.#markClosed()
+          controller.close()
+          return
+        }
 
-          const parsed = (await response.json()) as TJson | Array<TJson>
-          if (Array.isArray(parsed)) {
-            pendingItems = parsed
-          } else {
-            pendingItems = [parsed]
-          }
+        // Parse JSON and flatten arrays
+        const parsed = (await response.json()) as TJson | Array<TJson>
+        pendingItems = Array.isArray(parsed) ? parsed : [parsed]
 
-          // Yield first item
-          const firstItem = pendingItems.shift()
-          if (firstItem !== undefined) {
-            controller.enqueue(firstItem)
-          }
-
-          // Check if we should stop
-          if (this.upToDate && !this.#shouldContinueLive()) {
-            if (pendingItems.length === 0) {
-              this.#markClosed()
-              controller.close()
-            }
-          }
-        } catch (err) {
-          if (this.#abortController.signal.aborted) {
-            this.#markClosed()
-            controller.close()
-          } else {
-            this.#markError(err instanceof Error ? err : new Error(String(err)))
-            controller.error(err)
-          }
+        // Enqueue first item
+        if (pendingItems.length > 0) {
+          controller.enqueue(pendingItems.shift()!)
         }
       },
 
       cancel: () => {
         reader.releaseLock()
-        this.#abortController.abort()
-        this.#markClosed()
+        this.cancel()
       },
     })
   }

@@ -82,7 +82,11 @@ export async function* parseSSEStream(
         } else if (line.startsWith(`event:`)) {
           currentEvent.type = line.slice(6).trim()
         } else if (line.startsWith(`data:`)) {
-          currentEvent.data.push(line.slice(5))
+          // Per SSE spec, strip the optional space after "data:"
+          const content = line.slice(5)
+          currentEvent.data.push(
+            content.startsWith(` `) ? content.slice(1) : content
+          )
         }
         // Ignore other fields (id, retry, comments)
       }
