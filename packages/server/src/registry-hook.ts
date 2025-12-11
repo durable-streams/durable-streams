@@ -3,7 +3,7 @@
  * This stream records all create/delete events for observability.
  */
 
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 import type { StreamLifecycleHook } from "./types"
 import type { StreamStore } from "./store"
 import type { FileBackedStreamStore } from "./file-store"

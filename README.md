@@ -57,8 +57,7 @@ The protocol provides:
 
 This monorepo contains:
 
-- **[@durable-streams/client](./packages/client)** - TypeScript read-only client (smaller bundle)
-- **[@durable-streams/writer](./packages/writer)** - TypeScript read/write client (includes create/append/delete operations)
+- **[@durable-streams/client](./packages/client)** - TypeScript client with full read/write support and automatic batching
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
 - **[@durable-streams/test-ui](./packages/test-ui)** - Visual web interface for testing and exploring streams
@@ -132,28 +131,12 @@ The Test UI and CLI share the same `__registry__` system stream, so streams crea
 
 ## Quick Start
 
-### Read-only client (typical browser/mobile usage)
+### Full read/write client
 
-For applications that only need to read from streams:
-
-```typescript
-import { stream } from "@durable-streams/client"
-
-// Read existing data from stream (returns immediately)
-const res = await stream({
-  url: "https://your-server.com/v1/stream/my-stream",
-  live: false,
-})
-const text = await res.text()
-console.log(text)
-```
-
-### Read/write client
-
-For applications that need to create and write to streams:
+The `@durable-streams/client` package provides full read/write support with automatic batching for high-throughput writes:
 
 ```typescript
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 
 // Create a new stream
 const handle = await DurableStream.create({
@@ -161,31 +144,41 @@ const handle = await DurableStream.create({
   contentType: "application/json",
 })
 
-// Append data
+// Append data (automatically batched for high throughput)
 await handle.append({ event: "user.created", userId: "123" })
 await handle.append({ event: "user.updated", userId: "123" })
 
-// Writer also includes all read operations
-const res = await handle.stream({ live: false })
+// Read with the streaming API
+const res = await handle.stream<{ event: string; userId: string }>({
+  live: false,
+})
 const items = await res.json()
+console.log(items) // [{ event: "user.created", userId: "123" }, ...]
 ```
 
 ### Resume from an offset
 
 ```typescript
 // Read and save the offset
-const res = await stream({
-  url: "https://your-server.com/v1/stream/my-stream",
-  live: false,
-})
-await res.text() // Consume the stream
+const res = await handle.stream({ live: false })
+const text = await res.text()
 const savedOffset = res.offset // Save this for later
 
 // Resume from saved offset (catch-up mode returns immediately)
-const resumed = await stream({
-  url: "https://your-server.com/v1/stream/my-stream",
-  offset: savedOffset,
-  live: false,
+const resumed = await handle.stream({ offset: savedOffset, live: false })
+```
+
+### Live streaming
+
+```typescript
+// Subscribe to live updates
+const res = await handle.stream({ live: "auto" })
+
+res.subscribeJson(async (batch) => {
+  for (const item of batch.items) {
+    console.log("Received:", item)
+  }
+  saveCheckpoint(batch.offset) // Persist for resumption
 })
 ```
 
@@ -514,17 +507,20 @@ Stream database changes to web and mobile clients for real-time synchronization:
 ```typescript
 // Server: stream database changes
 for (const change of db.changes()) {
-  await handle.append(JSON.stringify(change))
+  await handle.append(change) // JSON objects batched automatically
 }
 
 // Client: receive and apply changes (works in browsers, React Native, native apps)
-const res = await stream({
-  url: "https://your-server.com/v1/stream/db-changes",
+const res = await handle.stream<Change>({
   offset: lastSeenOffset,
+  live: "auto",
 })
-const text = await res.text()
-const changes = parseChanges(text)
-changes.forEach(applyChange)
+res.subscribeJson(async (batch) => {
+  for (const change of batch.items) {
+    applyChange(change)
+  }
+  saveOffset(batch.offset)
+})
 ```
 
 ### Event Sourcing
@@ -533,13 +529,12 @@ Build event-sourced systems with durable event logs:
 
 ```typescript
 // Append events
-await handle.append(JSON.stringify({ type: "OrderCreated", orderId: "123" }))
-await handle.append(JSON.stringify({ type: "OrderPaid", orderId: "123" }))
+await handle.append({ type: "OrderCreated", orderId: "123" })
+await handle.append({ type: "OrderPaid", orderId: "123" })
 
 // Replay from beginning (catch-up mode for full replay)
-const res = await handle.stream({ offset: "-1", live: false })
-const text = await res.text()
-const events = parseEvents(text)
+const res = await handle.stream<Event>({ offset: "-1", live: false })
+const events = await res.json()
 const state = events.reduce(applyEvent, initialState)
 ```
 
@@ -554,10 +549,7 @@ for await (const token of llm.stream(prompt)) {
 }
 
 // Client can resume from any point (switch devices, refresh page, reconnect)
-const res = await stream({
-  url: "https://your-server.com/v1/stream/conversation",
-  offset: lastSeenOffset,
-})
+const res = await handle.stream({ offset: lastSeenOffset, live: false })
 const text = await res.text()
 renderTokens(text)
 ```

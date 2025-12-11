@@ -9,6 +9,13 @@ The Durable Streams client provides two main APIs:
 1. **`stream()` function** - A fetch-like read-only API for consuming streams
 2. **`DurableStream` class** - A handle for read/write operations on a stream
 
+## Key Features
+
+- **Automatic Batching**: Multiple `append()` calls are automatically batched together when a POST is in-flight, significantly improving throughput for high-frequency writes
+- **Streaming Reads**: `stream()` and `DurableStream.stream()` provide rich consumption options (promises, ReadableStreams, subscribers)
+- **Resumable**: Offset-based reads let you resume from any point
+- **Real-time**: Long-poll and SSE modes for live tailing with catch-up from any offset
+
 ## Usage
 
 ### Read-only: Using `stream()` (fetch-like API)
@@ -648,7 +655,7 @@ await handle.delete()
 
 #### `append(body, opts?): Promise<void>`
 
-Append data to the stream.
+Append data to the stream. By default, **automatic batching is enabled**: multiple `append()` calls made while a POST is in-flight will be batched together into a single request. This significantly improves throughput for high-frequency writes.
 
 ```typescript
 const handle = await DurableStream.connect({
@@ -663,13 +670,36 @@ await handle.append("Hello, world!")
 await handle.append("Message 1", { seq: "writer-1-001" })
 await handle.append("Message 2", { seq: "writer-1-002" })
 
-// Append JSON (as string)
-await handle.append(JSON.stringify({ event: "click", x: 100, y: 200 }))
+// For JSON streams, append objects directly (serialized automatically)
+await handle.append({ event: "click", x: 100, y: 200 })
+
+// Batching happens automatically - these may be sent in a single request
+await Promise.all([
+  handle.append({ event: "msg1" }),
+  handle.append({ event: "msg2" }),
+  handle.append({ event: "msg3" }),
+])
+```
+
+**Batching behavior:**
+
+- **JSON mode** (`contentType: "application/json"`): Multiple values are sent as a JSON array `[val1, val2, ...]`
+- **Byte mode**: Binary data is concatenated
+
+**Disabling batching:**
+
+If you need to ensure each append is sent immediately (e.g., for precise timing or debugging):
+
+```typescript
+const handle = new DurableStream({
+  url,
+  batching: false, // Disable automatic batching
+})
 ```
 
 #### `appendStream(source, opts?): Promise<void>`
 
-Append streaming data from an async iterable or ReadableStream.
+Append streaming data from an async iterable or ReadableStream. This method supports piping from any source.
 
 ```typescript
 const handle = await DurableStream.connect({
@@ -694,6 +724,25 @@ const readable = new ReadableStream({
   },
 })
 await handle.appendStream(readable)
+
+// Pipe from a fetch response body
+const response = await fetch("https://example.com/data")
+await handle.appendStream(response.body!)
+```
+
+#### `writable(opts?): WritableStream<Uint8Array | string>`
+
+Create a WritableStream that can receive piped data. Useful for stream composition:
+
+```typescript
+const handle = await DurableStream.connect({ url, auth })
+
+// Pipe from any ReadableStream
+await someReadableStream.pipeTo(handle.writable())
+
+// Pipe through a transform
+const readable = inputStream.pipeThrough(new TextEncoderStream())
+await readable.pipeTo(handle.writable())
 ```
 
 #### `stream(opts?): Promise<StreamResponse>`

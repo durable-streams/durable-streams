@@ -1,6 +1,6 @@
 import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 
 const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hostname : `localhost`}:8787`
 

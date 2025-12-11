@@ -81,7 +81,7 @@ The test UI is built with:
 - **Vite** - Fast development and build tool
 - **React** - UI library
 - **TanStack Router** - Type-safe routing
-- **@durable-streams/writer** - Read/write client library
+- **@durable-streams/client** - Read/write client library
 
 ### Project Structure
 

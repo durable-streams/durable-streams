@@ -16,7 +16,7 @@
     "link:dev": "pnpm link --global"
   },
   "dependencies": {
-    "@durable-streams/writer": "workspace:*"
+    "@durable-streams/client": "workspace:*"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
