@@ -401,6 +401,8 @@ export type DurableStreamErrorCode =
   | `UNAUTHORIZED`
   | `FORBIDDEN`
   | `RATE_LIMITED`
+  | `ALREADY_CONSUMED`
+  | `ALREADY_CLOSED`
   | `UNKNOWN`
 
 /**

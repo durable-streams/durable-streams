@@ -136,9 +136,19 @@ export class StreamResponseImpl<
   }
 
   #markConsuming(): void {
-    if (this.#state === SessionState.Ready) {
-      this.#state = SessionState.Consuming
+    if (this.#state === SessionState.Consuming) {
+      throw new DurableStreamError(
+        `StreamResponse is already being consumed. Each response can only be consumed once.`,
+        `ALREADY_CONSUMED`
+      )
     }
+    if (this.#state === SessionState.Closed) {
+      throw new DurableStreamError(
+        `StreamResponse has already been closed.`,
+        `ALREADY_CLOSED`
+      )
+    }
+    this.#state = SessionState.Consuming
   }
 
   #markClosed(): void {
