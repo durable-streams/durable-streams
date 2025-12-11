@@ -1,5 +1,5 @@
 /**
- * StreamHandle - A handle to a remote durable stream for read/write operations.
+ * DurableStream - A handle to a remote durable stream for read/write operations.
  *
  * Following the Electric Durable Stream Protocol specification.
  */
@@ -49,22 +49,9 @@ import type {
 import type { BackoffOptions } from "./fetch"
 
 /**
- * Options for StreamHandle constructor.
- * @deprecated Use StreamHandleOptions instead
+ * Options for DurableStream constructor.
  */
 export interface DurableStreamOptions extends StreamHandleOptions {
-  /**
-   * Additional query parameters to include in requests.
-   */
-  params?: {
-    [key: string]: string | (() => MaybePromise<string>) | undefined
-  }
-}
-
-/**
- * Options for StreamHandle constructor.
- */
-export interface StreamHandleConstructorOptions extends StreamHandleOptions {
   /**
    * Additional query parameters to include in requests.
    */
@@ -88,23 +75,23 @@ export interface StreamHandleConstructorOptions extends StreamHandleOptions {
  * @example
  * ```typescript
  * // Create a new stream
- * const handle = await StreamHandle.create({
+ * const stream = await DurableStream.create({
  *   url: "https://streams.example.com/my-stream",
  *   auth: { token: "my-token" },
  *   contentType: "application/json"
  * });
  *
  * // Write data
- * await handle.append({ message: "hello" });
+ * await stream.append({ message: "hello" });
  *
  * // Read with the new API
- * const res = await handle.stream<{ message: string }>();
+ * const res = await stream.stream<{ message: string }>();
  * for await (const item of res.jsonItems()) {
  *   console.log(item.message);
  * }
  * ```
  */
-export class StreamHandle {
+export class DurableStream {
   /**
    * The URL of the durable stream.
    */
@@ -115,7 +102,7 @@ export class StreamHandle {
    */
   contentType?: string
 
-  #options: StreamHandleConstructorOptions
+  #options: DurableStreamOptions
   readonly #fetchClient: typeof fetch
   readonly #sseFetchClient: typeof fetch
   #onError?: StreamErrorHandler
@@ -124,7 +111,7 @@ export class StreamHandle {
    * Create a cold handle to a stream.
    * No network IO is performed by the constructor.
    */
-  constructor(opts: StreamHandleConstructorOptions | DurableStreamOptions) {
+  constructor(opts: DurableStreamOptions) {
     validateOptions(opts)
     const urlStr = opts.url instanceof URL ? opts.url.toString() : opts.url
     this.url = urlStr
@@ -155,47 +142,41 @@ export class StreamHandle {
    * Create a new stream (create-only PUT) and return a handle.
    * Fails with DurableStreamError(code="CONFLICT_EXISTS") if it already exists.
    */
-  static async create(opts: CreateOptions): Promise<StreamHandle> {
-    const handle = new StreamHandle(opts)
-    await handle.create({
+  static async create(opts: CreateOptions): Promise<DurableStream> {
+    const stream = new DurableStream(opts)
+    await stream.create({
       contentType: opts.contentType,
       ttlSeconds: opts.ttlSeconds,
       expiresAt: opts.expiresAt,
       body: opts.body,
     })
-    return handle
+    return stream
   }
 
   /**
    * Validate that a stream exists and fetch metadata via HEAD.
    * Returns a handle with contentType populated (if sent by server).
    */
-  static async connect(
-    opts: StreamHandleConstructorOptions | StreamHandleOptions
-  ): Promise<StreamHandle> {
-    const handle = new StreamHandle(opts)
-    await handle.head()
-    return handle
+  static async connect(opts: DurableStreamOptions): Promise<DurableStream> {
+    const stream = new DurableStream(opts)
+    await stream.head()
+    return stream
   }
 
   /**
    * HEAD metadata for a stream without creating a handle.
    */
-  static async head(
-    opts: StreamHandleConstructorOptions | StreamHandleOptions
-  ): Promise<HeadResult> {
-    const handle = new StreamHandle(opts)
-    return handle.head()
+  static async head(opts: DurableStreamOptions): Promise<HeadResult> {
+    const stream = new DurableStream(opts)
+    return stream.head()
   }
 
   /**
    * Delete a stream without creating a handle.
    */
-  static async delete(
-    opts: StreamHandleConstructorOptions | StreamHandleOptions
-  ): Promise<void> {
-    const handle = new StreamHandle(opts)
-    return handle.delete()
+  static async delete(opts: DurableStreamOptions): Promise<void> {
+    const stream = new DurableStream(opts)
+    return stream.delete()
   }
 
   // ============================================================================
@@ -1261,9 +1242,7 @@ function toReadableStream(
 /**
  * Validate stream options.
  */
-function validateOptions(
-  options: Partial<DurableStreamOptions | StreamHandleConstructorOptions>
-): void {
+function validateOptions(options: Partial<DurableStreamOptions>): void {
   if (!options.url) {
     throw new MissingStreamUrlError()
   }
@@ -1271,4 +1250,3 @@ function validateOptions(
     throw new InvalidSignalError()
   }
 }
-

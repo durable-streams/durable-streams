@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, vi } from "vitest"
-import { StreamHandle } from "../src"
+import { DurableStream } from "../src"
 import { testWithStream, testWithTextStream } from "./support/test-context"
 import { decode, encode } from "./support/test-helpers"
 
@@ -27,7 +27,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         return fetch(...args)
       }
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: streamUrl,
         signal: aborter.signal,
         fetch: fetchWrapper,
@@ -97,7 +97,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         return fetch(...args)
       }
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: streamUrl,
         signal: aborter.signal,
         fetch: fetchWrapper,

@@ -7,7 +7,7 @@ TypeScript client for the Electric Durable Streams protocol.
 The Durable Streams client provides two main APIs:
 
 1. **`stream()` function** - A fetch-like read-only API for consuming streams
-2. **`StreamHandle` class** - A handle for read/write operations on a stream
+2. **`DurableStream` class** - A handle for read/write operations on a stream
 
 ## Usage
 
@@ -64,15 +64,15 @@ const unsubscribe = res.subscribeJson(async (batch) => {
 })
 ```
 
-### Read/Write: Using `StreamHandle`
+### Read/Write: Using `DurableStream`
 
 For write operations or when you need a persistent handle:
 
 ```typescript
-import { StreamHandle } from "@durable-streams/client"
+import { DurableStream } from "@durable-streams/client"
 
 // Create a new stream
-const handle = await StreamHandle.create({
+const handle = await DurableStream.create({
   url: "https://streams.example.com/my-account/chat/room-1",
   auth: { token: process.env.DS_TOKEN! },
   contentType: "application/json",
@@ -95,7 +95,7 @@ for await (const item of res.jsonItems()) {
 
 ```typescript
 // HEAD gives you the current tail offset if the server exposes it
-const handle = await StreamHandle.connect({ url, auth })
+const handle = await DurableStream.connect({ url, auth })
 const { offset } = await handle.head()
 
 // Read only new data from that point on
@@ -138,31 +138,37 @@ const res = await stream<TJson>({
 })
 ```
 
-### `StreamHandle`
+### `DurableStream`
 
 ```typescript
-class StreamHandle {
+class DurableStream {
   readonly url: string
   readonly contentType?: string
 
-  constructor(opts: StreamHandleConstructorOptions)
+  constructor(opts: DurableStreamConstructorOptions)
 
   // Static methods
-  static create(opts: CreateOptions): Promise<StreamHandle>
-  static connect(opts: StreamHandleOptions): Promise<StreamHandle>
-  static head(opts: StreamHandleOptions): Promise<HeadResult>
-  static delete(opts: StreamHandleOptions): Promise<void>
+  static create(opts: CreateOptions): Promise<DurableStream>
+  static connect(opts: DurableStreamOptions): Promise<DurableStream>
+  static head(opts: DurableStreamOptions): Promise<HeadResult>
+  static delete(opts: DurableStreamOptions): Promise<void>
 
   // Instance methods
   head(opts?: { signal?: AbortSignal }): Promise<HeadResult>
   create(opts?: CreateOptions): Promise<this>
   delete(opts?: { signal?: AbortSignal }): Promise<void>
-  append(body: BodyInit | Uint8Array | string, opts?: AppendOptions): Promise<void>
-  appendStream(source: AsyncIterable<Uint8Array | string>, opts?: AppendOptions): Promise<void>
-  
+  append(
+    body: BodyInit | Uint8Array | string,
+    opts?: AppendOptions
+  ): Promise<void>
+  appendStream(
+    source: AsyncIterable<Uint8Array | string>,
+    opts?: AppendOptions
+  ): Promise<void>
+
   // New fetch-like read API
   stream<TJson>(opts?: StreamOptions): Promise<StreamResponse<TJson>>
-  
+
   // Legacy read methods (deprecated)
   read(opts?: ReadOptions): AsyncIterable<StreamChunk>
   toReadableStream(opts?: ReadOptions): ReadableStream<StreamChunk>

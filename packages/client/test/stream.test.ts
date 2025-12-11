@@ -1,24 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
+  DurableStream,
   FetchError,
   InvalidSignalError,
   MissingStreamUrlError,
-  StreamHandle,
 } from "../src/index"
 import type { Mock } from "vitest"
 
-describe(`StreamHandle`, () => {
+describe(`DurableStream`, () => {
   describe(`constructor`, () => {
     it(`should require a URL`, () => {
       expect(() => {
         // @ts-expect-error - testing missing url
-        new StreamHandle({})
+        new DurableStream({})
       }).toThrow(MissingStreamUrlError)
     })
 
     it(`should validate signal is an AbortSignal`, () => {
       expect(() => {
-        new StreamHandle({
+        new DurableStream({
           url: `https://example.com/stream`,
           // @ts-expect-error - testing invalid signal
           signal: `not a signal`,
@@ -27,7 +27,7 @@ describe(`StreamHandle`, () => {
     })
 
     it(`should create a stream handle without network IO`, () => {
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
       })
 
@@ -36,7 +36,7 @@ describe(`StreamHandle`, () => {
     })
 
     it(`should accept auth token`, () => {
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         auth: { token: `my-token` },
       })
@@ -45,7 +45,7 @@ describe(`StreamHandle`, () => {
     })
 
     it(`should accept auth headers`, () => {
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         auth: { headers: { Authorization: `Bearer token` } },
       })
@@ -54,7 +54,7 @@ describe(`StreamHandle`, () => {
     })
 
     it(`should accept async auth headers`, () => {
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         auth: {
           getHeaders: async () => ({ Authorization: `Bearer token` }),
@@ -66,7 +66,7 @@ describe(`StreamHandle`, () => {
 
     it(`should accept custom fetch client`, () => {
       const customFetch = vi.fn()
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: customFetch,
       })
@@ -76,7 +76,7 @@ describe(`StreamHandle`, () => {
 
     it(`should accept AbortSignal`, () => {
       const controller = new AbortController()
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         signal: controller.signal,
       })
@@ -104,7 +104,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -130,13 +130,13 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
 
       // Note: The backoff wrapper throws FetchError for 4xx errors
-      // before StreamHandle can convert to StreamHandleError
+      // before DurableStream can convert to DurableStreamError
       await expect(stream.head()).rejects.toThrow(FetchError)
     })
 
@@ -150,7 +150,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -181,7 +181,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -212,7 +212,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -235,7 +235,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -270,7 +270,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -292,7 +292,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -306,7 +306,7 @@ describe(`StreamHandle`, () => {
   })
 
   describe(`static methods`, () => {
-    it(`StreamHandle.connect should validate and return handle`, async () => {
+    it(`DurableStream.connect should validate and return handle`, async () => {
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(null, {
           status: 200,
@@ -314,7 +314,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = await StreamHandle.connect({
+      const stream = await DurableStream.connect({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -326,7 +326,7 @@ describe(`StreamHandle`, () => {
       )
     })
 
-    it(`StreamHandle.head should return metadata without handle`, async () => {
+    it(`DurableStream.head should return metadata without handle`, async () => {
       const mockFetch = vi.fn().mockResolvedValue(
         new Response(null, {
           status: 200,
@@ -337,7 +337,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const result = await StreamHandle.head({
+      const result = await DurableStream.head({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
@@ -357,7 +357,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
         auth: { token: `my-secret-token` },
@@ -383,7 +383,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
         auth: { token: `my-token`, headerName: `x-api-key` },
@@ -409,7 +409,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
         auth: { headers: { Authorization: `Basic abc123` } },
@@ -435,7 +435,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
         auth: {
@@ -467,7 +467,7 @@ describe(`StreamHandle`, () => {
         })
       )
 
-      const stream = new StreamHandle({
+      const stream = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
         params: {
@@ -481,6 +481,195 @@ describe(`StreamHandle`, () => {
       const calledUrl = mockFetch.mock.calls[0]![0] as string
       expect(calledUrl).toContain(`tenant=acme`)
       expect(calledUrl).toContain(`version=v1`)
+    })
+  })
+
+  describe(`create`, () => {
+    it(`should create a stream with PUT request`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 201,
+          headers: { "content-type": `application/json` },
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await stream.create({ contentType: `application/json` })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          method: `PUT`,
+          headers: expect.objectContaining({
+            "content-type": `application/json`,
+          }),
+        })
+      )
+    })
+
+    it(`should set TTL header when provided`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 201,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await stream.create({ ttlSeconds: 3600 })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "Stream-TTL": `3600`,
+          }),
+        })
+      )
+    })
+
+    it(`should throw on conflict (409)`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 409,
+          statusText: `Conflict`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await expect(stream.create()).rejects.toThrow()
+    })
+  })
+
+  describe(`append`, () => {
+    it(`should append data with POST request`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        contentType: `text/plain`,
+      })
+
+      await stream.append(`hello world`)
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: `POST` })
+      )
+      // Verify body was sent (encoded as Uint8Array)
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      expect(callArgs.body).toBeInstanceOf(Uint8Array)
+    })
+
+    it(`should include seq header when provided`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await stream.append(`data`, { seq: `writer-1-001` })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            "Stream-Seq": `writer-1-001`,
+          }),
+        })
+      )
+    })
+
+    it(`should throw on 404`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 404,
+          statusText: `Not Found`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await expect(stream.append(`data`)).rejects.toThrow(FetchError)
+    })
+
+    it(`should throw on seq conflict (409)`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 409,
+          statusText: `Conflict`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await expect(stream.append(`data`, { seq: `old-seq` })).rejects.toThrow()
+    })
+  })
+
+  describe(`delete`, () => {
+    it(`should delete stream with DELETE request`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await stream.delete()
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ method: `DELETE` })
+      )
+    })
+
+    it(`should throw on 404`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 404,
+          statusText: `Not Found`,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await expect(stream.delete()).rejects.toThrow(FetchError)
     })
   })
 })

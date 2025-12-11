@@ -20,11 +20,8 @@ export { StreamResponseImpl } from "./response"
 // Handle API (read/write)
 // ============================================================================
 
-// StreamHandle class for read/write operations
-export {
-  StreamHandle,
-  type StreamHandleConstructorOptions,
-} from "./stream"
+// DurableStream class for read/write operations
+export { DurableStream, type DurableStreamOptions } from "./stream"
 
 // ============================================================================
 // Types

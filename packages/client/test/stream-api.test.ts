@@ -3,7 +3,6 @@ import {
   FetchError,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
-  StreamHandle,
   stream,
 } from "../src/index"
 import type { Mock } from "vitest"
@@ -285,52 +284,44 @@ describe(`stream() function`, () => {
   })
 })
 
-describe(`StreamHandle`, () => {
+describe(`DurableStream.stream() method`, () => {
   let mockFetch: Mock<typeof fetch>
 
   beforeEach(() => {
     mockFetch = vi.fn()
   })
 
-  describe(`stream() method`, () => {
-    it(`should start a stream session using handle URL and auth`, async () => {
-      // First call for connect HEAD
-      mockFetch.mockResolvedValueOnce(
-        new Response(null, {
-          status: 200,
-          headers: { "content-type": `application/json` },
-        })
-      )
-
-      // Second call for stream GET
-      mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify([{ id: 1 }]), {
-          status: 200,
-          headers: {
-            "content-type": `application/json`,
-            [STREAM_OFFSET_HEADER]: `1_10`,
-            [STREAM_UP_TO_DATE_HEADER]: `true`,
-          },
-        })
-      )
-
-      const handle = await StreamHandle.connect({
-        url: `https://example.com/stream`,
-        fetch: mockFetch,
-        auth: { token: `handle-token` },
+  it(`should start a stream session using handle URL and auth`, async () => {
+    // First call for connect HEAD
+    mockFetch.mockResolvedValueOnce(
+      new Response(null, {
+        status: 200,
+        headers: { "content-type": `application/json` },
       })
+    )
 
-      const res = await handle.stream<{ id: number }>()
+    // Second call for stream GET
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: 1 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_10`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    )
 
-      expect(res.url).toBe(`https://example.com/stream`)
-      expect(res.contentType).toBe(`application/json`)
+    const { DurableStream } = await import(`../src/index`)
+    const handle = await DurableStream.connect({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      auth: { token: `handle-token` },
     })
-  })
 
-  describe(`backward compatibility`, () => {
-    it(`should export DurableStream as alias for StreamHandle`, async () => {
-      const { DurableStream } = await import(`../src/index`)
-      expect(DurableStream).toBe(StreamHandle)
-    })
+    const res = await handle.stream<{ id: number }>()
+
+    expect(res.url).toBe(`https://example.com/stream`)
+    expect(res.contentType).toBe(`application/json`)
   })
 })
