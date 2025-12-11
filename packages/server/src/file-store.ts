@@ -782,9 +782,11 @@ export class FileBackedStreamStore {
   }
 
   clear(): void {
-    // Cancel all pending long-polls
+    // Cancel all pending long-polls and resolve them with empty result
     for (const pending of this.pendingLongPolls) {
       clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
     }
     this.pendingLongPolls = []
 
@@ -811,6 +813,18 @@ export class FileBackedStreamStore {
 
     // Note: Files are not deleted in clear() with unique directory names
     // New streams get fresh directories, so old files won't interfere
+  }
+
+  /**
+   * Cancel all pending long-polls (used during shutdown).
+   */
+  cancelAllWaits(): void {
+    for (const pending of this.pendingLongPolls) {
+      clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
+    }
+    this.pendingLongPolls = []
   }
 
   list(): Array<string> {

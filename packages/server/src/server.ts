@@ -36,6 +36,8 @@ export class DurableStreamTestServer {
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>
   }
   private _url: string | null = null
+  private activeSSEResponses = new Set<ServerResponse>()
+  private isShuttingDown = false
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -98,6 +100,20 @@ export class DurableStreamTestServer {
       return
     }
 
+    // Mark as shutting down to stop SSE handlers
+    this.isShuttingDown = true
+
+    // Cancel all pending long-polls and SSE waits to unblock connection handlers
+    if (`cancelAllWaits` in this.store) {
+      ;(this.store as { cancelAllWaits: () => void }).cancelAllWaits()
+    }
+
+    // Force-close all active SSE connections
+    for (const res of this.activeSSEResponses) {
+      res.end()
+    }
+    this.activeSSEResponses.clear()
+
     return new Promise((resolve, reject) => {
       this.server!.close(async (err) => {
         if (err) {
@@ -113,6 +129,7 @@ export class DurableStreamTestServer {
 
           this.server = null
           this._url = null
+          this.isShuttingDown = false
           resolve()
         } catch (closeErr) {
           reject(closeErr)
@@ -403,10 +420,18 @@ export class DurableStreamTestServer {
       }
     }
 
-    // Require offset parameter for long-poll per protocol spec
-    if (live === `long-poll` && !offset) {
+    // Require offset parameter for long-poll and SSE per protocol spec
+    if ((live === `long-poll` || live === `sse`) && !offset) {
       res.writeHead(400, { "content-type": `text/plain` })
-      res.end(`Long-poll requires offset parameter`)
+      res.end(
+        `${live === `sse` ? `SSE` : `Long-poll`} requires offset parameter`
+      )
+      return
+    }
+
+    // Handle SSE mode
+    if (live === `sse`) {
+      await this.handleSSE(path, stream, offset!, cursor, res)
       return
     }
 
@@ -465,6 +490,106 @@ export class DurableStreamTestServer {
 
     res.writeHead(200, headers)
     res.end(Buffer.from(responseData))
+  }
+
+  /**
+   * Handle SSE (Server-Sent Events) mode
+   */
+  private async handleSSE(
+    path: string,
+    stream: ReturnType<StreamStore[`get`]>,
+    initialOffset: string,
+    cursor: string | undefined,
+    res: ServerResponse
+  ): Promise<void> {
+    // Track this SSE connection
+    this.activeSSEResponses.add(res)
+
+    // Set SSE headers
+    res.writeHead(200, {
+      "content-type": `text/event-stream`,
+      "cache-control": `no-cache`,
+      connection: `keep-alive`,
+      "access-control-allow-origin": `*`,
+    })
+
+    let currentOffset = initialOffset
+    let isConnected = true
+
+    // Handle client disconnect
+    res.on(`close`, () => {
+      isConnected = false
+      this.activeSSEResponses.delete(res)
+    })
+
+    // Get content type for formatting
+    const isJsonStream = stream?.contentType?.includes(`application/json`)
+
+    // Send initial data and then wait for more
+    // Note: isConnected and isShuttingDown can change asynchronously
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (isConnected && !this.isShuttingDown) {
+      // Read current messages from offset
+      const { messages, upToDate } = this.store.read(path, currentOffset)
+
+      // Send data events for each message
+      for (const message of messages) {
+        // Format data based on content type
+        let dataPayload: string
+        if (isJsonStream) {
+          // Wrap JSON in array brackets for SSE
+          dataPayload = `[${new TextDecoder().decode(message.data)}]`
+        } else {
+          dataPayload = new TextDecoder().decode(message.data)
+        }
+
+        // Send data event
+        res.write(`event: data\n`)
+        res.write(`data: ${dataPayload}\n\n`)
+
+        currentOffset = message.offset
+      }
+
+      // Send control event with current offset/cursor
+      const controlData: Record<string, string> = {
+        [STREAM_OFFSET_HEADER]: currentOffset,
+      }
+      if (cursor) {
+        controlData[STREAM_CURSOR_HEADER] = cursor
+      }
+
+      res.write(`event: control\n`)
+      res.write(`data: ${JSON.stringify(controlData)}\n\n`)
+
+      // If caught up, wait for new messages
+      if (upToDate) {
+        const result = await this.store.waitForMessages(
+          path,
+          currentOffset,
+          this.options.longPollTimeout
+        )
+
+        // Check if we should exit after wait returns (values can change during await)
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (this.isShuttingDown || !isConnected) break
+
+        if (result.timedOut) {
+          // Send keep-alive control event on timeout
+          const keepAliveData: Record<string, string> = {
+            [STREAM_OFFSET_HEADER]: currentOffset,
+          }
+          if (cursor) {
+            keepAliveData[STREAM_CURSOR_HEADER] = cursor
+          }
+          res.write(`event: control\n`)
+          res.write(`data: ${JSON.stringify(keepAliveData)}\n\n`)
+        }
+        // Loop will continue and read new messages
+      }
+    }
+
+    this.activeSSEResponses.delete(res)
+    res.end()
   }
 
   /**

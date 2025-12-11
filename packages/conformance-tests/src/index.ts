@@ -2187,6 +2187,379 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
+  // SSE (Server-Sent Events) Mode
+  // ============================================================================
+
+  describe(`SSE Mode`, () => {
+    test(`should return text/event-stream content-type for SSE requests`, async () => {
+      const streamPath = `/v1/stream/sse-content-type-test-${Date.now()}`
+
+      // Create stream with text/plain content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Make SSE request with AbortController to avoid hanging
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            headers: { Accept: `text/event-stream` },
+            signal: controller.signal,
+          }
+        )
+
+        clearTimeout(timeoutId)
+        expect(response.status).toBe(200)
+        expect(response.headers.get(`content-type`)).toBe(`text/event-stream`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        // AbortError is expected when we cancel the SSE stream
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should accept live=sse query parameter for application/json`, async () => {
+      const streamPath = `/v1/stream/sse-json-test-${Date.now()}`
+
+      // Create stream with application/json content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ message: `hello` }),
+      })
+
+      // Make SSE request with AbortController
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            headers: { Accept: `text/event-stream` },
+            signal: controller.signal,
+          }
+        )
+
+        clearTimeout(timeoutId)
+        expect(response.status).toBe(200)
+        expect(response.headers.get(`content-type`)).toBe(`text/event-stream`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should require offset parameter for SSE mode`, async () => {
+      const streamPath = `/v1/stream/sse-no-offset-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // SSE without offset should fail (similar to long-poll)
+      const response = await fetch(`${getBaseUrl()}${streamPath}?live=sse`, {
+        method: `GET`,
+      })
+
+      // Should return 400 (offset required for live modes)
+      expect(response.status).toBe(400)
+    })
+
+    test(`client should reject SSE mode for incompatible content types`, async () => {
+      const streamPath = `/v1/stream/sse-binary-test-${Date.now()}`
+
+      // Create stream with binary content type (not SSE compatible)
+      const stream = await DurableStream.create({
+        url: `${getBaseUrl()}${streamPath}`,
+        contentType: `application/octet-stream`,
+      })
+
+      // Append some binary data
+      await stream.append(new Uint8Array([0x01, 0x02, 0x03]))
+
+      // Trying to read via SSE mode should throw
+      await expect(async () => {
+        for await (const _chunk of stream.read({ live: `sse` })) {
+          // Should throw before yielding
+        }
+      }).rejects.toThrow()
+    })
+
+    test(`should stream data events via SSE`, async () => {
+      const streamPath = `/v1/stream/sse-data-stream-test-${Date.now()}`
+
+      // Create stream with text/plain content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `message one`,
+      })
+
+      // Append more data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `message two`,
+      })
+
+      // Make SSE request and read the response body
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 2000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Read partial response
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let received = ``
+
+        // Read a few chunks to verify SSE format
+        for (let i = 0; i < 5; i++) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+        }
+
+        clearTimeout(timeoutId)
+        reader.cancel()
+
+        // Verify SSE format: should contain event: and data: lines
+        expect(received).toContain(`event:`)
+        expect(received).toContain(`data:`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should send control events with offset`, async () => {
+      const streamPath = `/v1/stream/sse-control-event-test-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Make SSE request
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 2000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Read response
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let received = ``
+
+        // Read chunks until we see a control event
+        for (let i = 0; i < 10; i++) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+          if (received.includes(`event: control`)) break
+        }
+
+        clearTimeout(timeoutId)
+        reader.cancel()
+
+        // Verify control event format
+        expect(received).toContain(`event: control`)
+        expect(received).toContain(`Stream-Next-Offset`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should accept cursor parameter in SSE mode`, async () => {
+      const streamPath = `/v1/stream/sse-cursor-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // SSE request with cursor should be accepted
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&cursor=test-cursor-456`,
+          {
+            method: `GET`,
+          }
+        )
+
+        clearTimeout(timeoutId)
+        expect(response.status).toBe(200)
+
+        // Read a bit and verify cursor is echoed in control event
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let received = ``
+
+        for (let i = 0; i < 10; i++) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+          if (received.includes(`Stream-Cursor`)) break
+        }
+
+        reader.cancel()
+
+        // Cursor should be echoed in control events
+        expect(received).toContain(`test-cursor-456`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should wrap JSON data in arrays for SSE`, async () => {
+      const streamPath = `/v1/stream/sse-json-wrap-test-${Date.now()}`
+
+      // Create JSON stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ id: 1, message: `hello` }),
+      })
+
+      // Make SSE request
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 2000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Read response
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let received = ``
+
+        for (let i = 0; i < 10; i++) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+          if (received.includes(`event: data`)) break
+        }
+
+        clearTimeout(timeoutId)
+        reader.cancel()
+
+        // JSON data should be wrapped in array brackets
+        expect(received).toContain(`event: data`)
+        // The data line should contain the JSON wrapped in []
+        expect(received).toMatch(/data:.*\[.*\{.*"id".*:.*1.*\}.*\]/)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+
+    test(`should handle SSE for empty stream`, async () => {
+      const streamPath = `/v1/stream/sse-empty-test-${Date.now()}`
+
+      // Create empty stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Make SSE request
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 1000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Read a bit
+        const reader = response.body!.getReader()
+        const decoder = new TextDecoder()
+        let received = ``
+
+        for (let i = 0; i < 5; i++) {
+          const { done, value } = await reader.read()
+          if (done) break
+          received += decoder.decode(value, { stream: true })
+          if (received.includes(`event: control`)) break
+        }
+
+        clearTimeout(timeoutId)
+        reader.cancel()
+
+        // Should get a control event even for empty stream
+        expect(received).toContain(`event: control`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+      }
+    })
+  })
+
+  // ============================================================================
   // JSON Mode
   // ============================================================================
 
