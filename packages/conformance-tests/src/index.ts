@@ -2515,6 +2515,147 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(response.status).toBe(412)
     })
+
+    test(`should accept quoted If-Match values`, async () => {
+      const streamPath = `/v1/stream/occ-quoted-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const offset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Append with quoted If-Match (per RFC 9110, ETags should be quoted)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `"${offset}"`, // Quoted
+        },
+        body: `test with quoted if-match`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should accept unquoted If-Match values`, async () => {
+      const streamPath = `/v1/stream/occ-unquoted-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const offset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Append with unquoted If-Match (common in practice)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": offset!, // Unquoted
+        },
+        body: `test with unquoted if-match`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should handle concurrent first appends with If-Match (race condition)`, async () => {
+      const streamPath = `/v1/stream/occ-race-test-${Date.now()}`
+
+      // Create empty stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const initialOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(initialOffset).toBeDefined()
+
+      // Simulate two clients racing to append with the same initial offset
+      const [response1, response2] = await Promise.all([
+        fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "If-Match": initialOffset!,
+          },
+          body: `client1`,
+        }),
+        fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "If-Match": initialOffset!,
+          },
+          body: `client2`,
+        }),
+      ])
+
+      // Exactly one should succeed (200/204), one should fail (412)
+      const statuses = [response1.status, response2.status].sort(
+        (a, b) => a - b
+      )
+
+      // First status should be success (200 or 204), second should be 412
+      expect([200, 204]).toContain(statuses[0])
+      expect(statuses[1]).toBe(412)
+
+      // The successful response should return the new offset
+      const successResponse = [200, 204].includes(response1.status)
+        ? response1
+        : response2
+      expect(successResponse.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // The failed response should also return the current offset for retry
+      const failedResponse = response1.status === 412 ? response1 : response2
+      expect(failedResponse.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+    })
+
+    test(`should reject If-Match: * on non-existent stream`, async () => {
+      const streamPath = `/v1/stream/occ-wildcard-nonexistent-${Date.now()}`
+
+      // Try to append with If-Match: * to non-existent stream
+      // Per RFC 9110, If-Match: * means "only if resource exists"
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `*`,
+        },
+        body: `should fail`,
+      })
+
+      // Should fail - either 404 (not found) or 412 (precondition failed)
+      expect([404, 412]).toContain(response.status)
+    })
+
+    test(`should handle If-Match: * on existing stream`, async () => {
+      const streamPath = `/v1/stream/occ-wildcard-existing-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with If-Match: * - should succeed since stream exists
+      // (or server may reject wildcard with 400 if not supported)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `*`,
+        },
+        body: `wildcard append`,
+      })
+
+      // May succeed (200/204) if wildcard supported, or 400 if not
+      expect([200, 204, 400]).toContain(response.status)
+    })
   })
 
   // ============================================================================

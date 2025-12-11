@@ -178,7 +178,9 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 - `If-Match: <offset>` (optional)
   - Enables optimistic concurrency control (OCC) for the append operation.
   - The value **MUST** be the expected current tail offset of the stream (i.e., the `Stream-Next-Offset` value from a previous response).
+  - The value **MAY** be quoted (e.g., `If-Match: "abc123"`) or unquoted (e.g., `If-Match: abc123`). Servers **MUST** accept both formats for compatibility with different HTTP clients.
   - If the stream's current tail offset does not match the provided value, the server **MUST** return `412 Precondition Failed`.
+  - The special value `*` (asterisk) means "match any existing resource". When `If-Match: *` is provided, the server **MUST** return `412 Precondition Failed` if the stream does not exist, or succeed if it does. Servers **MAY** reject `*` with `400 Bad Request` if they choose not to support this wildcard.
   - This allows clients to detect concurrent modifications and implement compare-and-swap semantics.
   - **Use case**: When multiple writers may append to the same stream, `If-Match` ensures an append only succeeds if no other writer has modified the stream since the client last observed it.
 
@@ -200,7 +202,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
-- `ETag: <offset>` (optional): The new tail offset, suitable for use in a subsequent `If-Match` header. Servers **MAY** include this to simplify OCC workflows.
+- `ETag: "<offset>"` (optional): The new tail offset as a quoted string (per RFC 9110), suitable for use in a subsequent `If-Match` header. Servers **MAY** include this to simplify OCC workflows. If provided, the ETag value **MUST** be a strong ETag (no `W/` prefix) since append-only streams require byte-level precision.
 
 #### Response Headers (on 412 Precondition Failed)
 
