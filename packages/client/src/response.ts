@@ -263,37 +263,32 @@ export class StreamResponseImpl<
     this.#markConsuming()
     this.#stopAfterUpToDate = true
 
-    const chunks: Array<Uint8Array> = []
+    const blobs: Array<Blob> = []
 
     for await (const response of this.#generateResponses()) {
-      // Use the efficient arrayBuffer() method on Response
-      const buffer = await response.arrayBuffer()
-      if (buffer.byteLength > 0) {
-        chunks.push(new Uint8Array(buffer))
+      // Get blob directly - no copy needed
+      const blob = await response.blob()
+      if (blob.size > 0) {
+        blobs.push(blob)
       }
       if (this.upToDate) break
     }
 
-    // Concatenate all chunks
-    if (chunks.length === 0) {
-      this.#markClosed()
+    this.#markClosed()
+
+    // No data
+    if (blobs.length === 0) {
       return new Uint8Array(0)
     }
-    if (chunks.length === 1) {
-      this.#markClosed()
-      return chunks[0]!
+
+    // Single blob - get arrayBuffer directly (no concatenation needed)
+    if (blobs.length === 1) {
+      return new Uint8Array(await blobs[0]!.arrayBuffer())
     }
 
-    const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
-    const result = new Uint8Array(totalLength)
-    let offset = 0
-    for (const chunk of chunks) {
-      result.set(chunk, offset)
-      offset += chunk.length
-    }
-
-    this.#markClosed()
-    return result
+    // Multiple blobs - use Blob constructor to concatenate (no manual copying)
+    const combined = new Blob(blobs)
+    return new Uint8Array(await combined.arrayBuffer())
   }
 
   async json(): Promise<Array<TJson>> {
@@ -343,6 +338,32 @@ export class StreamResponseImpl<
 
   bodyStream(): ReadableStream<Uint8Array> {
     this.#markConsuming()
+
+    // Optimization: If we have the first response and won't need more,
+    // just return the response body directly - zero copy!
+    if (this.upToDate && !this.#shouldContinueLive() && this.#firstResponse) {
+      const response = this.#takeFirstResponse()!
+      const body = response.body
+      if (body) {
+        // Wrap to handle cleanup on completion
+        const self = this
+        return body.pipeThrough(
+          new TransformStream<Uint8Array, Uint8Array>({
+            flush() {
+              self.#markClosed()
+            },
+          })
+        )
+      }
+      this.#markClosed()
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.close()
+        },
+      })
+    }
+
+    // Multiple responses case: need to concatenate streams
     const self = this
     const responseGenerator = this.#generateResponses()
     let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
