@@ -22,7 +22,7 @@ function RootLayout() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const SERVER_URL = `http://${window.location.hostname}:8787`
+  const SERVER_URL = `http://${window.location.hostname}:4437`
 
   useEffect(() => {
     void loadStreamsFromRegistry()

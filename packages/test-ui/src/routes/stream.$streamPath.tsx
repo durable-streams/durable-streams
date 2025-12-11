@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 import { DurableStream } from "@durable-streams/writer"
 
-const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hostname : `localhost`}:8787`
+const SERVER_URL = `http://${typeof window !== `undefined` ? window.location.hostname : `localhost`}:4437`
 
 export const Route = createFileRoute(`/stream/$streamPath`)({
   loader: async ({ params }) => {

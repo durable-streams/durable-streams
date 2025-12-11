@@ -39,13 +39,13 @@ The easiest way to get started is to run the local development server and use th
 pnpm start:dev
 ```
 
-This will start a Durable Streams server at `http://localhost:8787` with live reloading.
+This will start a Durable Streams server at `http://localhost:4437` with live reloading.
 
 ### Terminal 2: Use the CLI
 
 ```bash
-# Set the server URL (optional, defaults to http://localhost:8787)
-export STREAM_URL=http://localhost:8787
+# Set the server URL (optional, defaults to http://localhost:4437)
+export STREAM_URL=http://localhost:4437
 
 # Create a stream
 durable-stream-dev create my-stream
@@ -61,7 +61,7 @@ durable-stream-dev read my-stream
 
 ### Environment Variables
 
-- `STREAM_URL` - Base URL of the stream server (default: `http://localhost:8787`)
+- `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437`)
 
 ### Commands
 
@@ -102,11 +102,11 @@ durable-stream-dev delete <stream_id>
 pnpm start:dev
 
 # Terminal 2: Set up the stream
-export STREAM_URL=http://localhost:8787
+export STREAM_URL=http://localhost:4437
 durable-stream-dev create test-stream
 
 # Terminal 3: Start reading (will show data as it arrives)
-export STREAM_URL=http://localhost:8787
+export STREAM_URL=http://localhost:4437
 durable-stream-dev read test-stream
 
 # Back in Terminal 2: Write data and watch it appear in Terminal 3

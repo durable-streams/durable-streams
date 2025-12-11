@@ -48,7 +48,7 @@ export class DurableStreamTestServer {
     }
 
     this.options = {
-      port: options.port ?? 0,
+      port: options.port ?? 4437,
       host: options.host ?? `127.0.0.1`,
       longPollTimeout: options.longPollTimeout ?? 30_000,
       dataDir: options.dataDir,

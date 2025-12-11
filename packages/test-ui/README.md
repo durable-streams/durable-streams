@@ -110,7 +110,7 @@ import {
 } from "@durable-streams/server"
 
 const server = new DurableStreamTestServer({
-  port: 8787,
+  port: 4437,
   host: `127.0.0.1`,
 })
 
@@ -134,7 +134,7 @@ Outputs to `dist/` directory.
 
 ## Notes
 
-- The server must be running on `http://localhost:8787` for the UI to work
+- The server must be running on `http://localhost:4437` for the UI to work
 - Stream paths are automatically prefixed with `/v1/stream/`
 - The `__registry__` stream is excluded from the stream list
 - Press Enter in the write box to send messages (Shift+Enter for newlines)

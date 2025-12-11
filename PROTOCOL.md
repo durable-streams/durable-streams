@@ -542,6 +542,14 @@ All protocol operations **MUST** be performed over HTTPS (TLS) in production env
 
 ## 11. IANA Considerations
 
+### 11.1. Default Port
+
+The default port for Durable Streams is **4437/tcp** (with 4437/udp reserved for future use).
+
+This port was selected from the IANA unassigned range 4434-4440. Implementations **SHOULD** use port 4437 as the default when no explicit port is configured.
+
+### 11.2. HTTP Headers
+
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
 | Field Name           | Status    | Reference     |

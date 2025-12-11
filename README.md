@@ -112,7 +112,7 @@ pnpm start:dev
 pnpm link:dev
 
 # Set the server URL
-export STREAM_URL=http://localhost:8787
+export STREAM_URL=http://localhost:4437
 
 # Create a stream
 durable-stream-dev create my-stream
@@ -443,7 +443,7 @@ We encourage implementations in other languages and environments (Go, Rust, Pyth
 import { runConformanceTests } from "@durable-streams/conformance-tests"
 
 runConformanceTests({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
 })
 ```
 
@@ -453,7 +453,7 @@ runConformanceTests({
 import { createDurableStreamServer } from "@durable-streams/server"
 
 const server = createDurableStreamServer({
-  port: 8787,
+  port: 4437,
   // In-memory storage (for development)
   // Add file-backed storage for production
 })
@@ -466,7 +466,7 @@ See [@durable-streams/server](./packages/server) for more details.
 ## CLI Tool
 
 ```bash
-# Set the server URL (defaults to http://localhost:8787)
+# Set the server URL (defaults to http://localhost:4437)
 export STREAM_URL=https://your-server.com
 ```
 
@@ -540,7 +540,7 @@ Use the conformance test suite to verify your server implements the protocol cor
 import { runConformanceTests } from "@durable-streams/conformance-tests"
 
 runConformanceTests({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
 })
 ```
 
@@ -552,7 +552,7 @@ Measure your server's performance:
 import { runBenchmarks } from "@durable-streams/benchmarks"
 
 runBenchmarks({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
   environment: "local",
 })
 ```

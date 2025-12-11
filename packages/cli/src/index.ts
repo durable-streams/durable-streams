@@ -3,7 +3,7 @@
 import { stderr, stdin, stdout } from "node:process"
 import { DurableStream } from "@durable-streams/writer"
 
-const STREAM_URL = process.env.STREAM_URL || `http://localhost:8787`
+const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 
 function printUsage() {
   console.error(`
@@ -15,7 +15,7 @@ Usage:
   durable-stream delete <stream_id>              Delete a stream
 
 Environment Variables:
-  STREAM_URL    Base URL of the stream server (default: http://localhost:8787)
+  STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
 `)
 }
 
