@@ -342,8 +342,7 @@ export class StreamResponseImpl<
     const self = this
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
 
-    // Pipe all response bodies into the writable side in background
-    ;(async () => {
+    const pipeBodyStream = async (): Promise<void> => {
       try {
         for await (const response of self.#generateResponses()) {
           const body = response.body
@@ -381,7 +380,9 @@ export class StreamResponseImpl<
           self.#markError(err instanceof Error ? err : new Error(String(err)))
         }
       }
-    })()
+    }
+
+    void pipeBodyStream()
 
     return readable
   }
@@ -481,8 +482,7 @@ export class StreamResponseImpl<
     const abortController = new AbortController()
     const self = this
 
-    // Start consuming in the background
-    ;(async () => {
+    const consumeJsonSubscription = async (): Promise<void> => {
       try {
         for await (const response of self.#generateResponses()) {
           if (abortController.signal.aborted) break
@@ -502,7 +502,9 @@ export class StreamResponseImpl<
         // Ignore errors after unsubscribe
         if (!abortController.signal.aborted) throw e
       }
-    })()
+    }
+
+    void consumeJsonSubscription()
 
     return () => {
       abortController.abort()
@@ -514,7 +516,7 @@ export class StreamResponseImpl<
     const abortController = new AbortController()
     const self = this
 
-    ;(async () => {
+    const consumeBytesSubscription = async (): Promise<void> => {
       try {
         for await (const response of self.#generateResponses()) {
           if (abortController.signal.aborted) break
@@ -531,7 +533,9 @@ export class StreamResponseImpl<
       } catch (e) {
         if (!abortController.signal.aborted) throw e
       }
-    })()
+    }
+
+    void consumeBytesSubscription()
 
     return () => {
       abortController.abort()
@@ -543,7 +547,7 @@ export class StreamResponseImpl<
     const abortController = new AbortController()
     const self = this
 
-    ;(async () => {
+    const consumeTextSubscription = async (): Promise<void> => {
       try {
         for await (const response of self.#generateResponses()) {
           if (abortController.signal.aborted) break
@@ -560,7 +564,9 @@ export class StreamResponseImpl<
       } catch (e) {
         if (!abortController.signal.aborted) throw e
       }
-    })()
+    }
+
+    void consumeTextSubscription()
 
     return () => {
       abortController.abort()
