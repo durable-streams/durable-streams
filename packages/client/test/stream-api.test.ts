@@ -227,6 +227,117 @@ describe(`stream() function`, () => {
     })
   })
 
+  describe(`first request semantics`, () => {
+    it(`should reject on 401 auth failure`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(null, {
+          status: 401,
+          statusText: `Unauthorized`,
+        })
+      )
+
+      await expect(
+        stream({
+          url: `https://example.com/stream`,
+          fetchClient: mockFetch,
+        })
+      ).rejects.toThrow(FetchError)
+    })
+
+    it(`should reject on 403 forbidden error`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(null, {
+          status: 403,
+          statusText: `Forbidden`,
+        })
+      )
+
+      await expect(
+        stream({
+          url: `https://example.com/stream`,
+          fetchClient: mockFetch,
+        })
+      ).rejects.toThrow(FetchError)
+    })
+
+    it(`should not call arrayBuffer until consumption method is called`, async () => {
+      const responseData = `hello world`
+      const mockResponse = new Response(responseData, {
+        status: 200,
+        headers: {
+          [STREAM_OFFSET_HEADER]: `1_11`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+
+      // Spy on arrayBuffer method
+      const arrayBufferSpy = vi.spyOn(mockResponse, `arrayBuffer`)
+
+      mockFetch.mockResolvedValue(mockResponse)
+
+      // Call stream() - should resolve without calling arrayBuffer
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+      })
+
+      // At this point, arrayBuffer should NOT have been called
+      expect(arrayBufferSpy).not.toHaveBeenCalled()
+      expect(res.url).toBe(`https://example.com/stream`)
+
+      // Now consume the body
+      await res.text()
+
+      // Now arrayBuffer should have been called
+      expect(arrayBufferSpy).toHaveBeenCalled()
+    })
+
+    it(`should resolve with correct state from first response headers`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`data`, {
+          status: 200,
+          headers: {
+            "content-type": `text/plain`,
+            [STREAM_OFFSET_HEADER]: `5_100`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        offset: `5_50`,
+      })
+
+      // Verify state is extracted from first response headers
+      expect(res.offset).toBe(`5_100`)
+      expect(res.upToDate).toBe(true)
+      expect(res.startOffset).toBe(`5_50`)
+      expect(res.contentType).toBe(`text/plain`)
+    })
+
+    it(`should only make one request when stream() resolves`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`data`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `1_4`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+      })
+
+      // Only one request should have been made
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+    })
+  })
+
   describe(`auth`, () => {
     it(`should include token auth header`, async () => {
       mockFetch.mockResolvedValue(
