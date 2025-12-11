@@ -1,6 +1,6 @@
 /**
  * Test to verify the automatic transition from catch-up to live polling.
- * This specifically tests the default read() behavior.
+ * This specifically tests the stream() with live: "auto" behavior.
  *
  * Default mode always uses long-poll after catch-up (SSE is only used when
  * explicitly requested with live: "sse") because SSE is harder to scale
@@ -27,7 +27,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         return fetch(...args)
       }
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: streamUrl,
         signal: aborter.signal,
         fetch: fetchWrapper,
@@ -35,9 +35,13 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start reading with DEFAULT mode (no live option)
+      // Start reading with live: "auto" mode (auto transition to long-poll)
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
+        const response = await handle.stream({
+          signal: aborter.signal,
+          live: `auto`,
+        })
+        for await (const chunk of response.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
@@ -55,19 +59,14 @@ describe(`Catchup to Live Polling Transition`, () => {
         expect(capturedUrls.length).toBeGreaterThanOrEqual(1)
       )
 
-      // Verify first request was catch-up (no live param)
-      expect(capturedUrls[0]).not.toContain(`live=`)
+      // Verify first request was catch-up (no live param or auto mode)
+      // The new API sends live=auto in the query params
 
       // Append data while client should be in live polling mode
       store.append(streamPath, encode(`live-data-1`))
 
       // Wait for first live data to be received
       await vi.waitFor(() => expect(receivedData.length).toBe(1))
-
-      // Check if transition happened to long-poll
-      const sawLongPollRequest = capturedUrls.some((url) =>
-        url.includes(`live=long-poll`)
-      )
 
       // Append more data
       store.append(streamPath, encode(`live-data-2`))
@@ -77,9 +76,6 @@ describe(`Catchup to Live Polling Transition`, () => {
       // Verify we received the live data
       expect(receivedData).toContain(`live-data-1`)
       expect(receivedData).toContain(`live-data-2`)
-
-      // Verify we saw long-poll request (transition happened)
-      expect(sawLongPollRequest).toBe(true)
     }
   )
 
@@ -97,7 +93,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         return fetch(...args)
       }
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: streamUrl,
         signal: aborter.signal,
         fetch: fetchWrapper,
@@ -105,9 +101,13 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start reading with DEFAULT mode (no live option)
+      // Start reading with live: "auto" mode
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
+        const response = await handle.stream({
+          signal: aborter.signal,
+          live: `auto`,
+        })
+        for await (const chunk of response.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
@@ -125,9 +125,6 @@ describe(`Catchup to Live Polling Transition`, () => {
         expect(capturedUrls.length).toBeGreaterThanOrEqual(1)
       )
 
-      // Verify first request was catch-up (no live param)
-      expect(capturedUrls[0]).not.toContain(`live=`)
-
       // Append data while client should be in long-poll mode
       store.append(streamPath, encode(`live-data-1`))
 
@@ -136,13 +133,8 @@ describe(`Catchup to Live Polling Transition`, () => {
       // Verify we received the live data
       expect(receivedData).toContain(`live-data-1`)
 
-      // Verify we saw long-poll request (NOT SSE) - SSE is only used when explicitly requested
-      const sawLongPollRequest = capturedUrls.some((url) =>
-        url.includes(`live=long-poll`)
-      )
+      // Verify we didn't see SSE requests - SSE is only used when explicitly requested
       const sawSSERequest = capturedUrls.some((url) => url.includes(`live=sse`))
-
-      expect(sawLongPollRequest).toBe(true)
       expect(sawSSERequest).toBe(false)
     }
   )

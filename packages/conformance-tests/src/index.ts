@@ -86,11 +86,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.delete()
 
       // Verify it's gone by trying to read
-      await expect(async () => {
-        for await (const _chunk of stream.read({ live: false })) {
-          // Should throw before yielding
-        }
-      }).rejects.toThrow()
+      await expect(stream.stream({ live: false })).rejects.toThrow()
     })
 
     test(`should properly isolate recreated stream after delete`, async () => {
@@ -171,10 +167,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       await stream.append(`hello world`)
 
-      let text = ``
-      for await (const chunk of stream.read({ live: false })) {
-        text += new TextDecoder().decode(chunk.data)
-      }
+      const res = await stream.stream({ live: false })
+      const text = await res.text()
       expect(text).toBe(`hello world`)
     })
 
@@ -189,10 +183,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append(`chunk2`)
       await stream.append(`chunk3`)
 
-      let text = ``
-      for await (const chunk of stream.read({ live: false })) {
-        text += new TextDecoder().decode(chunk.data)
-      }
+      const res = await stream.stream({ live: false })
+      const text = await res.text()
       expect(text).toBe(`chunk1chunk2chunk3`)
     })
 
@@ -223,15 +215,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `text/plain`,
       })
 
-      let dataLength = 0
-      let sawUpToDate = false
-      for await (const chunk of stream.read({ live: false })) {
-        dataLength += chunk.data.length
-        if (chunk.upToDate) sawUpToDate = true
-      }
-
-      expect(dataLength).toBe(0)
-      expect(sawUpToDate).toBe(true)
+      const res = await stream.stream({ live: false })
+      const body = await res.body()
+      expect(body.length).toBe(0)
+      expect(res.upToDate).toBe(true)
     })
 
     test(`should read stream with data`, async () => {
@@ -243,15 +230,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       await stream.append(`hello`)
 
-      let text = ``
-      let sawUpToDate = false
-      for await (const chunk of stream.read({ live: false })) {
-        text += new TextDecoder().decode(chunk.data)
-        if (chunk.upToDate) sawUpToDate = true
-      }
-
+      const res = await stream.stream({ live: false })
+      const text = await res.text()
       expect(text).toBe(`hello`)
-      expect(sawUpToDate).toBe(true)
+      expect(res.upToDate).toBe(true)
     })
 
     test(`should read from offset`, async () => {
@@ -262,21 +244,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       await stream.append(`first`)
-      let firstOffset = ``
-      for await (const chunk of stream.read({ live: false })) {
-        firstOffset = chunk.offset
-      }
+      const res1 = await stream.stream({ live: false })
+      await res1.text()
+      const firstOffset = res1.offset
 
       await stream.append(`second`)
 
-      let text = ``
-      for await (const chunk of stream.read({
-        offset: firstOffset,
-        live: false,
-      })) {
-        text += new TextDecoder().decode(chunk.data)
-      }
-
+      const res2 = await stream.stream({ offset: firstOffset, live: false })
+      const text = await res2.text()
       expect(text).toBe(`second`)
     })
   })
@@ -297,13 +272,13 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Start reading in long-poll mode
       const readPromise = (async () => {
-        for await (const chunk of stream.read({
-          live: `long-poll`,
-        })) {
+        const res = await stream.stream({ live: `long-poll` })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(new TextDecoder().decode(chunk.data))
           }
           if (receivedData.length >= 1) {
+            res.cancel()
             break
           }
         }
@@ -331,10 +306,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append(`existing data`)
 
       // Read should return existing data immediately
-      let text = ``
-      for await (const chunk of stream.read({ live: false })) {
-        text += new TextDecoder().decode(chunk.data)
-      }
+      const res = await stream.stream({ live: false })
+      const text = await res.text()
 
       expect(text).toBe(`existing data`)
     })
@@ -2393,13 +2366,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append({ id: 2 })
       await stream.append({ id: 3 })
 
-      const results = []
-      for await (const item of stream.json({ live: false })) {
-        results.push(item)
-      }
+      const res = await stream.stream<{ id: number }>({ live: false })
+      const items = await res.json()
 
       // All three objects are batched together by the writer
-      expect(results).toEqual([[{ id: 1 }, { id: 2 }, { id: 3 }]])
+      expect(items).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     })
 
     test(`should reject empty JSON arrays with 400`, async () => {

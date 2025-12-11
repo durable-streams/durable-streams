@@ -83,8 +83,9 @@ async function readStream(streamId: string) {
     const stream = new DurableStream({ url })
 
     // Read from the stream and write to stdout
-    // Default behavior: catch-up first, then auto-select live mode
-    for await (const chunk of stream.read()) {
+    // Using live: "auto" for catch-up first, then auto-select live mode
+    const res = await stream.stream({ live: `auto` })
+    for await (const chunk of res.byteChunks()) {
       if (chunk.data.length > 0) {
         stdout.write(chunk.data)
       }

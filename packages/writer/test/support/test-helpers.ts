@@ -3,18 +3,19 @@
  * Following the Electric client pattern.
  */
 
-import type { DurableStream, StreamChunk } from "../../src"
+import type { ByteChunk } from "@durable-streams/client"
+import type { DurableStream } from "../../src"
 
 /**
- * Process chunks from a read() iterator with a handler.
+ * Process chunks from a stream() iterator with a handler.
  * Resolves when handler calls resolve(), rejects on error.
  */
 export async function forEachChunk(
-  stream: DurableStream,
+  handle: DurableStream,
   controller: AbortController,
   handler: (
     resolve: () => void,
-    chunk: StreamChunk,
+    chunk: ByteChunk,
     nthChunk: number
   ) => Promise<void> | void
 ): Promise<void> {
@@ -25,7 +26,8 @@ export async function forEachChunk(
   }
 
   try {
-    for await (const chunk of stream.read({ signal: controller.signal })) {
+    const response = await handle.stream({ signal: controller.signal })
+    for await (const chunk of response.byteChunks()) {
       await handler(resolveOnce, chunk, chunkIdx)
       chunkIdx++
     }
@@ -40,21 +42,21 @@ export async function forEachChunk(
  * Collect all chunks until up-to-date or timeout.
  */
 export async function collectChunks(
-  stream: DurableStream,
+  handle: DurableStream,
   options: {
     signal?: AbortSignal
     maxChunks?: number
     timeout?: number
     stopOnUpToDate?: boolean
   } = {}
-): Promise<Array<StreamChunk>> {
+): Promise<Array<ByteChunk>> {
   const {
     maxChunks = Infinity,
     timeout = 5000,
     stopOnUpToDate = true,
   } = options
 
-  const chunks: Array<StreamChunk> = []
+  const chunks: Array<ByteChunk> = []
   const aborter = new AbortController()
 
   // Link to external signal
@@ -68,7 +70,8 @@ export async function collectChunks(
   const timeoutId = setTimeout(() => aborter.abort(), timeout)
 
   try {
-    for await (const chunk of stream.read({ signal: aborter.signal })) {
+    const response = await handle.stream({ signal: aborter.signal })
+    for await (const chunk of response.byteChunks()) {
       chunks.push(chunk)
 
       if (chunks.length >= maxChunks) {
@@ -94,16 +97,16 @@ export async function collectChunks(
  * Wait for a stream to receive data and become up-to-date.
  */
 export async function waitForUpToDate(
-  stream: DurableStream,
+  handle: DurableStream,
   options: {
     signal?: AbortSignal
     timeout?: number
     numChunksExpected?: number
   } = {}
-): Promise<{ chunks: Array<StreamChunk>; offset: string }> {
+): Promise<{ chunks: Array<ByteChunk>; offset: string }> {
   const { timeout = 5000, numChunksExpected = 1 } = options
 
-  const chunks: Array<StreamChunk> = []
+  const chunks: Array<ByteChunk> = []
   const aborter = new AbortController()
 
   // Link to external signal
@@ -117,7 +120,8 @@ export async function waitForUpToDate(
   const timeoutId = setTimeout(() => aborter.abort(), timeout)
 
   try {
-    for await (const chunk of stream.read({ signal: aborter.signal })) {
+    const response = await handle.stream({ signal: aborter.signal })
+    for await (const chunk of response.byteChunks()) {
       chunks.push(chunk)
 
       if (chunks.length >= numChunksExpected && chunk.upToDate) {

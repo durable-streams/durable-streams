@@ -191,18 +191,11 @@ describe(`Read Operations (Catch-up)`, () => {
   testWithStream(`should read empty stream`, async ({ streamUrl, aborter }) => {
     const stream = new DurableStream({ url: streamUrl, signal: aborter.signal })
 
-    // read() returns an async iterable, collect first chunk with live: false
-    let result
-    for await (const chunk of stream.read({
-      live: false,
-      signal: aborter.signal,
-    })) {
-      result = chunk
-      break
-    }
+    const res = await stream.stream({ live: false, signal: aborter.signal })
+    const body = await res.body()
 
-    expect(result.data).toHaveLength(0)
-    expect(result.upToDate).toBe(true)
+    expect(body).toHaveLength(0)
+    expect(res.upToDate).toBe(true)
   })
 
   testWithStream(
@@ -215,17 +208,11 @@ describe(`Read Operations (Catch-up)`, () => {
         signal: aborter.signal,
       })
 
-      let result
-      for await (const chunk of stream.read({
-        live: false,
-        signal: aborter.signal,
-      })) {
-        result = chunk
-        break
-      }
+      const res = await stream.stream({ live: false, signal: aborter.signal })
+      const text = await res.text()
 
-      expect(decode(result.data)).toBe(`hello`)
-      expect(result.upToDate).toBe(true)
+      expect(text).toBe(`hello`)
+      expect(res.upToDate).toBe(true)
     }
   )
 
@@ -243,17 +230,14 @@ describe(`Read Operations (Catch-up)`, () => {
         signal: aborter.signal,
       })
 
-      let result
-      for await (const chunk of stream.read({
+      const res = await stream.stream({
         offset: firstOffset,
         live: false,
         signal: aborter.signal,
-      })) {
-        result = chunk
-        break
-      }
+      })
+      const text = await res.text()
 
-      expect(decode(result.data)).toBe(`second`)
+      expect(text).toBe(`second`)
     }
   )
 })
@@ -326,13 +310,14 @@ describe(`Read Operations (Streaming)`, () => {
 
       // Start reading - will make initial request then wait in long-poll
       const readPromise = (async () => {
-        for await (const chunk of stream.read({
+        const res = await stream.stream({
           live: `long-poll`,
           signal: aborter.signal,
-        })) {
+        })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
-            aborter.abort()
+            res.cancel()
             break
           }
         }
@@ -368,10 +353,11 @@ describe(`Read Operations (Streaming)`, () => {
 
       // Start reading with live: false - should get existing data and stop
       const readPromise = (async () => {
-        for await (const chunk of stream.read({
+        const res = await stream.stream({
           live: false,
           signal: aborter.signal,
-        })) {
+        })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
             receivedFirstData = true
@@ -413,7 +399,8 @@ describe(`Read Operations (Streaming)`, () => {
       const aborter1 = new AbortController()
 
       const firstSessionPromise = (async () => {
-        for await (const chunk of stream1.read({ signal: aborter1.signal })) {
+        const res = await stream1.stream({ signal: aborter1.signal })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.upToDate) {
             upToDateReceived = true
           }
@@ -423,7 +410,7 @@ describe(`Read Operations (Streaming)`, () => {
           savedOffset = chunk.offset
           // Stop after receiving 2 chunks of data
           if (firstSessionData.length >= 2) {
-            aborter1.abort()
+            res.cancel()
             break
           }
         }
@@ -452,11 +439,12 @@ describe(`Read Operations (Streaming)`, () => {
       })
 
       const secondSessionData: Array<string> = []
-      for await (const chunk of stream2.read({
+      const res2 = await stream2.stream({
         offset: savedOffset,
         live: false,
         signal: aborter.signal,
-      })) {
+      })
+      for await (const chunk of res2.byteChunks()) {
         if (chunk.data.length > 0) {
           secondSessionData.push(decode(chunk.data))
         }
@@ -496,16 +484,17 @@ describe(`Long-Poll Behavior`, () => {
 
       // Start reading - will make initial request, then wait in long-poll
       const readPromise = (async () => {
-        for await (const chunk of stream.read({
+        const res = await stream.stream({
           live: `long-poll`,
           signal: aborter.signal,
-        })) {
+        })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
           // Stop after receiving 2 data chunks
           if (receivedData.length >= 2) {
-            aborter.abort()
+            res.cancel()
             break
           }
         }
@@ -547,12 +536,10 @@ describe(`Error Handling`, () => {
         signal: aborter.signal,
       })
 
-      // read() returns an async iterable, so we need to iterate to trigger the fetch
-      await expect(async () => {
-        for await (const _chunk of stream.read({ signal: aborter.signal })) {
-          // Should throw before yielding any chunks
-        }
-      }).rejects.toThrow(FetchError)
+      // stream() triggers the fetch
+      await expect(stream.stream({ signal: aborter.signal })).rejects.toThrow(
+        FetchError
+      )
     }
   )
 
@@ -572,9 +559,7 @@ describe(`Error Handling`, () => {
       })
 
       try {
-        for await (const _chunk of stream.read({ signal: aborter.signal })) {
-          // Should error
-        }
+        await stream.stream({ signal: aborter.signal })
       } catch {
         // Expected
       }
@@ -616,12 +601,13 @@ describe(`Error Handling`, () => {
 
       // Start reading - will fail twice with 400, onError returns {} to retry
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
+        const res = await stream.stream({ signal: aborter.signal })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
           if (receivedData.length >= 1) {
-            aborter.abort()
+            res.cancel()
             break
           }
         }
@@ -673,13 +659,8 @@ describe(`Headers and Authentication`, () => {
         },
       })
 
-      // read() returns an async iterable, we need to iterate to trigger fetch
-      for await (const _chunk of stream.read({
-        live: false,
-        signal: aborter.signal,
-      })) {
-        break
-      }
+      // stream() triggers fetch
+      await stream.stream({ live: false, signal: aborter.signal })
 
       expect(capturedHeaders.length).toBeGreaterThan(0)
       expect(capturedHeaders[0]).toMatchObject({
@@ -709,13 +690,8 @@ describe(`Headers and Authentication`, () => {
       auth: { token: `my-secret-token` },
     })
 
-    // read() returns an async iterable, we need to iterate to trigger fetch
-    for await (const _chunk of stream.read({
-      live: false,
-      signal: aborter.signal,
-    })) {
-      break
-    }
+    // stream() triggers fetch
+    await stream.stream({ live: false, signal: aborter.signal })
 
     expect(capturedHeaders[0]).toMatchObject({
       authorization: `Bearer my-secret-token`,
@@ -723,7 +699,7 @@ describe(`Headers and Authentication`, () => {
   })
 
   testWithStream(
-    `should update headers on retry via onError in read()`,
+    `should update headers on retry via onError in stream()`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       const capturedHeaders: Array<Record<string, string>> = []
       let requestCount = 0
@@ -765,12 +741,13 @@ describe(`Headers and Authentication`, () => {
 
       // Start reading - first request will fail with 401, retry with new token
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
+        const res = await stream.stream({ signal: aborter.signal })
+        for await (const chunk of res.byteChunks()) {
           if (chunk.data.length > 0) {
             receivedData.push(decode(chunk.data))
           }
           if (receivedData.length >= 1) {
-            aborter.abort()
+            res.cancel()
             break
           }
         }
@@ -831,13 +808,8 @@ describe(`Query Parameters`, () => {
         },
       })
 
-      // read() returns an async iterable, we need to iterate to trigger fetch
-      for await (const _chunk of stream.read({
-        live: false,
-        signal: aborter.signal,
-      })) {
-        break
-      }
+      // stream() triggers fetch
+      await stream.stream({ live: false, signal: aborter.signal })
 
       const url = new URL(capturedUrls[0]!)
       expect(url.searchParams.get(`custom_param`)).toBe(`custom_value`)
@@ -852,7 +824,7 @@ describe(`Query Parameters`, () => {
 
 describe(`Abort Signal Handling`, () => {
   testWithStream(
-    `should abort read on signal abort (default live mode)`,
+    `should abort stream on signal abort (default live mode)`,
     async ({ streamUrl }) => {
       const aborter = new AbortController()
       let upToDateReceived = false
@@ -864,7 +836,8 @@ describe(`Abort Signal Handling`, () => {
 
       const readPromise = (async () => {
         const chunks: Array<unknown> = []
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
+        const res = await stream.stream({ signal: aborter.signal })
+        for await (const chunk of res.byteChunks()) {
           chunks.push(chunk)
           if (chunk.upToDate) {
             upToDateReceived = true
@@ -883,22 +856,19 @@ describe(`Abort Signal Handling`, () => {
     }
   )
 
-  testWithStream(`should abort read on signal abort`, async ({ streamUrl }) => {
-    const aborter = new AbortController()
-    const stream = new DurableStream({ url: streamUrl })
+  testWithStream(
+    `should abort stream on signal abort`,
+    async ({ streamUrl }) => {
+      const aborter = new AbortController()
+      const stream = new DurableStream({ url: streamUrl })
 
-    // Abort immediately
-    aborter.abort()
+      // Abort immediately
+      aborter.abort()
 
-    // Read with aborted signal should complete immediately (not throw)
-    // because the iterator checks for abort and returns done: true
-    const chunks: Array<unknown> = []
-    for await (const chunk of stream.read({ signal: aborter.signal })) {
-      chunks.push(chunk)
+      // stream() with aborted signal should reject
+      await expect(stream.stream({ signal: aborter.signal })).rejects.toThrow()
     }
-    // Should have no chunks since we aborted before starting
-    expect(chunks).toHaveLength(0)
-  })
+  )
 })
 
 // ============================================================================
@@ -907,7 +877,7 @@ describe(`Abort Signal Handling`, () => {
 
 describe(`ReadableStream Conversion`, () => {
   testWithStream(
-    `should convert read to ReadableStream and receive async data`,
+    `should convert stream to ReadableStream and receive async data`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       let requestCount = 0
       const fetchWrapper = async (
@@ -922,10 +892,11 @@ describe(`ReadableStream Conversion`, () => {
         signal: aborter.signal,
         fetch: fetchWrapper,
       })
-      const readableStream = stream.toReadableStream({ signal: aborter.signal })
+      const res = await stream.stream({ signal: aborter.signal })
+      const readableStream = res.bodyStream()
 
       const reader = readableStream.getReader()
-      let sawUpToDate = false
+      let sawUpToDate = res.upToDate
 
       // Read chunks until we get one with actual data
       // (first chunk may be empty up-to-date marker)
@@ -934,12 +905,10 @@ describe(`ReadableStream Conversion`, () => {
         while (true) {
           const { value, done } = await reader.read()
           if (done) return { value: undefined, done: true }
-          if (value.upToDate) {
-            sawUpToDate = true
-          }
-          if (value.data.length > 0) {
+          if (value.length > 0) {
             return { value, done: false }
           }
+          sawUpToDate = true
         }
       })()
 
@@ -953,7 +922,7 @@ describe(`ReadableStream Conversion`, () => {
 
       expect(done).toBe(false)
       expect(value).toBeDefined()
-      expect(decode(value!.data)).toBe(`stream data`)
+      expect(decode(value)).toBe(`stream data`)
       expect(requestCount).toBeGreaterThanOrEqual(1)
 
       reader.releaseLock()
@@ -962,10 +931,9 @@ describe(`ReadableStream Conversion`, () => {
   )
 
   testWithStream(
-    `should convert read to byte stream and receive async data`,
+    `should convert stream to byte stream and receive async data`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       let requestCount = 0
-      let sawEmptyChunk = false
 
       const fetchWrapper = async (
         ...args: Parameters<typeof fetch>
@@ -979,9 +947,11 @@ describe(`ReadableStream Conversion`, () => {
         signal: aborter.signal,
         fetch: fetchWrapper,
       })
-      const byteStream = stream.toByteStream({ signal: aborter.signal })
+      const res = await stream.stream({ signal: aborter.signal })
+      const byteStream = res.bodyStream()
 
       const reader = byteStream.getReader()
+      let sawEmptyChunk = res.upToDate
 
       // Read chunks until we get one with actual data
       // (first chunk may be empty up-to-date marker)
@@ -1044,13 +1014,14 @@ describe(`Convenience Methods`, () => {
 
       // Start iterating as text - will wait for data
       const textPromise = (async () => {
-        for await (const text of stream.text({
+        const res = await stream.stream({
           live: `long-poll`,
           signal: aborter.signal,
-        })) {
-          texts.push(text)
+        })
+        for await (const chunk of res.textChunks()) {
+          texts.push(chunk.text)
           if (texts.length >= 2) {
-            aborter.abort()
+            res.cancel()
             break
           }
         }

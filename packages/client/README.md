@@ -166,13 +166,8 @@ class DurableStream {
     opts?: AppendOptions
   ): Promise<void>
 
-  // New fetch-like read API
+  // Fetch-like read API
   stream<TJson>(opts?: StreamOptions): Promise<StreamResponse<TJson>>
-
-  // Legacy read methods (deprecated)
-  read(opts?: ReadOptions): AsyncIterable<StreamChunk>
-  toReadableStream(opts?: ReadOptions): ReadableStream<StreamChunk>
-  toByteStream(opts?: ReadOptions): ReadableStream<Uint8Array>
 }
 ```
 
@@ -246,7 +241,6 @@ Key types exported from the package:
 - `Offset` - Opaque string for stream position
 - `StreamResponse` - Response object from stream()
 - `ByteChunk` / `JsonBatch` / `TextChunk` - Data types for consumption
-- `StreamChunk` / `ReadResult` - Legacy data types from reads
 - `HeadResult` - Metadata from HEAD requests
 - `DurableStreamError` - Protocol-level errors with codes
 - `FetchError` - Transport/network errors

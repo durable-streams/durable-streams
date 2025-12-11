@@ -161,14 +161,14 @@ describe(`DurableStream`, () => {
     })
   })
 
-  describe(`read`, () => {
+  describe(`stream`, () => {
     let mockFetch: Mock<typeof fetch>
 
     beforeEach(() => {
       mockFetch = vi.fn()
     })
 
-    it(`should read data from the stream`, async () => {
+    it(`should read data from the stream using stream()`, async () => {
       const responseData = `hello world`
       mockFetch.mockResolvedValue(
         new Response(responseData, {
@@ -181,24 +181,20 @@ describe(`DurableStream`, () => {
         })
       )
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
 
-      // read() returns an async iterable, get first chunk with live: false
-      let result
-      for await (const chunk of stream.read({ live: false })) {
-        result = chunk
-        break
-      }
+      const response = await handle.stream({ live: false })
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `https://example.com/stream?offset=-1`,
+        expect.stringContaining(`https://example.com/stream`),
         expect.objectContaining({ method: `GET` })
       )
-      expect(new TextDecoder().decode(result.data)).toBe(responseData)
-      expect(result.offset).toBe(`1_11`)
+
+      const text = await response.text()
+      expect(text).toBe(responseData)
     })
 
     it(`should include offset in query params when provided`, async () => {
@@ -212,54 +208,18 @@ describe(`DurableStream`, () => {
         })
       )
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
 
-      for await (const _chunk of stream.read({ offset: `1_11`, live: false })) {
-        break
-      }
+      await handle.stream({ offset: `1_11`, live: false })
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        `https://example.com/stream?offset=1_11`,
-        expect.anything()
-      )
+      const calledUrl = mockFetch.mock.calls[0]![0] as string
+      expect(calledUrl).toContain(`offset=1_11`)
     })
 
     it(`should include live mode in query params`, async () => {
-      mockFetch.mockResolvedValue(
-        new Response(`data`, {
-          status: 200,
-          headers: { "Stream-Next-Offset": `1_5` },
-        })
-      )
-
-      const stream = new DurableStream({
-        url: `https://example.com/stream`,
-        fetch: mockFetch,
-      })
-
-      const aborter = new AbortController()
-      // Start reading with long-poll mode, then abort to end the test
-      const readPromise = (async () => {
-        for await (const _chunk of stream.read({
-          live: `long-poll`,
-          signal: aborter.signal,
-        })) {
-          aborter.abort()
-          break
-        }
-      })()
-      await readPromise
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        `https://example.com/stream?offset=-1&live=long-poll`,
-        expect.anything()
-      )
-    })
-
-    it(`should return upToDate when header is present`, async () => {
       mockFetch.mockResolvedValue(
         new Response(`data`, {
           status: 200,
@@ -270,18 +230,35 @@ describe(`DurableStream`, () => {
         })
       )
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
 
-      let result
-      for await (const chunk of stream.read({ live: false })) {
-        result = chunk
-        break
-      }
+      await handle.stream({ live: `long-poll` })
 
-      expect(result.upToDate).toBe(true)
+      const calledUrl = mockFetch.mock.calls[0]![0] as string
+      expect(calledUrl).toContain(`live=long-poll`)
+    })
+
+    it(`should expose upToDate on response`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`data`, {
+          status: 200,
+          headers: {
+            "Stream-Next-Offset": `1_5`,
+            "Stream-Up-To-Date": `true`,
+          },
+        })
+      )
+
+      const handle = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      const response = await handle.stream({ live: false })
+      expect(response.upToDate).toBe(true)
     })
 
     it(`should throw FetchError on 404`, async () => {
@@ -292,16 +269,12 @@ describe(`DurableStream`, () => {
         })
       )
 
-      const stream = new DurableStream({
+      const handle = new DurableStream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
       })
 
-      await expect(async () => {
-        for await (const _chunk of stream.read({ live: false })) {
-          // Should throw before yielding
-        }
-      }).rejects.toThrow(FetchError)
+      await expect(handle.stream({ live: false })).rejects.toThrow(FetchError)
     })
   })
 
