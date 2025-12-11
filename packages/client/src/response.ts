@@ -363,69 +363,53 @@ export class StreamResponseImpl<
       })
     }
 
-    // Multiple responses case: need to concatenate streams
+    // Multiple responses case: use pipeTo with preventClose to concatenate
+    // This is more efficient than manual read/enqueue - the browser optimizes pipes
     const self = this
-    const responseGenerator = this.#generateResponses()
-    let currentReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
 
-    return new ReadableStream<Uint8Array>({
-      async pull(controller) {
-        try {
-          // If we have a current reader, try to read from it
-          if (currentReader) {
-            const { done, value } = await currentReader.read()
-            if (!done) {
-              controller.enqueue(value)
-              return
-            }
-            // Current response body exhausted, get next response
-            currentReader = null
-          }
-
-          // Get next response
-          const { done, value: response } = await responseGenerator.next()
-          if (done) {
-            self.#markClosed()
-            controller.close()
-            return
-          }
-
-          // Get the body reader from the response
+    // Pipe all response bodies into the writable side in background
+    ;(async () => {
+      try {
+        for await (const response of self.#generateResponses()) {
           const body = response.body
           if (body) {
-            currentReader = body.getReader()
-            // Read first chunk
-            const { done: chunkDone, value } = await currentReader.read()
-            if (!chunkDone) {
-              controller.enqueue(value)
-            } else {
-              currentReader = null
-            }
+            // Pipe this response body, but don't close the writable yet
+            await body.pipeTo(writable, {
+              preventClose: true,
+              preventAbort: true,
+              preventCancel: true,
+            })
           }
 
-          // Check if we should stop
+          // Check if we should stop after this response
           if (self.upToDate && !self.#shouldContinueLive()) {
-            self.#markClosed()
-            controller.close()
-          }
-        } catch (err) {
-          if (self.#abortController.signal.aborted) {
-            self.#markClosed()
-            controller.close()
-          } else {
-            self.#markError(err instanceof Error ? err : new Error(String(err)))
-            controller.error(err)
+            break
           }
         }
-      },
-
-      cancel() {
-        currentReader?.cancel()
-        responseGenerator.return()
-        self.#abortController.abort()
+        // All responses piped, now close the writable
+        await writable.close()
         self.#markClosed()
-      },
-    })
+      } catch (err) {
+        if (self.#abortController.signal.aborted) {
+          try {
+            await writable.close()
+          } catch {
+            // Ignore close errors on abort
+          }
+          self.#markClosed()
+        } else {
+          try {
+            await writable.abort(err)
+          } catch {
+            // Ignore abort errors
+          }
+          self.#markError(err instanceof Error ? err : new Error(String(err)))
+        }
+      }
+    })()
+
+    return readable
   }
 
   jsonStream(): ReadableStream<TJson> {
