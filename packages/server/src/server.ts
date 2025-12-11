@@ -3,7 +3,7 @@
  */
 
 import { createServer } from "node:http"
-import { StreamStore } from "./store"
+import { OffsetMismatchError, StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
@@ -158,7 +158,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
+      `content-type, authorization, if-match, Stream-Seq, Stream-TTL, Stream-Expires-At`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -479,6 +479,7 @@ export class DurableStreamTestServer {
     const seq = req.headers[STREAM_SEQ_HEADER.toLowerCase()] as
       | string
       | undefined
+    const ifMatch = req.headers[`if-match`]
 
     const body = await this.readBody(req)
 
@@ -495,15 +496,59 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Support both sync (StreamStore) and async (FileBackedStreamStore) append
-    const message = await Promise.resolve(
-      this.store.append(path, body, { seq, contentType })
-    )
+    // Handle If-Match: * (wildcard) - match any existing resource
+    // This must be checked before attempting append
+    if (ifMatch === `*`) {
+      if (!this.store.has(path)) {
+        res.writeHead(412, { "content-type": `text/plain` })
+        res.end(`Stream does not exist`)
+        return
+      }
+      // Stream exists, wildcard matches - continue with append (no offset check)
+    }
 
-    res.writeHead(200, {
-      [STREAM_OFFSET_HEADER]: message.offset,
-    })
-    res.end()
+    // Parse If-Match for OCC (pass to store for atomic check)
+    let expectedOffset: string | undefined
+    if (ifMatch !== undefined && ifMatch !== `*`) {
+      expectedOffset = this.parseIfMatchValue(ifMatch)
+    }
+
+    try {
+      // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+      // The store performs atomic If-Match check if expectedOffset is provided
+      const message = await Promise.resolve(
+        this.store.append(path, body, { seq, contentType, expectedOffset })
+      )
+
+      res.writeHead(200, {
+        [STREAM_OFFSET_HEADER]: message.offset,
+      })
+      res.end()
+    } catch (err) {
+      if (err instanceof OffsetMismatchError) {
+        // Return 412 Precondition Failed with current offset
+        res.writeHead(412, {
+          "content-type": `text/plain`,
+          [STREAM_OFFSET_HEADER]: err.currentOffset,
+        })
+        res.end(`Offset mismatch`)
+        return
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Parse If-Match header value, stripping quotes if present.
+   * Per RFC 9110, ETags should be quoted strings, but we accept both
+   * quoted and unquoted values for compatibility.
+   */
+  private parseIfMatchValue(value: string): string {
+    // Strip surrounding quotes if present
+    if (value.startsWith(`"`) && value.endsWith(`"`)) {
+      return value.slice(1, -1)
+    }
+    return value
   }
 
   /**

@@ -5,6 +5,20 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Error thrown when If-Match offset doesn't match current stream offset.
+ * Used for optimistic concurrency control (OCC).
+ */
+export class OffsetMismatchError extends Error {
+  readonly currentOffset: string
+
+  constructor(message: string, currentOffset: string) {
+    super(message)
+    this.name = `OffsetMismatchError`
+    this.currentOffset = currentOffset
+  }
+}
+
+/**
  * Normalize content-type by extracting the media type (before any semicolon).
  * Handles cases like "application/json; charset=utf-8".
  */
@@ -157,15 +171,30 @@ export class StreamStore {
    * @throws Error if stream doesn't exist
    * @throws Error if seq is lower than lastSeq
    * @throws Error if JSON mode and array is empty
+   * @throws OffsetMismatchError if expectedOffset doesn't match current offset (OCC)
    */
   append(
     path: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
+    options: {
+      seq?: string
+      contentType?: string
+      expectedOffset?: string
+    } = {}
   ): StreamMessage {
     const stream = this.streams.get(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Check If-Match (OCC) - must be done atomically with append
+    if (options.expectedOffset !== undefined) {
+      if (stream.currentOffset !== options.expectedOffset) {
+        throw new OffsetMismatchError(
+          `Offset mismatch: expected ${options.expectedOffset}, actual ${stream.currentOffset}`,
+          stream.currentOffset
+        )
+      }
     }
 
     // Check content type match using normalization (handles charset parameters)
