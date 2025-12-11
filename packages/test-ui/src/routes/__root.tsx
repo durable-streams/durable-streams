@@ -22,60 +22,60 @@ function RootLayout() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const SERVER_URL = `http://${window.location.hostname}:8787`
+  const SERVER_URL = `${window.location.protocol}//${window.location.host}`
 
   useEffect(() => {
-    void loadStreamsFromRegistry()
-  }, [])
+    const controller = new AbortController()
 
-  const loadStreamsFromRegistry = async () => {
-    try {
-      const registryStream = new DurableStream({
-        url: `${SERVER_URL}/v1/stream/__registry__`,
-      })
-
-      // Check if registry exists, create it if it doesn't
-      const exists = await registryStream.head().catch(() => null)
-      if (!exists) {
-        await DurableStream.create({
-          url: `${SERVER_URL}/v1/stream/__registry__`,
-          contentType: `application/json`,
-        })
-      }
-
-      // Read all events from the registry
-      const loadedStreams: Array<Stream> = []
-
+    const followRegistry = async () => {
       try {
-        for await (const chunk of registryStream.json<
-          RegistryEvent | Array<RegistryEvent>
-        >()) {
-          const events = Array.isArray(chunk) ? chunk : [chunk]
+        const registryStream = new DurableStream({
+          url: `${SERVER_URL}/v1/stream/__registry__`,
+        })
 
-          for (const event of events) {
-            if (event.type === `created`) {
-              loadedStreams.push({
-                path: event.path,
-                contentType: event.contentType,
-              })
-            } else {
-              const index = loadedStreams.findIndex(
-                (s) => s.path === event.path
-              )
-              if (index !== -1) {
-                loadedStreams.splice(index, 1)
-              }
-            }
-          }
-          setStreams(loadedStreams)
+        // Check if registry exists, create it if it doesn't
+        const exists = await registryStream.head().catch(() => null)
+        if (!exists) {
+          await DurableStream.create({
+            url: `${SERVER_URL}/v1/stream/__registry__`,
+            contentType: `application/json`,
+          })
         }
-      } catch (readErr) {
-        console.error(`Error reading registry stream:`, readErr)
+
+        // Follow the registry stream for live updates
+        const streamMap = new Map<string, Stream>()
+
+        for await (const value of registryStream.jsonStream({
+          offset: `-1`,
+          live: `long-poll`,
+          signal: controller.signal,
+        })) {
+          const event = value as RegistryEvent
+          if (event.type === `created`) {
+            streamMap.set(event.path, {
+              path: event.path,
+              contentType: event.contentType,
+            })
+          } else {
+            streamMap.delete(event.path)
+          }
+
+          // Update state with current streams
+          setStreams(Array.from(streamMap.values()))
+        }
+      } catch (err: any) {
+        if (err.name !== `AbortError`) {
+          console.error(`Failed to follow registry:`, err)
+        }
       }
-    } catch (err) {
-      console.error(`Failed to load streams from registry:`, err)
     }
-  }
+
+    void followRegistry()
+
+    return () => {
+      controller.abort()
+    }
+  }, [])
 
   const createStream = async () => {
     if (!newStreamPath.trim()) {
@@ -90,10 +90,7 @@ function RootLayout() {
         contentType: newStreamContentType,
       })
 
-      setStreams([
-        ...streams,
-        { path: newStreamPath, contentType: newStreamContentType },
-      ])
+      // Stream will be added automatically via registry updates
       setNewStreamPath(``)
     } catch (err: any) {
       setError(`Failed to create stream: ${err.message}`)
@@ -116,7 +113,7 @@ function RootLayout() {
       })
       await stream.delete()
 
-      setStreams(streams.filter((s) => s.path !== path))
+      // Stream will be removed automatically via registry updates
     } catch (err: any) {
       setError(`Failed to delete stream: ${err.message}`)
     }
