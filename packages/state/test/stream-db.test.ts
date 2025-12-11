@@ -113,9 +113,9 @@ describe(`Stream DB`, () => {
     await db.preload()
 
     // Query using TanStack DB collection interface
-    const kyle = await db.users.get(`1`)
-    const alice = await db.users.get(`2`)
-    const msg = await db.messages.get(`msg1`)
+    const kyle = db.users.state.get(`1`)
+    const alice = db.users.state.get(`2`)
+    const msg = db.messages.state.get(`msg1`)
 
     expect(kyle?.name).toBe(`Kyle`)
     expect(kyle?.email).toBe(`kyle@example.com`)

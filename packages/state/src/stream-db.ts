@@ -1,4 +1,4 @@
-import { MaterializedState } from "./materialized-state"
+import { Collection } from "@tanstack/db"
 import { isChangeEvent } from "./types"
 import type { StateEvent } from "./types"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
@@ -32,19 +32,15 @@ export interface CreateStreamDBOptions {
 }
 
 /**
- * Collection interface for querying a specific entity type
- */
-interface Collection<T = unknown> {
-  get: (key: string) => Promise<T | undefined>
-  getType: (type: string) => Map<string, unknown>
-}
-
-/**
  * Stream DB interface with dynamic collections and preload method
  */
 type StreamDB<T extends Record<string, CollectionDefinition>> = {
   [K in keyof T]: Collection<
-    T[K] extends CollectionDefinition<infer U> ? U : unknown
+    T[K] extends CollectionDefinition<infer U>
+      ? U extends object
+        ? U
+        : Record<string, unknown>
+      : Record<string, unknown>
   >
 } & {
   preload: () => Promise<void>
@@ -60,7 +56,7 @@ export function defineStreamState<
 }
 
 /**
- * Create a stream-backed database with materialized state collections
+ * Create a stream-backed database with TanStack DB collections
  */
 export async function createStreamDB<
   T extends Record<string, CollectionDefinition>,
@@ -68,61 +64,119 @@ export async function createStreamDB<
   options: CreateStreamDBOptions & { state: { collections: T } }
 ): Promise<StreamDB<T>> {
   const { stream, state } = options
-  const materializedState = new MaterializedState()
 
-  // Build a map of collection name -> type for reverse lookup
-  const typeToCollection = new Map<string, string>()
+  // Map of type -> collection name for routing events
+  const typeToCollectionName = new Map<string, string>()
   for (const [collectionName, definition] of Object.entries(
     state.collections
   )) {
-    typeToCollection.set(definition.type, collectionName)
+    typeToCollectionName.set(definition.type, collectionName)
   }
 
-  // Track whether we've already consumed the stream
-  let hasPreloaded = false
+  // Track preload promise
   let preloadPromise: Promise<void> | null = null
 
-  // Consume the stream once
-  const consumeStream = async () => {
-    if (hasPreloaded) {
-      return
+  // Store sync callbacks for each collection
+  const syncCallbacks: Map<
+    string,
+    {
+      write: (msg: any) => void
+      begin: () => void
+      commit: () => void
     }
-    hasPreloaded = true
+  > = new Map()
 
-    for await (const event of stream.jsonStream<StateEvent>({
-      offset: `-1`,
-      live: false,
-    })) {
-      if (isChangeEvent(event)) {
-        materializedState.apply(event)
-      }
-      // Ignore control events for now
-    }
-  }
-
-  // Create collection objects
-  const db: Record<string, Collection> = {}
+  // Create all collections, storing their sync callbacks
+  const tanstackCollections: Record<string, Collection> = {}
 
   for (const [collectionName, definition] of Object.entries(
     state.collections
   )) {
-    db[collectionName] = {
-      async get(key: string) {
-        return materializedState.get(definition.type, key)
+    tanstackCollections[collectionName] = new Collection({
+      id: collectionName,
+      schema: definition.schema,
+      sync: {
+        sync: ({ write, begin, commit }) => {
+          // Just store the callbacks - we'll start sync manually later
+          syncCallbacks.set(collectionName, { write, begin, commit })
+        },
       },
-      getType(type: string) {
-        return materializedState.getType(type)
-      },
-    }
+    })
   }
 
-  // Add preload method
-  ;(db as StreamDB<T>).preload = async () => {
+  // Function to start syncing from the stream
+  const startSync = () => {
+    // Begin all collections
+    for (const cb of syncCallbacks.values()) {
+      cb.begin()
+    }
+
+    // Subscribe to stream and route events to appropriate collections
+    stream.subscribeJson<StateEvent>(
+      (events) => {
+        for (const event of events) {
+          if (isChangeEvent(event)) {
+            const targetCollectionName = typeToCollectionName.get(event.type)
+            if (targetCollectionName) {
+              const cb = syncCallbacks.get(targetCollectionName)
+              if (cb) {
+                cb.write({
+                  key: event.key,
+                  value: event.value as object,
+                  previousValue: event.old_value as object | undefined,
+                  type: event.headers.operation,
+                  metadata: {
+                    txid: event.headers.txid,
+                    timestamp: event.headers.timestamp,
+                  },
+                })
+              }
+            }
+          }
+        }
+
+        // Commit after each batch
+        for (const cb of syncCallbacks.values()) {
+          cb.commit()
+        }
+
+        // Begin again for next batch
+        for (const cb of syncCallbacks.values()) {
+          cb.begin()
+        }
+      },
+      {
+        offset: `-1`,
+        live: false,
+      }
+    )
+  }
+
+  // Wrap TanStack DB collections to add convenience methods
+  const collections: Record<string, any> = {}
+  for (const [name, tanstackCollection] of Object.entries(
+    tanstackCollections
+  )) {
+    // Return the TanStack collection directly - it already has the methods we need
+    collections[name] = tanstackCollection
+  }
+
+  // Add preload method that starts sync and waits for all collections to sync
+  const db = collections as StreamDB<T>
+  db.preload = async () => {
     if (!preloadPromise) {
-      preloadPromise = consumeStream()
+      // Start syncing from the stream
+      startSync()
+
+      // Wait for all collections to be ready
+      preloadPromise = Promise.all(
+        Object.values(tanstackCollections).map((collection) =>
+          collection.stateWhenReady()
+        )
+      ).then(() => undefined)
     }
     return preloadPromise
   }
 
-  return db as StreamDB<T>
+  return db
 }
