@@ -633,11 +633,16 @@ export class StreamResponseImpl<
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }
@@ -673,11 +678,16 @@ export class StreamResponseImpl<
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }
@@ -713,11 +723,16 @@ export class StreamResponseImpl<
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }

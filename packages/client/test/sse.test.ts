@@ -498,7 +498,7 @@ data: {"streamNextOffset":"100","upToDate":true}
     expect(streamResponse.offset).toBe(`100`)
   })
 
-  it.skip(`should surface SSE reconnection errors`, async () => {
+  it(`should surface SSE reconnection errors`, async () => {
     const StreamResponseImpl = await getStreamResponseImpl()
 
     // Create an SSE stream that ends immediately (triggering reconnect)
