@@ -57,12 +57,11 @@ function StreamViewer() {
           live: `long-poll`,
           signal: controller.signal,
         })
-        response.subscribeBytes(async (chunk) => {
-          const text = new TextDecoder().decode(chunk.data)
-          if (text !== ``) {
+        response.subscribeText(async (chunk) => {
+          if (chunk.text !== ``) {
             setMessages((prev) => [
               ...prev,
-              { offset: chunk.offset, data: text },
+              { offset: chunk.offset, data: chunk.text },
             ])
           }
         })
