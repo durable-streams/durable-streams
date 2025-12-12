@@ -139,8 +139,9 @@ class EventDispatcher {
   /** Whether we've received the initial up-to-date signal */
   private isUpToDate = false
 
-  /** Resolvers for preload promises */
+  /** Resolvers and rejecters for preload promises */
   private preloadResolvers: Array<() => void> = []
+  private preloadRejecters: Array<(error: Error) => void> = []
 
   /**
    * Register a handler for a specific event type
@@ -162,9 +163,19 @@ class EventDispatcher {
       return
     }
 
+    const operation = event.headers.operation
+
+    // Validate that values are objects (required for KEY_SYMBOL storage)
+    if (operation !== `delete`) {
+      if (typeof event.value !== `object` || event.value === null) {
+        throw new Error(
+          `StreamDB collections require object values; got ${typeof event.value} for type=${event.type}, key=${event.key}`
+        )
+      }
+    }
+
     // Get value, ensuring it's an object
     const value = (event.value ?? {}) as object
-    const operation = event.headers.operation
 
     // Store the key on the value so getKey can retrieve it
     setValueKey(value, event.key)
@@ -233,9 +244,21 @@ class EventDispatcher {
     if (this.isUpToDate) {
       return Promise.resolve()
     }
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       this.preloadResolvers.push(resolve)
+      this.preloadRejecters.push(reject)
     })
+  }
+
+  /**
+   * Reject all waiting preload promises with an error
+   */
+  rejectAll(error: Error): void {
+    for (const reject of this.preloadRejecters) {
+      reject(error)
+    }
+    this.preloadResolvers = []
+    this.preloadRejecters = []
   }
 
   /**
@@ -291,11 +314,37 @@ function createStreamSyncConfig<T extends object>(
 // ============================================================================
 
 /**
- * Define the structure of a stream state with typed collections
+ * Reserved collection names that would collide with StreamDB methods
  */
-export function defineStreamState<
+const RESERVED_COLLECTION_NAMES = new Set([`preload`, `close`])
+
+/**
+ * Create a state schema definition with typed collections
+ */
+export function createStateSchema<
   T extends Record<string, CollectionDefinition>,
 >(definition: { collections: T }): { collections: T } {
+  // Validate no reserved collection names
+  for (const name of Object.keys(definition.collections)) {
+    if (RESERVED_COLLECTION_NAMES.has(name)) {
+      throw new Error(
+        `Reserved collection name "${name}" - this would collide with StreamDB methods (${Array.from(RESERVED_COLLECTION_NAMES).join(`, `)})`
+      )
+    }
+  }
+
+  // Validate no duplicate event types
+  const typeToCollection = new Map<string, string>()
+  for (const [collectionName, def] of Object.entries(definition.collections)) {
+    const existing = typeToCollection.get(def.type)
+    if (existing) {
+      throw new Error(
+        `Duplicate event type "${def.type}" - used by both "${existing}" and "${collectionName}" collections`
+      )
+    }
+    typeToCollection.set(def.type, collectionName)
+  }
+
   return definition
 }
 
@@ -304,7 +353,7 @@ export function defineStreamState<
  *
  * @example
  * ```typescript
- * const streamState = defineStreamState({
+ * const stateSchema = createStateSchema({
  *   collections: {
  *     users: { schema: userSchema, type: "user" },
  *     messages: { schema: messageSchema, type: "message" },
@@ -313,7 +362,7 @@ export function defineStreamState<
  *
  * const db = await createStreamDB({
  *   stream: durableStream,
- *   state: streamState,
+ *   state: stateSchema,
  * })
  *
  * await db.preload()
@@ -367,17 +416,25 @@ export async function createStreamDB<TDef extends StreamStateDefinition>(
 
     // Process events as they come in
     streamResponse.subscribeJson(async (batch) => {
-      for (const event of batch.items) {
-        if (isChangeEvent(event)) {
-          dispatcher.dispatchChange(event)
-        } else if (isControlEvent(event)) {
-          dispatcher.dispatchControl(event)
+      try {
+        for (const event of batch.items) {
+          if (isChangeEvent(event)) {
+            dispatcher.dispatchChange(event)
+          } else if (isControlEvent(event)) {
+            dispatcher.dispatchControl(event)
+          }
         }
-      }
 
-      // Check batch-level up-to-date signal
-      if (batch.upToDate) {
-        dispatcher.markUpToDate()
+        // Check batch-level up-to-date signal
+        if (batch.upToDate) {
+          dispatcher.markUpToDate()
+        }
+      } catch (error) {
+        // Reject all waiting preload promises
+        dispatcher.rejectAll(error as Error)
+        // Abort the stream to stop further processing
+        abortController.abort()
+        // Don't rethrow - we've already rejected the promise
       }
     })
   }

@@ -15,7 +15,7 @@ export { isChangeEvent, isControlEvent } from "./types"
 export { MaterializedState } from "./materialized-state"
 
 // Stream DB
-export { createStreamDB, defineStreamState } from "./stream-db"
+export { createStreamDB, createStateSchema } from "./stream-db"
 export type {
   CollectionDefinition,
   StreamStateDefinition,

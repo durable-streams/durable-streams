@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
-import { createStreamDB, defineStreamState } from "../src/stream-db"
+import { createStateSchema, createStreamDB } from "../src/stream-db"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
 
 // Simple Standard Schema implementations for testing
@@ -57,7 +57,7 @@ describe(`Stream DB`, () => {
 
   it(`should define stream state and create db with collections`, async () => {
     // Define the stream state structure
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: {
           schema: userSchema,
@@ -131,7 +131,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should handle update operations`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -167,7 +167,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should handle delete operations`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -202,7 +202,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should handle empty streams`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -226,7 +226,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should ignore unknown event types`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -263,7 +263,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should receive live updates after preload`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -304,7 +304,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should route events to correct collections by type`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
         messages: { schema: messageSchema, type: `message` },
@@ -351,7 +351,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should handle repeated operations on the same key`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -412,7 +412,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should handle interleaved operations on multiple keys`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -474,7 +474,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should batch commit changes only on upToDate`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -539,7 +539,7 @@ describe(`Stream DB`, () => {
   })
 
   it(`should commit live updates in batches`, async () => {
-    const streamState = defineStreamState({
+    const streamState = createStateSchema({
       collections: {
         users: { schema: userSchema, type: `user` },
       },
@@ -586,5 +586,89 @@ describe(`Stream DB`, () => {
     expect(db.users.get(`3`)?.name).toBe(`Third`)
 
     db.close()
+  })
+
+  it(`should reject primitive values (non-objects)`, async () => {
+    const streamState = createStateSchema({
+      collections: {
+        config: {
+          schema: {
+            "~standard": {
+              version: 1,
+              vendor: `test`,
+              validate: (value) => ({ value: value as string }),
+            },
+          },
+          type: `config`,
+        },
+      },
+    })
+
+    const stream = await DurableStream.create({
+      url: `${baseUrl}/db/primitives-${Date.now()}`,
+      contentType: `application/json`,
+    })
+
+    // Append the primitive value BEFORE creating the DB
+    await stream.append({
+      type: `config`,
+      key: `theme`,
+      value: `dark`, // primitive string, not an object
+      headers: { operation: `insert` },
+    })
+
+    const db = await createStreamDB({ stream, state: streamState })
+
+    // Should throw when trying to process the primitive value during preload
+    await expect(db.preload()).rejects.toThrow(
+      /StreamDB collections require object values/
+    )
+
+    db.close()
+  })
+
+  it(`should reject duplicate event types across collections`, async () => {
+    // Two collections mapping to the same event type should throw
+    expect(() => {
+      createStateSchema({
+        collections: {
+          users: {
+            schema: userSchema,
+            type: `person`, // same type
+          },
+          admins: {
+            schema: userSchema,
+            type: `person`, // duplicate!
+          },
+        },
+      })
+    }).toThrow(/duplicate event type/i)
+  })
+
+  it(`should reject reserved collection names`, async () => {
+    // Collection names that collide with StreamDB methods should throw
+    expect(() => {
+      createStateSchema({
+        collections: {
+          preload: {
+            // reserved name!
+            schema: userSchema,
+            type: `user`,
+          },
+        },
+      })
+    }).toThrow(/reserved collection name/i)
+
+    expect(() => {
+      createStateSchema({
+        collections: {
+          close: {
+            // reserved name!
+            schema: userSchema,
+            type: `user`,
+          },
+        },
+      })
+    }).toThrow(/reserved collection name/i)
   })
 })
