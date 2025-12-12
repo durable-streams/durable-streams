@@ -929,4 +929,188 @@ describe(`DurableStream.stream() method`, () => {
       expect(textStream).toBeDefined()
     })
   })
+
+  describe(`live mode semantics`, () => {
+    it(`should stop at upToDate when live: false with body()`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`chunk1`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        live: false,
+      })
+
+      const data = await res.body()
+
+      // Should only fetch once (no live polling)
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(new TextDecoder().decode(data)).toBe(`chunk1`)
+      expect(res.upToDate).toBe(true)
+    })
+
+    it(`should continue polling when live: 'long-poll' with bodyStream()`, async () => {
+      // First response: not up-to-date
+      mockFetch.mockResolvedValueOnce(
+        new Response(`chunk1`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `1_5`,
+          },
+        })
+      )
+
+      // Second response: up-to-date
+      mockFetch.mockResolvedValueOnce(
+        new Response(`chunk2`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        live: `long-poll`,
+      })
+
+      const chunks: Array<Uint8Array> = []
+      const reader = res.bodyStream().getReader()
+
+      let result = await reader.read()
+      while (!result.done) {
+        chunks.push(result.value)
+        result = await reader.read()
+      }
+
+      // Should fetch twice (initial + one poll)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      const combined = new Uint8Array(
+        chunks.reduce((acc, chunk) => acc + chunk.length, 0)
+      )
+      let offset = 0
+      for (const chunk of chunks) {
+        combined.set(chunk, offset)
+        offset += chunk.length
+      }
+      expect(new TextDecoder().decode(combined)).toBe(`chunk1chunk2`)
+    })
+
+    it(`should stop at upToDate when live: false with json()`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify([{ id: 1 }, { id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        live: false,
+      })
+
+      const items = await res.json<{ id: number }>()
+
+      // Should only fetch once
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(items).toEqual([{ id: 1 }, { id: 2 }])
+      expect(res.upToDate).toBe(true)
+    })
+
+    it(`should continue polling when live: 'auto' with subscribeJson()`, async () => {
+      // First response: not up-to-date
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+          },
+        })
+      )
+
+      // Second response: still not up-to-date
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `2_10`,
+          },
+        })
+      )
+
+      // Third response: up-to-date
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 3 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `3_15`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        live: `auto`,
+      })
+
+      const batches: Array<Array<{ id: number }>> = []
+      const unsubscribe = res.subscribeJson<{ id: number }>(async (batch) => {
+        batches.push(batch.items)
+      })
+
+      // Wait for all chunks to be processed
+      await res.closed
+
+      unsubscribe()
+
+      // Should fetch three times
+      expect(mockFetch).toHaveBeenCalledTimes(3)
+      expect(batches).toEqual([[{ id: 1 }], [{ id: 2 }], [{ id: 3 }]])
+    })
+
+    it(`should stop at upToDate when live: false with text()`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`Hello World`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `1_11`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetchClient: mockFetch,
+        live: false,
+      })
+
+      const text = await res.text()
+
+      // Should only fetch once
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      expect(text).toBe(`Hello World`)
+      expect(res.upToDate).toBe(true)
+    })
+  })
 })
