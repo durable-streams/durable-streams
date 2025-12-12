@@ -197,7 +197,7 @@ data: {"streamNextOffset":"300"}
       const encoder = new TextEncoder()
 
       const stream = new ReadableStream<Uint8Array>({
-        async pull(controller) {
+        pull(controller) {
           if (abortController.signal.aborted) {
             controller.close()
             return
@@ -498,7 +498,106 @@ data: {"streamNextOffset":"100","upToDate":true}
     expect(streamResponse.offset).toBe(`100`)
   })
 
-  it.skip(`should surface SSE reconnection errors`, async () => {
+  it(`should provide correct offset values to subscribers (not stale)`, async () => {
+    // This test verifies the fix for the bug where SSE mode provided stale offset values.
+    // In SSE, control events with offset come AFTER data events. The implementation must
+    // wait for the control event before yielding data, so subscribers get the correct offset.
+    const StreamResponseImpl = await getStreamResponseImpl()
+
+    // Create an SSE stream with multiple data+control pairs
+    const sseText = `event: data
+data: {"id":1}
+
+event: control
+data: {"streamNextOffset":"100","streamCursor":"cursor-1"}
+
+event: data
+data: {"id":2}
+
+event: control
+data: {"streamNextOffset":"200","streamCursor":"cursor-2"}
+
+event: data
+data: {"id":3}
+
+event: control
+data: {"streamNextOffset":"300","streamCursor":"cursor-3","upToDate":true}
+
+`
+    const encoder = new TextEncoder()
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+
+    const firstResponse = new Response(sseBody, {
+      status: 200,
+      headers: { "content-type": `text/event-stream` },
+    })
+
+    const streamResponse = new StreamResponseImpl<{ id: number }>({
+      url: `http://test.com/stream`,
+      contentType: `application/json`,
+      live: `sse`,
+      startOffset: `0`,
+      isJsonMode: true,
+      initialOffset: `0`,
+      initialCursor: undefined,
+      initialUpToDate: false,
+      firstResponse,
+      abortController: new AbortController(),
+      fetchNext: vi.fn(),
+    })
+
+    // Collect all batches with their offsets
+    const batches: Array<{
+      items: Array<{ id: number }>
+      offset: string
+      cursor: string | undefined
+      upToDate: boolean
+    }> = []
+
+    await new Promise<void>((resolve) => {
+      streamResponse.subscribeJson<{ id: number }>((batch) => {
+        batches.push({
+          items: [...batch.items],
+          offset: batch.offset,
+          cursor: batch.cursor,
+          upToDate: batch.upToDate,
+        })
+        // Stop after upToDate
+        if (batch.upToDate) {
+          resolve()
+        }
+        return Promise.resolve()
+      })
+    })
+
+    // Verify each batch received the CORRECT offset for its data, not stale values
+    expect(batches).toHaveLength(3)
+
+    // First batch: id=1 should have offset=100, cursor=cursor-1
+    expect(batches[0]!.items).toEqual([{ id: 1 }])
+    expect(batches[0]!.offset).toBe(`100`)
+    expect(batches[0]!.cursor).toBe(`cursor-1`)
+    expect(batches[0]!.upToDate).toBe(false)
+
+    // Second batch: id=2 should have offset=200, cursor=cursor-2
+    expect(batches[1]!.items).toEqual([{ id: 2 }])
+    expect(batches[1]!.offset).toBe(`200`)
+    expect(batches[1]!.cursor).toBe(`cursor-2`)
+    expect(batches[1]!.upToDate).toBe(false)
+
+    // Third batch: id=3 should have offset=300, cursor=cursor-3, upToDate=true
+    expect(batches[2]!.items).toEqual([{ id: 3 }])
+    expect(batches[2]!.offset).toBe(`300`)
+    expect(batches[2]!.cursor).toBe(`cursor-3`)
+    expect(batches[2]!.upToDate).toBe(true)
+  })
+
+  it(`should surface SSE reconnection errors`, async () => {
     const StreamResponseImpl = await getStreamResponseImpl()
 
     // Create an SSE stream that ends immediately (triggering reconnect)
@@ -544,8 +643,9 @@ data: {"id":1}
 
     // Start consuming with subscriber (triggers live mode)
     const items: Array<{ id: number }> = []
-    streamResponse.subscribeJson(async (batch) => {
+    streamResponse.subscribeJson((batch) => {
       items.push(...batch.items)
+      return Promise.resolve()
     })
 
     // Wait a bit for the stream to process and error

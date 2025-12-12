@@ -220,6 +220,27 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Extract stream metadata from Response headers.
+   * Used by subscriber APIs to get the correct offset/cursor/upToDate for each
+   * specific Response, rather than reading from `this` which may be stale due to
+   * ReadableStream prefetching or timing issues.
+   */
+  #getMetadataFromResponse(response: Response): {
+    offset: Offset
+    cursor: string | undefined
+    upToDate: boolean
+  } {
+    const offset = response.headers.get(STREAM_OFFSET_HEADER)
+    const cursor = response.headers.get(STREAM_CURSOR_HEADER)
+    const upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
+    return {
+      offset: offset ?? this.offset, // Fall back to instance state if no header
+      cursor: cursor ?? this.cursor,
+      upToDate,
+    }
+  }
+
+  /**
    * Create the core ReadableStream<Response> that yields responses.
    * This is consumed once - all consumption methods use this same stream.
    *
@@ -312,28 +333,133 @@ export class StreamResponseImpl<
                 return
               }
 
-              if (event.type === `control`) {
-                // Update offset and cursor from control event
-                this.offset = event.streamNextOffset
-                if (event.streamCursor) {
-                  this.cursor = event.streamCursor
+              if (event.type === `data`) {
+                // In SSE mode, control events come AFTER data events in the protocol.
+                // We must wait for the subsequent control event to get the correct
+                // offset/cursor/upToDate values BEFORE yielding the data Response.
+                // We include these values in the Response headers so subscribers can
+                // read them from the Response itself, not from `this` which may be
+                // updated by subsequent pull() calls before the subscriber runs.
+                const pendingData = event.data
+
+                // Read until we get the control event
+                // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                while (true) {
+                  const { done: controlDone, value: controlEvent } =
+                    await sseEventIterator.next()
+
+                  if (controlDone) {
+                    // Stream ended without control event - yield data with current state
+                    // Include current offset/cursor in headers for subscribers
+                    const headers: Record<string, string> = {
+                      "content-type": this.contentType ?? `application/json`,
+                      [STREAM_OFFSET_HEADER]: String(this.offset),
+                    }
+                    if (this.cursor) {
+                      headers[STREAM_CURSOR_HEADER] = this.cursor
+                    }
+                    if (this.upToDate) {
+                      headers[STREAM_UP_TO_DATE_HEADER] = `true`
+                    }
+                    const syntheticResponse = new Response(pendingData, {
+                      status: 200,
+                      headers,
+                    })
+                    controller.enqueue(syntheticResponse)
+
+                    // Try to reconnect if we should continue live
+                    if (this.#shouldContinueLive() && this.#startSSE) {
+                      try {
+                        const newSSEResponse = await this.#startSSE(
+                          this.offset,
+                          this.cursor,
+                          this.#abortController.signal
+                        )
+                        if (newSSEResponse.body) {
+                          sseEventIterator = parseSSEStream(
+                            newSSEResponse.body,
+                            this.#abortController.signal
+                          )
+                        }
+                      } catch (err) {
+                        this.#markError(
+                          err instanceof Error
+                            ? err
+                            : new Error(`SSE reconnection failed`)
+                        )
+                        controller.error(
+                          err instanceof Error
+                            ? err
+                            : new Error(`SSE reconnection failed`)
+                        )
+                      }
+                    }
+                    return
+                  }
+
+                  if (controlEvent.type === `control`) {
+                    // Update instance state from control event
+                    this.offset = controlEvent.streamNextOffset
+                    if (controlEvent.streamCursor) {
+                      this.cursor = controlEvent.streamCursor
+                    }
+                    if (controlEvent.upToDate !== undefined) {
+                      this.upToDate = controlEvent.upToDate
+                    }
+
+                    // Create synthetic Response with headers containing the offset/cursor
+                    // Subscribers read from these headers to get correct values
+                    const headers: Record<string, string> = {
+                      "content-type": this.contentType ?? `application/json`,
+                      [STREAM_OFFSET_HEADER]: controlEvent.streamNextOffset,
+                    }
+                    if (controlEvent.streamCursor) {
+                      headers[STREAM_CURSOR_HEADER] = controlEvent.streamCursor
+                    }
+                    if (controlEvent.upToDate) {
+                      headers[STREAM_UP_TO_DATE_HEADER] = `true`
+                    }
+                    const syntheticResponse = new Response(pendingData, {
+                      status: 200,
+                      headers,
+                    })
+                    controller.enqueue(syntheticResponse)
+                    return
+                  }
+
+                  // If we get another data event before control, something is wrong
+                  // but we should handle it gracefully - yield current data with
+                  // current state in headers (controlEvent.type must be `data` here)
+                  const headers: Record<string, string> = {
+                    "content-type": this.contentType ?? `application/json`,
+                    [STREAM_OFFSET_HEADER]: String(this.offset),
+                  }
+                  if (this.cursor) {
+                    headers[STREAM_CURSOR_HEADER] = this.cursor
+                  }
+                  if (this.upToDate) {
+                    headers[STREAM_UP_TO_DATE_HEADER] = `true`
+                  }
+                  const syntheticResponse = new Response(pendingData, {
+                    status: 200,
+                    headers,
+                  })
+                  controller.enqueue(syntheticResponse)
+                  return
                 }
-                if (event.upToDate !== undefined) {
-                  this.upToDate = event.upToDate
-                }
-                // Continue to get next event (control events don't produce data)
-                continue
               }
 
-              // event.type === `data` - create a synthetic Response from SSE data
-              const syntheticResponse = new Response(event.data, {
-                status: 200,
-                headers: {
-                  "content-type": this.contentType ?? `application/json`,
-                },
-              })
-              controller.enqueue(syntheticResponse)
-              return
+              // event.type === `control` without preceding data (e.g., initial state)
+              // Update offset and cursor from control event
+              this.offset = event.streamNextOffset
+              if (event.streamCursor) {
+                this.cursor = event.streamCursor
+              }
+              if (event.upToDate !== undefined) {
+                this.upToDate = event.upToDate
+              }
+              // Continue to get next event (standalone control events don't produce data)
+              continue
             }
           }
 
@@ -621,23 +747,33 @@ export class StreamResponseImpl<
         while (!result.done) {
           if (abortController.signal.aborted) break
 
-          const parsed = (await result.value.json()) as T | Array<T>
+          // Get metadata from Response headers (not from `this` which may be stale)
+          const response = result.value
+          const { offset, cursor, upToDate } =
+            this.#getMetadataFromResponse(response)
+
+          const parsed = (await response.json()) as T | Array<T>
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
           await subscriber({
             items,
-            offset: this.offset,
-            cursor: this.cursor,
-            upToDate: this.upToDate,
+            offset,
+            cursor,
+            upToDate,
           })
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }
@@ -662,22 +798,32 @@ export class StreamResponseImpl<
         while (!result.done) {
           if (abortController.signal.aborted) break
 
-          const buffer = await result.value.arrayBuffer()
+          // Get metadata from Response headers (not from `this` which may be stale)
+          const response = result.value
+          const { offset, cursor, upToDate } =
+            this.#getMetadataFromResponse(response)
+
+          const buffer = await response.arrayBuffer()
 
           await subscriber({
             data: new Uint8Array(buffer),
-            offset: this.offset,
-            cursor: this.cursor,
-            upToDate: this.upToDate,
+            offset,
+            cursor,
+            upToDate,
           })
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }
@@ -702,22 +848,32 @@ export class StreamResponseImpl<
         while (!result.done) {
           if (abortController.signal.aborted) break
 
-          const text = await result.value.text()
+          // Get metadata from Response headers (not from `this` which may be stale)
+          const response = result.value
+          const { offset, cursor, upToDate } =
+            this.#getMetadataFromResponse(response)
+
+          const text = await response.text()
 
           await subscriber({
             text,
-            offset: this.offset,
-            cursor: this.cursor,
-            upToDate: this.upToDate,
+            offset,
+            cursor,
+            upToDate,
           })
 
           result = await reader.read()
         }
+        this.#markClosed()
       } catch (e) {
         // Ignore abort-related and body-consumed errors
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
-        if (!isAborted && !isBodyError) throw e
+        if (!isAborted && !isBodyError) {
+          this.#markError(e instanceof Error ? e : new Error(String(e)))
+        } else {
+          this.#markClosed()
+        }
       } finally {
         reader.releaseLock()
       }
