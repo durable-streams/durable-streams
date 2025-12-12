@@ -23,12 +23,16 @@ export type MaybePromise<T> = T | Promise<T>
  * Headers record where values can be static strings or async functions.
  * Following the @electric-sql/client pattern for dynamic headers.
  *
+ * **Important**: Functions are called **for each request**, not once per session.
+ * In live mode with long-polling, the same function may be called many times
+ * to fetch fresh values (e.g., refreshed auth tokens) for each poll.
+ *
  * @example
  * ```typescript
  * headers: {
- *   Authorization: `Bearer ${token}`,           // Static
- *   'X-Tenant-Id': () => getCurrentTenant(),    // Sync function
- *   'X-Auth': async () => await refreshToken()  // Async function
+ *   Authorization: `Bearer ${token}`,           // Static - same for all requests
+ *   'X-Tenant-Id': () => getCurrentTenant(),    // Called per-request
+ *   'X-Auth': async () => await refreshToken()  // Called per-request (can refresh)
  * }
  * ```
  */
@@ -39,6 +43,10 @@ export type HeadersRecord = {
 /**
  * Params record where values can be static or async functions.
  * Following the @electric-sql/client pattern for dynamic params.
+ *
+ * **Important**: Functions are called **for each request**, not once per session.
+ * In live mode, the same function may be called multiple times to fetch
+ * fresh parameter values for each poll.
  */
 export type ParamsRecord = {
   [key: string]: string | (() => MaybePromise<string>) | undefined
@@ -74,15 +82,17 @@ export interface StreamOptions {
   /**
    * HTTP headers to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
-   * Function values are resolved when needed, making this useful
-   * for dynamic headers like authentication tokens.
+   *
+   * **Important**: Functions are evaluated **per-request** (not per-session).
+   * In live mode, functions are called for each poll, allowing fresh values
+   * like refreshed auth tokens.
    *
    * @example
    * ```typescript
    * headers: {
    *   Authorization: `Bearer ${token}`,           // Static
-   *   'X-Tenant-Id': () => getCurrentTenant(),    // Sync function
-   *   'X-Auth': async () => await refreshToken()  // Async function
+   *   'X-Tenant-Id': () => getCurrentTenant(),    // Evaluated per-request
+   *   'X-Auth': async () => await refreshToken()  // Evaluated per-request
    * }
    * ```
    */
@@ -91,6 +101,8 @@ export interface StreamOptions {
   /**
    * Query parameters to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
+   *
+   * **Important**: Functions are evaluated **per-request** (not per-session).
    */
   params?: ParamsRecord
 
@@ -208,12 +220,16 @@ export interface StreamHandleOptions {
   /**
    * HTTP headers to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
+   *
+   * Functions are evaluated **per-request** (not per-session).
    */
   headers?: HeadersRecord
 
   /**
    * Query parameters to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
+   *
+   * Functions are evaluated **per-request** (not per-session).
    */
   params?: ParamsRecord
 
