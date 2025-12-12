@@ -55,7 +55,7 @@ export interface DurableStreamOptions extends StreamHandleOptions {
  *
  * This is a lightweight, reusable handle - not a persistent connection.
  * It does not automatically start reading or listening.
- * Create sessions as needed via stream() or the legacy read() method.
+ * Create sessions as needed via stream().
  *
  * @example
  * ```typescript
