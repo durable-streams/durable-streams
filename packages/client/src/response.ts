@@ -93,6 +93,7 @@ export class StreamResponseImpl<
   #closedReject!: (err: Error) => void
   #closed: Promise<void>
   #stopAfterUpToDate = false
+  #consumptionMethod: string | null = null
 
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
@@ -172,6 +173,23 @@ export class StreamResponseImpl<
 
   #markError(err: Error): void {
     this.#closedReject(err)
+  }
+
+  /**
+   * Ensure only one consumption method is used per StreamResponse.
+   * Throws if a different consumption method was already called.
+   */
+  #ensureNoConsumption(method: string): void {
+    if (
+      this.#consumptionMethod !== null &&
+      this.#consumptionMethod !== method
+    ) {
+      throw new DurableStreamError(
+        `Cannot call ${method}() - this StreamResponse is already being consumed via ${this.#consumptionMethod}()`,
+        `ALREADY_CONSUMED`
+      )
+    }
+    this.#consumptionMethod = method
   }
 
   /**
@@ -363,6 +381,7 @@ export class StreamResponseImpl<
   // =================================
 
   async body(): Promise<Uint8Array> {
+    this.#ensureNoConsumption(`body`)
     this.#stopAfterUpToDate = true
     const reader = this.#getResponseReader()
     const blobs: Array<Blob> = []
@@ -395,6 +414,7 @@ export class StreamResponseImpl<
   }
 
   async json(): Promise<Array<TJson>> {
+    this.#ensureNoConsumption(`json`)
     this.#ensureJsonMode()
     this.#stopAfterUpToDate = true
     const reader = this.#getResponseReader()
@@ -421,6 +441,7 @@ export class StreamResponseImpl<
   }
 
   async text(): Promise<string> {
+    this.#ensureNoConsumption(`text`)
     this.#stopAfterUpToDate = true
     const reader = this.#getResponseReader()
     const parts: Array<string> = []
@@ -448,6 +469,7 @@ export class StreamResponseImpl<
   // =====================
 
   bodyStream(): ReadableStream<Uint8Array> {
+    this.#ensureNoConsumption(`bodyStream`)
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
     const reader = this.#getResponseReader()
 
@@ -498,6 +520,7 @@ export class StreamResponseImpl<
   }
 
   jsonStream(): ReadableStream<TJson> {
+    this.#ensureNoConsumption(`jsonStream`)
     this.#ensureJsonMode()
     const reader = this.#getResponseReader()
     let pendingItems: Array<TJson> = []
@@ -560,6 +583,7 @@ export class StreamResponseImpl<
   subscribeJson(
     subscriber: (batch: JsonBatch<TJson>) => Promise<void>
   ): () => void {
+    this.#ensureNoConsumption(`subscribeJson`)
     this.#ensureJsonMode()
     const abortController = new AbortController()
     const reader = this.#getResponseReader()
@@ -598,6 +622,7 @@ export class StreamResponseImpl<
   }
 
   subscribeBytes(subscriber: (chunk: ByteChunk) => Promise<void>): () => void {
+    this.#ensureNoConsumption(`subscribeBytes`)
     const abortController = new AbortController()
     const reader = this.#getResponseReader()
 
@@ -634,6 +659,7 @@ export class StreamResponseImpl<
   }
 
   subscribeText(subscriber: (chunk: TextChunk) => Promise<void>): () => void {
+    this.#ensureNoConsumption(`subscribeText`)
     const abortController = new AbortController()
     const reader = this.#getResponseReader()
 
