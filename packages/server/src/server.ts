@@ -16,6 +16,10 @@ const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
+// SSE control event fields (Protocol Section 5.7)
+const SSE_OFFSET_FIELD = `streamNextOffset`
+const SSE_CURSOR_FIELD = `streamCursor`
+
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
@@ -567,12 +571,12 @@ export class DurableStreamTestServer {
       const controlOffset =
         messages[messages.length - 1]?.offset ?? stream!.currentOffset
 
-      // Send control event with current offset/cursor
+      // Send control event with current offset/cursor (Protocol Section 5.7)
       const controlData: Record<string, string> = {
-        [STREAM_OFFSET_HEADER]: controlOffset,
+        [SSE_OFFSET_FIELD]: controlOffset,
       }
       if (cursor) {
-        controlData[STREAM_CURSOR_HEADER] = cursor
+        controlData[SSE_CURSOR_FIELD] = cursor
       }
 
       res.write(`event: control\n`)
@@ -594,12 +598,12 @@ export class DurableStreamTestServer {
         if (this.isShuttingDown || !isConnected) break
 
         if (result.timedOut) {
-          // Send keep-alive control event on timeout
+          // Send keep-alive control event on timeout (Protocol Section 5.7)
           const keepAliveData: Record<string, string> = {
-            [STREAM_OFFSET_HEADER]: currentOffset,
+            [SSE_OFFSET_FIELD]: currentOffset,
           }
           if (cursor) {
-            keepAliveData[STREAM_CURSOR_HEADER] = cursor
+            keepAliveData[SSE_CURSOR_FIELD] = cursor
           }
           res.write(`event: control\n`)
           res.write(encodeSSEData(JSON.stringify(keepAliveData)))

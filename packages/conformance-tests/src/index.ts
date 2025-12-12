@@ -2425,9 +2425,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         clearTimeout(timeoutId)
         reader.cancel()
 
-        // Verify control event format
+        // Verify control event format (Protocol Section 5.7)
         expect(received).toContain(`event: control`)
-        expect(received).toContain(`Stream-Next-Offset`)
+        expect(received).toContain(`streamNextOffset`)
       } catch (e) {
         clearTimeout(timeoutId)
         if (e instanceof Error && e.name !== `AbortError`) {
@@ -2447,7 +2447,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       const { response, received } = await fetchSSE(
         `${getBaseUrl()}${streamPath}?offset=-1&live=sse&cursor=test-cursor-456`,
-        { untilContent: `Stream-Cursor` }
+        { untilContent: `streamCursor` }
       )
 
       expect(response.status).toBe(200)
@@ -2538,16 +2538,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         // Parse the control event and verify offset matches HTTP GET
         const controlLine = received
           .split(`\n`)
-          .find(
-            (l) => l.startsWith(`data: `) && l.includes(`Stream-Next-Offset`)
-          )
+          .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
         expect(controlLine).toBeDefined()
 
         const controlPayload = controlLine!.slice(`data: `.length)
         const controlData = JSON.parse(controlPayload)
 
         // SSE control offset should match HTTP GET offset (not -1)
-        expect(controlData[`Stream-Next-Offset`]).toBe(httpOffset)
+        expect(controlData[`streamNextOffset`]).toBe(httpOffset)
       } catch (e) {
         clearTimeout(timeoutId)
         if (e instanceof Error && e.name !== `AbortError`) {
@@ -2679,14 +2677,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const controlLines = received
           .split(`\n`)
           .filter(
-            (l) => l.startsWith(`data: `) && l.includes(`Stream-Next-Offset`)
+            (l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`)
           )
 
         const offsets: Array<string> = []
         for (const line of controlLines) {
           const payload = line.slice(`data: `.length)
           const data = JSON.parse(payload)
-          offsets.push(data[`Stream-Next-Offset`])
+          offsets.push(data[`streamNextOffset`])
         }
 
         // Verify offsets are monotonically increasing (lexicographically)
@@ -2749,11 +2747,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         // Extract offset from control event
         const controlLine = received1
           .split(`\n`)
-          .find(
-            (l) => l.startsWith(`data: `) && l.includes(`Stream-Next-Offset`)
-          )
+          .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
         const controlPayload = controlLine!.slice(`data: `.length)
-        lastOffset = JSON.parse(controlPayload)[`Stream-Next-Offset`]
+        lastOffset = JSON.parse(controlPayload)[`streamNextOffset`]
       } catch (e) {
         clearTimeout(timeoutId1)
         if (e instanceof Error && e.name !== `AbortError`) {

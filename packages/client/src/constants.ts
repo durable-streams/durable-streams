@@ -67,6 +67,22 @@ export const LIVE_QUERY_PARAM = `live`
 export const CURSOR_QUERY_PARAM = `cursor`
 
 // ============================================================================
+// SSE Control Event Fields (camelCase per PROTOCOL.md Section 5.7)
+// ============================================================================
+
+/**
+ * SSE control event field for the next offset.
+ * Note: Different from HTTP header name (camelCase vs Header-Case).
+ */
+export const SSE_OFFSET_FIELD = `streamNextOffset`
+
+/**
+ * SSE control event field for cursor.
+ * Note: Different from HTTP header name (camelCase vs Header-Case).
+ */
+export const SSE_CURSOR_FIELD = `streamCursor`
+
+// ============================================================================
 // Internal Constants
 // ============================================================================
 
