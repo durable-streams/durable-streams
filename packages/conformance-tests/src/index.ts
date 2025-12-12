@@ -2323,11 +2323,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       await stream.append(new Uint8Array([0x01, 0x02, 0x03]))
 
       // Trying to read via SSE mode should throw
-      await expect(async () => {
-        for await (const _chunk of stream.read({ live: `sse` })) {
-          // Should throw before yielding
-        }
-      }).rejects.toThrow()
+      await expect(stream.stream({ live: `sse` })).rejects.toThrow()
     })
 
     test(`should stream data events via SSE`, async () => {

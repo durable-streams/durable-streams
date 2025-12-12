@@ -177,13 +177,10 @@ export class StreamResponseImpl<
 
   /**
    * Ensure only one consumption method is used per StreamResponse.
-   * Throws if a different consumption method was already called.
+   * Throws if any consumption method was already called.
    */
   #ensureNoConsumption(method: string): void {
-    if (
-      this.#consumptionMethod !== null &&
-      this.#consumptionMethod !== method
-    ) {
+    if (this.#consumptionMethod !== null) {
       throw new DurableStreamError(
         `Cannot call ${method}() - this StreamResponse is already being consumed via ${this.#consumptionMethod}()`,
         `ALREADY_CONSUMED`
@@ -194,10 +191,12 @@ export class StreamResponseImpl<
 
   /**
    * Determine if we should continue with live updates based on live mode
-   * and whether a promise helper signaled to stop.
+   * and whether we've received upToDate.
    */
   #shouldContinueLive(): boolean {
-    if (this.#stopAfterUpToDate) return false
+    // Stop if we've received upToDate and a consumption method wants to stop after upToDate
+    if (this.#stopAfterUpToDate && this.upToDate) return false
+    // Stop if live mode is explicitly disabled
     if (this.live === false) return false
     return true
   }
@@ -354,11 +353,7 @@ export class StreamResponseImpl<
 
             this.#updateStateFromResponse(response)
             controller.enqueue(response)
-
-            if (this.upToDate && !this.#shouldContinueLive()) {
-              this.#markClosed()
-              controller.close()
-            }
+            // Let the next pull() decide whether to close based on upToDate
             return
           }
 
@@ -403,11 +398,13 @@ export class StreamResponseImpl<
     try {
       let result = await reader.read()
       while (!result.done) {
+        // Capture upToDate BEFORE consuming body (to avoid race with prefetch)
+        const wasUpToDate = this.upToDate
         const blob = await result.value.blob()
         if (blob.size > 0) {
           blobs.push(blob)
         }
-        if (this.upToDate) break
+        if (wasUpToDate) break
         result = await reader.read()
       }
     } finally {
@@ -427,23 +424,26 @@ export class StreamResponseImpl<
     return new Uint8Array(await combined.arrayBuffer())
   }
 
-  async json(): Promise<Array<TJson>> {
+  async json<T = TJson>(): Promise<Array<T>> {
     this.#ensureNoConsumption(`json`)
     this.#ensureJsonMode()
     this.#stopAfterUpToDate = true
     const reader = this.#getResponseReader()
-    const items: Array<TJson> = []
+    const items: Array<T> = []
 
     try {
       let result = await reader.read()
       while (!result.done) {
-        const parsed = (await result.value.json()) as TJson | Array<TJson>
+        // Capture upToDate BEFORE parsing (to avoid race with prefetch)
+        const wasUpToDate = this.upToDate
+        const parsed = (await result.value.json()) as T | Array<T>
         if (Array.isArray(parsed)) {
           items.push(...parsed)
         } else {
           items.push(parsed)
         }
-        if (this.upToDate) break
+        // Check if THIS response had upToDate set when we started reading it
+        if (wasUpToDate) break
         result = await reader.read()
       }
     } finally {
@@ -463,11 +463,13 @@ export class StreamResponseImpl<
     try {
       let result = await reader.read()
       while (!result.done) {
+        // Capture upToDate BEFORE consuming text (to avoid race with prefetch)
+        const wasUpToDate = this.upToDate
         const text = await result.value.text()
         if (text) {
           parts.push(text)
         }
-        if (this.upToDate) break
+        if (wasUpToDate) break
         result = await reader.read()
       }
     } finally {
@@ -484,6 +486,7 @@ export class StreamResponseImpl<
 
   bodyStream(): ReadableStream<Uint8Array> {
     this.#ensureNoConsumption(`bodyStream`)
+    this.#stopAfterUpToDate = true
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
     const reader = this.#getResponseReader()
 
@@ -491,6 +494,8 @@ export class StreamResponseImpl<
       try {
         let result = await reader.read()
         while (!result.done) {
+          // Capture upToDate BEFORE consuming body (to avoid race with prefetch)
+          const wasUpToDate = this.upToDate
           const body = result.value.body
           if (body) {
             await body.pipeTo(writable, {
@@ -500,7 +505,7 @@ export class StreamResponseImpl<
             })
           }
 
-          if (this.upToDate && !this.#shouldContinueLive()) {
+          if (wasUpToDate && !this.#shouldContinueLive()) {
             break
           }
           result = await reader.read()
@@ -594,8 +599,8 @@ export class StreamResponseImpl<
   // 3) Subscriber APIs
   // =====================
 
-  subscribeJson(
-    subscriber: (batch: JsonBatch<TJson>) => Promise<void>
+  subscribeJson<T = TJson>(
+    subscriber: (batch: JsonBatch<T>) => Promise<void>
   ): () => void {
     this.#ensureNoConsumption(`subscribeJson`)
     this.#ensureJsonMode()
@@ -608,7 +613,7 @@ export class StreamResponseImpl<
         while (!result.done) {
           if (abortController.signal.aborted) break
 
-          const parsed = (await result.value.json()) as TJson | Array<TJson>
+          const parsed = (await result.value.json()) as T | Array<T>
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
           await subscriber({
@@ -621,7 +626,10 @@ export class StreamResponseImpl<
           result = await reader.read()
         }
       } catch (e) {
-        if (!abortController.signal.aborted) throw e
+        // Ignore abort-related and body-consumed errors
+        const isAborted = abortController.signal.aborted
+        const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
+        if (!isAborted && !isBodyError) throw e
       } finally {
         reader.releaseLock()
       }
@@ -695,7 +703,10 @@ export class StreamResponseImpl<
           result = await reader.read()
         }
       } catch (e) {
-        if (!abortController.signal.aborted) throw e
+        // Ignore abort-related and body-consumed errors
+        const isAborted = abortController.signal.aborted
+        const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
+        if (!isAborted && !isBodyError) throw e
       } finally {
         reader.releaseLock()
       }

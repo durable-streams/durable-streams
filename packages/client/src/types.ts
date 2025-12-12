@@ -602,7 +602,7 @@ export interface StreamResponse<TJson = unknown> {
    * Only valid in JSON-mode; throws otherwise.
    * When used with `live: "auto"`, signals the session to stop after upToDate.
    */
-  json: () => Promise<Array<TJson>>
+  json: <T = TJson>() => Promise<Array<T>>
 
   /**
    * Accumulate text chunks into a single string, resolve at `upToDate`.
@@ -640,8 +640,8 @@ export interface StreamResponse<TJson = unknown> {
    * Subscribe to JSON batches as they arrive.
    * Returns unsubscribe function.
    */
-  subscribeJson: (
-    subscriber: (batch: JsonBatch<TJson>) => Promise<void>
+  subscribeJson: <T = TJson>(
+    subscriber: (batch: JsonBatch<T>) => Promise<void>
   ) => () => void
 
   /**

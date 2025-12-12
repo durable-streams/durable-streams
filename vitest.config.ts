@@ -17,14 +17,16 @@ export default defineConfig({
       defineProject({
         test: {
           name: "client",
-          include: ["packages/client/**/*.test.ts"],
+          include: ["packages/client/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
         },
         resolve: { alias },
       }),
       defineProject({
         test: {
           name: "server",
-          include: ["packages/server/**/*.test.ts"],
+          include: ["packages/server/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
         },
         resolve: { alias },
       }),

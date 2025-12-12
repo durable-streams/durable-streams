@@ -4,8 +4,13 @@
  * Following the Electric Durable Stream Protocol specification.
  */
 
-import { InvalidSignalError, MissingStreamUrlError } from "./error"
 import {
+  DurableStreamError,
+  InvalidSignalError,
+  MissingStreamUrlError,
+} from "./error"
+import {
+  SSE_COMPATIBLE_CONTENT_TYPES,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
@@ -392,6 +397,20 @@ export class DurableStream {
   async stream<TJson = unknown>(
     options?: Omit<StreamOptions, `url`>
   ): Promise<StreamResponse<TJson>> {
+    // Check SSE compatibility if SSE mode is requested
+    if (options?.live === `sse` && this.contentType) {
+      const isSSECompatible = SSE_COMPATIBLE_CONTENT_TYPES.some((prefix) =>
+        this.contentType!.startsWith(prefix)
+      )
+      if (!isSSECompatible) {
+        throw new DurableStreamError(
+          `SSE is not supported for content-type: ${this.contentType}`,
+          `SSE_NOT_SUPPORTED`,
+          400
+        )
+      }
+    }
+
     // Merge handle-level and call-specific headers
     const mergedHeaders: HeadersRecord = {
       ...this.#options.headers,

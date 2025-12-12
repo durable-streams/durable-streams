@@ -791,7 +791,7 @@ describe(`DurableStream.stream() method`, () => {
       })
 
       await res.body()
-      await expect(res.body()).rejects.toThrow(`ALREADY_CONSUMED`)
+      await expect(res.body()).rejects.toThrow(`already being consumed`)
     })
 
     it(`should throw when calling json() after body()`, async () => {
@@ -812,7 +812,7 @@ describe(`DurableStream.stream() method`, () => {
       })
 
       await res.body()
-      await expect(res.json()).rejects.toThrow(`ALREADY_CONSUMED`)
+      await expect(res.json()).rejects.toThrow(`already being consumed`)
     })
 
     it(`should throw when calling bodyStream() after json()`, async () => {
@@ -833,7 +833,7 @@ describe(`DurableStream.stream() method`, () => {
       })
 
       await res.json()
-      expect(() => res.bodyStream()).toThrow(`ALREADY_CONSUMED`)
+      expect(() => res.bodyStream()).toThrow(`already being consumed`)
     })
 
     it(`should throw when calling subscribeBytes() after bodyStream()`, async () => {
@@ -857,7 +857,7 @@ describe(`DurableStream.stream() method`, () => {
         res.subscribeBytes(async () => {
           /* noop */
         })
-      ).toThrow(`ALREADY_CONSUMED`)
+      ).toThrow(`already being consumed`)
     })
 
     it(`should throw when calling text() after subscribeJson()`, async () => {
@@ -880,7 +880,7 @@ describe(`DurableStream.stream() method`, () => {
       res.subscribeJson(async () => {
         /* noop */
       })
-      await expect(res.text()).rejects.toThrow(`ALREADY_CONSUMED`)
+      await expect(res.text()).rejects.toThrow(`already being consumed`)
     })
 
     it(`should throw when calling jsonStream() after subscribeText()`, async () => {
@@ -904,7 +904,7 @@ describe(`DurableStream.stream() method`, () => {
       res.subscribeText(async () => {
         /* noop */
       })
-      expect(() => res.jsonStream()).toThrow(`ALREADY_CONSUMED`)
+      expect(() => res.jsonStream()).toThrow(`already being consumed`)
     })
 
     it(`should allow calling textStream() after bodyStream() (same underlying method)`, async () => {
@@ -1032,7 +1032,7 @@ describe(`DurableStream.stream() method`, () => {
       expect(res.upToDate).toBe(true)
     })
 
-    it(`should continue polling when live: 'auto' with subscribeJson()`, async () => {
+    it(`should continue polling when live: 'long-poll' with json()`, async () => {
       // First response: not up-to-date
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: 1 }]), {
@@ -1070,22 +1070,15 @@ describe(`DurableStream.stream() method`, () => {
       const res = await stream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
-        live: `auto`,
+        live: `long-poll`,
       })
 
-      const batches: Array<Array<{ id: number }>> = []
-      const unsubscribe = res.subscribeJson<{ id: number }>(async (batch) => {
-        batches.push(batch.items)
-      })
-
-      // Wait for all chunks to be processed
-      await res.closed
-
-      unsubscribe()
+      // Use json() which properly waits for all data until upToDate
+      const items = await res.json<{ id: number }>()
 
       // Should fetch three times
       expect(mockFetch).toHaveBeenCalledTimes(3)
-      expect(batches).toEqual([[{ id: 1 }], [{ id: 2 }], [{ id: 3 }]])
+      expect(items).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
     })
 
     it(`should stop at upToDate when live: false with text()`, async () => {
