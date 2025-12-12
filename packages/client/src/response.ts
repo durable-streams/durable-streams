@@ -63,9 +63,9 @@ export interface StreamResponseConfig {
 /**
  * Implementation of the StreamResponse interface.
  */
-export class StreamResponseImpl<TJson = unknown>
-  implements IStreamResponse<TJson>
-{
+export class StreamResponseImpl<
+  TJson = unknown,
+> implements IStreamResponse<TJson> {
   // --- Static session info ---
   readonly url: string
   readonly contentType?: string

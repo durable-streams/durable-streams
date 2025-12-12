@@ -121,11 +121,9 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 #### Request Headers (Optional)
 
 - `Content-Type: <stream-content-type>`
-
   - Sets the stream's content type. If omitted, the server **MAY** default to `application/octet-stream`.
 
 - `Stream-TTL: <seconds>`
-
   - Sets a relative time-to-live in seconds from creation.
 
 - `Stream-Expires-At: <rfc3339>`
@@ -167,11 +165,9 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Request Headers
 
 - `Content-Type: <stream-content-type>`
-
   - **MUST** match the stream's existing content type. Servers **MUST** return `400 Bad Request` (or `409 Conflict` for state conflict) on mismatch.
 
 - `Transfer-Encoding: chunked` (optional)
-
   - Indicates a streaming body. Servers **SHOULD** support HTTP/1.1 chunked encoding and HTTP/2 streaming semantics.
 
 - `Stream-Seq: <string>` (optional)
@@ -299,11 +295,9 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 #### Query Parameters
 
 - `offset` (required)
-
   - The offset to read from. **MUST** be provided.
 
 - `live=long-poll` (required)
-
   - Indicates long-polling mode.
 
 - `cursor` (optional)
@@ -347,7 +341,6 @@ Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Eve
 #### Query Parameters
 
 - `offset` (required)
-
   - The offset to start reading from.
 
 - `live=sse` (required)
