@@ -553,7 +553,7 @@ data: {"id":1}
 
     // Error should have been caught
     expect(caughtError).toBeInstanceOf(Error)
-    expect(caughtError?.message).toBe(`Network error`)
+    expect((caughtError as unknown as Error).message).toBe(`Network error`)
 
     // startSSE should have been called for reconnection
     expect(startSSE).toHaveBeenCalled()

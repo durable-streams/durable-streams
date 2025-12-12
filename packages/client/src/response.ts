@@ -484,9 +484,11 @@ export class StreamResponseImpl<
   // 2) ReadableStreams
   // =====================
 
-  bodyStream(): ReadableStream<Uint8Array> {
-    this.#ensureNoConsumption(`bodyStream`)
-    this.#stopAfterUpToDate = true
+  /**
+   * Internal helper to create the body stream without consumption check.
+   * Used by both bodyStream() and textStream().
+   */
+  #createBodyStreamInternal(): ReadableStream<Uint8Array> {
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
     const reader = this.#getResponseReader()
 
@@ -538,6 +540,11 @@ export class StreamResponseImpl<
     return readable
   }
 
+  bodyStream(): ReadableStream<Uint8Array> {
+    this.#ensureNoConsumption(`bodyStream`)
+    return this.#createBodyStreamInternal()
+  }
+
   jsonStream(): ReadableStream<TJson> {
     this.#ensureNoConsumption(`jsonStream`)
     this.#ensureJsonMode()
@@ -578,9 +585,10 @@ export class StreamResponseImpl<
   }
 
   textStream(): ReadableStream<string> {
+    this.#ensureNoConsumption(`textStream`)
     const decoder = new TextDecoder()
 
-    return this.bodyStream().pipeThrough(
+    return this.#createBodyStreamInternal().pipeThrough(
       new TransformStream<Uint8Array, string>({
         transform(chunk, controller) {
           controller.enqueue(decoder.decode(chunk, { stream: true }))
@@ -666,7 +674,10 @@ export class StreamResponseImpl<
           result = await reader.read()
         }
       } catch (e) {
-        if (!abortController.signal.aborted) throw e
+        // Ignore abort-related and body-consumed errors
+        const isAborted = abortController.signal.aborted
+        const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
+        if (!isAborted && !isBodyError) throw e
       } finally {
         reader.releaseLock()
       }

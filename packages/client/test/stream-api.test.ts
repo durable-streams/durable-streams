@@ -858,6 +858,9 @@ describe(`DurableStream.stream() method`, () => {
           /* noop */
         })
       ).toThrow(`already being consumed`)
+
+      // Clean up: cancel the stream to stop background polling
+      res.cancel()
     })
 
     it(`should throw when calling text() after subscribeJson()`, async () => {
@@ -907,7 +910,7 @@ describe(`DurableStream.stream() method`, () => {
       expect(() => res.jsonStream()).toThrow(`already being consumed`)
     })
 
-    it(`should allow calling textStream() after bodyStream() (same underlying method)`, async () => {
+    it(`should allow calling textStream() which uses bodyStream internally`, async () => {
       mockFetch.mockResolvedValue(
         new Response(`data`, {
           status: 200,
@@ -923,10 +926,12 @@ describe(`DurableStream.stream() method`, () => {
         fetch: mockFetch,
       })
 
-      // bodyStream() is called internally by textStream()
-      // This should not throw because textStream uses bodyStream internally
-      const textStream = res.textStream()
-      expect(textStream).toBeDefined()
+      // textStream uses bodyStream internally but registers as 'textStream'
+      const textStreamResult = res.textStream()
+      expect(textStreamResult).toBeDefined()
+
+      // Clean up: cancel the stream to stop background polling
+      res.cancel()
     })
   })
 
@@ -978,6 +983,17 @@ describe(`DurableStream.stream() method`, () => {
         })
       )
 
+      // Third response: for continued polling (bodyStream continues after upToDate)
+      // The stream may start fetching this before we cancel
+      mockFetch.mockResolvedValueOnce(
+        new Response(`chunk3`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `3_15`,
+          },
+        })
+      )
+
       const res = await stream({
         url: `https://example.com/stream`,
         fetch: mockFetch,
@@ -987,14 +1003,25 @@ describe(`DurableStream.stream() method`, () => {
       const chunks: Array<Uint8Array> = []
       const reader = res.bodyStream().getReader()
 
+      // Read chunks until we've received the expected data
+      // Note: bodyStream() continues polling after upToDate per documented behavior
+      // so we need to cancel after receiving expected data
       let result = await reader.read()
       while (!result.done) {
         chunks.push(result.value)
+        // Check if we've received both chunks (chunk1 + chunk2 = 12 bytes)
+        const totalBytes = chunks.reduce((acc, chunk) => acc + chunk.length, 0)
+        if (totalBytes >= 12) {
+          // Cancel the stream since bodyStream() would otherwise keep polling
+          res.cancel()
+          break
+        }
         result = await reader.read()
       }
 
-      // Should fetch twice (initial + one poll)
-      expect(mockFetch).toHaveBeenCalledTimes(2)
+      // Should fetch at least twice (initial + one poll)
+      // May fetch more due to eager consumption before cancel
+      expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
       const combined = new Uint8Array(
         chunks.reduce((acc, chunk) => acc + chunk.length, 0)
       )
