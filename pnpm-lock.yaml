@@ -175,9 +175,6 @@ importers:
       '@durable-streams/server':
         specifier: workspace:*
         version: link:../server
-      '@durable-streams/writer':
-        specifier: workspace:*
-        version: link:../writer
       '@standard-schema/spec':
         specifier: ^1.0.0
         version: 1.0.0
