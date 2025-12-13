@@ -20,11 +20,6 @@ Example usage:
     ...         print(item)
 """
 
-from durable_streams_client._types import (
-    LiveMode,
-    Offset,
-    StreamEvent,
-)
 from durable_streams_client._errors import (
     DurableStreamError,
     FetchError,
@@ -32,10 +27,15 @@ from durable_streams_client._errors import (
     SeqConflictError,
     StreamConsumedError,
 )
-from durable_streams_client.stream import stream
+from durable_streams_client._types import (
+    LiveMode,
+    Offset,
+    StreamEvent,
+)
+from durable_streams_client.adurable_stream import AsyncDurableStream
 from durable_streams_client.astream import astream
 from durable_streams_client.durable_stream import DurableStream
-from durable_streams_client.adurable_stream import AsyncDurableStream
+from durable_streams_client.stream import stream
 
 __all__ = [
     # Types
