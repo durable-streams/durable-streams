@@ -46,11 +46,8 @@ class StreamStore {
 
       sub.listeners.delete(listener)
 
-      // Stop following if no more listeners (but keep messages cached)
-      if (sub.listeners.size === 0 && sub.abortController) {
-        sub.abortController.abort()
-        sub.abortController = null
-      }
+      // Keep subscription active even with no listeners
+      // This ensures we never miss messages and navigating back is instant
     }
   }
 
@@ -88,7 +85,13 @@ class StreamStore {
         }
       })
     } catch (err: any) {
-      if (err.name !== `AbortError`) {
+      // Ignore abort errors - expected when navigating away or during cleanup
+      const isAbortError =
+        err.name === `AbortError` ||
+        err.message?.includes(`aborted`) ||
+        err.message?.includes(`abort`)
+
+      if (!isAbortError) {
         console.error(`Failed to follow stream ${streamPath}:`, err.message)
       }
     }

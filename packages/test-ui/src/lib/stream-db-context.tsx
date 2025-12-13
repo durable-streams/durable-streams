@@ -85,6 +85,10 @@ export function StreamDBProvider({ children }: { children: ReactNode }) {
   const userColor = useMemo(() => getUserColor(userId), [userId])
 
   useEffect(() => {
+    let registryDB: StreamDB<typeof registryStateSchema> | null = null
+    let presenceDB: StreamDB<typeof presenceStateSchema> | null = null
+    let cancelled = false
+
     const initDBs = async () => {
       // Create registry stream
       const registryStream = new DurableStream({
@@ -93,12 +97,17 @@ export function StreamDBProvider({ children }: { children: ReactNode }) {
 
       // Check if registry exists, create it if it doesn't
       const registryExists = await registryStream.head().catch(() => null)
+
+      if (cancelled) return
+
       if (!registryExists) {
         await DurableStream.create({
           url: `${SERVER_URL}/v1/stream/__registry__`,
           contentType: `application/json`,
         })
       }
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) return
 
       // Create presence stream
       const presenceStream = new DurableStream({
@@ -107,26 +116,48 @@ export function StreamDBProvider({ children }: { children: ReactNode }) {
 
       // Check if presence exists, create it if it doesn't
       const presenceExists = await presenceStream.head().catch(() => null)
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) return
+
       if (!presenceExists) {
         await DurableStream.create({
           url: `${SERVER_URL}/v1/stream/__presence__`,
           contentType: `application/json`,
         })
       }
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) return
 
       // Create StreamDBs
-      const registryDB = await createStreamDB({
+      registryDB = await createStreamDB({
         stream: registryStream,
         state: registryStateSchema,
       })
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) {
+        registryDB.close()
+        return
+      }
 
-      const presenceDB = await createStreamDB({
+      presenceDB = await createStreamDB({
         stream: presenceStream,
         state: presenceStateSchema,
       })
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) {
+        registryDB.close()
+        presenceDB.close()
+        return
+      }
 
       // Preload both DBs
       await Promise.all([registryDB.preload(), presenceDB.preload()])
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (cancelled) {
+        registryDB.close()
+        presenceDB.close()
+        return
+      }
 
       setDBs({
         registryDB,
@@ -142,9 +173,15 @@ export function StreamDBProvider({ children }: { children: ReactNode }) {
     void initDBs()
 
     return () => {
-      if (dbs) {
-        dbs.registryDB.close()
-        dbs.presenceDB.close()
+      // Mark as cancelled to prevent setState after unmount
+      cancelled = true
+
+      // Close the DBs created in this effect, not from state
+      if (registryDB) {
+        registryDB.close()
+      }
+      if (presenceDB) {
+        presenceDB.close()
       }
     }
   }, [])

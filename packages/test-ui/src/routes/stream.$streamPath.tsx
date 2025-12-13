@@ -128,7 +128,7 @@ function StreamViewer() {
     <div className="stream-view">
       {error && <div className="error">{error}</div>}
       <div className="header">
-        <h2>{streamPath}</h2>
+        <h2>{decodeURIComponent(streamPath)}</h2>
         {typers.length > 0 && (
           <span className="typing-indicator">
             {typers.map((t) => t.userId.slice(0, 8)).join(`, `)} typing...
