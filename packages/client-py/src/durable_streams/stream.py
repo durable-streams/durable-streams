@@ -258,4 +258,5 @@ def _stream_internal(
         cursor=meta.cursor,
         fetch_next=fetch_next,
         is_sse=is_sse,
+        own_client=_own_client,
     )

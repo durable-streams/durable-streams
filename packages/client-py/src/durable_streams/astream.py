@@ -6,8 +6,8 @@ This is the primary async API for read-only stream consumption.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
-from typing import Any
+from collections.abc import Callable, Coroutine, Generator
+from typing import Any, cast
 
 import httpx
 
@@ -32,7 +32,92 @@ from durable_streams._util import (
 )
 
 
-async def astream(
+class AsyncStreamSession:
+    """
+    Async context manager wrapper for astream().
+
+    This allows both patterns:
+        # Preferred: direct async context manager
+        async with astream(url) as res:
+            async for item in res.iter_json():
+                print(item)
+
+        # Also supported: await then use as context manager
+        res = await astream(url)
+        async with res:
+            async for item in res.iter_json():
+                print(item)
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        offset: Offset | None = None,
+        live: LiveMode = "auto",
+        cursor: str | None = None,
+        headers: HeadersLike | None = None,
+        params: ParamsLike | None = None,
+        on_error: Callable[
+            [Exception],
+            Coroutine[Any, Any, dict[str, Any] | None] | dict[str, Any] | None,
+        ]
+        | None = None,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | httpx.Timeout | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._url = url
+        self._offset = offset
+        self._live = live
+        self._cursor = cursor
+        self._headers = headers
+        self._params = params
+        self._on_error = on_error
+        self._client = client
+        self._timeout = timeout
+        self._kwargs = kwargs
+        self._response: AsyncStreamResponse[Any] | None = None
+
+    def __await__(self) -> Generator[Any, None, AsyncStreamResponse[Any]]:
+        """Allow: res = await astream(url)"""
+        return self._create_response().__await__()
+
+    async def _create_response(self) -> AsyncStreamResponse[Any]:
+        """Create the async stream response."""
+        self._response = await _astream_impl(
+            url=self._url,
+            offset=self._offset,
+            live=cast(LiveMode, self._live),
+            cursor=self._cursor,
+            headers=self._headers,
+            params=self._params,
+            on_error=self._on_error,
+            client=self._client,
+            timeout=self._timeout,
+            **self._kwargs,
+        )
+        return self._response
+
+    async def __aenter__(self) -> AsyncStreamResponse[Any]:
+        """Allow: async with astream(url) as res:"""
+        if self._response is None:
+            await self._create_response()
+        assert self._response is not None
+        return self._response
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> None:
+        """Close the response on exit."""
+        if self._response is not None:
+            await self._response.aclose()
+
+
+def astream(
     url: str,
     *,
     offset: Offset | None = None,
@@ -47,12 +132,12 @@ async def astream(
     client: httpx.AsyncClient | None = None,
     timeout: float | httpx.Timeout | None = None,
     **kwargs: Any,
-) -> AsyncStreamResponse[Any]:
+) -> AsyncStreamSession:
     """
     Create an async streaming session to read from a durable stream.
 
-    This function makes the initial request and returns an AsyncStreamResponse
-    object that can be used to consume the stream data in various ways.
+    This function returns an async context manager that can be used directly
+    with `async with`, or awaited to get the response object.
 
     Args:
         url: The full URL to the durable stream
@@ -71,13 +156,51 @@ async def astream(
         **kwargs: Additional arguments passed to httpx
 
     Returns:
-        AsyncStreamResponse object for consuming stream data
+        AsyncStreamSession that can be used as async context manager or awaited
 
     Example:
-        >>> async with await astream("https://example.com/stream") as res:
+        # Preferred: direct async context manager
+        >>> async with astream("https://example.com/stream") as res:
+        ...     async for item in res.iter_json():
+        ...         print(item)
+
+        # Also works: await then use
+        >>> res = await astream("https://example.com/stream")
+        >>> async with res:
         ...     async for item in res.iter_json():
         ...         print(item)
     """
+    return AsyncStreamSession(
+        url,
+        offset=offset,
+        live=live,
+        cursor=cursor,
+        headers=headers,
+        params=params,
+        on_error=on_error,
+        client=client,
+        timeout=timeout,
+        **kwargs,
+    )
+
+
+async def _astream_impl(
+    url: str,
+    *,
+    offset: Offset | None = None,
+    live: LiveMode = "auto",
+    cursor: str | None = None,
+    headers: HeadersLike | None = None,
+    params: ParamsLike | None = None,
+    on_error: Callable[
+        [Exception], Coroutine[Any, Any, dict[str, Any] | None] | dict[str, Any] | None
+    ]
+    | None = None,
+    client: httpx.AsyncClient | None = None,
+    timeout: float | httpx.Timeout | None = None,
+    **kwargs: Any,
+) -> AsyncStreamResponse[Any]:
+    """Internal implementation that creates the actual response."""
     # Use provided client or create a new one
     own_client = client is None
     http_client = client or httpx.AsyncClient(timeout=timeout or 30.0)
@@ -258,4 +381,5 @@ async def _astream_internal(
         cursor=meta.cursor,
         fetch_next=fetch_next,
         is_sse=is_sse,
+        own_client=_own_client,
     )
