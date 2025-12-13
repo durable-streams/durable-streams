@@ -66,6 +66,7 @@ class StreamResponse(Generic[T]):
         response: httpx.Response,
         client: httpx.Client,
         live: LiveMode,
+        start_offset: Offset | None,
         offset: Offset | None,
         cursor: str | None,
         fetch_next: Callable[[Offset, str | None], httpx.Response],
@@ -75,6 +76,7 @@ class StreamResponse(Generic[T]):
         self._response = response
         self._client = client
         self._live = live
+        self._start_offset = start_offset or "-1"
         self._offset = offset or ""
         self._cursor = cursor
         self._fetch_next = fetch_next
@@ -83,6 +85,11 @@ class StreamResponse(Generic[T]):
         self._consumed_by: str | None = None
         self._closed = False
         self._up_to_date = False
+
+        # Response metadata (updated on each response)
+        self._headers = dict(response.headers)
+        self._status = response.status_code
+        self._status_text = response.reason_phrase or ""
 
         # Extract initial metadata
         self._content_type = response.headers.get("content-type")
@@ -94,6 +101,11 @@ class StreamResponse(Generic[T]):
             parse_httpx_headers,
             parse_response_headers,
         )
+
+        # Update HTTP response metadata
+        self._headers = dict(response.headers)
+        self._status = response.status_code
+        self._status_text = response.reason_phrase or ""
 
         headers = parse_httpx_headers(response.headers)
         meta = parse_response_headers(headers)
@@ -154,6 +166,31 @@ class StreamResponse(Generic[T]):
     def up_to_date(self) -> bool:
         """Whether we've caught up to the stream head."""
         return self._up_to_date
+
+    @property
+    def start_offset(self) -> Offset:
+        """The starting offset for this session."""
+        return self._start_offset
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """HTTP response headers from the most recent server response."""
+        return self._headers
+
+    @property
+    def status(self) -> int:
+        """HTTP status code from the most recent server response."""
+        return self._status
+
+    @property
+    def status_text(self) -> str:
+        """HTTP status text from the most recent server response."""
+        return self._status_text
+
+    @property
+    def ok(self) -> bool:
+        """Whether the most recent response was successful (status 200-299)."""
+        return 200 <= self._status < 300
 
     @property
     def closed(self) -> bool:
@@ -615,6 +652,7 @@ class AsyncStreamResponse(Generic[T]):
         response: httpx.Response,
         client: httpx.AsyncClient,
         live: LiveMode,
+        start_offset: Offset | None,
         offset: Offset | None,
         cursor: str | None,
         fetch_next: Callable[[Offset, str | None], Any],  # Returns awaitable
@@ -624,6 +662,7 @@ class AsyncStreamResponse(Generic[T]):
         self._response = response
         self._client = client
         self._live = live
+        self._start_offset = start_offset or "-1"
         self._offset = offset or ""
         self._cursor = cursor
         self._fetch_next = fetch_next
@@ -632,6 +671,11 @@ class AsyncStreamResponse(Generic[T]):
         self._consumed_by: str | None = None
         self._closed = False
         self._up_to_date = False
+
+        # Response metadata (updated on each response)
+        self._headers = dict(response.headers)
+        self._status = response.status_code
+        self._status_text = response.reason_phrase or ""
 
         self._content_type = response.headers.get("content-type")
         self._update_metadata_from_response(response)
@@ -642,6 +686,11 @@ class AsyncStreamResponse(Generic[T]):
             parse_httpx_headers,
             parse_response_headers,
         )
+
+        # Update HTTP response metadata
+        self._headers = dict(response.headers)
+        self._status = response.status_code
+        self._status_text = response.reason_phrase or ""
 
         headers = parse_httpx_headers(response.headers)
         meta = parse_response_headers(headers)
@@ -696,6 +745,31 @@ class AsyncStreamResponse(Generic[T]):
     @property
     def up_to_date(self) -> bool:
         return self._up_to_date
+
+    @property
+    def start_offset(self) -> Offset:
+        """The starting offset for this session."""
+        return self._start_offset
+
+    @property
+    def headers(self) -> dict[str, str]:
+        """HTTP response headers from the most recent server response."""
+        return self._headers
+
+    @property
+    def status(self) -> int:
+        """HTTP status code from the most recent server response."""
+        return self._status
+
+    @property
+    def status_text(self) -> str:
+        """HTTP status text from the most recent server response."""
+        return self._status_text
+
+    @property
+    def ok(self) -> bool:
+        """Whether the most recent response was successful (status 200-299)."""
+        return 200 <= self._status < 300
 
     @property
     def closed(self) -> bool:

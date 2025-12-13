@@ -25,11 +25,20 @@ from durable_streams_client._errors import (
     FetchError,
     RetentionGoneError,
     SeqConflictError,
+    SSEBytesIterationError,
+    SSENotSupportedError,
     StreamConsumedError,
+    StreamExistsError,
+    StreamNotFoundError,
 )
 from durable_streams_client._types import (
+    AppendResult,
+    BackoffOptions,
+    HeadResult,
+    HeadersLike,
     LiveMode,
     Offset,
+    ParamsLike,
     StreamEvent,
 )
 from durable_streams_client.adurable_stream import AsyncDurableStream
@@ -42,12 +51,21 @@ __all__ = [
     "LiveMode",
     "Offset",
     "StreamEvent",
+    "HeadResult",
+    "AppendResult",
+    "BackoffOptions",
+    "HeadersLike",
+    "ParamsLike",
     # Errors
     "DurableStreamError",
     "FetchError",
     "RetentionGoneError",
     "SeqConflictError",
     "StreamConsumedError",
+    "StreamNotFoundError",
+    "StreamExistsError",
+    "SSENotSupportedError",
+    "SSEBytesIterationError",
     # Top-level functions
     "stream",
     "astream",

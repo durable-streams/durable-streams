@@ -37,6 +37,7 @@ class MockAsyncResponse:
         self.ok = 200 <= status_code < 400
         self.is_success = self.ok
         self.text = content.decode("utf-8") if content else ""
+        self.reason_phrase = "OK" if self.ok else "Error"
 
     async def aread(self) -> bytes:
         return self._content
