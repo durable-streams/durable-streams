@@ -54,7 +54,7 @@ async def resolve_headers_async(headers: HeadersLike | None) -> dict[str, str]:
             result = value()
             # Check if result is awaitable
             if hasattr(result, "__await__"):
-                resolved[key] = await result
+                resolved[key] = await result  # type: ignore[misc]
             else:
                 resolved[key] = result  # type: ignore[assignment]
         else:
@@ -110,7 +110,7 @@ async def resolve_params_async(params: ParamsLike | None) -> dict[str, str]:
             result = value()
             # Check if result is awaitable
             if hasattr(result, "__await__"):
-                resolved[key] = await result
+                resolved[key] = await result  # type: ignore[misc]
             else:
                 resolved[key] = result  # type: ignore[assignment]
         else:

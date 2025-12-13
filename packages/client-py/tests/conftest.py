@@ -250,8 +250,8 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(  # noqa: ARG001
-    config: pytest.Config, items: list[pytest.Item]
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]  # noqa: ARG001
 ) -> None:
     """Skip integration tests if server script is not available."""
     project_root = _find_project_root()

@@ -45,6 +45,29 @@ class MockResponse:
         pass
 
 
+def setup_streaming_mock(mock_client: MagicMock, mock_response: MockResponse) -> None:
+    """Set up a mock httpx.Client for streaming (build_request + send pattern)."""
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send.return_value = mock_response
+
+
+def get_streaming_url(mock_client: MagicMock, call_index: int = 0) -> str:
+    """Extract URL from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_args = mock_client.build_request.call_args_list[call_index]
+        return str(call_args[0][1])
+    return ""
+
+
+def get_streaming_headers(mock_client: MagicMock, call_index: int = 0) -> dict:
+    """Extract headers from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_kwargs = mock_client.build_request.call_args_list[call_index]
+        return dict(call_kwargs[1].get("headers", {}))
+    return {}
+
+
 class TestDurableStreamConstructor:
     """Tests for DurableStream constructor."""
 
@@ -149,7 +172,7 @@ class TestDurableStreamStream:
     def test_stream_reads_data(self):
         """Should read data from the stream using stream()."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"hello world",
             headers={
                 "content-type": "text/plain",
@@ -157,6 +180,7 @@ class TestDurableStreamStream:
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -165,20 +189,21 @@ class TestDurableStreamStream:
 
         response = handle.stream(live=False)
 
-        mock_client.get.assert_called_once()
+        mock_client.send.assert_called_once()
         text = response.read_text()
         assert text == "hello world"
 
     def test_stream_includes_offset_in_query_params(self):
         """Should include offset in query params when provided."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "Stream-Next-Offset": "2_5",
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -187,19 +212,20 @@ class TestDurableStreamStream:
 
         handle.stream(offset="1_11", live=False)
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_streaming_url(mock_client)
         assert "offset=1_11" in called_url
 
     def test_stream_includes_live_mode_in_query_params(self):
         """Should include live mode in query params."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "Stream-Next-Offset": "1_5",
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -208,19 +234,20 @@ class TestDurableStreamStream:
 
         handle.stream(live="long-poll")
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_streaming_url(mock_client)
         assert "live=long-poll" in called_url
 
     def test_stream_exposes_up_to_date_on_response(self):
         """Should expose upToDate on response."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "Stream-Next-Offset": "1_5",
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -558,7 +585,7 @@ class TestDurableStreamMergedHeadersParams:
     def test_merges_handle_and_call_headers(self):
         """Should merge handle-level and call-level headers."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "content-type": "application/json",
@@ -566,6 +593,7 @@ class TestDurableStreamMergedHeadersParams:
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -577,20 +605,21 @@ class TestDurableStreamMergedHeadersParams:
             headers={"X-Call-Header": "from-call"},
         )
 
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["X-Handle-Header"] == "from-handle"
-        assert call_kwargs["headers"]["X-Call-Header"] == "from-call"
+        headers = get_streaming_headers(mock_client)
+        assert headers["X-Handle-Header"] == "from-handle"
+        assert headers["X-Call-Header"] == "from-call"
 
     def test_overrides_handle_headers_with_call_headers(self):
         """Should override handle headers with call headers."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "Stream-Next-Offset": "1_4",
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -602,19 +631,20 @@ class TestDurableStreamMergedHeadersParams:
             headers={"Authorization": "Bearer call-token"},
         )
 
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer call-token"
+        headers = get_streaming_headers(mock_client)
+        assert headers["Authorization"] == "Bearer call-token"
 
     def test_merges_handle_and_call_params(self):
         """Should merge handle-level and call-level params."""
         mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"data",
             headers={
                 "Stream-Next-Offset": "1_4",
                 "Stream-Up-To-Date": "true",
             },
         )
+        setup_streaming_mock(mock_client, mock_response)
 
         handle = DurableStream(
             "https://example.com/stream",
@@ -626,7 +656,7 @@ class TestDurableStreamMergedHeadersParams:
             params={"region": "call-region"},
         )
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_streaming_url(mock_client)
         assert "tenant=handle-tenant" in called_url
         assert "region=call-region" in called_url
 

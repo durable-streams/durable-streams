@@ -43,13 +43,50 @@ class MockResponse:
         pass
 
 
+def setup_mock_client(mock_response: MockResponse) -> MagicMock:
+    """Set up a mock httpx.Client that uses the streaming API."""
+    mock_client = MagicMock(spec=httpx.Client)
+
+    # Track the request for inspection
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send.return_value = mock_response
+
+    return mock_client
+
+
+def setup_mock_client_multi(responses: list[MockResponse]) -> MagicMock:
+    """Set up a mock httpx.Client with multiple responses."""
+    mock_client = MagicMock(spec=httpx.Client)
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send.side_effect = responses
+    return mock_client
+
+
+def get_request_headers(mock_client: MagicMock, call_index: int = 0) -> dict:
+    """Extract headers from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_kwargs = mock_client.build_request.call_args_list[call_index]
+        return dict(call_kwargs[1].get("headers", {}))
+    return {}
+
+
+def get_request_url(mock_client: MagicMock, call_index: int = 0) -> str:
+    """Extract URL from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_args = mock_client.build_request.call_args_list[call_index]
+        # URL is the second positional argument (after "GET")
+        return str(call_args[0][1])
+    return ""
+
+
 class TestFunctionBasedHeaders:
     """Tests for function-based headers."""
 
     def test_calls_sync_function_headers(self):
         """Should call sync function headers."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -57,6 +94,7 @@ class TestFunctionBasedHeaders:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         header_fn = MagicMock(return_value="Bearer token-123")
 
@@ -67,13 +105,12 @@ class TestFunctionBasedHeaders:
         )
 
         header_fn.assert_called_once()
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer token-123"
+        headers = get_request_headers(mock_client)
+        assert headers["Authorization"] == "Bearer token-123"
 
     def test_supports_multiple_function_headers(self):
         """Should support multiple function headers."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -81,6 +118,7 @@ class TestFunctionBasedHeaders:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         auth_fn = MagicMock(return_value="Bearer token")
         tenant_fn = MagicMock(return_value="tenant-123")
@@ -96,14 +134,13 @@ class TestFunctionBasedHeaders:
 
         auth_fn.assert_called_once()
         tenant_fn.assert_called_once()
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer token"
-        assert call_kwargs["headers"]["X-Tenant-Id"] == "tenant-123"
+        headers = get_request_headers(mock_client)
+        assert headers["Authorization"] == "Bearer token"
+        assert headers["X-Tenant-Id"] == "tenant-123"
 
     def test_mixes_static_and_function_headers(self):
         """Should mix static and function headers."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -111,6 +148,7 @@ class TestFunctionBasedHeaders:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         dynamic_fn = MagicMock(return_value="dynamic-value")
 
@@ -124,9 +162,9 @@ class TestFunctionBasedHeaders:
         )
 
         dynamic_fn.assert_called_once()
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["X-Static"] == "static-value"
-        assert call_kwargs["headers"]["X-Dynamic"] == "dynamic-value"
+        headers = get_request_headers(mock_client)
+        assert headers["X-Static"] == "static-value"
+        assert headers["X-Dynamic"] == "dynamic-value"
 
 
 class TestFunctionBasedParams:
@@ -134,8 +172,7 @@ class TestFunctionBasedParams:
 
     def test_calls_sync_function_params(self):
         """Should call sync function params."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -143,6 +180,7 @@ class TestFunctionBasedParams:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         param_fn = MagicMock(return_value="tenant-abc")
 
@@ -153,13 +191,12 @@ class TestFunctionBasedParams:
         )
 
         param_fn.assert_called_once()
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_request_url(mock_client)
         assert "tenant=tenant-abc" in called_url
 
     def test_supports_multiple_function_params(self):
         """Should support multiple function params."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -167,6 +204,7 @@ class TestFunctionBasedParams:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         tenant_fn = MagicMock(return_value="tenant-123")
         region_fn = MagicMock(return_value="us-west")
@@ -182,14 +220,13 @@ class TestFunctionBasedParams:
 
         tenant_fn.assert_called_once()
         region_fn.assert_called_once()
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_request_url(mock_client)
         assert "tenant=tenant-123" in called_url
         assert "region=us-west" in called_url
 
     def test_mixes_static_and_function_params(self):
         """Should mix static and function params."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -197,6 +234,7 @@ class TestFunctionBasedParams:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         dynamic_fn = MagicMock(return_value="dynamic")
 
@@ -210,7 +248,7 @@ class TestFunctionBasedParams:
         )
 
         dynamic_fn.assert_called_once()
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_request_url(mock_client)
         assert "static=value" in called_url
         assert "dynamic=dynamic" in called_url
 
@@ -220,8 +258,7 @@ class TestDurableStreamHandleFunctionHeaders:
 
     def test_resolves_handle_function_headers(self):
         """Should resolve handle-level function headers."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -229,6 +266,7 @@ class TestDurableStreamHandleFunctionHeaders:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         header_fn = MagicMock(return_value="Bearer dynamic-token")
 
@@ -241,13 +279,12 @@ class TestDurableStreamHandleFunctionHeaders:
         handle.stream()
 
         header_fn.assert_called()
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer dynamic-token"
+        headers = get_request_headers(mock_client)
+        assert headers["Authorization"] == "Bearer dynamic-token"
 
     def test_resolves_handle_function_params(self):
         """Should resolve handle-level function params."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -255,6 +292,7 @@ class TestDurableStreamHandleFunctionHeaders:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         param_fn = MagicMock(return_value="dynamic-tenant")
 
@@ -267,7 +305,7 @@ class TestDurableStreamHandleFunctionHeaders:
         handle.stream()
 
         param_fn.assert_called()
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_request_url(mock_client)
         assert "tenant=dynamic-tenant" in called_url
 
 
@@ -276,8 +314,7 @@ class TestCombinedHeadersAndParams:
 
     def test_supports_both_function_headers_and_params(self):
         """Should support both function headers and params."""
-        mock_client = MagicMock(spec=httpx.Client)
-        mock_client.get.return_value = MockResponse(
+        mock_response = MockResponse(
             b"[]",
             headers={
                 "content-type": "application/json",
@@ -285,6 +322,7 @@ class TestCombinedHeadersAndParams:
                 "Stream-Up-To-Date": "true",
             },
         )
+        mock_client = setup_mock_client(mock_response)
 
         header_fn = MagicMock(return_value="Bearer token")
         param_fn = MagicMock(return_value="tenant-123")
@@ -299,10 +337,10 @@ class TestCombinedHeadersAndParams:
         header_fn.assert_called_once()
         param_fn.assert_called_once()
 
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer token"
+        headers = get_request_headers(mock_client)
+        assert headers["Authorization"] == "Bearer token"
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_request_url(mock_client)
         assert "tenant=tenant-123" in called_url
 
 
@@ -311,8 +349,6 @@ class TestPerRequestResolutionInLiveMode:
 
     def test_calls_header_functions_on_each_long_poll_request(self):
         """Should call header functions on each long-poll request."""
-        mock_client = MagicMock(spec=httpx.Client)
-
         call_count = 0
 
         def header_fn():
@@ -340,7 +376,7 @@ class TestPerRequestResolutionInLiveMode:
             },
         )
 
-        mock_client.get.side_effect = [first_response, second_response]
+        mock_client = setup_mock_client_multi([first_response, second_response])
 
         res = stream(
             "https://example.com/stream",
@@ -356,8 +392,8 @@ class TestPerRequestResolutionInLiveMode:
         assert call_count >= 2
 
         # Verify different values were used
-        first_call_headers = mock_client.get.call_args_list[0][1]["headers"]
-        second_call_headers = mock_client.get.call_args_list[1][1]["headers"]
+        first_call_headers = get_request_headers(mock_client, 0)
+        second_call_headers = get_request_headers(mock_client, 1)
 
         assert first_call_headers["Authorization"] == "Bearer token-1"
         assert second_call_headers["Authorization"] == "Bearer token-2"
@@ -366,8 +402,6 @@ class TestPerRequestResolutionInLiveMode:
 
     def test_calls_param_functions_on_each_long_poll_request(self):
         """Should call param functions on each long-poll request."""
-        mock_client = MagicMock(spec=httpx.Client)
-
         call_count = 0
 
         def param_fn():
@@ -394,7 +428,7 @@ class TestPerRequestResolutionInLiveMode:
             },
         )
 
-        mock_client.get.side_effect = [first_response, second_response]
+        mock_client = setup_mock_client_multi([first_response, second_response])
 
         res = stream(
             "https://example.com/stream",
@@ -410,8 +444,8 @@ class TestPerRequestResolutionInLiveMode:
         assert call_count >= 2
 
         # Verify different values were used
-        first_call_url = mock_client.get.call_args_list[0][0][0]
-        second_call_url = mock_client.get.call_args_list[1][0][0]
+        first_call_url = get_request_url(mock_client, 0)
+        second_call_url = get_request_url(mock_client, 1)
 
         assert "tenant=tenant-1" in first_call_url
         assert "tenant=tenant-2" in second_call_url
@@ -420,8 +454,6 @@ class TestPerRequestResolutionInLiveMode:
 
     def test_calls_both_header_and_param_functions_on_each_poll(self):
         """Should call both header and param functions on each poll."""
-        mock_client = MagicMock(spec=httpx.Client)
-
         header_call_count = 0
         param_call_count = 0
 
@@ -463,7 +495,7 @@ class TestPerRequestResolutionInLiveMode:
             ),
         ]
 
-        mock_client.get.side_effect = responses
+        mock_client = setup_mock_client_multi(responses)
 
         res = stream(
             "https://example.com/stream",

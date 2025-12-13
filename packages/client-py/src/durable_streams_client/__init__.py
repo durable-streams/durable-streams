@@ -33,9 +33,8 @@ from durable_streams_client._errors import (
 )
 from durable_streams_client._types import (
     AppendResult,
-    BackoffOptions,
-    HeadResult,
     HeadersLike,
+    HeadResult,
     LiveMode,
     Offset,
     ParamsLike,
@@ -53,7 +52,6 @@ __all__ = [
     "StreamEvent",
     "HeadResult",
     "AppendResult",
-    "BackoffOptions",
     "HeadersLike",
     "ParamsLike",
     # Errors

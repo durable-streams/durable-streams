@@ -49,30 +49,62 @@ class MockAsyncResponse:
         pass
 
 
+def setup_async_mock_client(mock_response: MockAsyncResponse) -> MagicMock:
+    """Set up a mock httpx.AsyncClient that uses the streaming API."""
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
+def setup_async_mock_client_error(mock_response: MockAsyncResponse) -> MagicMock:
+    """Set up a mock client that returns an error response."""
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
+def get_async_request_headers(mock_client: MagicMock, call_index: int = 0) -> dict:
+    """Extract headers from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_kwargs = mock_client.build_request.call_args_list[call_index]
+        return dict(call_kwargs[1].get("headers", {}))
+    return {}
+
+
+def get_async_request_url(mock_client: MagicMock, call_index: int = 0) -> str:
+    """Extract URL from the captured build_request call."""
+    if call_index < len(mock_client.build_request.call_args_list):
+        call_args = mock_client.build_request.call_args_list[call_index]
+        return str(call_args[0][1])
+    return ""
+
+
 class TestAstreamBasicFunctionality:
     """Basic functionality tests for astream()."""
 
     @pytest.mark.anyio
     async def test_astream_makes_request_and_returns_response(self):
         """Should make request and return AsyncStreamResponse."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b'[{"message": "hello"}]',
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1_20",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b'[{"message": "hello"}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_20",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream(
             "https://example.com/stream",
             client=mock_client,
         )
 
-        mock_client.get.assert_called_once()
+        mock_client.send.assert_called_once()
         assert res.url == "https://example.com/stream"
         assert res.content_type == "application/json"
         assert res.live == "auto"
@@ -81,13 +113,11 @@ class TestAstreamBasicFunctionality:
     @pytest.mark.anyio
     async def test_astream_throws_on_404(self):
         """Should throw StreamNotFoundError on 404."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"Not Found",
-                status_code=404,
-            )
+        mock_response = MockAsyncResponse(
+            b"Not Found",
+            status_code=404,
         )
+        mock_client = setup_async_mock_client_error(mock_response)
 
         with pytest.raises(StreamNotFoundError) as exc_info:
             await astream("https://example.com/stream", client=mock_client)
@@ -97,16 +127,14 @@ class TestAstreamBasicFunctionality:
     @pytest.mark.anyio
     async def test_astream_respects_offset_option(self):
         """Should include offset in query parameters."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"data",
-                headers={
-                    "Stream-Next-Offset": "2_10",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "2_10",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream(
             "https://example.com/stream",
@@ -114,7 +142,7 @@ class TestAstreamBasicFunctionality:
             offset="1_5",
         )
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_async_request_url(mock_client)
         assert "offset=1_5" in called_url
         await res.aclose()
 
@@ -125,17 +153,15 @@ class TestAsyncStreamResponseConsumption:
     @pytest.mark.anyio
     async def test_read_text_async(self):
         """Should read text asynchronously."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"hello world",
-                headers={
-                    "content-type": "text/plain",
-                    "Stream-Next-Offset": "1_11",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"hello world",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream("https://example.com/stream", client=mock_client)
         text = await res.read_text()
@@ -144,17 +170,15 @@ class TestAsyncStreamResponseConsumption:
     @pytest.mark.anyio
     async def test_read_json_async(self):
         """Should read JSON asynchronously."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b'[{"id": 1}, {"id": 2}]',
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1_30",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_30",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream("https://example.com/stream", client=mock_client)
         result = await res.read_json()
@@ -163,16 +187,14 @@ class TestAsyncStreamResponseConsumption:
     @pytest.mark.anyio
     async def test_read_bytes_async(self):
         """Should read bytes asynchronously."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                bytes([1, 2, 3, 4, 5]),
-                headers={
-                    "Stream-Next-Offset": "1_5",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            bytes([1, 2, 3, 4, 5]),
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream(
             "https://example.com/stream",
@@ -190,16 +212,14 @@ class TestAsyncStreamIterators:
     @pytest.mark.anyio
     async def test_aiter_bytes(self):
         """Should async iterate bytes."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"stream data",
-                headers={
-                    "Stream-Next-Offset": "1_11",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"stream data",
+            headers={
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream(
             "https://example.com/stream",
@@ -217,17 +237,15 @@ class TestAsyncStreamIterators:
     @pytest.mark.anyio
     async def test_aiter_json(self):
         """Should async iterate JSON items."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b'[{"id": 1}, {"id": 2}]',
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1_30",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_30",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream(
             "https://example.com/stream",
@@ -248,16 +266,14 @@ class TestAsyncConsumptionExclusivity:
     @pytest.mark.anyio
     async def test_throws_when_calling_read_bytes_twice(self):
         """Should throw when calling read_bytes() twice."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"data",
-                headers={
-                    "Stream-Next-Offset": "1_5",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream("https://example.com/stream", client=mock_client)
         await res.read_bytes()
@@ -268,17 +284,15 @@ class TestAsyncConsumptionExclusivity:
     @pytest.mark.anyio
     async def test_throws_when_calling_read_json_after_read_bytes(self):
         """Should throw when calling read_json() after read_bytes()."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b'[{"id": 1}]',
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1_5",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream("https://example.com/stream", client=mock_client)
         await res.read_bytes()
@@ -293,7 +307,6 @@ class TestAsyncContextManager:
     @pytest.mark.anyio
     async def test_async_context_manager(self):
         """Should close response when exiting async context."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
         mock_response = MockAsyncResponse(
             b"data",
             headers={
@@ -301,7 +314,7 @@ class TestAsyncContextManager:
                 "Stream-Up-To-Date": "true",
             },
         )
-        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client = setup_async_mock_client(mock_response)
 
         res = await astream("https://example.com/stream", client=mock_client)
         async with res:
@@ -402,17 +415,17 @@ class TestAsyncDurableStreamBasics:
     @pytest.mark.anyio
     async def test_stream_async(self):
         """Should stream asynchronously."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"hello world",
-                headers={
-                    "content-type": "text/plain",
-                    "Stream-Next-Offset": "1_11",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"hello world",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.build_request.return_value = MagicMock()
+        mock_client.send = AsyncMock(return_value=mock_response)
 
         handle = AsyncDurableStream(
             "https://example.com/stream",
@@ -526,17 +539,15 @@ class TestAsyncFunctionHeaders:
     @pytest.mark.anyio
     async def test_calls_async_function_headers(self):
         """Should call async function headers."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"[]",
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"[]",
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         async def header_fn():
             return "Bearer async-token"
@@ -547,24 +558,22 @@ class TestAsyncFunctionHeaders:
             headers={"Authorization": header_fn},
         )
 
-        call_kwargs = mock_client.get.call_args[1]
-        assert call_kwargs["headers"]["Authorization"] == "Bearer async-token"
+        headers = get_async_request_headers(mock_client)
+        assert headers["Authorization"] == "Bearer async-token"
         await res.aclose()
 
     @pytest.mark.anyio
     async def test_calls_async_function_params(self):
         """Should call async function params."""
-        mock_client = MagicMock(spec=httpx.AsyncClient)
-        mock_client.get = AsyncMock(
-            return_value=MockAsyncResponse(
-                b"[]",
-                headers={
-                    "content-type": "application/json",
-                    "Stream-Next-Offset": "1",
-                    "Stream-Up-To-Date": "true",
-                },
-            )
+        mock_response = MockAsyncResponse(
+            b"[]",
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+                "Stream-Up-To-Date": "true",
+            },
         )
+        mock_client = setup_async_mock_client(mock_response)
 
         async def param_fn():
             return "async-tenant"
@@ -575,6 +584,6 @@ class TestAsyncFunctionHeaders:
             params={"tenant": param_fn},
         )
 
-        called_url = mock_client.get.call_args[0][0]
+        called_url = get_async_request_url(mock_client)
         assert "tenant=async-tenant" in called_url
         await res.aclose()

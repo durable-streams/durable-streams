@@ -12,7 +12,7 @@ import json
 from collections import deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any
 
 import httpx
 
@@ -30,13 +30,11 @@ from durable_streams_client._parse import (
 )
 from durable_streams_client._response import AsyncStreamResponse
 from durable_streams_client._types import (
-    DEFAULT_BACKOFF,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_SEQ_HEADER,
     STREAM_TTL_HEADER,
     AppendResult,
-    BackoffOptions,
     HeadersLike,
     HeadResult,
     LiveMode,
@@ -51,8 +49,6 @@ from durable_streams_client._util import (
     resolve_params_async,
 )
 from durable_streams_client.astream import astream as astream_fn
-
-T = TypeVar("T")
 
 
 @dataclass
@@ -96,7 +92,6 @@ class AsyncDurableStream:
         content_type: str | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
-        backoff: BackoffOptions | None = None,
         batching: bool = True,
         on_error: Callable[
             [Exception],
@@ -116,7 +111,6 @@ class AsyncDurableStream:
             content_type: Content type for the stream
             client: Optional httpx.AsyncClient to use
             timeout: Request timeout
-            backoff: Backoff options for retries
             batching: Enable automatic batching for append() calls
             on_error: Async error handler callback
         """
@@ -125,7 +119,6 @@ class AsyncDurableStream:
         self._params = params
         self._content_type = content_type
         self._timeout = timeout or 30.0
-        self._backoff = backoff or DEFAULT_BACKOFF
         self._batching = batching
         self._on_error = on_error
 
@@ -565,7 +558,7 @@ class AsyncDurableStream:
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
         **kwargs: Any,
-    ) -> AsyncStreamResponse[T]:
+    ) -> AsyncStreamResponse[Any]:
         """Start an async read session for this stream."""
         merged_headers: HeadersLike = {}
         if self._headers:
@@ -587,7 +580,6 @@ class AsyncDurableStream:
             headers=merged_headers or None,
             params=merged_params or None,
             on_error=self._on_error,
-            backoff=self._backoff,
             client=self._client,
             timeout=self._timeout,
             **kwargs,
