@@ -113,18 +113,15 @@ export interface Stream {
   /**
    * Append data to the stream.
    *
-   * @param data - Data to append (Uint8Array or string)
+   * @param data - Data to append (object for JSON streams, Uint8Array or string for binary)
    * @param options - Optional append options (seq for ordering)
    *
    * @example
    * ```typescript
-   * await stream.append(JSON.stringify({ event: 'user.created' }))
+   * await stream.append({ event: 'user.created' })
    * ```
    */
-  append: (
-    data: Uint8Array | string,
-    options?: StreamAppendOptions
-  ) => Promise<void>
+  append: (data: unknown, options?: StreamAppendOptions) => Promise<void>
 }
 
 /**
@@ -311,7 +308,7 @@ export interface WrapperProtocolOptions {
  */
 export interface SDKHooks {
   onStreamCreated?: (stream: Stream, metadata?: unknown) => Promise<void>
-  onMessageAppended?: (stream: Stream, data: Uint8Array) => Promise<void>
+  onMessageAppended?: (stream: Stream, data: unknown) => Promise<void>
   onStreamDeleted?: (stream: Stream) => Promise<void>
 }
 

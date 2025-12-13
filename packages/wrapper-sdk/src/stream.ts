@@ -103,22 +103,15 @@ export class StreamImpl implements Stream {
   /**
    * Append data to the stream.
    *
-   * @param data - Data to append (Uint8Array or string)
+   * @param data - Data to append (object for JSON streams, Uint8Array or string for binary)
    * @param options - Optional append options (seq for ordering)
    */
-  async append(
-    data: Uint8Array | string,
-    options?: StreamAppendOptions
-  ): Promise<void> {
-    // Encode string data to Uint8Array for the hook
-    const encodedData =
-      typeof data === `string` ? new TextEncoder().encode(data) : data
-
-    // Append to the underlying stream
+  async append(data: unknown, options?: StreamAppendOptions): Promise<void> {
+    // Append to the underlying stream (writer handles JSON serialization)
     await this.#durableStream.append(data, { seq: options?.seq })
 
-    // Call the lifecycle hook
-    await this.#hooks.onMessageAppended?.(this, encodedData)
+    // Call the lifecycle hook with the original data
+    await this.#hooks.onMessageAppended?.(this, data)
   }
 
   /**
