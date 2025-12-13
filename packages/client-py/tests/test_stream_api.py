@@ -14,7 +14,6 @@ import pytest
 
 from durable_streams import (
     DurableStreamError,
-    FetchError,
     StreamConsumedError,
     stream,
 )
