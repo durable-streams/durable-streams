@@ -12,6 +12,22 @@ export type RequestHasher = (
 ) => string | Promise<string>
 
 /**
+ * Extended Response returned by SSE proxy fetch with additional methods.
+ */
+export interface SSEProxyResponse extends Response {
+  /**
+   * The stream path for this SSE connection.
+   */
+  readonly streamPath: string
+
+  /**
+   * Delete the underlying durable stream, clearing all cached data.
+   * Use this to force a fresh request on the next fetch.
+   */
+  delete: () => Promise<void>
+}
+
+/**
  * Options for creating an SSE proxy fetch client.
  */
 export interface SSEProxyFetchOptions {

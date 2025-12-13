@@ -237,6 +237,48 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
   })
 
   /**
+   * Delete a stream (clears cached data for fresh retry).
+   *
+   * This aborts any active backend connection and deletes the durable stream,
+   * allowing the next request to start fresh.
+   */
+  app.delete(`/sse-proxy/stream/:streamPath`, async (c) => {
+    const streamPath = c.req.param(`streamPath`)
+
+    // Abort any active connection first
+    const connection = activeConnections.get(streamPath)
+    if (connection) {
+      connection.abortController.abort()
+      activeConnections.delete(streamPath)
+    }
+
+    // Delete the durable stream
+    const streamPath_ = `/v1/stream/${streamPath}`
+    const fullStreamUrl = `${normalizedStreamsUrl}${streamPath_}`
+
+    try {
+      const deleteResponse = await baseFetch(fullStreamUrl, {
+        method: `DELETE`,
+        headers: streamsHeaders,
+      })
+
+      if (!deleteResponse.ok && deleteResponse.status !== 404) {
+        return c.json(
+          { error: `Failed to delete stream: ${deleteResponse.status}` },
+          500
+        )
+      }
+
+      return c.json({ success: true, deleted: deleteResponse.status !== 404 })
+    } catch (err) {
+      return c.json(
+        { error: `Failed to delete stream: ${(err as Error).message}` },
+        500
+      )
+    }
+  })
+
+  /**
    * List active proxy connections (for debugging/monitoring).
    */
   app.get(`/sse-proxy/connections`, (c) => {

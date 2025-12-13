@@ -32,6 +32,7 @@ export { defaultHashRequest, createRequestHasher } from "./hash"
 export type {
   // Client types
   SSEProxyFetchOptions,
+  SSEProxyResponse,
   RequestHasher,
 
   // Server types

@@ -11,6 +11,7 @@ import type {
   ProxyInitiateRequest,
   ProxyInitiateResponse,
   SSEProxyFetchOptions,
+  SSEProxyResponse,
 } from "./types"
 
 /**
@@ -226,8 +227,8 @@ export function createSSEProxyFetch(
       abortController
     )
 
-    // Return a Response that looks like a normal SSE response
-    return new Response(sseBody, {
+    // Create base Response
+    const response = new Response(sseBody, {
       status: 200,
       statusText: `OK`,
       headers: new Headers({
@@ -236,7 +237,26 @@ export function createSSEProxyFetch(
         Connection: `keep-alive`,
         "X-SSE-Proxy-Stream": initiateResult.streamPath,
       }),
+    }) as SSEProxyResponse
+
+    // Add streamPath property
+    Object.defineProperty(response, `streamPath`, {
+      value: initiateResult.streamPath,
+      writable: false,
+      enumerable: true,
     })
+
+    // Add delete method
+    response.delete = async () => {
+      await deleteStream(
+        normalizedProxyUrl,
+        initiateResult.streamPath,
+        proxyHeaders,
+        baseFetch
+      )
+    }
+
+    return response
   }
 }
 
@@ -262,6 +282,33 @@ async function notifyProxyAbort(
   }
 }
 
+/**
+ * Delete a stream from the proxy server.
+ */
+async function deleteStream(
+  proxyUrl: string,
+  streamPath: string,
+  headers: Record<string, string>,
+  fetchFn: typeof fetch
+): Promise<void> {
+  const response = await fetchFn(
+    `${proxyUrl}/sse-proxy/stream/${encodeURIComponent(streamPath)}`,
+    {
+      method: `DELETE`,
+      headers,
+    }
+  )
+
+  if (!response.ok) {
+    const errorText = await response.text()
+    throw new Error(`Failed to delete stream: ${response.status} ${errorText}`)
+  }
+}
+
 // Re-export types for convenience
-export type { SSEProxyFetchOptions, RequestHasher } from "./types"
+export type {
+  SSEProxyFetchOptions,
+  SSEProxyResponse,
+  RequestHasher,
+} from "./types"
 export { defaultHashRequest, createRequestHasher } from "./hash"
