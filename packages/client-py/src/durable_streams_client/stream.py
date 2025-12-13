@@ -165,7 +165,7 @@ def _stream_internal(
             )
 
             # Check for errors
-            if not response.ok:
+            if not response.is_success:
                 headers_dict = parse_httpx_headers(response.headers)
                 body = response.text
                 error = error_from_status(
@@ -233,7 +233,7 @@ def _stream_internal(
             **kwargs,
         )
 
-        if not resp.ok and resp.status_code != 204:
+        if not resp.is_success and resp.status_code != 204:
             hdrs = parse_httpx_headers(resp.headers)
             body = resp.text
             error = error_from_status(

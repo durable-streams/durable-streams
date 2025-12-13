@@ -542,14 +542,20 @@ class DurableStream:
         content_type: str | None,
     ) -> AppendResult | None:
         """Append with batching - collect messages and send in batches."""
+        should_flush = False
+
         with self._batch_lock:
             self._batch_queue.append(
                 _QueuedMessage(data=data, seq=seq, content_type=content_type)
             )
 
-            # If no request in flight, send immediately
+            # If no request in flight, we should flush
             if not self._batch_in_flight:
-                return self._flush_batch()
+                should_flush = True
+
+        # Flush outside the lock to avoid deadlock
+        if should_flush:
+            return self._flush_batch()
 
         return None
 
@@ -566,14 +572,24 @@ class DurableStream:
 
         try:
             result = self._send_batch(messages)
-            return result
-        finally:
+
+            # Check if more messages accumulated while we were sending
+            flush_again = False
             with self._batch_lock:
                 self._batch_in_flight = False
-
-                # If more messages accumulated, flush again
                 if self._batch_queue:
-                    self._flush_batch()
+                    flush_again = True
+
+            # Flush remaining messages outside the lock
+            if flush_again:
+                self._flush_batch()
+
+            return result
+        except Exception:
+            # On error, reset the in-flight flag
+            with self._batch_lock:
+                self._batch_in_flight = False
+            raise
 
     def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
         """Send a batch of messages as a single POST request."""

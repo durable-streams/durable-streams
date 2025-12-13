@@ -461,13 +461,19 @@ class AsyncDurableStream:
         content_type: str | None,
     ) -> AppendResult | None:
         """Append with batching."""
+        should_flush = False
+
         async with self._batch_lock:
             self._batch_queue.append(
                 _QueuedMessage(data=data, seq=seq, content_type=content_type)
             )
 
             if not self._batch_in_flight:
-                return await self._flush_batch()
+                should_flush = True
+
+        # Flush outside the lock to avoid deadlock
+        if should_flush:
+            return await self._flush_batch()
 
         return None
 
@@ -483,13 +489,24 @@ class AsyncDurableStream:
 
         try:
             result = await self._send_batch(messages)
-            return result
-        finally:
+
+            # Check if more messages accumulated while we were sending
+            flush_again = False
             async with self._batch_lock:
                 self._batch_in_flight = False
-
                 if self._batch_queue:
-                    await self._flush_batch()
+                    flush_again = True
+
+            # Flush remaining messages outside the lock
+            if flush_again:
+                await self._flush_batch()
+
+            return result
+        except Exception:
+            # On error, reset the in-flight flag
+            async with self._batch_lock:
+                self._batch_in_flight = False
+            raise
 
     async def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
         """Send a batch of messages."""
