@@ -43,6 +43,9 @@ jobs:
 
   test-python:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client-py
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,20 +56,18 @@ jobs:
           version: "latest"
 
       - name: Setup Python
-        run: uv python install 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Install Python dependencies
-        working-directory: packages/client-py
         run: uv sync --dev
 
       - name: Lint with ruff
-        working-directory: packages/client-py
         run: uv run ruff check src/ tests/
 
       - name: Typecheck with pyright
-        working-directory: packages/client-py
         run: uv run pyright src/
 
       - name: Run unit tests
-        working-directory: packages/client-py
         run: uv run pytest tests/ -v --ignore=tests/test_integration.py

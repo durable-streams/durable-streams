@@ -5,3 +5,5 @@ coverage
 pnpm-lock.yaml
 .output
 .changeset
+packages/test-ui/src/routeTree.gen.ts
+packages/client-py
