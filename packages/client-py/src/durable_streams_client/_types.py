@@ -4,15 +4,14 @@ Core types for the Durable Streams client.
 This module defines the fundamental types used throughout the library.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import (
     Any,
-    Callable,
     Generic,
     Literal,
     TypeVar,
 )
-
 
 # Type alias for stream offsets - opaque strings
 Offset = str
@@ -85,6 +84,7 @@ ParamsLike = dict[str, str | Callable[[], str] | None]
 
 # Type for JSON decode function
 JsonDecoder = Callable[[Any], T]
+
 
 # Backoff options type
 @dataclass
