@@ -39,6 +39,7 @@ class MockResponse:
         self.ok = 200 <= status_code < 400
         self.is_success = self.ok
         self.text = content.decode("utf-8") if content else ""
+        self.reason_phrase = "OK" if self.ok else "Error"
 
     def read(self) -> bytes:
         return self._content
@@ -439,6 +440,109 @@ class TestFirstRequestSemantics:
         stream("https://example.com/stream", client=mock_client)
 
         assert mock_client.get.call_count == 1
+
+
+class TestResponseMetadata:
+    """Tests for response metadata properties (headers, status, ok, etc.)."""
+
+    def test_exposes_http_headers(self):
+        """Should expose response headers from first response."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"[]",
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+                "etag": "abc123",
+                "cache-control": "max-age=60",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+
+        assert res.headers.get("etag") == "abc123"
+        assert res.headers.get("cache-control") == "max-age=60"
+        assert res.headers.get("content-type") == "application/json"
+
+    def test_exposes_status_code(self):
+        """Should expose HTTP status from first response."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"[]",
+            status_code=200,
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+
+        assert res.status == 200
+        assert res.status_text == "OK"
+        assert res.ok is True
+
+    def test_exposes_start_offset(self):
+        """Should expose the starting offset for this session."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "5_100",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            offset="5_50",
+        )
+
+        # start_offset should be the initial offset we passed in
+        assert res.start_offset == "5_50"
+        # offset should be updated from the response headers
+        assert res.offset == "5_100"
+
+    def test_ok_is_true_for_success(self):
+        """Should be true for successful responses."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"[]",
+            status_code=200,
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        assert res.ok is True
+
+    def test_headers_after_consumption(self):
+        """Should expose headers even after consumption."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1",
+                "Stream-Up-To-Date": "true",
+                "etag": "test-etag",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+
+        assert res.headers.get("etag") == "test-etag"
+        assert res.status == 200
+
+        # Consume the response
+        items = res.read_json()
+        assert len(items) == 1
+
+        # Metadata still accessible after consumption
+        assert res.headers.get("etag") == "test-etag"
 
 
 class TestLiveModeSemantics:

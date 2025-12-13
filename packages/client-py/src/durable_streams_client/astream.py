@@ -248,7 +248,8 @@ async def _astream_internal(
         response=response,
         client=client,
         live=live,
-        offset=meta.next_offset,
+        start_offset=offset,  # Original offset passed to astream()
+        offset=meta.next_offset,  # Current offset from response headers
         cursor=meta.cursor,
         fetch_next=fetch_next,
         is_sse=is_sse,

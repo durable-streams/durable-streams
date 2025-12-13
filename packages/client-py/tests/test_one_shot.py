@@ -19,6 +19,8 @@ class TestStreamResponseOneShot:
             "Stream-Next-Offset": "123",
             "Content-Type": "application/json",
         }
+        response.status_code = 200
+        response.reason_phrase = "OK"
         response.iter_bytes.return_value = iter([b'[{"id": 1}]'])
         response.read.return_value = b'[{"id": 1}]'
         response.close.return_value = None
@@ -34,6 +36,7 @@ class TestStreamResponseOneShot:
             response=mock_response,
             client=MagicMock(),
             live=False,
+            start_offset="-1",
             offset="123",
             cursor=None,
             fetch_next=MagicMock(),
@@ -119,6 +122,8 @@ class TestAsyncStreamResponseOneShot:
             "Stream-Next-Offset": "123",
             "Content-Type": "application/json",
         }
+        response.status_code = 200
+        response.reason_phrase = "OK"
 
         async def mock_aiter_bytes():
             yield b'[{"id": 1}]'
@@ -141,6 +146,7 @@ class TestAsyncStreamResponseOneShot:
             response=mock_response,
             client=MagicMock(),
             live=False,
+            start_offset="-1",
             offset="123",
             cursor=None,
             fetch_next=MagicMock(),
