@@ -6,6 +6,7 @@ This module handles parsing of SSE event streams according to the protocol:
 - `event: control` events contain `streamNextOffset` and optional `streamCursor`
 """
 
+import codecs
 import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
@@ -155,6 +156,9 @@ def parse_sse_sync(byte_iterator: Iterator[bytes]) -> Iterator[SSEEvent]:
     """
     Parse SSE events from a synchronous byte iterator.
 
+    Uses incremental UTF-8 decoding to handle multi-byte characters
+    that may be split across chunk boundaries.
+
     Args:
         byte_iterator: Iterator yielding bytes
 
@@ -162,13 +166,22 @@ def parse_sse_sync(byte_iterator: Iterator[bytes]) -> Iterator[SSEEvent]:
         Parsed SSE events
     """
     parser = SSEParser()
+    # Use incremental decoder to handle UTF-8 codepoints split across chunks
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     for chunk in byte_iterator:
-        text = chunk.decode("utf-8")
-        for event in parser.feed(text):
+        text = decoder.decode(chunk)
+        if text:
+            for event in parser.feed(text):
+                yield event
+
+    # Flush any remaining bytes in the decoder
+    final_text = decoder.decode(b"", final=True)
+    if final_text:
+        for event in parser.feed(final_text):
             yield event
 
-    # Handle any remaining data
+    # Handle any remaining events in the parser
     for event in parser.finish():
         yield event
 
@@ -179,6 +192,9 @@ async def parse_sse_async(
     """
     Parse SSE events from an asynchronous byte iterator.
 
+    Uses incremental UTF-8 decoding to handle multi-byte characters
+    that may be split across chunk boundaries.
+
     Args:
         byte_iterator: Async iterator yielding bytes
 
@@ -186,12 +202,21 @@ async def parse_sse_async(
         Parsed SSE events
     """
     parser = SSEParser()
+    # Use incremental decoder to handle UTF-8 codepoints split across chunks
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     async for chunk in byte_iterator:
-        text = chunk.decode("utf-8")
-        for event in parser.feed(text):
+        text = decoder.decode(chunk)
+        if text:
+            for event in parser.feed(text):
+                yield event
+
+    # Flush any remaining bytes in the decoder
+    final_text = decoder.decode(b"", final=True)
+    if final_text:
+        for event in parser.feed(final_text):
             yield event
 
-    # Handle any remaining data
+    # Handle any remaining events in the parser
     for event in parser.finish():
         yield event

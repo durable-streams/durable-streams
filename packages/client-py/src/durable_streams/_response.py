@@ -282,18 +282,30 @@ class StreamResponse(Generic[T]):
         return self._iter_text_internal(encoding)
 
     def _iter_text_internal(self, encoding: str) -> Iterator[str]:
-        """Internal text iteration."""
+        """Internal text iteration using incremental decoding."""
+        import codecs
+
         if self._is_sse:
             yield from self._iter_sse_text()
         else:
+            # Use incremental decoder for correct handling of multi-byte chars
+            # split across chunk boundaries
+            decoder = codecs.getincrementaldecoder(encoding)("replace")
             try:
                 for chunk in self._response.iter_bytes():
-                    yield chunk.decode(encoding)
+                    text = decoder.decode(chunk)
+                    if text:
+                        yield text
+                # Flush any remaining bytes
+                final = decoder.decode(b"", final=True)
+                if final:
+                    yield final
             finally:
                 self._response.close()
 
             while self._should_continue_live():
                 response = self._fetch_next(self._offset, self._cursor)
+                decoder = codecs.getincrementaldecoder(encoding)("replace")
                 try:
                     self._update_metadata_from_response(response)
 
@@ -302,7 +314,12 @@ class StreamResponse(Generic[T]):
                         continue
 
                     for chunk in response.iter_bytes():
-                        yield chunk.decode(encoding)
+                        text = decoder.decode(chunk)
+                        if text:
+                            yield text
+                    final = decoder.decode(b"", final=True)
+                    if final:
+                        yield final
                 finally:
                     response.close()
 
@@ -520,30 +537,54 @@ class StreamResponse(Generic[T]):
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
     ) -> Iterator[StreamEvent[Any]]:
-        """Iterate SSE events with metadata."""
+        """
+        Iterate SSE events with metadata.
+
+        SSE events come in data -> control order, so we buffer data events
+        until we see the control event, then emit them with the correct
+        metadata from the control event. This ensures StreamEvent.next_offset
+        and other metadata are accurate for checkpointing.
+        """
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
+
+        # Buffer to hold data events until we see their control event
+        buffered_data: list[Any] = []
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
+                # Convert data based on mode but don't yield yet
                 if mode == "text":
                     data: Any = event.data
                 elif mode == "json" or mode == "json_batches":
                     data = decode_json_items(event.data, decode)
                 else:
                     data = event.data.encode("utf-8")
-
-                yield StreamEvent(
-                    data=data,
-                    next_offset=self._offset,
-                    up_to_date=self._up_to_date,
-                    cursor=self._cursor,
-                )
+                buffered_data.append(data)
             else:
-                # Control event - update metadata
+                # Control event - update metadata first
                 self._offset = event.stream_next_offset
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+
+                # Now emit all buffered data with correct metadata
+                for data in buffered_data:
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+                buffered_data.clear()
+
+        # Handle any remaining data (unlikely but be safe)
+        for data in buffered_data:
+            yield StreamEvent(
+                data=data,
+                next_offset=self._offset,
+                up_to_date=self._up_to_date,
+                cursor=self._cursor,
+            )
 
     # === Read-all methods ===
 
@@ -953,19 +994,31 @@ class AsyncStreamResponse(Generic[T]):
         return self._aiter_text_internal(encoding)
 
     async def _aiter_text_internal(self, encoding: str) -> AsyncIterator[str]:
-        """Internal async text iteration."""
+        """Internal async text iteration using incremental decoding."""
+        import codecs
+
         if self._is_sse:
             async for text in self._aiter_sse_text():
                 yield text
         else:
+            # Use incremental decoder for correct handling of multi-byte chars
+            # split across chunk boundaries
+            decoder = codecs.getincrementaldecoder(encoding)("replace")
             try:
                 async for chunk in self._response.aiter_bytes():
-                    yield chunk.decode(encoding)
+                    text = decoder.decode(chunk)
+                    if text:
+                        yield text
+                # Flush any remaining bytes
+                final = decoder.decode(b"", final=True)
+                if final:
+                    yield final
             finally:
                 await self._response.aclose()
 
             while self._should_continue_live():
                 response = await self._fetch_next(self._offset, self._cursor)
+                decoder = codecs.getincrementaldecoder(encoding)("replace")
                 try:
                     self._update_metadata_from_response(response)
 
@@ -974,7 +1027,12 @@ class AsyncStreamResponse(Generic[T]):
                         continue
 
                     async for chunk in response.aiter_bytes():
-                        yield chunk.decode(encoding)
+                        text = decoder.decode(chunk)
+                        if text:
+                            yield text
+                    final = decoder.decode(b"", final=True)
+                    if final:
+                        yield final
                 finally:
                     await response.aclose()
 
@@ -1159,29 +1217,54 @@ class AsyncStreamResponse(Generic[T]):
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
     ) -> AsyncIterator[StreamEvent[Any]]:
-        """Iterate SSE events with metadata."""
+        """
+        Iterate SSE events with metadata.
+
+        SSE events come in data -> control order, so we buffer data events
+        until we see the control event, then emit them with the correct
+        metadata from the control event. This ensures StreamEvent.next_offset
+        and other metadata are accurate for checkpointing.
+        """
         from durable_streams._sse import SSEDataEvent, parse_sse_async
+
+        # Buffer to hold data events until we see their control event
+        buffered_data: list[Any] = []
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
+                # Convert data based on mode but don't yield yet
                 if mode == "text":
                     data: Any = event.data
                 elif mode in ("json", "json_batches"):
                     data = decode_json_items(event.data, decode)
                 else:
                     data = event.data.encode("utf-8")
-
-                yield StreamEvent(
-                    data=data,
-                    next_offset=self._offset,
-                    up_to_date=self._up_to_date,
-                    cursor=self._cursor,
-                )
+                buffered_data.append(data)
             else:
+                # Control event - update metadata first
                 self._offset = event.stream_next_offset
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+
+                # Now emit all buffered data with correct metadata
+                for data in buffered_data:
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+                buffered_data.clear()
+
+        # Handle any remaining data (unlikely but be safe)
+        for data in buffered_data:
+            yield StreamEvent(
+                data=data,
+                next_offset=self._offset,
+                up_to_date=self._up_to_date,
+                cursor=self._cursor,
+            )
 
     # === Read-all methods ===
 

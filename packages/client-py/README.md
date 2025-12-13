@@ -434,7 +434,6 @@ This client implements the [Durable Streams Protocol](../../PROTOCOL.md), includ
 - **Read modes**: Catch-up, Long-poll, and SSE
 - **Headers**: `Stream-Next-Offset`, `Stream-Cursor`, `Stream-Up-To-Date`, `Stream-Seq`
 - **JSON mode**: Array flattening on reads, array wrapping on appends
-- **SSE reconnection**: Automatic reconnection using `streamNextOffset`
 - **Batching**: Automatic request batching for high-throughput appends
 
 ## License
