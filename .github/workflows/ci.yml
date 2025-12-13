@@ -63,7 +63,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install Python dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/
