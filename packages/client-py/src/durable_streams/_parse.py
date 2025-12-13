@@ -8,7 +8,7 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
-from durable_streams_client._types import (
+from durable_streams._types import (
     STREAM_CURSOR_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_UP_TO_DATE_HEADER,

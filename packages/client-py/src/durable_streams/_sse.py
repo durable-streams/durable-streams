@@ -10,7 +10,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
-from durable_streams_client._types import Offset
+from durable_streams._types import Offset
 
 
 @dataclass

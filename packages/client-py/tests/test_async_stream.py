@@ -11,12 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from durable_streams_client import (
+from durable_streams import (
     AsyncDurableStream,
     StreamConsumedError,
     astream,
 )
-from durable_streams_client._errors import StreamNotFoundError
+from durable_streams._errors import StreamNotFoundError
 
 
 class MockAsyncResponse:
@@ -525,7 +525,7 @@ class TestAsyncDurableStreamErrors:
             batching=False,
         )
 
-        from durable_streams_client import SeqConflictError
+        from durable_streams import SeqConflictError
 
         with pytest.raises(SeqConflictError):
             await handle.append("data", seq="old-seq")

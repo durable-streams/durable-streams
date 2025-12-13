@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import httpx
 
-from durable_streams_client import DurableStream, stream
+from durable_streams import DurableStream, stream
 
 
 class MockResponse:

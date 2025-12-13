@@ -1,6 +1,6 @@
 """Tests for error handling."""
 
-from durable_streams_client._errors import (
+from durable_streams._errors import (
     DurableStreamError,
     FetchError,
     RetentionGoneError,

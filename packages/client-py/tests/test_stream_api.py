@@ -12,13 +12,13 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from durable_streams_client import (
+from durable_streams import (
     DurableStreamError,
     FetchError,
     StreamConsumedError,
     stream,
 )
-from durable_streams_client._errors import StreamNotFoundError
+from durable_streams._errors import StreamNotFoundError
 
 
 class MockResponse:

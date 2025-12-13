@@ -1,4 +1,4 @@
-# durable-streams-client
+# durable-streams
 
 Python client for the Electric Durable Streams protocol.
 
@@ -12,13 +12,13 @@ The Durable Streams client provides two main APIs:
 ## Installation
 
 ```bash
-pip install durable-streams-client
+pip install durable-streams
 ```
 
 Or with uv:
 
 ```bash
-uv add durable-streams-client
+uv add durable-streams
 ```
 
 ## Quick Start
@@ -26,7 +26,7 @@ uv add durable-streams-client
 ### Reading from a Stream
 
 ```python
-from durable_streams_client import stream
+from durable_streams import stream
 
 # Simple iteration over JSON items
 with stream("https://streams.example.com/my-stream") as res:
@@ -42,7 +42,7 @@ with stream("https://streams.example.com/my-stream", live=False) as res:
 ### Async Reading
 
 ```python
-from durable_streams_client import astream
+from durable_streams import astream
 
 async with await astream("https://streams.example.com/my-stream") as res:
     async for item in res.iter_json():
@@ -52,7 +52,7 @@ async with await astream("https://streams.example.com/my-stream") as res:
 ### Writing to a Stream
 
 ```python
-from durable_streams_client import DurableStream
+from durable_streams import DurableStream
 
 # Create a new stream
 handle = DurableStream.create(
@@ -80,7 +80,7 @@ with handle.stream() as res:
 Create a synchronous streaming session.
 
 ```python
-from durable_streams_client import stream
+from durable_streams import stream
 
 res = stream(
     url="https://example.com/stream",
@@ -96,7 +96,7 @@ res = stream(
 Create an asynchronous streaming session.
 
 ```python
-from durable_streams_client import astream
+from durable_streams import astream
 
 res = await astream(
     url="https://example.com/stream",
@@ -179,7 +179,7 @@ with stream(url) as res:
 #### Events with Metadata
 
 ```python
-from durable_streams_client import StreamEvent
+from durable_streams import StreamEvent
 
 with stream(url) as res:
     for event in res.iter_events(mode="json"):
@@ -213,7 +213,7 @@ Handle classes for read/write operations on streams.
 #### Creating Handles
 
 ```python
-from durable_streams_client import DurableStream
+from durable_streams import DurableStream
 
 # Create a new stream
 handle = DurableStream.create(
@@ -260,7 +260,7 @@ with handle.stream(offset="12345") as res:
 #### Async Version
 
 ```python
-from durable_streams_client import AsyncDurableStream
+from durable_streams import AsyncDurableStream
 
 handle = await AsyncDurableStream.create(
     url="https://example.com/stream",
@@ -280,7 +280,7 @@ By default, multiple `append()` calls made while a POST is in-flight are batched
 
 ```python
 import asyncio
-from durable_streams_client import AsyncDurableStream
+from durable_streams import AsyncDurableStream
 
 handle = await AsyncDurableStream.create(url, content_type="application/json")
 
@@ -301,7 +301,7 @@ handle = DurableStream(url, batching=False)
 ## Error Handling
 
 ```python
-from durable_streams_client import (
+from durable_streams import (
     stream,
     DurableStreamError,
     FetchError,
@@ -394,7 +394,7 @@ uv sync --dev
 
 ```bash
 uv run pytest
-uv run pytest --cov=durable_streams_client
+uv run pytest --cov=durable_streams
 ```
 
 ### Linting and Formatting

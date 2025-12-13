@@ -2,7 +2,7 @@
 
 import pytest
 
-from durable_streams_client._parse import (
+from durable_streams._parse import (
     batch_for_json_append,
     decode_json_items,
     flatten_json_array,

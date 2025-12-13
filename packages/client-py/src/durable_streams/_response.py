@@ -16,14 +16,14 @@ from typing import (
     cast,
 )
 
-from durable_streams_client._errors import (
+from durable_streams._errors import (
     SSEBytesIterationError,
     StreamConsumedError,
 )
-from durable_streams_client._parse import (
+from durable_streams._parse import (
     decode_json_items,
 )
-from durable_streams_client._types import (
+from durable_streams._types import (
     LiveMode,
     Offset,
     StreamEvent,
@@ -98,7 +98,7 @@ class StreamResponse(Generic[T]):
 
     def _update_metadata_from_response(self, response: httpx.Response) -> None:
         """Update internal state from response headers."""
-        from durable_streams_client._parse import (
+        from durable_streams._parse import (
             parse_httpx_headers,
             parse_response_headers,
         )
@@ -303,7 +303,7 @@ class StreamResponse(Generic[T]):
 
     def _iter_sse_text(self) -> Iterator[str]:
         """Iterate SSE data events as text."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_sync
+        from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
@@ -402,7 +402,7 @@ class StreamResponse(Generic[T]):
         decode: Callable[[Any], T] | None,
     ) -> Iterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_sync
+        from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
@@ -516,7 +516,7 @@ class StreamResponse(Generic[T]):
         decode: Callable[[Any], T] | None,
     ) -> Iterator[StreamEvent[Any]]:
         """Iterate SSE events with metadata."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_sync
+        from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
@@ -786,7 +786,7 @@ class AsyncStreamResponse(Generic[T]):
 
     def _update_metadata_from_response(self, response: httpx.Response) -> None:
         """Update internal state from response headers."""
-        from durable_streams_client._parse import (
+        from durable_streams._parse import (
             parse_httpx_headers,
             parse_response_headers,
         )
@@ -970,7 +970,7 @@ class AsyncStreamResponse(Generic[T]):
 
     async def _aiter_sse_text(self) -> AsyncIterator[str]:
         """Iterate SSE data events as text."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_async
+        from durable_streams._sse import SSEDataEvent, parse_sse_async
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
@@ -1050,7 +1050,7 @@ class AsyncStreamResponse(Generic[T]):
         decode: Callable[[Any], T] | None,
     ) -> AsyncIterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_async
+        from durable_streams._sse import SSEDataEvent, parse_sse_async
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
@@ -1150,7 +1150,7 @@ class AsyncStreamResponse(Generic[T]):
         decode: Callable[[Any], T] | None,
     ) -> AsyncIterator[StreamEvent[Any]]:
         """Iterate SSE events with metadata."""
-        from durable_streams_client._sse import SSEDataEvent, parse_sse_async
+        from durable_streams._sse import SSEDataEvent, parse_sse_async
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):

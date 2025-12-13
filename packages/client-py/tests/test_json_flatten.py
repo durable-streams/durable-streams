@@ -1,6 +1,6 @@
 """Tests for JSON flattening behavior."""
 
-from durable_streams_client._parse import (
+from durable_streams._parse import (
     decode_json_items,
     flatten_json_array,
 )

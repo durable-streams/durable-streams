@@ -11,12 +11,12 @@ import uuid
 
 import pytest
 
-from durable_streams_client import (
+from durable_streams import (
     DurableStream,
     astream,
     stream,
 )
-from durable_streams_client._errors import StreamNotFoundError
+from durable_streams._errors import StreamNotFoundError
 
 # Mark all tests in this file as integration tests
 pytestmark = pytest.mark.integration
@@ -481,7 +481,7 @@ class TestIntegrationOneShot:
             with handle.stream(live=False) as res:
                 _ = res.read_text()
 
-                from durable_streams_client import StreamConsumedError
+                from durable_streams import StreamConsumedError
 
                 with pytest.raises(StreamConsumedError):
                     res.read_text()

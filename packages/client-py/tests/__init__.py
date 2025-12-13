@@ -1,1 +1,1 @@
-# Tests for durable_streams_client
+# Tests for durable_streams
