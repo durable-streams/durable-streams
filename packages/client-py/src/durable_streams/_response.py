@@ -72,6 +72,7 @@ class StreamResponse(Generic[T]):
         cursor: str | None,
         fetch_next: Callable[[Offset, str | None], httpx.Response],
         is_sse: bool = False,
+        own_client: bool = False,
     ) -> None:
         self._url = url
         self._response = response
@@ -82,6 +83,7 @@ class StreamResponse(Generic[T]):
         self._cursor = cursor
         self._fetch_next = fetch_next
         self._is_sse = is_sse
+        self._own_client = own_client
 
         self._consumed_by: str | None = None
         self._closed = False
@@ -208,10 +210,13 @@ class StreamResponse(Generic[T]):
         return self._closed
 
     def close(self) -> None:
-        """Close the stream."""
+        """Close the stream and release resources."""
         if not self._closed:
             self._closed = True
             self._response.close()
+            # Close the client if we created it internally
+            if self._own_client:
+                self._client.close()
 
     def __enter__(self) -> StreamResponse[T]:
         return self
@@ -761,6 +766,7 @@ class AsyncStreamResponse(Generic[T]):
         cursor: str | None,
         fetch_next: Callable[[Offset, str | None], Any],  # Returns awaitable
         is_sse: bool = False,
+        own_client: bool = False,
     ) -> None:
         self._url = url
         self._response = response
@@ -771,6 +777,7 @@ class AsyncStreamResponse(Generic[T]):
         self._cursor = cursor
         self._fetch_next = fetch_next
         self._is_sse = is_sse
+        self._own_client = own_client
 
         self._consumed_by: str | None = None
         self._closed = False
@@ -889,10 +896,13 @@ class AsyncStreamResponse(Generic[T]):
         return self._closed
 
     async def aclose(self) -> None:
-        """Close the stream."""
+        """Close the stream and release resources."""
         if not self._closed:
             self._closed = True
             await self._response.aclose()
+            # Close the client if we created it internally
+            if self._own_client:
+                await self._client.aclose()
 
     async def __aenter__(self) -> AsyncStreamResponse[T]:
         return self

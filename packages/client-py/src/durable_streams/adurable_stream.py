@@ -28,7 +28,6 @@ from durable_streams._parse import (
     parse_httpx_headers,
     wrap_for_json_append,
 )
-from durable_streams._response import AsyncStreamResponse
 from durable_streams._types import (
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
@@ -48,6 +47,7 @@ from durable_streams._util import (
     resolve_headers_async,
     resolve_params_async,
 )
+from durable_streams.astream import AsyncStreamSession
 from durable_streams.astream import astream as astream_fn
 
 
@@ -78,7 +78,7 @@ class AsyncDurableStream:
         >>> await handle.append({"message": "hello"})
         >>>
         >>> # Read data
-        >>> async with await handle.stream() as res:
+        >>> async with handle.stream() as res:
         ...     async for item in res.iter_json():
         ...         print(item)
     """
@@ -549,7 +549,7 @@ class AsyncDurableStream:
         next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
         return AppendResult(next_offset=next_offset)
 
-    async def stream(
+    def stream(
         self,
         *,
         offset: Offset | None = None,
@@ -558,8 +558,17 @@ class AsyncDurableStream:
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
         **kwargs: Any,
-    ) -> AsyncStreamResponse[Any]:
-        """Start an async read session for this stream."""
+    ) -> AsyncStreamSession:
+        """
+        Start an async read session for this stream.
+
+        Returns an async context manager for reading from the stream.
+
+        Example:
+            async with handle.stream() as res:
+                async for item in res.iter_json():
+                    print(item)
+        """
         merged_headers: HeadersLike = {}
         if self._headers:
             merged_headers.update(self._headers)
@@ -572,7 +581,7 @@ class AsyncDurableStream:
         if params:
             merged_params.update(params)
 
-        return await astream_fn(
+        return astream_fn(
             self._url,
             offset=offset,
             live=live,

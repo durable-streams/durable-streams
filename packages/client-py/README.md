@@ -28,7 +28,12 @@ uv add durable-streams
 ```python
 from durable_streams import stream
 
-# Simple iteration over JSON items
+# Default iteration yields raw bytes chunks
+with stream("https://streams.example.com/my-stream") as res:
+    for chunk in res:  # bytes
+        process(chunk)
+
+# Iterate over JSON items (flattened from arrays)
 with stream("https://streams.example.com/my-stream") as res:
     for item in res.iter_json():
         print(item)
@@ -44,7 +49,13 @@ with stream("https://streams.example.com/my-stream", live=False) as res:
 ```python
 from durable_streams import astream
 
-async with await astream("https://streams.example.com/my-stream") as res:
+# Direct async context manager - no await needed!
+async with astream("https://streams.example.com/my-stream") as res:
+    async for chunk in res:  # bytes
+        process(chunk)
+
+# Or iterate JSON
+async with astream("https://streams.example.com/my-stream") as res:
     async for item in res.iter_json():
         print(item)
 ```
@@ -130,7 +141,7 @@ with stream(url) as res:
         process(chunk)
 
 # Async
-async with await astream(url) as res:
+async with astream(url) as res:
     async for chunk in res:
         process(chunk)
 ```
@@ -269,7 +280,7 @@ handle = await AsyncDurableStream.create(
 
 await handle.append({"event": "click"})
 
-async with await handle.stream() as res:
+async with handle.stream() as res:
     async for item in res.iter_json():
         print(item)
 ```
