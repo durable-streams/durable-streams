@@ -36,6 +36,7 @@ import type {
 export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
   const {
     streamsUrl,
+    publicStreamsUrl = streamsUrl,
     streamsHeaders = {},
     fetch: baseFetch = globalThis.fetch,
     streamTTLSeconds = 3600,
@@ -43,8 +44,9 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
     onProxyEnd,
   } = options
 
-  // Normalize streams URL
+  // Normalize streams URLs
   const normalizedStreamsUrl = streamsUrl.replace(/\/$/, ``)
+  const normalizedPublicStreamsUrl = publicStreamsUrl.replace(/\/$/, ``)
 
   // Track active proxy connections for abort handling
   const activeConnections = new Map<string, ActiveProxyConnection>()
@@ -73,9 +75,10 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
       return c.json({ error: `Missing required fields: url, streamPath` }, 400)
     }
 
-    // Build the full stream URL
-    const streamUrl = `/v1/stream/${streamPath}`
-    const fullStreamUrl = `${normalizedStreamsUrl}${streamUrl}`
+    // Build the stream URLs
+    const streamPath_ = `/v1/stream/${streamPath}`
+    const fullStreamUrl = `${normalizedStreamsUrl}${streamPath_}`
+    const publicStreamUrl = `${normalizedPublicStreamsUrl}${streamPath_}`
 
     // Call onProxyStart hook if provided
     if (onProxyStart) {
@@ -94,7 +97,7 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
     if (existing) {
       // Stream already exists and is being proxied, just return the URL
       const response: ProxyInitiateResponse = {
-        streamUrl,
+        streamUrl: publicStreamUrl,
         streamPath,
         created: false,
         offset: `-1`,
@@ -194,7 +197,7 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
     }
 
     const response: ProxyInitiateResponse = {
-      streamUrl,
+      streamUrl: publicStreamUrl,
       streamPath,
       created,
       offset,

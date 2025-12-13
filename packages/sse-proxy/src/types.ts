@@ -22,12 +22,6 @@ export interface SSEProxyFetchOptions {
   proxyUrl: string
 
   /**
-   * The base URL of the durable streams server for reading proxied streams.
-   * E.g., "https://streams.example.com"
-   */
-  streamsUrl: string
-
-  /**
    * Custom function to generate stream paths from requests.
    * By default, uses a hash of the URL, method, and relevant headers.
    */
@@ -44,11 +38,6 @@ export interface SSEProxyFetchOptions {
    * These are NOT the headers sent to the backend SSE server.
    */
   proxyHeaders?: Record<string, string>
-
-  /**
-   * Headers to include when reading from the durable streams server.
-   */
-  streamsHeaders?: Record<string, string>
 }
 
 /**
@@ -115,6 +104,13 @@ export interface SSEProxyServerOptions {
    * E.g., "https://streams.example.com"
    */
   streamsUrl: string
+
+  /**
+   * The public URL of the durable streams server returned to clients.
+   * Defaults to streamsUrl. Use this when the internal and external URLs differ.
+   * E.g., internal: "http://streams:3001", public: "https://streams.example.com"
+   */
+  publicStreamsUrl?: string
 
   /**
    * Headers to include when writing to the durable streams server.

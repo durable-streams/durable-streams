@@ -110,7 +110,6 @@ function createSSEReadableStream(
  * ```typescript
  * const fetchWithProxy = createSSEProxyFetch({
  *   proxyUrl: "https://proxy.example.com",
- *   streamsUrl: "https://streams.example.com",
  * })
  *
  * // SSE requests go through the proxy
@@ -127,16 +126,13 @@ export function createSSEProxyFetch(
 ): typeof fetch {
   const {
     proxyUrl,
-    streamsUrl,
     hashRequest = defaultHashRequest,
     fetch: baseFetch = globalThis.fetch,
     proxyHeaders = {},
-    streamsHeaders = {},
   } = options
 
-  // Normalize URLs
+  // Normalize proxy URL
   const normalizedProxyUrl = proxyUrl.replace(/\/$/, ``)
-  const normalizedStreamsUrl = streamsUrl.replace(/\/$/, ``)
 
   return async function proxiedFetch(
     input: RequestInfo | URL,
@@ -216,14 +212,11 @@ export function createSSEProxyFetch(
 
     const initiateResult: ProxyInitiateResponse = await proxyResponse.json()
 
-    // Now read from the durable stream
-    const streamUrl = `${normalizedStreamsUrl}${initiateResult.streamUrl}`
-
+    // Now read from the durable stream (server returns full URL)
     const streamResponse = await stream({
-      url: streamUrl,
+      url: initiateResult.streamUrl,
       offset: initiateResult.offset,
       live: `sse`,
-      headers: streamsHeaders,
       signal: abortController.signal,
     })
 
