@@ -150,6 +150,11 @@ class TestErrorFromStatus:
         assert error.code == "BUSY"
 
     def test_unknown_status(self) -> None:
+        """Unknown HTTP statuses return DurableStreamError (not FetchError).
+
+        FetchError is reserved for transport-level errors like network failures.
+        """
         error = error_from_status(418, "https://example.com")
-        assert isinstance(error, FetchError)
+        assert isinstance(error, DurableStreamError)
         assert error.status == 418
+        assert error.code == "HTTP_ERROR"

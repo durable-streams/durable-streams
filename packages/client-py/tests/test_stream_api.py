@@ -678,7 +678,7 @@ class TestOnErrorCallback:
         def on_error_handler(_e: Exception) -> dict[str, Any] | None:
             return None  # No recovery
 
-        with pytest.raises(FetchError):
+        with pytest.raises(DurableStreamError):
             stream(
                 "https://example.com/stream",
                 client=mock_client,
