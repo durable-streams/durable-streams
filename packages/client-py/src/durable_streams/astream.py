@@ -38,17 +38,22 @@ class AsyncStreamSession:
     """
     Async context manager wrapper for astream().
 
-    This allows both patterns:
-        # Preferred: direct async context manager
+    RECOMMENDED: Use as an async context manager directly:
+
         async with astream(url) as res:
             async for item in res.iter_json():
                 print(item)
 
-        # Also supported: await then use as context manager
+    ALSO SUPPORTED (but less safe): Await first, then use:
+
         res = await astream(url)
         async with res:
             async for item in res.iter_json():
                 print(item)
+
+    WARNING: If you use ``await astream(url)`` without wrapping the result
+    in an ``async with`` block, the connection will NOT be automatically closed.
+    This can lead to resource leaks. Always prefer the direct context manager pattern.
     """
 
     def __init__(
@@ -82,7 +87,22 @@ class AsyncStreamSession:
         self._response: AsyncStreamResponse[Any] | None = None
 
     def __await__(self) -> Generator[Any, None, AsyncStreamResponse[Any]]:
-        """Allow: res = await astream(url)"""
+        """
+        Allow: res = await astream(url)
+
+        WARNING: When using this pattern, you are responsible for closing the
+        response manually (via ``await res.aclose()`` or ``async with res:``).
+        Prefer the direct context manager pattern: ``async with astream(url) as res:``
+        """
+        import warnings
+
+        warnings.warn(
+            "Using 'await astream(url)' returns an unclosed response. "
+            "Prefer 'async with astream(url) as res:' to ensure proper cleanup, "
+            "or wrap the result in 'async with res:' after awaiting.",
+            ResourceWarning,
+            stacklevel=3,
+        )
         return self._create_response().__await__()
 
     async def _create_response(self) -> AsyncStreamResponse[Any]:

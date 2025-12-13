@@ -228,13 +228,32 @@ class SSEBytesIterationError(DurableStreamError):
         )
 
 
+class SSEReadAllError(DurableStreamError):
+    """
+    Exception raised when attempting to use read-all methods in SSE mode.
+
+    In SSE mode, the connection stays open for live streaming, so read-all
+    methods (read_text, read_json, read_json_batches) would hang indefinitely.
+    Use iteration methods instead, or use live=False for catch-up reads.
+    """
+
+    def __init__(self, method: str) -> None:
+        super().__init__(
+            f"Cannot use {method}() in SSE mode - SSE connections stay open for "
+            "live streaming. Use iteration methods (iter_json, iter_text) instead, "
+            "or use live=False or live='long-poll' for read-all semantics.",
+            code="SSE_READ_ALL_NOT_SUPPORTED",
+        )
+        self.method = method
+
+
 def error_from_status(
     status: int,
     url: str,
     body: str | bytes | None = None,
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str] | None = None,  # noqa: ARG001 - kept for API compatibility
     operation: str | None = None,
-) -> DurableStreamError | FetchError:
+) -> DurableStreamError:
     """
     Create an appropriate error from an HTTP status code.
 
@@ -301,11 +320,12 @@ def error_from_status(
             details=details,
         )
 
-    # Generic error for other status codes
-    return FetchError(
-        f"HTTP error {status}",
+    # Generic error for other HTTP status codes
+    # Use DurableStreamError for protocol/server errors, reserve FetchError for
+    # transport-level errors (network failures, timeouts, DNS, etc.)
+    return DurableStreamError(
+        f"HTTP error {status} at {url}",
         status=status,
-        url=url,
-        headers=headers,
-        body=body if isinstance(body, (str, bytes)) else None,
+        code="HTTP_ERROR",
+        details=body,
     )

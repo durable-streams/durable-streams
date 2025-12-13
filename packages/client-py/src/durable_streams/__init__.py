@@ -20,6 +20,8 @@ Example usage:
     ...         print(item)
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from durable_streams._errors import (
     DurableStreamError,
     FetchError,
@@ -27,6 +29,7 @@ from durable_streams._errors import (
     SeqConflictError,
     SSEBytesIterationError,
     SSENotSupportedError,
+    SSEReadAllError,
     StreamConsumedError,
     StreamExistsError,
     StreamNotFoundError,
@@ -64,6 +67,7 @@ __all__ = [
     "StreamExistsError",
     "SSENotSupportedError",
     "SSEBytesIterationError",
+    "SSEReadAllError",
     # Top-level functions
     "stream",
     "astream",
@@ -72,4 +76,9 @@ __all__ = [
     "AsyncDurableStream",
 ]
 
-__version__ = "0.1.0"
+# Use importlib.metadata for version (works with installed package)
+# Fall back to hard-coded version for editable installs
+try:
+    __version__ = version("durable-streams")
+except PackageNotFoundError:
+    __version__ = "0.1.0"

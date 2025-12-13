@@ -18,6 +18,7 @@ from typing import (
 
 from durable_streams._errors import (
     SSEBytesIterationError,
+    SSEReadAllError,
     StreamConsumedError,
 )
 from durable_streams._parse import (
@@ -272,12 +273,24 @@ class StreamResponse(Generic[T]):
         Iterate over decoded text chunks.
 
         Args:
-            encoding: Text encoding (default: utf-8)
+            encoding: Text encoding (default: utf-8).
+                Note: In SSE mode, this must be "utf-8" per the SSE specification.
 
         Yields:
             Decoded text strings
+
+        Raises:
+            ValueError: If non-UTF-8 encoding is specified in SSE mode
         """
         self._ensure_not_consumed("iter_text")
+
+        # SSE is UTF-8 only per spec
+        if self._is_sse and encoding.lower().replace("-", "") != "utf8":
+            raise ValueError(
+                f"SSE mode only supports UTF-8 encoding (got {encoding!r}). "
+                "The SSE specification requires UTF-8."
+            )
+
         self._mark_consumed("iter_text")
         return self._iter_text_internal(encoding)
 
@@ -635,26 +648,30 @@ class StreamResponse(Generic[T]):
         """
         Read all text until up-to-date.
 
+        Note: Not supported in SSE mode. Use iter_text() for SSE streams,
+        or use live=False for read-all semantics.
+
         Args:
             encoding: Text encoding
 
         Returns:
             All text concatenated
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
         """
         self._ensure_not_consumed("read_text")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_text")
+
         self._mark_consumed("read_text")
         return self._read_text_internal(encoding)
 
     def _read_text_internal(self, encoding: str) -> str:
         """Internal read-all for text."""
-        if self._is_sse:
-            parts: list[str] = []
-            for text in self._iter_sse_text():
-                parts.append(text)
-            return "".join(parts)
-        else:
-            data = self._read_bytes_internal()
-            return data.decode(encoding)
+        data = self._read_bytes_internal()
+        return data.decode(encoding)
 
     def read_json(
         self,
@@ -665,13 +682,23 @@ class StreamResponse(Generic[T]):
 
         Returns flattened list of items (arrays are expanded).
 
+        Note: Not supported in SSE mode. Use iter_json() for SSE streams,
+        or use live=False for read-all semantics.
+
         Args:
             decode: Optional function to decode each item
 
         Returns:
             List of all JSON items
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
         """
         self._ensure_not_consumed("read_json")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_json")
+
         self._mark_consumed("read_json")
         return self._read_json_internal(decode)
 
@@ -682,40 +709,33 @@ class StreamResponse(Generic[T]):
         """Internal read-all for JSON (stops at up-to-date)."""
         all_items: list[T] = []
 
-        if self._is_sse:
-            # For SSE, iterate until up_to_date
-            for batch in self._iter_sse_json_batches(decode):
-                all_items.extend(batch)
-                if self._up_to_date:
-                    break
-        else:
-            # Read first response
+        # Read first response
+        try:
+            content = self._response.read()
+            if content:
+                items = decode_json_items(content, decode)
+                all_items.extend(items)
+        finally:
+            self._response.close()
+
+        # Continue until up-to-date (read-all methods stop at up-to-date)
+        while not self._up_to_date:
+            if self._live is False:
+                break
+            response = self._fetch_next(self._offset, self._cursor)
             try:
-                content = self._response.read()
+                self._update_metadata_from_response(response)
+
+                if response.status_code == 204:
+                    response.close()
+                    continue
+
+                content = response.read()
                 if content:
                     items = decode_json_items(content, decode)
                     all_items.extend(items)
             finally:
-                self._response.close()
-
-            # Continue until up-to-date (read-all methods stop at up-to-date)
-            while not self._up_to_date:
-                if self._live is False:
-                    break
-                response = self._fetch_next(self._offset, self._cursor)
-                try:
-                    self._update_metadata_from_response(response)
-
-                    if response.status_code == 204:
-                        response.close()
-                        continue
-
-                    content = response.read()
-                    if content:
-                        items = decode_json_items(content, decode)
-                        all_items.extend(items)
-                finally:
-                    response.close()
+                response.close()
 
         return all_items
 
@@ -728,13 +748,23 @@ class StreamResponse(Generic[T]):
 
         Preserves array boundaries from each response.
 
+        Note: Not supported in SSE mode. Use iter_json_batches() for SSE streams,
+        or use live=False for read-all semantics.
+
         Args:
             decode: Optional function to decode each item
 
         Returns:
             List of lists of JSON items
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
         """
         self._ensure_not_consumed("read_json_batches")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_json_batches")
+
         self._mark_consumed("read_json_batches")
         return self._read_json_batches_internal(decode)
 
@@ -745,39 +775,33 @@ class StreamResponse(Generic[T]):
         """Internal read-all for JSON batches (stops at up-to-date)."""
         all_batches: list[list[T]] = []
 
-        if self._is_sse:
-            for batch in self._iter_sse_json_batches(decode):
-                all_batches.append(batch)
-                if self._up_to_date:
-                    break
-        else:
+        try:
+            content = self._response.read()
+            if content:
+                items = decode_json_items(content, decode)
+                if items:
+                    all_batches.append(items)
+        finally:
+            self._response.close()
+
+        while not self._up_to_date:
+            if self._live is False:
+                break
+            response = self._fetch_next(self._offset, self._cursor)
             try:
-                content = self._response.read()
+                self._update_metadata_from_response(response)
+
+                if response.status_code == 204:
+                    response.close()
+                    continue
+
+                content = response.read()
                 if content:
                     items = decode_json_items(content, decode)
                     if items:
                         all_batches.append(items)
             finally:
-                self._response.close()
-
-            while not self._up_to_date:
-                if self._live is False:
-                    break
-                response = self._fetch_next(self._offset, self._cursor)
-                try:
-                    self._update_metadata_from_response(response)
-
-                    if response.status_code == 204:
-                        response.close()
-                        continue
-
-                    content = response.read()
-                    if content:
-                        items = decode_json_items(content, decode)
-                        if items:
-                            all_batches.append(items)
-                finally:
-                    response.close()
+                response.close()
 
         return all_batches
 
@@ -988,8 +1012,25 @@ class AsyncStreamResponse(Generic[T]):
     # === Text iteration ===
 
     def iter_text(self, encoding: str = "utf-8") -> AsyncIterator[str]:
-        """Iterate over decoded text chunks."""
+        """
+        Iterate over decoded text chunks.
+
+        Args:
+            encoding: Text encoding (default: utf-8).
+                Note: In SSE mode, this must be "utf-8" per the SSE specification.
+
+        Raises:
+            ValueError: If non-UTF-8 encoding is specified in SSE mode
+        """
         self._ensure_not_consumed("iter_text")
+
+        # SSE is UTF-8 only per spec
+        if self._is_sse and encoding.lower().replace("-", "") != "utf8":
+            raise ValueError(
+                f"SSE mode only supports UTF-8 encoding (got {encoding!r}). "
+                "The SSE specification requires UTF-8."
+            )
+
         self._mark_consumed("iter_text")
         return self._aiter_text_internal(encoding)
 
@@ -1305,28 +1346,46 @@ class AsyncStreamResponse(Generic[T]):
         return b"".join(chunks)
 
     async def read_text(self, encoding: str = "utf-8") -> str:
-        """Read all text until up-to-date."""
+        """
+        Read all text until up-to-date.
+
+        Note: Not supported in SSE mode. Use iter_text() for SSE streams,
+        or use live=False for read-all semantics.
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
+        """
         self._ensure_not_consumed("read_text")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_text")
+
         self._mark_consumed("read_text")
         return await self._aread_text_internal(encoding)
 
     async def _aread_text_internal(self, encoding: str) -> str:
         """Internal async read-all for text."""
-        if self._is_sse:
-            parts: list[str] = []
-            async for text in self._aiter_sse_text():
-                parts.append(text)
-            return "".join(parts)
-        else:
-            data = await self._aread_bytes_internal()
-            return data.decode(encoding)
+        data = await self._aread_bytes_internal()
+        return data.decode(encoding)
 
     async def read_json(
         self,
         decode: Callable[[Any], T] | None = None,
     ) -> list[T]:
-        """Read all JSON items until up-to-date."""
+        """
+        Read all JSON items until up-to-date.
+
+        Note: Not supported in SSE mode. Use iter_json() for SSE streams,
+        or use live=False for read-all semantics.
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
+        """
         self._ensure_not_consumed("read_json")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_json")
+
         self._mark_consumed("read_json")
         return await self._aread_json_internal(decode)
 
@@ -1337,37 +1396,31 @@ class AsyncStreamResponse(Generic[T]):
         """Internal async read-all for JSON (stops at up-to-date)."""
         all_items: list[T] = []
 
-        if self._is_sse:
-            async for batch in self._aiter_sse_json_batches(decode):
-                all_items.extend(batch)
-                if self._up_to_date:
-                    break
-        else:
+        try:
+            content = await self._response.aread()
+            if content:
+                items = decode_json_items(content, decode)
+                all_items.extend(items)
+        finally:
+            await self._response.aclose()
+
+        while not self._up_to_date:
+            if self._live is False:
+                break
+            response = await self._fetch_next(self._offset, self._cursor)
             try:
-                content = await self._response.aread()
+                self._update_metadata_from_response(response)
+
+                if response.status_code == 204:
+                    await response.aclose()
+                    continue
+
+                content = await response.aread()
                 if content:
                     items = decode_json_items(content, decode)
                     all_items.extend(items)
             finally:
-                await self._response.aclose()
-
-            while not self._up_to_date:
-                if self._live is False:
-                    break
-                response = await self._fetch_next(self._offset, self._cursor)
-                try:
-                    self._update_metadata_from_response(response)
-
-                    if response.status_code == 204:
-                        await response.aclose()
-                        continue
-
-                    content = await response.aread()
-                    if content:
-                        items = decode_json_items(content, decode)
-                        all_items.extend(items)
-                finally:
-                    await response.aclose()
+                await response.aclose()
 
         return all_items
 
@@ -1375,8 +1428,20 @@ class AsyncStreamResponse(Generic[T]):
         self,
         decode: Callable[[Any], T] | None = None,
     ) -> list[list[T]]:
-        """Read all JSON batches until up-to-date."""
+        """
+        Read all JSON batches until up-to-date.
+
+        Note: Not supported in SSE mode. Use iter_json_batches() for SSE streams,
+        or use live=False for read-all semantics.
+
+        Raises:
+            SSEReadAllError: If called in SSE mode
+        """
         self._ensure_not_consumed("read_json_batches")
+
+        if self._is_sse:
+            raise SSEReadAllError("read_json_batches")
+
         self._mark_consumed("read_json_batches")
         return await self._aread_json_batches_internal(decode)
 
@@ -1387,38 +1452,32 @@ class AsyncStreamResponse(Generic[T]):
         """Internal async read-all for JSON batches (stops at up-to-date)."""
         all_batches: list[list[T]] = []
 
-        if self._is_sse:
-            async for batch in self._aiter_sse_json_batches(decode):
-                all_batches.append(batch)
-                if self._up_to_date:
-                    break
-        else:
+        try:
+            content = await self._response.aread()
+            if content:
+                items = decode_json_items(content, decode)
+                if items:
+                    all_batches.append(items)
+        finally:
+            await self._response.aclose()
+
+        while not self._up_to_date:
+            if self._live is False:
+                break
+            response = await self._fetch_next(self._offset, self._cursor)
             try:
-                content = await self._response.aread()
+                self._update_metadata_from_response(response)
+
+                if response.status_code == 204:
+                    await response.aclose()
+                    continue
+
+                content = await response.aread()
                 if content:
                     items = decode_json_items(content, decode)
                     if items:
                         all_batches.append(items)
             finally:
-                await self._response.aclose()
-
-            while not self._up_to_date:
-                if self._live is False:
-                    break
-                response = await self._fetch_next(self._offset, self._cursor)
-                try:
-                    self._update_metadata_from_response(response)
-
-                    if response.status_code == 204:
-                        await response.aclose()
-                        continue
-
-                    content = await response.aread()
-                    if content:
-                        items = decode_json_items(content, decode)
-                        if items:
-                            all_batches.append(items)
-                finally:
-                    await response.aclose()
+                await response.aclose()
 
         return all_batches
