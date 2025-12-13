@@ -12,6 +12,7 @@ from typing import Any, cast
 import httpx
 
 from durable_streams._errors import (
+    SSENotSupportedError,
     error_from_status,
 )
 from durable_streams._parse import parse_httpx_headers, parse_response_headers
@@ -27,6 +28,7 @@ from durable_streams._types import (
 )
 from durable_streams._util import (
     build_url_with_params,
+    is_sse_compatible_content_type,
     resolve_headers_async,
     resolve_params_async,
 )
@@ -263,6 +265,10 @@ async def _astream_internal(
     resolved_headers = await resolve_headers_async(headers)
     resolved_params = await resolve_params_async(params)
 
+    # Add Accept header for SSE mode (standard SSE negotiation)
+    if is_sse and "accept" not in {k.lower() for k in resolved_headers}:
+        resolved_headers["Accept"] = "text/event-stream"
+
     all_params = {**resolved_params, **query_params}
     request_url = build_url_with_params(url, all_params)
 
@@ -320,6 +326,16 @@ async def _astream_internal(
                 continue
 
             raise
+
+    # Check SSE compatibility after response headers are available
+    if is_sse:
+        content_type = response.headers.get("content-type")
+        if not is_sse_compatible_content_type(content_type):
+            await response.aclose()
+            raise SSENotSupportedError(
+                f"SSE mode is not compatible with content type: {content_type}. "
+                "SSE is only supported for text/* or application/json streams."
+            )
 
     headers_dict = parse_httpx_headers(response.headers)
     meta = parse_response_headers(headers_dict)

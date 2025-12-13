@@ -86,31 +86,6 @@ ParamsLike = dict[str, str | Callable[[], str] | None]
 JsonDecoder = Callable[[Any], T]
 
 
-# Backoff options type
-@dataclass
-class BackoffOptions:
-    """
-    Options for configuring exponential backoff retry behavior.
-
-    Attributes:
-        initial_delay: Initial delay before retrying in seconds
-        max_delay: Maximum retry delay in seconds
-        multiplier: Multiplier for exponential backoff
-        max_retries: Maximum number of retry attempts (None for infinite)
-        on_failed_attempt: Optional callback on each failed attempt
-    """
-
-    initial_delay: float = 0.1
-    max_delay: float = 60.0
-    multiplier: float = 1.3
-    max_retries: int | None = None
-    on_failed_attempt: Callable[[], None] | None = None
-
-
-# Default backoff configuration
-DEFAULT_BACKOFF = BackoffOptions()
-
-
 # Protocol constants
 STREAM_NEXT_OFFSET_HEADER = "Stream-Next-Offset"
 STREAM_CURSOR_HEADER = "Stream-Cursor"
@@ -125,6 +100,3 @@ CURSOR_QUERY_PARAM = "cursor"
 
 # Content types compatible with SSE
 SSE_COMPATIBLE_CONTENT_TYPES = ("text/", "application/json")
-
-# HTTP status codes that should trigger automatic retry
-HTTP_RETRY_STATUS_CODES = (429, 503)

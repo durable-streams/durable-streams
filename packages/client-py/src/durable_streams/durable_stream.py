@@ -553,36 +553,32 @@ class DurableStream:
         return None
 
     def _flush_batch(self) -> AppendResult | None:
-        """Flush the batch queue and send a single request."""
-        with self._batch_lock:
-            if not self._batch_queue:
-                return None
+        """Flush the batch queue and send a single request.
 
-            # Take all queued messages
-            messages = list(self._batch_queue)
-            self._batch_queue.clear()
-            self._batch_in_flight = True
+        Uses a loop instead of recursion to avoid stack overflow under
+        sustained high-throughput writes.
+        """
+        result: AppendResult | None = None
 
-        try:
-            result = self._send_batch(messages)
-
-            # Check if more messages accumulated while we were sending
-            flush_again = False
+        while True:
             with self._batch_lock:
-                self._batch_in_flight = False
-                if self._batch_queue:
-                    flush_again = True
+                if not self._batch_queue:
+                    self._batch_in_flight = False
+                    return result
 
-            # Flush remaining messages outside the lock
-            if flush_again:
-                self._flush_batch()
+                # Take all queued messages
+                messages = list(self._batch_queue)
+                self._batch_queue.clear()
+                self._batch_in_flight = True
 
-            return result
-        except Exception:
-            # On error, reset the in-flight flag
-            with self._batch_lock:
-                self._batch_in_flight = False
-            raise
+            try:
+                result = self._send_batch(messages)
+                # Loop continues to check if more messages accumulated
+            except Exception:
+                # On error, reset the in-flight flag
+                with self._batch_lock:
+                    self._batch_in_flight = False
+                raise
 
     def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
         """Send a batch of messages as a single POST request."""
