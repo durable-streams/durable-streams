@@ -7,7 +7,7 @@ This is the primary async API for read-only stream consumption.
 from __future__ import annotations
 
 from collections.abc import Callable, Coroutine
-from typing import Any, TypeVar
+from typing import Any
 
 import httpx
 
@@ -18,10 +18,8 @@ from durable_streams_client._parse import parse_httpx_headers, parse_response_he
 from durable_streams_client._response import AsyncStreamResponse
 from durable_streams_client._types import (
     CURSOR_QUERY_PARAM,
-    DEFAULT_BACKOFF,
     LIVE_QUERY_PARAM,
     OFFSET_QUERY_PARAM,
-    BackoffOptions,
     HeadersLike,
     LiveMode,
     Offset,
@@ -32,8 +30,6 @@ from durable_streams_client._util import (
     resolve_headers_async,
     resolve_params_async,
 )
-
-T = TypeVar("T")
 
 
 async def astream(
@@ -48,11 +44,10 @@ async def astream(
         [Exception], Coroutine[Any, Any, dict[str, Any] | None] | dict[str, Any] | None
     ]
     | None = None,
-    backoff: BackoffOptions | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: float | httpx.Timeout | None = None,
     **kwargs: Any,
-) -> AsyncStreamResponse[T]:
+) -> AsyncStreamResponse[Any]:
     """
     Create an async streaming session to read from a durable stream.
 
@@ -71,7 +66,6 @@ async def astream(
         headers: HTTP headers (static strings or callables)
         params: Query parameters (static strings or callables)
         on_error: Async error handler callback
-        backoff: Backoff options for retries
         client: Optional httpx.AsyncClient to use (will not be closed)
         timeout: Request timeout
         **kwargs: Additional arguments passed to httpx
@@ -97,7 +91,6 @@ async def astream(
             headers=headers,
             params=params,
             on_error=on_error,
-            _backoff=backoff or DEFAULT_BACKOFF,
             client=http_client,
             _own_client=own_client,
             timeout=timeout,
@@ -121,7 +114,6 @@ async def _astream_internal(
         [Exception], Coroutine[Any, Any, dict[str, Any] | None] | dict[str, Any] | None
     ]
     | None,
-    _backoff: BackoffOptions,  # Reserved for future backoff implementation
     client: httpx.AsyncClient,
     _own_client: bool,  # Reserved for future client lifecycle management
     timeout: float | httpx.Timeout | None,
@@ -151,21 +143,27 @@ async def _astream_internal(
     all_params = {**resolved_params, **query_params}
     request_url = build_url_with_params(url, all_params)
 
-    current_headers = resolved_headers.copy()
-    current_params = resolved_params.copy()
+    current_headers: dict[str, str] = resolved_headers.copy()
+    current_params: dict[str, str] = resolved_params.copy()
 
     while True:
         try:
-            response = await client.get(
+            # Use streaming mode to avoid buffering the entire response
+            request = client.build_request(
+                "GET",
                 request_url,
                 headers=current_headers,
                 timeout=timeout,
                 **kwargs,
             )
+            response = await client.send(request, stream=True)
 
             if not response.is_success:
+                # For errors, read body for error details then close
+                body_bytes = await response.aread()
+                await response.aclose()
+                body = body_bytes.decode("utf-8", errors="replace")
                 headers_dict = parse_httpx_headers(response.headers)
-                body = response.text
                 error = error_from_status(
                     response.status_code,
                     url,
@@ -180,10 +178,11 @@ async def _astream_internal(
             if on_error is not None:
                 result = on_error(e)
                 # Handle both sync and async on_error
+                retry_opts: dict[str, Any] | None
                 if hasattr(result, "__await__"):
-                    retry_opts = await result
+                    retry_opts = await result  # type: ignore[misc]
                 else:
-                    retry_opts = result
+                    retry_opts = result  # type: ignore[assignment]
 
                 if retry_opts is None:
                     raise
@@ -223,16 +222,22 @@ async def _astream_internal(
         all_prms = {**resolved_prms, **next_params}
         next_url = build_url_with_params(url, all_prms)
 
-        resp = await client.get(
+        # Use streaming mode for live fetches
+        request = client.build_request(
+            "GET",
             next_url,
             headers=resolved_hdrs,
             timeout=timeout,
             **kwargs,
         )
+        resp = await client.send(request, stream=True)
 
         if not resp.is_success and resp.status_code != 204:
+            # For errors, read body for error details then close
+            body_bytes = await resp.aread()
+            await resp.aclose()
+            body = body_bytes.decode("utf-8", errors="replace")
             hdrs = parse_httpx_headers(resp.headers)
-            body = resp.text
             error = error_from_status(
                 resp.status_code,
                 url,

@@ -7,7 +7,7 @@ This is the primary API for read-only stream consumption.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any
 
 import httpx
 
@@ -18,10 +18,8 @@ from durable_streams_client._parse import parse_httpx_headers, parse_response_he
 from durable_streams_client._response import StreamResponse
 from durable_streams_client._types import (
     CURSOR_QUERY_PARAM,
-    DEFAULT_BACKOFF,
     LIVE_QUERY_PARAM,
     OFFSET_QUERY_PARAM,
-    BackoffOptions,
     HeadersLike,
     LiveMode,
     Offset,
@@ -33,8 +31,6 @@ from durable_streams_client._util import (
     resolve_params_sync,
 )
 
-T = TypeVar("T")
-
 
 def stream(
     url: str,
@@ -45,11 +41,10 @@ def stream(
     headers: HeadersLike | None = None,
     params: ParamsLike | None = None,
     on_error: Callable[[Exception], dict[str, Any] | None] | None = None,
-    backoff: BackoffOptions | None = None,
     client: httpx.Client | None = None,
     timeout: float | httpx.Timeout | None = None,
     **kwargs: Any,
-) -> StreamResponse[T]:
+) -> StreamResponse[Any]:
     """
     Create a streaming session to read from a durable stream.
 
@@ -68,7 +63,6 @@ def stream(
         headers: HTTP headers (static strings or callables)
         params: Query parameters (static strings or callables)
         on_error: Error handler callback
-        backoff: Backoff options for retries
         client: Optional httpx.Client to use (will not be closed)
         timeout: Request timeout
         **kwargs: Additional arguments passed to httpx
@@ -94,7 +88,6 @@ def stream(
             headers=headers,
             params=params,
             on_error=on_error,
-            _backoff=backoff or DEFAULT_BACKOFF,
             client=http_client,
             _own_client=own_client,
             timeout=timeout,
@@ -115,7 +108,6 @@ def _stream_internal(
     headers: HeadersLike | None,
     params: ParamsLike | None,
     on_error: Callable[[Exception], dict[str, Any] | None] | None,
-    _backoff: BackoffOptions,  # Reserved for future backoff implementation
     client: httpx.Client,
     _own_client: bool,  # Reserved for future client lifecycle management
     timeout: float | httpx.Timeout | None,
@@ -157,17 +149,22 @@ def _stream_internal(
 
     while True:
         try:
-            response = client.get(
+            # Use streaming mode to avoid buffering the entire response
+            request = client.build_request(
+                "GET",
                 request_url,
                 headers=current_headers,
                 timeout=timeout,
                 **kwargs,
             )
+            response = client.send(request, stream=True)
 
             # Check for errors
             if not response.is_success:
+                # For errors, we need to read the body for error details
+                body = response.read().decode("utf-8", errors="replace")
+                response.close()
                 headers_dict = parse_httpx_headers(response.headers)
-                body = response.text
                 error = error_from_status(
                     response.status_code,
                     url,
@@ -226,16 +223,21 @@ def _stream_internal(
         all_prms = {**resolved_prms, **next_params}
         next_url = build_url_with_params(url, all_prms)
 
-        resp = client.get(
+        # Use streaming mode for live fetches
+        request = client.build_request(
+            "GET",
             next_url,
             headers=resolved_hdrs,
             timeout=timeout,
             **kwargs,
         )
+        resp = client.send(request, stream=True)
 
         if not resp.is_success and resp.status_code != 204:
+            # For errors, read body for error details then close
+            body = resp.read().decode("utf-8", errors="replace")
+            resp.close()
             hdrs = parse_httpx_headers(resp.headers)
-            body = resp.text
             error = error_from_status(
                 resp.status_code,
                 url,

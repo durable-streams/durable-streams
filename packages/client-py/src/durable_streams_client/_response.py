@@ -13,6 +13,7 @@ from typing import (
     Generic,
     Literal,
     TypeVar,
+    cast,
 )
 
 from durable_streams_client._errors import (
@@ -131,11 +132,20 @@ class StreamResponse(Generic[T]):
         self._consumed_by = method
 
     def _should_continue_live(self) -> bool:
-        """Check if we should continue with live updates."""
+        """
+        Check if we should continue with live updates.
+
+        The key insight is:
+        - live=False: Stop at first up-to-date (catch-up only)
+        - live="auto"/"long-poll"/"sse": Continue tailing even after up-to-date
+        """
         if self._closed:
             return False
-        # live=False means catch-up only - no live updates
-        return self._live is not False
+        # live=False means catch-up only - stop at first up-to-date
+        if self._live is False:
+            return not self._up_to_date
+        # Otherwise, keep tailing until explicitly closed
+        return True
 
     @property
     def url(self) -> str:
@@ -150,7 +160,7 @@ class StreamResponse(Generic[T]):
     @property
     def live(self) -> LiveMode:
         """The live mode for this session."""
-        return self._live
+        return cast(LiveMode, self._live)
 
     @property
     def offset(self) -> Offset:
@@ -228,24 +238,27 @@ class StreamResponse(Generic[T]):
     def _iter_bytes_internal(self) -> Iterator[bytes]:
         """Internal bytes iteration with live continuation."""
         # Yield from first response
-        for chunk in self._response.iter_bytes():
-            yield chunk
+        try:
+            for chunk in self._response.iter_bytes():
+                yield chunk
+        finally:
+            self._response.close()
 
         # Continue with live updates if needed
-        while self._should_continue_live() and not self._up_to_date:
+        while self._should_continue_live():
+            response = self._fetch_next(self._offset, self._cursor)
             try:
-                response = self._fetch_next(self._offset, self._cursor)
                 self._update_metadata_from_response(response)
 
                 # Handle 204 No Content (long-poll timeout)
                 if response.status_code == 204:
+                    response.close()
                     continue
 
                 for chunk in response.iter_bytes():
                     yield chunk
-
-            except Exception:
-                break
+            finally:
+                response.close()
 
     # === Text iteration ===
 
@@ -268,21 +281,25 @@ class StreamResponse(Generic[T]):
         if self._is_sse:
             yield from self._iter_sse_text()
         else:
-            for chunk in self._response.iter_bytes():
-                yield chunk.decode(encoding)
+            try:
+                for chunk in self._response.iter_bytes():
+                    yield chunk.decode(encoding)
+            finally:
+                self._response.close()
 
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        response.close()
                         continue
 
                     for chunk in response.iter_bytes():
                         yield chunk.decode(encoding)
-                except Exception:
-                    break
+                finally:
+                    response.close()
 
     def _iter_sse_text(self) -> Iterator[str]:
         """Iterate SSE data events as text."""
@@ -353,19 +370,23 @@ class StreamResponse(Generic[T]):
             yield from self._iter_sse_json_batches(decode)
         else:
             # Read and parse the first response
-            content = self._response.read()
-            if content:
-                items = decode_json_items(content, decode)
-                if items:
-                    yield items
+            try:
+                content = self._response.read()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        yield items
+            finally:
+                self._response.close()
 
             # Continue with live updates if needed
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        response.close()
                         continue
 
                     content = response.read()
@@ -373,8 +394,8 @@ class StreamResponse(Generic[T]):
                         items = decode_json_items(content, decode)
                         if items:
                             yield items
-                except Exception:
-                    break
+                finally:
+                    response.close()
 
     def _iter_sse_json_batches(
         self,
@@ -434,23 +455,27 @@ class StreamResponse(Generic[T]):
             yield from self._iter_sse_events(mode, decode)
         else:
             # Handle first response
-            content = self._response.read()
-            if content:
-                data = self._convert_content(content, mode, encoding, decode)
-                yield StreamEvent(
-                    data=data,
-                    next_offset=self._offset,
-                    up_to_date=self._up_to_date,
-                    cursor=self._cursor,
-                )
+            try:
+                content = self._response.read()
+                if content:
+                    data = self._convert_content(content, mode, encoding, decode)
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+            finally:
+                self._response.close()
 
             # Continue with live updates
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        response.close()
                         continue
 
                     content = response.read()
@@ -462,8 +487,8 @@ class StreamResponse(Generic[T]):
                             up_to_date=self._up_to_date,
                             cursor=self._cursor,
                         )
-                except Exception:
-                    break
+                finally:
+                    response.close()
 
     def _convert_content(
         self,
@@ -533,26 +558,30 @@ class StreamResponse(Generic[T]):
         return self._read_bytes_internal()
 
     def _read_bytes_internal(self) -> bytes:
-        """Internal read-all for bytes."""
+        """Internal read-all for bytes (accumulate until up-to-date)."""
         chunks: list[bytes] = []
 
         # Read first response
-        chunks.append(self._response.read())
+        try:
+            chunks.append(self._response.read())
+        finally:
+            self._response.close()
 
-        # Continue until up-to-date (for live=auto, stop after up_to_date)
+        # Continue until up-to-date (read-all methods always stop at up-to-date)
         while not self._up_to_date:
             if self._live is False:
                 break
+            response = self._fetch_next(self._offset, self._cursor)
             try:
-                response = self._fetch_next(self._offset, self._cursor)
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    response.close()
                     continue
 
                 chunks.append(response.read())
-            except Exception:
-                break
+            finally:
+                response.close()
 
         return b"".join(chunks)
 
@@ -604,11 +633,43 @@ class StreamResponse(Generic[T]):
         self,
         decode: Callable[[Any], T] | None,
     ) -> list[T]:
-        """Internal read-all for JSON."""
+        """Internal read-all for JSON (stops at up-to-date)."""
         all_items: list[T] = []
 
-        for batch in self._iter_json_batches_internal(decode):
-            all_items.extend(batch)
+        if self._is_sse:
+            # For SSE, iterate until up_to_date
+            for batch in self._iter_sse_json_batches(decode):
+                all_items.extend(batch)
+                if self._up_to_date:
+                    break
+        else:
+            # Read first response
+            try:
+                content = self._response.read()
+                if content:
+                    items = decode_json_items(content, decode)
+                    all_items.extend(items)
+            finally:
+                self._response.close()
+
+            # Continue until up-to-date (read-all methods stop at up-to-date)
+            while not self._up_to_date:
+                if self._live is False:
+                    break
+                response = self._fetch_next(self._offset, self._cursor)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        response.close()
+                        continue
+
+                    content = response.read()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        all_items.extend(items)
+                finally:
+                    response.close()
 
         return all_items
 
@@ -629,7 +690,50 @@ class StreamResponse(Generic[T]):
         """
         self._ensure_not_consumed("read_json_batches")
         self._mark_consumed("read_json_batches")
-        return list(self._iter_json_batches_internal(decode))
+        return self._read_json_batches_internal(decode)
+
+    def _read_json_batches_internal(
+        self,
+        decode: Callable[[Any], T] | None,
+    ) -> list[list[T]]:
+        """Internal read-all for JSON batches (stops at up-to-date)."""
+        all_batches: list[list[T]] = []
+
+        if self._is_sse:
+            for batch in self._iter_sse_json_batches(decode):
+                all_batches.append(batch)
+                if self._up_to_date:
+                    break
+        else:
+            try:
+                content = self._response.read()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        all_batches.append(items)
+            finally:
+                self._response.close()
+
+            while not self._up_to_date:
+                if self._live is False:
+                    break
+                response = self._fetch_next(self._offset, self._cursor)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        response.close()
+                        continue
+
+                    content = response.read()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        if items:
+                            all_batches.append(items)
+                finally:
+                    response.close()
+
+        return all_batches
 
 
 class AsyncStreamResponse(Generic[T]):
@@ -716,11 +820,20 @@ class AsyncStreamResponse(Generic[T]):
         self._consumed_by = method
 
     def _should_continue_live(self) -> bool:
-        """Check if we should continue with live updates."""
+        """
+        Check if we should continue with live updates.
+
+        The key insight is:
+        - live=False: Stop at first up-to-date (catch-up only)
+        - live="auto"/"long-poll"/"sse": Continue tailing even after up-to-date
+        """
         if self._closed:
             return False
-        # live=False means catch-up only - no live updates
-        return self._live is not False
+        # live=False means catch-up only - stop at first up-to-date
+        if self._live is False:
+            return not self._up_to_date
+        # Otherwise, keep tailing until explicitly closed
+        return True
 
     @property
     def url(self) -> str:
@@ -732,7 +845,7 @@ class AsyncStreamResponse(Generic[T]):
 
     @property
     def live(self) -> LiveMode:
-        return self._live
+        return cast(LiveMode, self._live)
 
     @property
     def offset(self) -> Offset:
@@ -801,21 +914,25 @@ class AsyncStreamResponse(Generic[T]):
 
     async def _aiter_bytes_internal(self) -> AsyncIterator[bytes]:
         """Internal async bytes iteration."""
-        async for chunk in self._response.aiter_bytes():
-            yield chunk
+        try:
+            async for chunk in self._response.aiter_bytes():
+                yield chunk
+        finally:
+            await self._response.aclose()
 
-        while self._should_continue_live() and not self._up_to_date:
+        while self._should_continue_live():
+            response = await self._fetch_next(self._offset, self._cursor)
             try:
-                response = await self._fetch_next(self._offset, self._cursor)
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    await response.aclose()
                     continue
 
                 async for chunk in response.aiter_bytes():
                     yield chunk
-            except Exception:
-                break
+            finally:
+                await response.aclose()
 
     # === Text iteration ===
 
@@ -831,21 +948,25 @@ class AsyncStreamResponse(Generic[T]):
             async for text in self._aiter_sse_text():
                 yield text
         else:
-            async for chunk in self._response.aiter_bytes():
-                yield chunk.decode(encoding)
+            try:
+                async for chunk in self._response.aiter_bytes():
+                    yield chunk.decode(encoding)
+            finally:
+                await self._response.aclose()
 
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = await self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = await self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        await response.aclose()
                         continue
 
                     async for chunk in response.aiter_bytes():
                         yield chunk.decode(encoding)
-                except Exception:
-                    break
+                finally:
+                    await response.aclose()
 
     async def _aiter_sse_text(self) -> AsyncIterator[str]:
         """Iterate SSE data events as text."""
@@ -898,18 +1019,22 @@ class AsyncStreamResponse(Generic[T]):
             async for batch in self._aiter_sse_json_batches(decode):
                 yield batch
         else:
-            content = await self._response.aread()
-            if content:
-                items = decode_json_items(content, decode)
-                if items:
-                    yield items
+            try:
+                content = await self._response.aread()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        yield items
+            finally:
+                await self._response.aclose()
 
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = await self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = await self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        await response.aclose()
                         continue
 
                     content = await response.aread()
@@ -917,8 +1042,8 @@ class AsyncStreamResponse(Generic[T]):
                         items = decode_json_items(content, decode)
                         if items:
                             yield items
-                except Exception:
-                    break
+                finally:
+                    await response.aclose()
 
     async def _aiter_sse_json_batches(
         self,
@@ -967,22 +1092,26 @@ class AsyncStreamResponse(Generic[T]):
             async for event in self._aiter_sse_events(mode, decode):
                 yield event
         else:
-            content = await self._response.aread()
-            if content:
-                data = self._convert_content(content, mode, encoding, decode)
-                yield StreamEvent(
-                    data=data,
-                    next_offset=self._offset,
-                    up_to_date=self._up_to_date,
-                    cursor=self._cursor,
-                )
+            try:
+                content = await self._response.aread()
+                if content:
+                    data = self._convert_content(content, mode, encoding, decode)
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+            finally:
+                await self._response.aclose()
 
-            while self._should_continue_live() and not self._up_to_date:
+            while self._should_continue_live():
+                response = await self._fetch_next(self._offset, self._cursor)
                 try:
-                    response = await self._fetch_next(self._offset, self._cursor)
                     self._update_metadata_from_response(response)
 
                     if response.status_code == 204:
+                        await response.aclose()
                         continue
 
                     content = await response.aread()
@@ -994,8 +1123,8 @@ class AsyncStreamResponse(Generic[T]):
                             up_to_date=self._up_to_date,
                             cursor=self._cursor,
                         )
-                except Exception:
-                    break
+                finally:
+                    await response.aclose()
 
     def _convert_content(
         self,
@@ -1057,23 +1186,28 @@ class AsyncStreamResponse(Generic[T]):
         return await self._aread_bytes_internal()
 
     async def _aread_bytes_internal(self) -> bytes:
-        """Internal async read-all for bytes."""
+        """Internal async read-all for bytes (accumulate until up-to-date)."""
         chunks: list[bytes] = []
-        chunks.append(await self._response.aread())
+        try:
+            chunks.append(await self._response.aread())
+        finally:
+            await self._response.aclose()
 
+        # Continue until up-to-date (read-all methods always stop at up-to-date)
         while not self._up_to_date:
             if self._live is False:
                 break
+            response = await self._fetch_next(self._offset, self._cursor)
             try:
-                response = await self._fetch_next(self._offset, self._cursor)
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    await response.aclose()
                     continue
 
                 chunks.append(await response.aread())
-            except Exception:
-                break
+            finally:
+                await response.aclose()
 
         return b"".join(chunks)
 
@@ -1107,11 +1241,40 @@ class AsyncStreamResponse(Generic[T]):
         self,
         decode: Callable[[Any], T] | None,
     ) -> list[T]:
-        """Internal async read-all for JSON."""
+        """Internal async read-all for JSON (stops at up-to-date)."""
         all_items: list[T] = []
 
-        async for batch in self._aiter_json_batches_internal(decode):
-            all_items.extend(batch)
+        if self._is_sse:
+            async for batch in self._aiter_sse_json_batches(decode):
+                all_items.extend(batch)
+                if self._up_to_date:
+                    break
+        else:
+            try:
+                content = await self._response.aread()
+                if content:
+                    items = decode_json_items(content, decode)
+                    all_items.extend(items)
+            finally:
+                await self._response.aclose()
+
+            while not self._up_to_date:
+                if self._live is False:
+                    break
+                response = await self._fetch_next(self._offset, self._cursor)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        await response.aclose()
+                        continue
+
+                    content = await response.aread()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        all_items.extend(items)
+                finally:
+                    await response.aclose()
 
         return all_items
 
@@ -1122,8 +1285,47 @@ class AsyncStreamResponse(Generic[T]):
         """Read all JSON batches until up-to-date."""
         self._ensure_not_consumed("read_json_batches")
         self._mark_consumed("read_json_batches")
+        return await self._aread_json_batches_internal(decode)
 
-        batches: list[list[T]] = []
-        async for batch in self._aiter_json_batches_internal(decode):
-            batches.append(batch)
-        return batches
+    async def _aread_json_batches_internal(
+        self,
+        decode: Callable[[Any], T] | None,
+    ) -> list[list[T]]:
+        """Internal async read-all for JSON batches (stops at up-to-date)."""
+        all_batches: list[list[T]] = []
+
+        if self._is_sse:
+            async for batch in self._aiter_sse_json_batches(decode):
+                all_batches.append(batch)
+                if self._up_to_date:
+                    break
+        else:
+            try:
+                content = await self._response.aread()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        all_batches.append(items)
+            finally:
+                await self._response.aclose()
+
+            while not self._up_to_date:
+                if self._live is False:
+                    break
+                response = await self._fetch_next(self._offset, self._cursor)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        await response.aclose()
+                        continue
+
+                    content = await response.aread()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        if items:
+                            all_batches.append(items)
+                finally:
+                    await response.aclose()
+
+        return all_batches

@@ -28,10 +28,9 @@ dev = [
     "ruff>=0.8.0",
     "pyright>=1.1.390",
     "pytest>=8.0.0",
-    "pytest-anyio>=0.0.0",
+    "anyio[trio]>=4.0.0",  # For pytest anyio support
     "pytest-cov>=6.0.0",
     "respx>=0.22.0",
-    "anyio>=4.0.0",
 ]
 
 [build-system]

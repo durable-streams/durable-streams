@@ -6,7 +6,7 @@ This module handles parsing of response headers and JSON data.
 
 import json
 from collections.abc import Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from durable_streams_client._types import (
     STREAM_CURSOR_HEADER,
@@ -99,7 +99,7 @@ def flatten_json_array(data: Any) -> list[Any]:
         List of items
     """
     if isinstance(data, list):
-        return data
+        return cast(list[Any], data)
     return [data]
 
 

@@ -18,6 +18,7 @@ class TestStreamResponseOneShot:
         response.headers = {
             "Stream-Next-Offset": "123",
             "Content-Type": "application/json",
+            "Stream-Up-To-Date": "true",  # Important: prevents live tailing
         }
         response.status_code = 200
         response.reason_phrase = "OK"
@@ -121,6 +122,7 @@ class TestAsyncStreamResponseOneShot:
         response.headers = {
             "Stream-Next-Offset": "123",
             "Content-Type": "application/json",
+            "Stream-Up-To-Date": "true",  # Important: prevents live tailing
         }
         response.status_code = 200
         response.reason_phrase = "OK"
@@ -131,9 +133,12 @@ class TestAsyncStreamResponseOneShot:
         async def mock_aread():
             return b'[{"id": 1}]'
 
+        async def mock_aclose():
+            pass
+
         response.aiter_bytes = mock_aiter_bytes
         response.aread = mock_aread
-        response.aclose = MagicMock(return_value=None)
+        response.aclose = mock_aclose
         return response
 
     @pytest.fixture
