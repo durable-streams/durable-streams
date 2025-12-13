@@ -11,8 +11,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 
-from durable_streams_client import DurableStream, SeqConflictError
-from durable_streams_client._errors import StreamExistsError, StreamNotFoundError
+from durable_streams import DurableStream, SeqConflictError
+from durable_streams._errors import StreamExistsError, StreamNotFoundError
 
 
 class MockResponse:

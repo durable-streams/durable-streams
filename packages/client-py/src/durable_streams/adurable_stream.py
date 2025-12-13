@@ -1,35 +1,35 @@
 """
-DurableStream - Synchronous handle class for read/write operations.
+AsyncDurableStream - Asynchronous handle class for read/write operations.
 
-This provides a persistent handle to a stream with methods for creating,
+This provides a persistent async handle to a stream with methods for creating,
 reading, appending, and deleting streams.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
-from durable_streams_client._errors import (
+from durable_streams._errors import (
     SeqConflictError,
     StreamExistsError,
     StreamNotFoundError,
     error_from_status,
 )
-from durable_streams_client._parse import (
+from durable_streams._parse import (
     batch_for_bytes_append,
     batch_for_json_append,
     parse_httpx_headers,
     wrap_for_json_append,
 )
-from durable_streams_client._response import StreamResponse
-from durable_streams_client._types import (
+from durable_streams._response import AsyncStreamResponse
+from durable_streams._types import (
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_SEQ_HEADER,
@@ -41,14 +41,14 @@ from durable_streams_client._types import (
     Offset,
     ParamsLike,
 )
-from durable_streams_client._util import (
+from durable_streams._util import (
     build_url_with_params,
     encode_body,
     is_json_content_type,
-    resolve_headers_sync,
-    resolve_params_sync,
+    resolve_headers_async,
+    resolve_params_async,
 )
-from durable_streams_client.stream import stream as stream_fn
+from durable_streams.astream import astream as astream_fn
 
 
 @dataclass
@@ -60,26 +60,26 @@ class _QueuedMessage:
     content_type: str | None
 
 
-class DurableStream:
+class AsyncDurableStream:
     """
-    A synchronous handle to a durable stream for read/write operations.
+    An asynchronous handle to a durable stream for read/write operations.
 
     This is a lightweight, reusable handle - not a persistent connection.
     Create sessions as needed via stream().
 
     Example:
         >>> # Create a new stream
-        >>> handle = DurableStream.create(
+        >>> handle = await AsyncDurableStream.create(
         ...     "https://example.com/stream",
         ...     content_type="application/json",
         ... )
         >>>
         >>> # Append data
-        >>> handle.append({"message": "hello"})
+        >>> await handle.append({"message": "hello"})
         >>>
         >>> # Read data
-        >>> with handle.stream() as res:
-        ...     for item in res.iter_json():
+        >>> async with await handle.stream() as res:
+        ...     async for item in res.iter_json():
         ...         print(item)
     """
 
@@ -90,10 +90,14 @@ class DurableStream:
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
         content_type: str | None = None,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
         batching: bool = True,
-        on_error: Callable[[Exception], dict[str, Any] | None] | None = None,
+        on_error: Callable[
+            [Exception],
+            Coroutine[Any, Any, dict[str, Any] | None] | dict[str, Any] | None,
+        ]
+        | None = None,
     ) -> None:
         """
         Create a handle to a durable stream.
@@ -105,10 +109,10 @@ class DurableStream:
             headers: HTTP headers (static strings or callables)
             params: Query parameters (static strings or callables)
             content_type: Content type for the stream
-            client: Optional httpx.Client to use
+            client: Optional httpx.AsyncClient to use
             timeout: Request timeout
             batching: Enable automatic batching for append() calls
-            on_error: Error handler callback
+            on_error: Async error handler callback
         """
         self._url = url
         self._headers = headers
@@ -118,12 +122,11 @@ class DurableStream:
         self._batching = batching
         self._on_error = on_error
 
-        # Client management
         self._own_client = client is None
-        self._client = client or httpx.Client(timeout=self._timeout)
+        self._client = client or httpx.AsyncClient(timeout=self._timeout)
 
         # Batching infrastructure
-        self._batch_lock = threading.Lock()
+        self._batch_lock = asyncio.Lock()
         self._batch_queue: deque[_QueuedMessage] = deque()
         self._batch_in_flight = False
 
@@ -137,46 +140,35 @@ class DurableStream:
         """The content type of the stream."""
         return self._content_type
 
-    def close(self) -> None:
+    async def aclose(self) -> None:
         """Close the handle and release resources."""
         if self._own_client:
-            self._client.close()
+            await self._client.aclose()
 
-    def __enter__(self) -> DurableStream:
+    async def __aenter__(self) -> AsyncDurableStream:
         return self
 
-    def __exit__(self, *args: object) -> None:
-        self.close()
+    async def __aexit__(self, *args: object) -> None:
+        await self.aclose()
 
     # === Static factory methods ===
 
     @classmethod
-    def connect(
+    async def connect(
         cls,
         url: str,
         *,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
         **kwargs: Any,
-    ) -> DurableStream:
+    ) -> AsyncDurableStream:
         """
         Connect to an existing stream (validates via HEAD).
 
-        Args:
-            url: Stream URL
-            headers: HTTP headers
-            params: Query parameters
-            client: Optional httpx.Client
-            timeout: Request timeout
-            **kwargs: Additional arguments
-
         Returns:
-            DurableStream handle with content_type populated
-
-        Raises:
-            StreamNotFoundError: If stream doesn't exist
+            AsyncDurableStream handle with content_type populated
         """
         handle = cls(
             url,
@@ -186,11 +178,11 @@ class DurableStream:
             timeout=timeout,
             **kwargs,
         )
-        handle.head()  # Validates existence and populates content_type
+        await handle.head()
         return handle
 
     @classmethod
-    def create(
+    async def create(
         cls,
         url: str,
         *,
@@ -200,30 +192,15 @@ class DurableStream:
         body: bytes | str | Any | None = None,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
         **kwargs: Any,
-    ) -> DurableStream:
+    ) -> AsyncDurableStream:
         """
         Create a new stream and return a handle.
 
-        Args:
-            url: Stream URL
-            content_type: Content type for the stream
-            ttl_seconds: Time-to-live in seconds
-            expires_at: Absolute expiry time (RFC3339)
-            body: Optional initial body
-            headers: HTTP headers
-            params: Query parameters
-            client: Optional httpx.Client
-            timeout: Request timeout
-            **kwargs: Additional arguments
-
         Returns:
-            DurableStream handle
-
-        Raises:
-            StreamExistsError: If stream already exists with different config
+            AsyncDurableStream handle
         """
         handle = cls(
             url,
@@ -234,7 +211,7 @@ class DurableStream:
             timeout=timeout,
             **kwargs,
         )
-        handle.create_stream(
+        await handle.create_stream(
             content_type=content_type,
             ttl_seconds=ttl_seconds,
             expires_at=expires_at,
@@ -243,28 +220,16 @@ class DurableStream:
         return handle
 
     @classmethod
-    def head_static(
+    async def head_static(
         cls,
         url: str,
         *,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
     ) -> HeadResult:
-        """
-        Get stream metadata without creating a handle.
-
-        Args:
-            url: Stream URL
-            headers: HTTP headers
-            params: Query parameters
-            client: Optional httpx.Client
-            timeout: Request timeout
-
-        Returns:
-            HeadResult with stream metadata
-        """
+        """Get stream metadata without creating a handle."""
         handle = cls(
             url,
             headers=headers,
@@ -273,31 +238,22 @@ class DurableStream:
             timeout=timeout,
         )
         try:
-            return handle.head()
+            return await handle.head()
         finally:
             if client is None:
-                handle.close()
+                await handle.aclose()
 
     @classmethod
-    def delete_static(
+    async def delete_static(
         cls,
         url: str,
         *,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
-        client: httpx.Client | None = None,
+        client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
     ) -> None:
-        """
-        Delete a stream without creating a handle.
-
-        Args:
-            url: Stream URL
-            headers: HTTP headers
-            params: Query parameters
-            client: Optional httpx.Client
-            timeout: Request timeout
-        """
+        """Delete a stream without creating a handle."""
         handle = cls(
             url,
             headers=headers,
@@ -306,28 +262,20 @@ class DurableStream:
             timeout=timeout,
         )
         try:
-            handle.delete()
+            await handle.delete()
         finally:
             if client is None:
-                handle.close()
+                await handle.aclose()
 
     # === Instance methods ===
 
-    def head(self) -> HeadResult:
-        """
-        Get metadata for this stream via HEAD request.
-
-        Returns:
-            HeadResult with stream metadata
-
-        Raises:
-            StreamNotFoundError: If stream doesn't exist
-        """
-        resolved_headers = resolve_headers_sync(self._headers)
-        resolved_params = resolve_params_sync(self._params)
+    async def head(self) -> HeadResult:
+        """Get metadata for this stream via HEAD request."""
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
-        response = self._client.head(
+        response = await self._client.head(
             request_url,
             headers=resolved_headers,
             timeout=self._timeout,
@@ -344,13 +292,11 @@ class DurableStream:
                 headers=headers_dict,
             )
 
-        headers_dict = parse_httpx_headers(response.headers)
         content_type = response.headers.get("content-type")
         offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
         etag = response.headers.get("etag")
         cache_control = response.headers.get("cache-control")
 
-        # Update instance content type
         if content_type:
             self._content_type = content_type
 
@@ -362,7 +308,7 @@ class DurableStream:
             cache_control=cache_control,
         )
 
-    def create_stream(
+    async def create_stream(
         self,
         *,
         content_type: str | None = None,
@@ -370,20 +316,9 @@ class DurableStream:
         expires_at: str | None = None,
         body: bytes | str | Any | None = None,
     ) -> None:
-        """
-        Create this stream on the server.
-
-        Args:
-            content_type: Content type for the stream
-            ttl_seconds: Time-to-live in seconds
-            expires_at: Absolute expiry time (RFC3339)
-            body: Optional initial body
-
-        Raises:
-            StreamExistsError: If stream already exists with different config
-        """
-        resolved_headers = resolve_headers_sync(self._headers)
-        resolved_params = resolve_params_sync(self._params)
+        """Create this stream on the server."""
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
         ct = content_type or self._content_type
@@ -398,7 +333,7 @@ class DurableStream:
         if body is not None:
             request_body = encode_body(body)
 
-        response = self._client.put(
+        response = await self._client.put(
             request_url,
             headers=resolved_headers,
             content=request_body,
@@ -418,25 +353,19 @@ class DurableStream:
                 operation="create",
             )
 
-        # Update content type from response
         response_ct = response.headers.get("content-type")
         if response_ct:
             self._content_type = response_ct
         elif ct:
             self._content_type = ct
 
-    def delete(self) -> None:
-        """
-        Delete this stream.
-
-        Raises:
-            StreamNotFoundError: If stream doesn't exist
-        """
-        resolved_headers = resolve_headers_sync(self._headers)
-        resolved_params = resolve_params_sync(self._params)
+    async def delete(self) -> None:
+        """Delete this stream."""
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
-        response = self._client.delete(
+        response = await self._client.delete(
             request_url,
             headers=resolved_headers,
             timeout=self._timeout,
@@ -453,7 +382,7 @@ class DurableStream:
                 headers=headers_dict,
             )
 
-    def append(
+    async def append(
         self,
         data: bytes | str | Any,
         *,
@@ -466,31 +395,22 @@ class DurableStream:
         When batching is enabled (default), multiple append() calls made while
         a POST is in-flight will be batched together into a single request.
 
-        Args:
-            data: Data to append (bytes, string, or JSON-serializable value)
-            seq: Optional sequence number for writer coordination
-            content_type: Optional content type override
-
         Returns:
             AppendResult with the new tail offset, or None if batched
-
-        Raises:
-            SeqConflictError: If seq is lower than last appended
-            DurableStreamError: For other protocol errors
         """
         if self._batching:
-            return self._append_with_batching(data, seq, content_type)
-        return self._append_direct(data, seq, content_type)
+            return await self._append_with_batching(data, seq, content_type)
+        return await self._append_direct(data, seq, content_type)
 
-    def _append_direct(
+    async def _append_direct(
         self,
         data: Any,
         seq: str | None,
         content_type: str | None,
     ) -> AppendResult:
         """Direct append without batching."""
-        resolved_headers = resolve_headers_sync(self._headers)
-        resolved_params = resolve_params_sync(self._params)
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
         ct = content_type or self._content_type
@@ -500,13 +420,12 @@ class DurableStream:
         if seq:
             resolved_headers[STREAM_SEQ_HEADER] = seq
 
-        # For JSON mode, wrap in array (server flattens one level)
         if is_json_content_type(ct):
             body = json.dumps(wrap_for_json_append(data)).encode("utf-8")
         else:
             body = encode_body(data)
 
-        response = self._client.post(
+        response = await self._client.post(
             request_url,
             headers=resolved_headers,
             content=body,
@@ -528,74 +447,70 @@ class DurableStream:
         next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
         return AppendResult(next_offset=next_offset)
 
-    def _append_with_batching(
+    async def _append_with_batching(
         self,
         data: Any,
         seq: str | None,
         content_type: str | None,
     ) -> AppendResult | None:
-        """Append with batching - collect messages and send in batches."""
+        """Append with batching."""
         should_flush = False
 
-        with self._batch_lock:
+        async with self._batch_lock:
             self._batch_queue.append(
                 _QueuedMessage(data=data, seq=seq, content_type=content_type)
             )
 
-            # If no request in flight, we should flush
             if not self._batch_in_flight:
                 should_flush = True
 
         # Flush outside the lock to avoid deadlock
         if should_flush:
-            return self._flush_batch()
+            return await self._flush_batch()
 
         return None
 
-    def _flush_batch(self) -> AppendResult | None:
-        """Flush the batch queue and send a single request."""
-        with self._batch_lock:
+    async def _flush_batch(self) -> AppendResult | None:
+        """Flush the batch queue."""
+        async with self._batch_lock:
             if not self._batch_queue:
                 return None
 
-            # Take all queued messages
             messages = list(self._batch_queue)
             self._batch_queue.clear()
             self._batch_in_flight = True
 
         try:
-            result = self._send_batch(messages)
+            result = await self._send_batch(messages)
 
             # Check if more messages accumulated while we were sending
             flush_again = False
-            with self._batch_lock:
+            async with self._batch_lock:
                 self._batch_in_flight = False
                 if self._batch_queue:
                     flush_again = True
 
             # Flush remaining messages outside the lock
             if flush_again:
-                self._flush_batch()
+                await self._flush_batch()
 
             return result
         except Exception:
             # On error, reset the in-flight flag
-            with self._batch_lock:
+            async with self._batch_lock:
                 self._batch_in_flight = False
             raise
 
-    def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
-        """Send a batch of messages as a single POST request."""
-        resolved_headers = resolve_headers_sync(self._headers)
-        resolved_params = resolve_params_sync(self._params)
+    async def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
+        """Send a batch of messages."""
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
-        # Get content type
         ct = messages[0].content_type or self._content_type
         if ct:
             resolved_headers["content-type"] = ct
 
-        # Get highest seq
         highest_seq: str | None = None
         for msg in reversed(messages):
             if msg.seq is not None:
@@ -605,17 +520,14 @@ class DurableStream:
         if highest_seq:
             resolved_headers[STREAM_SEQ_HEADER] = highest_seq
 
-        # Build batched body
         if is_json_content_type(ct):
-            # JSON mode: send array of values
             values = [msg.data for msg in messages]
             body = batch_for_json_append(values)
         else:
-            # Bytes mode: concatenate
             chunks = [encode_body(msg.data) for msg in messages]
             body = batch_for_bytes_append(chunks)
 
-        response = self._client.post(
+        response = await self._client.post(
             request_url,
             headers=resolved_headers,
             content=body,
@@ -637,7 +549,7 @@ class DurableStream:
         next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
         return AppendResult(next_offset=next_offset)
 
-    def stream(
+    async def stream(
         self,
         *,
         offset: Offset | None = None,
@@ -646,22 +558,8 @@ class DurableStream:
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
         **kwargs: Any,
-    ) -> StreamResponse[Any]:
-        """
-        Start a read session for this stream.
-
-        Args:
-            offset: Starting offset
-            live: Live mode behavior
-            cursor: Cursor for CDN collapsing
-            headers: Additional headers (merged with handle headers)
-            params: Additional params (merged with handle params)
-            **kwargs: Additional arguments
-
-        Returns:
-            StreamResponse for consuming stream data
-        """
-        # Merge headers and params
+    ) -> AsyncStreamResponse[Any]:
+        """Start an async read session for this stream."""
         merged_headers: HeadersLike = {}
         if self._headers:
             merged_headers.update(self._headers)
@@ -674,7 +572,7 @@ class DurableStream:
         if params:
             merged_params.update(params)
 
-        return stream_fn(
+        return await astream_fn(
             self._url,
             offset=offset,
             live=live,

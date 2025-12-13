@@ -6,7 +6,7 @@ This module provides common utilities used by both sync and async implementation
 
 from typing import Any
 
-from durable_streams_client._types import HeadersLike, ParamsLike
+from durable_streams._types import HeadersLike, ParamsLike
 
 
 def resolve_headers_sync(headers: HeadersLike | None) -> dict[str, str]:

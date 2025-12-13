@@ -7,7 +7,7 @@ This package provides both synchronous and asynchronous APIs for reading and
 writing to durable streams.
 
 Example usage:
-    >>> from durable_streams_client import stream, astream, DurableStream
+    >>> from durable_streams import stream, astream, DurableStream
     >>>
     >>> # Simple catch-up read
     >>> with stream("https://example.com/stream") as res:
@@ -20,7 +20,7 @@ Example usage:
     ...         print(item)
 """
 
-from durable_streams_client._errors import (
+from durable_streams._errors import (
     DurableStreamError,
     FetchError,
     RetentionGoneError,
@@ -31,7 +31,7 @@ from durable_streams_client._errors import (
     StreamExistsError,
     StreamNotFoundError,
 )
-from durable_streams_client._types import (
+from durable_streams._types import (
     AppendResult,
     HeadersLike,
     HeadResult,
@@ -40,10 +40,10 @@ from durable_streams_client._types import (
     ParamsLike,
     StreamEvent,
 )
-from durable_streams_client.adurable_stream import AsyncDurableStream
-from durable_streams_client.astream import astream
-from durable_streams_client.durable_stream import DurableStream
-from durable_streams_client.stream import stream
+from durable_streams.adurable_stream import AsyncDurableStream
+from durable_streams.astream import astream
+from durable_streams.durable_stream import DurableStream
+from durable_streams.stream import stream
 
 __all__ = [
     # Types

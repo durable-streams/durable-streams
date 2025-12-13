@@ -181,7 +181,7 @@ toml = [
 ]
 
 [[package]]
-name = "durable-streams-client"
+name = "durable-streams"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

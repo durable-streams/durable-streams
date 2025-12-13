@@ -1,6 +1,6 @@
 """Tests for SSE parsing."""
 
-from durable_streams_client._sse import (
+from durable_streams._sse import (
     SSEControlEvent,
     SSEDataEvent,
     SSEParser,

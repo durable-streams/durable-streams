@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from durable_streams_client._errors import StreamConsumedError
-from durable_streams_client._response import AsyncStreamResponse, StreamResponse
+from durable_streams._errors import StreamConsumedError
+from durable_streams._response import AsyncStreamResponse, StreamResponse
 
 
 class TestStreamResponseOneShot:

@@ -1,6 +1,6 @@
 """Tests for utility functions."""
 
-from durable_streams_client._util import (
+from durable_streams._util import (
     build_url_with_params,
     encode_body,
     is_json_content_type,
