@@ -1,0 +1,748 @@
+"""
+Comprehensive tests for stream() function.
+
+Matches TypeScript client test coverage from stream-api.test.ts.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import MagicMock
+
+import httpx
+import pytest
+
+from durable_streams_client import (
+    DurableStreamError,
+    FetchError,
+    StreamConsumedError,
+    stream,
+)
+from durable_streams_client._errors import StreamNotFoundError
+
+
+class MockResponse:
+    """Mock httpx.Response for testing."""
+
+    def __init__(
+        self,
+        content: bytes | str = b"",
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ):
+        if isinstance(content, str):
+            content = content.encode("utf-8")
+        self._content = content
+        self.status_code = status_code
+        self.headers = httpx.Headers(headers or {})
+        self.ok = 200 <= status_code < 400
+        self.is_success = self.ok
+        self.text = content.decode("utf-8") if content else ""
+
+    def read(self) -> bytes:
+        return self._content
+
+    def iter_bytes(self, _chunk_size: int = 1024):
+        yield self._content
+
+    def close(self):
+        pass
+
+
+class TestStreamBasicFunctionality:
+    """Basic functionality tests."""
+
+    def test_stream_makes_request_and_returns_response(self):
+        """Should make the first request and return a StreamResponse."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"message": "hello"}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_20",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+        )
+
+        mock_client.get.assert_called_once()
+        assert res.url == "https://example.com/stream"
+        assert res.content_type == "application/json"
+        assert res.live == "auto"
+
+    def test_stream_throws_on_404(self):
+        """Should throw StreamNotFoundError on 404."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"Not Found",
+            status_code=404,
+            headers={"content-type": "text/plain"},
+        )
+
+        with pytest.raises(StreamNotFoundError) as exc_info:
+            stream("https://example.com/stream", client=mock_client)
+        assert exc_info.value.status == 404
+
+    def test_stream_respects_offset_option(self):
+        """Should include offset in query parameters."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "2_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream(
+            "https://example.com/stream",
+            client=mock_client,
+            offset="1_5",
+        )
+
+        called_url = mock_client.get.call_args[0][0]
+        assert "offset=1_5" in called_url
+
+    def test_stream_sets_live_query_param_for_explicit_modes(self):
+        """Should set live query param for explicit modes."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+        )
+
+        called_url = mock_client.get.call_args[0][0]
+        assert "live=long-poll" in called_url
+
+
+class TestStreamResponseConsumption:
+    """Tests for StreamResponse consumption methods."""
+
+    def test_read_text_accumulates_text(self):
+        """Should accumulate text with read_text()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"hello world",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        text = res.read_text()
+        assert text == "hello world"
+
+    def test_read_json_accumulates_json(self):
+        """Should accumulate JSON with read_json()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_30",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        result = res.read_json()
+        assert result == [{"id": 1}, {"id": 2}]
+
+    def test_read_bytes_accumulates_bytes(self):
+        """Should accumulate bytes with read_bytes()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            bytes([1, 2, 3, 4, 5]),
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        body = res.read_bytes()
+        assert body == bytes([1, 2, 3, 4, 5])
+
+
+class TestStreamIterators:
+    """Tests for iteration methods."""
+
+    def test_iter_bytes_returns_chunks(self):
+        """Should iterate bytes chunks."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"stream data",
+            headers={
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        chunks = list(res)
+        assert len(chunks) >= 1
+        assert b"stream data" in b"".join(chunks)
+
+    def test_iter_json_returns_items(self):
+        """Should iterate JSON items."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_30",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        items = list(res.iter_json())
+        assert items == [{"id": 1}, {"id": 2}]
+
+    def test_iter_text_returns_strings(self):
+        """Should iterate text chunks."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"hello world",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_11",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        text_chunks = list(res.iter_text())
+        assert "".join(text_chunks) == "hello world"
+
+
+class TestConsumptionExclusivity:
+    """Tests for one-shot consumption semantics."""
+
+    def test_throws_when_calling_read_bytes_twice(self):
+        """Should throw when calling read_bytes() twice."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        res.read_bytes()
+
+        with pytest.raises(StreamConsumedError):
+            res.read_bytes()
+
+    def test_throws_when_calling_read_json_after_read_bytes(self):
+        """Should throw when calling read_json() after read_bytes()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        res.read_bytes()
+
+        with pytest.raises(StreamConsumedError):
+            res.read_json()
+
+    def test_throws_when_iterating_after_read_json(self):
+        """Should throw when iterating after read_json()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream("https://example.com/stream", client=mock_client)
+        res.read_json()
+
+        with pytest.raises(StreamConsumedError):
+            iter(res)
+
+
+class TestContextManager:
+    """Tests for context manager protocol."""
+
+    def test_context_manager_closes_response(self):
+        """Should close response when exiting context."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_response = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_4",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+        mock_response.close = MagicMock()
+        mock_client.get.return_value = mock_response
+
+        with stream("https://example.com/stream", client=mock_client) as res:
+            _ = res.read_bytes()
+
+        assert res.closed
+
+
+class TestAuthHeaders:
+    """Tests for authentication and custom headers."""
+
+    def test_includes_token_auth_header(self):
+        """Should include Authorization header."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"ok",
+            headers={
+                "Stream-Next-Offset": "1_2",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream(
+            "https://example.com/stream",
+            client=mock_client,
+            headers={"Authorization": "Bearer my-token"},
+        )
+
+        call_kwargs = mock_client.get.call_args[1]
+        assert "Authorization" in call_kwargs["headers"]
+        assert call_kwargs["headers"]["Authorization"] == "Bearer my-token"
+
+    def test_includes_custom_headers(self):
+        """Should include custom headers."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"ok",
+            headers={
+                "Stream-Next-Offset": "1_2",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream(
+            "https://example.com/stream",
+            client=mock_client,
+            headers={"x-custom": "value"},
+        )
+
+        call_kwargs = mock_client.get.call_args[1]
+        assert call_kwargs["headers"]["x-custom"] == "value"
+
+
+class TestFirstRequestSemantics:
+    """Tests for first request semantics."""
+
+    def test_rejects_on_401_auth_failure(self):
+        """Should reject on 401 Unauthorized."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"Unauthorized",
+            status_code=401,
+        )
+
+        with pytest.raises(DurableStreamError) as exc_info:
+            stream("https://example.com/stream", client=mock_client)
+        assert exc_info.value.status == 401
+
+    def test_rejects_on_403_forbidden(self):
+        """Should reject on 403 Forbidden."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"Forbidden",
+            status_code=403,
+        )
+
+        with pytest.raises(DurableStreamError) as exc_info:
+            stream("https://example.com/stream", client=mock_client)
+        assert exc_info.value.status == 403
+
+    def test_response_state_from_first_response_headers(self):
+        """Should resolve with correct state from first response headers."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "5_100",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            offset="5_50",
+        )
+
+        assert res.offset == "5_100"
+        assert res.up_to_date is True
+        assert res.content_type == "text/plain"
+
+    def test_only_makes_one_request_on_resolve(self):
+        """Should only make one request when stream() resolves."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_4",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream("https://example.com/stream", client=mock_client)
+
+        assert mock_client.get.call_count == 1
+
+
+class TestLiveModeSemantics:
+    """Tests for live mode behavior."""
+
+    def test_stops_at_up_to_date_when_live_false(self):
+        """Should stop at upToDate when live: false."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"chunk1",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        data = res.read_bytes()
+
+        # Should only fetch once (no live polling)
+        assert mock_client.get.call_count == 1
+        assert data == b"chunk1"
+        assert res.up_to_date is True
+
+    def test_continues_polling_when_live_long_poll(self):
+        """Should continue polling when live: 'long-poll'."""
+        mock_client = MagicMock(spec=httpx.Client)
+
+        # First response: not up-to-date
+        first_response = MockResponse(
+            b"chunk1",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                # No Stream-Up-To-Date header = not up to date,
+            },
+        )
+
+        # Second response: up-to-date
+        second_response = MockResponse(
+            b"chunk2",
+            headers={
+                "Stream-Next-Offset": "2_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        mock_client.get.side_effect = [first_response, second_response]
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+        )
+
+        # Use read_json with live=long-poll continues until upToDate
+        data = res.read_bytes()
+
+        assert mock_client.get.call_count == 2
+        assert data == b"chunk1chunk2"
+
+    def test_stops_at_up_to_date_with_json(self):
+        """Should stop at upToDate when live: false with read_json()."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        items = res.read_json()
+
+        assert mock_client.get.call_count == 1
+        assert items == [{"id": 1}, {"id": 2}]
+        assert res.up_to_date is True
+
+
+class TestOnErrorCallback:
+    """Tests for on_error callback handling."""
+
+    def test_on_error_returns_none_reraises(self):
+        """Should re-raise when on_error returns None."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"Error",
+            status_code=500,
+        )
+
+        def on_error_handler(_e: Exception) -> dict[str, Any] | None:
+            return None  # No recovery
+
+        with pytest.raises(FetchError):
+            stream(
+                "https://example.com/stream",
+                client=mock_client,
+                on_error=on_error_handler,
+            )
+
+    def test_on_error_can_retry_with_new_headers(self):
+        """Should retry with headers from on_error."""
+        mock_client = MagicMock(spec=httpx.Client)
+
+        # First call fails
+        first_response = MockResponse(
+            b"Unauthorized",
+            status_code=401,
+        )
+
+        # Second call succeeds
+        second_response = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_4",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        mock_client.get.side_effect = [first_response, second_response]
+
+        retry_count = 0
+
+        def on_error_handler(_e: Exception) -> dict[str, Any] | None:
+            nonlocal retry_count
+            retry_count += 1
+            if retry_count == 1:
+                # First error - retry with new auth
+                return {"headers": {"Authorization": "Bearer new-token"}}
+            return None  # Don't retry again
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            on_error=on_error_handler,
+        )
+
+        assert mock_client.get.call_count == 2
+        assert res.url == "https://example.com/stream"
+
+
+class TestParams:
+    """Tests for query parameters."""
+
+    def test_includes_custom_params(self):
+        """Should include custom query params."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"data",
+            headers={
+                "Stream-Next-Offset": "1_4",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        stream(
+            "https://example.com/stream",
+            client=mock_client,
+            params={"tenant": "acme", "version": "v1"},
+        )
+
+        called_url = mock_client.get.call_args[0][0]
+        assert "tenant=acme" in called_url
+        assert "version=v1" in called_url
+
+
+class TestEvents:
+    """Tests for event iteration."""
+
+    def test_iter_events_yields_events_with_metadata(self):
+        """Should yield StreamEvent objects with metadata."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        events = list(res.iter_events())
+        assert len(events) == 1
+        assert events[0].data == [{"id": 1}]
+        assert events[0].next_offset == "1_10"
+        assert events[0].up_to_date is True
+
+    def test_iter_events_text_mode(self):
+        """Should yield text data in text mode."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"hello",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        events = list(res.iter_events(mode="text"))
+        assert len(events) == 1
+        assert events[0].data == "hello"
+
+    def test_iter_events_bytes_mode(self):
+        """Should yield bytes data in bytes mode."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b"\x01\x02\x03",
+            headers={
+                "Stream-Next-Offset": "1_3",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        events = list(res.iter_events(mode="bytes"))
+        assert len(events) == 1
+        assert events[0].data == b"\x01\x02\x03"
+
+
+class TestJsonBatches:
+    """Tests for JSON batch methods."""
+
+    def test_iter_json_batches_preserves_boundaries(self):
+        """Should preserve batch boundaries."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.get.return_value = MockResponse(
+            b'[{"id": 1}, {"id": 2}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live=False,
+        )
+
+        batches = list(res.iter_json_batches())
+        assert len(batches) == 1
+        assert batches[0] == [{"id": 1}, {"id": 2}]
+
+    def test_read_json_batches_returns_list_of_lists(self):
+        """Should return list of lists."""
+        mock_client = MagicMock(spec=httpx.Client)
+
+        # Two responses
+        first_response = MockResponse(
+            b'[{"id": 1}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "1_5",
+                # No Stream-Up-To-Date header = not up to date,
+            },
+        )
+        second_response = MockResponse(
+            b'[{"id": 2}, {"id": 3}]',
+            headers={
+                "content-type": "application/json",
+                "Stream-Next-Offset": "2_10",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+
+        mock_client.get.side_effect = [first_response, second_response]
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+        )
+
+        batches = res.read_json_batches()
+        assert len(batches) == 2
+        assert batches[0] == [{"id": 1}]
+        assert batches[1] == [{"id": 2}, {"id": 3}]
