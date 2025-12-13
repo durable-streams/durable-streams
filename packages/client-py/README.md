@@ -118,7 +118,7 @@ The `live` parameter controls streaming behavior:
 
 ### StreamResponse / AsyncStreamResponse
 
-Response objects returned by `stream()` and `astream()`. These are **one-shot** - 
+Response objects returned by `stream()` and `astream()`. These are **one-shot** -
 you can only consume them in one mode. Attempting to consume again raises `StreamConsumedError`.
 
 #### Context Manager Usage (Recommended)
@@ -195,13 +195,13 @@ with stream(url) as res:
 with stream(url, live=False) as res:
     # Read all bytes
     data = res.read_bytes()
-    
+
     # Read all text
     text = res.read_text()
-    
+
     # Read all JSON items (flattened)
     items = res.read_json()
-    
+
     # Read JSON batches (preserves boundaries)
     batches = res.read_json_batches()
 ```
