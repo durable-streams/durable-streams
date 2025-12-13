@@ -246,9 +246,9 @@ export function createSSEProxyFetch(
       enumerable: true,
     })
 
-    // Add delete method
-    response.delete = async () => {
-      await deleteStream(
+    // Add deleteStream method
+    response.deleteStream = async () => {
+      await deleteProxyStream(
         normalizedProxyUrl,
         initiateResult.streamPath,
         proxyHeaders,
@@ -285,7 +285,7 @@ async function notifyProxyAbort(
 /**
  * Delete a stream from the proxy server.
  */
-async function deleteStream(
+async function deleteProxyStream(
   proxyUrl: string,
   streamPath: string,
   headers: Record<string, string>,

@@ -24,7 +24,7 @@ export interface SSEProxyResponse extends Response {
    * Delete the underlying durable stream, clearing all cached data.
    * Use this to force a fresh request on the next fetch.
    */
-  delete: () => Promise<void>
+  deleteStream: () => Promise<void>
 }
 
 /**
