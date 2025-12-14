@@ -7,7 +7,8 @@
  * - Sequence number tracking with duplicate detection
  * - Client-side ordering - batches are sent and acknowledged in strict sequence order
  * - Safe retries - duplicates are detected and ignored
- * - Automatic batching for high throughput
+ * - Low-latency default - messages send immediately when no requests are in-flight
+ * - Opportunistic batching - groups messages only when requests are already pending
  * - Automatic retry with exponential backoff
  */
 
@@ -70,15 +71,18 @@ export interface IdempotentProducerOptions {
 
   /**
    * Maximum batch size in bytes before triggering a flush.
-   * When accumulated message bytes exceed this threshold, a batch is sent immediately.
+   * Only relevant for high-throughput scenarios where messages accumulate faster
+   * than the network can send them. For typical small/infrequent messages,
+   * batches send immediately when the queue is idle.
    * Defaults to 1MB (1048576 bytes).
    */
   maxBatchBytes?: number
 
   /**
    * Maximum number of batches that can be in-flight concurrently.
-   * Higher values increase throughput but use more memory.
-   * Batches that arrive out-of-order at the server will retry until earlier batches complete.
+   * Only relevant for high-throughput bulk loading scenarios where you're
+   * sending data faster than network RTT allows. For typical usage, messages
+   * send immediately and this limit is never reached.
    * Defaults to 5.
    */
   maxInFlight?: number
@@ -112,9 +116,9 @@ export interface IdempotentAppendOptions {
 const DEFAULT_MAX_BATCH_BYTES = 1024 * 1024
 
 /**
- * Default and maximum number of in-flight batches.
- * With Kafka-style client-side ordering, batches that arrive out-of-order
- * at the server will get 409 and retry until earlier batches complete.
+ * Default maximum number of in-flight batches.
+ * Only relevant for high-throughput bulk loading. For typical usage,
+ * messages send immediately and only one batch is ever in-flight.
  */
 const DEFAULT_MAX_IN_FLIGHT = 5
 
@@ -169,11 +173,14 @@ function isFatalError(status: number): boolean {
 }
 
 /**
- * IdempotentProducer provides exactly-once append semantics with automatic batching.
+ * IdempotentProducer provides exactly-once append semantics with low-latency delivery.
  *
- * Multiple append() calls are automatically batched together for high throughput.
- * Each batch gets a single sequence number for idempotent delivery.
- * Failed batches are automatically retried with exponential backoff.
+ * Messages send immediately when no requests are in-flight (the common case for
+ * small/infrequent messages). Batching only occurs opportunistically when requests
+ * are already pending, providing both low latency and high throughput when needed.
+ *
+ * Failed requests are automatically retried with exponential backoff.
+ * Duplicate detection on the server ensures exactly-once delivery even with retries.
  *
  * @example
  * ```typescript
@@ -192,7 +199,7 @@ function isFatalError(status: number): boolean {
  *   }
  * });
  *
- * // Fire-and-forget - batched automatically
+ * // Fire-and-forget - sends immediately when idle, batches when busy
  * producer.append({ event: "click", button: "submit" });
  * producer.append({ event: "click", button: "cancel" });
  * producer.append({ event: "page_view", page: "/home" });

@@ -194,11 +194,9 @@ const stream = await DurableStream.create({
   contentType: "application/json",
 })
 
-// Create an idempotent producer with pipelining for high throughput
+// Create an idempotent producer
 const producer = new IdempotentProducer({
   stream,
-  maxBatchBytes: 1024 * 1024, // Flush when batch reaches 1MB (default)
-  maxInFlight: 5, // Up to 5 batches in-flight concurrently (default)
   onBatchAck: (result, count) => {
     metrics.increment("events_sent", count)
   },
@@ -222,14 +220,15 @@ console.log(`All sent, last acked: ${producer.state.lastAckedSequence}`)
 
 Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
 
-- **Batches** multiple appends and flushes when byte threshold is reached
-- **Pipelines** up to 5 batches in-flight with Kafka-style client-side ordering
-- **Retries** failed batches with exponential backoff (including out-of-order)
-- **Tracks** sequence numbers per batch for duplicate detection
-- **Ignores** duplicate sequences on the server (safe retries)
+- **Low latency** - Messages send immediately when no requests are in-flight
+- **Batches opportunistically** - Groups messages when requests are already in-flight
+- **Retries** failed requests with exponential backoff
+- **Tracks** sequence numbers for duplicate detection
+- **Ignores** duplicates on the server (safe retries)
 - **Fences** zombie producers via epochs (prevents stale producers from writing)
 - **Provides** `onBatchAck` and `onError` callbacks for monitoring
-- **Flushes** via `flush()` method to wait for all pending writes
+
+For high-throughput bulk loading, you can tune `maxBatchBytes` (flush threshold, default 1MB) and `maxInFlight` (concurrent batches, default 5). But for typical small/infrequent messages, the defaults prioritize low latency.
 
 Use `IdempotentProducer` when data integrity matters (payments, orders, events). Use simple `append()` for development, testing, or when duplicates are acceptable at the application level.
 
