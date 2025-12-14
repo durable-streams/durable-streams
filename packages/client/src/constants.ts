@@ -37,6 +37,24 @@ export const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
 export const STREAM_SEQ_HEADER = `Stream-Seq`
 
 /**
+ * Request header for idempotent producer ID.
+ * Send "?" to request a new producer ID, or the assigned ID for subsequent appends.
+ */
+export const STREAM_PRODUCER_ID_HEADER = `Stream-Producer-Id`
+
+/**
+ * Request header for producer epoch (zombie fencing).
+ * Send "?" to bump the epoch, or the current epoch number.
+ */
+export const STREAM_PRODUCER_EPOCH_HEADER = `Stream-Producer-Epoch`
+
+/**
+ * Response header containing the last acknowledged sequence number.
+ * Returned by the server after successful idempotent appends.
+ */
+export const STREAM_ACKED_SEQ_HEADER = `Stream-Acked-Seq`
+
+/**
  * Request header for stream TTL in seconds (on create).
  */
 export const STREAM_TTL_HEADER = `Stream-TTL`

@@ -21,6 +21,17 @@ export { stream } from "./stream-api"
 export { DurableStream, type DurableStreamOptions } from "./stream"
 
 // ============================================================================
+// Idempotent Producer API
+// ============================================================================
+
+// IdempotentProducer for exactly-once append semantics
+export {
+  IdempotentProducer,
+  type IdempotentProducerOptions,
+  type IdempotentAppendOptions,
+} from "./idempotent-producer"
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -56,6 +67,11 @@ export type {
   DurableStreamErrorCode,
   RetryOpts,
   StreamErrorHandler,
+
+  // Idempotent producer types
+  IdempotentProducerErrorCode,
+  IdempotentAppendResult,
+  IdempotentProducerState,
 } from "./types"
 
 // ============================================================================
@@ -68,6 +84,7 @@ export {
   DurableStreamError,
   MissingStreamUrlError,
   InvalidSignalError,
+  IdempotentProducerError,
 } from "./error"
 
 // ============================================================================
@@ -92,6 +109,9 @@ export {
   STREAM_SEQ_HEADER,
   STREAM_TTL_HEADER,
   STREAM_EXPIRES_AT_HEADER,
+  STREAM_PRODUCER_ID_HEADER,
+  STREAM_PRODUCER_EPOCH_HEADER,
+  STREAM_ACKED_SEQ_HEADER,
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
