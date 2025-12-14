@@ -76,6 +76,14 @@ export interface IdempotentProducerOptions {
   maxBatchBytes?: number
 
   /**
+   * Maximum number of batches that can be in-flight concurrently.
+   * Higher values increase throughput but use more memory.
+   * Batches that arrive out-of-order at the server will retry until earlier batches complete.
+   * Defaults to 5.
+   */
+  maxInFlight?: number
+
+  /**
    * Called when a batch is successfully acknowledged.
    * Useful for metrics and monitoring without blocking.
    */
@@ -102,6 +110,13 @@ export interface IdempotentAppendOptions {
  * Default max batch size in bytes (1MB).
  */
 const DEFAULT_MAX_BATCH_BYTES = 1024 * 1024
+
+/**
+ * Default and maximum number of in-flight batches.
+ * With Kafka-style client-side ordering, batches that arrive out-of-order
+ * at the server will get 409 and retry until earlier batches complete.
+ */
+const DEFAULT_MAX_IN_FLIGHT = 5
 
 /**
  * Queued message for batching.
@@ -134,8 +149,11 @@ function normalizeContentType(contentType: string | undefined): string {
  * Check if an error is fatal (should not retry).
  */
 function isFatalError(status: number): boolean {
-  // 4xx errors (except 429) are fatal - bad request, fenced, etc.
-  return status >= 400 && status < 500 && status !== 429
+  // 4xx errors are fatal, except:
+  // - 429 (rate limited) - should retry with backoff
+  // - 409 (conflict) - includes OUT_OF_ORDER_SEQUENCE which should retry
+  //   until earlier batches complete (Kafka-style pipelining)
+  return status >= 400 && status < 500 && status !== 429 && status !== 409
 }
 
 /**
@@ -179,6 +197,7 @@ export class IdempotentProducer {
   readonly #onBatchAck?: BatchAckCallback
   readonly #onError?: BatchErrorCallback
   readonly #maxBatchBytes: number
+  readonly #maxInFlight: number
 
   #producerId?: string
   #epoch?: number
@@ -202,6 +221,7 @@ export class IdempotentProducer {
     this.#onBatchAck = options.onBatchAck
     this.#onError = options.onError
     this.#maxBatchBytes = options.maxBatchBytes ?? DEFAULT_MAX_BATCH_BYTES
+    this.#maxInFlight = options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT
 
     // Create fetch client with backoff
     const backoffOptions = {
@@ -212,9 +232,10 @@ export class IdempotentProducer {
     const fetchWithBackoff = createFetchWithBackoff(baseFetch, backoffOptions)
     this.#fetchClient = createFetchWithConsumedBody(fetchWithBackoff)
 
-    // Queue with concurrency 1 for Kafka-style strict ordering
-    // Batches must be sent and acknowledged in sequence order
-    this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
+    // Queue with concurrency for pipelining multiple in-flight batches
+    // Batches that arrive out-of-order at the server will retry (409) until
+    // earlier batches complete - this is Kafka-style client-side ordering
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
   }
 
   /**

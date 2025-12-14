@@ -194,10 +194,11 @@ const stream = await DurableStream.create({
   contentType: "application/json",
 })
 
-// Create an idempotent producer for exactly-once semantics
+// Create an idempotent producer with pipelining for high throughput
 const producer = new IdempotentProducer({
   stream,
   maxBatchBytes: 1024 * 1024, // Flush when batch reaches 1MB (default)
+  maxInFlight: 5, // Up to 5 batches in-flight concurrently (default)
   onBatchAck: (result, count) => {
     metrics.increment("events_sent", count)
   },
@@ -222,8 +223,8 @@ console.log(`All sent, last acked: ${producer.state.lastAckedSequence}`)
 Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
 
 - **Batches** multiple appends and flushes when byte threshold is reached
-- **Orders** batches with Kafka-style client-side sequence guarantees
-- **Retries** failed batches with exponential backoff
+- **Pipelines** up to 5 batches in-flight with Kafka-style client-side ordering
+- **Retries** failed batches with exponential backoff (including out-of-order)
 - **Tracks** sequence numbers per batch for duplicate detection
 - **Ignores** duplicate sequences on the server (safe retries)
 - **Fences** zombie producers via epochs (prevents stale producers from writing)
