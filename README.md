@@ -182,6 +182,43 @@ res.subscribeJson(async (batch) => {
 })
 ```
 
+### Exactly-once writes with IdempotentProducer
+
+For production use, wrap your stream with `IdempotentProducer` to get exactly-once delivery guarantees with safe retries:
+
+```typescript
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
+
+const stream = await DurableStream.create({
+  url: "https://your-server.com/v1/stream/my-stream",
+  contentType: "application/json",
+})
+
+// Create an idempotent producer for exactly-once semantics
+const producer = new IdempotentProducer({ stream })
+
+// Safe to retry on network errors - duplicates are automatically detected
+await producer.append({ event: "payment.processed", amount: 100 })
+await producer.append({ event: "payment.confirmed", txId: "abc123" })
+
+// Check if a retry was a duplicate
+const result = await producer.append({ event: "order.shipped" })
+if (result.duplicate) {
+  console.log("Already written, safe to continue")
+}
+```
+
+**Why use IdempotentProducer?**
+
+Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
+
+- Tracks sequence numbers per producer session
+- Server detects and ignores duplicate sequences
+- Safe to retry any failed append without risking duplicates
+- Supports zombie fencing via epochs (prevents stale producers from writing)
+
+Use `IdempotentProducer` when data integrity matters (payments, orders, events). Use simple `append()` for development, testing, or when duplicates are acceptable at the application level.
+
 ## Protocol in 60 Seconds
 
 Here's the protocol in action with raw HTTP:
