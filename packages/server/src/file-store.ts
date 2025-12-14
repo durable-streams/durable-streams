@@ -5,7 +5,7 @@
 
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { randomBytes } from "node:crypto"
+import { randomBytes, randomUUID } from "node:crypto"
 import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
@@ -16,7 +16,20 @@ import {
   processJsonAppend,
 } from "./store"
 import type { Database } from "lmdb"
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  IdempotentAppendOptions,
+  IdempotentAppendResult,
+  PendingBatch,
+  PendingLongPoll,
+  ProducerState,
+  Stream,
+  StreamMessage,
+} from "./types"
+
+/**
+ * Maximum number of pending out-of-order batches per producer.
+ */
+const MAX_PENDING_BATCHES = 4
 
 /**
  * Stream metadata stored in LMDB.
@@ -37,6 +50,24 @@ interface StreamMetadata {
    * This allows safe async deletion and immediate reuse of stream paths.
    */
   directoryName: string
+}
+
+/**
+ * Producer metadata stored in LMDB.
+ */
+interface ProducerMetadata {
+  producerId: string
+  streamPath: string
+  epoch: number
+  lastSequence: number
+  lastActivityAt: number
+  // Pending batches stored as JSON-serializable format
+  pendingBatches: Array<{
+    sequence: number
+    data: string // Base64 encoded
+    contentType?: string
+    receivedAt: number
+  }>
 }
 
 /**
@@ -581,6 +612,466 @@ export class FileBackedStreamStore {
 
     // 6. Return (client knows data is durable)
     return message
+  }
+
+  /**
+   * Idempotent append with producer ID and sequence number tracking.
+   * Implements Kafka-style exactly-once semantics.
+   */
+  async idempotentAppend(
+    streamPath: string,
+    data: Uint8Array,
+    options: IdempotentAppendOptions
+  ): Promise<IdempotentAppendResult> {
+    const streamKey = `stream:${streamPath}`
+    const streamMeta = this.db.get(streamKey) as StreamMetadata | undefined
+
+    if (!streamMeta) {
+      throw new Error(`Stream not found: ${streamPath}`)
+    }
+
+    // Check content type match
+    if (options.contentType && streamMeta.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(streamMeta.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
+        )
+      }
+    }
+
+    // Handle new producer registration (producerId === '?')
+    if (options.producerId === `?`) {
+      return this.registerNewProducer(streamPath, streamMeta, data, options)
+    }
+
+    // Handle epoch bump request (producerEpoch === '?')
+    if (options.producerEpoch === `?`) {
+      return this.bumpProducerEpoch(streamPath, options.producerId, data)
+    }
+
+    // Look up existing producer
+    const producerKey = this.getProducerKey(options.producerId, streamPath)
+    const producerMeta = this.db.get(producerKey) as
+      | ProducerMetadata
+      | undefined
+
+    if (!producerMeta) {
+      return {
+        success: false,
+        duplicate: false,
+        producerState: {
+          producerId: options.producerId,
+          streamPath,
+          epoch: 0,
+          lastSequence: -1,
+          pendingBatches: [],
+          lastActivityAt: Date.now(),
+        },
+        error: {
+          error: `UNKNOWN_PRODUCER`,
+          message: `Producer ${options.producerId} not found`,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Convert metadata to state
+    const producer = this.producerMetaToState(producerMeta)
+
+    // Validate epoch (zombie fencing)
+    const requestedEpoch =
+      typeof options.producerEpoch === `string`
+        ? parseInt(options.producerEpoch, 10)
+        : options.producerEpoch
+
+    if (requestedEpoch < producer.epoch) {
+      return {
+        success: false,
+        duplicate: false,
+        producerState: producer,
+        error: {
+          error: `PRODUCER_FENCED`,
+          message: `Producer epoch ${requestedEpoch} is stale, current epoch is ${producer.epoch}`,
+          currentEpoch: producer.epoch,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Validate sequence number
+    const sequence = options.sequence
+    const expectedSequence = producer.lastSequence + 1
+
+    // Duplicate detection
+    if (sequence <= producer.lastSequence) {
+      // This is a duplicate - return success without writing
+      producer.lastActivityAt = Date.now()
+      this.saveProducerState(producer)
+      return {
+        success: true,
+        duplicate: true,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // Expected sequence - write immediately
+    if (sequence === expectedSequence) {
+      const message = await this.appendToStreamInternal(
+        streamPath,
+        streamMeta,
+        data
+      )
+      producer.lastSequence = sequence
+      producer.lastActivityAt = Date.now()
+
+      // Check if we can flush pending batches
+      await this.flushPendingBatches(producer, streamPath)
+
+      // Save producer state
+      this.saveProducerState(producer)
+
+      // Notify long-polls
+      this.notifyLongPolls(streamPath)
+
+      return {
+        success: true,
+        duplicate: false,
+        message,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // Future sequence - buffer if we have room
+    if (producer.pendingBatches.length < MAX_PENDING_BATCHES) {
+      const pending: PendingBatch = {
+        sequence,
+        data,
+        contentType: options.contentType,
+        receivedAt: Date.now(),
+      }
+
+      // Insert in sorted order by sequence
+      const insertIndex = producer.pendingBatches.findIndex(
+        (b) => b.sequence > sequence
+      )
+      if (insertIndex === -1) {
+        producer.pendingBatches.push(pending)
+      } else {
+        producer.pendingBatches.splice(insertIndex, 0, pending)
+      }
+
+      producer.lastActivityAt = Date.now()
+      this.saveProducerState(producer)
+
+      return {
+        success: true,
+        duplicate: false,
+        producerState: producer,
+        statusCode: 202,
+        pending: true,
+      }
+    }
+
+    // Too many pending batches - reject
+    return {
+      success: false,
+      duplicate: false,
+      producerState: producer,
+      error: {
+        error: `OUT_OF_ORDER_SEQUENCE`,
+        message: `Expected sequence ${expectedSequence}, received ${sequence}`,
+        expectedSequence,
+        lastSequence: producer.lastSequence,
+      },
+      statusCode: 409,
+    }
+  }
+
+  /**
+   * Register a new producer and perform the first append.
+   */
+  private async registerNewProducer(
+    streamPath: string,
+    streamMeta: StreamMetadata,
+    data: Uint8Array,
+    options: IdempotentAppendOptions
+  ): Promise<IdempotentAppendResult> {
+    const producerId = randomUUID()
+
+    const producer: ProducerState = {
+      producerId,
+      streamPath,
+      epoch: 0,
+      lastSequence: -1,
+      pendingBatches: [],
+      lastActivityAt: Date.now(),
+    }
+
+    // For new producers, sequence must be 0
+    if (options.sequence !== 0) {
+      // Save producer state even on error so it exists for future requests
+      this.saveProducerState(producer)
+      return {
+        success: false,
+        duplicate: false,
+        producerState: producer,
+        error: {
+          error: `OUT_OF_ORDER_SEQUENCE`,
+          message: `New producer must start with sequence 0, received ${options.sequence}`,
+          expectedSequence: 0,
+          lastSequence: -1,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Write the first message
+    const message = await this.appendToStreamInternal(
+      streamPath,
+      streamMeta,
+      data
+    )
+    producer.lastSequence = 0
+
+    // Save producer state
+    this.saveProducerState(producer)
+
+    // Notify long-polls
+    this.notifyLongPolls(streamPath)
+
+    return {
+      success: true,
+      duplicate: false,
+      message,
+      producerState: producer,
+      statusCode: 200,
+    }
+  }
+
+  /**
+   * Bump producer epoch (re-registration for zombie fencing).
+   */
+  private bumpProducerEpoch(
+    streamPath: string,
+    producerId: string,
+    data: Uint8Array
+  ): IdempotentAppendResult {
+    const producerKey = this.getProducerKey(producerId, streamPath)
+    const existingMeta = this.db.get(producerKey) as
+      | ProducerMetadata
+      | undefined
+
+    let producer: ProducerState
+
+    if (!existingMeta) {
+      // Create a new producer with this ID
+      producer = {
+        producerId,
+        streamPath,
+        epoch: 0,
+        lastSequence: -1,
+        pendingBatches: [],
+        lastActivityAt: Date.now(),
+      }
+    } else {
+      // Bump epoch and reset sequence
+      producer = this.producerMetaToState(existingMeta)
+      producer.epoch++
+      producer.lastSequence = -1
+      producer.pendingBatches = []
+      producer.lastActivityAt = Date.now()
+    }
+
+    // Save updated producer state
+    this.saveProducerState(producer)
+
+    // Empty body is allowed for epoch bump only
+    const text = new TextDecoder().decode(data).trim()
+    if (text === `[]` || data.length === 0) {
+      return {
+        success: true,
+        duplicate: false,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // If data provided, this is an error for epoch bump
+    return {
+      success: false,
+      duplicate: false,
+      producerState: producer,
+      error: {
+        error: `OUT_OF_ORDER_SEQUENCE`,
+        message: `Epoch bump request must have empty body`,
+        expectedSequence: 0,
+        lastSequence: -1,
+      },
+      statusCode: 400,
+    }
+  }
+
+  /**
+   * Internal append that doesn't check sequence (used by idempotent append).
+   */
+  private async appendToStreamInternal(
+    streamPath: string,
+    streamMeta: StreamMetadata,
+    data: Uint8Array
+  ): Promise<StreamMessage> {
+    // Process JSON mode data
+    let processedData = data
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+      processedData = processJsonAppend(data)
+    }
+
+    // Parse current offset
+    const parts = streamMeta.currentOffset.split(`_`).map(Number)
+    const readSeq = parts[0]!
+    const byteOffset = parts[1]!
+
+    // Calculate new offset
+    const newByteOffset = byteOffset + processedData.length
+    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
+
+    // Get segment file path
+    const streamDir = path.join(
+      this.dataDir,
+      `streams`,
+      streamMeta.directoryName
+    )
+    const segmentPath = path.join(streamDir, `segment_00000.log`)
+
+    // Get write stream from pool
+    const stream = this.fileHandlePool.getWriteStream(segmentPath)
+
+    // Write message with framing
+    const lengthBuf = Buffer.allocUnsafe(4)
+    lengthBuf.writeUInt32BE(processedData.length, 0)
+    const frameBuf = Buffer.concat([
+      lengthBuf,
+      processedData,
+      Buffer.from(`\n`),
+    ])
+    await new Promise<void>((resolve, reject) => {
+      stream.write(frameBuf, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
+
+    // Create message object
+    const message: StreamMessage = {
+      data: processedData,
+      offset: newOffset,
+      timestamp: Date.now(),
+    }
+
+    // Flush to disk
+    await this.fileHandlePool.fsyncFile(segmentPath)
+
+    // Update stream metadata
+    const key = `stream:${streamPath}`
+    const updatedMeta: StreamMetadata = {
+      ...streamMeta,
+      currentOffset: newOffset,
+      totalBytes: streamMeta.totalBytes + processedData.length + 5,
+    }
+    this.db.putSync(key, updatedMeta)
+
+    return message
+  }
+
+  /**
+   * Flush pending batches that are now ready to write.
+   */
+  private async flushPendingBatches(
+    producer: ProducerState,
+    streamPath: string
+  ): Promise<void> {
+    while (producer.pendingBatches.length > 0) {
+      const nextPending = producer.pendingBatches[0]!
+      if (nextPending.sequence === producer.lastSequence + 1) {
+        // This batch is ready to write
+        producer.pendingBatches.shift()
+
+        // Re-fetch stream metadata (may have changed)
+        const streamKey = `stream:${streamPath}`
+        const streamMeta = this.db.get(streamKey) as StreamMetadata
+        await this.appendToStreamInternal(
+          streamPath,
+          streamMeta,
+          nextPending.data
+        )
+        producer.lastSequence = nextPending.sequence
+      } else {
+        // Gap still exists
+        break
+      }
+    }
+  }
+
+  /**
+   * Convert ProducerMetadata to ProducerState.
+   */
+  private producerMetaToState(meta: ProducerMetadata): ProducerState {
+    return {
+      producerId: meta.producerId,
+      streamPath: meta.streamPath,
+      epoch: meta.epoch,
+      lastSequence: meta.lastSequence,
+      lastActivityAt: meta.lastActivityAt,
+      pendingBatches: meta.pendingBatches.map((p) => ({
+        sequence: p.sequence,
+        data: Buffer.from(p.data, `base64`),
+        contentType: p.contentType,
+        receivedAt: p.receivedAt,
+      })),
+    }
+  }
+
+  /**
+   * Save producer state to LMDB.
+   */
+  private saveProducerState(producer: ProducerState): void {
+    const key = this.getProducerKey(producer.producerId, producer.streamPath)
+    const meta: ProducerMetadata = {
+      producerId: producer.producerId,
+      streamPath: producer.streamPath,
+      epoch: producer.epoch,
+      lastSequence: producer.lastSequence,
+      lastActivityAt: producer.lastActivityAt,
+      pendingBatches: producer.pendingBatches.map((p) => ({
+        sequence: p.sequence,
+        data: Buffer.from(p.data).toString(`base64`),
+        contentType: p.contentType,
+        receivedAt: p.receivedAt,
+      })),
+    }
+    this.db.putSync(key, meta)
+  }
+
+  /**
+   * Get a producer by ID and stream path.
+   */
+  getProducer(
+    producerId: string,
+    streamPath: string
+  ): ProducerState | undefined {
+    const key = this.getProducerKey(producerId, streamPath)
+    const meta = this.db.get(key) as ProducerMetadata | undefined
+    return meta ? this.producerMetaToState(meta) : undefined
+  }
+
+  /**
+   * Generate producer key for LMDB.
+   */
+  private getProducerKey(producerId: string, streamPath: string): string {
+    return `producer:${producerId}:${streamPath}`
   }
 
   read(

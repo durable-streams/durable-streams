@@ -139,6 +139,173 @@ export interface TestServerOptions {
 }
 
 /**
+ * A pending batch waiting for earlier sequences to arrive.
+ */
+export interface PendingBatch {
+  /**
+   * The sequence number of this batch.
+   */
+  sequence: number
+
+  /**
+   * The data to write when sequence is ready.
+   */
+  data: Uint8Array
+
+  /**
+   * Content type of the batch.
+   */
+  contentType?: string
+
+  /**
+   * Timestamp when the batch was received.
+   */
+  receivedAt: number
+}
+
+/**
+ * State for an idempotent producer.
+ */
+export interface ProducerState {
+  /**
+   * The unique producer identifier.
+   */
+  producerId: string
+
+  /**
+   * The stream this producer writes to.
+   */
+  streamPath: string
+
+  /**
+   * Current epoch for zombie fencing.
+   * Increments when producer re-registers.
+   */
+  epoch: number
+
+  /**
+   * The highest committed sequence number.
+   * -1 means no sequences have been committed yet.
+   */
+  lastSequence: number
+
+  /**
+   * Out-of-order batches waiting for earlier sequences.
+   * Maximum 4 pending batches allowed.
+   */
+  pendingBatches: Array<PendingBatch>
+
+  /**
+   * Timestamp of last activity for expiration.
+   */
+  lastActivityAt: number
+}
+
+/**
+ * Error codes for idempotent producer operations.
+ */
+export type IdempotentProducerErrorCode =
+  | `DUPLICATE_SEQUENCE`
+  | `OUT_OF_ORDER_SEQUENCE`
+  | `PRODUCER_FENCED`
+  | `UNKNOWN_PRODUCER`
+
+/**
+ * Error response for idempotent producer operations.
+ */
+export interface IdempotentProducerError {
+  /**
+   * The error code.
+   */
+  error: IdempotentProducerErrorCode
+
+  /**
+   * Human-readable error message.
+   */
+  message: string
+
+  /**
+   * Expected sequence number (for sequence errors).
+   */
+  expectedSequence?: number
+
+  /**
+   * Last committed sequence number (for sequence errors).
+   */
+  lastSequence?: number
+
+  /**
+   * Current epoch (for fencing errors).
+   */
+  currentEpoch?: number
+}
+
+/**
+ * Result of an idempotent append operation.
+ */
+export interface IdempotentAppendResult {
+  /**
+   * Whether the operation was a success (including duplicate detection).
+   */
+  success: boolean
+
+  /**
+   * Whether this was a duplicate (already committed).
+   */
+  duplicate: boolean
+
+  /**
+   * The message that was written (or the existing message for duplicates).
+   */
+  message?: StreamMessage
+
+  /**
+   * The producer state after the operation.
+   */
+  producerState: ProducerState
+
+  /**
+   * Error details if operation failed.
+   */
+  error?: IdempotentProducerError
+
+  /**
+   * HTTP status code to return.
+   */
+  statusCode: number
+
+  /**
+   * Whether the batch was accepted but pending (202 Accepted).
+   */
+  pending?: boolean
+}
+
+/**
+ * Options for idempotent append operations.
+ */
+export interface IdempotentAppendOptions {
+  /**
+   * Producer ID (or '?' to request new ID).
+   */
+  producerId: string
+
+  /**
+   * Producer epoch (or '?' to bump epoch).
+   */
+  producerEpoch: string | number
+
+  /**
+   * Sequence number for this batch.
+   */
+  sequence: number
+
+  /**
+   * Content type of the data.
+   */
+  contentType?: string
+}
+
+/**
  * Pending long-poll request.
  */
 export interface PendingLongPoll {

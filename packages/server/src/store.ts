@@ -2,7 +2,16 @@
  * In-memory stream storage.
  */
 
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import { randomUUID } from "node:crypto"
+import type {
+  IdempotentAppendOptions,
+  IdempotentAppendResult,
+  PendingBatch,
+  PendingLongPoll,
+  ProducerState,
+  Stream,
+  StreamMessage,
+} from "./types"
 
 /**
  * Normalize content-type by extracting the media type (before any semicolon).
@@ -68,11 +77,17 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 }
 
 /**
+ * Maximum number of pending out-of-order batches per producer.
+ */
+const MAX_PENDING_BATCHES = 4
+
+/**
  * In-memory store for durable streams.
  */
 export class StreamStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
+  private producers = new Map<string, ProducerState>()
 
   /**
    * Create a new stream.
@@ -198,6 +213,314 @@ export class StreamStore {
   }
 
   /**
+   * Idempotent append with producer ID and sequence number tracking.
+   * Implements Kafka-style exactly-once semantics.
+   */
+  idempotentAppend(
+    path: string,
+    data: Uint8Array,
+    options: IdempotentAppendOptions
+  ): IdempotentAppendResult {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Check content type match
+    if (options.contentType && stream.contentType) {
+      const providedType = normalizeContentType(options.contentType)
+      const streamType = normalizeContentType(stream.contentType)
+      if (providedType !== streamType) {
+        throw new Error(
+          `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
+        )
+      }
+    }
+
+    // Handle new producer registration (producerId === '?')
+    if (options.producerId === `?`) {
+      return this.registerNewProducer(path, stream, data, options)
+    }
+
+    // Handle epoch bump request (producerEpoch === '?')
+    if (options.producerEpoch === `?`) {
+      return this.bumpProducerEpoch(path, options.producerId, data)
+    }
+
+    // Look up existing producer
+    const producerKey = this.getProducerKey(options.producerId, path)
+    const producer = this.producers.get(producerKey)
+
+    if (!producer) {
+      return {
+        success: false,
+        duplicate: false,
+        producerState: {
+          producerId: options.producerId,
+          streamPath: path,
+          epoch: 0,
+          lastSequence: -1,
+          pendingBatches: [],
+          lastActivityAt: Date.now(),
+        },
+        error: {
+          error: `UNKNOWN_PRODUCER`,
+          message: `Producer ${options.producerId} not found`,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Validate epoch (zombie fencing)
+    const requestedEpoch =
+      typeof options.producerEpoch === `string`
+        ? parseInt(options.producerEpoch, 10)
+        : options.producerEpoch
+
+    if (requestedEpoch < producer.epoch) {
+      return {
+        success: false,
+        duplicate: false,
+        producerState: producer,
+        error: {
+          error: `PRODUCER_FENCED`,
+          message: `Producer epoch ${requestedEpoch} is stale, current epoch is ${producer.epoch}`,
+          currentEpoch: producer.epoch,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Validate sequence number
+    const sequence = options.sequence
+    const expectedSequence = producer.lastSequence + 1
+
+    // Duplicate detection
+    if (sequence <= producer.lastSequence) {
+      // This is a duplicate - return success without writing
+      producer.lastActivityAt = Date.now()
+      return {
+        success: true,
+        duplicate: true,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // Expected sequence - write immediately
+    if (sequence === expectedSequence) {
+      const message = this.appendToStream(stream, data)
+      producer.lastSequence = sequence
+      producer.lastActivityAt = Date.now()
+
+      // Check if we can flush pending batches
+      this.flushPendingBatches(producer, stream)
+
+      // Notify long-polls
+      this.notifyLongPolls(path)
+
+      return {
+        success: true,
+        duplicate: false,
+        message,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // Future sequence - buffer if we have room
+    if (producer.pendingBatches.length < MAX_PENDING_BATCHES) {
+      const pending: PendingBatch = {
+        sequence,
+        data,
+        contentType: options.contentType,
+        receivedAt: Date.now(),
+      }
+
+      // Insert in sorted order by sequence
+      const insertIndex = producer.pendingBatches.findIndex(
+        (b) => b.sequence > sequence
+      )
+      if (insertIndex === -1) {
+        producer.pendingBatches.push(pending)
+      } else {
+        producer.pendingBatches.splice(insertIndex, 0, pending)
+      }
+
+      producer.lastActivityAt = Date.now()
+
+      return {
+        success: true,
+        duplicate: false,
+        producerState: producer,
+        statusCode: 202,
+        pending: true,
+      }
+    }
+
+    // Too many pending batches - reject
+    return {
+      success: false,
+      duplicate: false,
+      producerState: producer,
+      error: {
+        error: `OUT_OF_ORDER_SEQUENCE`,
+        message: `Expected sequence ${expectedSequence}, received ${sequence}`,
+        expectedSequence,
+        lastSequence: producer.lastSequence,
+      },
+      statusCode: 409,
+    }
+  }
+
+  /**
+   * Register a new producer and perform the first append.
+   */
+  private registerNewProducer(
+    path: string,
+    stream: Stream,
+    data: Uint8Array,
+    options: IdempotentAppendOptions
+  ): IdempotentAppendResult {
+    const producerId = randomUUID()
+    const producerKey = this.getProducerKey(producerId, path)
+
+    const producer: ProducerState = {
+      producerId,
+      streamPath: path,
+      epoch: 0,
+      lastSequence: -1,
+      pendingBatches: [],
+      lastActivityAt: Date.now(),
+    }
+
+    this.producers.set(producerKey, producer)
+
+    // For new producers, sequence must be 0
+    if (options.sequence !== 0) {
+      return {
+        success: false,
+        duplicate: false,
+        producerState: producer,
+        error: {
+          error: `OUT_OF_ORDER_SEQUENCE`,
+          message: `New producer must start with sequence 0, received ${options.sequence}`,
+          expectedSequence: 0,
+          lastSequence: -1,
+        },
+        statusCode: 409,
+      }
+    }
+
+    // Write the first message
+    const message = this.appendToStream(stream, data)
+    producer.lastSequence = 0
+
+    // Notify long-polls
+    this.notifyLongPolls(path)
+
+    return {
+      success: true,
+      duplicate: false,
+      message,
+      producerState: producer,
+      statusCode: 200,
+    }
+  }
+
+  /**
+   * Bump producer epoch (re-registration for zombie fencing).
+   */
+  private bumpProducerEpoch(
+    path: string,
+    producerId: string,
+    data: Uint8Array
+  ): IdempotentAppendResult {
+    const producerKey = this.getProducerKey(producerId, path)
+    let producer = this.producers.get(producerKey)
+
+    if (!producer) {
+      // Create a new producer with this ID
+      producer = {
+        producerId,
+        streamPath: path,
+        epoch: 0,
+        lastSequence: -1,
+        pendingBatches: [],
+        lastActivityAt: Date.now(),
+      }
+      this.producers.set(producerKey, producer)
+    } else {
+      // Bump epoch and reset sequence
+      producer.epoch++
+      producer.lastSequence = -1
+      producer.pendingBatches = []
+      producer.lastActivityAt = Date.now()
+    }
+
+    // Empty body is allowed for epoch bump only
+    // Check if data is effectively empty (just [] for JSON)
+    const text = new TextDecoder().decode(data).trim()
+    if (text === `[]` || data.length === 0) {
+      return {
+        success: true,
+        duplicate: false,
+        producerState: producer,
+        statusCode: 200,
+      }
+    }
+
+    // If data provided, this is an error for epoch bump
+    return {
+      success: false,
+      duplicate: false,
+      producerState: producer,
+      error: {
+        error: `OUT_OF_ORDER_SEQUENCE`,
+        message: `Epoch bump request must have empty body`,
+        expectedSequence: 0,
+        lastSequence: -1,
+      },
+      statusCode: 400,
+    }
+  }
+
+  /**
+   * Flush pending batches that are now ready to write.
+   */
+  private flushPendingBatches(producer: ProducerState, stream: Stream): void {
+    while (producer.pendingBatches.length > 0) {
+      const nextPending = producer.pendingBatches[0]!
+      if (nextPending.sequence === producer.lastSequence + 1) {
+        // This batch is ready to write
+        producer.pendingBatches.shift()
+        this.appendToStream(stream, nextPending.data)
+        producer.lastSequence = nextPending.sequence
+      } else {
+        // Gap still exists
+        break
+      }
+    }
+  }
+
+  /**
+   * Get a producer by ID and stream path.
+   */
+  getProducer(
+    producerId: string,
+    streamPath: string
+  ): ProducerState | undefined {
+    return this.producers.get(this.getProducerKey(producerId, streamPath))
+  }
+
+  /**
+   * Generate producer key for the map.
+   */
+  private getProducerKey(producerId: string, streamPath: string): string {
+    return `${producerId}:${streamPath}`
+  }
+
+  /**
    * Read messages from a stream starting at the given offset.
    */
   read(
@@ -310,7 +633,7 @@ export class StreamStore {
   }
 
   /**
-   * Clear all streams.
+   * Clear all streams and producer state.
    */
   clear(): void {
     // Cancel all pending long-polls and resolve them with timeout
@@ -321,6 +644,7 @@ export class StreamStore {
     }
     this.pendingLongPolls = []
     this.streams.clear()
+    this.producers.clear()
   }
 
   /**
