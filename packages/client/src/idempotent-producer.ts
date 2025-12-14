@@ -18,7 +18,7 @@ import {
   STREAM_PRODUCER_EPOCH_HEADER,
   STREAM_PRODUCER_ID_HEADER,
 } from "./constants"
-import { IdempotentProducerError } from "./error"
+import { FetchError, IdempotentProducerError } from "./error"
 import {
   BackoffDefaults,
   createFetchWithBackoff,
@@ -119,6 +119,19 @@ const DEFAULT_MAX_BATCH_BYTES = 1024 * 1024
 const DEFAULT_MAX_IN_FLIGHT = 5
 
 /**
+ * Maximum retries for OUT_OF_ORDER_SEQUENCE errors.
+ * These occur during pipelining when batches arrive out of order.
+ */
+const OUT_OF_ORDER_MAX_RETRIES = 100
+
+/**
+ * Base delay for OUT_OF_ORDER_SEQUENCE retries (ms).
+ * We use a shorter delay than normal backoff since we expect earlier batches
+ * to complete soon.
+ */
+const OUT_OF_ORDER_BASE_DELAY = 50
+
+/**
  * Queued message for batching.
  */
 interface QueuedMessage {
@@ -149,11 +162,10 @@ function normalizeContentType(contentType: string | undefined): string {
  * Check if an error is fatal (should not retry).
  */
 function isFatalError(status: number): boolean {
-  // 4xx errors are fatal, except:
-  // - 429 (rate limited) - should retry with backoff
-  // - 409 (conflict) - includes OUT_OF_ORDER_SEQUENCE which should retry
-  //   until earlier batches complete (Kafka-style pipelining)
-  return status >= 400 && status < 500 && status !== 429 && status !== 409
+  // 4xx errors (except 429) are fatal - bad request, fenced, etc.
+  // Note: 409 OUT_OF_ORDER_SEQUENCE is handled specially in #sendBatch
+  // for Kafka-style pipelining, but other 409s are fatal.
+  return status >= 400 && status < 500 && status !== 429
 }
 
 /**
@@ -530,16 +542,89 @@ export class IdempotentProducer {
     const combinedSignal =
       signals.length > 0 ? AbortSignal.any(signals) : undefined
 
-    // Make the request (with automatic retry via fetchClient)
-    const response = await this.#fetchClient(this.#stream.url, {
-      method: `POST`,
-      headers,
-      body,
-      signal: combinedSignal,
-    })
+    // Make the request with retry logic for OUT_OF_ORDER_SEQUENCE
+    // This handles Kafka-style pipelining where batches may arrive out of order
+    let retryCount = 0
 
-    // Parse response
-    return this.#handleResponse(response, sequence)
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (true) {
+      try {
+        const response = await this.#fetchClient(this.#stream.url, {
+          method: `POST`,
+          headers,
+          body,
+          signal: combinedSignal,
+        })
+
+        // Parse response
+        return this.#handleResponse(response, sequence)
+      } catch (error) {
+        // Check if this is an OUT_OF_ORDER_SEQUENCE error (retriable for pipelining)
+        if (
+          error instanceof FetchError &&
+          error.status === 409 &&
+          error.json &&
+          typeof error.json === `object` &&
+          `error` in error.json &&
+          error.json.error === `OUT_OF_ORDER_SEQUENCE`
+        ) {
+          retryCount++
+          if (retryCount > OUT_OF_ORDER_MAX_RETRIES) {
+            throw new IdempotentProducerError(
+              `Max retries exceeded waiting for earlier batches`,
+              `OUT_OF_ORDER_SEQUENCE`,
+              409,
+              error.json as Record<string, unknown>
+            )
+          }
+
+          // Wait with exponential backoff before retrying
+          const delay = Math.min(
+            OUT_OF_ORDER_BASE_DELAY * Math.pow(1.5, retryCount - 1),
+            5000
+          )
+          await new Promise((resolve) => setTimeout(resolve, delay))
+          continue
+        }
+
+        // For PRODUCER_FENCED, set the fenced flag and throw
+        if (
+          error instanceof FetchError &&
+          error.status === 409 &&
+          error.json &&
+          typeof error.json === `object` &&
+          `error` in error.json &&
+          error.json.error === `PRODUCER_FENCED`
+        ) {
+          this.#fenced = true
+          throw new IdempotentProducerError(
+            `Producer fenced: stale epoch`,
+            `PRODUCER_FENCED`,
+            409,
+            error.json as Record<string, unknown>
+          )
+        }
+
+        // For other 409 errors (UNKNOWN_PRODUCER, etc.), wrap in IdempotentProducerError
+        if (
+          error instanceof FetchError &&
+          error.status === 409 &&
+          error.json &&
+          typeof error.json === `object` &&
+          `error` in error.json
+        ) {
+          throw new IdempotentProducerError(
+            `Idempotent producer error: ${String(error.json.error)}`,
+            error.json.error as `UNKNOWN_PRODUCER` | `OUT_OF_ORDER_SEQUENCE`,
+            409,
+            error.json as Record<string, unknown>
+          )
+        }
+
+        // Re-throw other errors
+        throw error
+      }
+    }
   }
 
   /**

@@ -172,9 +172,9 @@ export interface ProducerState {
 
 /**
  * Error codes for idempotent producer operations.
+ * Note: Duplicates are successful (204 No Content), not errors.
  */
 export type IdempotentProducerErrorCode =
-  | `DUPLICATE_SEQUENCE`
   | `OUT_OF_ORDER_SEQUENCE`
   | `PRODUCER_FENCED`
   | `UNKNOWN_PRODUCER`
