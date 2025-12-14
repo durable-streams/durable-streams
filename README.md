@@ -78,6 +78,8 @@ git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
 
+pnpm build
+
 # Terminal 1: Start the local server
 pnpm start:dev
 
@@ -103,6 +105,8 @@ See the [Test UI README](./packages/test-ui/README.md) for details.
 git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
+
+pnpm build
 
 # Terminal 1: Start the local server
 pnpm start:dev
