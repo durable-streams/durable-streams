@@ -279,6 +279,26 @@ export function createSSEProxyServer(options: SSEProxyServerOptions): Hono {
   })
 
   /**
+   * Get the status of a specific stream.
+   *
+   * Returns whether the proxy is actively writing to this stream.
+   */
+  app.get(`/sse-proxy/stream/:streamPath/status`, (c) => {
+    const streamPath = c.req.param(`streamPath`)
+
+    const connection = activeConnections.get(streamPath)
+    if (connection) {
+      return c.json({
+        active: true,
+        startedAt: connection.startedAt,
+        durationMs: Date.now() - connection.startedAt,
+      })
+    }
+
+    return c.json({ active: false })
+  })
+
+  /**
    * List active proxy connections (for debugging/monitoring).
    */
   app.get(`/sse-proxy/connections`, (c) => {

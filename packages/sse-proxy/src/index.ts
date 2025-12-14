@@ -34,6 +34,7 @@ export type {
   SSEProxyFetchOptions,
   SSEProxyResponse,
   RequestHasher,
+  ProxyStreamStatus,
 
   // Server types
   SSEProxyServerOptions,

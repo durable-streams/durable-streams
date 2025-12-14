@@ -246,6 +246,26 @@ export function createSSEProxyFetch(
       enumerable: true,
     })
 
+    // Add isActive method
+    response.isActive = async () => {
+      return checkStreamActive(
+        normalizedProxyUrl,
+        initiateResult.streamPath,
+        proxyHeaders,
+        baseFetch
+      )
+    }
+
+    // Add abort method
+    response.abort = async () => {
+      await abortProxyStream(
+        normalizedProxyUrl,
+        initiateResult.streamPath,
+        proxyHeaders,
+        baseFetch
+      )
+    }
+
     // Add deleteStream method
     response.deleteStream = async () => {
       await deleteProxyStream(
@@ -261,7 +281,7 @@ export function createSSEProxyFetch(
 }
 
 /**
- * Notify the proxy server to abort a connection.
+ * Notify the proxy server to abort a connection (fire and forget).
  */
 async function notifyProxyAbort(
   proxyUrl: string,
@@ -279,6 +299,59 @@ async function notifyProxyAbort(
     )
   } catch {
     // Ignore errors - the connection may already be closed
+  }
+}
+
+/**
+ * Abort a stream's backend connection.
+ */
+async function abortProxyStream(
+  proxyUrl: string,
+  streamPath: string,
+  headers: Record<string, string>,
+  fetchFn: typeof fetch
+): Promise<void> {
+  const response = await fetchFn(
+    `${proxyUrl}/sse-proxy/abort/${encodeURIComponent(streamPath)}`,
+    {
+      method: `DELETE`,
+      headers,
+    }
+  )
+
+  // 404 is ok - the connection may have already ended
+  if (!response.ok && response.status !== 404) {
+    const errorText = await response.text()
+    throw new Error(`Failed to abort stream: ${response.status} ${errorText}`)
+  }
+}
+
+/**
+ * Check if a stream is actively being written to.
+ */
+async function checkStreamActive(
+  proxyUrl: string,
+  streamPath: string,
+  headers: Record<string, string>,
+  fetchFn: typeof fetch
+): Promise<boolean> {
+  try {
+    const response = await fetchFn(
+      `${proxyUrl}/sse-proxy/stream/${encodeURIComponent(streamPath)}/status`,
+      {
+        method: `GET`,
+        headers,
+      }
+    )
+
+    if (!response.ok) {
+      return false
+    }
+
+    const status = await response.json()
+    return status.active === true
+  } catch {
+    return false
   }
 }
 

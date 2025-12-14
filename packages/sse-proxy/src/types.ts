@@ -21,10 +21,44 @@ export interface SSEProxyResponse extends Response {
   readonly streamPath: string
 
   /**
+   * Check if the proxy is still actively writing to this stream.
+   * Returns true if the backend SSE connection is still open.
+   */
+  isActive: () => Promise<boolean>
+
+  /**
+   * Abort the backend SSE connection.
+   * The stream data is preserved - only the active connection is stopped.
+   * Other clients can continue reading the data that was already written.
+   */
+  abort: () => Promise<void>
+
+  /**
    * Delete the underlying durable stream, clearing all cached data.
+   * Also aborts any active backend connection.
    * Use this to force a fresh request on the next fetch.
    */
   deleteStream: () => Promise<void>
+}
+
+/**
+ * Status information for a proxied stream.
+ */
+export interface ProxyStreamStatus {
+  /**
+   * Whether the proxy is actively writing to this stream.
+   */
+  active: boolean
+
+  /**
+   * When the proxy connection started (if active).
+   */
+  startedAt?: number
+
+  /**
+   * How long the proxy has been running in milliseconds (if active).
+   */
+  durationMs?: number
 }
 
 /**
