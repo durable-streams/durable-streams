@@ -125,6 +125,9 @@ importers:
       '@durable-streams/client':
         specifier: workspace:*
         version: link:../client
+      fast-check:
+        specifier: ^4.4.0
+        version: 4.4.0
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.1)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
@@ -2185,6 +2188,10 @@ packages:
   extendable-error@0.1.7:
     resolution: {integrity: sha512-UOiS2in6/Q0FK0R0q6UY9vYpQ21mr/Qn1KOnte7vsACuNJf514WvCCUHSRCPcgjPT2bAhNIJdlE6bVap1GKmeg==}
 
+  fast-check@4.4.0:
+    resolution: {integrity: sha512-s87BFAp8YaWYOBXjbTxeotaOhmA4hPYAyk9gBTFxdab25P6eAlqrryUvVMA2qd9bT/0Xq+YNJGtoVhJd/BxI4g==}
+    engines: {node: '>=12.17.0'}
+
   fast-deep-equal@3.1.3:
     resolution: {integrity: sha512-f3qQ9oQy9j2AhBe/H9VC91wLmKBCCU/gDOnKNAYG5hswO7BLKj09Hc5HYNz9cGI++xlpDCIgDaitVs03ATR84Q==}
 
@@ -2851,6 +2858,9 @@ packages:
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
+
+  pure-rand@7.0.1:
+    resolution: {integrity: sha512-oTUZM/NAZS8p7ANR3SHh30kXB+zK2r2BPcEn/awJIbOvq82WoMN4p62AWWp3Hhw50G0xMsw1mhIBLqHw64EcNQ==}
 
   quansync@0.2.11:
     resolution: {integrity: sha512-AifT7QEbW9Nri4tAwR5M/uzpBuqfZf+zwaEM/QkzEjj7NBuFD2rBuy0K3dE+8wltbezDV7JMA0WfnCPYRSYbXA==}
@@ -5499,6 +5509,10 @@ snapshots:
 
   extendable-error@0.1.7: {}
 
+  fast-check@4.4.0:
+    dependencies:
+      pure-rand: 7.0.1
+
   fast-deep-equal@3.1.3: {}
 
   fast-diff@1.3.0: {}
@@ -6101,6 +6115,8 @@ snapshots:
   punycode.js@2.3.1: {}
 
   punycode@2.3.1: {}
+
+  pure-rand@7.0.1: {}
 
   quansync@0.2.11: {}
 
