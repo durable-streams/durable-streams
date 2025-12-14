@@ -5,6 +5,7 @@
  * - Server-assigned producer IDs for tracking write sessions
  * - Producer epochs for zombie fencing
  * - Sequence number tracking with duplicate detection
+ * - Client-side ordering - batches are sent and acknowledged in strict sequence order
  * - Safe retries - duplicates are detected and ignored
  * - Automatic batching for high throughput
  * - Automatic retry with exponential backoff
@@ -75,13 +76,6 @@ export interface IdempotentProducerOptions {
   maxBatchBytes?: number
 
   /**
-   * Maximum number of batches that can be in-flight concurrently.
-   * Higher values increase throughput but use more memory.
-   * Defaults to 4.
-   */
-  maxInFlight?: number
-
-  /**
    * Called when a batch is successfully acknowledged.
    * Useful for metrics and monitoring without blocking.
    */
@@ -108,17 +102,6 @@ export interface IdempotentAppendOptions {
  * Default max batch size in bytes (1MB).
  */
 const DEFAULT_MAX_BATCH_BYTES = 1024 * 1024
-
-/**
- * Maximum allowed in-flight batches.
- * The server buffers up to 4 out-of-order batches, so max 5 in-flight is safe.
- */
-const MAX_IN_FLIGHT_LIMIT = 5
-
-/**
- * Default number of in-flight batches.
- */
-const DEFAULT_MAX_IN_FLIGHT = 4
 
 /**
  * Queued message for batching.
@@ -196,7 +179,6 @@ export class IdempotentProducer {
   readonly #onBatchAck?: BatchAckCallback
   readonly #onError?: BatchErrorCallback
   readonly #maxBatchBytes: number
-  readonly #maxInFlight: number
 
   #producerId?: string
   #epoch?: number
@@ -220,11 +202,6 @@ export class IdempotentProducer {
     this.#onBatchAck = options.onBatchAck
     this.#onError = options.onError
     this.#maxBatchBytes = options.maxBatchBytes ?? DEFAULT_MAX_BATCH_BYTES
-    // Cap maxInFlight at 5 (server buffers up to 4 out-of-order batches)
-    this.#maxInFlight = Math.min(
-      options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT,
-      MAX_IN_FLIGHT_LIMIT
-    )
 
     // Create fetch client with backoff
     const backoffOptions = {
@@ -235,8 +212,9 @@ export class IdempotentProducer {
     const fetchWithBackoff = createFetchWithBackoff(baseFetch, backoffOptions)
     this.#fetchClient = createFetchWithConsumedBody(fetchWithBackoff)
 
-    // Queue with concurrency for pipelining multiple in-flight batches
-    this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
+    // Queue with concurrency 1 for Kafka-style strict ordering
+    // Batches must be sent and acknowledged in sequence order
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
   }
 
   /**
@@ -632,17 +610,6 @@ export class IdempotentProducer {
         return {
           success: true,
           duplicate: false,
-          ackedSeq,
-          statusCode: status,
-        }
-      }
-
-      case 202: {
-        // Accepted - buffered for out-of-order handling
-        return {
-          success: true,
-          duplicate: false,
-          pending: true,
           ackedSeq,
           statusCode: status,
         }

@@ -139,31 +139,6 @@ export interface TestServerOptions {
 }
 
 /**
- * A pending batch waiting for earlier sequences to arrive.
- */
-export interface PendingBatch {
-  /**
-   * The sequence number of this batch.
-   */
-  sequence: number
-
-  /**
-   * The data to write when sequence is ready.
-   */
-  data: Uint8Array
-
-  /**
-   * Content type of the batch.
-   */
-  contentType?: string
-
-  /**
-   * Timestamp when the batch was received.
-   */
-  receivedAt: number
-}
-
-/**
  * State for an idempotent producer.
  */
 export interface ProducerState {
@@ -188,12 +163,6 @@ export interface ProducerState {
    * -1 means no sequences have been committed yet.
    */
   lastSequence: number
-
-  /**
-   * Out-of-order batches waiting for earlier sequences.
-   * Maximum 4 pending batches allowed.
-   */
-  pendingBatches: Array<PendingBatch>
 
   /**
    * Timestamp of last activity for expiration.
@@ -273,11 +242,6 @@ export interface IdempotentAppendResult {
    * HTTP status code to return.
    */
   statusCode: number
-
-  /**
-   * Whether the batch was accepted but pending (202 Accepted).
-   */
-  pending?: boolean
 }
 
 /**

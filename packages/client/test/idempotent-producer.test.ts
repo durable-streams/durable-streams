@@ -78,19 +78,6 @@ describe(`IdempotentProducer`, () => {
       })
     })
 
-    it(`should cap maxInFlight at 5`, () => {
-      // We can't directly inspect the private field, but we can verify
-      // by checking behavior - this is more of a documentation test
-      const producer = new IdempotentProducer({
-        stream,
-        maxInFlight: 10, // Exceeds limit
-        backoffOptions: { maxRetries: 0 },
-      })
-
-      // Producer should still be created successfully
-      expect(producer).toBeDefined()
-    })
-
     it(`should accept custom backoff options`, () => {
       const producer = new IdempotentProducer({
         stream,
@@ -202,26 +189,6 @@ describe(`IdempotentProducer`, () => {
       expect(result.pending).toBeUndefined()
       expect(result.statusCode).toBe(200)
       expect(result.ackedSeq).toBe(0)
-    })
-
-    it(`should handle 202 Accepted (buffered out-of-order)`, async () => {
-      const makeResponse = createMockResponse(202, {
-        [STREAM_PRODUCER_ID_HEADER]: `producer-123`,
-        [STREAM_PRODUCER_EPOCH_HEADER]: `1`,
-        [STREAM_ACKED_SEQ_HEADER]: `0`,
-      })
-      mockFetch.mockImplementation(() => Promise.resolve(makeResponse()))
-
-      const producer = new IdempotentProducer({
-        stream,
-        backoffOptions: { maxRetries: 0 },
-      })
-      const result = await producer.append({ event: `test` })
-
-      expect(result.success).toBe(true)
-      expect(result.duplicate).toBe(false)
-      expect(result.pending).toBe(true)
-      expect(result.statusCode).toBe(202)
     })
 
     it(`should handle 204 No Content (duplicate)`, async () => {

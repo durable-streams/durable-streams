@@ -723,12 +723,6 @@ export interface IdempotentAppendResult {
   duplicate: boolean
 
   /**
-   * Whether the batch was accepted but pending (202 Accepted).
-   * This means it was buffered for out-of-order handling.
-   */
-  pending?: boolean
-
-  /**
    * The last acknowledged sequence number (from Stream-Acked-Seq header).
    */
   ackedSeq?: number

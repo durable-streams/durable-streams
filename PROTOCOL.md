@@ -200,7 +200,7 @@ For applications requiring exactly-once delivery semantics with safe retries, se
 
 #### Overview
 
-Idempotent producer support uses server-assigned producer identities and client-managed sequence numbers to detect and handle duplicate or out-of-order writes:
+Idempotent producer support uses server-assigned producer identities and client-managed sequence numbers to detect and handle duplicate writes:
 
 1. **Producer ID**: A unique identifier assigned by the server on first append, identifying the producer session
 2. **Producer Epoch**: A monotonically increasing counter that allows servers to fence "zombie" producers from previous sessions
@@ -274,7 +274,6 @@ ProducerState {
   stream_path: string        // Stream this producer writes to
   epoch: number              // Current epoch for fencing
   last_sequence: number      // Highest committed sequence (-1 if none)
-  pending_batches: Batch[]   // Out-of-order buffer (max 4 entries)
 }
 ```
 
@@ -284,14 +283,13 @@ On each incoming batch with idempotent headers:
 
 1. **Expected sequence**: If `incoming_seq == last_sequence + 1`, write the batch and advance `last_sequence`. Return `200 OK`.
 2. **Duplicate**: If `incoming_seq <= last_sequence`, return `204 No Content` without writing (idempotent success - not an error)
-3. **Future sequence**: If `incoming_seq > last_sequence + 1`:
-   - If fewer than 4 batches pending, buffer the batch and return `202 Accepted`
-   - Otherwise, return `409 Conflict` with error code `OUT_OF_ORDER_SEQUENCE`
+3. **Out-of-order sequence**: If `incoming_seq > last_sequence + 1`, return `409 Conflict` with error code `OUT_OF_ORDER_SEQUENCE`
+
+Servers **MUST NOT** buffer out-of-order batches. Clients are responsible for ensuring batches are delivered in sequence order. This follows the Kafka idempotent producer model where the client manages ordering.
 
 #### Response Codes (Idempotent Mode)
 
 - `200 OK`: Batch successfully written to stream
-- `202 Accepted`: Out-of-order batch buffered for later writing
 - `204 No Content`: Duplicate batch detected (idempotent success - no new data written)
 - `404 Not Found`: Unknown producer (for epoch bump requests only)
 - `409 Conflict`: Sequence or epoch conflict (see error responses below)
@@ -367,17 +365,18 @@ Idempotent producer mode (`Stream-Producer-Id`) and basic sequence coordination 
 - Servers **MUST** reject requests that include both `Stream-Producer-Id` and `Stream-Seq` without `Stream-Producer-Epoch`
 - Clients **SHOULD** choose one mode and use it consistently
 
-#### Handling In-Flight Requests
+#### Client-Side Ordering (Kafka-style)
 
-With idempotent producers, clients can safely pipeline multiple requests:
+Clients are responsible for ensuring batches are acknowledged in sequence order. This follows the Kafka idempotent producer model:
 
-1. Client sends batch with seq=0, then seq=1, then seq=2 (without waiting for acks)
-2. If seq=1 fails and client retries, server handles correctly:
-   - If seq=2 arrived first, it's buffered as pending
-   - When seq=1 retry arrives, both are committed in order
-3. Sequence numbers guarantee ordering regardless of network reordering
+1. Clients **MAY** have multiple in-flight requests, but **MUST** ensure ordering is preserved
+2. If batch N fails while batch N+1 is in-flight:
+   - Client **MUST** wait for batch N+1 to complete
+   - Client **MUST** retry batch N before sending new batches
+   - If batch N's retry succeeds, the server will reject batch N+1 as a duplicate (204) if it was already written, or accept it if it failed
+3. Clients **SHOULD** limit concurrent in-flight requests to 5 per producer for optimal throughput
 
-**Maximum in-flight requests**: Clients **SHOULD** limit concurrent unacknowledged requests to 5 per producer. This ensures the server's pending buffer (max 4 entries) can handle worst-case reordering.
+**Pipelining with ordering**: Clients can achieve high throughput by pipelining requests while maintaining a sliding window of in-flight batches. When a batch fails, the client pauses new sends and retries in order.
 
 #### Producer State Retention
 

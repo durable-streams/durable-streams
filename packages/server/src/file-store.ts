@@ -19,17 +19,11 @@ import type { Database } from "lmdb"
 import type {
   IdempotentAppendOptions,
   IdempotentAppendResult,
-  PendingBatch,
   PendingLongPoll,
   ProducerState,
   Stream,
   StreamMessage,
 } from "./types"
-
-/**
- * Maximum number of pending out-of-order batches per producer.
- */
-const MAX_PENDING_BATCHES = 4
 
 /**
  * Stream metadata stored in LMDB.
@@ -61,13 +55,6 @@ interface ProducerMetadata {
   epoch: number
   lastSequence: number
   lastActivityAt: number
-  // Pending batches stored as JSON-serializable format
-  pendingBatches: Array<{
-    sequence: number
-    data: string // Base64 encoded
-    contentType?: string
-    receivedAt: number
-  }>
 }
 
 /**
@@ -666,7 +653,6 @@ export class FileBackedStreamStore {
           streamPath,
           epoch: 0,
           lastSequence: -1,
-          pendingBatches: [],
           lastActivityAt: Date.now(),
         },
         error: {
@@ -720,20 +706,13 @@ export class FileBackedStreamStore {
 
     // Expected sequence - write immediately
     if (sequence === expectedSequence) {
-      let message = await this.appendToStreamInternal(
+      const message = await this.appendToStreamInternal(
         streamPath,
         streamMeta,
         data
       )
       producer.lastSequence = sequence
       producer.lastActivityAt = Date.now()
-
-      // Check if we can flush pending batches
-      // Use final message offset if any pending batches were flushed
-      const lastFlushed = await this.flushPendingBatches(producer, streamPath)
-      if (lastFlushed) {
-        message = lastFlushed
-      }
 
       // Save producer state
       this.saveProducerState(producer)
@@ -750,38 +729,7 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Future sequence - buffer if we have room
-    if (producer.pendingBatches.length < MAX_PENDING_BATCHES) {
-      const pending: PendingBatch = {
-        sequence,
-        data,
-        contentType: options.contentType,
-        receivedAt: Date.now(),
-      }
-
-      // Insert in sorted order by sequence
-      const insertIndex = producer.pendingBatches.findIndex(
-        (b) => b.sequence > sequence
-      )
-      if (insertIndex === -1) {
-        producer.pendingBatches.push(pending)
-      } else {
-        producer.pendingBatches.splice(insertIndex, 0, pending)
-      }
-
-      producer.lastActivityAt = Date.now()
-      this.saveProducerState(producer)
-
-      return {
-        success: true,
-        duplicate: false,
-        producerState: producer,
-        statusCode: 202,
-        pending: true,
-      }
-    }
-
-    // Too many pending batches - reject
+    // Out-of-order sequence - reject immediately (Kafka-style client-side ordering)
     return {
       success: false,
       duplicate: false,
@@ -812,7 +760,6 @@ export class FileBackedStreamStore {
       streamPath,
       epoch: 0,
       lastSequence: -1,
-      pendingBatches: [],
       lastActivityAt: Date.now(),
     }
 
@@ -880,7 +827,6 @@ export class FileBackedStreamStore {
           streamPath,
           epoch: 0,
           lastSequence: -1,
-          pendingBatches: [],
           lastActivityAt: Date.now(),
         },
         error: {
@@ -895,7 +841,6 @@ export class FileBackedStreamStore {
     const producer = this.producerMetaToState(existingMeta)
     producer.epoch++
     producer.lastSequence = -1
-    producer.pendingBatches = []
     producer.lastActivityAt = Date.now()
 
     // Save updated producer state
@@ -999,38 +944,6 @@ export class FileBackedStreamStore {
   }
 
   /**
-   * Flush pending batches that are now ready to write.
-   * Returns the last message written, if any.
-   */
-  private async flushPendingBatches(
-    producer: ProducerState,
-    streamPath: string
-  ): Promise<Message | undefined> {
-    let lastMessage: Message | undefined
-    while (producer.pendingBatches.length > 0) {
-      const nextPending = producer.pendingBatches[0]!
-      if (nextPending.sequence === producer.lastSequence + 1) {
-        // This batch is ready to write
-        producer.pendingBatches.shift()
-
-        // Re-fetch stream metadata (may have changed)
-        const streamKey = `stream:${streamPath}`
-        const streamMeta = this.db.get(streamKey) as StreamMetadata
-        lastMessage = await this.appendToStreamInternal(
-          streamPath,
-          streamMeta,
-          nextPending.data
-        )
-        producer.lastSequence = nextPending.sequence
-      } else {
-        // Gap still exists
-        break
-      }
-    }
-    return lastMessage
-  }
-
-  /**
    * Convert ProducerMetadata to ProducerState.
    */
   private producerMetaToState(meta: ProducerMetadata): ProducerState {
@@ -1040,12 +953,6 @@ export class FileBackedStreamStore {
       epoch: meta.epoch,
       lastSequence: meta.lastSequence,
       lastActivityAt: meta.lastActivityAt,
-      pendingBatches: meta.pendingBatches.map((p) => ({
-        sequence: p.sequence,
-        data: Buffer.from(p.data, `base64`),
-        contentType: p.contentType,
-        receivedAt: p.receivedAt,
-      })),
     }
   }
 
@@ -1060,12 +967,6 @@ export class FileBackedStreamStore {
       epoch: producer.epoch,
       lastSequence: producer.lastSequence,
       lastActivityAt: producer.lastActivityAt,
-      pendingBatches: producer.pendingBatches.map((p) => ({
-        sequence: p.sequence,
-        data: Buffer.from(p.data).toString(`base64`),
-        contentType: p.contentType,
-        receivedAt: p.receivedAt,
-      })),
     }
     this.db.putSync(key, meta)
   }

@@ -3275,7 +3275,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(data).toEqual([{ event: `original` }])
     })
 
-    test(`should buffer out-of-order sequence and write when gap fills`, async () => {
+    test(`should reject out-of-order sequence immediately (Kafka-style)`, async () => {
       const streamPath = `/v1/stream/idempotent-out-of-order-${Date.now()}`
 
       // Create stream
@@ -3297,7 +3297,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       const producerId = reg.headers.get(`Stream-Producer-Id`)!
 
-      // Send seq 2 (skip seq 1) - should be buffered
+      // Send seq 2 (skip seq 1) - should be rejected immediately
       const resp2 = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
         headers: {
@@ -3309,28 +3309,16 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: JSON.stringify([{ seq: 2 }]),
       })
 
-      expect(resp2.status).toBe(202) // Accepted but pending
-      expect(resp2.headers.get(`Stream-Acked-Seq`)).toBe(`0`) // Still at seq 0
+      expect(resp2.status).toBe(409) // Conflict - out of order
+      const error = await resp2.json()
+      expect(error.error).toBe(`OUT_OF_ORDER_SEQUENCE`)
+      expect(error.expectedSequence).toBe(1)
+      expect(error.lastSequence).toBe(0)
 
-      // Now send seq 1 - should flush both
-      const resp1 = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `1`,
-        },
-        body: JSON.stringify([{ seq: 1 }]),
-      })
-
-      expect(resp1.status).toBe(200)
-      expect(resp1.headers.get(`Stream-Acked-Seq`)).toBe(`2`) // Both written
-
-      // Verify data was written in order
+      // Verify only seq 0 was written
       const readResp = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await readResp.json()
-      expect(data).toEqual([{ seq: 0 }, { seq: 1 }, { seq: 2 }])
+      expect(data).toEqual([{ seq: 0 }])
     })
 
     test(`should reject unknown producer ID`, async () => {
@@ -3437,59 +3425,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const error = await response.json()
       expect(error.error).toBe(`OUT_OF_ORDER_SEQUENCE`)
       expect(error.expectedSequence).toBe(0)
-    })
-
-    test(`should reject too many out-of-order batches`, async () => {
-      const streamPath = `/v1/stream/idempotent-max-pending-${Date.now()}`
-
-      // Create stream
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/json` },
-      })
-
-      // Register producer
-      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": `?`,
-          "Stream-Seq": `0`,
-        },
-        body: JSON.stringify([{ seq: 0 }]),
-      })
-
-      const producerId = reg.headers.get(`Stream-Producer-Id`)!
-
-      // Send sequences 2, 3, 4, 5 (all out of order, need seq 1 first)
-      for (const seq of [2, 3, 4, 5]) {
-        await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `POST`,
-          headers: {
-            "Content-Type": `application/json`,
-            "Stream-Producer-Id": producerId,
-            "Stream-Producer-Epoch": `0`,
-            "Stream-Seq": String(seq),
-          },
-          body: JSON.stringify([{ seq }]),
-        })
-      }
-
-      // Now try to send seq 6 - should be rejected (max 4 pending)
-      const resp6 = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `6`,
-        },
-        body: JSON.stringify([{ seq: 6 }]),
-      })
-
-      expect(resp6.status).toBe(409)
-      const error = await resp6.json()
-      expect(error.error).toBe(`OUT_OF_ORDER_SEQUENCE`)
     })
 
     test(`should require Stream-Producer-Epoch for known producer`, async () => {
@@ -3616,89 +3551,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(newAppend.status).toBe(200)
       expect(newAppend.headers.get(`Stream-Acked-Seq`)).toBe(`0`)
-    })
-
-    test(`should handle multiple concurrent out-of-order batches correctly`, async () => {
-      const streamPath = `/v1/stream/idempotent-concurrent-${Date.now()}`
-
-      // Create stream
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/json` },
-      })
-
-      // Register producer
-      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": `?`,
-          "Stream-Seq": `0`,
-        },
-        body: JSON.stringify([{ seq: 0 }]),
-      })
-
-      const producerId = reg.headers.get(`Stream-Producer-Id`)!
-
-      // Send seq 3, 4, 2 (out of order but within buffer)
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `3`,
-        },
-        body: JSON.stringify([{ seq: 3 }]),
-      })
-
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `4`,
-        },
-        body: JSON.stringify([{ seq: 4 }]),
-      })
-
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `2`,
-        },
-        body: JSON.stringify([{ seq: 2 }]),
-      })
-
-      // Now send seq 1 - should flush all
-      const final = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-          "Stream-Producer-Id": producerId,
-          "Stream-Producer-Epoch": `0`,
-          "Stream-Seq": `1`,
-        },
-        body: JSON.stringify([{ seq: 1 }]),
-      })
-
-      expect(final.status).toBe(200)
-      expect(final.headers.get(`Stream-Acked-Seq`)).toBe(`4`)
-
-      // Verify all data was written in order
-      const readResp = await fetch(`${getBaseUrl()}${streamPath}`)
-      const data = await readResp.json()
-      expect(data).toEqual([
-        { seq: 0 },
-        { seq: 1 },
-        { seq: 2 },
-        { seq: 3 },
-        { seq: 4 },
-      ])
     })
   })
 }

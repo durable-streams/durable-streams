@@ -6,7 +6,6 @@ import { randomUUID } from "node:crypto"
 import type {
   IdempotentAppendOptions,
   IdempotentAppendResult,
-  PendingBatch,
   PendingLongPoll,
   ProducerState,
   Stream,
@@ -75,11 +74,6 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
   const wrapped = `[${text}]`
   return new TextEncoder().encode(wrapped)
 }
-
-/**
- * Maximum number of pending out-of-order batches per producer.
- */
-const MAX_PENDING_BATCHES = 4
 
 /**
  * In-memory store for durable streams.
@@ -260,7 +254,6 @@ export class StreamStore {
           streamPath: path,
           epoch: 0,
           lastSequence: -1,
-          pendingBatches: [],
           lastActivityAt: Date.now(),
         },
         error: {
@@ -310,16 +303,9 @@ export class StreamStore {
 
     // Expected sequence - write immediately
     if (sequence === expectedSequence) {
-      let message = this.appendToStream(stream, data)
+      const message = this.appendToStream(stream, data)
       producer.lastSequence = sequence
       producer.lastActivityAt = Date.now()
-
-      // Check if we can flush pending batches
-      // Use final message offset if any pending batches were flushed
-      const lastFlushed = this.flushPendingBatches(producer, stream)
-      if (lastFlushed) {
-        message = lastFlushed
-      }
 
       // Notify long-polls
       this.notifyLongPolls(path)
@@ -333,37 +319,7 @@ export class StreamStore {
       }
     }
 
-    // Future sequence - buffer if we have room
-    if (producer.pendingBatches.length < MAX_PENDING_BATCHES) {
-      const pending: PendingBatch = {
-        sequence,
-        data,
-        contentType: options.contentType,
-        receivedAt: Date.now(),
-      }
-
-      // Insert in sorted order by sequence
-      const insertIndex = producer.pendingBatches.findIndex(
-        (b) => b.sequence > sequence
-      )
-      if (insertIndex === -1) {
-        producer.pendingBatches.push(pending)
-      } else {
-        producer.pendingBatches.splice(insertIndex, 0, pending)
-      }
-
-      producer.lastActivityAt = Date.now()
-
-      return {
-        success: true,
-        duplicate: false,
-        producerState: producer,
-        statusCode: 202,
-        pending: true,
-      }
-    }
-
-    // Too many pending batches - reject
+    // Out-of-order sequence - reject immediately (Kafka-style client-side ordering)
     return {
       success: false,
       duplicate: false,
@@ -395,7 +351,6 @@ export class StreamStore {
       streamPath: path,
       epoch: 0,
       lastSequence: -1,
-      pendingBatches: [],
       lastActivityAt: Date.now(),
     }
 
@@ -454,7 +409,6 @@ export class StreamStore {
           streamPath: path,
           epoch: 0,
           lastSequence: -1,
-          pendingBatches: [],
           lastActivityAt: Date.now(),
         },
         error: {
@@ -468,7 +422,6 @@ export class StreamStore {
     // Bump epoch and reset sequence
     producer.epoch++
     producer.lastSequence = -1
-    producer.pendingBatches = []
     producer.lastActivityAt = Date.now()
 
     // Empty body is allowed for epoch bump only
@@ -496,30 +449,6 @@ export class StreamStore {
       },
       statusCode: 400,
     }
-  }
-
-  /**
-   * Flush pending batches that are now ready to write.
-   * Returns the last message written, if any.
-   */
-  private flushPendingBatches(
-    producer: ProducerState,
-    stream: Stream
-  ): Message | undefined {
-    let lastMessage: Message | undefined
-    while (producer.pendingBatches.length > 0) {
-      const nextPending = producer.pendingBatches[0]!
-      if (nextPending.sequence === producer.lastSequence + 1) {
-        // This batch is ready to write
-        producer.pendingBatches.shift()
-        lastMessage = this.appendToStream(stream, nextPending.data)
-        producer.lastSequence = nextPending.sequence
-      } else {
-        // Gap still exists
-        break
-      }
-    }
-    return lastMessage
   }
 
   /**
