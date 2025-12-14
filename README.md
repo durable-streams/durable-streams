@@ -184,7 +184,7 @@ res.subscribeJson(async (batch) => {
 
 ### Exactly-once writes with IdempotentProducer
 
-For production use, wrap your stream with `IdempotentProducer` to get exactly-once delivery guarantees with safe retries:
+For production use, wrap your stream with `IdempotentProducer` to get exactly-once delivery guarantees with automatic retries:
 
 ```typescript
 import { DurableStream, IdempotentProducer } from "@durable-streams/client"
@@ -194,22 +194,26 @@ const stream = await DurableStream.create({
   contentType: "application/json",
 })
 
-// Create an idempotent producer for exactly-once semantics
-const producer = new IdempotentProducer({ stream })
+// Create an idempotent producer with callbacks for monitoring
+const producer = new IdempotentProducer({
+  stream,
+  onBatchAck: (result, count) => {
+    metrics.increment("events_sent", count)
+  },
+  onError: (error, count) => {
+    logger.error("Batch failed", { error, count })
+    // Could dead-letter, alert, etc.
+  },
+})
 
-// Fire-and-forget style - these are automatically batched together
+// Fire-and-forget - batched automatically, retried on failure
 producer.append({ event: "click", button: "submit" })
 producer.append({ event: "click", button: "cancel" })
 producer.append({ event: "page_view", page: "/home" })
 
-// Or await when you need confirmation (e.g., before responding to user)
-const result = await producer.append({
-  event: "payment.processed",
-  amount: 100,
-})
-if (result.duplicate) {
-  console.log("Already written (safe retry)")
-}
+// Wait for all pending to complete (e.g., before shutdown)
+await producer.flush()
+console.log(`All sent, last acked: ${producer.state.lastAckedSequence}`)
 ```
 
 **Why use IdempotentProducer?**
@@ -217,10 +221,12 @@ if (result.duplicate) {
 Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
 
 - Automatically batches multiple appends for high throughput
-- Tracks sequence numbers per batch
-- Server detects and ignores duplicate sequences
-- Safe to retry any failed append without risking duplicates
+- Retries failed batches with exponential backoff
+- Tracks sequence numbers per batch for duplicate detection
+- Server detects and ignores duplicate sequences (safe retries)
 - Supports zombie fencing via epochs (prevents stale producers from writing)
+- Provides `onBatchAck` and `onError` callbacks for monitoring
+- `flush()` method to wait for all pending writes
 
 Use `IdempotentProducer` when data integrity matters (payments, orders, events). Use simple `append()` for development, testing, or when duplicates are acceptable at the application level.
 

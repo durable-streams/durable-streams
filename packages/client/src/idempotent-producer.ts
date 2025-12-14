@@ -7,6 +7,7 @@
  * - Sequence number tracking with duplicate detection
  * - Safe retries - duplicates are detected and ignored
  * - Automatic batching for high throughput
+ * - Automatic retry with exponential backoff
  */
 
 import fastq from "fastq"
@@ -17,9 +18,28 @@ import {
   STREAM_PRODUCER_ID_HEADER,
 } from "./constants"
 import { IdempotentProducerError } from "./error"
+import {
+  BackoffDefaults,
+  createFetchWithBackoff,
+  createFetchWithConsumedBody,
+} from "./fetch"
 import type { DurableStream } from "./stream"
 import type { IdempotentAppendResult, IdempotentProducerState } from "./types"
+import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
+
+/**
+ * Callback for batch acknowledgment.
+ */
+export type BatchAckCallback = (
+  result: IdempotentAppendResult,
+  itemCount: number
+) => void
+
+/**
+ * Callback for batch errors (after retries exhausted).
+ */
+export type BatchErrorCallback = (error: Error, itemCount: number) => void
 
 /**
  * Options for creating an IdempotentProducer.
@@ -40,6 +60,24 @@ export interface IdempotentProducerOptions {
    * AbortSignal for operations.
    */
   signal?: AbortSignal
+
+  /**
+   * Backoff options for retry behavior.
+   * Defaults to exponential backoff with jitter.
+   */
+  backoffOptions?: Partial<BackoffOptions>
+
+  /**
+   * Called when a batch is successfully acknowledged.
+   * Useful for metrics and monitoring without blocking.
+   */
+  onBatchAck?: BatchAckCallback
+
+  /**
+   * Called when a batch fails (after retries exhausted).
+   * Useful for error logging and dead-letter handling.
+   */
+  onError?: BatchErrorCallback
 }
 
 /**
@@ -71,10 +109,19 @@ function normalizeContentType(contentType: string | undefined): string {
 }
 
 /**
+ * Check if an error is fatal (should not retry).
+ */
+function isFatalError(status: number): boolean {
+  // 4xx errors (except 429) are fatal - bad request, fenced, etc.
+  return status >= 400 && status < 500 && status !== 429
+}
+
+/**
  * IdempotentProducer provides exactly-once append semantics with automatic batching.
  *
  * Multiple append() calls are automatically batched together for high throughput.
  * Each batch gets a single sequence number for idempotent delivery.
+ * Failed batches are automatically retried with exponential backoff.
  *
  * @example
  * ```typescript
@@ -83,21 +130,32 @@ function normalizeContentType(contentType: string | undefined): string {
  *   contentType: "application/json"
  * });
  *
- * const producer = new IdempotentProducer({ stream });
+ * const producer = new IdempotentProducer({
+ *   stream,
+ *   onBatchAck: (result, count) => {
+ *     console.log(`Batch of ${count} items acked`);
+ *   },
+ *   onError: (error, count) => {
+ *     console.error(`Batch of ${count} items failed:`, error);
+ *   }
+ * });
  *
- * // These are automatically batched together
+ * // Fire-and-forget - batched automatically
  * producer.append({ event: "click", button: "submit" });
  * producer.append({ event: "click", button: "cancel" });
  * producer.append({ event: "page_view", page: "/home" });
  *
- * // Or await if you need confirmation
- * const result = await producer.append({ event: "purchase", amount: 100 });
+ * // Wait for all pending to complete before shutdown
+ * await producer.flush();
  * ```
  */
 export class IdempotentProducer {
   readonly #stream: DurableStream
   readonly #contentType?: string
   readonly #signal?: AbortSignal
+  readonly #fetchClient: typeof fetch
+  readonly #onBatchAck?: BatchAckCallback
+  readonly #onError?: BatchErrorCallback
 
   #producerId?: string
   #epoch?: number
@@ -110,10 +168,24 @@ export class IdempotentProducer {
   #queue: queueAsPromised<Array<QueuedMessage>>
   #buffer: Array<QueuedMessage> = []
 
+  // Flush support
+  #flushResolvers: Array<() => void> = []
+
   constructor(options: IdempotentProducerOptions) {
     this.#stream = options.stream
     this.#contentType = options.contentType
     this.#signal = options.signal
+    this.#onBatchAck = options.onBatchAck
+    this.#onError = options.onError
+
+    // Create fetch client with backoff
+    const backoffOptions = {
+      ...BackoffDefaults,
+      ...options.backoffOptions,
+    }
+    const baseFetch = globalThis.fetch.bind(globalThis)
+    const fetchWithBackoff = createFetchWithBackoff(baseFetch, backoffOptions)
+    this.#fetchClient = createFetchWithConsumedBody(fetchWithBackoff)
 
     // Single-worker queue ensures sequential batch processing
     this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
@@ -165,12 +237,13 @@ export class IdempotentProducer {
    * Append data with exactly-once semantics.
    *
    * Multiple append() calls are automatically batched together for efficiency.
+   * Failed batches are automatically retried with exponential backoff.
    * Safe to retry on network errors - the server detects and ignores duplicates.
    *
    * @param body - The data to append (Uint8Array, string, or JSON-serializable value)
    * @param options - Optional append options
    * @returns Promise that resolves with result when the batch containing this item is sent
-   * @throws {IdempotentProducerError} On producer errors (fenced, unknown producer, etc.)
+   * @throws {IdempotentProducerError} On fatal errors (fenced, bad request, etc.)
    */
   append(
     body: unknown,
@@ -206,11 +279,55 @@ export class IdempotentProducer {
   }
 
   /**
+   * Wait for all pending appends to complete.
+   *
+   * Returns when:
+   * - All buffered items have been sent
+   * - All in-flight batches have been acknowledged (or failed)
+   *
+   * @example
+   * ```typescript
+   * // High-throughput writes
+   * for (const event of events) {
+   *   producer.append(event);
+   * }
+   *
+   * // Wait before shutdown
+   * await producer.flush();
+   * console.log(`All events sent, last acked: ${producer.state.lastAckedSequence}`);
+   * ```
+   */
+  async flush(): Promise<void> {
+    // If nothing pending, return immediately
+    if (this.#buffer.length === 0 && this.#queue.idle()) {
+      return
+    }
+
+    // If there's a buffer but queue is idle, trigger send
+    if (this.#buffer.length > 0 && this.#queue.idle()) {
+      const batch = this.#buffer.splice(0)
+      this.#queue.push(batch).catch((err) => {
+        for (const msg of batch) msg.reject(err)
+      })
+    }
+
+    // Wait for queue to drain
+    return new Promise<void>((resolve) => {
+      this.#flushResolvers.push(resolve)
+    })
+  }
+
+  /**
    * Batch worker - processes batches of messages.
    */
   async #batchWorker(batch: Array<QueuedMessage>): Promise<void> {
+    const itemCount = batch.length
+
     try {
       const result = await this.#sendBatch(batch)
+
+      // Call onBatchAck callback
+      this.#onBatchAck?.(result, itemCount)
 
       // Resolve all messages in the batch with the same result
       for (const msg of batch) {
@@ -223,18 +340,44 @@ export class IdempotentProducer {
         this.#queue.push(nextBatch).catch((err) => {
           for (const msg of nextBatch) msg.reject(err)
         })
+      } else {
+        // No more pending - resolve flush waiters
+        this.#resolveFlushWaiters()
       }
     } catch (error) {
+      // Call onError callback
+      this.#onError?.(error as Error, itemCount)
+
       // Reject current batch
       for (const msg of batch) {
         msg.reject(error as Error)
       }
-      // Also reject buffered messages
-      for (const msg of this.#buffer) {
-        msg.reject(error as Error)
+
+      // For fatal errors, reject all buffered messages too
+      if (
+        error instanceof IdempotentProducerError &&
+        isFatalError(error.status)
+      ) {
+        for (const msg of this.#buffer) {
+          msg.reject(error)
+        }
+        this.#buffer = []
       }
-      this.#buffer = []
+
+      // Resolve flush waiters (even on error)
+      this.#resolveFlushWaiters()
+
       throw error
+    }
+  }
+
+  /**
+   * Resolve all pending flush() calls.
+   */
+  #resolveFlushWaiters(): void {
+    const resolvers = this.#flushResolvers.splice(0)
+    for (const resolve of resolvers) {
+      resolve()
     }
   }
 
@@ -299,8 +442,8 @@ export class IdempotentProducer {
     const combinedSignal =
       signals.length > 0 ? AbortSignal.any(signals) : undefined
 
-    // Make the request
-    const response = await fetch(this.#stream.url, {
+    // Make the request (with automatic retry via fetchClient)
+    const response = await this.#fetchClient(this.#stream.url, {
       method: `POST`,
       headers,
       body,
@@ -334,7 +477,7 @@ export class IdempotentProducer {
       [STREAM_PRODUCER_EPOCH_HEADER]: `?`,
     }
 
-    const response = await fetch(this.#stream.url, {
+    const response = await this.#fetchClient(this.#stream.url, {
       method: `POST`,
       headers,
       signal: this.#signal,

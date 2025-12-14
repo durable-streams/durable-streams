@@ -29,6 +29,8 @@ export {
   IdempotentProducer,
   type IdempotentProducerOptions,
   type IdempotentAppendOptions,
+  type BatchAckCallback,
+  type BatchErrorCallback,
 } from "./idempotent-producer"
 
 // ============================================================================
