@@ -197,14 +197,18 @@ const stream = await DurableStream.create({
 // Create an idempotent producer for exactly-once semantics
 const producer = new IdempotentProducer({ stream })
 
-// Safe to retry on network errors - duplicates are automatically detected
-await producer.append({ event: "payment.processed", amount: 100 })
-await producer.append({ event: "payment.confirmed", txId: "abc123" })
+// Fire-and-forget style - these are automatically batched together
+producer.append({ event: "click", button: "submit" })
+producer.append({ event: "click", button: "cancel" })
+producer.append({ event: "page_view", page: "/home" })
 
-// Check if a retry was a duplicate
-const result = await producer.append({ event: "order.shipped" })
+// Or await when you need confirmation (e.g., before responding to user)
+const result = await producer.append({
+  event: "payment.processed",
+  amount: 100,
+})
 if (result.duplicate) {
-  console.log("Already written, safe to continue")
+  console.log("Already written (safe retry)")
 }
 ```
 
@@ -212,7 +216,8 @@ if (result.duplicate) {
 
 Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
 
-- Tracks sequence numbers per producer session
+- Automatically batches multiple appends for high throughput
+- Tracks sequence numbers per batch
 - Server detects and ignores duplicate sequences
 - Safe to retry any failed append without risking duplicates
 - Supports zombie fencing via epochs (prevents stale producers from writing)

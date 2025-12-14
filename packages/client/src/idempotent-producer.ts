@@ -6,7 +6,10 @@
  * - Producer epochs for zombie fencing
  * - Sequence number tracking with duplicate detection
  * - Safe retries - duplicates are detected and ignored
+ * - Automatic batching for high throughput
  */
+
+import fastq from "fastq"
 
 import {
   STREAM_ACKED_SEQ_HEADER,
@@ -16,6 +19,7 @@ import {
 import { IdempotentProducerError } from "./error"
 import type { DurableStream } from "./stream"
 import type { IdempotentAppendResult, IdempotentProducerState } from "./types"
+import type { queueAsPromised } from "fastq"
 
 /**
  * Options for creating an IdempotentProducer.
@@ -49,6 +53,16 @@ export interface IdempotentAppendOptions {
 }
 
 /**
+ * Queued message for batching.
+ */
+interface QueuedMessage {
+  data: unknown
+  signal?: AbortSignal
+  resolve: (result: IdempotentAppendResult) => void
+  reject: (error: Error) => void
+}
+
+/**
  * Normalize content-type by extracting the media type (before any semicolon).
  */
 function normalizeContentType(contentType: string | undefined): string {
@@ -57,34 +71,10 @@ function normalizeContentType(contentType: string | undefined): string {
 }
 
 /**
- * Encode a body value to the appropriate format.
- */
-function encodeBody(
-  body: unknown,
-  isJson: boolean
-): { encoded: BodyInit; size: number } {
-  if (body instanceof Uint8Array) {
-    // Cast to ensure compatible BodyInit type
-    return { encoded: body as unknown as BodyInit, size: body.length }
-  }
-  if (typeof body === `string`) {
-    const bytes = new TextEncoder().encode(body)
-    return { encoded: bytes as unknown as BodyInit, size: bytes.length }
-  }
-  if (isJson) {
-    // For JSON mode, wrap in array (server flattens one level)
-    const jsonStr = JSON.stringify([body])
-    const bytes = new TextEncoder().encode(jsonStr)
-    return { encoded: bytes as unknown as BodyInit, size: bytes.length }
-  }
-  // For non-JSON, serialize as JSON bytes
-  const jsonStr = JSON.stringify(body)
-  const bytes = new TextEncoder().encode(jsonStr)
-  return { encoded: bytes as unknown as BodyInit, size: bytes.length }
-}
-
-/**
- * IdempotentProducer provides exactly-once append semantics.
+ * IdempotentProducer provides exactly-once append semantics with automatic batching.
+ *
+ * Multiple append() calls are automatically batched together for high throughput.
+ * Each batch gets a single sequence number for idempotent delivery.
  *
  * @example
  * ```typescript
@@ -95,13 +85,13 @@ function encodeBody(
  *
  * const producer = new IdempotentProducer({ stream });
  *
- * // Safe to retry - duplicates are detected
- * await producer.append({ event: "user_clicked", button: "submit" });
- * await producer.append({ event: "page_viewed", page: "/home" });
+ * // These are automatically batched together
+ * producer.append({ event: "click", button: "submit" });
+ * producer.append({ event: "click", button: "cancel" });
+ * producer.append({ event: "page_view", page: "/home" });
  *
- * // Check producer state
- * console.log(producer.state);
- * // { producerId: "abc123", epoch: 0, nextSequence: 2, lastAckedSequence: 1, initialized: true, fenced: false }
+ * // Or await if you need confirmation
+ * const result = await producer.append({ event: "purchase", amount: 100 });
  * ```
  */
 export class IdempotentProducer {
@@ -116,10 +106,17 @@ export class IdempotentProducer {
   #initialized = false
   #fenced = false
 
+  // Batching infrastructure
+  #queue: queueAsPromised<Array<QueuedMessage>>
+  #buffer: Array<QueuedMessage> = []
+
   constructor(options: IdempotentProducerOptions) {
     this.#stream = options.stream
     this.#contentType = options.contentType
     this.#signal = options.signal
+
+    // Single-worker queue ensures sequential batch processing
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
   }
 
   /**
@@ -167,31 +164,117 @@ export class IdempotentProducer {
   /**
    * Append data with exactly-once semantics.
    *
+   * Multiple append() calls are automatically batched together for efficiency.
    * Safe to retry on network errors - the server detects and ignores duplicates.
    *
    * @param body - The data to append (Uint8Array, string, or JSON-serializable value)
    * @param options - Optional append options
-   * @returns Result with success status and metadata
+   * @returns Promise that resolves with result when the batch containing this item is sent
    * @throws {IdempotentProducerError} On producer errors (fenced, unknown producer, etc.)
    */
-  async append(
+  append(
     body: unknown,
     options?: IdempotentAppendOptions
   ): Promise<IdempotentAppendResult> {
     if (this.#fenced) {
-      throw new IdempotentProducerError(
-        `Producer has been fenced (stale epoch)`,
-        `PRODUCER_FENCED`,
-        403,
-        { currentEpoch: this.#epoch }
+      return Promise.reject(
+        new IdempotentProducerError(
+          `Producer has been fenced (stale epoch)`,
+          `PRODUCER_FENCED`,
+          403,
+          { currentEpoch: this.#epoch }
+        )
       )
+    }
+
+    return new Promise<IdempotentAppendResult>((resolve, reject) => {
+      this.#buffer.push({
+        data: body,
+        signal: options?.signal,
+        resolve,
+        reject,
+      })
+
+      // If queue is idle, send immediately
+      if (this.#queue.idle()) {
+        const batch = this.#buffer.splice(0)
+        this.#queue.push(batch).catch((err) => {
+          for (const msg of batch) msg.reject(err)
+        })
+      }
+    })
+  }
+
+  /**
+   * Batch worker - processes batches of messages.
+   */
+  async #batchWorker(batch: Array<QueuedMessage>): Promise<void> {
+    try {
+      const result = await this.#sendBatch(batch)
+
+      // Resolve all messages in the batch with the same result
+      for (const msg of batch) {
+        msg.resolve(result)
+      }
+
+      // Send accumulated batch if any
+      if (this.#buffer.length > 0) {
+        const nextBatch = this.#buffer.splice(0)
+        this.#queue.push(nextBatch).catch((err) => {
+          for (const msg of nextBatch) msg.reject(err)
+        })
+      }
+    } catch (error) {
+      // Reject current batch
+      for (const msg of batch) {
+        msg.reject(error as Error)
+      }
+      // Also reject buffered messages
+      for (const msg of this.#buffer) {
+        msg.reject(error as Error)
+      }
+      this.#buffer = []
+      throw error
+    }
+  }
+
+  /**
+   * Send a batch of messages as a single POST request.
+   */
+  async #sendBatch(
+    batch: Array<QueuedMessage>
+  ): Promise<IdempotentAppendResult> {
+    if (batch.length === 0) {
+      return { success: true, duplicate: false, statusCode: 200 }
     }
 
     const contentType =
       this.#contentType ?? this.#stream.contentType ?? `application/json`
     const isJson = normalizeContentType(contentType) === `application/json`
 
-    const { encoded } = encodeBody(body, isJson)
+    // Build body based on content type
+    let body: BodyInit
+    if (isJson) {
+      // JSON mode: send array of items (server flattens one level)
+      const items = batch.map((m) => m.data)
+      body = JSON.stringify(items)
+    } else {
+      // Byte mode: concatenate all data
+      const encoder = new TextEncoder()
+      const chunks: Array<Uint8Array> = batch.map((m) => {
+        if (m.data instanceof Uint8Array) return m.data
+        if (typeof m.data === `string`) return encoder.encode(m.data)
+        return encoder.encode(JSON.stringify(m.data))
+      })
+      const totalSize = chunks.reduce((sum, c) => sum + c.length, 0)
+      const concatenated = new Uint8Array(totalSize)
+      let offset = 0
+      for (const chunk of chunks) {
+        concatenated.set(chunk, offset)
+        offset += chunk.length
+      }
+      body = concatenated as unknown as BodyInit
+    }
 
     // Build headers for idempotent append
     const headers: Record<string, string> = {
@@ -210,15 +293,17 @@ export class IdempotentProducer {
     // Combine signals
     const signals: Array<AbortSignal> = []
     if (this.#signal) signals.push(this.#signal)
-    if (options?.signal) signals.push(options.signal)
+    for (const msg of batch) {
+      if (msg.signal) signals.push(msg.signal)
+    }
     const combinedSignal =
       signals.length > 0 ? AbortSignal.any(signals) : undefined
 
-    // Make the request directly to the stream URL
+    // Make the request
     const response = await fetch(this.#stream.url, {
       method: `POST`,
       headers,
-      body: encoded,
+      body,
       signal: combinedSignal,
     })
 
