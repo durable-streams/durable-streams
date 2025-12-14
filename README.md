@@ -194,9 +194,11 @@ const stream = await DurableStream.create({
   contentType: "application/json",
 })
 
-// Create an idempotent producer with callbacks for monitoring
+// Create an idempotent producer with pipelining for high throughput
 const producer = new IdempotentProducer({
   stream,
+  maxBatchBytes: 1024 * 1024, // Flush when batch reaches 1MB (default)
+  maxInFlight: 4, // Up to 4 batches in-flight concurrently (default)
   onBatchAck: (result, count) => {
     metrics.increment("events_sent", count)
   },
@@ -220,13 +222,14 @@ console.log(`All sent, last acked: ${producer.state.lastAckedSequence}`)
 
 Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
 
-- Automatically batches multiple appends for high throughput
-- Retries failed batches with exponential backoff
-- Tracks sequence numbers per batch for duplicate detection
-- Server detects and ignores duplicate sequences (safe retries)
-- Supports zombie fencing via epochs (prevents stale producers from writing)
-- Provides `onBatchAck` and `onError` callbacks for monitoring
-- `flush()` method to wait for all pending writes
+- **Batches** multiple appends and flushes when byte threshold is reached
+- **Pipelines** up to 4 batches in-flight concurrently (server reorders as needed)
+- **Retries** failed batches with exponential backoff
+- **Tracks** sequence numbers per batch for duplicate detection
+- **Ignores** duplicate sequences on the server (safe retries)
+- **Fences** zombie producers via epochs (prevents stale producers from writing)
+- **Provides** `onBatchAck` and `onError` callbacks for monitoring
+- **Flushes** via `flush()` method to wait for all pending writes
 
 Use `IdempotentProducer` when data integrity matters (payments, orders, events). Use simple `append()` for development, testing, or when duplicates are acceptable at the application level.
 
