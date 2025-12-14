@@ -68,6 +68,20 @@ export interface IdempotentProducerOptions {
   backoffOptions?: Partial<BackoffOptions>
 
   /**
+   * Maximum batch size in bytes before triggering a flush.
+   * When accumulated message bytes exceed this threshold, a batch is sent immediately.
+   * Defaults to 1MB (1048576 bytes).
+   */
+  maxBatchBytes?: number
+
+  /**
+   * Maximum number of batches that can be in-flight concurrently.
+   * Higher values increase throughput but use more memory.
+   * Defaults to 4.
+   */
+  maxInFlight?: number
+
+  /**
    * Called when a batch is successfully acknowledged.
    * Useful for metrics and monitoring without blocking.
    */
@@ -91,13 +105,38 @@ export interface IdempotentAppendOptions {
 }
 
 /**
+ * Default max batch size in bytes (1MB).
+ */
+const DEFAULT_MAX_BATCH_BYTES = 1024 * 1024
+
+/**
+ * Maximum allowed in-flight batches.
+ * The server buffers up to 4 out-of-order batches, so max 5 in-flight is safe.
+ */
+const MAX_IN_FLIGHT_LIMIT = 5
+
+/**
+ * Default number of in-flight batches.
+ */
+const DEFAULT_MAX_IN_FLIGHT = 4
+
+/**
  * Queued message for batching.
  */
 interface QueuedMessage {
   data: unknown
+  dataBytes: number // Pre-computed size for byte tracking
   signal?: AbortSignal
   resolve: (result: IdempotentAppendResult) => void
   reject: (error: Error) => void
+}
+
+/**
+ * A batch ready to send with its assigned sequence number.
+ */
+interface PreparedBatch {
+  messages: Array<QueuedMessage>
+  sequence: number
 }
 
 /**
@@ -156,6 +195,8 @@ export class IdempotentProducer {
   readonly #fetchClient: typeof fetch
   readonly #onBatchAck?: BatchAckCallback
   readonly #onError?: BatchErrorCallback
+  readonly #maxBatchBytes: number
+  readonly #maxInFlight: number
 
   #producerId?: string
   #epoch?: number
@@ -165,8 +206,9 @@ export class IdempotentProducer {
   #fenced = false
 
   // Batching infrastructure
-  #queue: queueAsPromised<Array<QueuedMessage>>
+  #queue: queueAsPromised<PreparedBatch>
   #buffer: Array<QueuedMessage> = []
+  #bufferBytes = 0
 
   // Flush support
   #flushResolvers: Array<() => void> = []
@@ -177,6 +219,12 @@ export class IdempotentProducer {
     this.#signal = options.signal
     this.#onBatchAck = options.onBatchAck
     this.#onError = options.onError
+    this.#maxBatchBytes = options.maxBatchBytes ?? DEFAULT_MAX_BATCH_BYTES
+    // Cap maxInFlight at 5 (server buffers up to 4 out-of-order batches)
+    this.#maxInFlight = Math.min(
+      options.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT,
+      MAX_IN_FLIGHT_LIMIT
+    )
 
     // Create fetch client with backoff
     const backoffOptions = {
@@ -187,8 +235,8 @@ export class IdempotentProducer {
     const fetchWithBackoff = createFetchWithBackoff(baseFetch, backoffOptions)
     this.#fetchClient = createFetchWithConsumedBody(fetchWithBackoff)
 
-    // Single-worker queue ensures sequential batch processing
-    this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
+    // Queue with concurrency for pipelining multiple in-flight batches
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
   }
 
   /**
@@ -237,6 +285,10 @@ export class IdempotentProducer {
    * Append data with exactly-once semantics.
    *
    * Multiple append() calls are automatically batched together for efficiency.
+   * Batches are sent when:
+   * - Buffer size exceeds maxBatchBytes threshold
+   * - The queue has capacity for more in-flight batches
+   *
    * Failed batches are automatically retried with exponential backoff.
    * Safe to retry on network errors - the server detects and ignores duplicates.
    *
@@ -260,21 +312,60 @@ export class IdempotentProducer {
       )
     }
 
+    // Calculate byte size of data
+    const dataBytes = this.#estimateBytes(body)
+
     return new Promise<IdempotentAppendResult>((resolve, reject) => {
       this.#buffer.push({
         data: body,
+        dataBytes,
         signal: options?.signal,
         resolve,
         reject,
       })
+      this.#bufferBytes += dataBytes
 
-      // If queue is idle, send immediately
-      if (this.#queue.idle()) {
-        const batch = this.#buffer.splice(0)
-        this.#queue.push(batch).catch((err) => {
-          for (const msg of batch) msg.reject(err)
-        })
+      // Flush if buffer exceeds byte threshold
+      if (this.#bufferBytes >= this.#maxBatchBytes) {
+        this.#flushBuffer()
+      } else if (this.#queue.idle()) {
+        // Queue is idle - flush immediately to avoid latency
+        this.#flushBuffer()
       }
+    })
+  }
+
+  /**
+   * Estimate byte size of data.
+   */
+  #estimateBytes(data: unknown): number {
+    if (data instanceof Uint8Array) {
+      return data.length
+    }
+    if (typeof data === `string`) {
+      // UTF-8 estimate: 1-4 bytes per char, use 2 as average
+      return data.length * 2
+    }
+    // JSON: stringify to estimate
+    return JSON.stringify(data).length
+  }
+
+  /**
+   * Flush the current buffer as a prepared batch.
+   */
+  #flushBuffer(): void {
+    if (this.#buffer.length === 0) return
+
+    const messages = this.#buffer.splice(0)
+    this.#bufferBytes = 0
+
+    // Assign sequence number NOW (before sending)
+    const sequence = this.#nextSequence++
+
+    const preparedBatch: PreparedBatch = { messages, sequence }
+
+    this.#queue.push(preparedBatch).catch((err) => {
+      for (const msg of messages) msg.reject(err)
     })
   }
 
@@ -298,17 +389,12 @@ export class IdempotentProducer {
    * ```
    */
   async flush(): Promise<void> {
-    // If nothing pending, return immediately
-    if (this.#buffer.length === 0 && this.#queue.idle()) {
-      return
-    }
+    // Flush any remaining buffer
+    this.#flushBuffer()
 
-    // If there's a buffer but queue is idle, trigger send
-    if (this.#buffer.length > 0 && this.#queue.idle()) {
-      const batch = this.#buffer.splice(0)
-      this.#queue.push(batch).catch((err) => {
-        for (const msg of batch) msg.reject(err)
-      })
+    // If nothing in-flight, return immediately
+    if (this.#queue.idle()) {
+      return
     }
 
     // Wait for queue to drain
@@ -318,30 +404,26 @@ export class IdempotentProducer {
   }
 
   /**
-   * Batch worker - processes batches of messages.
+   * Batch worker - processes prepared batches with assigned sequence numbers.
    */
-  async #batchWorker(batch: Array<QueuedMessage>): Promise<void> {
-    const itemCount = batch.length
+  async #batchWorker(preparedBatch: PreparedBatch): Promise<void> {
+    const { messages, sequence } = preparedBatch
+    const itemCount = messages.length
 
     try {
-      const result = await this.#sendBatch(batch)
+      const result = await this.#sendBatch(messages, sequence)
 
       // Call onBatchAck callback
       this.#onBatchAck?.(result, itemCount)
 
       // Resolve all messages in the batch with the same result
-      for (const msg of batch) {
+      for (const msg of messages) {
         msg.resolve(result)
       }
 
-      // Send accumulated batch if any
-      if (this.#buffer.length > 0) {
-        const nextBatch = this.#buffer.splice(0)
-        this.#queue.push(nextBatch).catch((err) => {
-          for (const msg of nextBatch) msg.reject(err)
-        })
-      } else {
-        // No more pending - resolve flush waiters
+      // Check if we should resolve flush waiters
+      // (only when queue is idle AND buffer is empty)
+      if (this.#queue.idle() && this.#buffer.length === 0) {
         this.#resolveFlushWaiters()
       }
     } catch (error) {
@@ -349,7 +431,7 @@ export class IdempotentProducer {
       this.#onError?.(error as Error, itemCount)
 
       // Reject current batch
-      for (const msg of batch) {
+      for (const msg of messages) {
         msg.reject(error as Error)
       }
 
@@ -362,10 +444,13 @@ export class IdempotentProducer {
           msg.reject(error)
         }
         this.#buffer = []
+        this.#bufferBytes = 0
       }
 
-      // Resolve flush waiters (even on error)
-      this.#resolveFlushWaiters()
+      // Resolve flush waiters (even on error) if queue is now idle
+      if (this.#queue.idle() && this.#buffer.length === 0) {
+        this.#resolveFlushWaiters()
+      }
 
       throw error
     }
@@ -383,9 +468,12 @@ export class IdempotentProducer {
 
   /**
    * Send a batch of messages as a single POST request.
+   * @param batch - The messages to send
+   * @param sequence - The pre-assigned sequence number for this batch
    */
   async #sendBatch(
-    batch: Array<QueuedMessage>
+    batch: Array<QueuedMessage>,
+    sequence: number
   ): Promise<IdempotentAppendResult> {
     if (batch.length === 0) {
       return { success: true, duplicate: false, statusCode: 200 }
@@ -420,10 +508,11 @@ export class IdempotentProducer {
     }
 
     // Build headers for idempotent append
+    // Sequence is pre-assigned when batch is created, enabling pipelining
     const headers: Record<string, string> = {
       "content-type": contentType,
       [STREAM_PRODUCER_ID_HEADER]: this.#producerId ?? `?`,
-      "Stream-Seq": String(this.#nextSequence),
+      "Stream-Seq": String(sequence),
     }
 
     // Include epoch header
@@ -451,7 +540,7 @@ export class IdempotentProducer {
     })
 
     // Parse response
-    return this.#handleResponse(response)
+    return this.#handleResponse(response, sequence)
   }
 
   /**
@@ -506,8 +595,13 @@ export class IdempotentProducer {
 
   /**
    * Handle the response from an idempotent append.
+   * @param response - The HTTP response
+   * @param _sequence - The sequence number that was sent (unused, for future debugging)
    */
-  #handleResponse(response: Response): IdempotentAppendResult {
+  #handleResponse(
+    response: Response,
+    _sequence: number
+  ): IdempotentAppendResult {
     const status = response.status
 
     // Extract headers
@@ -531,10 +625,10 @@ export class IdempotentProducer {
     }
 
     // Handle different response codes
+    // Note: sequence is pre-assigned when batch is created, not incremented here
     switch (status) {
       case 200: {
         // Success - committed
-        this.#nextSequence++
         return {
           success: true,
           duplicate: false,
@@ -545,7 +639,6 @@ export class IdempotentProducer {
 
       case 202: {
         // Accepted - buffered for out-of-order handling
-        this.#nextSequence++
         return {
           success: true,
           duplicate: false,
@@ -557,7 +650,6 @@ export class IdempotentProducer {
 
       case 204: {
         // Duplicate - already committed, idempotent success
-        // Don't increment sequence - it was already counted
         return {
           success: true,
           duplicate: true,
@@ -618,5 +710,7 @@ export class IdempotentProducer {
     this.#lastAckedSequence = -1
     this.#initialized = false
     this.#fenced = false
+    this.#buffer = []
+    this.#bufferBytes = 0
   }
 }
