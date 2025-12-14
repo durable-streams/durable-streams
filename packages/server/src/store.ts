@@ -298,23 +298,28 @@ export class StreamStore {
     // Duplicate detection
     if (sequence <= producer.lastSequence) {
       // This is a duplicate - return success without writing
+      // Use 204 No Content to indicate success with no new data
       producer.lastActivityAt = Date.now()
       return {
         success: true,
         duplicate: true,
         producerState: producer,
-        statusCode: 200,
+        statusCode: 204,
       }
     }
 
     // Expected sequence - write immediately
     if (sequence === expectedSequence) {
-      const message = this.appendToStream(stream, data)
+      let message = this.appendToStream(stream, data)
       producer.lastSequence = sequence
       producer.lastActivityAt = Date.now()
 
       // Check if we can flush pending batches
-      this.flushPendingBatches(producer, stream)
+      // Use final message offset if any pending batches were flushed
+      const lastFlushed = this.flushPendingBatches(producer, stream)
+      if (lastFlushed) {
+        message = lastFlushed
+      }
 
       // Notify long-polls
       this.notifyLongPolls(path)
@@ -437,26 +442,34 @@ export class StreamStore {
     data: Uint8Array
   ): IdempotentAppendResult {
     const producerKey = this.getProducerKey(producerId, path)
-    let producer = this.producers.get(producerKey)
+    const producer = this.producers.get(producerKey)
 
     if (!producer) {
-      // Create a new producer with this ID
-      producer = {
-        producerId,
-        streamPath: path,
-        epoch: 0,
-        lastSequence: -1,
-        pendingBatches: [],
-        lastActivityAt: Date.now(),
+      // Producer doesn't exist - return UNKNOWN_PRODUCER error
+      return {
+        success: false,
+        duplicate: false,
+        producerState: {
+          producerId,
+          streamPath: path,
+          epoch: 0,
+          lastSequence: -1,
+          pendingBatches: [],
+          lastActivityAt: Date.now(),
+        },
+        error: {
+          error: `UNKNOWN_PRODUCER`,
+          message: `Producer ${producerId} not found for stream ${path}`,
+        },
+        statusCode: 404,
       }
-      this.producers.set(producerKey, producer)
-    } else {
-      // Bump epoch and reset sequence
-      producer.epoch++
-      producer.lastSequence = -1
-      producer.pendingBatches = []
-      producer.lastActivityAt = Date.now()
     }
+
+    // Bump epoch and reset sequence
+    producer.epoch++
+    producer.lastSequence = -1
+    producer.pendingBatches = []
+    producer.lastActivityAt = Date.now()
 
     // Empty body is allowed for epoch bump only
     // Check if data is effectively empty (just [] for JSON)
@@ -487,20 +500,26 @@ export class StreamStore {
 
   /**
    * Flush pending batches that are now ready to write.
+   * Returns the last message written, if any.
    */
-  private flushPendingBatches(producer: ProducerState, stream: Stream): void {
+  private flushPendingBatches(
+    producer: ProducerState,
+    stream: Stream
+  ): Message | undefined {
+    let lastMessage: Message | undefined
     while (producer.pendingBatches.length > 0) {
       const nextPending = producer.pendingBatches[0]!
       if (nextPending.sequence === producer.lastSequence + 1) {
         // This batch is ready to write
         producer.pendingBatches.shift()
-        this.appendToStream(stream, nextPending.data)
+        lastMessage = this.appendToStream(stream, nextPending.data)
         producer.lastSequence = nextPending.sequence
       } else {
         // Gap still exists
         break
       }
     }
+    return lastMessage
   }
 
   /**

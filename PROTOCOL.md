@@ -282,26 +282,25 @@ ProducerState {
 
 On each incoming batch with idempotent headers:
 
-1. **Expected sequence**: If `incoming_seq == last_sequence + 1`, write the batch and advance `last_sequence`
-2. **Duplicate**: If `incoming_seq <= last_sequence`, return success without writing (idempotent)
+1. **Expected sequence**: If `incoming_seq == last_sequence + 1`, write the batch and advance `last_sequence`. Return `200 OK`.
+2. **Duplicate**: If `incoming_seq <= last_sequence`, return `204 No Content` without writing (idempotent success - not an error)
 3. **Future sequence**: If `incoming_seq > last_sequence + 1`:
    - If fewer than 4 batches pending, buffer the batch and return `202 Accepted`
    - Otherwise, return `409 Conflict` with error code `OUT_OF_ORDER_SEQUENCE`
+
+#### Response Codes (Idempotent Mode)
+
+- `200 OK`: Batch successfully written to stream
+- `202 Accepted`: Out-of-order batch buffered for later writing
+- `204 No Content`: Duplicate batch detected (idempotent success - no new data written)
+- `404 Not Found`: Unknown producer (for epoch bump requests only)
+- `409 Conflict`: Sequence or epoch conflict (see error responses below)
 
 #### Error Responses (Idempotent Mode)
 
 Servers **MUST** return appropriate error responses for idempotent producer errors:
 
 **409 Conflict** with JSON body:
-
-```json
-{
-  "error": "DUPLICATE_SEQUENCE",
-  "message": "Sequence 5 has already been committed",
-  "expected_sequence": 6,
-  "last_sequence": 5
-}
-```
 
 ```json
 {
@@ -319,6 +318,8 @@ Servers **MUST** return appropriate error responses for idempotent producer erro
   "current_epoch": 1
 }
 ```
+
+**404 Not Found** with JSON body:
 
 ```json
 {

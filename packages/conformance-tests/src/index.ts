@@ -3265,7 +3265,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Should succeed (idempotent) but data shouldn't be written again
-      expect(retry.status).toBe(200)
+      // 204 No Content indicates success with no new data written
+      expect(retry.status).toBe(204)
       expect(retry.headers.get(`Stream-Acked-Seq`)).toBe(`0`)
 
       // Verify only one message was written

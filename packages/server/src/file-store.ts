@@ -707,19 +707,20 @@ export class FileBackedStreamStore {
     // Duplicate detection
     if (sequence <= producer.lastSequence) {
       // This is a duplicate - return success without writing
+      // Use 204 No Content to indicate success with no new data
       producer.lastActivityAt = Date.now()
       this.saveProducerState(producer)
       return {
         success: true,
         duplicate: true,
         producerState: producer,
-        statusCode: 200,
+        statusCode: 204,
       }
     }
 
     // Expected sequence - write immediately
     if (sequence === expectedSequence) {
-      const message = await this.appendToStreamInternal(
+      let message = await this.appendToStreamInternal(
         streamPath,
         streamMeta,
         data
@@ -728,7 +729,11 @@ export class FileBackedStreamStore {
       producer.lastActivityAt = Date.now()
 
       // Check if we can flush pending batches
-      await this.flushPendingBatches(producer, streamPath)
+      // Use final message offset if any pending batches were flushed
+      const lastFlushed = await this.flushPendingBatches(producer, streamPath)
+      if (lastFlushed) {
+        message = lastFlushed
+      }
 
       // Save producer state
       this.saveProducerState(producer)
@@ -865,26 +870,33 @@ export class FileBackedStreamStore {
       | ProducerMetadata
       | undefined
 
-    let producer: ProducerState
-
     if (!existingMeta) {
-      // Create a new producer with this ID
-      producer = {
-        producerId,
-        streamPath,
-        epoch: 0,
-        lastSequence: -1,
-        pendingBatches: [],
-        lastActivityAt: Date.now(),
+      // Producer doesn't exist - return UNKNOWN_PRODUCER error
+      return {
+        success: false,
+        duplicate: false,
+        producerState: {
+          producerId,
+          streamPath,
+          epoch: 0,
+          lastSequence: -1,
+          pendingBatches: [],
+          lastActivityAt: Date.now(),
+        },
+        error: {
+          error: `UNKNOWN_PRODUCER`,
+          message: `Producer ${producerId} not found for stream ${streamPath}`,
+        },
+        statusCode: 404,
       }
-    } else {
-      // Bump epoch and reset sequence
-      producer = this.producerMetaToState(existingMeta)
-      producer.epoch++
-      producer.lastSequence = -1
-      producer.pendingBatches = []
-      producer.lastActivityAt = Date.now()
     }
+
+    // Bump epoch and reset sequence
+    const producer = this.producerMetaToState(existingMeta)
+    producer.epoch++
+    producer.lastSequence = -1
+    producer.pendingBatches = []
+    producer.lastActivityAt = Date.now()
 
     // Save updated producer state
     this.saveProducerState(producer)
@@ -988,11 +1000,13 @@ export class FileBackedStreamStore {
 
   /**
    * Flush pending batches that are now ready to write.
+   * Returns the last message written, if any.
    */
   private async flushPendingBatches(
     producer: ProducerState,
     streamPath: string
-  ): Promise<void> {
+  ): Promise<Message | undefined> {
+    let lastMessage: Message | undefined
     while (producer.pendingBatches.length > 0) {
       const nextPending = producer.pendingBatches[0]!
       if (nextPending.sequence === producer.lastSequence + 1) {
@@ -1002,7 +1016,7 @@ export class FileBackedStreamStore {
         // Re-fetch stream metadata (may have changed)
         const streamKey = `stream:${streamPath}`
         const streamMeta = this.db.get(streamKey) as StreamMetadata
-        await this.appendToStreamInternal(
+        lastMessage = await this.appendToStreamInternal(
           streamPath,
           streamMeta,
           nextPending.data
@@ -1013,6 +1027,7 @@ export class FileBackedStreamStore {
         break
       }
     }
+    return lastMessage
   }
 
   /**

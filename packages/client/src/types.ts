@@ -700,9 +700,9 @@ export interface StreamResponse<TJson = unknown> {
 
 /**
  * Error codes for idempotent producer operations.
+ * Note: Duplicates are NOT errors - they return success with duplicate: true.
  */
 export type IdempotentProducerErrorCode =
-  | `DUPLICATE_SEQUENCE`
   | `OUT_OF_ORDER_SEQUENCE`
   | `PRODUCER_FENCED`
   | `UNKNOWN_PRODUCER`
@@ -737,32 +737,6 @@ export interface IdempotentAppendResult {
    * HTTP status code from the response.
    */
   statusCode: number
-}
-
-/**
- * Options for creating an idempotent producer.
- */
-export interface IdempotentProducerOptions {
-  /**
-   * The DurableStream to produce to.
-   */
-  stream: unknown // Will be DurableStream - circular ref avoided
-
-  /**
-   * Content type for appends.
-   * If not specified, uses the stream's content type.
-   */
-  contentType?: string
-
-  /**
-   * AbortSignal for operations.
-   */
-  signal?: AbortSignal
-
-  /**
-   * Custom fetch implementation.
-   */
-  fetch?: typeof globalThis.fetch
 }
 
 /**
