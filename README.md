@@ -491,6 +491,12 @@ await server.start()
 
 See [@durable-streams/server](./packages/server) for more details.
 
+### Community implementations
+
+**Go**
+
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation that has full coverage of the conformance test suite.
+
 ## CLI Tool
 
 ```bash
