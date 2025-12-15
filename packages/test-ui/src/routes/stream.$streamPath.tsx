@@ -157,11 +157,6 @@ function StreamViewer() {
       {error && <div className="error">{error}</div>}
       <div className="header">
         <h2>{decodeURIComponent(streamPath)}</h2>
-        {typers.length > 0 && (
-          <span className="typing-indicator">
-            {typers.map((t) => t.userId.slice(0, 8)).join(`, `)} typing...
-          </span>
-        )}
       </div>
       <div className="messages" ref={parentRef}>
         {messages.length === 0 && (
@@ -223,23 +218,37 @@ function StreamViewer() {
         <div ref={messagesEndRef} />
       </div>
       {!isRegistryStream && (
-        <div className="write-section">
-          <textarea
-            placeholder="Type your message (Shift+Enter for new line)..."
-            value={writeInput}
-            onChange={(e) => {
-              setWriteInput(e.target.value)
-              startTyping()
-            }}
-            onKeyPress={(e) => {
-              if (e.key === `Enter` && !e.shiftKey) {
-                e.preventDefault()
-                void writeToStream()
-              }
-            }}
-          />
-          <button onClick={writeToStream}>▸ Send</button>
-        </div>
+        <>
+          {typers.length > 0 && (
+            <div
+              style={{
+                padding: `8px 16px`,
+                fontSize: `12px`,
+                color: `var(--text-dim)`,
+                fontStyle: `italic`,
+              }}
+            >
+              {typers.map((t) => t.userId.slice(0, 8)).join(`, `)} typing...
+            </div>
+          )}
+          <div className="write-section">
+            <textarea
+              placeholder="Type your message (Shift+Enter for new line)..."
+              value={writeInput}
+              onChange={(e) => {
+                setWriteInput(e.target.value)
+                startTyping()
+              }}
+              onKeyPress={(e) => {
+                if (e.key === `Enter` && !e.shiftKey) {
+                  e.preventDefault()
+                  void writeToStream()
+                }
+              }}
+            />
+            <button onClick={writeToStream}>▸ Send</button>
+          </div>
+        </>
       )}
     </div>
   )
