@@ -16,6 +16,11 @@ const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
+// Idempotent producer headers (Protocol Section 5.2.1)
+const STREAM_PRODUCER_ID_HEADER = `Stream-Producer-Id`
+const STREAM_PRODUCER_EPOCH_HEADER = `Stream-Producer-Epoch`
+const STREAM_ACKED_SEQ_HEADER = `Stream-Acked-Seq`
+
 // SSE control event fields (Protocol Section 5.7)
 const SSE_OFFSET_FIELD = `streamNextOffset`
 const SSE_CURSOR_FIELD = `streamCursor`
@@ -189,11 +194,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Producer-Id, Stream-Producer-Epoch`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Producer-Id, Stream-Producer-Epoch, Stream-Acked-Seq, etag, content-type`
     )
 
     // Handle CORS preflight
@@ -629,7 +634,29 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
+    // Idempotent producer headers
+    const producerId = req.headers[STREAM_PRODUCER_ID_HEADER.toLowerCase()] as
+      | string
+      | undefined
+    const producerEpoch = req.headers[
+      STREAM_PRODUCER_EPOCH_HEADER.toLowerCase()
+    ] as string | undefined
+
     const body = await this.readBody(req)
+
+    // Check for idempotent producer mode
+    if (producerId !== undefined) {
+      await this.handleIdempotentAppend(
+        path,
+        body,
+        contentType,
+        producerId,
+        producerEpoch,
+        seq,
+        res
+      )
+      return
+    }
 
     if (body.length === 0) {
       res.writeHead(400, { "content-type": `text/plain` })
@@ -652,6 +679,107 @@ export class DurableStreamTestServer {
     res.writeHead(200, {
       [STREAM_OFFSET_HEADER]: message.offset,
     })
+    res.end()
+  }
+
+  /**
+   * Handle idempotent append with producer ID and sequence tracking.
+   */
+  private async handleIdempotentAppend(
+    path: string,
+    body: Uint8Array,
+    contentType: string | undefined,
+    producerId: string,
+    producerEpoch: string | undefined,
+    seq: string | undefined,
+    res: ServerResponse
+  ): Promise<void> {
+    // For idempotent mode, we need either:
+    // 1. producerId = '?' (new producer registration)
+    // 2. producerEpoch = '?' (epoch bump)
+    // 3. Both producerEpoch and seq (normal append)
+    if (producerId !== `?` && producerEpoch !== `?`) {
+      // Normal idempotent append - need epoch and sequence
+      if (producerEpoch === undefined) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(
+          `Stream-Producer-Epoch header is required for idempotent append`
+        )
+        return
+      }
+      if (seq === undefined) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Stream-Seq header is required for idempotent append`)
+        return
+      }
+    }
+
+    // For new producer registration or normal append with data, body is required
+    // Exception: epoch bump with '?' allows empty body
+    if (producerEpoch !== `?` && body.length === 0) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Empty body`)
+      return
+    }
+
+    // Content-Type is required for appends with data
+    if (producerEpoch !== `?` && !contentType) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Content-Type header is required`)
+      return
+    }
+
+    // Parse sequence number (required except for epoch bump)
+    let sequence = 0
+    if (producerEpoch !== `?`) {
+      sequence = parseInt(seq!, 10)
+      if (isNaN(sequence) || sequence < 0) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-Seq value for idempotent append`)
+        return
+      }
+    }
+
+    // Call idempotentAppend on the store
+    const result = await Promise.resolve(
+      this.store.idempotentAppend(path, body, {
+        producerId,
+        producerEpoch: producerEpoch ?? 0,
+        sequence,
+        contentType,
+      })
+    )
+
+    // Build response headers
+    const headers: Record<string, string> = {
+      [STREAM_PRODUCER_ID_HEADER]: result.producerState.producerId,
+      [STREAM_PRODUCER_EPOCH_HEADER]: String(result.producerState.epoch),
+      [STREAM_ACKED_SEQ_HEADER]: String(result.producerState.lastSequence),
+    }
+
+    // Add offset if message was written
+    if (result.message) {
+      headers[STREAM_OFFSET_HEADER] = result.message.offset
+    } else if (result.success) {
+      // For duplicates or epoch bumps, get current stream offset
+      const stream = this.store.get(path)
+      if (stream) {
+        headers[STREAM_OFFSET_HEADER] = stream.currentOffset
+      }
+    }
+
+    // Handle error responses
+    if (!result.success && result.error) {
+      res.writeHead(result.statusCode, {
+        "content-type": `application/json`,
+        ...headers,
+      })
+      res.end(JSON.stringify(result.error))
+      return
+    }
+
+    // Success response
+    res.writeHead(result.statusCode, headers)
     res.end()
   }
 

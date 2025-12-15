@@ -3132,4 +3132,425 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(data.length).toBe(4)
     })
   })
+
+  // ===========================================================================
+  // Idempotent Producer Tests (Protocol Section 5.2.1)
+  // ===========================================================================
+  describe(`Idempotent Producer`, () => {
+    test(`should register new producer with Stream-Producer-Id: ?`, async () => {
+      const streamPath = `/v1/stream/idempotent-new-producer-${Date.now()}`
+
+      // Create stream first
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register new producer with first append
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `first` }]),
+      })
+
+      expect(response.status).toBe(200)
+
+      // Should return producer ID, epoch, and acked sequence
+      const producerId = response.headers.get(`Stream-Producer-Id`)
+      const producerEpoch = response.headers.get(`Stream-Producer-Epoch`)
+      const ackedSeq = response.headers.get(`Stream-Acked-Seq`)
+      const offset = response.headers.get(`Stream-Next-Offset`)
+
+      expect(producerId).toBeTruthy()
+      expect(producerId).not.toBe(`?`)
+      expect(producerEpoch).toBe(`0`)
+      expect(ackedSeq).toBe(`0`)
+      expect(offset).toBeTruthy()
+    })
+
+    test(`should accept sequential appends with correct sequence numbers`, async () => {
+      const streamPath = `/v1/stream/idempotent-sequential-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ seq: 0 }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Send seq 1
+      const resp1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `1`,
+        },
+        body: JSON.stringify([{ seq: 1 }]),
+      })
+
+      expect(resp1.status).toBe(200)
+      expect(resp1.headers.get(`Stream-Acked-Seq`)).toBe(`1`)
+
+      // Send seq 2
+      const resp2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `2`,
+        },
+        body: JSON.stringify([{ seq: 2 }]),
+      })
+
+      expect(resp2.status).toBe(200)
+      expect(resp2.headers.get(`Stream-Acked-Seq`)).toBe(`2`)
+
+      // Verify data was written in order
+      const readResp = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await readResp.json()
+      expect(data).toEqual([{ seq: 0 }, { seq: 1 }, { seq: 2 }])
+    })
+
+    test(`should detect and ignore duplicate sequences (idempotent retry)`, async () => {
+      const streamPath = `/v1/stream/idempotent-duplicate-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `original` }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Retry the same sequence (simulating network retry)
+      const retry = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `duplicate` }]),
+      })
+
+      // Should succeed (idempotent) but data shouldn't be written again
+      // 204 No Content indicates success with no new data written
+      expect(retry.status).toBe(204)
+      expect(retry.headers.get(`Stream-Acked-Seq`)).toBe(`0`)
+
+      // Verify only one message was written
+      const readResp = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await readResp.json()
+      expect(data).toEqual([{ event: `original` }])
+    })
+
+    test(`should reject out-of-order sequence immediately (Kafka-style)`, async () => {
+      const streamPath = `/v1/stream/idempotent-out-of-order-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer with seq 0
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ seq: 0 }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Send seq 2 (skip seq 1) - should be rejected immediately
+      const resp2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `2`,
+        },
+        body: JSON.stringify([{ seq: 2 }]),
+      })
+
+      expect(resp2.status).toBe(409) // Conflict - out of order
+      const error = await resp2.json()
+      expect(error.error).toBe(`OUT_OF_ORDER_SEQUENCE`)
+      expect(error.expectedSequence).toBe(1)
+      expect(error.lastSequence).toBe(0)
+
+      // Verify only seq 0 was written
+      const readResp = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await readResp.json()
+      expect(data).toEqual([{ seq: 0 }])
+    })
+
+    test(`should reject unknown producer ID`, async () => {
+      const streamPath = `/v1/stream/idempotent-unknown-producer-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to append with unknown producer ID
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `unknown-producer-id`,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `test` }]),
+      })
+
+      expect(response.status).toBe(409)
+      const error = await response.json()
+      expect(error.error).toBe(`UNKNOWN_PRODUCER`)
+    })
+
+    test(`should fence producer with stale epoch (zombie fencing)`, async () => {
+      const streamPath = `/v1/stream/idempotent-epoch-fence-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `first` }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Bump epoch (simulate producer restart)
+      const bump = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `?`,
+        },
+        body: JSON.stringify([]),
+      })
+
+      expect(bump.status).toBe(200)
+      expect(bump.headers.get(`Stream-Producer-Epoch`)).toBe(`1`)
+
+      // Try to append with old epoch (zombie producer)
+      const zombie = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+          "Stream-Seq": `1`,
+        },
+        body: JSON.stringify([{ event: `zombie` }]),
+      })
+
+      expect(zombie.status).toBe(409)
+      const error = await zombie.json()
+      expect(error.error).toBe(`PRODUCER_FENCED`)
+      expect(error.currentEpoch).toBe(1)
+    })
+
+    test(`should require sequence 0 for new producer`, async () => {
+      const streamPath = `/v1/stream/idempotent-seq0-required-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to register with non-zero sequence
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `5`,
+        },
+        body: JSON.stringify([{ event: `test` }]),
+      })
+
+      expect(response.status).toBe(409)
+      const error = await response.json()
+      expect(error.error).toBe(`OUT_OF_ORDER_SEQUENCE`)
+      expect(error.expectedSequence).toBe(0)
+    })
+
+    test(`should require Stream-Producer-Epoch for known producer`, async () => {
+      const streamPath = `/v1/stream/idempotent-epoch-required-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `first` }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Try to append without epoch header
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Seq": `1`,
+        },
+        body: JSON.stringify([{ event: `test` }]),
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should require Stream-Seq for idempotent append`, async () => {
+      const streamPath = `/v1/stream/idempotent-seq-required-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `first` }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Try to append without sequence header
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `0`,
+        },
+        body: JSON.stringify([{ event: `test` }]),
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should allow epoch bump with empty body`, async () => {
+      const streamPath = `/v1/stream/idempotent-epoch-bump-empty-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Register producer
+      const reg = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": `?`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `first` }]),
+      })
+
+      const producerId = reg.headers.get(`Stream-Producer-Id`)!
+
+      // Bump epoch with empty array body
+      const bump = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `?`,
+        },
+        body: JSON.stringify([]),
+      })
+
+      expect(bump.status).toBe(200)
+      expect(bump.headers.get(`Stream-Producer-Id`)).toBe(producerId)
+      expect(bump.headers.get(`Stream-Producer-Epoch`)).toBe(`1`)
+      expect(bump.headers.get(`Stream-Acked-Seq`)).toBe(`-1`) // Reset
+
+      // Should be able to start from seq 0 again
+      const newAppend = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Stream-Producer-Id": producerId,
+          "Stream-Producer-Epoch": `1`,
+          "Stream-Seq": `0`,
+        },
+        body: JSON.stringify([{ event: `after-bump` }]),
+      })
+
+      expect(newAppend.status).toBe(200)
+      expect(newAppend.headers.get(`Stream-Acked-Seq`)).toBe(`0`)
+    })
+  })
 }

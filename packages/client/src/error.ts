@@ -1,4 +1,7 @@
-import type { DurableStreamErrorCode } from "./types"
+import type {
+  DurableStreamErrorCode,
+  IdempotentProducerErrorCode,
+} from "./types"
 
 /**
  * Error thrown for transport/network errors.
@@ -185,5 +188,54 @@ export class InvalidSignalError extends Error {
   constructor() {
     super(`Invalid signal option. It must be an instance of AbortSignal.`)
     this.name = `InvalidSignalError`
+  }
+}
+
+/**
+ * Error thrown for idempotent producer operations.
+ */
+export class IdempotentProducerError extends Error {
+  /**
+   * The error code.
+   */
+  code: IdempotentProducerErrorCode
+
+  /**
+   * HTTP status code.
+   */
+  status: number
+
+  /**
+   * Expected sequence number (for sequence errors).
+   */
+  expectedSequence?: number
+
+  /**
+   * Last committed sequence number (for sequence errors).
+   */
+  lastSequence?: number
+
+  /**
+   * Current epoch (for fencing errors).
+   */
+  currentEpoch?: number
+
+  constructor(
+    message: string,
+    code: IdempotentProducerErrorCode,
+    status: number,
+    details?: {
+      expectedSequence?: number
+      lastSequence?: number
+      currentEpoch?: number
+    }
+  ) {
+    super(message)
+    this.name = `IdempotentProducerError`
+    this.code = code
+    this.status = status
+    this.expectedSequence = details?.expectedSequence
+    this.lastSequence = details?.lastSequence
+    this.currentEpoch = details?.currentEpoch
   }
 }

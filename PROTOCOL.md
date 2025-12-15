@@ -24,6 +24,7 @@ Copyright (c) 2025 ElectricSQL
 5. [HTTP Operations](#5-http-operations)
    - 5.1. [Create Stream](#51-create-stream)
    - 5.2. [Append to Stream](#52-append-to-stream)
+     - 5.2.1. [Idempotent Producer Support](#521-idempotent-producer-support)
    - 5.3. [Delete Stream](#53-delete-stream)
    - 5.4. [Stream Metadata](#54-stream-metadata)
    - 5.5. [Read Stream - Catch-up](#55-read-stream---catch-up)
@@ -192,6 +193,199 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+
+### 5.2.1. Idempotent Producer Support
+
+For applications requiring exactly-once delivery semantics with safe retries, servers **MAY** implement idempotent producer support. This feature enables producers to retry failed requests without risk of duplicate messages being written to the stream.
+
+#### Overview
+
+Idempotent producer support uses server-assigned producer identities and client-managed sequence numbers to detect and handle duplicate writes:
+
+1. **Producer ID**: A unique identifier assigned by the server on first append, identifying the producer session
+2. **Producer Epoch**: A monotonically increasing counter that allows servers to fence "zombie" producers from previous sessions
+3. **Sequence Number**: A per-producer, per-stream counter that increases with each successful append
+
+#### Enabling Idempotent Producers
+
+To use idempotent producer semantics, clients include the `Stream-Producer-Id` header on append requests:
+
+**First append (no producer ID yet):**
+
+```http
+POST {stream-url}
+Content-Type: application/json
+Stream-Producer-Id: ?
+
+[{"event": "created"}]
+```
+
+The special value `?` requests the server to assign a new producer ID. The server responds with:
+
+```http
+HTTP/1.1 200 OK
+Stream-Next-Offset: 0000000000000001_0000000000000042
+Stream-Producer-Id: abc123
+Stream-Producer-Epoch: 0
+Stream-Acked-Seq: 0
+```
+
+**Subsequent appends:**
+
+```http
+POST {stream-url}
+Content-Type: application/json
+Stream-Producer-Id: abc123
+Stream-Producer-Epoch: 0
+Stream-Seq: 1
+
+[{"event": "updated"}]
+```
+
+#### Request Headers (Idempotent Mode)
+
+- `Stream-Producer-Id: <id>` or `Stream-Producer-Id: ?`
+  - The producer's unique identifier. Use `?` to request a new producer ID from the server.
+  - If provided with a known ID, the server validates the producer exists.
+
+- `Stream-Producer-Epoch: <number>` (required when `Stream-Producer-Id` is not `?`)
+  - The producer's current epoch. Used for zombie fencing.
+  - Servers **MUST** reject requests with an epoch lower than the current epoch for that producer.
+
+- `Stream-Seq: <number>` (required when `Stream-Producer-Id` is not `?`)
+  - The sequence number for this batch. **MUST** be a non-negative integer.
+  - In idempotent mode, sequence numbers are **numeric** (not lexicographic as in basic mode).
+  - The first sequence number for a new producer **MUST** be `0`.
+  - Sequence numbers **MUST** increase by exactly 1 for each successful append.
+
+#### Response Headers (Idempotent Mode)
+
+- `Stream-Producer-Id: <id>`: The producer's unique identifier (always returned)
+- `Stream-Producer-Epoch: <number>`: The current epoch for this producer
+- `Stream-Acked-Seq: <number>`: The highest sequence number successfully written
+
+#### Server-Side State Tracking
+
+Servers implementing idempotent producers **MUST** maintain per-producer state:
+
+```
+ProducerState {
+  producer_id: string        // Unique identifier
+  stream_path: string        // Stream this producer writes to
+  epoch: number              // Current epoch for fencing
+  last_sequence: number      // Highest committed sequence (-1 if none)
+}
+```
+
+#### Sequence Number Validation
+
+On each incoming batch with idempotent headers:
+
+1. **Expected sequence**: If `incoming_seq == last_sequence + 1`, write the batch and advance `last_sequence`. Return `200 OK`.
+2. **Duplicate**: If `incoming_seq <= last_sequence`, return `204 No Content` without writing (idempotent success - not an error)
+3. **Out-of-order sequence**: If `incoming_seq > last_sequence + 1`, return `409 Conflict` with error code `OUT_OF_ORDER_SEQUENCE`
+
+Servers **MUST NOT** buffer out-of-order batches. Clients are responsible for ensuring batches are delivered in sequence order. This follows the Kafka idempotent producer model where the client manages ordering.
+
+#### Response Codes (Idempotent Mode)
+
+- `200 OK`: Batch successfully written to stream
+- `204 No Content`: Duplicate batch detected (idempotent success - no new data written)
+- `404 Not Found`: Unknown producer (for epoch bump requests only)
+- `409 Conflict`: Sequence or epoch conflict (see error responses below)
+
+#### Error Responses (Idempotent Mode)
+
+Servers **MUST** return appropriate error responses for idempotent producer errors:
+
+**409 Conflict** with JSON body:
+
+```json
+{
+  "error": "OUT_OF_ORDER_SEQUENCE",
+  "message": "Expected sequence 3, received 7",
+  "expected_sequence": 3,
+  "last_sequence": 2
+}
+```
+
+```json
+{
+  "error": "PRODUCER_FENCED",
+  "message": "Producer epoch 0 is stale, current epoch is 1",
+  "current_epoch": 1
+}
+```
+
+**404 Not Found** with JSON body:
+
+```json
+{
+  "error": "UNKNOWN_PRODUCER",
+  "message": "Producer abc123 not found"
+}
+```
+
+#### Producer Epoch and Zombie Fencing
+
+The epoch mechanism prevents "zombie" producers from corrupting stream data:
+
+1. When a producer requests a new ID with `Stream-Producer-Id: ?`, the server assigns epoch `0`
+2. If a producer needs to re-register (e.g., after restart), it requests a new ID
+3. The old producer ID remains valid but any append with the old epoch is rejected
+
+**Re-registration with existing ID:**
+
+Clients **MAY** re-register an existing producer ID to bump the epoch:
+
+```http
+POST {stream-url}
+Content-Type: application/json
+Stream-Producer-Id: abc123
+Stream-Producer-Epoch: ?
+
+[]
+```
+
+Note: An empty body with `Stream-Producer-Epoch: ?` is a special case that only bumps the epoch and resets the sequence counter without writing data. The server responds with the new epoch:
+
+```http
+HTTP/1.1 200 OK
+Stream-Producer-Id: abc123
+Stream-Producer-Epoch: 1
+Stream-Acked-Seq: -1
+```
+
+After re-registration, the producer starts with sequence `0` again.
+
+#### Interaction with Basic Stream-Seq
+
+Idempotent producer mode (`Stream-Producer-Id`) and basic sequence coordination (`Stream-Seq` without producer ID) are mutually exclusive:
+
+- Servers **MUST** reject requests that include both `Stream-Producer-Id` and `Stream-Seq` without `Stream-Producer-Epoch`
+- Clients **SHOULD** choose one mode and use it consistently
+
+#### Client-Side Ordering (Kafka-style)
+
+Clients are responsible for ensuring batches are acknowledged in sequence order. This follows the Kafka idempotent producer model:
+
+1. Clients **MAY** have multiple in-flight requests, but **MUST** ensure ordering is preserved
+2. If batch N fails while batch N+1 is in-flight:
+   - Client **MUST** wait for batch N+1 to complete
+   - Client **MUST** retry batch N before sending new batches
+   - If batch N's retry succeeds, the server will reject batch N+1 as a duplicate (204) if it was already written, or accept it if it failed
+3. Clients **SHOULD** limit concurrent in-flight requests to 5 per producer for optimal throughput
+
+**Pipelining with ordering**: Clients can achieve high throughput by pipelining requests while maintaining a sliding window of in-flight batches. When a batch fails, the client pauses new sends and retries in order.
+
+#### Producer State Retention
+
+Servers **MAY** expire producer state after a period of inactivity. If a producer attempts to append after its state has expired:
+
+- Server returns `409 Conflict` with `UNKNOWN_PRODUCER` error
+- Client **MUST** re-register with `Stream-Producer-Id: ?`
+
+Servers **SHOULD** retain producer state for at least 7 days of inactivity, but **MAY** use shorter retention periods and **MUST** document their retention policy.
 
 ### 5.3. Delete Stream
 
@@ -552,23 +746,29 @@ This port was selected from the IANA unassigned range 4434-4440. Standalone serv
 
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
-| Field Name           | Status    | Reference     |
-| -------------------- | --------- | ------------- |
-| `Stream-TTL`         | permanent | This document |
-| `Stream-Expires-At`  | permanent | This document |
-| `Stream-Seq`         | permanent | This document |
-| `Stream-Cursor`      | permanent | This document |
-| `Stream-Next-Offset` | permanent | This document |
-| `Stream-Up-To-Date`  | permanent | This document |
+| Field Name              | Status    | Reference     |
+| ----------------------- | --------- | ------------- |
+| `Stream-TTL`            | permanent | This document |
+| `Stream-Expires-At`     | permanent | This document |
+| `Stream-Seq`            | permanent | This document |
+| `Stream-Cursor`         | permanent | This document |
+| `Stream-Next-Offset`    | permanent | This document |
+| `Stream-Up-To-Date`     | permanent | This document |
+| `Stream-Producer-Id`    | permanent | This document |
+| `Stream-Producer-Epoch` | permanent | This document |
+| `Stream-Acked-Seq`      | permanent | This document |
 
 **Descriptions:**
 
 - `Stream-TTL`: Relative time-to-live for streams (seconds)
 - `Stream-Expires-At`: Absolute expiry time for streams (RFC 3339 timestamp)
-- `Stream-Seq`: Writer sequence number for coordination (opaque string)
+- `Stream-Seq`: Writer sequence number for coordination (opaque string or integer in idempotent mode)
 - `Stream-Cursor`: Cursor for CDN collapsing (opaque string)
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
+- `Stream-Producer-Id`: Producer unique identifier for idempotent writes (opaque string, or `?` to request new ID)
+- `Stream-Producer-Epoch`: Producer epoch for zombie fencing (non-negative integer, or `?` to bump epoch)
+- `Stream-Acked-Seq`: Highest sequence number acknowledged by server (integer)
 
 ## 12. References
 

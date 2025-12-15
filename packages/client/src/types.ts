@@ -693,3 +693,81 @@ export interface StreamResponse<TJson = unknown> {
    */
   readonly closed: Promise<void>
 }
+
+// ============================================================================
+// Idempotent Producer Types
+// ============================================================================
+
+/**
+ * Error codes for idempotent producer operations.
+ * Note: Duplicates are NOT errors - they return success with duplicate: true.
+ */
+export type IdempotentProducerErrorCode =
+  | `OUT_OF_ORDER_SEQUENCE`
+  | `PRODUCER_FENCED`
+  | `UNKNOWN_PRODUCER`
+
+/**
+ * Result of an idempotent append operation.
+ */
+export interface IdempotentAppendResult {
+  /**
+   * Whether the operation was successful.
+   */
+  success: boolean
+
+  /**
+   * Whether this was a duplicate (already committed).
+   * Success is still true for duplicates - they're idempotent.
+   */
+  duplicate: boolean
+
+  /**
+   * The last acknowledged sequence number (from Stream-Acked-Seq header).
+   */
+  ackedSeq?: number
+
+  /**
+   * HTTP status code from the response.
+   */
+  statusCode: number
+}
+
+/**
+ * State of an idempotent producer.
+ */
+export interface IdempotentProducerState {
+  /**
+   * The server-assigned producer ID.
+   * Undefined until first append initializes the producer.
+   */
+  producerId?: string
+
+  /**
+   * The current epoch for zombie fencing.
+   * Undefined until first append initializes the producer.
+   */
+  epoch?: number
+
+  /**
+   * The next sequence number to use.
+   * Starts at 0 for new producers.
+   */
+  nextSequence: number
+
+  /**
+   * The last acknowledged sequence number.
+   * -1 if no sequences have been acknowledged.
+   */
+  lastAckedSequence: number
+
+  /**
+   * Whether the producer has been initialized (received producer ID).
+   */
+  initialized: boolean
+
+  /**
+   * Whether the producer has been fenced (stale epoch).
+   */
+  fenced: boolean
+}

@@ -195,6 +195,56 @@ res.subscribeJson(async (batch) => {
 })
 ```
 
+### Exactly-once writes with IdempotentProducer
+
+For production use, wrap your stream with `IdempotentProducer` to get exactly-once delivery guarantees with automatic retries:
+
+```typescript
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
+
+const stream = await DurableStream.create({
+  url: "https://your-server.com/v1/stream/my-stream",
+  contentType: "application/json",
+})
+
+// Create an idempotent producer
+const producer = new IdempotentProducer({
+  stream,
+  onBatchAck: (result, count) => {
+    metrics.increment("events_sent", count)
+  },
+  onError: (error, count) => {
+    logger.error("Batch failed", { error, count })
+    // Could dead-letter, alert, etc.
+  },
+})
+
+// Fire-and-forget - batched automatically, retried on failure
+producer.append({ event: "click", button: "submit" })
+producer.append({ event: "click", button: "cancel" })
+producer.append({ event: "page_view", page: "/home" })
+
+// Wait for all pending to complete (e.g., before shutdown)
+await producer.flush()
+console.log(`All sent, last acked: ${producer.state.lastAckedSequence}`)
+```
+
+**Why use IdempotentProducer?**
+
+Network failures create uncertainty - when a request times out, you don't know if the server received it. Without idempotency, retrying could write the same data twice. The idempotent producer:
+
+- **Low latency** - Messages send immediately when no requests are in-flight
+- **Batches opportunistically** - Groups messages when requests are already in-flight
+- **Retries** failed requests with exponential backoff
+- **Tracks** sequence numbers for duplicate detection
+- **Ignores** duplicates on the server (safe retries)
+- **Fences** zombie producers via epochs (prevents stale producers from writing)
+- **Provides** `onBatchAck` and `onError` callbacks for monitoring
+
+For high-throughput bulk loading, you can tune `maxBatchBytes` (flush threshold, default 1MB) and `maxInFlight` (concurrent batches, default 5). But for typical small/infrequent messages, the defaults prioritize low latency.
+
+Use `IdempotentProducer` when data integrity matters (payments, orders, events). Use simple `append()` for development, testing, or when duplicates are acceptable at the application level.
+
 ## Protocol in 60 Seconds
 
 Here's the protocol in action with raw HTTP:
