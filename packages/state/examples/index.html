@@ -318,7 +318,19 @@
         try {
           const streamUrl = `${SERVER_URL}/v1/stream${streamPath}`
 
-          // Create StreamDB - it will create the stream if needed
+          // Check if stream exists, create it if not
+          try {
+            const testStream = new DurableStream({ url: streamUrl })
+            await testStream.head()
+          } catch {
+            // Stream doesn't exist, create it
+            await DurableStream.create({
+              url: streamUrl,
+              contentType: "application/json",
+            })
+          }
+
+          // Create StreamDB
           db = await createStreamDB({
             streamOptions: {
               url: streamUrl,
