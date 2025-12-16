@@ -86,7 +86,7 @@ describe(`Stream DB`, () => {
 
     // Create a durable stream for writing test data
     const streamPath = `/db/chat-${Date.now()}`
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: `${baseUrl}${streamPath}`,
       contentType: `application/json`,
     })
@@ -154,7 +154,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/update-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -196,7 +196,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/delete-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -267,7 +267,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/unknown-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -310,7 +310,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/live-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -362,7 +362,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/routing-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -414,7 +414,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/repeated-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -481,7 +481,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/interleaved-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -549,7 +549,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/batch-commit-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -619,7 +619,7 @@ describe(`Stream DB`, () => {
       users: { schema: userSchema, type: `user`, primaryKey: `id` },
     })
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: `${baseUrl}/db/subscribe-changes-${Date.now()}`,
       contentType: `application/json`,
     })
@@ -720,7 +720,7 @@ describe(`Stream DB`, () => {
 
     const streamUrl = `${baseUrl}/db/live-batch-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -784,7 +784,7 @@ describe(`Stream DB`, () => {
       },
     })
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: `${baseUrl}/db/primitives-${Date.now()}`,
       contentType: `application/json`,
     })
@@ -1487,7 +1487,7 @@ describe(`Stream DB Actions`, () => {
 
     const streamUrl = `${baseUrl}/db/actions-error-mutate-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -1545,7 +1545,7 @@ describe(`Stream DB Actions`, () => {
 
     const streamUrl = `${baseUrl}/db/actions-error-mutation-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -1619,7 +1619,7 @@ describe(`Stream DB TxId Tracking`, () => {
 
     const streamUrl = `${baseUrl}/db/txid-basic-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -1666,7 +1666,7 @@ describe(`Stream DB TxId Tracking`, () => {
 
     const streamUrl = `${baseUrl}/db/txid-already-seen-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
@@ -1812,7 +1812,7 @@ describe(`Stream DB TxId Tracking`, () => {
 
     const streamUrl = `${baseUrl}/db/txid-concurrent-${Date.now()}`
 
-    await DurableStream.create({
+    const stream = await DurableStream.create({
       url: streamUrl,
       contentType: `application/json`,
     })
