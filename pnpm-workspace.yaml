@@ -1,2 +1,8 @@
 packages:
-  - "packages/*"
+  - packages/*
+  - packages/*/examples
+
+ignoredBuiltDependencies:
+  - "@parcel/watcher"
+  - "@swc/core"
+  - lmdb

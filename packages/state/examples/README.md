@@ -15,7 +15,7 @@ This directory contains single-file HTML examples demonstrating the Durable Stre
 2. **Start the Durable Streams server:**
 
    ```bash
-   # From the monorepo root
+   # From the monorepo root (in a separate terminal)
    pnpm --filter @durable-streams/server dev
    ```
 
@@ -23,21 +23,26 @@ This directory contains single-file HTML examples demonstrating the Durable Stre
 
 ## Running Examples
 
-Simply open any HTML file in your browser:
+We use Vite for fast development:
 
 ```bash
-# From this directory
-open progress-bar.html
-# or
-python3 -m http.server 8080
-# then visit http://localhost:8080/progress-bar.html
+# From this directory (packages/state/examples)
+cd packages/state/examples
+pnpm install
+pnpm dev
 ```
+
+This will:
+
+- Start Vite dev server (usually on http://localhost:5173)
+- Open the example in your browser automatically
+- Hot reload on changes
 
 ## Examples
 
-### progress-bar.html
+### index.html (Background Jobs with Progress Tracking)
 
-**Background Jobs with Progress Tracking**
+**Progress Bar Example**
 
 A demo of the state protocol showing multiple concurrent background jobs with:
 
@@ -77,14 +82,14 @@ Each example demonstrates:
 **"Failed to connect" error:**
 
 - Make sure the Durable Streams server is running on port 4437
-- Check that packages are built with `pnpm build`
+- Check that packages are built with `pnpm build` from the monorepo root
 
-**Import errors:**
+**Vite won't start:**
 
-- Verify you're running from the monorepo with built packages
-- Check that `../../client/dist/index.js` and `../dist/index.js` exist
+- Run `pnpm install` in the examples directory first
+- Make sure the parent packages are built
 
-**CORS errors:**
+**Module resolution errors:**
 
-- The server should have CORS enabled by default
-- If issues persist, try serving the HTML through a local server instead of `file://`
+- Ensure you've run `pnpm install` in the monorepo root
+- The workspace dependencies should resolve automatically

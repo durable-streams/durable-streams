@@ -279,9 +279,9 @@
   </div>
 
   <script type="module">
-    // Import from local packages (assumes running from within the monorepo)
-    import { DurableStream } from '../../client/dist/index.js'
-    import { createStreamDB, createStateSchema } from '../dist/index.js'
+    // Import from workspace packages
+    import { DurableStream } from '@durable-streams/client'
+    import { createStreamDB, createStateSchema } from '@durable-streams/state'
 
     const SERVER_URL = 'http://localhost:4437'
 

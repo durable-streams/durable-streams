@@ -1,0 +1,17 @@
+{
+  "name": "@durable-streams/examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --open",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}
