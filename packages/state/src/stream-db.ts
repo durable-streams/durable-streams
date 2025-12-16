@@ -1,9 +1,14 @@
 import { createCollection, createOptimisticAction } from "@tanstack/db"
+import { DurableStream as DurableStreamClass } from "@durable-streams/client"
 import { isChangeEvent, isControlEvent } from "./types"
 import type { Collection, SyncConfig } from "@tanstack/db"
 import type { ChangeEvent, StateEvent } from "./types"
 import type { StandardSchemaV1 } from "@standard-schema/spec"
-import type { DurableStream, StreamResponse } from "@durable-streams/client"
+import type {
+  DurableStream,
+  DurableStreamOptions,
+  StreamResponse,
+} from "@durable-streams/client"
 
 // ============================================================================
 // Type Definitions
@@ -61,19 +66,15 @@ export type CollectionWithHelpers<T = unknown> = CollectionDefinition<T> &
 /**
  * Stream state definition containing all collections
  */
-export interface StreamStateDefinition {
-  collections: Record<string, CollectionDefinition>
-}
+export type StreamStateDefinition = Record<string, CollectionDefinition>
 
 /**
  * Stream state schema with helper methods for creating change events
  */
 export type StateSchema<T extends Record<string, CollectionDefinition>> = {
-  collections: {
-    [K in keyof T]: CollectionWithHelpers<
-      T[K] extends CollectionDefinition<infer U> ? U : unknown
-    >
-  }
+  [K in keyof T]: CollectionWithHelpers<
+    T[K] extends CollectionDefinition<infer U> ? U : unknown
+  >
 }
 
 /**
@@ -110,8 +111,8 @@ export interface CreateStreamDBOptions<
     never
   >,
 > {
-  /** The durable stream to subscribe to */
-  stream: DurableStream
+  /** Options for creating the durable stream (stream is created lazily on preload) */
+  streamOptions: DurableStreamOptions
   /** The stream state definition */
   state: TDef
   /** Optional factory function to create actions with db and stream context */
@@ -128,17 +129,15 @@ type ExtractCollectionType<T extends CollectionDefinition> =
  * Map collection definitions to TanStack DB Collection types
  */
 type CollectionMap<TDef extends StreamStateDefinition> = {
-  [K in keyof TDef[`collections`]]: Collection<
-    ExtractCollectionType<TDef[`collections`][K]> & object,
-    string
-  >
+  [K in keyof TDef]: Collection<ExtractCollectionType<TDef[K]> & object, string>
 }
 
 /**
  * The StreamDB interface - provides typed access to collections
  */
-export type StreamDB<TDef extends StreamStateDefinition> = CollectionMap<TDef> &
-  StreamDBMethods
+export type StreamDB<TDef extends StreamStateDefinition> = {
+  collections: CollectionMap<TDef>
+} & StreamDBMethods
 
 /**
  * StreamDB with actions
@@ -461,37 +460,96 @@ function createStreamSyncConfig<T extends object>(
 // ============================================================================
 
 /**
- * Reserved collection names that would collide with StreamDB methods
+ * Reserved collection names that would collide with StreamDB properties
+ * (collections are now namespaced, but we still prevent internal name collisions)
  */
-const RESERVED_COLLECTION_NAMES = new Set([`preload`, `close`])
+const RESERVED_COLLECTION_NAMES = new Set([
+  `collections`,
+  `preload`,
+  `close`,
+  `utils`,
+  `actions`,
+])
 
 /**
  * Create helper functions for a collection
  */
 function createCollectionHelpers<T>(
   eventType: string,
-  primaryKey: string
+  primaryKey: string,
+  schema: StandardSchemaV1<T>
 ): CollectionEventHelpers<T> {
   return {
-    insert: ({ key, value, headers }): ChangeEvent<T> => ({
-      type: eventType,
-      key: key ?? String((value as any)[primaryKey]),
-      value,
-      headers: { operation: `insert`, ...headers },
-    }),
-    update: ({ key, value, oldValue, headers }): ChangeEvent<T> => ({
-      type: eventType,
-      key: key ?? String((value as any)[primaryKey]),
-      value,
-      old_value: oldValue,
-      headers: { operation: `update`, ...headers },
-    }),
-    delete: ({ key, oldValue, headers }): ChangeEvent<T> => ({
-      type: eventType,
-      key: key ?? (oldValue ? String((oldValue as any)[primaryKey]) : ``),
-      old_value: oldValue,
-      headers: { operation: `delete`, ...headers },
-    }),
+    insert: ({ key, value, headers }): ChangeEvent<T> => {
+      // Validate value
+      const result = schema[`~standard`].validate(value)
+      if (`issues` in result) {
+        throw new Error(
+          `Validation failed for ${eventType} insert: ${result.issues.map((i) => i.message).join(`, `)}`
+        )
+      }
+
+      return {
+        type: eventType,
+        key: key ?? String((value as any)[primaryKey]),
+        value,
+        headers: { ...headers, operation: `insert` },
+      }
+    },
+    update: ({ key, value, oldValue, headers }): ChangeEvent<T> => {
+      // Validate value
+      const result = schema[`~standard`].validate(value)
+      if (`issues` in result) {
+        throw new Error(
+          `Validation failed for ${eventType} update: ${result.issues.map((i) => i.message).join(`, `)}`
+        )
+      }
+
+      // Optionally validate oldValue if provided
+      if (oldValue !== undefined) {
+        const oldResult = schema[`~standard`].validate(oldValue)
+        if (`issues` in oldResult) {
+          throw new Error(
+            `Validation failed for ${eventType} update (oldValue): ${oldResult.issues.map((i) => i.message).join(`, `)}`
+          )
+        }
+      }
+
+      return {
+        type: eventType,
+        key: key ?? String((value as any)[primaryKey]),
+        value,
+        old_value: oldValue,
+        headers: { ...headers, operation: `update` },
+      }
+    },
+    delete: ({ key, oldValue, headers }): ChangeEvent<T> => {
+      // Optionally validate oldValue if provided
+      if (oldValue !== undefined) {
+        const result = schema[`~standard`].validate(oldValue)
+        if (`issues` in result) {
+          throw new Error(
+            `Validation failed for ${eventType} delete (oldValue): ${result.issues.map((i) => i.message).join(`, `)}`
+          )
+        }
+      }
+
+      // Ensure we have either key or oldValue to derive the key from
+      const finalKey =
+        key ?? (oldValue ? String((oldValue as any)[primaryKey]) : undefined)
+      if (!finalKey) {
+        throw new Error(
+          `Cannot create ${eventType} delete event: must provide either 'key' or 'oldValue' with a ${primaryKey} field`
+        )
+      }
+
+      return {
+        type: eventType,
+        key: finalKey,
+        old_value: oldValue,
+        headers: { ...headers, operation: `delete` },
+      }
+    },
   }
 }
 
@@ -500,19 +558,19 @@ function createCollectionHelpers<T>(
  */
 export function createStateSchema<
   T extends Record<string, CollectionDefinition>,
->(definition: { collections: T }): StateSchema<T> {
+>(collections: T): StateSchema<T> {
   // Validate no reserved collection names
-  for (const name of Object.keys(definition.collections)) {
+  for (const name of Object.keys(collections)) {
     if (RESERVED_COLLECTION_NAMES.has(name)) {
       throw new Error(
-        `Reserved collection name "${name}" - this would collide with StreamDB methods (${Array.from(RESERVED_COLLECTION_NAMES).join(`, `)})`
+        `Reserved collection name "${name}" - this would collide with StreamDB properties (${Array.from(RESERVED_COLLECTION_NAMES).join(`, `)})`
       )
     }
   }
 
   // Validate no duplicate event types
   const typeToCollection = new Map<string, string>()
-  for (const [collectionName, def] of Object.entries(definition.collections)) {
+  for (const [collectionName, def] of Object.entries(collections)) {
     const existing = typeToCollection.get(def.type)
     if (existing) {
       throw new Error(
@@ -524,14 +582,18 @@ export function createStateSchema<
 
   // Enhance collections with helper methods
   const enhancedCollections: any = {}
-  for (const [name, collectionDef] of Object.entries(definition.collections)) {
+  for (const [name, collectionDef] of Object.entries(collections)) {
     enhancedCollections[name] = {
       ...collectionDef,
-      ...createCollectionHelpers(collectionDef.type, collectionDef.primaryKey),
+      ...createCollectionHelpers(
+        collectionDef.type,
+        collectionDef.primaryKey,
+        collectionDef.schema
+      ),
     }
   }
 
-  return { collections: enhancedCollections }
+  return enhancedCollections
 }
 
 /**
@@ -540,27 +602,22 @@ export function createStateSchema<
  * @example
  * ```typescript
  * const stateSchema = createStateSchema({
- *   collections: {
- *     users: { schema: userSchema, type: "user" },
- *     messages: { schema: messageSchema, type: "message" },
- *   },
+ *   users: { schema: userSchema, type: "user", primaryKey: "id" },
+ *   messages: { schema: messageSchema, type: "message", primaryKey: "id" },
  * })
  *
- * // Create change events using schema helpers
- * const insertEvent = stateSchema.collections.users.insert({
- *   key: "123",
- *   value: { name: "Kyle", email: "kyle@example.com" }
- * })
- * await stream.append(insertEvent)
- *
- * // Create a stream DB
+ * // Create a stream DB (stream is created lazily on preload)
  * const db = await createStreamDB({
- *   stream: durableStream,
+ *   streamOptions: {
+ *     url: "https://api.example.com/streams/my-stream",
+ *     contentType: "application/json",
+ *   },
  *   state: stateSchema,
  * })
  *
+ * // preload() creates the stream and loads initial data
  * await db.preload()
- * const user = db.users.get("123")
+ * const user = await db.collections.users.get("123")
  * ```
  */
 export async function createStreamDB<
@@ -576,15 +633,18 @@ export async function createStreamDB<
     ? StreamDB<TDef>
     : StreamDBWithActions<TDef, TActions>
 > {
-  const { stream, state, actions: actionsFactory } = options
+  const { streamOptions, state, actions: actionsFactory } = options
+
+  // Create a stream handle (lightweight, doesn't connect until stream() is called)
+  const stream = new DurableStreamClass(streamOptions)
 
   // Create the event dispatcher
   const dispatcher = new EventDispatcher()
 
   // Create TanStack DB collections for each definition
-  const collections: Record<string, Collection<object, string>> = {}
+  const collectionInstances: Record<string, Collection<object, string>> = {}
 
-  for (const [name, definition] of Object.entries(state.collections)) {
+  for (const [name, definition] of Object.entries(state)) {
     const collection = createCollection({
       id: `stream-db:${name}`,
       schema: definition.schema as StandardSchemaV1<object>,
@@ -601,7 +661,7 @@ export async function createStreamDB<
       gcTime: 0,
     })
 
-    collections[name] = collection
+    collectionInstances[name] = collection
   }
 
   // Stream consumer state (lazy initialization)
@@ -616,7 +676,7 @@ export async function createStreamDB<
     if (consumerStarted) return
     consumerStarted = true
 
-    // Connect to the stream
+    // Start streaming (this is where the connection actually happens)
     streamResponse = await stream.stream<StateEvent>({
       live: `auto`,
       signal: abortController.signal,
@@ -664,7 +724,7 @@ export async function createStreamDB<
 
   // Combine collections with methods
   const db = {
-    ...collections,
+    collections: collectionInstances,
     ...dbMethods,
   } as unknown as StreamDB<TDef>
 

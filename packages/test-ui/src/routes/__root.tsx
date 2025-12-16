@@ -26,7 +26,7 @@ function StreamListItem({ stream }: { stream: StreamMetadata }) {
   const { data: viewers = [] } = useLiveQuery(
     (q) =>
       q
-        .from({ presence: presenceDB.presence })
+        .from({ presence: presenceDB.collections.presence })
         .where(({ presence }) =>
           and(
             eq(presence.streamPath, stream.path),
@@ -40,7 +40,7 @@ function StreamListItem({ stream }: { stream: StreamMetadata }) {
   const { data: typingUsers = [] } = useLiveQuery(
     (q) =>
       q
-        .from({ presence: presenceDB.presence })
+        .from({ presence: presenceDB.collections.presence })
         .where(({ presence }) =>
           and(
             eq(presence.streamPath, stream.path),
@@ -95,7 +95,7 @@ function RootLayout() {
 
   // Query all streams from registry
   const { data: streams = [] } = useLiveQuery((q) =>
-    q.from({ streams: registryDB.streams })
+    q.from({ streams: registryDB.collections.streams })
   )
 
   console.log({ streams })
@@ -115,7 +115,7 @@ function RootLayout() {
       })
 
       // Emit registry insert event
-      const event = registryStateSchema.collections.streams.insert({
+      const event = registryStateSchema.streams.insert({
         key: newStreamPath,
         value: {
           path: newStreamPath,
@@ -148,7 +148,7 @@ function RootLayout() {
       await stream.delete()
 
       // Emit registry delete event
-      const event = registryStateSchema.collections.streams.delete({
+      const event = registryStateSchema.streams.delete({
         key: path,
       })
 

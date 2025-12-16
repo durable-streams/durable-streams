@@ -117,7 +117,7 @@ function StreamViewer() {
   const { data: typers = [] } = useLiveQuery(
     (q) =>
       q
-        .from({ presence: presenceDB.presence })
+        .from({ presence: presenceDB.collections.presence })
         .where(({ presence }) =>
           and(
             eq(presence.streamPath, streamPath),

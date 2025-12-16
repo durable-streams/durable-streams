@@ -44,11 +44,10 @@ const streamMetadataSchema = {
 }
 
 const registryStateSchema = createStateSchema({
-  collections: {
-    streams: {
-      schema: streamMetadataSchema,
-      type: `stream`,
-    },
+  streams: {
+    schema: streamMetadataSchema,
+    type: `stream`,
+    primaryKey: `path`,
   },
 })
 
@@ -89,7 +88,7 @@ export function createRegistryHooks(
 
       const streamName = extractStreamName(event.path)
 
-      const changeEvent = registryStateSchema.collections.streams.insert({
+      const changeEvent = registryStateSchema.streams.insert({
         key: streamName,
         value: {
           path: streamName,
@@ -106,7 +105,7 @@ export function createRegistryHooks(
 
       const streamName = extractStreamName(event.path)
 
-      const changeEvent = registryStateSchema.collections.streams.delete({
+      const changeEvent = registryStateSchema.streams.delete({
         key: streamName,
       })
 

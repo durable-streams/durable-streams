@@ -119,21 +119,17 @@ const presenceSchema = {
 // ============================================================================
 
 export const registryStateSchema = createStateSchema({
-  collections: {
-    streams: {
-      schema: streamMetadataSchema,
-      type: `stream`,
-      primaryKey: `path`,
-    },
+  streams: {
+    schema: streamMetadataSchema,
+    type: `stream`,
+    primaryKey: `path`,
   },
 })
 
 export const presenceStateSchema = createStateSchema({
-  collections: {
-    presence: {
-      schema: presenceSchema,
-      type: `presence`,
-      primaryKey: `sessionId`,
-    },
+  presence: {
+    schema: presenceSchema,
+    type: `presence`,
+    primaryKey: `sessionId`,
   },
 })

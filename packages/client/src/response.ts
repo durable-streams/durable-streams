@@ -737,7 +737,7 @@ export class StreamResponseImpl<
 
         // Parse JSON and flatten arrays (handle empty responses gracefully)
         const text = await response.text()
-        const content = text || `[]` // Default to empty array if no content
+        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
         const parsed = JSON.parse(content) as TJson | Array<TJson>
         pendingItems = Array.isArray(parsed) ? parsed : [parsed]
 
@@ -798,7 +798,7 @@ export class StreamResponseImpl<
 
           // Get response text first (handles empty responses gracefully)
           const text = await response.text()
-          const content = text || `[]` // Default to empty array if no content
+          const content = text.trim() || `[]` // Default to empty array if no content or whitespace
           const parsed = JSON.parse(content) as T | Array<T>
           const items = Array.isArray(parsed) ? parsed : [parsed]
 

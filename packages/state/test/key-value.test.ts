@@ -138,13 +138,13 @@ describe(`Key-Value Store`, () => {
           type: `config`,
           key: `theme`,
           value: `dark`,
-          headers: { operation: `insert` },
+          headers: { operation: `insert` as const },
         },
         {
           type: `config`,
           key: `theme`,
           value: `light`,
-          headers: { operation: `update` },
+          headers: { operation: `update` as const },
         },
       ]
 

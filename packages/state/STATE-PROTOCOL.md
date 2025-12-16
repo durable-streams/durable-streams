@@ -92,8 +92,15 @@ Change messages represent state mutations. They **MUST** contain:
 
 - `type` (string): Entity type discriminator
 - `key` (string): Entity identifier
-- `value` (any JSON value): The new value for the entity
 - `headers` (object): Operation metadata
+
+For `insert` and `update` operations, change messages **MUST** also contain:
+
+- `value` (any JSON value): The new value for the entity
+
+For `delete` operations, change messages **MAY** contain:
+
+- `value` (any JSON value): Typically `null` or omitted
 
 Change messages **MAY** include:
 
@@ -156,9 +163,26 @@ Update operations modify existing entities. The `value` field **MUST** be presen
 
 #### 4.1.3. Delete Operation
 
-Delete operations remove entities. The `value` field **MAY** be present (typically `null` or omitted) for delete operations. The `old_value` field **MAY** be present to preserve the deleted entity's data.
+Delete operations remove entities. The `value` field **MAY** be present (typically `null`) or **MAY** be omitted entirely. The `old_value` field **MAY** be present to preserve the deleted entity's data.
 
-**Example:**
+**Example (value omitted):**
+
+```json
+{
+  "type": "user",
+  "key": "user:123",
+  "old_value": {
+    "name": "Alice",
+    "email": "alice.new@example.com"
+  },
+  "headers": {
+    "operation": "delete",
+    "timestamp": "2025-01-15T10:40:00Z"
+  }
+}
+```
+
+**Example (value null):**
 
 ```json
 {
