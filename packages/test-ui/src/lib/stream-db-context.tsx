@@ -122,7 +122,7 @@ async function createPresenceDB(url: string) {
           const txid = crypto.randomUUID()
           await stream.append(
             presenceStateSchema.presence.delete({
-              oldValue: { sessionId } as PresenceData,
+              key: sessionId,
               headers: { txid },
             })
           )

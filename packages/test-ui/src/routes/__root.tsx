@@ -98,8 +98,6 @@ function RootLayout() {
     q.from({ streams: registryDB.collections.streams })
   )
 
-  console.log({ streams })
-
   const createStream = async () => {
     if (!newStreamPath.trim()) {
       setError(`Stream path cannot be empty`)

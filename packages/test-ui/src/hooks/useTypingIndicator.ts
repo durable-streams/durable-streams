@@ -16,7 +16,6 @@ export function useTypingIndicator(streamPath: string | undefined) {
     setIsTyping(true)
 
     // Send typing event
-    console.log({ userId, route: location.pathname, streamPath, userColor })
     presenceDB.actions.updatePresence({
       userId,
       route: location.pathname,

@@ -370,6 +370,15 @@ class EventDispatcher {
     }
     this.preloadResolvers = []
     this.preloadRejecters = []
+
+    // Also reject all pending txid promises
+    for (const resolvers of this.txidResolvers.values()) {
+      for (const { reject, timeoutId } of resolvers) {
+        clearTimeout(timeoutId)
+        reject(error)
+      }
+    }
+    this.txidResolvers.clear()
   }
 
   /**
@@ -489,9 +498,19 @@ function createCollectionHelpers<T>(
         )
       }
 
+      // Derive key from value if not explicitly provided
+      const derived = (value as any)[primaryKey]
+      const finalKey =
+        key ?? (derived != null && derived !== `` ? String(derived) : undefined)
+      if (finalKey == null || finalKey === ``) {
+        throw new Error(
+          `Cannot create ${eventType} insert event: must provide either 'key' or a value with a non-empty '${primaryKey}' field`
+        )
+      }
+
       return {
         type: eventType,
-        key: key ?? String((value as any)[primaryKey]),
+        key: finalKey,
         value,
         headers: { ...headers, operation: `insert` },
       }
@@ -515,9 +534,19 @@ function createCollectionHelpers<T>(
         }
       }
 
+      // Derive key from value if not explicitly provided
+      const derived = (value as any)[primaryKey]
+      const finalKey =
+        key ?? (derived != null && derived !== `` ? String(derived) : undefined)
+      if (finalKey == null || finalKey === ``) {
+        throw new Error(
+          `Cannot create ${eventType} update event: must provide either 'key' or a value with a non-empty '${primaryKey}' field`
+        )
+      }
+
       return {
         type: eventType,
-        key: key ?? String((value as any)[primaryKey]),
+        key: finalKey,
         value,
         old_value: oldValue,
         headers: { ...headers, operation: `update` },
@@ -714,6 +743,8 @@ export async function createStreamDB<
       await dispatcher.waitForUpToDate()
     },
     close: () => {
+      // Reject all pending operations before aborting
+      dispatcher.rejectAll(new Error(`StreamDB closed`))
       abortController.abort()
     },
     utils: {

@@ -603,7 +603,7 @@ export class StreamResponseImpl<
         const wasUpToDate = this.upToDate
         // Get response text first (handles empty responses gracefully)
         const text = await result.value.text()
-        const content = text || `[]` // Default to empty array if no content
+        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
         const parsed = JSON.parse(content) as T | Array<T>
         if (Array.isArray(parsed)) {
           items.push(...parsed)
