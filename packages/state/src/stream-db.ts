@@ -485,7 +485,7 @@ function createCollectionHelpers<T>(
       const result = schema[`~standard`].validate(value)
       if (`issues` in result) {
         throw new Error(
-          `Validation failed for ${eventType} insert: ${result.issues.map((i) => i.message).join(`, `)}`
+          `Validation failed for ${eventType} insert: ${result.issues?.map((i) => i.message).join(`, `) ?? `Unknown validation error`}`
         )
       }
 
@@ -501,7 +501,7 @@ function createCollectionHelpers<T>(
       const result = schema[`~standard`].validate(value)
       if (`issues` in result) {
         throw new Error(
-          `Validation failed for ${eventType} update: ${result.issues.map((i) => i.message).join(`, `)}`
+          `Validation failed for ${eventType} update: ${result.issues?.map((i) => i.message).join(`, `) ?? `Unknown validation error`}`
         )
       }
 
@@ -510,7 +510,7 @@ function createCollectionHelpers<T>(
         const oldResult = schema[`~standard`].validate(oldValue)
         if (`issues` in oldResult) {
           throw new Error(
-            `Validation failed for ${eventType} update (oldValue): ${oldResult.issues.map((i) => i.message).join(`, `)}`
+            `Validation failed for ${eventType} update (oldValue): ${oldResult.issues?.map((i) => i.message).join(`, `) ?? `Unknown validation error`}`
           )
         }
       }
@@ -529,7 +529,7 @@ function createCollectionHelpers<T>(
         const result = schema[`~standard`].validate(oldValue)
         if (`issues` in result) {
           throw new Error(
-            `Validation failed for ${eventType} delete (oldValue): ${result.issues.map((i) => i.message).join(`, `)}`
+            `Validation failed for ${eventType} delete (oldValue): ${result.issues?.map((i) => i.message).join(`, `) ?? `Unknown validation error`}`
           )
         }
       }
