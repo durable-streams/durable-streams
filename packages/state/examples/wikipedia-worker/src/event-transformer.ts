@@ -9,15 +9,7 @@ export const stateSchema = createStateSchema({
     type: `wikipedia-event`,
     primaryKey: `id`,
   },
-}) as ReturnType<
-  typeof createStateSchema<{
-    events: {
-      schema: typeof wikipediaEventSchema
-      type: `wikipedia-event`
-      primaryKey: `id`
-    }
-  }>
->
+})
 
 /**
  * Transforms a raw Wikipedia event from the SSE stream into our standardized format
@@ -42,7 +34,7 @@ export function transformWikipediaEvent(
     type: raw.type,
     timestamp: new Date(raw.timestamp * 1000).toISOString(),
     user: raw.user,
-    isBot: raw.bot ?? false,
+    isBot: raw.bot,
     namespace: raw.namespace,
     title: raw.title,
     serverName: raw.server_name,
@@ -90,17 +82,12 @@ function computeEventUrl(raw: WikipediaRawEvent): string {
   const encodedTitle = encodeURIComponent(raw.title)
 
   // For edits with revision info, create diff URL
-  if (
-    raw.type === `edit` &&
-    raw.revision &&
-    raw.revision.new != null &&
-    raw.revision.old != null
-  ) {
+  if (raw.type === `edit` && raw.revision) {
     return `${base}/${encodedTitle}?diff=${raw.revision.new}&oldid=${raw.revision.old}`
   }
 
   // For new pages with revision, link to that specific revision
-  if (raw.type === `new` && raw.revision && raw.revision.new != null) {
+  if (raw.type === `new` && raw.revision) {
     return `${base}/${encodedTitle}?oldid=${raw.revision.new}`
   }
 

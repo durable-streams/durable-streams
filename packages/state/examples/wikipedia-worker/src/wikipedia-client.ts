@@ -61,6 +61,7 @@ export class WikipediaStreamClient {
         )
       }, 15000)
 
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       while (!this.isManuallyDisconnected) {
         const { done, value } = await reader.read()
 
@@ -115,6 +116,7 @@ export class WikipediaStreamClient {
         clearInterval(healthInterval)
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (this.isManuallyDisconnected) {
         return
       }

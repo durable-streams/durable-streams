@@ -85,7 +85,7 @@ export function WikipediaDBProvider(props: WikipediaDBProviderProps) {
       )
       console.log(
         `[WikipediaDB] Events collection size:`,
-        database.collections.events?.size
+        database.collections.events.size
       )
 
       setDb(database)

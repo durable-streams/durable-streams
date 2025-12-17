@@ -810,7 +810,7 @@ describe(`Stream DB`, () => {
     db.close()
   })
 
-  it(`should reject duplicate event types across collections`, async () => {
+  it(`should reject duplicate event types across collections`, () => {
     // Two collections mapping to the same event type should throw
     expect(() => {
       createStateSchema({
@@ -828,7 +828,7 @@ describe(`Stream DB`, () => {
     }).toThrow(/duplicate event type/i)
   })
 
-  it(`should reject reserved collection names`, async () => {
+  it(`should reject reserved collection names`, () => {
     // Collection names that collide with StreamDB methods should throw
     expect(() => {
       createStateSchema({
@@ -1546,11 +1546,11 @@ describe(`Stream DB Actions`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db, stream }) => ({
+      actions: ({ db: dbInstance, stream }) => ({
         addUser: {
           onMutate: (name: string) => {
             // Optimistic update
-            db.collections.users.insert({
+            dbInstance.collections.users.insert({
               id: name,
               name,
               email: `${name.toLowerCase()}@example.com`,
@@ -1624,10 +1624,10 @@ describe(`Stream DB Actions`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db, stream }) => ({
+      actions: ({ db: dbInstance, stream }) => ({
         addUser: {
           onMutate: (name: string) => {
-            db.collections.users.insert({
+            dbInstance.collections.users.insert({
               id: name,
               name,
               email: `${name.toLowerCase()}@example.com`,
@@ -1648,12 +1648,12 @@ describe(`Stream DB Actions`, () => {
         },
         updateUser: {
           onMutate: ({ id, name }: { id: string; name: string }) => {
-            db.collections.users.update(id, (draft) => {
+            dbInstance.collections.users.update(id, (draft) => {
               draft.name = name
             })
           },
           mutationFn: async ({ id, name }: { id: string; name: string }) => {
-            const user = db.collections.users.get(id)
+            const user = dbInstance.collections.users.get(id)
             if (user) {
               await stream.append(
                 streamState.users.update({
@@ -1699,12 +1699,12 @@ describe(`Stream DB Actions`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db, stream: actionStream }) => {
+      actions: ({ db: dbInstance, stream: actionStream }) => {
         capturedStream = actionStream
         return {
           addUser: {
             onMutate: (name: string) => {
-              db.collections.users.insert({
+              dbInstance.collections.users.insert({
                 id: name,
                 name,
                 email: `${name.toLowerCase()}@example.com`,
@@ -1759,13 +1759,13 @@ describe(`Stream DB Actions`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db }) => ({
+      actions: ({ db: dbInstance }) => ({
         addUser: {
           onMutate: (name: string) => {
             if (name === `ERROR`) {
               throw new Error(`onMutate error`)
             }
-            db.collections.users.insert({
+            dbInstance.collections.users.insert({
               id: name,
               name,
               email: `${name.toLowerCase()}@example.com`,
@@ -1817,10 +1817,10 @@ describe(`Stream DB Actions`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db }) => ({
+      actions: ({ db: dbInstance }) => ({
         addUser: {
           onMutate: (name: string) => {
-            db.collections.users.insert({
+            dbInstance.collections.users.insert({
               id: name,
               name,
               email: `${name.toLowerCase()}@example.com`,
@@ -2019,10 +2019,10 @@ describe(`Stream DB TxId Tracking`, () => {
         contentType: `application/json`,
       },
       state: streamState,
-      actions: ({ db, stream }) => ({
+      actions: ({ db: dbInstance, stream }) => ({
         addUser: {
           onMutate: (name: string) => {
-            db.collections.users.insert({
+            dbInstance.collections.users.insert({
               id: name,
               name,
               email: `${name.toLowerCase()}@example.com`,
@@ -2044,7 +2044,7 @@ describe(`Stream DB TxId Tracking`, () => {
             )
 
             // Wait for txid to be synced back
-            await db.utils.awaitTxId(txid)
+            await dbInstance.utils.awaitTxId(txid)
           },
         },
       }),

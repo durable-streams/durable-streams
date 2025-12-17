@@ -747,6 +747,7 @@ export function createStateSchema<
  * const user = await db.collections.users.get("123")
  * ```
  */
+// eslint-disable-next-line @typescript-eslint/require-await
 export async function createStreamDB<
   TDef extends StreamStateDefinition,
   TActions extends Record<string, ActionDefinition<any>> = Record<
@@ -821,7 +822,7 @@ export async function createStreamDB<
     let lastBatchTime = Date.now()
 
     // Process events as they come in
-    streamResponse.subscribeJson(async (batch) => {
+    streamResponse.subscribeJson((batch) => {
       try {
         batchCount++
         lastBatchTime = Date.now()

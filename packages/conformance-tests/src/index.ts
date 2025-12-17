@@ -329,7 +329,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const readPromise = (async () => {
         const res = await stream.stream({ live: `long-poll` })
         await new Promise<void>((resolve) => {
-          const unsubscribe = res.subscribeBytes(async (chunk) => {
+          const unsubscribe = res.subscribeBytes((chunk) => {
             if (chunk.data.length > 0) {
               receivedData.push(new TextDecoder().decode(chunk.data))
             }

@@ -57,6 +57,7 @@ describe(`DurableStream`, () => {
       const stream = new DurableStream({
         url: `https://example.com/stream`,
         headers: {
+          // eslint-disable-next-line @typescript-eslint/require-await
           Authorization: async () => `Bearer token`,
         },
       })
@@ -412,6 +413,7 @@ describe(`DurableStream`, () => {
         url: `https://example.com/stream`,
         fetch: mockFetch,
         headers: {
+          // eslint-disable-next-line @typescript-eslint/require-await
           Authorization: async () => `Bearer dynamic-token`,
         },
       })
@@ -658,6 +660,7 @@ describe(`DurableStream`, () => {
       })
 
       // Create an async iterable source
+      // eslint-disable-next-line @typescript-eslint/require-await
       async function* generateChunks() {
         yield `chunk1`
         yield `chunk2`
@@ -690,6 +693,7 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
+      // eslint-disable-next-line @typescript-eslint/require-await
       async function* generateChunks() {
         yield `data`
       }
@@ -718,6 +722,7 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
+      // eslint-disable-next-line @typescript-eslint/require-await
       async function* generateChunks() {
         yield `data`
       }
@@ -747,6 +752,7 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
+      // eslint-disable-next-line @typescript-eslint/require-await
       async function* generateChunks() {
         yield `data`
       }
@@ -769,6 +775,7 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
+      // eslint-disable-next-line @typescript-eslint/require-await
       async function* generateChunks() {
         yield `data`
       }

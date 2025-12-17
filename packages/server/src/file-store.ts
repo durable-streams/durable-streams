@@ -360,11 +360,11 @@ export class FileBackedStreamStore {
     if (existing) {
       // Check if config matches (idempotent create)
       // MIME types are case-insensitive per RFC 2045
-      const normalizeContentType = (ct: string | undefined) =>
+      const normalizeMimeType = (ct: string | undefined) =>
         (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        normalizeContentType(options.contentType) ===
-        normalizeContentType(existing.contentType)
+        normalizeMimeType(options.contentType) ===
+        normalizeMimeType(existing.contentType)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -721,12 +721,15 @@ export class FileBackedStreamStore {
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
    */
-  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const key = `stream:${path}`
+  formatResponse(
+    streamPath: string,
+    messages: Array<StreamMessage>
+  ): Uint8Array {
+    const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
     if (!streamMeta) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new Error(`Stream not found: ${streamPath}`)
     }
 
     // Concatenate all message data
