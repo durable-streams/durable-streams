@@ -601,7 +601,10 @@ export class StreamResponseImpl<
       while (!result.done) {
         // Capture upToDate BEFORE parsing (to avoid race with prefetch)
         const wasUpToDate = this.upToDate
-        const parsed = (await result.value.json()) as T | Array<T>
+        // Get response text first (handles empty responses gracefully)
+        const text = await result.value.text()
+        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
+        const parsed = JSON.parse(content) as T | Array<T>
         if (Array.isArray(parsed)) {
           items.push(...parsed)
         } else {
@@ -732,8 +735,10 @@ export class StreamResponseImpl<
           return
         }
 
-        // Parse JSON and flatten arrays
-        const parsed = (await response.json()) as TJson | Array<TJson>
+        // Parse JSON and flatten arrays (handle empty responses gracefully)
+        const text = await response.text()
+        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
+        const parsed = JSON.parse(content) as TJson | Array<TJson>
         pendingItems = Array.isArray(parsed) ? parsed : [parsed]
 
         // Enqueue first item
@@ -791,7 +796,10 @@ export class StreamResponseImpl<
           const { offset, cursor, upToDate } =
             this.#getMetadataFromResponse(response)
 
-          const parsed = (await response.json()) as T | Array<T>
+          // Get response text first (handles empty responses gracefully)
+          const text = await response.text()
+          const content = text.trim() || `[]` // Default to empty array if no content or whitespace
+          const parsed = JSON.parse(content) as T | Array<T>
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
           await subscriber({

@@ -84,7 +84,7 @@ export async function collectChunks(
     const response = await handle.stream({ signal: aborter.signal })
 
     await new Promise<void>((resolve) => {
-      const unsubscribe = response.subscribeBytes(async (chunk) => {
+      const unsubscribe = response.subscribeBytes((chunk) => {
         chunks.push(chunk)
 
         if (chunks.length >= maxChunks) {
@@ -149,7 +149,7 @@ export async function waitForUpToDate(
     const response = await handle.stream({ signal: aborter.signal })
 
     await new Promise<void>((resolve) => {
-      const unsubscribe = response.subscribeBytes(async (chunk) => {
+      const unsubscribe = response.subscribeBytes((chunk) => {
         chunks.push(chunk)
 
         if (chunks.length >= numChunksExpected && chunk.upToDate) {

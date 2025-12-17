@@ -44,7 +44,7 @@ describe(`Catchup to Live Polling Transition`, () => {
 
         // Use subscribeBytes for backpressure-aware consumption with metadata
         await new Promise<void>((resolve) => {
-          const unsubscribe = response.subscribeBytes(async (chunk) => {
+          const unsubscribe = response.subscribeBytes((chunk) => {
             if (chunk.data.length > 0) {
               receivedData.push(decode(chunk.data))
             }
@@ -115,7 +115,7 @@ describe(`Catchup to Live Polling Transition`, () => {
 
         // Use subscribeBytes for backpressure-aware consumption with metadata
         await new Promise<void>((resolve) => {
-          const unsubscribe = response.subscribeBytes(async (chunk) => {
+          const unsubscribe = response.subscribeBytes((chunk) => {
             if (chunk.data.length > 0) {
               receivedData.push(decode(chunk.data))
             }

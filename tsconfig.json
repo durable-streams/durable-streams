@@ -36,6 +36,7 @@
     "**/*.config.ts",
     "**/test/**",
     "**/*.test.ts",
-    "packages/test-ui/**"
+    "packages/test-ui/**",
+    "packages/state/examples/**"
   ]
 }
