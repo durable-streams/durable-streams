@@ -6,11 +6,7 @@ import { useWikipediaDB } from "../lib/stream-db"
 import "./StatsPanel.css"
 
 export function StatsPanel() {
-  console.log(`[StatsPanel] Component rendering...`)
-
   const db = useWikipediaDB()
-
-  console.log(`[StatsPanel] Got db from context:`, db)
 
   // Total events count
   const totalQuery = useLiveQuery((q) =>

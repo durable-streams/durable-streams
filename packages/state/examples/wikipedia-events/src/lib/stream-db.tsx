@@ -71,26 +71,10 @@ export function WikipediaDBProvider(props: WikipediaDBProviderProps) {
       await database.preload()
 
       console.log(`[WikipediaDB] Connected and ready`)
-      console.log(
-        `[WikipediaDB] Database collections:`,
-        Object.keys(database.collections)
-      )
-      console.log(
-        `[WikipediaDB] Events collection:`,
-        database.collections.events
-      )
-      console.log(
-        `[WikipediaDB] Events collection type:`,
-        typeof database.collections.events
-      )
-      console.log(
-        `[WikipediaDB] Events collection size:`,
-        database.collections.events.size
-      )
 
       setDb(database)
       setIsLoading(false)
-      console.log(`[WikipediaDB] Setup complete, children should now render`)
+      console.log(`[WikipediaDB] Setup complete`)
     } catch (err) {
       const errorMessage =
         err instanceof Error ? err.message : `Failed to connect to stream`
