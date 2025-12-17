@@ -1,80 +1,16 @@
 /**
- * StreamContext implementation that provides scoped access to streams within a namespace.
+ * Middleware and utilities for creating protocol contexts.
  */
 
-import type {
-  StreamContext,
-  StreamInfo,
-  CreateStreamOptions,
-  AppendOptions,
-  ReadOptions,
-  ReadResult,
-  StreamMessage,
-} from "./types"
+import { Hono } from "hono"
+import { DurableStream } from "@durable-streams/client"
+import type { ProtocolConfig, ProtocolHonoEnv } from "./types"
 
 /**
- * Interface for the underlying store (matches StreamStore/FileBackedStreamStore).
+ * Normalize a path by ensuring it starts with "/" and doesn't end with "/".
  */
-export interface StoreAdapter {
-  create(
-    path: string,
-    options?: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-    }
-  ): { currentOffset: string; contentType?: string; createdAt: number } | Promise<{ currentOffset: string; contentType?: string; createdAt: number }>
-
-  get(path: string): { path: string; currentOffset: string; contentType?: string; createdAt: number; ttlSeconds?: number; expiresAt?: string } | undefined
-
-  has(path: string): boolean
-
-  append(
-    path: string,
-    data: Uint8Array,
-    options?: { seq?: string; contentType?: string }
-  ): StreamMessage | Promise<StreamMessage>
-
-  read(
-    path: string,
-    offset?: string
-  ): { messages: StreamMessage[]; upToDate: boolean }
-
-  delete(path: string): boolean | void
-
-  list(): string[]
-
-  waitForMessages(
-    path: string,
-    offset: string,
-    timeoutMs: number
-  ): Promise<{ messages: StreamMessage[]; timedOut: boolean }>
-}
-
-/**
- * Options for creating a ScopedStreamContext.
- */
-export interface ScopedStreamContextOptions {
-  /** The namespace to scope operations to */
-  namespace: string
-
-  /** The underlying store adapter */
-  store: StoreAdapter
-
-  /** Optional callback when a stream is created */
-  onStreamCreated?: (info: StreamInfo) => void | Promise<void>
-
-  /** Optional callback when a stream is deleted */
-  onStreamDeleted?: (path: string) => void | Promise<void>
-}
-
-/**
- * Normalizes a namespace path.
- * Ensures it starts with "/" and doesn't end with "/".
- */
-function normalizeNamespace(namespace: string): string {
-  let normalized = namespace.trim()
+function normalizePath(path: string): string {
+  let normalized = path.trim()
   if (!normalized.startsWith(`/`)) {
     normalized = `/` + normalized
   }
@@ -85,298 +21,82 @@ function normalizeNamespace(namespace: string): string {
 }
 
 /**
- * Normalizes a subpath and combines it with the namespace.
+ * Combine namespace and subpath into a full stream path.
  */
 function resolvePath(namespace: string, subpath: string): string {
-  // Ensure subpath starts with /
+  const normalizedNamespace = normalizePath(namespace)
   let normalizedSubpath = subpath.trim()
+
+  // Handle empty subpath
+  if (!normalizedSubpath) {
+    return normalizedNamespace
+  }
+
+  // Ensure subpath starts with /
   if (!normalizedSubpath.startsWith(`/`)) {
     normalizedSubpath = `/` + normalizedSubpath
   }
 
-  // Combine namespace and subpath
-  return namespace + normalizedSubpath
+  return normalizedNamespace + normalizedSubpath
 }
 
 /**
- * Validates that a full path is within the namespace.
+ * Create a middleware that sets up the stream context for protocol handlers.
+ * This middleware adds a `stream()` function to the Hono context that creates
+ * DurableStream handles scoped to the protocol's namespace.
  */
-function validatePathInNamespace(namespace: string, fullPath: string): void {
-  if (!fullPath.startsWith(namespace + `/`) && fullPath !== namespace) {
-    throw new Error(
-      `Path "${fullPath}" is outside namespace "${namespace}"`
-    )
-  }
-}
+export function createStreamMiddleware(
+  namespace: string,
+  config: ProtocolConfig
+): import("hono").MiddlewareHandler<ProtocolHonoEnv> {
+  const normalizedNamespace = normalizePath(namespace)
 
-/**
- * Converts store stream data to StreamInfo.
- */
-function toStreamInfo(
-  stream: {
-    path: string
-    currentOffset: string
-    contentType?: string
-    createdAt: number
-    ttlSeconds?: number
-    expiresAt?: string
-  }
-): StreamInfo {
-  return {
-    path: stream.path,
-    contentType: stream.contentType,
-    currentOffset: stream.currentOffset,
-    createdAt: stream.createdAt,
-    ttlSeconds: stream.ttlSeconds,
-    expiresAt: stream.expiresAt,
-  }
-}
+  return async (c, next) => {
+    // Set the namespace on the context
+    c.set(`namespace`, normalizedNamespace)
 
-/**
- * Encodes data for storage.
- */
-function encodeData(data: Uint8Array | string | object): Uint8Array {
-  if (data instanceof Uint8Array) {
-    return data
-  }
-  if (typeof data === `string`) {
-    return new TextEncoder().encode(data)
-  }
-  return new TextEncoder().encode(JSON.stringify(data))
-}
+    // Set the stream factory function
+    c.set(`stream`, (subpath: string) => {
+      const fullPath = resolvePath(normalizedNamespace, subpath)
+      const url = `${config.baseUrl}${fullPath}`
 
-/**
- * Stream context that scopes all operations to a specific namespace.
- * This is the primary interface protocols use to interact with streams.
- */
-export class ScopedStreamContext implements StreamContext {
-  readonly namespace: string
-  private readonly store: StoreAdapter
-  private readonly onStreamCreated?: (info: StreamInfo) => void | Promise<void>
-  private readonly onStreamDeleted?: (path: string) => void | Promise<void>
-
-  constructor(options: ScopedStreamContextOptions) {
-    this.namespace = normalizeNamespace(options.namespace)
-    this.store = options.store
-    this.onStreamCreated = options.onStreamCreated
-    this.onStreamDeleted = options.onStreamDeleted
-  }
-
-  async create(
-    subpath: string,
-    options: CreateStreamOptions = {}
-  ): Promise<StreamInfo> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    // Prepare initial data
-    let initialData: Uint8Array | undefined
-    if (options.initialData !== undefined) {
-      initialData = encodeData(options.initialData)
-    }
-
-    // Create the stream
-    const result = await Promise.resolve(
-      this.store.create(fullPath, {
-        contentType: options.contentType ?? `application/json`,
-        ttlSeconds: options.ttlSeconds,
-        expiresAt: options.expiresAt,
-        initialData,
+      return new DurableStream({
+        url,
+        headers: config.headers,
+        fetch: config.fetch,
       })
-    )
+    })
 
-    const info: StreamInfo = {
-      path: fullPath,
-      contentType: result.contentType ?? options.contentType ?? `application/json`,
-      currentOffset: result.currentOffset,
-      createdAt: result.createdAt,
-      ttlSeconds: options.ttlSeconds,
-      expiresAt: options.expiresAt,
-    }
-
-    // Fire callback
-    if (this.onStreamCreated) {
-      await Promise.resolve(this.onStreamCreated(info))
-    }
-
-    return info
-  }
-
-  async get(subpath: string): Promise<StreamInfo | undefined> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    const stream = this.store.get(fullPath)
-    if (!stream) {
-      return undefined
-    }
-
-    return toStreamInfo(stream)
-  }
-
-  async has(subpath: string): Promise<boolean> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    return this.store.has(fullPath)
-  }
-
-  async append(
-    subpath: string,
-    data: Uint8Array | string | object,
-    options: AppendOptions = {}
-  ): Promise<StreamMessage> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    const stream = this.store.get(fullPath)
-    if (!stream) {
-      throw new Error(`Stream not found: ${fullPath}`)
-    }
-
-    const encodedData = encodeData(data)
-
-    return Promise.resolve(
-      this.store.append(fullPath, encodedData, {
-        seq: options.seq,
-        contentType: stream.contentType,
-      })
-    )
-  }
-
-  async read(
-    subpath: string,
-    options: ReadOptions = {}
-  ): Promise<ReadResult> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    const stream = this.store.get(fullPath)
-    if (!stream) {
-      throw new Error(`Stream not found: ${fullPath}`)
-    }
-
-    const { messages, upToDate } = this.store.read(fullPath, options.offset)
-
-    // Determine the next offset
-    const lastMessage = messages[messages.length - 1]
-    const nextOffset = lastMessage?.offset ?? stream.currentOffset
-
-    return {
-      messages,
-      nextOffset,
-      upToDate,
-    }
-  }
-
-  async delete(subpath: string): Promise<void> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    if (!this.store.has(fullPath)) {
-      throw new Error(`Stream not found: ${fullPath}`)
-    }
-
-    this.store.delete(fullPath)
-
-    // Fire callback
-    if (this.onStreamDeleted) {
-      await Promise.resolve(this.onStreamDeleted(fullPath))
-    }
-  }
-
-  async list(prefix?: string): Promise<StreamInfo[]> {
-    const allPaths = this.store.list()
-
-    // Filter to streams within namespace (and optional prefix)
-    const namespacePrefix = prefix
-      ? resolvePath(this.namespace, prefix)
-      : this.namespace + `/`
-
-    const matchingPaths = allPaths.filter((path) =>
-      path.startsWith(namespacePrefix)
-    )
-
-    return matchingPaths
-      .map((path) => this.store.get(path))
-      .filter((s): s is NonNullable<typeof s> => s !== undefined)
-      .map(toStreamInfo)
-  }
-
-  async waitForMessages(
-    subpath: string,
-    offset: string,
-    timeout: number
-  ): Promise<{ messages: StreamMessage[]; timedOut: boolean }> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    return this.store.waitForMessages(fullPath, offset, timeout)
-  }
-
-  async compact(
-    subpath: string,
-    compactor: (messages: StreamMessage[]) => Uint8Array | string | object
-  ): Promise<{ oldStream: StreamInfo; newStream: StreamInfo } | undefined> {
-    const fullPath = resolvePath(this.namespace, subpath)
-    validatePathInNamespace(this.namespace, fullPath)
-
-    // Get the existing stream
-    const oldStreamData = this.store.get(fullPath)
-    if (!oldStreamData) {
-      throw new Error(`Stream not found: ${fullPath}`)
-    }
-
-    // Read all messages
-    const { messages } = this.store.read(fullPath, `-1`)
-
-    // Check if compaction is needed (at least 2 messages)
-    if (messages.length < 2) {
-      return undefined
-    }
-
-    // Generate compacted data
-    const compactedData = compactor(messages)
-    const encodedData = encodeData(compactedData)
-
-    // Create new stream path with compaction suffix
-    const timestamp = Date.now()
-    const newPath = `${fullPath}~compacted~${timestamp}`
-
-    // Create the new compacted stream
-    const newStreamResult = await Promise.resolve(
-      this.store.create(newPath, {
-        contentType: oldStreamData.contentType,
-        ttlSeconds: oldStreamData.ttlSeconds,
-        expiresAt: oldStreamData.expiresAt,
-        initialData: encodedData,
-      })
-    )
-
-    const oldStream = toStreamInfo(oldStreamData)
-    const newStream: StreamInfo = {
-      path: newPath,
-      contentType: oldStreamData.contentType,
-      currentOffset: newStreamResult.currentOffset,
-      createdAt: newStreamResult.createdAt,
-      ttlSeconds: oldStreamData.ttlSeconds,
-      expiresAt: oldStreamData.expiresAt,
-    }
-
-    // Fire callback for new stream
-    if (this.onStreamCreated) {
-      await Promise.resolve(this.onStreamCreated(newStream))
-    }
-
-    return { oldStream, newStream }
+    await next()
   }
 }
 
 /**
- * Create a stream context for a given namespace.
+ * Create a protocol app with the stream middleware already applied.
  */
-export function createStreamContext(
-  options: ScopedStreamContextOptions
-): StreamContext {
-  return new ScopedStreamContext(options)
+export function createProtocolApp(
+  namespace: string,
+  config: ProtocolConfig
+): Hono<ProtocolHonoEnv> {
+  const app = new Hono<ProtocolHonoEnv>()
+  app.use(`*`, createStreamMiddleware(namespace, config))
+  return app
+}
+
+/**
+ * Helper to get a stream handle from the Hono context.
+ */
+export function getStream(
+  c: import("hono").Context<ProtocolHonoEnv>,
+  subpath: string
+): DurableStream {
+  const streamFn = c.get(`stream`)
+  return streamFn(subpath)
+}
+
+/**
+ * Helper to get the namespace from the Hono context.
+ */
+export function getNamespace(c: import("hono").Context<ProtocolHonoEnv>): string {
+  return c.get(`namespace`)
 }

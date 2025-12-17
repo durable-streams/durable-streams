@@ -26,7 +26,12 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
-  "dependencies": {},
+  "dependencies": {
+    "hono": "^4.7.0"
+  },
+  "peerDependencies": {
+    "@durable-streams/client": "workspace:*"
+  },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
     "@durable-streams/client": "workspace:*",

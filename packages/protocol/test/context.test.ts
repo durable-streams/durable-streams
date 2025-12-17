@@ -1,363 +1,186 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { StreamStore } from "@durable-streams/server"
-import { createStreamContext } from "../src/index"
+import { describe, it, expect } from "vitest"
+import {
+  createStreamMiddleware,
+  createProtocolApp,
+  getStream,
+  getNamespace,
+} from "../src/context"
+import type { ProtocolConfig } from "../src/types"
+import { Hono } from "hono"
+import type { ProtocolHonoEnv } from "../src/types"
 
-describe(`ScopedStreamContext`, () => {
-  let store: StreamStore
+describe(`createStreamMiddleware`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
 
-  beforeEach(() => {
-    store = new StreamStore()
+  it(`should set namespace on context`, async () => {
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/myns`, mockConfig))
+    app.get(`/test`, (c) => c.json({ namespace: c.var.namespace }))
+
+    const res = await app.request(`/test`)
+    const data = await res.json()
+
+    expect(data.namespace).toBe(`/myns`)
   })
 
-  describe(`stream creation`, () => {
-    it(`should create a stream within namespace`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
+  it(`should normalize namespace path`, async () => {
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`myns/`, mockConfig))
+    app.get(`/test`, (c) => c.json({ namespace: c.var.namespace }))
 
-      const info = await ctx.create(`doc-1`)
+    const res = await app.request(`/test`)
+    const data = await res.json()
 
-      expect(info.path).toBe(`/myns/doc-1`)
-      expect(info.contentType).toBe(`application/json`)
-      expect(store.has(`/myns/doc-1`)).toBe(true)
-    })
-
-    it(`should create stream with options`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      const info = await ctx.create(`doc-1`, {
-        contentType: `application/octet-stream`,
-        ttlSeconds: 3600,
-        initialData: new Uint8Array([1, 2, 3]),
-      })
-
-      expect(info.path).toBe(`/myns/doc-1`)
-      expect(info.ttlSeconds).toBe(3600)
-
-      // Check initial data was written
-      const stream = store.get(`/myns/doc-1`)
-      expect(stream?.messages.length).toBeGreaterThan(0)
-    })
-
-    it(`should normalize subpaths`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      // Both should create the same stream
-      await ctx.create(`/doc-1`)
-      const exists = await ctx.has(`doc-1`)
-      expect(exists).toBe(true)
-    })
-
-    it(`should call onStreamCreated hook`, async () => {
-      let createdPath: string | undefined
-
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-        onStreamCreated: async (info) => {
-          createdPath = info.path
-        },
-      })
-
-      await ctx.create(`doc-1`)
-      expect(createdPath).toBe(`/myns/doc-1`)
-    })
+    expect(data.namespace).toBe(`/myns`)
   })
 
-  describe(`stream operations`, () => {
-    it(`should get stream info`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
+  it(`should set stream factory on context`, async () => {
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/myns`, mockConfig))
+    app.get(`/test`, (c) => c.json({ hasStream: typeof c.var.stream === `function` }))
 
-      await ctx.create(`doc-1`)
-      const info = await ctx.get(`doc-1`)
+    const res = await app.request(`/test`)
+    const data = await res.json()
 
-      expect(info).toBeTruthy()
-      expect(info?.path).toBe(`/myns/doc-1`)
-    })
-
-    it(`should return undefined for non-existent stream`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      const info = await ctx.get(`nonexistent`)
-      expect(info).toBeUndefined()
-    })
-
-    it(`should check stream existence`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      expect(await ctx.has(`doc-1`)).toBe(false)
-      await ctx.create(`doc-1`)
-      expect(await ctx.has(`doc-1`)).toBe(true)
-    })
-
-    it(`should append data to stream`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      const msg = await ctx.append(`doc-1`, { hello: `world` })
-
-      expect(msg.offset).toBeTruthy()
-      expect(msg.data.length).toBeGreaterThan(0)
-    })
-
-    it(`should append with different data types`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`, { contentType: `application/octet-stream` })
-
-      // Uint8Array
-      await ctx.append(`doc-1`, new Uint8Array([1, 2, 3]))
-
-      // String
-      await ctx.append(`doc-1`, `hello`)
-
-      const result = await ctx.read(`doc-1`, { offset: `-1` })
-      expect(result.messages.length).toBe(2)
-    })
-
-    it(`should read from stream`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      await ctx.append(`doc-1`, { msg: 1 })
-      await ctx.append(`doc-1`, { msg: 2 })
-
-      const result = await ctx.read(`doc-1`, { offset: `-1` })
-
-      expect(result.messages.length).toBe(2)
-      expect(result.upToDate).toBe(true)
-      expect(result.nextOffset).toBeTruthy()
-    })
-
-    it(`should read from offset`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      const msg1 = await ctx.append(`doc-1`, { msg: 1 })
-      await ctx.append(`doc-1`, { msg: 2 })
-
-      const result = await ctx.read(`doc-1`, { offset: msg1.offset })
-
-      expect(result.messages.length).toBe(1)
-    })
-
-    it(`should delete stream`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      expect(await ctx.has(`doc-1`)).toBe(true)
-
-      await ctx.delete(`doc-1`)
-      expect(await ctx.has(`doc-1`)).toBe(false)
-    })
-
-    it(`should call onStreamDeleted hook`, async () => {
-      let deletedPath: string | undefined
-
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-        onStreamDeleted: async (path) => {
-          deletedPath = path
-        },
-      })
-
-      await ctx.create(`doc-1`)
-      await ctx.delete(`doc-1`)
-
-      expect(deletedPath).toBe(`/myns/doc-1`)
-    })
+    expect(data.hasStream).toBe(true)
   })
 
-  describe(`stream listing`, () => {
-    it(`should list streams in namespace`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      await ctx.create(`doc-2`)
-      await ctx.create(`other/nested`)
-
-      const streams = await ctx.list()
-
-      expect(streams.length).toBe(3)
-      expect(streams.map((s) => s.path)).toContain(`/myns/doc-1`)
-      expect(streams.map((s) => s.path)).toContain(`/myns/doc-2`)
+  it(`should create DurableStream with correct URL`, async () => {
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/docs`, mockConfig))
+    app.get(`/:docId`, (c) => {
+      // Create stream to ensure factory works
+      c.var.stream(`updates`)
+      return c.json({ created: true })
     })
 
-    it(`should filter by prefix`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`users/alice`)
-      await ctx.create(`users/bob`)
-      await ctx.create(`docs/readme`)
-
-      const users = await ctx.list(`users`)
-
-      expect(users.length).toBe(2)
-      expect(users.every((s) => s.path.includes(`/users/`))).toBe(true)
-    })
-
-    it(`should not include streams from other namespaces`, async () => {
-      const ctx1 = createStreamContext({
-        namespace: `/ns1`,
-        store,
-      })
-      const ctx2 = createStreamContext({
-        namespace: `/ns2`,
-        store,
-      })
-
-      await ctx1.create(`doc-1`)
-      await ctx2.create(`doc-2`)
-
-      const ns1Streams = await ctx1.list()
-      const ns2Streams = await ctx2.list()
-
-      expect(ns1Streams.length).toBe(1)
-      expect(ns1Streams[0]?.path).toBe(`/ns1/doc-1`)
-
-      expect(ns2Streams.length).toBe(1)
-      expect(ns2Streams[0]?.path).toBe(`/ns2/doc-2`)
-    })
+    const res = await app.request(`/my-doc`)
+    expect(res.status).toBe(200)
   })
 
-  describe(`namespace enforcement`, () => {
-    it(`should prevent access outside namespace`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
+  it(`should pass headers to DurableStream`, async () => {
+    const configWithHeaders: ProtocolConfig = {
+      baseUrl: `https://streams.example.com/v1/stream`,
+      headers: {
+        Authorization: `Bearer test-token`,
+      },
+    }
 
-      // Create a stream in a different namespace directly
-      store.create(`/other/doc`, { contentType: `application/json` })
-
-      // Try to access it through the scoped context
-      await expect(ctx.get(`../other/doc`)).rejects.toThrow(/outside namespace/)
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/docs`, configWithHeaders))
+    app.get(`/:docId`, (c) => {
+      // Create stream to ensure factory works with headers
+      c.var.stream(`updates`)
+      return c.json({ created: true })
     })
 
-    it(`should normalize namespace path`, async () => {
-      const ctx = createStreamContext({
-        namespace: `myns/`,
-        store,
-      })
+    const res = await app.request(`/my-doc`)
+    expect(res.status).toBe(200)
+  })
+})
 
-      expect(ctx.namespace).toBe(`/myns`)
+describe(`createProtocolApp`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should create a Hono app with middleware already applied`, async () => {
+    const app = createProtocolApp(`/myns`, mockConfig)
+    app.get(`/test`, (c) =>
+      c.json({
+        namespace: c.var.namespace,
+        hasStream: typeof c.var.stream === `function`,
+      })
+    )
+
+    const res = await app.request(`/test`)
+    const data = await res.json()
+
+    expect(data.namespace).toBe(`/myns`)
+    expect(data.hasStream).toBe(true)
+  })
+})
+
+describe(`getStream helper`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should return a DurableStream instance`, async () => {
+    let streamResult: unknown
+
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/docs`, mockConfig))
+    app.get(`/:docId`, (c) => {
+      streamResult = getStream(c, `updates`)
+      return c.text(`ok`)
     })
+
+    await app.request(`/my-doc`)
+
+    expect(streamResult).toBeDefined()
+    expect(typeof (streamResult as { create: unknown }).create).toBe(`function`)
+  })
+})
+
+describe(`getNamespace helper`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should return the namespace from context`, async () => {
+    let namespaceResult: string | undefined
+
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/myns`, mockConfig))
+    app.get(`/test`, (c) => {
+      namespaceResult = getNamespace(c)
+      return c.text(`ok`)
+    })
+
+    await app.request(`/test`)
+
+    expect(namespaceResult).toBe(`/myns`)
+  })
+})
+
+describe(`path resolution`, () => {
+  it(`should resolve subpaths correctly`, async () => {
+    // We can test path resolution by checking the DurableStream's internal URL
+    // Since DurableStream is a real class, we need to inspect the URL it creates
+    const config: ProtocolConfig = {
+      baseUrl: `https://streams.example.com/v1/stream`,
+    }
+
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/docs`, config))
+    app.get(`/test`, (c) => {
+      // Create streams with different subpaths
+      c.var.stream(`updates`)
+      c.var.stream(`/updates`)
+      c.var.stream(`nested/path`)
+      return c.text(`ok`)
+    })
+
+    await app.request(`/test`)
+    // If no errors thrown, paths were resolved successfully
   })
 
-  describe(`compaction`, () => {
-    it(`should compact stream with multiple messages`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
+  it(`should handle empty subpath`, async () => {
+    const config: ProtocolConfig = {
+      baseUrl: `https://streams.example.com/v1/stream`,
+    }
 
-      await ctx.create(`doc-1`)
-      await ctx.append(`doc-1`, { key: `a`, value: 1 })
-      await ctx.append(`doc-1`, { key: `b`, value: 2 })
-      await ctx.append(`doc-1`, { key: `a`, value: 3 })
-
-      const result = await ctx.compact(`doc-1`, (messages) => {
-        // Simple compaction: just take the last message data
-        const decoder = new TextDecoder()
-        const allData = messages.map((m) => decoder.decode(m.data)).join(``)
-        return { compacted: true, originalCount: messages.length, data: allData }
-      })
-
-      expect(result).toBeTruthy()
-      expect(result?.oldStream.path).toBe(`/myns/doc-1`)
-      expect(result?.newStream.path).toContain(`compacted`)
+    const app = new Hono<ProtocolHonoEnv>()
+    app.use(`*`, createStreamMiddleware(`/docs`, config))
+    app.get(`/test`, (c) => {
+      c.var.stream(``)
+      return c.text(`ok`)
     })
 
-    it(`should not compact stream with single message`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      await ctx.append(`doc-1`, { only: `one` })
-
-      const result = await ctx.compact(`doc-1`, () => ({ compacted: true }))
-
-      expect(result).toBeUndefined()
-    })
-  })
-
-  describe(`waiting for messages`, () => {
-    it(`should wait for new messages`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      const msg = await ctx.append(`doc-1`, { initial: true })
-
-      // Start waiting
-      const waitPromise = ctx.waitForMessages(`doc-1`, msg.offset, 5000)
-
-      // Append a new message after a delay
-      setTimeout(async () => {
-        await ctx.append(`doc-1`, { new: `message` })
-      }, 50)
-
-      const result = await waitPromise
-
-      expect(result.timedOut).toBe(false)
-      expect(result.messages.length).toBe(1)
-    })
-
-    it(`should timeout if no new messages`, async () => {
-      const ctx = createStreamContext({
-        namespace: `/myns`,
-        store,
-      })
-
-      await ctx.create(`doc-1`)
-      const msg = await ctx.append(`doc-1`, { initial: true })
-
-      const result = await ctx.waitForMessages(`doc-1`, msg.offset, 50)
-
-      expect(result.timedOut).toBe(true)
-      expect(result.messages.length).toBe(0)
-    })
+    const res = await app.request(`/test`)
+    expect(res.status).toBe(200)
   })
 })

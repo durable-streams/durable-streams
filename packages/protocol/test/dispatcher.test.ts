@@ -1,365 +1,250 @@
-import { describe, it, expect, beforeEach } from "vitest"
-import { StreamStore } from "@durable-streams/server"
-import {
-  createDispatcher,
-  defineProtocol,
-  createProtocolBuilder,
-} from "../src/index"
+import { describe, it, expect } from "vitest"
+import { createDispatcher, defineProtocol, stream, mountProtocol } from "../src/index"
+import { Hono } from "hono"
+import type { ProtocolHonoEnv, ProtocolConfig } from "../src/types"
 
-describe(`ProtocolDispatcher`, () => {
-  let store: StreamStore
-  let dispatcher: ReturnType<typeof createDispatcher>
+describe(`createDispatcher`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
 
-  beforeEach(() => {
-    store = new StreamStore()
-    dispatcher = createDispatcher(store)
+  it(`should create a Hono app`, () => {
+    const app = createDispatcher(mockConfig, [])
+    expect(app).toBeDefined()
+    expect(app.fetch).toBeDefined()
   })
 
-  describe(`protocol registration`, () => {
-    it(`should register a protocol`, async () => {
-      const protocol = defineProtocol({
-        name: `test`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200, body: `ok` }),
-      })
-
-      await dispatcher.register(protocol)
-      expect(dispatcher.getProtocol(`test`)).toBe(protocol)
+  it(`should mount protocols at their namespaces`, async () => {
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/test`,
+      setup: (app) => {
+        app.get(`/hello`, (c) => c.text(`Hello from test`))
+      },
     })
 
-    it(`should list registered protocols`, async () => {
-      const p1 = defineProtocol({
-        name: `proto1`,
-        namespace: `/proto1`,
-        handle: async () => ({ status: 200 }),
-      })
-      const p2 = defineProtocol({
-        name: `proto2`,
-        namespace: `/proto2`,
-        handle: async () => ({ status: 200 }),
-      })
+    const app = createDispatcher(mockConfig, [protocol])
 
-      await dispatcher.register(p1)
-      await dispatcher.register(p2)
-
-      const protocols = dispatcher.listProtocols()
-      expect(protocols).toHaveLength(2)
-      expect(protocols.map((p) => p.name)).toContain(`proto1`)
-      expect(protocols.map((p) => p.name)).toContain(`proto2`)
-    })
-
-    it(`should unregister a protocol`, async () => {
-      const protocol = defineProtocol({
-        name: `test`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200 }),
-      })
-
-      await dispatcher.register(protocol)
-      expect(dispatcher.getProtocol(`test`)).toBeTruthy()
-
-      const unregistered = await dispatcher.unregister(`test`)
-      expect(unregistered).toBe(true)
-      expect(dispatcher.getProtocol(`test`)).toBeUndefined()
-    })
-
-    it(`should detect conflicting namespaces`, async () => {
-      const p1 = defineProtocol({
-        name: `proto1`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200 }),
-      })
-      const p2 = defineProtocol({
-        name: `proto2`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200 }),
-      })
-
-      await dispatcher.register(p1)
-      await expect(dispatcher.register(p2)).rejects.toThrow(/conflicts/)
-    })
-
-    it(`should call onRegister hook`, async () => {
-      let registered = false
-
-      const protocol = defineProtocol({
-        name: `test`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200 }),
-        hooks: {
-          onRegister: async () => {
-            registered = true
-          },
-        },
-      })
-
-      await dispatcher.register(protocol)
-      expect(registered).toBe(true)
-    })
-
-    it(`should call onUnregister hook`, async () => {
-      let unregistered = false
-
-      const protocol = defineProtocol({
-        name: `test`,
-        namespace: `/test`,
-        handle: async () => ({ status: 200 }),
-        hooks: {
-          onUnregister: async () => {
-            unregistered = true
-          },
-        },
-      })
-
-      await dispatcher.register(protocol)
-      await dispatcher.unregister(`test`)
-      expect(unregistered).toBe(true)
-    })
+    const res = await app.request(`/test/hello`)
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe(`Hello from test`)
   })
 
-  describe(`request matching`, () => {
-    it(`should match exact namespace`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/test`,
-          handle: async () => ({ status: 200, body: `matched` }),
-        })
-      )
-
-      const match = dispatcher.match(`/v1/stream/test`)
-      expect(match).toBeTruthy()
-      expect(match?.protocol.name).toBe(`test`)
+  it(`should mount multiple protocols`, async () => {
+    const protocol1 = defineProtocol({
+      name: `proto1`,
+      namespace: `/one`,
+      setup: (app) => {
+        app.get(`/`, (c) => c.text(`Protocol One`))
+      },
     })
 
-    it(`should match wildcard namespace`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/test/*`,
-          handle: async () => ({ status: 200 }),
-        })
-      )
-
-      const match1 = dispatcher.match(`/v1/stream/test/foo`)
-      expect(match1).toBeTruthy()
-      expect(match1?.wildcard).toBe(`foo`)
-
-      const match2 = dispatcher.match(`/v1/stream/test/foo/bar`)
-      expect(match2).toBeTruthy()
-      expect(match2?.wildcard).toBe(`foo/bar`)
+    const protocol2 = defineProtocol({
+      name: `proto2`,
+      namespace: `/two`,
+      setup: (app) => {
+        app.get(`/`, (c) => c.text(`Protocol Two`))
+      },
     })
 
-    it(`should match named parameters`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/docs/:docId`,
-          handle: async () => ({ status: 200 }),
-        })
-      )
+    const app = createDispatcher(mockConfig, [protocol1, protocol2])
 
-      const match = dispatcher.match(`/v1/stream/docs/my-doc`)
-      expect(match).toBeTruthy()
-      expect(match?.params.docId).toBe(`my-doc`)
-    })
+    const res1 = await app.request(`/one`)
+    expect(res1.status).toBe(200)
+    expect(await res1.text()).toBe(`Protocol One`)
 
-    it(`should match combined patterns`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/yjs/:docId/*`,
-          handle: async () => ({ status: 200 }),
-        })
-      )
-
-      const match = dispatcher.match(`/v1/stream/yjs/doc-123/awareness`)
-      expect(match).toBeTruthy()
-      expect(match?.params.docId).toBe(`doc-123`)
-      expect(match?.wildcard).toBe(`awareness`)
-    })
-
-    it(`should prefer more specific patterns`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `general`,
-          namespace: `/api/*`,
-          handle: async () => ({ status: 200, body: `general` }),
-        })
-      )
-      await dispatcher.register(
-        defineProtocol({
-          name: `specific`,
-          namespace: `/api/users`,
-          handle: async () => ({ status: 200, body: `specific` }),
-        })
-      )
-
-      const match = dispatcher.match(`/v1/stream/api/users`)
-      expect(match?.protocol.name).toBe(`specific`)
-    })
+    const res2 = await app.request(`/two`)
+    expect(res2.status).toBe(200)
+    expect(await res2.text()).toBe(`Protocol Two`)
   })
 
-  describe(`request dispatching`, () => {
-    it(`should dispatch to matching protocol`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/test`,
-          handle: async (req) => ({
-            status: 200,
-            body: `method: ${req.method}`,
-          }),
-        })
-      )
-
-      const response = await dispatcher.dispatch(`GET`, `/v1/stream/test`, {
-        url: new URL(`http://localhost/v1/stream/test`),
-        headers: new Headers(),
-      })
-
-      expect(response.status).toBe(200)
-      expect(response.body).toBe(`method: GET`)
+  it(`should return 404 for unmatched routes`, async () => {
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/test`,
+      setup: (app) => {
+        app.get(`/hello`, (c) => c.text(`Hello`))
+      },
     })
 
-    it(`should provide request params to handler`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/docs/:docId/*`,
-          handle: async (req) => ({
-            status: 200,
-            body: JSON.stringify({
-              docId: req.params.docId,
-              wildcard: req.wildcard,
-              subpath: req.subpath,
-            }),
-          }),
-        })
-      )
+    const app = createDispatcher(mockConfig, [protocol])
 
-      const response = await dispatcher.dispatch(
-        `POST`,
-        `/v1/stream/docs/my-doc/updates`,
-        {
-          url: new URL(`http://localhost/v1/stream/docs/my-doc/updates`),
-          headers: new Headers(),
-        }
-      )
-
-      expect(response.status).toBe(200)
-      const body = JSON.parse(response.body as string)
-      expect(body.docId).toBe(`my-doc`)
-      expect(body.wildcard).toBe(`updates`)
-    })
-
-    it(`should provide scoped context to handler`, async () => {
-      let contextNamespace: string | undefined
-
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/myns`,
-          handle: async (req, ctx) => {
-            contextNamespace = ctx.namespace
-            return { status: 200 }
-          },
-        })
-      )
-
-      await dispatcher.dispatch(`GET`, `/v1/stream/myns/sub`, {
-        url: new URL(`http://localhost/v1/stream/myns/sub`),
-        headers: new Headers(),
-      })
-
-      expect(contextNamespace).toBe(`/myns`)
-    })
-
-    it(`should return 404 for unmatched paths`, async () => {
-      const response = await dispatcher.dispatch(`GET`, `/v1/stream/unknown`, {
-        url: new URL(`http://localhost/v1/stream/unknown`),
-        headers: new Headers(),
-      })
-
-      expect(response.status).toBe(404)
-    })
-
-    it(`should pass through when handler returns undefined`, async () => {
-      await dispatcher.register(
-        defineProtocol({
-          name: `test`,
-          namespace: `/test`,
-          handle: async () => undefined,
-        })
-      )
-
-      const response = await dispatcher.dispatch(`GET`, `/v1/stream/test`, {
-        url: new URL(`http://localhost/v1/stream/test`),
-        headers: new Headers(),
-      })
-
-      // Passthrough returns 200 with empty body
-      expect(response.status).toBe(200)
-    })
+    const res = await app.request(`/unknown`)
+    expect(res.status).toBe(404)
   })
 
-  describe(`ProtocolBuilder`, () => {
-    it(`should build a protocol with route handlers`, async () => {
-      const protocol = createProtocolBuilder(`test`, `/api/*`)
-        .get(`/users`, async () => ({
-          status: 200,
-          body: JSON.stringify([{ id: 1, name: `Alice` }]),
-        }))
-        .post(`/users`, async (req) => ({
-          status: 201,
-          body: JSON.stringify({ created: true }),
-        }))
-        .build()
-
-      await dispatcher.register(protocol)
-
-      const getResponse = await dispatcher.dispatch(
-        `GET`,
-        `/v1/stream/api/users`,
-        {
-          url: new URL(`http://localhost/v1/stream/api/users`),
-          headers: new Headers(),
-        }
-      )
-      expect(getResponse.status).toBe(200)
-
-      const postResponse = await dispatcher.dispatch(
-        `POST`,
-        `/v1/stream/api/users`,
-        {
-          url: new URL(`http://localhost/v1/stream/api/users`),
-          headers: new Headers(),
-        }
-      )
-      expect(postResponse.status).toBe(201)
+  it(`should handle nested routes within namespace`, async () => {
+    const protocol = defineProtocol({
+      name: `docs`,
+      namespace: `/docs`,
+      setup: (app) => {
+        app.get(`/:docId`, (c) => c.text(`Doc: ${c.req.param(`docId`)}`))
+        app.get(`/:docId/updates`, (c) => c.text(`Updates for: ${c.req.param(`docId`)}`))
+      },
     })
 
-    it(`should support wildcard route paths`, async () => {
-      const protocol = createProtocolBuilder(`test`, `/api/*`)
-        .all(`*`, async (req) => ({
-          status: 200,
-          body: `subpath: ${req.subpath}`,
-        }))
-        .build()
+    const app = createDispatcher(mockConfig, [protocol])
 
-      await dispatcher.register(protocol)
+    const res1 = await app.request(`/docs/my-doc`)
+    expect(res1.status).toBe(200)
+    expect(await res1.text()).toBe(`Doc: my-doc`)
 
-      const response = await dispatcher.dispatch(
-        `GET`,
-        `/v1/stream/api/any/path/here`,
-        {
-          url: new URL(`http://localhost/v1/stream/api/any/path/here`),
-          headers: new Headers(),
-        }
-      )
+    const res2 = await app.request(`/docs/my-doc/updates`)
+    expect(res2.status).toBe(200)
+    expect(await res2.text()).toBe(`Updates for: my-doc`)
+  })
 
-      expect(response.status).toBe(200)
-      expect(response.body).toContain(`any/path/here`)
+  it(`should support different HTTP methods`, async () => {
+    const protocol = defineProtocol({
+      name: `api`,
+      namespace: `/api`,
+      setup: (app) => {
+        app.get(`/resource`, (c) => c.text(`GET`))
+        app.post(`/resource`, (c) => c.text(`POST`))
+        app.put(`/resource`, (c) => c.text(`PUT`))
+        app.delete(`/resource`, (c) => c.text(`DELETE`))
+      },
     })
+
+    const app = createDispatcher(mockConfig, [protocol])
+
+    expect(await (await app.request(`/api/resource`, { method: `GET` })).text()).toBe(`GET`)
+    expect(await (await app.request(`/api/resource`, { method: `POST` })).text()).toBe(`POST`)
+    expect(await (await app.request(`/api/resource`, { method: `PUT` })).text()).toBe(`PUT`)
+    expect(await (await app.request(`/api/resource`, { method: `DELETE` })).text()).toBe(`DELETE`)
+  })
+})
+
+describe(`mountProtocol`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should mount a protocol onto an existing app`, async () => {
+    const app = new Hono<ProtocolHonoEnv>()
+    app.get(`/`, (c) => c.text(`Root`))
+
+    const protocol = defineProtocol({
+      name: `addon`,
+      namespace: `/addon`,
+      setup: (protoApp) => {
+        protoApp.get(`/feature`, (c) => c.text(`Addon Feature`))
+      },
+    })
+
+    mountProtocol(app, mockConfig, protocol)
+
+    const rootRes = await app.request(`/`)
+    expect(rootRes.status).toBe(200)
+    expect(await rootRes.text()).toBe(`Root`)
+
+    const addonRes = await app.request(`/addon/feature`)
+    expect(addonRes.status).toBe(200)
+    expect(await addonRes.text()).toBe(`Addon Feature`)
+  })
+})
+
+describe(`defineProtocol`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should create a protocol with name and namespace`, () => {
+    const protocol = defineProtocol({
+      name: `my-protocol`,
+      namespace: `/my`,
+      setup: () => {},
+    })
+
+    expect(protocol.name).toBe(`my-protocol`)
+    expect(protocol.namespace).toBe(`/my`)
+  })
+
+  it(`should provide config to setup function`, async () => {
+    let receivedConfig: ProtocolConfig | undefined
+
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/test`,
+      setup: (app, config) => {
+        receivedConfig = config
+        app.get(`/`, (c) => c.text(`ok`))
+      },
+    })
+
+    const app = createDispatcher(mockConfig, [protocol])
+    await app.request(`/test`)
+
+    expect(receivedConfig).toBe(mockConfig)
+  })
+
+  it(`should set up stream context in handlers`, async () => {
+    let hasStreamFn = false
+    let hasNamespace = false
+
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/myns`,
+      setup: (app) => {
+        app.get(`/check`, (c) => {
+          hasStreamFn = typeof c.var.stream === `function`
+          hasNamespace = typeof c.var.namespace === `string`
+          return c.text(`ok`)
+        })
+      },
+    })
+
+    const app = createDispatcher(mockConfig, [protocol])
+    await app.request(`/myns/check`)
+
+    expect(hasStreamFn).toBe(true)
+    expect(hasNamespace).toBe(true)
+  })
+
+  it(`should provide correct namespace in context`, async () => {
+    let contextNamespace: string | undefined
+
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/myns`,
+      setup: (app) => {
+        app.get(`/ns`, (c) => {
+          contextNamespace = c.var.namespace
+          return c.text(`ok`)
+        })
+      },
+    })
+
+    const app = createDispatcher(mockConfig, [protocol])
+    await app.request(`/myns/ns`)
+
+    expect(contextNamespace).toBe(`/myns`)
+  })
+})
+
+describe(`stream helper`, () => {
+  const mockConfig: ProtocolConfig = {
+    baseUrl: `https://streams.example.com/v1/stream`,
+  }
+
+  it(`should return a DurableStream instance`, async () => {
+    let streamInstance: unknown
+
+    const protocol = defineProtocol({
+      name: `test`,
+      namespace: `/docs`,
+      setup: (app) => {
+        app.get(`/:id`, (c) => {
+          streamInstance = stream(c, `updates`)
+          return c.text(`ok`)
+        })
+      },
+    })
+
+    const app = createDispatcher(mockConfig, [protocol])
+    await app.request(`/docs/my-doc`)
+
+    expect(streamInstance).toBeDefined()
+    expect(typeof (streamInstance as { create: unknown }).create).toBe(`function`)
   })
 })
