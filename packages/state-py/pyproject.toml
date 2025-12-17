@@ -1,0 +1,60 @@
+[project]
+name = "durable-streams-state"
+version = "0.1.0"
+description = "Python state sync layer for Durable Streams"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "ElectricSQL" }]
+keywords = ["durable-streams", "state", "sync", "materializer"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Typing :: Typed",
+]
+dependencies = [
+  "durable-streams>=0.1.0",
+  "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.8.0",
+  "pyright>=1.1.390",
+  "pytest>=8.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/durable_streams_state"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/pyproject.toml"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "C4", "UP", "ARG", "SIM"]
+ignore = ["E501", "B008", "B904", "SIM108"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["durable_streams_state"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+include = ["src"]
+exclude = ["tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
