@@ -1,0 +1,44 @@
+{
+  "name": "@durable-streams/wrapper-sdk",
+  "version": "0.0.0",
+  "description": "SDK for building wrapper protocols on top of durable streams",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "durable",
+    "stream",
+    "wrapper",
+    "protocol",
+    "sdk"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/wrapper-sdk"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/writer": "workspace:*"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*"
+  }
+}
