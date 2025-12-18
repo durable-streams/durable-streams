@@ -8,8 +8,17 @@ Public API intentionally mirrors `packages/state` (TypeScript) but is pythonic:
 """
 
 from durable_streams_state.materialized_state import MaterializedState
-from durable_streams_state.schema import CollectionDefinition, StateSchema, create_state_schema
-from durable_streams_state.stream_db import AsyncStreamDB, StreamDB, create_async_stream_db, create_stream_db
+from durable_streams_state.schema import (
+    CollectionDefinition,
+    StateSchema,
+    create_state_schema,
+)
+from durable_streams_state.stream_db import (
+    AsyncStreamDB,
+    StreamDB,
+    create_async_stream_db,
+    create_stream_db,
+)
 from durable_streams_state.types import (
     ChangeEvent,
     ChangeHeaders,

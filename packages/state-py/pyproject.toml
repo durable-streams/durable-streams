@@ -22,11 +22,16 @@ dependencies = [
   "pydantic>=2.7.0",
 ]
 
+[tool.uv.sources]
+durable-streams = { path = "../client-py", editable = true }
+
 [project.optional-dependencies]
 dev = [
   "ruff>=0.8.0",
   "pyright>=1.1.390",
   "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "httpx>=0.28.0",
 ]
 
 [build-system]
@@ -58,3 +63,5 @@ exclude = ["tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

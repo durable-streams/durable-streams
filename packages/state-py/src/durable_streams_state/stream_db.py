@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -88,11 +89,7 @@ class CollectionView(Generic[T]):
         # Apply pending in order
         applied: list[CollectionChange] = []
         for ch in self._pending:
-            if ch.type == "insert":
-                if ch.value is not None:
-                    self._data[ch.key] = ch.value  # type: ignore[assignment]
-                    self._known_keys.add(ch.key)
-            elif ch.type == "update":
+            if ch.type == "insert" or ch.type == "update":
                 if ch.value is not None:
                     self._data[ch.key] = ch.value  # type: ignore[assignment]
                     self._known_keys.add(ch.key)
@@ -291,7 +288,9 @@ class StreamDB:
         try:
             with self.stream.stream(live=self._live) as res:
                 self._response = res
+                had_batches = False
                 for batch in res.iter_json_batches():
+                    had_batches = True
                     if self._stop.is_set():
                         break
 
@@ -304,7 +303,9 @@ class StreamDB:
                         elif is_control_event(event):
                             self._dispatcher.dispatch_control(event)
 
-                    self._dispatcher.commit_if_up_to_date(up_to_date=bool(res.up_to_date))
+                    self._dispatcher.commit_if_up_to_date(
+                        up_to_date=bool(res.up_to_date)
+                    )
                     if self._dispatcher.ready:
                         self._ready.set()
 
@@ -314,6 +315,11 @@ class StreamDB:
                     # Keep loop responsive even if stream is very quiet
                     # (iter_json_batches already blocks; this is just a yield point)
                     time.sleep(0)
+
+                # Handle empty streams (no batches received) - mark as ready
+                if not had_batches:
+                    self._dispatcher.commit_if_up_to_date(up_to_date=True)
+                    self._ready.set()
         except Exception as e:
             self._error = e
             self._dispatcher.reject_all(e)
@@ -333,14 +339,8 @@ class StreamDB:
     def close(self) -> None:
         self._stop.set()
         if self._response is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._response.close()
-            except Exception:
-                pass
-
-    class utils:
-        # Placeholder namespace; instance method below shadows via property
-        pass
 
     @property
     def utils(self) -> Any:
@@ -378,7 +378,9 @@ class AsyncStreamDB:
         try:
             async with self.stream.stream(live=self._live) as res:
                 self._response = res
+                had_batches = False
                 async for batch in res.iter_json_batches():
+                    had_batches = True
                     for item in batch:
                         if not isinstance(item, dict):
                             continue
@@ -388,11 +390,18 @@ class AsyncStreamDB:
                         elif is_control_event(event):
                             self._dispatcher.dispatch_control(event)
 
-                    self._dispatcher.commit_if_up_to_date(up_to_date=bool(res.up_to_date))
+                    self._dispatcher.commit_if_up_to_date(
+                        up_to_date=bool(res.up_to_date)
+                    )
                     if self._dispatcher.ready:
                         self._ready.set()
 
                     await asyncio.sleep(0)
+
+                # Handle empty streams (no batches received) - mark as ready
+                if not had_batches:
+                    self._dispatcher.commit_if_up_to_date(up_to_date=True)
+                    self._ready.set()
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -413,17 +422,13 @@ class AsyncStreamDB:
     async def aclose(self) -> None:
         if self._task is not None:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
             self._task = None
 
         if self._response is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._response.aclose()
-            except Exception:
-                pass
 
     @property
     def utils(self) -> Any:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Generic, Mapping, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel, TypeAdapter
 
@@ -99,8 +100,9 @@ class CollectionSchema(Generic[T]):
         headers: Mapping[str, str] | None = None,
     ) -> ChangeEvent[T]:
         validated = self._validate(value, label="update")
+        validated_old: T | None = None
         if old_value is not None:
-            _ = self._validate(old_value, label="update (old_value)")
+            validated_old = self._validate(old_value, label="update (old_value)")
 
         final_key = key or self._derive_key_from_value(validated)
         if not final_key:
@@ -117,8 +119,8 @@ class CollectionSchema(Generic[T]):
             "value": validated,
             "headers": merged,  # type: ignore[typeddict-item]
         }
-        if old_value is not None:
-            evt["old_value"] = old_value
+        if validated_old is not None:
+            evt["old_value"] = validated_old
         return evt
 
     def delete(
@@ -128,12 +130,13 @@ class CollectionSchema(Generic[T]):
         old_value: Any | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> ChangeEvent[T]:
+        validated_old: T | None = None
         if old_value is not None:
-            _ = self._validate(old_value, label="delete")
+            validated_old = self._validate(old_value, label="delete")
 
         final_key = key
-        if final_key is None and old_value is not None:
-            final_key = self._derive_key_from_value(old_value)
+        if final_key is None and validated_old is not None:
+            final_key = self._derive_key_from_value(validated_old)
 
         if not final_key:
             raise ValueError(
@@ -148,8 +151,8 @@ class CollectionSchema(Generic[T]):
             "key": final_key,
             "headers": merged,  # type: ignore[typeddict-item]
         }
-        if old_value is not None:
-            evt["old_value"] = old_value
+        if validated_old is not None:
+            evt["old_value"] = validated_old
         return evt
 
     def upsert(
@@ -180,7 +183,7 @@ StateSchema = dict[str, CollectionSchema[Any]]
 
 
 def create_state_schema(defs: Mapping[str, CollectionDefinition[Any]]) -> StateSchema:
-    for name in defs.keys():
+    for name in defs:
         if name in _RESERVED_COLLECTION_NAMES:
             raise ValueError(
                 f"Reserved collection name {name!r} - this would collide with StreamDB "

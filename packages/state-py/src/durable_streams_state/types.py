@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict, TypeVar, Union
+from typing import Any, Literal, TypedDict, TypeVar
 
 Operation = Literal["insert", "update", "delete", "upsert"]
 
@@ -33,7 +33,7 @@ class ControlEvent(TypedDict):
     headers: ControlHeaders
 
 
-StateEvent = Union[ChangeEvent[Any], ControlEvent]
+StateEvent = ChangeEvent[Any] | ControlEvent
 
 
 def is_change_event(event: StateEvent) -> bool:
