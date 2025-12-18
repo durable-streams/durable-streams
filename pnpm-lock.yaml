@@ -111,6 +111,8 @@ importers:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
 
+  packages/client-py: {}
+
   packages/conformance-tests:
     dependencies:
       '@durable-streams/client':
