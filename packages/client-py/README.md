@@ -1,6 +1,6 @@
 # durable-streams
 
-Python client for the Electric Durable Streams protocol.
+Python client for the Durable Streams protocol.
 
 ## Overview
 
@@ -438,4 +438,4 @@ This client implements the [Durable Streams Protocol](../../PROTOCOL.md), includ
 
 ## License
 
-Apache-2.0
+MIT
