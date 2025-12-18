@@ -6,7 +6,7 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { randomBytes } from "node:crypto"
-import { open as openLMDB } from "lmdb"
+import { createRequire } from "node:module"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
@@ -173,7 +173,22 @@ export class FileBackedStreamStore {
     this.dataDir = options.dataDir
 
     // Initialize LMDB
-    this.db = openLMDB({
+    const require = createRequire(import.meta.url)
+    let openLMDB:
+      | ((opts: { path: string; compression?: boolean }) => Database)
+      | null = null
+    try {
+      // lmdb is an optional native dependency for file-backed stores.
+      // We only require it at runtime if/when FileBackedStreamStore is used.
+      ;({ open: openLMDB } = require(`lmdb`) as { open: typeof openLMDB })
+    } catch (err) {
+      throw new Error(
+        `FileBackedStreamStore requires the optional dependency 'lmdb'. ` +
+          `Install it to use file-backed storage. Original error: ${String(err)}`
+      )
+    }
+
+    this.db = openLMDB!({
       path: path.join(this.dataDir, `metadata.lmdb`),
       compression: true,
     })

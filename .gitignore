@@ -186,3 +186,11 @@ htmlcov/
 # Claude local settings
 .claude/settings.local.json
 .beads
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
