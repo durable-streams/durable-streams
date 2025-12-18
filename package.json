@@ -21,7 +21,9 @@
     "prepare": "husky",
     "changeset": "changeset",
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
-    "changeset:publish": "pnpm build && changeset publish"
+    "changeset:publish": "pnpm build && changeset publish",
+    "ci:version": "changeset version && node scripts/sync-python-versions.mjs && pnpm install --no-frozen-lockfile",
+    "ci:publish": "pnpm build && changeset publish && node scripts/publish-python.mjs"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

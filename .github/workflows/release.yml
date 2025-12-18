@@ -12,6 +12,7 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write # Needed for PyPI Trusted Publishing (OIDC)
 
 jobs:
   release:
@@ -31,6 +32,9 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -40,17 +44,18 @@ jobs:
       - name: Test
         run: pnpm test:run
 
-      - name: Create Release Pull Request or Publish to npm
+      - name: Create Release Pull Request or Publish to npm/PyPI
         id: changesets
         uses: changesets/action@v1.5.3
         with:
-          version: pnpm run changeset:version
-          publish: pnpm run changeset:publish
+          version: pnpm run ci:version
+          publish: pnpm run ci:publish
           commit: "ci: Version Packages"
           title: "ci: Version Packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
 
       - name: Comment on PRs about release
         if: steps.changesets.outputs.published == 'true'
