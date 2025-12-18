@@ -135,25 +135,31 @@ def _stream_internal(
     if cursor:
         query_params[CURSOR_QUERY_PARAM] = cursor
 
-    # Resolve user-provided headers and params
-    resolved_headers = resolve_headers_sync(headers)
-    resolved_params = resolve_params_sync(params)
-
-    # Add Accept header for SSE mode (standard SSE negotiation)
-    if is_sse and "accept" not in {k.lower() for k in resolved_headers}:
-        resolved_headers["Accept"] = "text/event-stream"
-
-    # Merge query params (user params + protocol params)
-    all_params = {**resolved_params, **query_params}
-
-    # Build the request URL
-    request_url = build_url_with_params(url, all_params)
+    # Track mutations from on_error that should persist to fetch_next
+    header_mutations: dict[str, str] = {}
+    param_mutations: dict[str, str] = {}
 
     # Make the initial request with retry loop for on_error
-    current_headers = resolved_headers.copy()
-    current_params = resolved_params.copy()
-
     while True:
+        # Re-resolve headers/params on each retry so callables (e.g., token fetchers)
+        # can return fresh values
+        resolved_headers = resolve_headers_sync(headers)
+        resolved_params = resolve_params_sync(params)
+
+        # Apply any mutations from previous on_error calls
+        current_headers = {**resolved_headers, **header_mutations}
+        current_params = {**resolved_params, **param_mutations}
+
+        # Add Accept header for SSE mode (standard SSE negotiation)
+        if is_sse and "accept" not in {k.lower() for k in current_headers}:
+            current_headers["Accept"] = "text/event-stream"
+
+        # Merge query params (user params + protocol params)
+        all_params = {**current_params, **query_params}
+
+        # Build the request URL
+        request_url = build_url_with_params(url, all_params)
+
         try:
             # Use streaming mode to avoid buffering the entire response
             request = client.build_request(
@@ -190,15 +196,12 @@ def _stream_internal(
                     # No recovery, re-raise
                     raise
 
-                # Merge returned params/headers for retry
+                # Accumulate mutations for retry and for fetch_next
                 if "params" in retry_opts:
-                    current_params = {**current_params, **retry_opts["params"]}
+                    param_mutations = {**param_mutations, **retry_opts["params"]}
                 if "headers" in retry_opts:
-                    current_headers = {**current_headers, **retry_opts["headers"]}
+                    header_mutations = {**header_mutations, **retry_opts["headers"]}
 
-                # Rebuild request URL with updated params
-                all_params = {**current_params, **query_params}
-                request_url = build_url_with_params(url, all_params)
                 continue
 
             raise
@@ -218,6 +221,10 @@ def _stream_internal(
     meta = parse_response_headers(headers_dict)
 
     # Create fetch_next function for live continuation
+    # Capture the mutations from on_error so they persist to follow-up requests
+    captured_header_mutations = header_mutations.copy()
+    captured_param_mutations = param_mutations.copy()
+
     def fetch_next(next_offset: Offset, next_cursor: str | None) -> httpx.Response:
         """Fetch the next chunk for live updates."""
         next_params: dict[str, str] = {}
@@ -232,18 +239,22 @@ def _stream_internal(
         if next_cursor:
             next_params[CURSOR_QUERY_PARAM] = next_cursor
 
-        # Re-resolve dynamic headers/params
+        # Re-resolve dynamic headers/params, then apply any mutations from on_error
         resolved_hdrs = resolve_headers_sync(headers)
         resolved_prms = resolve_params_sync(params)
 
-        all_prms = {**resolved_prms, **next_params}
+        # Apply captured mutations from on_error (e.g., refreshed auth)
+        final_hdrs = {**resolved_hdrs, **captured_header_mutations}
+        final_prms = {**resolved_prms, **captured_param_mutations}
+
+        all_prms = {**final_prms, **next_params}
         next_url = build_url_with_params(url, all_prms)
 
         # Use streaming mode for live fetches
         request = client.build_request(
             "GET",
             next_url,
-            headers=resolved_hdrs,
+            headers=final_hdrs,
             timeout=timeout,
             **kwargs,
         )

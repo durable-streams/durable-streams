@@ -178,7 +178,12 @@ class AsyncDurableStream:
             timeout=timeout,
             **kwargs,
         )
-        await handle.head()
+        try:
+            await handle.head()
+        except Exception:
+            # Close the handle to avoid leaking the client if we created it
+            await handle.aclose()
+            raise
         return handle
 
     @classmethod
@@ -211,12 +216,17 @@ class AsyncDurableStream:
             timeout=timeout,
             **kwargs,
         )
-        await handle.create_stream(
-            content_type=content_type,
-            ttl_seconds=ttl_seconds,
-            expires_at=expires_at,
-            body=body,
-        )
+        try:
+            await handle.create_stream(
+                content_type=content_type,
+                ttl_seconds=ttl_seconds,
+                expires_at=expires_at,
+                body=body,
+            )
+        except Exception:
+            # Close the handle to avoid leaking the client if we created it
+            await handle.aclose()
+            raise
         return handle
 
     @classmethod
