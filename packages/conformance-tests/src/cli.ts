@@ -8,16 +8,17 @@
  *   npx @durable-streams/conformance-tests --watch src http://localhost:4473
  */
 
-import { spawn, type ChildProcess } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync, watch } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import type { ChildProcess } from "node:child_process"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 interface ParsedArgs {
-  mode: "run" | "watch"
-  watchPaths: string[]
+  mode: `run` | `watch`
+  watchPaths: Array<string>
   baseUrl: string
   help: boolean
 }
@@ -50,11 +51,11 @@ Examples:
 `)
 }
 
-function parseArgs(args: string[]): ParsedArgs {
+function parseArgs(args: Array<string>): ParsedArgs {
   const result: ParsedArgs = {
-    mode: "run",
+    mode: `run`,
     watchPaths: [],
-    baseUrl: "",
+    baseUrl: ``,
     help: false,
   }
 
@@ -62,24 +63,24 @@ function parseArgs(args: string[]): ParsedArgs {
   while (i < args.length) {
     const arg = args[i]!
 
-    if (arg === "--help" || arg === "-h") {
+    if (arg === `--help` || arg === `-h`) {
       result.help = true
       return result
     }
 
-    if (arg === "--run") {
-      result.mode = "run"
+    if (arg === `--run`) {
+      result.mode = `run`
       i++
       continue
     }
 
-    if (arg === "--watch") {
-      result.mode = "watch"
+    if (arg === `--watch`) {
+      result.mode = `watch`
       i++
       // Collect all paths until we hit another flag or the last argument (url)
       while (i < args.length - 1) {
         const next = args[i]!
-        if (next.startsWith("--") || next.startsWith("-")) {
+        if (next.startsWith(`--`) || next.startsWith(`-`)) {
           break
         }
         result.watchPaths.push(next)
@@ -89,7 +90,7 @@ function parseArgs(args: string[]): ParsedArgs {
     }
 
     // Last non-flag argument is the URL
-    if (!arg.startsWith("-")) {
+    if (!arg.startsWith(`-`)) {
       result.baseUrl = arg
     }
 
@@ -101,7 +102,7 @@ function parseArgs(args: string[]): ParsedArgs {
 
 function validateArgs(args: ParsedArgs): string | null {
   if (!args.baseUrl) {
-    return "Error: Base URL is required"
+    return `Error: Base URL is required`
   }
 
   try {
@@ -110,8 +111,8 @@ function validateArgs(args: ParsedArgs): string | null {
     return `Error: Invalid URL "${args.baseUrl}"`
   }
 
-  if (args.mode === "watch" && args.watchPaths.length === 0) {
-    return "Error: --watch requires at least one path to watch"
+  if (args.mode === `watch` && args.watchPaths.length === 0) {
+    return `Error: --watch requires at least one path to watch`
   }
 
   return null
@@ -119,8 +120,8 @@ function validateArgs(args: ParsedArgs): string | null {
 
 // Get the path to the test runner file
 function getTestRunnerPath(): string {
-  const runnerInDist = join(__dirname, "test-runner.js")
-  const runnerInSrc = join(__dirname, "test-runner.ts")
+  const runnerInDist = join(__dirname, `test-runner.js`)
+  const runnerInSrc = join(__dirname, `test-runner.ts`)
 
   // In production (dist), use the compiled JS
   // In development (with tsx), use TS directly
@@ -135,18 +136,18 @@ function runTests(baseUrl: string): Promise<number> {
     const runnerPath = getTestRunnerPath()
 
     // Find vitest binary
-    const vitestBin = join(__dirname, "..", "node_modules", ".bin", "vitest")
+    const vitestBin = join(__dirname, `..`, `node_modules`, `.bin`, `vitest`)
     const vitestBinAlt = join(
       __dirname,
-      "..",
-      "..",
-      "..",
-      "node_modules",
-      ".bin",
-      "vitest"
+      `..`,
+      `..`,
+      `..`,
+      `node_modules`,
+      `.bin`,
+      `vitest`
     )
 
-    let vitestPath = "vitest"
+    let vitestPath = `vitest`
     if (existsSync(vitestBin)) {
       vitestPath = vitestBin
     } else if (existsSync(vitestBinAlt)) {
@@ -154,28 +155,28 @@ function runTests(baseUrl: string): Promise<number> {
     }
 
     const args = [
-      "run",
+      `run`,
       runnerPath,
-      "--no-coverage",
-      "--reporter=default",
-      "--passWithNoTests=false",
+      `--no-coverage`,
+      `--reporter=default`,
+      `--passWithNoTests=false`,
     ]
 
     const child = spawn(vitestPath, args, {
-      stdio: "inherit",
+      stdio: `inherit`,
       env: {
         ...process.env,
         CONFORMANCE_TEST_URL: baseUrl,
-        FORCE_COLOR: "1",
+        FORCE_COLOR: `1`,
       },
       shell: true,
     })
 
-    child.on("close", (code) => {
+    child.on(`close`, (code) => {
       resolvePromise(code ?? 1)
     })
 
-    child.on("error", (err) => {
+    child.on(`error`, (err) => {
       console.error(`Failed to run tests: ${err.message}`)
       resolvePromise(1)
     })
@@ -188,7 +189,10 @@ async function runOnce(baseUrl: string): Promise<void> {
   process.exit(exitCode)
 }
 
-async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
+async function runWatch(
+  baseUrl: string,
+  watchPaths: Array<string>
+): Promise<void> {
   let runningProcess: ChildProcess | null = null
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
   const DEBOUNCE_MS = 300
@@ -197,18 +201,18 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
     const runnerPath = getTestRunnerPath()
 
     // Find vitest binary
-    const vitestBin = join(__dirname, "..", "node_modules", ".bin", "vitest")
+    const vitestBin = join(__dirname, `..`, `node_modules`, `.bin`, `vitest`)
     const vitestBinAlt = join(
       __dirname,
-      "..",
-      "..",
-      "..",
-      "node_modules",
-      ".bin",
-      "vitest"
+      `..`,
+      `..`,
+      `..`,
+      `node_modules`,
+      `.bin`,
+      `vitest`
     )
 
-    let vitestPath = "vitest"
+    let vitestPath = `vitest`
     if (existsSync(vitestBin)) {
       vitestPath = vitestBin
     } else if (existsSync(vitestBinAlt)) {
@@ -216,19 +220,19 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
     }
 
     const args = [
-      "run",
+      `run`,
       runnerPath,
-      "--no-coverage",
-      "--reporter=default",
-      "--passWithNoTests=false",
+      `--no-coverage`,
+      `--reporter=default`,
+      `--passWithNoTests=false`,
     ]
 
     return spawn(vitestPath, args, {
-      stdio: "inherit",
+      stdio: `inherit`,
       env: {
         ...process.env,
         CONFORMANCE_TEST_URL: baseUrl,
-        FORCE_COLOR: "1",
+        FORCE_COLOR: `1`,
       },
       shell: true,
     })
@@ -242,7 +246,7 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
     debounceTimer = setTimeout(() => {
       // Kill any running test process
       if (runningProcess) {
-        runningProcess.kill("SIGTERM")
+        runningProcess.kill(`SIGTERM`)
         runningProcess = null
       }
 
@@ -251,13 +255,13 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
 
       runningProcess = spawnTests()
 
-      runningProcess.on("close", (code) => {
+      runningProcess.on(`close`, (code) => {
         if (code === 0) {
           console.log(`\nAll tests passed`)
         } else {
           console.log(`\nTests failed (exit code: ${code})`)
         }
-        console.log(`\nWatching for changes in: ${watchPaths.join(", ")}`)
+        console.log(`\nWatching for changes in: ${watchPaths.join(`, `)}`)
         console.log(`Press Ctrl+C to exit\n`)
         runningProcess = null
       })
@@ -265,7 +269,7 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
   }
 
   // Set up file watchers
-  const watchers: ReturnType<typeof watch>[] = []
+  const watchers: Array<ReturnType<typeof watch>> = []
 
   for (const watchPath of watchPaths) {
     const absPath = resolve(process.cwd(), watchPath)
@@ -275,7 +279,7 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
         absPath,
         { recursive: true },
         (eventType, filename) => {
-          if (filename && !filename.includes("node_modules")) {
+          if (filename && !filename.includes(`node_modules`)) {
             console.log(`\nChange detected: ${filename}`)
             runTestsDebounced()
           }
@@ -292,16 +296,16 @@ async function runWatch(baseUrl: string, watchPaths: string[]): Promise<void> {
   }
 
   if (watchers.length === 0) {
-    console.error("Error: No valid paths to watch")
+    console.error(`Error: No valid paths to watch`)
     process.exit(1)
   }
 
   // Handle cleanup
-  process.on("SIGINT", () => {
-    console.log("\n\nStopping watch mode...")
+  process.on(`SIGINT`, () => {
+    console.log(`\n\nStopping watch mode...`)
     watchers.forEach((w) => w.close())
     if (runningProcess) {
-      runningProcess.kill("SIGTERM")
+      runningProcess.kill(`SIGTERM`)
     }
     process.exit(0)
   })
@@ -324,11 +328,11 @@ async function main() {
   const error = validateArgs(args)
   if (error) {
     console.error(error)
-    console.error("\nRun with --help for usage information")
+    console.error(`\nRun with --help for usage information`)
     process.exit(1)
   }
 
-  if (args.mode === "watch") {
+  if (args.mode === `watch`) {
     await runWatch(args.baseUrl, args.watchPaths)
   } else {
     await runOnce(args.baseUrl)
