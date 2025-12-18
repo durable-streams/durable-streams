@@ -635,6 +635,9 @@ class StreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     response.close()
                     continue
 
@@ -727,6 +730,9 @@ class StreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     response.close()
                     continue
 
@@ -792,6 +798,9 @@ class StreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     response.close()
                     continue
 
@@ -1336,6 +1345,9 @@ class AsyncStreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     await response.aclose()
                     continue
 
@@ -1412,6 +1424,9 @@ class AsyncStreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     await response.aclose()
                     continue
 
@@ -1469,6 +1484,9 @@ class AsyncStreamResponse(Generic[T]):
                 self._update_metadata_from_response(response)
 
                 if response.status_code == 204:
+                    # 204 means "long-poll timeout, nothing new" - we're caught up
+                    # Mark as up-to-date to prevent endless polling if header is missing
+                    self._up_to_date = True
                     await response.aclose()
                     continue
 

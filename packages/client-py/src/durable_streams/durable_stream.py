@@ -186,7 +186,12 @@ class DurableStream:
             timeout=timeout,
             **kwargs,
         )
-        handle.head()  # Validates existence and populates content_type
+        try:
+            handle.head()  # Validates existence and populates content_type
+        except Exception:
+            # Close the handle to avoid leaking the client if we created it
+            handle.close()
+            raise
         return handle
 
     @classmethod
@@ -234,12 +239,17 @@ class DurableStream:
             timeout=timeout,
             **kwargs,
         )
-        handle.create_stream(
-            content_type=content_type,
-            ttl_seconds=ttl_seconds,
-            expires_at=expires_at,
-            body=body,
-        )
+        try:
+            handle.create_stream(
+                content_type=content_type,
+                ttl_seconds=ttl_seconds,
+                expires_at=expires_at,
+                body=body,
+            )
+        except Exception:
+            # Close the handle to avoid leaking the client if we created it
+            handle.close()
+            raise
         return handle
 
     @classmethod
