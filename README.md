@@ -325,6 +325,8 @@ Offsets are opaque tokens that identify positions within a stream:
 - **Lexicographically sortable** - You can compare offsets to determine ordering
 - **`"-1"` means start** - Use `offset: "-1"` to read from the beginning
 - **Server-generated** - Always use the `offset` value returned in responses
+- **Unique** - Each offset is unique within a stream
+- **Monotonically increasing** - All offsets are monotonically increasing within a stream
 
 ```typescript
 // Start from beginning (catch-up mode)
