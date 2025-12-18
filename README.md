@@ -592,6 +592,22 @@ res.subscribe((chunk) => {
 
 Use the conformance test suite to verify your server implements the protocol correctly:
 
+### Using the CLI
+
+The easiest way to run conformance tests against your server:
+
+```bash
+# Run tests once (for CI)
+npx @durable-streams/conformance-tests --run http://localhost:4437
+
+# Watch mode - reruns tests when source files change (for development)
+npx @durable-streams/conformance-tests --watch src http://localhost:4437
+```
+
+### Programmatic Usage
+
+You can also run the tests programmatically in your own test suite:
+
 ```typescript
 import { runConformanceTests } from "@durable-streams/conformance-tests"
 
