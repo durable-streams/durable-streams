@@ -1,7 +1,7 @@
 """
 Durable Streams Python Client
 
-A Python client library for the Electric Durable Streams protocol.
+A Python client library for the Durable Streams protocol.
 
 This package provides both synchronous and asynchronous APIs for reading and
 writing to durable streams.
