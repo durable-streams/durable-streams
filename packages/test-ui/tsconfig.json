@@ -3,7 +3,7 @@
     "target": "ES2022",
     "useDefineForClassFields": true,
     "module": "ESNext",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "dom.asynciterable"],
     "types": ["vite/client"],
     "skipLibCheck": true,
     "jsx": "react-jsx",

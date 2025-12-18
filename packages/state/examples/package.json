@@ -1,0 +1,19 @@
+{
+  "name": "@durable-streams/examples",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite background-jobs --open",
+    "dev:background-jobs": "vite background-jobs --open",
+    "build": "vite build background-jobs"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

@@ -1,77 +1,101 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router"
 import { useEffect, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
+import { and, eq, gt, useLiveQuery } from "@tanstack/react-db"
+import { useStreamDB } from "../lib/stream-db-context"
+import { usePresence } from "../hooks/usePresence"
+import type { StreamMetadata } from "../lib/schemas"
 import "../styles.css"
 
-interface Stream {
-  path: string
-  contentType?: string
-}
+const SERVER_URL = `http://${window.location.hostname}:4437`
 
-interface RegistryEvent {
-  type: `created` | `deleted`
-  path: string
-  contentType?: string
-  timestamp: number
+function StreamListItem({ stream }: { stream: StreamMetadata }) {
+  const { presenceDB } = useStreamDB()
+  const [now, setNow] = useState(Date.now())
+
+  // Update "now" every 5 seconds to re-evaluate stale indicators
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setNow(Date.now())
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [])
+
+  // Query viewers for this stream
+  const { data: viewers = [] } = useLiveQuery(
+    (q) =>
+      q
+        .from({ presence: presenceDB.collections.presence })
+        .where(({ presence }) =>
+          and(
+            eq(presence.streamPath, stream.path),
+            gt(presence.lastSeen, now - 60000)
+          )
+        ),
+    [stream.path, now]
+  )
+
+  // Query typing users for this stream
+  const { data: typingUsers = [] } = useLiveQuery(
+    (q) =>
+      q
+        .from({ presence: presenceDB.collections.presence })
+        .where(({ presence }) =>
+          and(
+            eq(presence.streamPath, stream.path),
+            eq(presence.isTyping, true),
+            gt(presence.lastSeen, now - 60000)
+          )
+        ),
+    [stream.path, now]
+  )
+
+  return (
+    <Link
+      to="/stream/$streamPath"
+      params={{ streamPath: stream.path }}
+      className="stream-item"
+      activeProps={{ className: `stream-item active` }}
+    >
+      <div className="stream-info">
+        <div className="stream-path">{decodeURIComponent(stream.path)}</div>
+        <div className="stream-meta">
+          <span className="stream-type">
+            {stream.contentType.toLowerCase()}
+          </span>
+          {typingUsers.length > 0 && <span className="typing-spinner">⌛</span>}
+          {viewers.length > 0 && (
+            <div className="viewers">
+              {viewers.map((v) => (
+                <div
+                  key={v.sessionId}
+                  className="viewer-dot"
+                  style={{ backgroundColor: v.color }}
+                  title={`User ${v.userId.slice(0, 8)}`}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Link>
+  )
 }
 
 function RootLayout() {
-  const [streams, setStreams] = useState<Array<Stream>>([])
+  const { registryDB } = useStreamDB()
   const [newStreamPath, setNewStreamPath] = useState(``)
   const [newStreamContentType, setNewStreamContentType] = useState(`text/plain`)
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const SERVER_URL = `http://${window.location.hostname}:4437`
+  // Use presence hook for heartbeat and cleanup
+  usePresence()
 
-  useEffect(() => {
-    void loadStreamsFromRegistry()
-  }, [])
-
-  const loadStreamsFromRegistry = async () => {
-    try {
-      const registryStream = new DurableStream({
-        url: `${SERVER_URL}/v1/stream/__registry__`,
-      })
-
-      // Check if registry exists, create it if it doesn't
-      const exists = await registryStream.head().catch(() => null)
-      if (!exists) {
-        await DurableStream.create({
-          url: `${SERVER_URL}/v1/stream/__registry__`,
-          contentType: `application/json`,
-        })
-      }
-
-      // Read all events from the registry
-      const loadedStreams: Array<Stream> = []
-
-      try {
-        const response = await registryStream.stream<RegistryEvent>({
-          live: false,
-        })
-        const items = await response.json()
-        for (const item of items) {
-          if (item.type === `created`) {
-            loadedStreams.push({
-              path: item.path,
-              contentType: item.contentType,
-            })
-          } else {
-            const index = loadedStreams.findIndex((s) => s.path === item.path)
-            if (index !== -1) {
-              loadedStreams.splice(index, 1)
-            }
-          }
-        }
-        setStreams([...loadedStreams])
-      } catch (readErr) {
-        console.error(`Error reading registry stream:`, readErr)
-      }
-    } catch (err) {
-      console.error(`Failed to load streams from registry:`, err)
-    }
-  }
+  // Query all streams from registry
+  const { data: streams = [] } = useLiveQuery((q) =>
+    q.from({ streams: registryDB.collections.streams })
+  )
 
   const createStream = async () => {
     if (!newStreamPath.trim()) {
@@ -81,15 +105,12 @@ function RootLayout() {
 
     try {
       setError(null)
+      // Create the actual stream - server registry hook will update __registry__
       await DurableStream.create({
         url: `${SERVER_URL}/v1/stream/${newStreamPath}`,
         contentType: newStreamContentType,
       })
 
-      setStreams([
-        ...streams,
-        { path: newStreamPath, contentType: newStreamContentType },
-      ])
       setNewStreamPath(``)
     } catch (err: any) {
       setError(`Failed to create stream: ${err.message}`)
@@ -110,9 +131,8 @@ function RootLayout() {
       const stream = new DurableStream({
         url: `${SERVER_URL}/v1/stream/${path}`,
       })
+      // Delete the stream - server registry hook will update __registry__
       await stream.delete()
-
-      setStreams(streams.filter((s) => s.path !== path))
     } catch (err: any) {
       setError(`Failed to delete stream: ${err.message}`)
     }
@@ -147,22 +167,8 @@ function RootLayout() {
         </div>
         <div className="stream-list">
           {streams.map((stream) => (
-            <Link
-              key={stream.path}
-              to="/stream/$streamPath"
-              params={{ streamPath: stream.path }}
-              className="stream-item"
-              activeProps={{ className: `stream-item active` }}
-              onClick={() => setSidebarOpen(false)}
-            >
-              <div>
-                <div className="stream-path">
-                  {decodeURIComponent(stream.path)}
-                </div>
-                <div className="stream-type">
-                  {stream.contentType?.toLowerCase() || `unknown`}
-                </div>
-              </div>
+            <div key={stream.path} style={{ position: `relative` }}>
+              <StreamListItem stream={stream} />
               <button
                 className="delete-btn"
                 title={`Delete stream: ${decodeURIComponent(stream.path)}`}
@@ -174,7 +180,7 @@ function RootLayout() {
               >
                 ×
               </button>
-            </Link>
+            </div>
           ))}
         </div>
       </div>

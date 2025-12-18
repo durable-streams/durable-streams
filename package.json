@@ -34,6 +34,7 @@
     "@types/node": "^22.15.21",
     "@typescript-eslint/eslint-plugin": "^8.47.0",
     "@typescript-eslint/parser": "^8.47.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "eslint": "^9.39.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.4",
@@ -52,5 +53,11 @@
     "*.{json,md,yml,yaml}": [
       "prettier --write"
     ]
+  },
+  "pnpm": {
+    "overrides": {
+      "@tanstack/db": "https://pkg.pr.new/TanStack/db/@tanstack/db@ce63da0",
+      "@tanstack/solid-db": "https://pkg.pr.new/TanStack/db/@tanstack/solid-db@ce63da0"
+    }
   }
 }

@@ -335,7 +335,7 @@ describe(`stream() function`, () => {
       })
 
       const received: Array<{ data: Uint8Array; offset: string }> = []
-      const unsubscribe = res.subscribeBytes(async (chunk) => {
+      const unsubscribe = res.subscribeBytes((chunk) => {
         received.push({ data: chunk.data, offset: chunk.offset })
       })
 
@@ -364,7 +364,7 @@ describe(`stream() function`, () => {
         live: false,
       })
 
-      const unsubscribe = res.subscribeBytes(async () => {
+      const unsubscribe = res.subscribeBytes(() => {
         // Immediately unsubscribe
         unsubscribe()
       })
@@ -395,7 +395,7 @@ describe(`stream() function`, () => {
       })
 
       const received: Array<Array<{ id: number }>> = []
-      const unsubscribe = res.subscribeJson(async (batch) => {
+      const unsubscribe = res.subscribeJson((batch) => {
         received.push([...batch.items])
       })
 
@@ -448,7 +448,7 @@ describe(`stream() function`, () => {
       })
 
       const received: Array<string> = []
-      const unsubscribe = res.subscribeText(async (chunk) => {
+      const unsubscribe = res.subscribeText((chunk) => {
         received.push(chunk.text)
       })
 

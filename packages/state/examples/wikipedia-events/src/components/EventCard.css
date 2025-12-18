@@ -1,0 +1,149 @@
+.event-card {
+  background: white;
+  padding: 1rem;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s;
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.event-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+}
+
+.event-card.is-bot {
+  opacity: 0.85;
+}
+
+.event-header {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  align-items: center;
+}
+
+.language-badge,
+.type-badge,
+.bot-badge {
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.language-badge {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.type-badge {
+  font-size: 0.7rem;
+}
+
+.type-edit .type-badge {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
+.type-new .type-badge {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.type-log .type-badge {
+  background: #fed7aa;
+  color: #92400e;
+}
+
+.type-categorize .type-badge {
+  background: #e9d5ff;
+  color: #6b21a8;
+}
+
+.bot-badge {
+  background: #f3f4f6;
+  border: 1px solid #d1d5db;
+  font-size: 0.9rem;
+}
+
+.event-title {
+  display: block;
+  font-weight: 600;
+  font-size: 1rem;
+  color: #1f2937;
+  text-decoration: none;
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.event-title:hover {
+  color: #667eea;
+  text-decoration: underline;
+}
+
+.event-meta {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #6b7280;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.user {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+
+.timestamp {
+  color: #9ca3af;
+}
+
+.length-change {
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 0.75rem;
+}
+
+.length-change.positive {
+  background: #d1fae5;
+  color: #065f46;
+}
+
+.length-change.negative {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.comment {
+  font-size: 0.85rem;
+  color: #4b5563;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: #f9fafb;
+  padding: 0.5rem;
+  border-radius: 4px;
+  border-left: 3px solid #e5e7eb;
+}

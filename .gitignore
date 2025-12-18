@@ -182,3 +182,7 @@ htmlcov/
 
 # uv
 .uv/
+
+# Claude local settings
+.claude/settings.local.json
+.beads

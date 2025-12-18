@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://durable-streams.dev/state-protocol/v1",
+  "title": "Durable Streams State Protocol Schema",
+  "description": "JSON Schema for the Durable Streams State Protocol, an extension of the Durable Streams Protocol that defines change events and control messages for state synchronization",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/ChangeMessage"
+    },
+    {
+      "$ref": "#/definitions/ControlMessage"
+    }
+  ],
+  "definitions": {
+    "ChangeMessage": {
+      "type": "object",
+      "title": "Change Message",
+      "description": "A change event representing a state mutation (insert, update, or delete)",
+      "required": ["type", "key", "headers"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "Entity type discriminator. Used to route events to the correct collection or handler in multi-type streams",
+          "minLength": 1,
+          "examples": ["user", "message", "presence", "config"]
+        },
+        "key": {
+          "type": "string",
+          "description": "Entity identifier. Must be unique within a given type",
+          "minLength": 1,
+          "examples": ["user:123", "msg:456", "config:theme"]
+        },
+        "value": {
+          "description": "The new value for the entity. Required for insert and update operations. For delete operations, this field is typically omitted or set to null",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" },
+            { "type": "array" },
+            { "type": "object" }
+          ]
+        },
+        "old_value": {
+          "description": "Optional previous value. May be included in update or delete operations to enable conflict detection or audit logging",
+          "oneOf": [
+            { "type": "string" },
+            { "type": "number" },
+            { "type": "boolean" },
+            { "type": "null" },
+            { "type": "array" },
+            { "type": "object" }
+          ]
+        },
+        "headers": {
+          "$ref": "#/definitions/ChangeHeaders"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "headers": {
+                "properties": {
+                  "operation": { "const": "insert" }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["value"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "headers": {
+                "properties": {
+                  "operation": { "const": "update" }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": ["value"]
+          }
+        }
+      ]
+    },
+    "ChangeHeaders": {
+      "type": "object",
+      "title": "Change Headers",
+      "description": "Headers for change messages containing operation metadata",
+      "required": ["operation"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": ["insert", "update", "delete"],
+          "description": "The operation type. 'insert' creates a new entity, 'update' modifies an existing entity, 'delete' removes an entity"
+        },
+        "txid": {
+          "type": "string",
+          "description": "Optional transaction identifier. Used to group related changes or enable transactional semantics",
+          "minLength": 1
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional RFC 3339 timestamp indicating when the change occurred. If omitted, servers may use the append timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ControlMessage": {
+      "type": "object",
+      "title": "Control Message",
+      "description": "A control event for stream management, separate from data changes",
+      "required": ["headers"],
+      "properties": {
+        "headers": {
+          "$ref": "#/definitions/ControlHeaders"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ControlHeaders": {
+      "type": "object",
+      "title": "Control Headers",
+      "description": "Headers for control messages",
+      "required": ["control"],
+      "properties": {
+        "control": {
+          "type": "string",
+          "enum": ["snapshot-start", "snapshot-end", "reset"],
+          "description": "Control event type. 'snapshot-start' and 'snapshot-end' delimit snapshot boundaries, 'reset' signals a state reset"
+        },
+        "offset": {
+          "type": "string",
+          "description": "Optional offset associated with the control event. Used to indicate the stream position at which the control event applies",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "Operation": {
+      "type": "string",
+      "enum": ["insert", "update", "delete"],
+      "description": "Operation type for change events"
+    },
+    "ControlType": {
+      "type": "string",
+      "enum": ["snapshot-start", "snapshot-end", "reset"],
+      "description": "Control event type"
+    },
+    "Value": {
+      "description": "A generic value type supporting primitives, arrays, and objects",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "null" },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      ]
+    },
+    "Row": {
+      "type": "object",
+      "description": "A row is a record of values",
+      "additionalProperties": {
+        "$ref": "#/definitions/Value"
+      }
+    }
+  }
+}

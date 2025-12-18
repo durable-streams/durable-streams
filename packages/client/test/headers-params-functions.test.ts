@@ -330,7 +330,7 @@ describe(`function-based headers and params`, () => {
       })
 
       let fetchCallCount = 0
-      mockFetch.mockReset().mockImplementation(async () => {
+      mockFetch.mockReset().mockImplementation(() => {
         fetchCallCount++
         if (fetchCallCount === 1) {
           return new Response(JSON.stringify([{ id: 1 }]), {
@@ -364,7 +364,7 @@ describe(`function-based headers and params`, () => {
       // Consume with subscriber to trigger live polling
       const items: Array<unknown> = []
       let batchCount = 0
-      res.subscribeJson(async (batch) => {
+      res.subscribeJson((batch) => {
         batchCount++
         items.push(...batch.items)
         if (batchCount >= 2) {
@@ -399,7 +399,7 @@ describe(`function-based headers and params`, () => {
       })
 
       let fetchCallCount = 0
-      mockFetch.mockReset().mockImplementation(async () => {
+      mockFetch.mockReset().mockImplementation(() => {
         fetchCallCount++
         if (fetchCallCount === 1) {
           return new Response(JSON.stringify([{ id: 1 }]), {
@@ -433,7 +433,7 @@ describe(`function-based headers and params`, () => {
       // Consume with subscriber to trigger live polling
       const items: Array<unknown> = []
       let batchCount = 0
-      res.subscribeJson(async (batch) => {
+      res.subscribeJson((batch) => {
         batchCount++
         items.push(...batch.items)
         if (batchCount >= 2) {
@@ -476,7 +476,7 @@ describe(`function-based headers and params`, () => {
       })
 
       let fetchCallCount = 0
-      mockFetch.mockReset().mockImplementation(async () => {
+      mockFetch.mockReset().mockImplementation(() => {
         fetchCallCount++
         if (fetchCallCount === 1) {
           return new Response(JSON.stringify([{ id: 1 }]), {
@@ -521,7 +521,7 @@ describe(`function-based headers and params`, () => {
       // Consume with subscriber to trigger live polling
       const items: Array<unknown> = []
       let batchCount = 0
-      res.subscribeJson(async (batch) => {
+      res.subscribeJson((batch) => {
         batchCount++
         items.push(...batch.items)
         if (batchCount >= 3) {

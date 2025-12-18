@@ -43,6 +43,15 @@ AI products make this painfully visible. Token streaming is the UI for chat and 
 
 **Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at [Electric](https://electric-sql.com/) for real-time Postgres sync, reliably delivering millions of state changes every day.
 
+**What you get:**
+
+- **Refresh-safe** - Users refresh the page, switch tabs, or background the app—they pick up exactly where they left off
+- **Share links** - A stream is a URL. Multiple viewers can watch the same stream together in real-time
+- **Never re-run** - Don't repeat expensive work because a client disconnected mid-stream
+- **Multi-device** - Start on your phone, continue on your laptop, watch from a shared link—all in sync
+- **Multi-tab** - Works seamlessly across browser tabs without duplicating connections or missing data
+- **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
+
 The protocol provides:
 
 - 🌐 **Universal** - Works anywhere HTTP works: web browsers, mobile apps, native clients, IoT devices, edge workers
@@ -78,6 +87,8 @@ git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
 
+pnpm build
+
 # Terminal 1: Start the local server
 pnpm start:dev
 
@@ -103,6 +114,8 @@ See the [Test UI README](./packages/test-ui/README.md) for details.
 git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
+
+pnpm build
 
 # Terminal 1: Start the local server
 pnpm start:dev
@@ -354,9 +367,9 @@ Durable Streams is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PR
 - Content-type preservation
 - CDN-friendly caching and request collapsing
 
-### CDN Caching
+### CDN Caching and Fan-Out
 
-Historical reads (catch-up from known offsets) are fully cacheable at CDNs and in browsers:
+This is where the economics change. Because reads are offset-based URLs, CDNs can cache and collapse requests—meaning **one origin can serve millions of concurrent viewers** without breaking a sweat.
 
 ```bash
 # Request
@@ -374,10 +387,16 @@ Content-Type: application/json
 
 **How it works:**
 
+- **Shared streams** - Backends write to a stream, multiple clients subscribe to it in real-time
 - **Offset-based URLs** - Same offset = same data, perfect for caching
-- **Cache-Control** - Historical data cached for 60s, stale content served during revalidation
-- **ETag** - Efficient revalidation for unchanged data
-- **Request collapsing** - Multiple clients requesting same offset collapsed to single upstream request
+- **Request collapsing** - 10,000 viewers at the same offset become one upstream request
+- **Edge delivery** - CDN edges serve catch-up reads; origin only handles new writes
+
+**What this enables:**
+
+- **Live dashboards** - Thousands of viewers watch the same metrics stream
+- **Collaborative apps** - Multiple users sync to the same document or workspace
+- **Shared debugging** - Watch a user's session in real-time to troubleshoot together
 
 ## Performance
 
@@ -416,30 +435,25 @@ Your application server consumes from backend streaming systems, applies authori
 - Durable Streams to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
-## Why Not SSE or WebSockets?
+## Relationship to SSE and WebSockets
 
-Server-Sent Events (SSE) and WebSockets provide real-time communication, but both share fundamental limitations for durable streaming:
+SSE and WebSockets are good transports for real-time delivery. Durable Streams uses SSE as one of its delivery modes (`live=sse`). The difference isn't the transport, it's what sits behind it.
 
-- **No durability** - Both are ephemeral; disconnect and data is lost
-- **No standardized resumption** - No standard way to resume from a specific position after reconnection
-- **No catch-up protocol** - No defined way to retrieve historical data before switching to live mode
-- **Custom implementation required** - You must build your own storage, replay, and reconnection logic
-- **Poor caching integration** - Neither integrates well with HTTP caching infrastructure
+**SSE/WebSockets give you a connection. Durable Streams gives you a log.**
 
-SSE is also text-only. WebSockets require stateful connection management, sticky sessions for load balancing, and custom message framing.
+SSE can reconnect (via `Last-Event-ID`), but it doesn't standardize what happens on the server side: there's no defined log format, no retention semantics, no catch-up protocol, no multi-reader coordination. Most real-world SSE endpoints don't persist history—if you disconnect, the data is gone.
 
-**Durable Streams addresses all of these:**
+Durable Streams standardizes the durable log underneath:
 
-- **Durable storage** - Data persists across server restarts and client disconnections
-- **Standardized resumption** - Opaque, lexicographically sortable offsets with defined semantics
-- **Unified catch-up and live protocol** - Same offset-based API for historical and real-time data
-- **Simple protocol** - Standard HTTP methods and headers, no custom framing required
-- **Caching-friendly** - Offset-based requests enable efficient CDN and browser caching
-- **Stateless servers** - No connection state to manage; clients track their own offsets
-- **Binary support** - Content-type agnostic byte streams
-- **Conformance tests** - Standardized test suite ensures consistent behavior
+- **Persistent storage** - Data survives disconnections, refreshes, and server restarts
+- **Offset-based resumption** - Resume from any position with well-defined semantics
+- **Unified catch-up and live** - Same API for historical replay and real-time tailing
+- **Multi-reader support** - Multiple clients can subscribe to the same stream
+- **CDN-friendly** - Offset-based URLs enable aggressive caching and request collapsing
+- **Stateless servers** - Clients track their own offsets; no connection state to manage
+- **Standard protocol** - Reusable clients and framework integrations that work with any conforming server
 
-Durable Streams can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability layer on top.
+The result: SSE (or long-poll) for the last mile, durable log semantics everywhere else. You get the simplicity of HTTP streaming with the reliability of an append-only log.
 
 ## Building Your Own Implementation
 
@@ -476,6 +490,12 @@ await server.start()
 ```
 
 See [@durable-streams/server](./packages/server) for more details.
+
+### Community implementations
+
+**Go**
+
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation that has full coverage of the conformance test suite.
 
 ## CLI Tool
 
@@ -540,19 +560,33 @@ const state = events.reduce(applyEvent, initialState)
 
 ### AI Conversation Streaming
 
-Stream LLM responses with full conversation history accessible across devices:
+LLM inference is expensive. When a user's tab gets suspended, their network flaps, or they refresh the page, you don't want to re-run the generation—you want them to pick up exactly where they left off.
 
 ```typescript
-// Stream AI response chunks
+// Server: stream tokens to a durable stream (continues even if client disconnects)
+const handle = await DurableStream.create({
+  url: `https://your-server.com/v1/stream/generation/${generationId}`,
+  contentType: "text/plain",
+})
+
 for await (const token of llm.stream(prompt)) {
-  await handle.append(token)
+  await handle.append(token) // Persisted immediately
 }
 
-// Client can resume from any point (switch devices, refresh page, reconnect)
-const res = await handle.stream({ offset: lastSeenOffset, live: false })
-const text = await res.text()
-renderTokens(text)
+// Client: resume from last seen position (refresh-safe)
+const res = await handle.stream({ offset: lastSeenOffset, live: "auto" })
+res.subscribe((chunk) => {
+  renderTokens(chunk.data)
+  saveOffset(chunk.offset) // Persist for next resume
+})
 ```
+
+**What this gives you:**
+
+- **Tab suspended?** User comes back, catches up from saved offset—no re-generation
+- **Page refresh?** Continues from last token, not from the beginning
+- **Share the generation?** Multiple viewers watch the same stream in real-time
+- **Switch devices?** Start on mobile, continue on desktop, same stream
 
 ## Testing Your Implementation
 

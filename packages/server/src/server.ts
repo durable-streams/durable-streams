@@ -3,6 +3,7 @@
  */
 
 import { createServer } from "node:http"
+import { deflateSync, gzipSync } from "node:zlib"
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
@@ -36,6 +37,54 @@ function encodeSSEData(payload: string): string {
 }
 
 /**
+ * Minimum response size to consider for compression.
+ * Responses smaller than this won't benefit from compression.
+ */
+const COMPRESSION_THRESHOLD = 1024
+
+/**
+ * Determine the best compression encoding from Accept-Encoding header.
+ * Returns 'gzip', 'deflate', or null if no compression should be used.
+ */
+function getCompressionEncoding(
+  acceptEncoding: string | undefined
+): `gzip` | `deflate` | null {
+  if (!acceptEncoding) return null
+
+  // Parse Accept-Encoding header (e.g., "gzip, deflate, br" or "gzip;q=1.0, deflate;q=0.5")
+  const encodings = acceptEncoding
+    .toLowerCase()
+    .split(`,`)
+    .map((e) => e.trim())
+
+  // Prefer gzip over deflate (better compression, wider support)
+  for (const encoding of encodings) {
+    const name = encoding.split(`;`)[0]?.trim()
+    if (name === `gzip`) return `gzip`
+  }
+  for (const encoding of encodings) {
+    const name = encoding.split(`;`)[0]?.trim()
+    if (name === `deflate`) return `deflate`
+  }
+
+  return null
+}
+
+/**
+ * Compress data using the specified encoding.
+ */
+function compressData(
+  data: Uint8Array,
+  encoding: `gzip` | `deflate`
+): Uint8Array {
+  if (encoding === `gzip`) {
+    return gzipSync(data)
+  } else {
+    return deflateSync(data)
+  }
+}
+
+/**
  * HTTP server for testing durable streams.
  * Supports both in-memory and file-backed storage modes.
  */
@@ -43,11 +92,15 @@ export class DurableStreamTestServer {
   readonly store: StreamStore | FileBackedStreamStore
   private server: Server | null = null
   private options: Required<
-    Omit<TestServerOptions, `dataDir` | `onStreamCreated` | `onStreamDeleted`>
+    Omit<
+      TestServerOptions,
+      `dataDir` | `onStreamCreated` | `onStreamDeleted` | `compression`
+    >
   > & {
     dataDir?: string
     onStreamCreated?: (event: StreamLifecycleEvent) => void | Promise<void>
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>
+    compression: boolean
   }
   private _url: string | null = null
   private activeSSEResponses = new Set<ServerResponse>()
@@ -70,6 +123,7 @@ export class DurableStreamTestServer {
       dataDir: options.dataDir,
       onStreamCreated: options.onStreamCreated,
       onStreamDeleted: options.onStreamDeleted,
+      compression: options.compression ?? true,
     }
   }
 
@@ -193,7 +247,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
     )
 
     // Handle CORS preflight
@@ -212,7 +266,7 @@ export class DurableStreamTestServer {
           this.handleHead(path, res)
           break
         case `GET`:
-          await this.handleRead(path, url, res)
+          await this.handleRead(path, url, req, res)
           break
         case `POST`:
           await this.handleAppend(path, req, res)
@@ -394,6 +448,7 @@ export class DurableStreamTestServer {
   private async handleRead(
     path: string,
     url: URL,
+    req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
     const stream = this.store.get(path)
@@ -502,8 +557,24 @@ export class DurableStreamTestServer {
     // Format response (wraps JSON in array brackets)
     const responseData = this.store.formatResponse(path, messages)
 
+    // Apply compression if enabled and response is large enough
+    let finalData: Uint8Array = responseData
+    if (
+      this.options.compression &&
+      responseData.length >= COMPRESSION_THRESHOLD
+    ) {
+      const acceptEncoding = req.headers[`accept-encoding`]
+      const encoding = getCompressionEncoding(acceptEncoding)
+      if (encoding) {
+        finalData = compressData(responseData, encoding)
+        headers[`content-encoding`] = encoding
+        // Add Vary header to indicate response varies by Accept-Encoding
+        headers[`vary`] = `accept-encoding`
+      }
+    }
+
     res.writeHead(200, headers)
-    res.end(Buffer.from(responseData))
+    res.end(Buffer.from(finalData))
   }
 
   /**

@@ -2,6 +2,7 @@ import React, { StrictMode } from "react"
 import ReactDOM from "react-dom/client"
 import { RouterProvider, createRouter } from "@tanstack/react-router"
 import { routeTree } from "./routeTree.gen"
+import { StreamDBProvider } from "./lib/stream-db-context"
 
 const router = createRouter({ routeTree })
 
@@ -16,7 +17,9 @@ if (!rootElement.innerHTML) {
   const root = ReactDOM.createRoot(rootElement)
   root.render(
     <StrictMode>
-      <RouterProvider router={router} />
+      <StreamDBProvider>
+        <RouterProvider router={router} />
+      </StreamDBProvider>
     </StrictMode>
   )
 }

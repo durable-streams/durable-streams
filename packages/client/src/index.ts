@@ -48,8 +48,6 @@ export type {
   AppendOptions,
   ReadOptions,
   HeadResult,
-  ReadResult,
-  StreamChunk,
   LegacyLiveMode,
 
   // Error handling

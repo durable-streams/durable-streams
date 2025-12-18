@@ -136,6 +136,12 @@ export interface TestServerOptions {
    * Hook called when a stream is deleted.
    */
   onStreamDeleted?: StreamLifecycleHook
+
+  /**
+   * Enable gzip/deflate compression for responses.
+   * Default: true.
+   */
+  compression?: boolean
 }
 
 /**
