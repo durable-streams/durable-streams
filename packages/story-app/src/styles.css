@@ -1,0 +1,101 @@
+/* Import a playful font - must come before @import "tailwindcss" */
+@import url("https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&display=swap");
+
+@import "tailwindcss";
+
+/* Custom theme */
+@theme {
+  /* Child-friendly color palette */
+  --color-story-purple: #8B5CF6;
+  --color-story-pink: #EC4899;
+  --color-story-yellow: #FCD34D;
+  --color-story-blue: #60A5FA;
+  --color-story-green: #34D399;
+  --color-story-orange: #FB923C;
+  
+  /* Font family */
+  --font-story: "Comic Neue", "Comic Sans MS", "Chalkboard SE", sans-serif;
+  
+  /* Animations */
+  --animate-wiggle: wiggle 1s ease-in-out infinite;
+  --animate-float: float 3s ease-in-out infinite;
+}
+
+@keyframes wiggle {
+  0%, 100% { transform: rotate(-3deg); }
+  50% { transform: rotate(3deg); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+/* Custom utility classes */
+@layer components {
+  /* Gradient backgrounds */
+  .bg-story-gradient {
+    @apply bg-gradient-to-br from-story-purple via-story-pink to-story-orange;
+  }
+
+  /* Book-like container */
+  .book-container {
+    @apply bg-amber-50 rounded-3xl shadow-2xl p-8 md:p-12;
+    background-image: url("data:image/svg+xml,%3Csvg width='100' height='100' viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11 18c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm48 25c3.866 0 7-3.134 7-7s-3.134-7-7-7-7 3.134-7 7 3.134 7 7 7zm-43-7c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm63 31c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM34 90c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zm56-76c1.657 0 3-1.343 3-3s-1.343-3-3-3-3 1.343-3 3 1.343 3 3 3zM12 86c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm28-65c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm23-11c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-6 60c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm29 22c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zM32 63c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm57-13c2.76 0 5-2.24 5-5s-2.24-5-5-5-5 2.24-5 5 2.24 5 5 5zm-9-21c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM60 91c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM35 41c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2zM12 60c1.105 0 2-.895 2-2s-.895-2-2-2-2 .895-2 2 .895 2 2 2z' fill='%23fcd34d' fill-opacity='0.1' fill-rule='evenodd'/%3E%3C/svg%3E");
+  }
+
+  /* Playful button */
+  .btn-playful {
+    @apply px-8 py-4 rounded-full font-bold text-xl text-white;
+    @apply bg-gradient-to-r from-story-purple to-story-pink;
+    @apply shadow-lg hover:shadow-xl;
+    @apply transform transition-all duration-200;
+    @apply hover:scale-105 active:scale-95;
+  }
+
+  /* Control button */
+  .btn-control {
+    @apply w-16 h-16 rounded-full flex items-center justify-center;
+    @apply bg-white shadow-lg;
+    @apply transform transition-all duration-200;
+    @apply hover:scale-110 active:scale-95;
+  }
+
+  /* Sparkle decoration */
+  .sparkle {
+    @apply absolute text-story-yellow animate-pulse;
+  }
+}
+
+/* Smooth text reveal animation */
+@keyframes text-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.text-reveal {
+  animation: text-reveal 0.3s ease-out forwards;
+}
+
+/* Glow effect for current text */
+.text-glow {
+  text-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
+}
+
+/* Story text with consistent paragraph spacing */
+.story-text {
+  line-height: 1.6;
+}
+
+/* Collapse multiple newlines into consistent paragraph breaks */
+.story-text br {
+  content: "";
+  display: block;
+  margin-bottom: 0.75em;
+}
