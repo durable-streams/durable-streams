@@ -52,17 +52,31 @@ function StreamViewer() {
 
     const followStream = async () => {
       try {
-        for await (const chunk of stream.read({
-          offset: `-1`,
-          live: `long-poll`,
-          signal: controller.signal,
-        })) {
-          const text = new TextDecoder().decode(chunk.data)
-          if (text !== ``) {
+        if (isJsonStream) {
+          // Use jsonStream for JSON content
+          for await (const value of stream.jsonStream({
+            offset: `-1`,
+            live: `long-poll`,
+            signal: controller.signal,
+          })) {
             setMessages((prev) => [
               ...prev,
-              { offset: chunk.offset, data: text },
+              { offset: stream.offset || `-1`, data: JSON.stringify(value) },
             ])
+          }
+        } else {
+          // Use textStream for text/binary content
+          for await (const value of stream.textStream({
+            offset: `-1`,
+            live: `long-poll`,
+            signal: controller.signal,
+          })) {
+            if (value !== ``) {
+              setMessages((prev) => [
+                ...prev,
+                { offset: stream.offset || `-1`, data: value },
+              ])
+            }
           }
         }
       } catch (err: any) {

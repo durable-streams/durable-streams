@@ -186,19 +186,17 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      // read() returns an async iterable, get first chunk with live: false
-      let result
-      for await (const chunk of stream.read({ live: false })) {
-        result = chunk
-        break
-      }
+      // textStream() returns a readable stream
+      const reader = stream.textStream({ live: false }).getReader()
+      const { value } = await reader.read()
+      reader.releaseLock()
 
       expect(mockFetch).toHaveBeenCalledWith(
         `https://example.com/stream?offset=-1`,
         expect.objectContaining({ method: `GET` })
       )
-      expect(new TextDecoder().decode(result.data)).toBe(responseData)
-      expect(result.offset).toBe(`1_11`)
+      expect(value).toBe(responseData)
+      expect(stream.offset).toBe(`1_11`)
     })
 
     it(`should include offset in query params when provided`, async () => {
@@ -217,9 +215,11 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      for await (const _chunk of stream.read({ offset: `1_11`, live: false })) {
-        break
-      }
+      const reader = stream
+        .textStream({ offset: `1_11`, live: false })
+        .getReader()
+      await reader.read()
+      reader.releaseLock()
 
       expect(mockFetch).toHaveBeenCalledWith(
         `https://example.com/stream?offset=1_11`,
@@ -243,13 +243,15 @@ describe(`DurableStream`, () => {
       const aborter = new AbortController()
       // Start reading with long-poll mode, then abort to end the test
       const readPromise = (async () => {
-        for await (const _chunk of stream.read({
-          live: `long-poll`,
-          signal: aborter.signal,
-        })) {
-          aborter.abort()
-          break
-        }
+        const reader = stream
+          .textStream({
+            live: `long-poll`,
+            signal: aborter.signal,
+          })
+          .getReader()
+        await reader.read()
+        aborter.abort()
+        reader.releaseLock()
       })()
       await readPromise
 
@@ -259,7 +261,7 @@ describe(`DurableStream`, () => {
       )
     })
 
-    it(`should return upToDate when header is present`, async () => {
+    it(`should close stream when upToDate header is present with live: false`, async () => {
       mockFetch.mockResolvedValue(
         new Response(`data`, {
           status: 200,
@@ -275,13 +277,15 @@ describe(`DurableStream`, () => {
         fetch: mockFetch,
       })
 
-      let result
-      for await (const chunk of stream.read({ live: false })) {
-        result = chunk
-        break
-      }
+      const reader = stream.textStream({ live: false }).getReader()
+      const { value, done } = await reader.read()
+      expect(value).toBe(`data`)
+      expect(done).toBe(false)
 
-      expect(result.upToDate).toBe(true)
+      // Next read should be done since stream is up to date
+      const { done: secondDone } = await reader.read()
+      expect(secondDone).toBe(true)
+      reader.releaseLock()
     })
 
     it(`should throw FetchError on 404`, async () => {
@@ -298,9 +302,9 @@ describe(`DurableStream`, () => {
       })
 
       await expect(async () => {
-        for await (const _chunk of stream.read({ live: false })) {
-          // Should throw before yielding
-        }
+        const reader = stream.textStream({ live: false }).getReader()
+        await reader.read()
+        reader.releaseLock()
       }).rejects.toThrow(FetchError)
     })
   })

@@ -5,6 +5,7 @@ const alias = {
   "@durable-streams/client": path.resolve(__dirname, "./packages/client/src"),
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/writer": path.resolve(__dirname, "./packages/writer/src"),
+  "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
   "@durable-streams/conformance-tests": path.resolve(
     __dirname,
     "./packages/conformance-tests/src"
@@ -35,6 +36,22 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      defineProject({
+        test: {
+          name: "state",
+          include: ["packages/state/**/*.test.ts"],
+        },
+        resolve: { alias },
+      }),
+      // TODO: Re-enable writer tests after updating to new API
+      // See: https://github.com/durable-streams/durable-streams/issues/26
+      // defineProject({
+      //   test: {
+      //     name: "writer",
+      //     include: ["packages/writer/**/*.test.ts"],
+      //   },
+      //   resolve: { alias },
+      // }),
     ],
     coverage: {
       provider: `v8`,

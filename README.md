@@ -136,6 +136,8 @@ The Test UI and CLI share the same `__registry__` system stream, so streams crea
 
 For applications that only need to read from streams:
 
+**The API mirrors the Fetch Response API** with methods like `.json()`, `.text()`, `.body()`, and uses standard Web Streams for all streaming operations:
+
 ```typescript
 import { DurableStream } from "@durable-streams/client"
 
@@ -143,9 +145,17 @@ const stream = new DurableStream({
   url: "https://your-server.com/v1/stream/my-stream",
 })
 
-// Read existing data from stream (returns immediately)
-const result = await stream.read({ live: false })
-console.log(new TextDecoder().decode(result.data))
+// Like response.text() - read all existing data as text
+const text = await stream.text()
+console.log(text)
+
+// Like response.json() - read all data as parsed JSON
+const data = await stream.json()
+
+// Like response.body - get a ReadableStream for streaming
+for await (const chunk of stream.body()) {
+  console.log(chunk) // Uint8Array chunks
+}
 ```
 
 ### Read/write client
@@ -162,22 +172,27 @@ const stream = await DurableStream.create({
 })
 
 // Append data
-await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
-await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+await stream.append({ event: "user.created", userId: "123" })
+await stream.append({ event: "user.updated", userId: "123" })
 
 // Writer also includes all read operations
-const result = await stream.read({ live: false })
+const data = await stream.json()
+console.log(data) // Array of JSON objects
 ```
 
 ### Resume from an offset
 
 ```typescript
-// Read and save the offset
-const result = await stream.read({ live: false })
-const savedOffset = result.offset // Save this for later
+// Read all data and get the offset
+await stream.text()
+const savedOffset = stream.offset // Save this for later
 
-// Resume from saved offset (catch-up mode returns immediately)
-const resumed = await stream.read({ offset: savedOffset, live: false })
+// Resume from saved offset using textStream
+const reader = stream
+  .textStream({ offset: savedOffset, live: false })
+  .getReader()
+const { value } = await reader.read()
+reader.releaseLock()
 ```
 
 ## Protocol in 60 Seconds
@@ -246,13 +261,17 @@ await stream.append("hello")
 await stream.append("world")
 
 // Read from beginning - returns all data concatenated
-const result = await stream.read({ live: false })
-// result.data = "helloworld" (complete stream from offset to end)
+const text = await stream.text()
+// text = "helloworld" (complete stream from offset to end)
 
-// If more data arrives and you read again from the returned offset
+// If more data arrives and you read again from the saved offset
 await stream.append("!")
-const next = await stream.read({ offset: result.offset })
-// next.data = "!" (complete new data from last offset to new end)
+const reader = stream
+  .textStream({ offset: stream.offset, live: false })
+  .getReader()
+const { value } = await reader.read()
+reader.releaseLock()
+// value = "!" (complete new data from last offset to new end)
 ```
 
 **You must implement your own framing.** For example, newline-delimited JSON (NDJSON):
@@ -282,8 +301,12 @@ const stream = await DurableStream.create({
 await stream.append({ event: "user.created", userId: "123" })
 await stream.append({ event: "user.updated", userId: "123" })
 
-// Read returns parsed JSON array
-for await (const message of stream.json({ live: false })) {
+// Read all messages at once (like response.json())
+const messages = await stream.json()
+console.log(messages) // [{ event: "user.created", ... }, { event: "user.updated", ... }]
+
+// Or stream messages one at a time (Web Streams API - async iterable)
+for await (const message of stream.jsonStream({ live: false })) {
   console.log(message)
   // { event: "user.created", userId: "123" }
   // { event: "user.updated", userId: "123" }
@@ -308,11 +331,19 @@ Offsets are opaque tokens that identify positions within a stream:
 - **Server-generated** - Always use the `offset` value returned in responses
 
 ```typescript
-// Start from beginning (catch-up mode)
-const result = await stream.read({ offset: "-1", live: false })
+// Start from beginning - .text() always starts from beginning by default
+const allText = await stream.text()
 
-// Resume from last position (always use returned offset)
-const next = await stream.read({ offset: result.offset, live: false })
+// Resume from last position (stream.offset updated after reads)
+const savedOffset = stream.offset
+
+// Later, resume from saved offset using textStream
+for await (const chunk of stream.textStream({
+  offset: savedOffset,
+  live: false,
+})) {
+  console.log(chunk)
+}
 ```
 
 The only special offset value is `"-1"` for stream start. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
@@ -493,13 +524,14 @@ Stream database changes to web and mobile clients for real-time synchronization:
 ```typescript
 // Server: stream database changes
 for (const change of db.changes()) {
-  await stream.append(JSON.stringify(change))
+  await stream.append(change)
 }
 
 // Client: receive and apply changes (works in browsers, React Native, native apps)
-const result = await stream.read({ offset: lastSeenOffset })
-const changes = parseChanges(result.data)
-changes.forEach(applyChange)
+for await (const line of stream.textStream({ offset: lastSeenOffset })) {
+  const change = JSON.parse(line)
+  applyChange(change)
+}
 ```
 
 ### Event Sourcing
@@ -507,13 +539,12 @@ changes.forEach(applyChange)
 Build event-sourced systems with durable event logs:
 
 ```typescript
-// Append events
-await stream.append(JSON.stringify({ type: "OrderCreated", orderId: "123" }))
-await stream.append(JSON.stringify({ type: "OrderPaid", orderId: "123" }))
+// Append events (JSON mode)
+await stream.append({ type: "OrderCreated", orderId: "123" })
+await stream.append({ type: "OrderPaid", orderId: "123" })
 
-// Replay from beginning (catch-up mode for full replay)
-const result = await stream.read({ offset: "-1", live: false })
-const events = parseEvents(result.data)
+// Replay from beginning - .json() returns all events as array
+const events = await stream.json()
 const state = events.reduce(applyEvent, initialState)
 ```
 
@@ -528,8 +559,9 @@ for await (const token of llm.stream(prompt)) {
 }
 
 // Client can resume from any point (switch devices, refresh page, reconnect)
-const result = await stream.read({ offset: lastSeenOffset })
-renderTokens(new TextDecoder().decode(result.data))
+for await (const chunk of stream.textStream({ offset: lastSeenOffset })) {
+  renderTokens(chunk)
+}
 ```
 
 ## Testing Your Implementation

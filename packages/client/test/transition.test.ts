@@ -37,16 +37,25 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       // Start reading with DEFAULT mode (no live option)
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
-          if (chunk.data.length > 0) {
-            receivedData.push(decode(chunk.data))
-          }
+        const reader = stream.body({ signal: aborter.signal }).getReader()
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
 
-          // After receiving 2 data chunks, stop
-          if (receivedData.length >= 2) {
-            aborter.abort()
-            break
+            if (value.length > 0) {
+              receivedData.push(decode(value))
+            }
+
+            // After receiving 2 data chunks, stop
+            if (receivedData.length >= 2) {
+              aborter.abort()
+              break
+            }
           }
+        } finally {
+          reader.releaseLock()
         }
       })()
 
@@ -107,16 +116,25 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       // Start reading with DEFAULT mode (no live option)
       const readPromise = (async () => {
-        for await (const chunk of stream.read({ signal: aborter.signal })) {
-          if (chunk.data.length > 0) {
-            receivedData.push(decode(chunk.data))
-          }
+        const reader = stream.textStream({ signal: aborter.signal }).getReader()
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
 
-          // After receiving 1 data chunk, stop
-          if (receivedData.length >= 1) {
-            aborter.abort()
-            break
+            if (value.length > 0) {
+              receivedData.push(value)
+            }
+
+            // After receiving 1 data chunk, stop
+            if (receivedData.length >= 1) {
+              aborter.abort()
+              break
+            }
           }
+        } finally {
+          reader.releaseLock()
         }
       })()
 

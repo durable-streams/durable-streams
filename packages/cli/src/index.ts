@@ -84,10 +84,8 @@ async function readStream(streamId: string) {
 
     // Read from the stream and write to stdout
     // Default behavior: catch-up first, then auto-select live mode
-    for await (const chunk of stream.read()) {
-      if (chunk.data.length > 0) {
-        stdout.write(chunk.data)
-      }
+    for await (const chunk of stream.body()) {
+      stdout.write(chunk)
     }
   } catch (error) {
     if (error instanceof Error) {
