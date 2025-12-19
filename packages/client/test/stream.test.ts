@@ -606,6 +606,77 @@ describe(`DurableStream`, () => {
 
       await expect(stream.append(`data`, { seq: `old-seq` })).rejects.toThrow()
     })
+
+    it(`should await promise-valued body before sending`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        contentType: `text/plain`,
+      })
+
+      // Append a promise that resolves to a string
+      await stream.append(Promise.resolve(`promised data`))
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      expect(callArgs.body).toBeInstanceOf(Uint8Array)
+      // Verify the resolved value was sent
+      const decoder = new TextDecoder()
+      expect(decoder.decode(callArgs.body as Uint8Array)).toBe(`promised data`)
+    })
+
+    it(`should await delayed promise before sending`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        contentType: `text/plain`,
+      })
+
+      // Append a promise that resolves after a delay
+      const delayedPromise = new Promise<string>((resolve) => {
+        setTimeout(() => resolve(`delayed data`), 10)
+      })
+      await stream.append(delayedPromise)
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      const decoder = new TextDecoder()
+      expect(decoder.decode(callArgs.body as Uint8Array)).toBe(`delayed data`)
+    })
+
+    it(`should reject when promise body rejects`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 200,
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      // Append a promise that rejects
+      const failingPromise = Promise.reject(new Error(`Promise failed`))
+
+      await expect(stream.append(failingPromise)).rejects.toThrow(
+        `Promise failed`
+      )
+      // Should not have called fetch since promise rejected
+      expect(mockFetch).not.toHaveBeenCalled()
+    })
   })
 
   describe(`delete`, () => {

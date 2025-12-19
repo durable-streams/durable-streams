@@ -62,6 +62,18 @@ function normalizeContentType(contentType: string | undefined): string {
 }
 
 /**
+ * Check if a value is a Promise or Promise-like (thenable).
+ */
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    value !== null &&
+    typeof value === `object` &&
+    `then` in value &&
+    typeof (value as PromiseLike<unknown>).then === `function`
+  )
+}
+
+/**
  * Options for DurableStream constructor.
  */
 export interface DurableStreamOptions extends StreamHandleOptions {
@@ -329,17 +341,31 @@ export class DurableStream {
    * This significantly improves throughput for high-frequency writes.
    *
    * - `body` may be Uint8Array, string, or any JSON-serializable value (for JSON streams).
+   * - `body` may also be a Promise that resolves to any of the above types.
    * - Strings are encoded as UTF-8.
    * - `seq` (if provided) is sent as stream-seq (writer coordination).
+   *
+   * @example
+   * ```typescript
+   * // Direct value
+   * await stream.append({ message: "hello" });
+   *
+   * // Promise value - awaited before buffering
+   * await stream.append(fetchData());
+   * await stream.append(Promise.all([a, b, c]));
+   * ```
    */
   async append(
     body: BodyInit | Uint8Array | string | unknown,
     opts?: AppendOptions
   ): Promise<void> {
+    // Await promises before buffering
+    const resolvedBody = isPromiseLike(body) ? await body : body
+
     if (this.#batchingEnabled && this.#queue) {
-      return this.#appendWithBatching(body, opts)
+      return this.#appendWithBatching(resolvedBody, opts)
     }
-    return this.#appendDirect(body, opts)
+    return this.#appendDirect(resolvedBody, opts)
   }
 
   /**
