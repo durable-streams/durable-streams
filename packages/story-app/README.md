@@ -1,22 +1,41 @@
 # 📖 Tell Me a Story!
 
-A magical story generator for children, built with TanStack Start and Durable Streams.
+A demonstration of **durable streaming** for AI-generated content, built with TanStack Start and Durable Streams.
+
+The app itself is a fun, child-friendly story generator — kids enter a prompt and the app generates and narrates a unique story just for them. But under the hood, it's showcasing how durable streams solve real problems with streaming AI content.
+
+## What This Demonstrates
+
+This app showcases the power of **durable streams** for handling AI-generated streaming content. When OpenAI generates a story, both the text transcript and audio narration are streamed in real-time. Instead of sending this ephemeral stream directly to the browser, we capture it in a **durable stream** that persists the data.
+
+### Why Durability Matters
+
+Traditional streaming is ephemeral—if the connection drops, the data is lost. With durable streams:
+
+- **🔄 Refresh Resilience** - Refresh the page mid-story and playback resumes from exactly where you left off. The stream retains all data, so the client simply reconnects and continues.
+
+- **📡 Network Resilience** - If the network drops during generation or playback, no data is lost. When connectivity returns, the stream picks up seamlessly.
+
+- **🔗 Shareable During Generation** - Share a story URL while it's still being generated. Recipients can start listening immediately, even catching up on content that was generated before they joined.
+
+- **⏸️ Pause & Resume** - Close the tab, come back hours later, and continue from where you stopped. The complete stream is still available.
+
+### How It Works
+
+1. **User submits a prompt** → Server creates a new durable stream
+2. **OpenAI generates the story** → Text and audio are streamed back
+3. **Frames are appended to the stream** → Each chunk (text or audio) is encoded as a binary frame and durably persisted
+4. **Client subscribes to the stream** → Audio plays in real-time as frames arrive
+5. **On refresh/reconnect** → Client reloads the stream from the beginning, rebuilds the audio buffer, seeks to the saved position, and resumes playback
+
+The server returns the stream ID immediately and continues processing OpenAI's response in the background. This means the HTTP request completes quickly while generation continues asynchronously.
 
 ## Features
 
-- **AI-Generated Stories** - Uses OpenAI's GPT-4o with audio to create unique stories based on prompts
-- **Real-time Audio Playback** - Stories are narrated as they're generated using PCM16 streaming audio
-- **Durable Streams** - Stories are persisted for 7 days and can be shared via URL
-- **Auto-Resume** - Refresh the page and pick up where you left off
-- **Child-Friendly UI** - Colorful, playful design with large touch targets
-
-## How It Works
-
-1. User enters a story prompt (e.g., "A brave little mouse who wants to become a knight")
-2. Server creates a durable stream and starts generating the story with OpenAI
-3. Text and audio are streamed back in binary frames and appended to the durable stream
-4. Client subscribes to the stream and plays audio in real-time
-5. The story URL can be shared with anyone
+- **AI-Generated Stories** - Uses OpenAI's GPT-4o with audio to create unique narrated stories
+- **Synchronized Text & Audio** - Text appears in sync with the spoken narration
+- **7-Day Persistence** - Stories remain available for a week
+- **Child-Friendly UI** - Colorful, playful design with intuitive controls
 
 ## Setup
 
@@ -25,7 +44,6 @@ A magical story generator for children, built with TanStack Start and Durable St
 - Node.js 18+
 - pnpm
 - OpenAI API key with access to `gpt-4o-audio-preview`
-- Durable Streams server running
 
 ### Environment Variables
 
@@ -52,22 +70,18 @@ pnpm dev
 ```
 
 This will start:
+
 - **Durable Streams Server** on http://localhost:4437
 - **Story App** on http://localhost:3001
 
-Open http://localhost:3001 in your browser to use the app.
+Open http://localhost:3001 in your browser.
 
-#### Running Separately
+## Try the Durability Demo
 
-If you prefer to run the servers in separate terminals:
-
-```bash
-# Terminal 1: Durable streams server
-pnpm dev:stream
-
-# Terminal 2: Story app
-pnpm dev:app
-```
+1. **Start a story** - Enter a prompt and click "Create My Story!"
+2. **While it's playing, refresh the page** - Notice how playback resumes from exactly where you were
+3. **Copy the URL and open in another tab** - Both tabs receive the same stream
+4. **Start a new story and share the URL immediately** - The recipient can start listening even while generation continues
 
 ## Architecture
 
@@ -75,13 +89,13 @@ pnpm dev:app
 
 Stories are stored as binary frames in the durable stream:
 
-| Frame Type | Code | Description |
-|------------|------|-------------|
-| Metadata   | 0x00 | Initial prompt JSON |
+| Frame Type | Code | Description                                |
+| ---------- | ---- | ------------------------------------------ |
+| Metadata   | 0x00 | Initial prompt JSON                        |
 | Text       | 0x01 | Transcript chunk (includes `isTitle` flag) |
-| Audio      | 0x02 | PCM16 audio data (24kHz mono) |
-| End        | 0x03 | End of stream marker |
-| Error      | 0x04 | Error message |
+| Audio      | 0x02 | PCM16 audio data (24kHz mono)              |
+| End        | 0x03 | End of stream marker                       |
+| Error      | 0x04 | Error message                              |
 
 Each frame has a 5-byte header: 1 byte type + 4 bytes length (big-endian).
 
@@ -89,9 +103,9 @@ Each frame has a 5-byte header: 1 byte type + 4 bytes length (big-endian).
 
 - `src/server/functions.ts` - Server function that creates streams and calls OpenAI
 - `src/lib/frame-parser.ts` - Binary frame encoding/decoding
-- `src/lib/audio-player.ts` - Web Audio API PCM16 player
-- `src/lib/storage.ts` - Session storage for playback progress
-- `src/routes/story.$streamId.tsx` - Story playback page
+- `src/lib/audio-player.ts` - Web Audio API PCM16 streaming player
+- `src/lib/storage.ts` - Session storage for playback position
+- `src/routes/story.$streamId.tsx` - Story playback page with resume logic
 
 ## License
 

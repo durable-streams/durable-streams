@@ -145,10 +145,10 @@ function encodeFrame(type: FrameTypeValue, payload: Uint8Array): Uint8Array {
  * Returns parsed frames and any remaining bytes that don't form a complete frame
  */
 export function parseFrames(buffer: Uint8Array): {
-  frames: Frame[]
+  frames: Array<Frame>
   remainder: Uint8Array
 } {
-  const frames: Frame[] = []
+  const frames: Array<Frame> = []
   let offset = 0
 
   while (offset + HEADER_SIZE <= buffer.length) {
@@ -168,7 +168,10 @@ export function parseFrames(buffer: Uint8Array): {
     }
 
     // Extract payload
-    const payload = buffer.slice(offset + HEADER_SIZE, offset + HEADER_SIZE + length)
+    const payload = buffer.slice(
+      offset + HEADER_SIZE,
+      offset + HEADER_SIZE + length
+    )
 
     // Parse based on type
     const frame = parseFrame(type, payload)
@@ -225,7 +228,7 @@ function parseFrame(type: number, payload: Uint8Array): Frame | null {
 /**
  * Concatenate multiple Uint8Arrays
  */
-export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+export function concatBytes(...arrays: Array<Uint8Array>): Uint8Array {
   const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0)
   const result = new Uint8Array(totalLength)
   let offset = 0
@@ -235,4 +238,3 @@ export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   }
   return result
 }
-

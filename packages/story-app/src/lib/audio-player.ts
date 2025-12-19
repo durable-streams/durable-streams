@@ -11,7 +11,7 @@
 const SAMPLE_RATE = 24000 // OpenAI outputs 24kHz audio
 const BYTES_PER_SAMPLE = 2 // 16-bit = 2 bytes
 
-type PlayerState = "idle" | "playing" | "paused"
+type PlayerState = `idle` | `playing` | `paused`
 
 export interface AudioPlayerState {
   isPlaying: boolean
@@ -26,23 +26,23 @@ export type AudioPlayerCallback = (state: AudioPlayerState) => void
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null
-  private allChunks: Float32Array[] = [] // All received chunks (for restart)
-  private scheduledSources: AudioBufferSourceNode[] = []
-  private totalBufferedSamples: number = 0
-  
+  private allChunks: Array<Float32Array> = [] // All received chunks (for restart)
+  private scheduledSources: Array<AudioBufferSourceNode> = []
+  private totalBufferedSamples = 0
+
   // Playback state
-  private state: PlayerState = "idle"
-  private isBlocked: boolean = false
-  private streamFinished: boolean = false // Stream has finished loading
-  private playbackCompleted: boolean = false // User has played through to the end
-  
+  private state: PlayerState = `idle`
+  private isBlocked = false
+  private streamFinished = false // Stream has finished loading
+  private playbackCompleted = false // User has played through to the end
+
   // Timing
-  private playbackStartTime: number = 0 // AudioContext time when playback started
-  private playbackStartOffset: number = 0 // Position in audio when playback started
-  private pausedAt: number = 0 // Audio position when paused
-  private lastScheduledEndTime: number = 0 // When the last scheduled chunk ends
-  private nextChunkIndex: number = 0 // Next chunk to schedule
-  
+  private playbackStartTime = 0 // AudioContext time when playback started
+  private playbackStartOffset = 0 // Position in audio when playback started
+  private pausedAt = 0 // Audio position when paused
+  private lastScheduledEndTime = 0 // When the last scheduled chunk ends
+  private nextChunkIndex = 0 // Next chunk to schedule
+
   private onStateChange: AudioPlayerCallback | null = null
   private updateInterval: number | null = null
 
@@ -56,8 +56,8 @@ export class AudioPlayer {
 
   getState(): AudioPlayerState {
     return {
-      isPlaying: this.state === "playing",
-      isPaused: this.state === "paused",
+      isPlaying: this.state === `playing`,
+      isPaused: this.state === `paused`,
       isBlocked: this.isBlocked,
       currentTime: this.getCurrentTime(),
       duration: this.getDuration(),
@@ -76,11 +76,11 @@ export class AudioPlayer {
       this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE })
     }
 
-    if (this.audioContext.state === "suspended") {
+    if (this.audioContext.state === `suspended`) {
       try {
         await this.audioContext.resume()
         // Small delay to let the browser settle the state
-        await new Promise(resolve => setTimeout(resolve, 10))
+        await new Promise((resolve) => setTimeout(resolve, 10))
       } catch {
         this.isBlocked = true
         this.notifyStateChange()
@@ -89,13 +89,13 @@ export class AudioPlayer {
     }
 
     // Check state after resume attempt
-    this.isBlocked = this.audioContext.state === "suspended"
-    
+    this.isBlocked = this.audioContext.state === `suspended`
+
     if (this.isBlocked) {
       this.notifyStateChange()
       return false
     }
-    
+
     this.startUpdateLoop()
     return true
   }
@@ -104,12 +104,16 @@ export class AudioPlayer {
     if (this.updateInterval !== null) return
 
     this.updateInterval = window.setInterval(() => {
-      if (this.state === "playing") {
+      if (this.state === `playing`) {
         // Check if playback finished
         const currentTime = this.getCurrentTime()
         const duration = this.getDuration()
-        if (this.streamFinished && duration > 0 && currentTime >= duration - 0.05) {
-          this.state = "idle"
+        if (
+          this.streamFinished &&
+          duration > 0 &&
+          currentTime >= duration - 0.05
+        ) {
+          this.state = `idle`
           this.pausedAt = 0
           this.playbackCompleted = true // Mark that we've played through to the end
         }
@@ -139,14 +143,15 @@ export class AudioPlayer {
       const low = pcm16Data[i * 2]
       const high = pcm16Data[i * 2 + 1]
       const sample = (high << 8) | low
-      float32Data[i] = sample >= 0x8000 ? (sample - 0x10000) / 32768 : sample / 32768
+      float32Data[i] =
+        sample >= 0x8000 ? (sample - 0x10000) / 32768 : sample / 32768
     }
 
     this.allChunks.push(float32Data)
     this.totalBufferedSamples += samples
 
     // If playing, schedule the new chunk
-    if (this.state === "playing" && this.audioContext) {
+    if (this.state === `playing` && this.audioContext) {
       this.scheduleChunk(this.allChunks.length - 1)
     }
 
@@ -165,15 +170,15 @@ export class AudioPlayer {
     const contextReady = await this.initContext()
     if (!contextReady) return false
 
-    if (this.state === "paused") {
+    if (this.state === `paused`) {
       // Resume from paused position
       this.resumeFromPosition(this.pausedAt)
-    } else if (this.state === "idle") {
+    } else if (this.state === `idle`) {
       // Start from beginning (or from pausedAt if set)
       this.resumeFromPosition(this.pausedAt)
     }
 
-    this.state = "playing"
+    this.state = `playing`
     this.notifyStateChange()
     return true
   }
@@ -182,11 +187,11 @@ export class AudioPlayer {
    * Pause playback
    */
   pause(): void {
-    if (this.state !== "playing") return
+    if (this.state !== `playing`) return
 
     // Save current position
     this.pausedAt = this.getCurrentTime()
-    this.state = "paused"
+    this.state = `paused`
 
     // Stop all scheduled sources
     this.stopAllSources()
@@ -198,11 +203,11 @@ export class AudioPlayer {
    */
   async restart(): Promise<boolean> {
     this.stopAllSources()
-    this.state = "idle"
+    this.state = `idle`
     this.pausedAt = 0
     this.nextChunkIndex = 0
     this.playbackCompleted = false
-    
+
     return this.play()
   }
 
@@ -211,18 +216,18 @@ export class AudioPlayer {
    * Used for resuming from saved progress
    */
   seekTo(positionSeconds: number): void {
-    const wasPlaying = this.state === "playing"
-    
+    const wasPlaying = this.state === `playing`
+
     if (wasPlaying) {
       this.stopAllSources()
     }
-    
+
     this.pausedAt = Math.min(positionSeconds, this.getDuration())
-    
+
     if (wasPlaying) {
       this.resumeFromPosition(this.pausedAt)
     }
-    
+
     this.notifyStateChange()
   }
 
@@ -231,7 +236,7 @@ export class AudioPlayer {
    */
   stop(): void {
     this.stopAllSources()
-    this.state = "idle"
+    this.state = `idle`
     this.pausedAt = 0
     this.nextChunkIndex = 0
     this.playbackCompleted = false
@@ -248,7 +253,7 @@ export class AudioPlayer {
   }
 
   getCurrentTime(): number {
-    if (this.state === "paused" || this.state === "idle") {
+    if (this.state === `paused` || this.state === `idle`) {
       return this.pausedAt
     }
 
@@ -277,7 +282,7 @@ export class AudioPlayer {
     if (!this.audioContext) return
 
     this.stopAllSources()
-    
+
     this.playbackStartTime = this.audioContext.currentTime
     this.playbackStartOffset = positionSeconds
     this.lastScheduledEndTime = this.audioContext.currentTime
@@ -303,7 +308,7 @@ export class AudioPlayer {
         const skipSeconds = positionSeconds - accumulatedTime
         const skipSamples = Math.floor(skipSeconds * SAMPLE_RATE)
         const partialChunk = this.allChunks[i].slice(skipSamples)
-        
+
         if (partialChunk.length > 0) {
           this.scheduleFloat32Data(partialChunk)
         }
@@ -313,7 +318,7 @@ export class AudioPlayer {
         this.scheduleChunk(i)
         this.nextChunkIndex = i + 1
       }
-      
+
       accumulatedTime = chunkEndTime
     }
 
@@ -332,14 +337,21 @@ export class AudioPlayer {
   private scheduleFloat32Data(float32Data: Float32Array): void {
     if (!this.audioContext || float32Data.length === 0) return
 
-    const buffer = this.audioContext.createBuffer(1, float32Data.length, SAMPLE_RATE)
+    const buffer = this.audioContext.createBuffer(
+      1,
+      float32Data.length,
+      SAMPLE_RATE
+    )
     buffer.copyToChannel(float32Data, 0)
 
     const source = this.audioContext.createBufferSource()
     source.buffer = buffer
     source.connect(this.audioContext.destination)
 
-    const startTime = Math.max(this.lastScheduledEndTime, this.audioContext.currentTime)
+    const startTime = Math.max(
+      this.lastScheduledEndTime,
+      this.audioContext.currentTime
+    )
     source.start(startTime)
     this.lastScheduledEndTime = startTime + buffer.duration
 

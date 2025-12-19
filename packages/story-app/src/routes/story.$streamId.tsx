@@ -1,36 +1,33 @@
-import { createFileRoute, Link, useSearch } from "@tanstack/react-router"
+import { Link, createFileRoute, useSearch } from "@tanstack/react-router"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { stream } from "@durable-streams/client"
+import { FrameType, concatBytes, parseFrames } from "../lib/frame-parser"
+import { AudioPlayer } from "../lib/audio-player"
 import {
-  parseFrames,
-  concatBytes,
-  FrameType,
-  type Frame,
-} from "../lib/frame-parser"
-import { AudioPlayer, type AudioPlayerState } from "../lib/audio-player"
-import {
-  saveStoryProgress,
-  loadStoryProgress,
   clearStoryProgress,
-  type StoryProgress,
+  loadStoryProgress,
+  saveStoryProgress,
 } from "../lib/storage"
+import type { StoryProgress } from "../lib/storage"
+import type { Frame } from "../lib/frame-parser"
+import type { AudioPlayerState } from "../lib/audio-player"
 
 // Environment - will be replaced by build
-const DURABLE_STREAM_URL = "http://localhost:4437"
+const DURABLE_STREAM_URL = `http://localhost:4437`
 
 // Sample rate for calculating audio timing
 const SAMPLE_RATE = 24000
 const BYTES_PER_SAMPLE = 2
 
 type PageState =
-  | "loading"
-  | "resuming"
-  | "blocked"
-  | "playing"
-  | "paused"
-  | "finished"
-  | "error"
-  | "not-found"
+  | `loading`
+  | `resuming`
+  | `blocked`
+  | `playing`
+  | `paused`
+  | `finished`
+  | `error`
+  | `not-found`
 
 interface SearchParams {
   autoplay?: string
@@ -43,7 +40,7 @@ interface TextSegment {
   audioStartTime: number // When this text's audio starts (in seconds)
 }
 
-export const Route = createFileRoute("/story/$streamId")({
+export const Route = createFileRoute(`/story/$streamId`)({
   component: StoryPage,
   validateSearch: (search: Record<string, unknown>): SearchParams => ({
     autoplay: search.autoplay as string | undefined,
@@ -52,14 +49,14 @@ export const Route = createFileRoute("/story/$streamId")({
 
 function StoryPage() {
   const { streamId } = Route.useParams()
-  const search = useSearch({ from: "/story/$streamId" })
-  const autoplay = search.autoplay === "1"
+  const search = useSearch({ from: `/story/$streamId` })
+  const autoplay = search.autoplay === `1`
 
   // State
-  const [pageState, setPageState] = useState<PageState>("loading")
+  const [pageState, setPageState] = useState<PageState>(`loading`)
   const [title, setTitle] = useState<string | null>(null)
   const [prompt, setPrompt] = useState<string | null>(null)
-  const [textSegments, setTextSegments] = useState<TextSegment[]>([])
+  const [textSegments, setTextSegments] = useState<Array<TextSegment>>([])
   const [visibleTextIndex, setVisibleTextIndex] = useState(-1)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<AudioPlayerState>({
@@ -77,14 +74,14 @@ function StoryPage() {
   const streamBufferRef = useRef<Uint8Array>(new Uint8Array(0))
   const unsubscribeRef = useRef<(() => void) | null>(null)
   const hasStartedRef = useRef(false)
-  const currentOffsetRef = useRef<string>("-1")
+  const currentOffsetRef = useRef<string>(`-1`)
   const userScrolledRef = useRef(false)
-  
+
   // Track audio timing for text sync
   const audioTimeAccumulatorRef = useRef(0)
   const pendingTextRef = useRef<string | null>(null)
-  const allSegmentsRef = useRef<TextSegment[]>([])
-  
+  const allSegmentsRef = useRef<Array<TextSegment>>([])
+
   // Resume state
   const savedProgressRef = useRef<StoryProgress | null>(null)
   const isResumingRef = useRef(false)
@@ -95,7 +92,7 @@ function StoryPage() {
       document.title = `${title} - Tell Me a Story!`
     }
     return () => {
-      document.title = "Tell Me a Story!"
+      document.title = `Tell Me a Story!`
     }
   }, [title])
 
@@ -114,10 +111,10 @@ function StoryPage() {
   // Update visible text based on audio playback time
   useEffect(() => {
     if (!audioState.isPlaying || audioState.isPaused) return
-    
+
     const currentTime = audioState.currentTime
     let newVisibleIndex = -1
-    
+
     for (let i = 0; i < allSegmentsRef.current.length; i++) {
       if (allSegmentsRef.current[i].audioStartTime <= currentTime) {
         newVisibleIndex = i
@@ -125,31 +122,36 @@ function StoryPage() {
         break
       }
     }
-    
+
     if (newVisibleIndex !== visibleTextIndex) {
       setVisibleTextIndex(newVisibleIndex)
     }
-  }, [audioState.currentTime, audioState.isPlaying, audioState.isPaused, visibleTextIndex])
+  }, [
+    audioState.currentTime,
+    audioState.isPlaying,
+    audioState.isPaused,
+    visibleTextIndex,
+  ])
 
   // Auto-scroll window to bottom when new text appears (unless user scrolled up)
   useEffect(() => {
     if (userScrolledRef.current) return
-    
+
     // Scroll window to bottom
     window.scrollTo({
       top: document.documentElement.scrollHeight,
-      behavior: "smooth",
+      behavior: `smooth`,
     })
   }, [visibleTextIndex])
 
   // Detect user scroll - check if they scrolled away from bottom
   useEffect(() => {
     const handleScroll = () => {
-      const distanceFromBottom = 
-        document.documentElement.scrollHeight - 
-        window.scrollY - 
+      const distanceFromBottom =
+        document.documentElement.scrollHeight -
+        window.scrollY -
         window.innerHeight
-      
+
       // If user is near bottom (within 150px), enable auto-scroll
       if (distanceFromBottom < 150) {
         userScrolledRef.current = false
@@ -159,12 +161,12 @@ function StoryPage() {
       }
     }
 
-    window.addEventListener("scroll", handleScroll, { passive: true })
-    return () => window.removeEventListener("scroll", handleScroll)
+    window.addEventListener(`scroll`, handleScroll, { passive: true })
+    return () => window.removeEventListener(`scroll`, handleScroll)
   }, [])
 
   // Process received frames
-  const processFrames = useCallback((frames: Frame[]) => {
+  const processFrames = useCallback((frames: Array<Frame>) => {
     for (const frame of frames) {
       switch (frame.type) {
         case FrameType.METADATA:
@@ -176,18 +178,19 @@ function StoryPage() {
             setTitle(frame.payload.text)
           } else {
             // Store pending text to be paired with next audio
-            pendingTextRef.current = (pendingTextRef.current || "") + frame.payload.text
+            pendingTextRef.current =
+              (pendingTextRef.current || ``) + frame.payload.text
           }
           break
 
         case FrameType.AUDIO:
           if (audioPlayerRef.current) {
             audioPlayerRef.current.addAudioData(frame.payload)
-            
+
             // Calculate audio duration for this chunk
             const samples = frame.payload.length / BYTES_PER_SAMPLE
             const chunkDuration = samples / SAMPLE_RATE
-            
+
             // If we have pending text, pair it with this audio timing
             if (pendingTextRef.current) {
               const segment: TextSegment = {
@@ -199,7 +202,7 @@ function StoryPage() {
               setTextSegments([...allSegmentsRef.current])
               pendingTextRef.current = null
             }
-            
+
             audioTimeAccumulatorRef.current += chunkDuration
           }
           break
@@ -216,7 +219,7 @@ function StoryPage() {
             setTextSegments([...allSegmentsRef.current])
             pendingTextRef.current = null
           }
-          
+
           if (audioPlayerRef.current) {
             audioPlayerRef.current.markFinished()
           }
@@ -224,7 +227,7 @@ function StoryPage() {
 
         case FrameType.ERROR:
           setErrorMessage(frame.payload.error)
-          setPageState("error")
+          setPageState(`error`)
           break
       }
     }
@@ -236,65 +239,64 @@ function StoryPage() {
     if (isResumingRef.current) return
     // Only save if we have a meaningful position
     if (audioState.currentTime <= 0) return
-    
+
     const progress: StoryProgress = {
       offset: currentOffsetRef.current,
       audioTimestamp: audioState.currentTime,
       title,
       prompt,
-      finished: pageState === "finished",
+      finished: pageState === `finished`,
     }
     saveStoryProgress(streamId, progress)
   }, [streamId, audioState.currentTime, title, prompt, pageState])
 
   // Subscribe to stream
-  const subscribeToStream = useCallback(
-    async () => {
-      const streamUrl = `${DURABLE_STREAM_URL}/v1/stream/${streamId}`
+  const subscribeToStream = useCallback(async () => {
+    const streamUrl = `${DURABLE_STREAM_URL}/v1/stream/${streamId}`
 
-      try {
-        // Always start from beginning to get all data (for audio buffer rebuild)
-        const res = await stream({
-          url: streamUrl,
-          offset: "-1",
-          live: "long-poll",
-        })
+    try {
+      // Always start from beginning to get all data (for audio buffer rebuild)
+      const res = await stream({
+        url: streamUrl,
+        offset: `-1`,
+        live: `long-poll`,
+      })
 
-        // Subscribe to byte chunks
-        const unsubscribe = res.subscribeBytes(async (chunk) => {
-          // Update current offset
-          currentOffsetRef.current = chunk.offset
+      // Subscribe to byte chunks
+      const unsubscribe = res.subscribeBytes((chunk): Promise<void> => {
+        // Update current offset
+        currentOffsetRef.current = chunk.offset
 
-          // Append to buffer and parse frames
-          streamBufferRef.current = concatBytes(
-            streamBufferRef.current,
-            chunk.data
-          )
-          const { frames, remainder } = parseFrames(streamBufferRef.current)
-          streamBufferRef.current = remainder
+        // Append to buffer and parse frames
+        streamBufferRef.current = concatBytes(
+          streamBufferRef.current,
+          chunk.data
+        )
+        const { frames, remainder } = parseFrames(streamBufferRef.current)
+        streamBufferRef.current = remainder
 
-          // Process frames
-          processFrames(frames)
-        })
+        // Process frames
+        processFrames(frames)
 
-        unsubscribeRef.current = unsubscribe
-      } catch (err) {
-        console.error("Stream subscription error:", err)
-        if (
-          err instanceof Error &&
-          (err.message.includes("404") || err.message.includes("Not Found"))
-        ) {
-          setPageState("not-found")
-        } else {
-          setErrorMessage(
-            err instanceof Error ? err.message : "Failed to load story"
-          )
-          setPageState("error")
-        }
+        return Promise.resolve()
+      })
+
+      unsubscribeRef.current = unsubscribe
+    } catch (err) {
+      console.error(`Stream subscription error:`, err)
+      if (
+        err instanceof Error &&
+        (err.message.includes(`404`) || err.message.includes(`Not Found`))
+      ) {
+        setPageState(`not-found`)
+      } else {
+        setErrorMessage(
+          err instanceof Error ? err.message : `Failed to load story`
+        )
+        setPageState(`error`)
       }
-    },
-    [streamId, processFrames]
-  )
+    }
+  }, [streamId, processFrames])
 
   // Initial load and stream subscription
   useEffect(() => {
@@ -307,16 +309,16 @@ function StoryPage() {
       // We're resuming - store the target timestamp
       savedProgressRef.current = savedProgress
       isResumingRef.current = true
-      
+
       // Restore saved state immediately for display
       setTitle(savedProgress.title)
       setPrompt(savedProgress.prompt)
-      
+
       if (savedProgress.finished) {
-        setPageState("finished")
+        setPageState(`finished`)
       } else {
         // Show "resuming" state
-        setPageState("resuming")
+        setPageState(`resuming`)
       }
     }
 
@@ -335,30 +337,30 @@ function StoryPage() {
     if (!isResumingRef.current) return false
     if (!savedProgressRef.current) return false
     if (!audioPlayerRef.current) return false
-    
+
     const targetTime = savedProgressRef.current.audioTimestamp
     const player = audioPlayerRef.current
     const currentDuration = player.getDuration()
-    
+
     // Need some audio to be loaded
     if (currentDuration === 0) return false
-    
+
     // If target is beyond what we have, wait (unless stream is finished)
     if (currentDuration < targetTime) return false
-    
+
     // We have enough audio - proceed with resume
     const savedProgress = savedProgressRef.current
-    
+
     // Clear resume state first to prevent re-entry
     isResumingRef.current = false
     savedProgressRef.current = null
-    
+
     // Clamp target time to available duration
     const seekTime = Math.min(targetTime, currentDuration)
-    
+
     // Seek audio to saved position
     player.seekTo(seekTime)
-    
+
     // Update visible text to match the saved timestamp
     let newVisibleIndex = -1
     for (let i = 0; i < allSegmentsRef.current.length; i++) {
@@ -369,7 +371,7 @@ function StoryPage() {
       }
     }
     setVisibleTextIndex(newVisibleIndex)
-    
+
     // Auto-play from resumed position (unless already finished)
     if (!savedProgress.finished) {
       // Use setTimeout to ensure state is settled before playing
@@ -377,15 +379,15 @@ function StoryPage() {
         if (!audioPlayerRef.current) return
         audioPlayerRef.current.play().then((success) => {
           if (!success) {
-            setPageState("blocked")
+            setPageState(`blocked`)
           }
         })
       }, 50)
     } else {
-      setPageState("finished")
+      setPageState(`finished`)
       setVisibleTextIndex(allSegmentsRef.current.length - 1)
     }
-    
+
     return true
   }, [])
 
@@ -397,13 +399,13 @@ function StoryPage() {
   // Also poll for resume in case effect doesn't trigger
   useEffect(() => {
     if (!isResumingRef.current) return
-    
+
     const interval = setInterval(() => {
       if (attemptResume()) {
         clearInterval(interval)
       }
     }, 100)
-    
+
     return () => clearInterval(interval)
   }, [attemptResume])
 
@@ -412,17 +414,13 @@ function StoryPage() {
     // Skip if we're resuming (that's handled above)
     if (isResumingRef.current) return
     if (!audioPlayerRef.current) return
-    
+
     const player = audioPlayerRef.current
-    
-    if (
-      autoplay &&
-      pageState === "loading" &&
-      audioState.duration > 0
-    ) {
+
+    if (autoplay && pageState === `loading` && audioState.duration > 0) {
       player.play().then((success) => {
         if (!success) {
-          setPageState("blocked")
+          setPageState(`blocked`)
         }
       })
     }
@@ -431,13 +429,13 @@ function StoryPage() {
   // Update page state based on audio state
   useEffect(() => {
     if (audioState.isBlocked) {
-      setPageState("blocked")
+      setPageState(`blocked`)
     } else if (audioState.isPlaying && !audioState.isPaused) {
-      setPageState("playing")
+      setPageState(`playing`)
     } else if (audioState.isPaused) {
-      setPageState("paused")
+      setPageState(`paused`)
     } else if (audioState.isFinished && !audioState.isPlaying) {
-      setPageState("finished")
+      setPageState(`finished`)
       // Show all text when finished
       setVisibleTextIndex(allSegmentsRef.current.length - 1)
     }
@@ -449,7 +447,7 @@ function StoryPage() {
     if (audioPlayerRef.current) {
       const success = await audioPlayerRef.current.play()
       if (!success) {
-        setPageState("blocked")
+        setPageState(`blocked`)
       }
     }
   }
@@ -462,42 +460,48 @@ function StoryPage() {
 
   const handleRestart = async () => {
     clearStoryProgress(streamId)
-    
+
     // Reset text display
     setVisibleTextIndex(-1)
     userScrolledRef.current = false
-    
+
     if (audioPlayerRef.current) {
       await audioPlayerRef.current.restart()
     }
   }
 
   const handleShare = async () => {
-    const url = window.location.href.split("?")[0] // Remove autoplay param
+    const url = window.location.href.split(`?`)[0] // Remove autoplay param
     try {
       await navigator.clipboard.writeText(url)
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
       // Fallback for older browsers
-      window.prompt("Copy this link to share:", url)
+      window.prompt(`Copy this link to share:`, url)
     }
   }
 
   // Build visible text content
   const visibleText = textSegments
     .slice(0, visibleTextIndex + 1)
-    .map(s => s.text)
-    .join("")
+    .map((s) => s.text)
+    .join(``)
 
   // Render loading/resuming state
-  if ((pageState === "loading" || pageState === "resuming") && !title && textSegments.length === 0) {
+  if (
+    (pageState === `loading` || pageState === `resuming`) &&
+    !title &&
+    textSegments.length === 0
+  ) {
     return (
       <div className="min-h-screen bg-story-gradient flex items-center justify-center">
         <div className="text-center text-white">
           <div className="text-6xl mb-4 animate-bounce">📖</div>
           <p className="text-2xl animate-pulse">
-            {pageState === "resuming" ? "Resuming your story..." : "Loading your story..."}
+            {pageState === `resuming`
+              ? `Resuming your story...`
+              : `Loading your story...`}
           </p>
         </div>
       </div>
@@ -505,7 +509,7 @@ function StoryPage() {
   }
 
   // Render not found state
-  if (pageState === "not-found") {
+  if (pageState === `not-found`) {
     return (
       <div className="min-h-screen bg-story-gradient flex items-center justify-center p-4">
         <div className="book-container max-w-lg text-center">
@@ -525,7 +529,7 @@ function StoryPage() {
   }
 
   // Render error state
-  if (pageState === "error") {
+  if (pageState === `error`) {
     return (
       <div className="min-h-screen bg-story-gradient flex items-center justify-center p-4">
         <div className="book-container max-w-lg text-center">
@@ -554,7 +558,7 @@ function StoryPage() {
       <div className="sparkle text-3xl top-5 left-5 animate-float">✨</div>
       <div
         className="sparkle text-2xl top-10 right-10 animate-float"
-        style={{ animationDelay: "0.5s" }}
+        style={{ animationDelay: `0.5s` }}
       >
         ⭐
       </div>
@@ -564,7 +568,7 @@ function StoryPage() {
         {/* Book container */}
         <div className="book-container w-full max-w-3xl relative">
           {/* Autoplay blocked overlay - shown when browser blocks autoplay */}
-          {pageState === "blocked" && (
+          {pageState === `blocked` && (
             <div className="absolute inset-0 bg-black/70 rounded-3xl flex items-center justify-center z-20">
               <div className="text-center">
                 <button
@@ -592,23 +596,23 @@ function StoryPage() {
           <div className="text-xl md:text-2xl text-gray-800 story-text mb-8">
             {visibleText ? (
               visibleText.split(/\n\n+/).map((paragraph, i) => (
-                <p key={i} className={i > 0 ? "mt-4" : ""}>
+                <p key={i} className={i > 0 ? `mt-4` : ``}>
                   {paragraph}
                 </p>
               ))
             ) : (
               <p className="text-gray-400 italic">
-                {pageState === "resuming" 
-                  ? "Resuming story..." 
-                  : pageState === "paused" || pageState === "blocked"
-                  ? "Press play to start..." 
-                  : "Story is loading..."}
+                {pageState === `resuming`
+                  ? `Resuming story...`
+                  : pageState === `paused` || pageState === `blocked`
+                    ? `Press play to start...`
+                    : `Story is loading...`}
               </p>
             )}
           </div>
 
           {/* Finished overlay */}
-          {pageState === "finished" && (
+          {pageState === `finished` && (
             <div className="text-center py-8 border-t-2 border-story-yellow/30 flex-shrink-0">
               <p className="text-3xl font-bold text-story-purple mb-4">
                 ✨ The End ✨
@@ -673,11 +677,11 @@ function StoryPage() {
 
           {/* Play/Pause button */}
           <button
-            onClick={pageState === "playing" ? handlePause : handlePlay}
+            onClick={pageState === `playing` ? handlePause : handlePlay}
             className="btn-control w-20 h-20 text-4xl bg-gradient-to-r from-story-purple to-story-pink text-white"
-            title={pageState === "playing" ? "Pause" : "Play"}
+            title={pageState === `playing` ? `Pause` : `Play`}
           >
-            {pageState === "playing" ? "⏸️" : "▶️"}
+            {pageState === `playing` ? `⏸️` : `▶️`}
           </button>
 
           {/* Share button */}
@@ -705,5 +709,5 @@ function StoryPage() {
 function formatTime(seconds: number): string {
   const mins = Math.floor(seconds / 60)
   const secs = Math.floor(seconds % 60)
-  return `${mins}:${secs.toString().padStart(2, "0")}`
+  return `${mins}:${secs.toString().padStart(2, `0`)}`
 }

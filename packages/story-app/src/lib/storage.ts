@@ -13,7 +13,7 @@ export interface StoryProgress {
   finished: boolean
 }
 
-const STORAGE_KEY_PREFIX = "story-progress-"
+const STORAGE_KEY_PREFIX = `story-progress-`
 
 /**
  * Save story progress to sessionStorage
@@ -27,7 +27,7 @@ export function saveStoryProgress(
     sessionStorage.setItem(key, JSON.stringify(progress))
   } catch {
     // Ignore storage errors (e.g., quota exceeded, private browsing)
-    console.warn("Failed to save story progress to sessionStorage")
+    console.warn(`Failed to save story progress to sessionStorage`)
   }
 }
 
@@ -43,7 +43,7 @@ export function loadStoryProgress(streamId: string): StoryProgress | null {
     }
   } catch {
     // Ignore parse errors
-    console.warn("Failed to load story progress from sessionStorage")
+    console.warn(`Failed to load story progress from sessionStorage`)
   }
   return null
 }

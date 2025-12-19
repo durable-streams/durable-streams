@@ -2,13 +2,13 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useState } from "react"
 import { generateStory } from "../server/functions"
 
-export const Route = createFileRoute("/")({
+export const Route = createFileRoute(`/`)({
   component: HomePage,
 })
 
 function HomePage() {
   const navigate = useNavigate()
-  const [prompt, setPrompt] = useState("")
+  const [prompt, setPrompt] = useState(``)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -22,16 +22,18 @@ function HomePage() {
     try {
       // Call the server function with prompt data
       // Type assertion needed due to TanStack Start's dynamic typing
-      const serverFn = generateStory as unknown as (args: { data: { prompt: string } }) => Promise<{ streamId: string; streamUrl: string }>
+      const serverFn = generateStory as unknown as (args: {
+        data: { prompt: string }
+      }) => Promise<{ streamId: string; streamUrl: string }>
       const result = await serverFn({ data: { prompt: prompt.trim() } })
       // Navigate to story page with autoplay flag
       navigate({
-        to: "/story/$streamId",
+        to: `/story/$streamId`,
         params: { streamId: result.streamId },
-        search: { autoplay: "1" },
+        search: { autoplay: `1` },
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong")
+      setError(err instanceof Error ? err.message : `Something went wrong`)
       setIsLoading(false)
     }
   }
@@ -42,31 +44,31 @@ function HomePage() {
       <div className="sparkle text-4xl top-10 left-10 animate-float">✨</div>
       <div
         className="sparkle text-3xl top-20 right-20 animate-float"
-        style={{ animationDelay: "0.5s" }}
+        style={{ animationDelay: `0.5s` }}
       >
         ⭐
       </div>
       <div
         className="sparkle text-5xl bottom-20 left-20 animate-float"
-        style={{ animationDelay: "1s" }}
+        style={{ animationDelay: `1s` }}
       >
         🌟
       </div>
       <div
         className="sparkle text-4xl bottom-10 right-10 animate-float"
-        style={{ animationDelay: "1.5s" }}
+        style={{ animationDelay: `1.5s` }}
       >
         ✨
       </div>
       <div
         className="sparkle text-3xl top-1/3 left-5 animate-float"
-        style={{ animationDelay: "0.3s" }}
+        style={{ animationDelay: `0.3s` }}
       >
         🌙
       </div>
       <div
         className="sparkle text-4xl top-1/4 right-10 animate-float"
-        style={{ animationDelay: "0.8s" }}
+        style={{ animationDelay: `0.8s` }}
       >
         ☁️
       </div>
@@ -129,10 +131,10 @@ function HomePage() {
           <p className="text-white/80 mb-3">Need ideas? Try:</p>
           <div className="flex flex-wrap justify-center gap-2">
             {[
-              "A dragon who loves to bake cookies",
-              "A princess who becomes a scientist",
-              "A friendly robot learning to dance",
-              "A magical garden where flowers sing",
+              `A dragon who loves to bake cookies`,
+              `A princess who becomes a scientist`,
+              `A friendly robot learning to dance`,
+              `A magical garden where flowers sing`,
             ].map((suggestion) => (
               <button
                 key={suggestion}
