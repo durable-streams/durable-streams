@@ -64,7 +64,7 @@ const schema = createStateSchema({
 })
 
 // Create a stream-backed database
-const db = await createStreamDB({
+const db = createStreamDB({
   streamOptions: {
     url: "https://api.example.com/streams/my-stream",
     contentType: "application/json",
@@ -228,7 +228,7 @@ const eventWithTxId = schema.users.insert({
 ### Creating a Database
 
 ```typescript
-const db = await createStreamDB({
+const db = createStreamDB({
   streamOptions: {
     url: "https://api.example.com/streams/my-stream",
     contentType: "application/json",
@@ -337,7 +337,7 @@ await db.utils.awaitTxId("txid-uuid", 5000) // 5 second timeout
 Define actions with optimistic updates and server confirmation:
 
 ```typescript
-const db = await createStreamDB({
+const db = createStreamDB({
   streamOptions: { url: streamUrl, contentType: "application/json" },
   state: schema,
   actions: ({ db, stream }) => ({

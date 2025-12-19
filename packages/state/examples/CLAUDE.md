@@ -83,7 +83,7 @@ if (query.isLoading()) {
 StreamDB collections are TanStack DB collections internally, so `useLiveQuery` works seamlessly:
 
 ```typescript
-const db = await createStreamDB({
+const db = createStreamDB({
   streamOptions: { url: streamUrl },
   state: stateSchema,
 })

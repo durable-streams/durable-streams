@@ -109,7 +109,7 @@ Each event shows:
 ### StreamDB Integration
 
 ```typescript
-const db = await createStreamDB({
+const db = createStreamDB({
   streamOptions: {
     url: "http://localhost:4437/v1/stream/wikipedia-events",
     contentType: "application/json",

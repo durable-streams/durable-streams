@@ -92,7 +92,7 @@ describe(`Stream DB`, () => {
     })
 
     // Create the stream DB (will create its own stream handle for reading)
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: `${baseUrl}${streamPath}`,
         contentType: `application/json`,
@@ -159,7 +159,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -201,7 +201,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -242,7 +242,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -272,7 +272,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -315,7 +315,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -367,7 +367,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -419,7 +419,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -486,7 +486,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -554,7 +554,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -640,7 +640,7 @@ describe(`Stream DB`, () => {
     )
 
     // Create StreamDB
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: { url: stream.url, contentType: stream.contentType },
       state: streamState,
     })
@@ -725,7 +725,7 @@ describe(`Stream DB`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -797,7 +797,7 @@ describe(`Stream DB`, () => {
       headers: { operation: `insert` },
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: { url: stream.url, contentType: stream.contentType },
       state: streamState,
     })
@@ -1295,7 +1295,7 @@ describe(`Upsert Operations`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1331,7 +1331,7 @@ describe(`Upsert Operations`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1374,7 +1374,7 @@ describe(`Upsert Operations`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1421,7 +1421,7 @@ describe(`Upsert Operations`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1463,7 +1463,7 @@ describe(`Upsert Operations`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1540,7 +1540,7 @@ describe(`Stream DB Actions`, () => {
 
     const mutationResults: Array<{ name: string; signal: AbortSignal }> = []
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1618,7 +1618,7 @@ describe(`Stream DB Actions`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1693,7 +1693,7 @@ describe(`Stream DB Actions`, () => {
 
     let capturedStream: unknown = null
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: `${baseUrl}/db/actions-stream-${Date.now()}`,
         contentType: `application/json`,
@@ -1753,7 +1753,7 @@ describe(`Stream DB Actions`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1811,7 +1811,7 @@ describe(`Stream DB Actions`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1885,7 +1885,7 @@ describe(`Stream DB TxId Tracking`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1932,7 +1932,7 @@ describe(`Stream DB TxId Tracking`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -1977,7 +1977,7 @@ describe(`Stream DB TxId Tracking`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -2013,7 +2013,7 @@ describe(`Stream DB TxId Tracking`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,
@@ -2078,7 +2078,7 @@ describe(`Stream DB TxId Tracking`, () => {
       contentType: `application/json`,
     })
 
-    const db = await createStreamDB({
+    const db = createStreamDB({
       streamOptions: {
         url: streamUrl,
         contentType: `application/json`,

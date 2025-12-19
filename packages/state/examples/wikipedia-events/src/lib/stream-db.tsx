@@ -59,7 +59,7 @@ export function WikipediaDBProvider(props: WikipediaDBProviderProps) {
         console.log(`[WikipediaDB] Stream created`)
       }
 
-      const database = await createStreamDB({
+      const database = createStreamDB({
         streamOptions: {
           url: streamUrl,
           contentType: `application/json`,
