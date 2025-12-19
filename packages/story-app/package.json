@@ -1,0 +1,32 @@
+{
+  "name": "@durable-streams/story-app",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n stream,app -c blue,magenta \"pnpm run dev:stream\" \"pnpm run dev:app\"",
+    "dev:app": "vite dev",
+    "dev:stream": "pnpm --filter @durable-streams/cli start:dev",
+    "build": "vite build",
+    "start": "vite preview"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:^",
+    "@tanstack/react-router": "^1.141.0",
+    "@tanstack/react-start": "^1.141.0",
+    "openai": "^4.77.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tanstack/router-plugin": "^1.141.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.7.2",
+    "vite": "^7.0.0"
+  }
+}
