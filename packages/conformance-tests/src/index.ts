@@ -99,6 +99,44 @@ async function fetchSSE(
 }
 
 /**
+ * Parse SSE events from raw SSE text.
+ * Handles multi-line data correctly by joining data: lines per the SSE spec.
+ * Returns an array of parsed events with type and data.
+ */
+function parseSSEEvents(
+  sseText: string
+): Array<{ type: string; data: string }> {
+  const events: Array<{ type: string; data: string }> = []
+  const normalized = sseText.replace(/\r\n/g, `\n`)
+
+  // Split by double newlines (event boundaries)
+  const eventBlocks = normalized.split(`\n\n`).filter((block) => block.trim())
+
+  for (const block of eventBlocks) {
+    const lines = block.split(`\n`)
+    let eventType = ``
+    const dataLines: Array<string> = []
+
+    for (const line of lines) {
+      if (line.startsWith(`event:`)) {
+        eventType = line.slice(6).trim()
+      } else if (line.startsWith(`data:`)) {
+        // Per SSE spec, strip the optional space after "data:"
+        const content = line.slice(5)
+        dataLines.push(content.startsWith(` `) ? content.slice(1) : content)
+      }
+    }
+
+    if (eventType && dataLines.length > 0) {
+      // Join data lines with newlines per SSE spec
+      events.push({ type: eventType, data: dataLines.join(`\n`) })
+    }
+  }
+
+  return events
+}
+
+/**
  * Run the full conformance test suite against a server
  */
 export function runConformanceTests(options: ConformanceTestOptions): void {
@@ -2577,15 +2615,13 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(200)
       expect(received).toContain(`event: data`)
 
-      // Extract and parse the JSON payload to verify it's valid
-      const dataLine = received
-        .split(`\n`)
-        .find((l) => l.startsWith(`data: `) && l.includes(`[`))
-      expect(dataLine).toBeDefined()
+      // Parse SSE events properly (handles multi-line data per SSE spec)
+      const events = parseSSEEvents(received)
+      const dataEvent = events.find((e) => e.type === `data`)
+      expect(dataEvent).toBeDefined()
 
-      const payload = dataLine!.slice(`data: `.length)
       // This will throw if JSON is invalid (e.g., trailing comma)
-      const parsed = JSON.parse(payload)
+      const parsed = JSON.parse(dataEvent!.data)
 
       // Verify the structure matches what we sent
       expect(parsed).toEqual([{ id: 1, message: `hello` }])

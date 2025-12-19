@@ -49,8 +49,8 @@ export function processJsonAppend(
     const elements = parsed.map((item) => JSON.stringify(item))
     result = elements.join(`,`) + `,`
   } else {
-    // Single value - add trailing comma
-    result = text.trim() + `,`
+    // Single value - re-serialize to normalize whitespace (single-line JSON)
+    result = JSON.stringify(parsed) + `,`
   }
 
   return new TextEncoder().encode(result)
