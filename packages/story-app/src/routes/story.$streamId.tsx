@@ -583,24 +583,28 @@ function StoryPage() {
 
           {/* Title */}
           {title && (
-            <h1 className="text-3xl md:text-4xl font-bold text-center text-story-purple mb-6 flex-shrink-0">
+            <h1 className="text-3xl md:text-4xl font-bold text-center text-story-purple mb-4">
               {title}
             </h1>
           )}
 
           {/* Story text */}
-          <div className="prose prose-lg max-w-none mb-8">
-            <p className="text-xl md:text-2xl leading-relaxed text-gray-800 whitespace-pre-wrap">
-              {visibleText || (
-                <span className="text-gray-400 italic">
-                  {pageState === "resuming" 
-                    ? "Resuming story..." 
-                    : pageState === "paused" || pageState === "blocked"
-                    ? "Press play to start..." 
-                    : "Story is loading..."}
-                </span>
-              )}
-            </p>
+          <div className="text-xl md:text-2xl text-gray-800 story-text mb-8">
+            {visibleText ? (
+              visibleText.split(/\n\n+/).map((paragraph, i) => (
+                <p key={i} className={i > 0 ? "mt-4" : ""}>
+                  {paragraph}
+                </p>
+              ))
+            ) : (
+              <p className="text-gray-400 italic">
+                {pageState === "resuming" 
+                  ? "Resuming story..." 
+                  : pageState === "paused" || pageState === "blocked"
+                  ? "Press play to start..." 
+                  : "Story is loading..."}
+              </p>
+            )}
           </div>
 
           {/* Finished overlay */}

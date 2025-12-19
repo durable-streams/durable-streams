@@ -87,3 +87,15 @@
 .text-glow {
   text-shadow: 0 0 20px rgba(139, 92, 246, 0.3);
 }
+
+/* Story text with consistent paragraph spacing */
+.story-text {
+  line-height: 1.6;
+}
+
+/* Collapse multiple newlines into consistent paragraph breaks */
+.story-text br {
+  content: "";
+  display: block;
+  margin-bottom: 0.75em;
+}
