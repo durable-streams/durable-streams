@@ -6,8 +6,8 @@
  */
 
 export interface StoryProgress {
-  offset: string
-  textContent: string
+  offset: string // Stream offset for resuming subscription
+  audioTimestamp: number // Audio playback position in seconds
   title: string | null
   prompt: string | null
   finished: boolean
@@ -59,15 +59,3 @@ export function clearStoryProgress(streamId: string): void {
     // Ignore errors
   }
 }
-
-/**
- * Update just the offset (for frequent updates during playback)
- */
-export function updateStoryOffset(streamId: string, offset: string): void {
-  const progress = loadStoryProgress(streamId)
-  if (progress) {
-    progress.offset = offset
-    saveStoryProgress(streamId, progress)
-  }
-}
-

@@ -24,6 +24,7 @@ const BYTES_PER_SAMPLE = 2
 
 type PageState =
   | "loading"
+  | "resuming"
   | "blocked"
   | "playing"
   | "paused"
@@ -83,6 +84,10 @@ function StoryPage() {
   const audioTimeAccumulatorRef = useRef(0)
   const pendingTextRef = useRef<string | null>(null)
   const allSegmentsRef = useRef<TextSegment[]>([])
+  
+  // Resume state
+  const savedProgressRef = useRef<StoryProgress | null>(null)
+  const isResumingRef = useRef(false)
 
   // Update page title when story title changes
   useEffect(() => {
@@ -225,32 +230,33 @@ function StoryPage() {
     }
   }, [])
 
-  // Save progress periodically
-  const saveProgress = useCallback(() => {
-    const visibleText = allSegmentsRef.current
-      .slice(0, visibleTextIndex + 1)
-      .map(s => s.text)
-      .join("")
+  // Save progress during playback and on pause
+  useEffect(() => {
+    // Don't save while resuming
+    if (isResumingRef.current) return
+    // Only save if we have a meaningful position
+    if (audioState.currentTime <= 0) return
     
     const progress: StoryProgress = {
       offset: currentOffsetRef.current,
-      textContent: visibleText,
+      audioTimestamp: audioState.currentTime,
       title,
       prompt,
       finished: pageState === "finished",
     }
     saveStoryProgress(streamId, progress)
-  }, [streamId, visibleTextIndex, title, prompt, pageState])
+  }, [streamId, audioState.currentTime, title, prompt, pageState])
 
   // Subscribe to stream
   const subscribeToStream = useCallback(
-    async (startOffset: string = "-1") => {
+    async () => {
       const streamUrl = `${DURABLE_STREAM_URL}/v1/stream/${streamId}`
 
       try {
+        // Always start from beginning to get all data (for audio buffer rebuild)
         const res = await stream({
           url: streamUrl,
-          offset: startOffset,
+          offset: "-1",
           live: "long-poll",
         })
 
@@ -269,9 +275,6 @@ function StoryPage() {
 
           // Process frames
           processFrames(frames)
-
-          // Save progress
-          saveProgress()
         })
 
         unsubscribeRef.current = unsubscribe
@@ -290,7 +293,7 @@ function StoryPage() {
         }
       }
     },
-    [streamId, processFrames, saveProgress]
+    [streamId, processFrames]
   )
 
   // Initial load and stream subscription
@@ -300,24 +303,25 @@ function StoryPage() {
 
     // Check for saved progress
     const savedProgress = loadStoryProgress(streamId)
-    if (savedProgress) {
-      // Restore saved state
+    if (savedProgress && savedProgress.audioTimestamp > 0) {
+      // We're resuming - store the target timestamp
+      savedProgressRef.current = savedProgress
+      isResumingRef.current = true
+      
+      // Restore saved state immediately for display
       setTitle(savedProgress.title)
       setPrompt(savedProgress.prompt)
-      currentOffsetRef.current = savedProgress.offset
-
+      
       if (savedProgress.finished) {
         setPageState("finished")
       } else {
-        setPageState("paused")
+        // Show "resuming" state
+        setPageState("resuming")
       }
-
-      // Resume from saved offset
-      subscribeToStream(savedProgress.offset)
-    } else {
-      // Start fresh
-      subscribeToStream("-1")
     }
+
+    // Always load stream from beginning to rebuild audio buffer
+    subscribeToStream()
 
     return () => {
       if (unsubscribeRef.current) {
@@ -326,15 +330,101 @@ function StoryPage() {
     }
   }, [streamId, subscribeToStream])
 
-  // Auto-start playback when we have audio and autoplay is enabled
+  // Handle resume: once we've loaded enough audio, seek to saved position and play
+  const attemptResume = useCallback(() => {
+    if (!isResumingRef.current) return false
+    if (!savedProgressRef.current) return false
+    if (!audioPlayerRef.current) return false
+    
+    const targetTime = savedProgressRef.current.audioTimestamp
+    const player = audioPlayerRef.current
+    const currentDuration = player.getDuration()
+    
+    // Need some audio to be loaded
+    if (currentDuration === 0) return false
+    
+    // If target is beyond what we have, wait (unless stream is finished)
+    if (currentDuration < targetTime) return false
+    
+    // We have enough audio - proceed with resume
+    const savedProgress = savedProgressRef.current
+    
+    // Clear resume state first to prevent re-entry
+    isResumingRef.current = false
+    savedProgressRef.current = null
+    
+    // Clamp target time to available duration
+    const seekTime = Math.min(targetTime, currentDuration)
+    
+    // Seek audio to saved position
+    player.seekTo(seekTime)
+    
+    // Update visible text to match the saved timestamp
+    let newVisibleIndex = -1
+    for (let i = 0; i < allSegmentsRef.current.length; i++) {
+      if (allSegmentsRef.current[i].audioStartTime <= seekTime) {
+        newVisibleIndex = i
+      } else {
+        break
+      }
+    }
+    setVisibleTextIndex(newVisibleIndex)
+    
+    // Auto-play from resumed position (unless already finished)
+    if (!savedProgress.finished) {
+      // Use setTimeout to ensure state is settled before playing
+      setTimeout(() => {
+        if (!audioPlayerRef.current) return
+        audioPlayerRef.current.play().then((success) => {
+          if (!success) {
+            setPageState("blocked")
+          }
+        })
+      }, 50)
+    } else {
+      setPageState("finished")
+      setVisibleTextIndex(allSegmentsRef.current.length - 1)
+    }
+    
+    return true
+  }, [])
+
+  // Try to resume when audio state changes
   useEffect(() => {
+    attemptResume()
+  }, [audioState.duration, attemptResume])
+
+  // Also poll for resume in case effect doesn't trigger
+  useEffect(() => {
+    if (!isResumingRef.current) return
+    
+    const interval = setInterval(() => {
+      if (attemptResume()) {
+        clearInterval(interval)
+      }
+    }, 100)
+    
+    return () => clearInterval(interval)
+  }, [attemptResume])
+
+  // Auto-start playback when we have audio and autoplay is enabled (for new stories)
+  useEffect(() => {
+    // Skip if we're resuming (that's handled above)
+    if (isResumingRef.current) return
+    if (!audioPlayerRef.current) return
+    
+    const player = audioPlayerRef.current
+    
     if (
       autoplay &&
       pageState === "loading" &&
-      audioState.duration > 0 &&
-      audioPlayerRef.current
+      audioState.duration > 0
     ) {
-      handlePlay()
+      player.play().then((success) => {
+        if (!success) {
+          setPageState("blocked")
+        }
+      })
     }
   }, [autoplay, pageState, audioState.duration])
 
@@ -351,6 +441,7 @@ function StoryPage() {
       // Show all text when finished
       setVisibleTextIndex(allSegmentsRef.current.length - 1)
     }
+    // Don't change state if none of the above - keep current state (e.g., "blocked" or "loading")
   }, [audioState])
 
   // Handlers
@@ -399,13 +490,15 @@ function StoryPage() {
     .map(s => s.text)
     .join("")
 
-  // Render loading state
-  if (pageState === "loading" && !title && textSegments.length === 0) {
+  // Render loading/resuming state
+  if ((pageState === "loading" || pageState === "resuming") && !title && textSegments.length === 0) {
     return (
       <div className="min-h-screen bg-story-gradient flex items-center justify-center">
         <div className="text-center text-white">
           <div className="text-6xl mb-4 animate-bounce">📖</div>
-          <p className="text-2xl animate-pulse">Loading your story...</p>
+          <p className="text-2xl animate-pulse">
+            {pageState === "resuming" ? "Resuming your story..." : "Loading your story..."}
+          </p>
         </div>
       </div>
     )
@@ -470,16 +563,21 @@ function StoryPage() {
       <div className="flex flex-col items-center p-4 pb-32">
         {/* Book container */}
         <div className="book-container w-full max-w-3xl relative">
-          {/* Autoplay blocked overlay */}
+          {/* Autoplay blocked overlay - shown when browser blocks autoplay */}
           {pageState === "blocked" && (
-            <div className="absolute inset-0 bg-black/50 rounded-3xl flex items-center justify-center z-20">
-              <button
-                onClick={handlePlay}
-                className="btn-playful text-2xl flex items-center gap-3"
-              >
-                <span className="text-4xl">▶️</span>
-                Tap to Listen
-              </button>
+            <div className="absolute inset-0 bg-black/70 rounded-3xl flex items-center justify-center z-20">
+              <div className="text-center">
+                <button
+                  onClick={handlePlay}
+                  className="btn-playful text-2xl flex items-center gap-3 mb-4"
+                >
+                  <span className="text-4xl">▶️</span>
+                  Tap to Play
+                </button>
+                <p className="text-white/80 text-sm">
+                  Your browser requires a tap to start audio
+                </p>
+              </div>
             </div>
           )}
 
@@ -495,7 +593,11 @@ function StoryPage() {
             <p className="text-xl md:text-2xl leading-relaxed text-gray-800 whitespace-pre-wrap">
               {visibleText || (
                 <span className="text-gray-400 italic">
-                  {pageState === "paused" ? "Press play to start..." : "Story is loading..."}
+                  {pageState === "resuming" 
+                    ? "Resuming story..." 
+                    : pageState === "paused" || pageState === "blocked"
+                    ? "Press play to start..." 
+                    : "Story is loading..."}
                 </span>
               )}
             </p>

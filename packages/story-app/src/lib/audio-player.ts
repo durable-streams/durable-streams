@@ -33,7 +33,8 @@ export class AudioPlayer {
   // Playback state
   private state: PlayerState = "idle"
   private isBlocked: boolean = false
-  private streamFinished: boolean = false
+  private streamFinished: boolean = false // Stream has finished loading
+  private playbackCompleted: boolean = false // User has played through to the end
   
   // Timing
   private playbackStartTime: number = 0 // AudioContext time when playback started
@@ -60,7 +61,7 @@ export class AudioPlayer {
       isBlocked: this.isBlocked,
       currentTime: this.getCurrentTime(),
       duration: this.getDuration(),
-      isFinished: this.streamFinished && this.state !== "playing",
+      isFinished: this.playbackCompleted, // Only true when user has played through to the end
     }
   }
 
@@ -78,6 +79,8 @@ export class AudioPlayer {
     if (this.audioContext.state === "suspended") {
       try {
         await this.audioContext.resume()
+        // Small delay to let the browser settle the state
+        await new Promise(resolve => setTimeout(resolve, 10))
       } catch {
         this.isBlocked = true
         this.notifyStateChange()
@@ -85,11 +88,16 @@ export class AudioPlayer {
       }
     }
 
+    // Check state after resume attempt
     this.isBlocked = this.audioContext.state === "suspended"
-    if (!this.isBlocked) {
-      this.startUpdateLoop()
+    
+    if (this.isBlocked) {
+      this.notifyStateChange()
+      return false
     }
-    return !this.isBlocked
+    
+    this.startUpdateLoop()
+    return true
   }
 
   private startUpdateLoop(): void {
@@ -100,9 +108,10 @@ export class AudioPlayer {
         // Check if playback finished
         const currentTime = this.getCurrentTime()
         const duration = this.getDuration()
-        if (this.streamFinished && currentTime >= duration - 0.05) {
+        if (this.streamFinished && duration > 0 && currentTime >= duration - 0.05) {
           this.state = "idle"
           this.pausedAt = 0
+          this.playbackCompleted = true // Mark that we've played through to the end
         }
         this.notifyStateChange()
       }
@@ -192,8 +201,29 @@ export class AudioPlayer {
     this.state = "idle"
     this.pausedAt = 0
     this.nextChunkIndex = 0
+    this.playbackCompleted = false
     
     return this.play()
+  }
+
+  /**
+   * Seek to a specific position (in seconds)
+   * Used for resuming from saved progress
+   */
+  seekTo(positionSeconds: number): void {
+    const wasPlaying = this.state === "playing"
+    
+    if (wasPlaying) {
+      this.stopAllSources()
+    }
+    
+    this.pausedAt = Math.min(positionSeconds, this.getDuration())
+    
+    if (wasPlaying) {
+      this.resumeFromPosition(this.pausedAt)
+    }
+    
+    this.notifyStateChange()
   }
 
   /**
@@ -204,6 +234,7 @@ export class AudioPlayer {
     this.state = "idle"
     this.pausedAt = 0
     this.nextChunkIndex = 0
+    this.playbackCompleted = false
     this.notifyStateChange()
   }
 
@@ -233,6 +264,13 @@ export class AudioPlayer {
 
   isAutoplayBlocked(): boolean {
     return this.isBlocked
+  }
+
+  /**
+   * Check if the stream has finished loading (all audio received)
+   */
+  isStreamComplete(): boolean {
+    return this.streamFinished
   }
 
   private resumeFromPosition(positionSeconds: number): void {
