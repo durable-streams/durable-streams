@@ -493,6 +493,38 @@ For optimal cache behavior, clients **SHOULD** order query parameters lexicograp
 
 Clients **SHOULD** echo the `Stream-Cursor` value as `cursor=<cursor>` in subsequent long-poll requests. This, along with the appropriate `Cache-Control` header, enables CDNs and proxies to collapse multiple clients waiting for the same data into a single upstream request.
 
+**Server-Generated Cursors:**
+
+To prevent infinite CDN cache loops (where clients receive the same cached empty response indefinitely), servers **MUST** generate a `Stream-Cursor` header on all live mode responses (long-poll and SSE). The cursor mechanism works as follows:
+
+1. **Interval-based Calculation**: Servers divide time into fixed intervals (default: 20 seconds) counted from an epoch (default: October 9, 2024 00:00:00 UTC). The cursor value is the interval number as a decimal string.
+
+2. **Cursor Generation**: For each live response, the server calculates the current interval number and returns it as the `Stream-Cursor` header value.
+
+3. **Collision Handling**: When a client provides a `cursor` query parameter that equals the current interval number, the server **MUST** add random jitter (1-3600 seconds) to advance the cursor to a future interval. This prevents clients from getting stuck in loops when CDNs cache responses with the same cursor.
+
+4. **Client Behavior**: Clients **MUST** include the received `Stream-Cursor` value as the `cursor` query parameter in subsequent requests. This creates different cache keys as time progresses, ensuring CDN caches eventually expire.
+
+**Example Cursor Flow:**
+
+```
+# Client makes initial long-poll request
+GET /stream?offset=123&live=long-poll
+
+# Server returns cursor based on current interval (e.g., interval 1000)
+< Stream-Cursor: 1000
+
+# Client echoes cursor on next request
+GET /stream?offset=123&live=long-poll&cursor=1000
+
+# If still in same interval, server adds jitter and returns advanced cursor
+< Stream-Cursor: 1050
+```
+
+**Empty Response ETags:**
+
+For `204 No Content` responses (long-poll timeout), servers **SHOULD** include a monotonic timestamp component in the ETag to ensure cache busting. This prevents CDNs from serving stale "no data" responses when new data has arrived.
+
 **Long-poll Caching:**
 
 CDNs and proxies **SHOULD NOT** cache `204 No Content` responses from long-poll requests in most cases. Long-poll `200 OK` responses are safe to cache when keyed by `offset`, `cursor`, and authentication credentials.

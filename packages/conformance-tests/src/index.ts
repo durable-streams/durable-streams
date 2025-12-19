@@ -1596,8 +1596,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(400)
     })
 
-    test(`should accept cursor parameter for collapsing`, async () => {
-      const streamPath = `/v1/stream/longpoll-cursor-test-${Date.now()}`
+    test(`should generate Stream-Cursor header on long-poll responses`, async () => {
+      const streamPath = `/v1/stream/longpoll-cursor-gen-test-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `PUT`,
@@ -1605,9 +1605,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test data`,
       })
 
-      // Long-poll with cursor param should not error
+      // Long-poll request without cursor - server MUST generate one
       const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll&cursor=test-cursor-123`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll`,
         {
           method: `GET`,
         }
@@ -1615,15 +1615,54 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       expect(response.status).toBe(200)
 
-      // If server returns Stream-Cursor, we can echo it back
+      // Server MUST return a Stream-Cursor header
       const cursor = response.headers.get(`Stream-Cursor`)
-      if (cursor) {
-        // Just verify it's a string
-        expect(typeof cursor).toBe(`string`)
-      }
+      expect(cursor).toBeDefined()
+      expect(cursor).not.toBeNull()
+
+      // Cursor must be a numeric string (interval number)
+      expect(/^\d+$/.test(cursor!)).toBe(true)
     })
 
-    test(`should return Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`, async () => {
+    test(`should echo cursor and handle collision with jitter`, async () => {
+      const streamPath = `/v1/stream/longpoll-cursor-collision-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // First request to get current cursor
+      const response1 = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll`,
+        {
+          method: `GET`,
+        }
+      )
+
+      expect(response1.status).toBe(200)
+      const cursor1 = response1.headers.get(`Stream-Cursor`)
+      expect(cursor1).toBeDefined()
+
+      // Immediate second request with same cursor - should get advanced cursor due to collision
+      const response2 = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll&cursor=${cursor1}`,
+        {
+          method: `GET`,
+        }
+      )
+
+      expect(response2.status).toBe(200)
+      const cursor2 = response2.headers.get(`Stream-Cursor`)
+      expect(cursor2).toBeDefined()
+
+      // The returned cursor should be greater than the one we sent
+      // (either naturally advanced to next interval, or jitter was added)
+      expect(parseInt(cursor2!, 10)).toBeGreaterThanOrEqual(parseInt(cursor1!, 10))
+    })
+
+    test(`should return Stream-Cursor, Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`, async () => {
       const streamPath = `/v1/stream/longpoll-204-headers-test-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -1658,6 +1697,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         if (response.status === 204) {
           expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
           expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+
+          // Server MUST return Stream-Cursor even on 204 timeout
+          const cursor = response.headers.get(`Stream-Cursor`)
+          expect(cursor).toBeDefined()
+          expect(/^\d+$/.test(cursor!)).toBe(true)
         }
         // If we get a 200 (data arrived somehow), that's also valid
         expect([200, 204]).toContain(response.status)
@@ -2604,8 +2648,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       }
     })
 
-    test(`should accept cursor parameter in SSE mode`, async () => {
-      const streamPath = `/v1/stream/sse-cursor-test-${Date.now()}`
+    test(`should generate streamCursor in SSE control events`, async () => {
+      const streamPath = `/v1/stream/sse-cursor-gen-test-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `PUT`,
@@ -2613,14 +2657,62 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test data`,
       })
 
+      // SSE request without cursor - server MUST generate one
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&cursor=test-cursor-456`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `streamCursor` }
       )
 
       expect(response.status).toBe(200)
-      // Cursor should be echoed in control events
-      expect(received).toContain(`test-cursor-456`)
+
+      // Parse control event to find streamCursor
+      const controlMatch = received.match(
+        /event: control\s*\ndata: ({[^}]+})/
+      )
+      expect(controlMatch).toBeDefined()
+
+      const controlData = JSON.parse(controlMatch![1])
+      expect(controlData.streamCursor).toBeDefined()
+
+      // Cursor must be a numeric string (interval number)
+      expect(/^\d+$/.test(controlData.streamCursor)).toBe(true)
+    })
+
+    test(`should handle cursor collision with jitter in SSE mode`, async () => {
+      const streamPath = `/v1/stream/sse-cursor-collision-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // First SSE request to get current cursor
+      const { received: received1 } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `streamCursor` }
+      )
+
+      const controlMatch1 = received1.match(
+        /event: control\s*\ndata: ({[^}]+})/
+      )
+      expect(controlMatch1).toBeDefined()
+      const cursor1 = JSON.parse(controlMatch1![1]).streamCursor
+
+      // Second SSE request with same cursor - should get advanced cursor
+      const { received: received2 } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&cursor=${cursor1}`,
+        { untilContent: `streamCursor` }
+      )
+
+      const controlMatch2 = received2.match(
+        /event: control\s*\ndata: ({[^}]+})/
+      )
+      expect(controlMatch2).toBeDefined()
+      const cursor2 = JSON.parse(controlMatch2![1]).streamCursor
+
+      // The returned cursor should be greater than or equal to the one we sent
+      expect(parseInt(cursor2, 10)).toBeGreaterThanOrEqual(parseInt(cursor1, 10))
     })
 
     test(`should wrap JSON data in arrays for SSE and produce valid JSON`, async () => {
