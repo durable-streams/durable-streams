@@ -6,16 +6,17 @@
  *
  * The mechanism works by:
  * 1. Dividing time into fixed intervals (default 20 seconds)
- * 2. Computing interval number from an epoch (December 19, 2025)
+ * 2. Computing interval number from an epoch (October 9, 2024)
  * 3. Returning cursor values that change at interval boundaries
- * 4. Adding random jitter when cursor collisions occur
+ * 4. Ensuring monotonic cursor progression (never going backwards)
  */
 
 /**
- * Default epoch for cursor calculation: December 19, 2025 00:00:00 UTC.
+ * Default epoch for cursor calculation: October 9, 2024 00:00:00 UTC.
  * This is the reference point from which intervals are counted.
+ * Using a past date ensures cursors are always positive.
  */
-export const DEFAULT_CURSOR_EPOCH: Date = new Date(`2025-12-19T00:00:00.000Z`)
+export const DEFAULT_CURSOR_EPOCH: Date = new Date(`2024-10-09T00:00:00.000Z`)
 
 /**
  * Default interval duration in seconds.
@@ -45,7 +46,7 @@ export interface CursorOptions {
 
   /**
    * Epoch timestamp for interval calculation.
-   * Default: December 19, 2025 00:00:00 UTC.
+   * Default: October 9, 2024 00:00:00 UTC.
    */
   epoch?: Date
 }
@@ -72,12 +73,73 @@ export function calculateCursor(options: CursorOptions = {}): string {
 }
 
 /**
+ * Generate a random jitter value in intervals.
+ *
+ * @param intervalSeconds - The interval duration in seconds
+ * @returns Number of intervals to add as jitter
+ */
+function generateJitterIntervals(intervalSeconds: number): number {
+  // Add random jitter: 1-3600 seconds
+  const jitterSeconds =
+    MIN_JITTER_SECONDS +
+    Math.floor(Math.random() * (MAX_JITTER_SECONDS - MIN_JITTER_SECONDS + 1))
+
+  // Calculate how many intervals the jitter represents (at least 1)
+  return Math.max(1, Math.ceil(jitterSeconds / intervalSeconds))
+}
+
+/**
+ * Generate a cursor for a response, ensuring monotonic progression.
+ *
+ * This function ensures the returned cursor is always greater than or equal
+ * to the current time interval, and strictly greater than any client-provided
+ * cursor. This prevents cache loops where a client could cycle between
+ * cursor values.
+ *
+ * Algorithm:
+ * - If no client cursor: return current interval
+ * - If client cursor < current interval: return current interval
+ * - If client cursor >= current interval: return client cursor + jitter
+ *
+ * This guarantees monotonic cursor progression and prevents A→B→A cycles.
+ *
+ * @param clientCursor - The cursor provided by the client (if any)
+ * @param options - Configuration for cursor calculation
+ * @returns The cursor value to include in the response
+ */
+export function generateResponseCursor(
+  clientCursor: string | undefined,
+  options: CursorOptions = {}
+): string {
+  const intervalSeconds =
+    options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
+  const currentCursor = calculateCursor(options)
+  const currentInterval = parseInt(currentCursor, 10)
+
+  // No client cursor - return current interval
+  if (!clientCursor) {
+    return currentCursor
+  }
+
+  // Parse client cursor
+  const clientInterval = parseInt(clientCursor, 10)
+
+  // If client cursor is invalid or behind current time, return current interval
+  if (isNaN(clientInterval) || clientInterval < currentInterval) {
+    return currentCursor
+  }
+
+  // Client cursor is at or ahead of current interval - add jitter to advance
+  // This ensures we never return a cursor <= what the client sent
+  const jitterIntervals = generateJitterIntervals(intervalSeconds)
+  return String(clientInterval + jitterIntervals)
+}
+
+/**
  * Handle cursor collision by adding random jitter.
  *
- * When the newly calculated cursor equals the previous cursor provided by the client,
- * we add random jitter (1-3600 seconds) to advance to a future interval.
- * This prevents clients from getting stuck in infinite loops when CDNs cache
- * responses with the same cursor.
+ * @deprecated Use generateResponseCursor instead, which handles all cases
+ * including monotonicity guarantees.
  *
  * @param currentCursor - The newly calculated cursor value
  * @param previousCursor - The cursor provided by the client (if any)
@@ -89,40 +151,6 @@ export function handleCursorCollision(
   previousCursor: string | undefined,
   options: CursorOptions = {}
 ): string {
-  // No collision if no previous cursor or they differ
-  if (!previousCursor || currentCursor !== previousCursor) {
-    return currentCursor
-  }
-
-  const intervalSeconds =
-    options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
-
-  // Add random jitter: 1-3600 seconds
-  const jitterSeconds =
-    MIN_JITTER_SECONDS +
-    Math.floor(Math.random() * (MAX_JITTER_SECONDS - MIN_JITTER_SECONDS + 1))
-
-  // Calculate how many intervals the jitter represents
-  const jitterIntervals = Math.ceil(jitterSeconds / intervalSeconds)
-
-  // Return the advanced cursor
-  const currentInterval = parseInt(currentCursor, 10)
-  return String(currentInterval + jitterIntervals)
-}
-
-/**
- * Generate a complete cursor for a response.
- *
- * This combines cursor calculation with collision handling.
- *
- * @param clientCursor - The cursor provided by the client (if any)
- * @param options - Configuration for cursor calculation
- * @returns The cursor value to include in the response
- */
-export function generateResponseCursor(
-  clientCursor: string | undefined,
-  options: CursorOptions = {}
-): string {
-  const currentCursor = calculateCursor(options)
-  return handleCursorCollision(currentCursor, clientCursor, options)
+  // Delegate to the new implementation for backwards compatibility
+  return generateResponseCursor(previousCursor, options)
 }

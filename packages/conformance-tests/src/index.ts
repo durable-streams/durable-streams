@@ -1657,11 +1657,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const cursor2 = response2.headers.get(`Stream-Cursor`)
       expect(cursor2).toBeDefined()
 
-      // The returned cursor should be greater than the one we sent
-      // (either naturally advanced to next interval, or jitter was added)
-      expect(parseInt(cursor2!, 10)).toBeGreaterThanOrEqual(
-        parseInt(cursor1!, 10)
-      )
+      // The returned cursor MUST be strictly greater than the one we sent
+      // (monotonic progression prevents cache cycles)
+      expect(parseInt(cursor2!, 10)).toBeGreaterThan(parseInt(cursor1!, 10))
     })
 
     test(`should return Stream-Cursor, Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`, async () => {
@@ -2711,8 +2709,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(controlMatch2).toBeDefined()
       const cursor2 = JSON.parse(controlMatch2![1] as string).streamCursor
 
-      // The returned cursor should be greater than or equal to the one we sent
-      expect(parseInt(cursor2 as string, 10)).toBeGreaterThanOrEqual(
+      // The returned cursor MUST be strictly greater than the one we sent
+      // (monotonic progression prevents cache cycles)
+      expect(parseInt(cursor2 as string, 10)).toBeGreaterThan(
         parseInt(cursor1 as string, 10)
       )
     })

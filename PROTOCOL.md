@@ -495,15 +495,20 @@ Clients **SHOULD** echo the `Stream-Cursor` value as `cursor=<cursor>` in subseq
 
 **Server-Generated Cursors:**
 
-To prevent infinite CDN cache loops (where clients receive the same cached empty response indefinitely), servers **MUST** generate a `Stream-Cursor` header on all live mode responses (long-poll and SSE). The cursor mechanism works as follows:
+To prevent infinite CDN cache loops (where clients receive the same cached empty response indefinitely), servers **MUST** generate cursors on all live mode responses:
 
-1. **Interval-based Calculation**: Servers divide time into fixed intervals (default: 20 seconds) counted from an epoch (default: December 19, 2025 00:00:00 UTC). The cursor value is the interval number as a decimal string.
+- **Long-poll**: `Stream-Cursor` response header
+- **SSE**: `streamCursor` field in `control` events
 
-2. **Cursor Generation**: For each live response, the server calculates the current interval number and returns it as the `Stream-Cursor` header value.
+The cursor mechanism works as follows:
 
-3. **Collision Handling**: When a client provides a `cursor` query parameter that equals the current interval number, the server **MUST** add random jitter (1-3600 seconds) to advance the cursor to a future interval. This prevents clients from getting stuck in loops when CDNs cache responses with the same cursor.
+1. **Interval-based Calculation**: Servers divide time into fixed intervals (default: 20 seconds) counted from an epoch (default: October 9, 2024 00:00:00 UTC). The cursor value is the interval number as a decimal string.
 
-4. **Client Behavior**: Clients **MUST** include the received `Stream-Cursor` value as the `cursor` query parameter in subsequent requests. This creates different cache keys as time progresses, ensuring CDN caches eventually expire.
+2. **Cursor Generation**: For each live response, the server calculates the current interval number and returns it as the cursor value.
+
+3. **Monotonic Progression**: Servers **MUST** ensure cursors never go backwards. When a client provides a `cursor` query parameter that is greater than or equal to the current interval number, the server **MUST** return a cursor strictly greater than the client's cursor (by adding random jitter of 1-3600 seconds). This guarantees monotonic progression and prevents cache cycles.
+
+4. **Client Behavior**: Clients **MUST** include the received cursor value as the `cursor` query parameter in subsequent requests. This creates different cache keys as time progresses, ensuring CDN caches eventually expire.
 
 **Example Cursor Flow:**
 

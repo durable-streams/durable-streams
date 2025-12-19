@@ -152,7 +152,7 @@ export interface TestServerOptions {
 
   /**
    * Epoch timestamp for cursor interval calculation.
-   * Default: December 19, 2025 00:00:00 UTC.
+   * Default: October 9, 2024 00:00:00 UTC.
    */
   cursorEpoch?: Date
 }
