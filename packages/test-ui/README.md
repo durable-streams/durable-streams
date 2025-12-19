@@ -53,11 +53,12 @@ This means:
 
 ### Real-Time Following
 
-The UI uses the `stream.follow()` API which automatically:
+The UI uses the `stream.jsonStream()` API which automatically:
 
 1. Catches up on any missed messages (from offset `-1`, the beginning)
-2. Switches to live mode (SSE or long-polling based on content-type)
+2. Switches to live mode (long-polling for updates)
 3. Handles reconnection and backoff automatically
+4. Yields individual JSON items from the stream
 
 ### UI Components
 

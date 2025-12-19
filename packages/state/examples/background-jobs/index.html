@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Durable Streams - Background Jobs with Progress</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 2rem;
+        color: #2d3748;
+      }
+
+      .container {
+        max-width: 900px;
+        margin: 0 auto;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 2rem;
+        color: white;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 0.5rem;
+        font-weight: 700;
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+      }
+
+      .controls {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        margin-bottom: 2rem;
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 0.75rem 2rem;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3);
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      .stats {
+        display: flex;
+        gap: 1rem;
+        margin-left: auto;
+        font-size: 0.9rem;
+        color: #718096;
+      }
+
+      .stat {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
+
+      .stat-value {
+        font-weight: 700;
+        font-size: 1.2rem;
+        color: #667eea;
+      }
+
+      .jobs {
+        display: flex;
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .job {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        transition: all 0.2s;
+      }
+
+      .job:hover {
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+      }
+
+      .job-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+      }
+
+      .job-id {
+        font-weight: 600;
+        font-size: 0.9rem;
+        color: #4a5568;
+        font-family: "Courier New", monospace;
+      }
+
+      .job-status {
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .job-status.pending {
+        background: #fef3c7;
+        color: #92400e;
+      }
+
+      .job-status.running {
+        background: #dbeafe;
+        color: #1e40af;
+      }
+
+      .job-status.completed {
+        background: #d1fae5;
+        color: #065f46;
+      }
+
+      .job-status.error {
+        background: #fee2e2;
+        color: #991b1b;
+      }
+
+      .job-message {
+        font-size: 0.95rem;
+        color: #4a5568;
+        margin-bottom: 1rem;
+        min-height: 1.5rem;
+      }
+
+      .progress-container {
+        background: #e2e8f0;
+        height: 8px;
+        border-radius: 4px;
+        overflow: hidden;
+        margin-bottom: 0.5rem;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        transition: width 0.3s ease;
+        border-radius: 4px;
+      }
+
+      .progress-text {
+        font-size: 0.85rem;
+        color: #718096;
+        text-align: right;
+      }
+
+      .job-error {
+        margin-top: 0.75rem;
+        padding: 0.75rem;
+        background: #fee2e2;
+        border-left: 3px solid #dc2626;
+        border-radius: 4px;
+        font-size: 0.9rem;
+        color: #991b1b;
+      }
+
+      .empty-state {
+        background: white;
+        padding: 3rem;
+        border-radius: 12px;
+        text-align: center;
+        color: #718096;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      }
+
+      .empty-state-icon {
+        font-size: 3rem;
+        margin-bottom: 1rem;
+        opacity: 0.5;
+      }
+
+      .loading {
+        text-align: center;
+        padding: 2rem;
+        color: white;
+        font-size: 1.2rem;
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid rgba(255, 255, 255, 0.3);
+        border-radius: 50%;
+        border-top-color: white;
+        animation: spin 1s linear infinite;
+        margin-right: 0.5rem;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>⚡ Background Jobs</h1>
+        <p>Durable Streams State Protocol Demo</p>
+      </div>
+
+      <div id="loading" class="loading">
+        <div class="spinner"></div>
+        Connecting to stream...
+      </div>
+
+      <div id="app" style="display: none">
+        <div class="controls">
+          <button id="startJob">Start New Job</button>
+          <div class="stats">
+            <div class="stat">
+              <span>Total:</span>
+              <span class="stat-value" id="totalJobs">0</span>
+            </div>
+            <div class="stat">
+              <span>Running:</span>
+              <span class="stat-value" id="runningJobs">0</span>
+            </div>
+            <div class="stat">
+              <span>Completed:</span>
+              <span class="stat-value" id="completedJobs">0</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="jobs" id="jobsList"></div>
+
+        <div id="emptyState" class="empty-state" style="display: none">
+          <div class="empty-state-icon">📋</div>
+          <h3>No jobs yet</h3>
+          <p>Click "Start New Job" to begin</p>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      // Import from workspace packages
+      import { DurableStream } from "@durable-streams/client"
+      import { createStreamDB, createStateSchema } from "@durable-streams/state"
+      import { z } from "zod"
+
+      const SERVER_URL = "http://localhost:4437"
+
+      // Define job schema with Zod
+      const jobSchema = z.object({
+        id: z.string().min(1),
+        status: z.enum(["pending", "running", "completed", "error"]),
+        progress: z.number().min(0).max(100),
+        message: z.string(),
+        startedAt: z.number(),
+        completedAt: z.number().optional(),
+        error: z.string().optional(),
+      })
+
+      // Create state schema
+      const stateSchema = createStateSchema({
+        jobs: {
+          schema: jobSchema,
+          type: "job",
+          primaryKey: "id",
+        },
+      })
+
+      // Initialize
+      let db
+      const streamPath = "/jobs-demo"
+
+      async function init() {
+        try {
+          const streamUrl = `${SERVER_URL}/v1/stream${streamPath}`
+
+          // Check if stream exists, create it if not
+          try {
+            const testStream = new DurableStream({ url: streamUrl })
+            await testStream.head()
+          } catch {
+            // Stream doesn't exist, create it
+            await DurableStream.create({
+              url: streamUrl,
+              contentType: "application/json",
+            })
+          }
+
+          // Create StreamDB
+          db = createStreamDB({
+            streamOptions: {
+              url: streamUrl,
+              contentType: "application/json",
+            },
+            state: stateSchema,
+          })
+
+          // Preload existing jobs
+          await db.preload()
+
+          // Subscribe to changes
+          db.collections.jobs.subscribeChanges(() => {
+            renderJobs()
+          })
+
+          // Show UI
+          document.getElementById("loading").style.display = "none"
+          document.getElementById("app").style.display = "block"
+
+          renderJobs()
+        } catch (err) {
+          document.getElementById("loading").innerHTML = `
+          <div style="color: #fee2e2;">
+            ❌ Failed to connect: ${err.message}
+            <br><br>
+            Make sure the Durable Streams server is running on ${SERVER_URL}
+          </div>
+        `
+        }
+      }
+
+      // Start a new job
+      async function startJob() {
+        const jobId = `job-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+
+        // Insert initial job state
+        const event = stateSchema.jobs.insert({
+          value: {
+            id: jobId,
+            status: "pending",
+            progress: 0,
+            message: "Job created, waiting to start...",
+            startedAt: Date.now(),
+          },
+        })
+
+        await db.stream.append(event)
+
+        // Start background processing simulation
+        simulateJobProgress(jobId)
+      }
+
+      // Simulate job progress with randomization
+      async function simulateJobProgress(jobId) {
+        // Random task descriptions
+        const tasks = [
+          "Processing data",
+          "Analyzing files",
+          "Running calculations",
+          "Generating report",
+          "Optimizing results",
+          "Validating output",
+          "Building artifacts",
+          "Running tests",
+          "Deploying changes",
+          "Syncing database",
+        ]
+
+        // Randomize behavior
+        const totalSteps = Math.floor(Math.random() * 5) + 4 // 4-8 steps
+        const shouldError = Math.random() < 0.2 // 20% chance of error
+        const errorAtStep = shouldError
+          ? Math.floor(Math.random() * totalSteps) + 1
+          : -1
+        const stepDelay = Math.random() * 800 + 400 // 400-1200ms per step
+
+        // Start job
+        await db.stream.append(
+          stateSchema.jobs.update({
+            key: jobId,
+            value: {
+              id: jobId,
+              status: "running",
+              progress: 0,
+              message: `Starting: ${tasks[0]}...`,
+              startedAt: Date.now(),
+            },
+          })
+        )
+
+        // Progress through steps
+        for (let step = 1; step <= totalSteps; step++) {
+          await new Promise((resolve) => setTimeout(resolve, stepDelay))
+
+          const progress = Math.floor((step / totalSteps) * 100)
+          const task = tasks[Math.floor(Math.random() * tasks.length)]
+
+          // Check if error should occur at this step
+          if (step === errorAtStep) {
+            const errors = [
+              "Connection timeout",
+              "Invalid data format",
+              "Insufficient memory",
+              "Permission denied",
+              "Resource not found",
+              "Rate limit exceeded",
+            ]
+            const error = errors[Math.floor(Math.random() * errors.length)]
+
+            await db.stream.append(
+              stateSchema.jobs.update({
+                key: jobId,
+                value: {
+                  id: jobId,
+                  status: "error",
+                  progress,
+                  message: `Failed at ${progress}%`,
+                  startedAt: Date.now(),
+                  completedAt: Date.now(),
+                  error: error,
+                },
+              })
+            )
+            return
+          }
+
+          // Normal progress update
+          if (step === totalSteps) {
+            // Complete
+            await db.stream.append(
+              stateSchema.jobs.update({
+                key: jobId,
+                value: {
+                  id: jobId,
+                  status: "completed",
+                  progress: 100,
+                  message: "Successfully completed!",
+                  startedAt: Date.now(),
+                  completedAt: Date.now(),
+                },
+              })
+            )
+          } else {
+            // In progress
+            await db.stream.append(
+              stateSchema.jobs.update({
+                key: jobId,
+                value: {
+                  id: jobId,
+                  status: "running",
+                  progress,
+                  message: `${task}... (${progress}%)`,
+                  startedAt: Date.now(),
+                },
+              })
+            )
+          }
+        }
+      }
+
+      // Render jobs list
+      function renderJobs() {
+        const jobs = Array.from(db.collections.jobs.values())
+        const jobsList = document.getElementById("jobsList")
+        const emptyState = document.getElementById("emptyState")
+
+        // Update stats
+        document.getElementById("totalJobs").textContent = jobs.length
+        document.getElementById("runningJobs").textContent = jobs.filter(
+          (j) => j.status === "running"
+        ).length
+        document.getElementById("completedJobs").textContent = jobs.filter(
+          (j) => j.status === "completed"
+        ).length
+
+        if (jobs.length === 0) {
+          jobsList.style.display = "none"
+          emptyState.style.display = "block"
+          return
+        }
+
+        jobsList.style.display = "flex"
+        emptyState.style.display = "none"
+
+        // Sort by startedAt (newest first)
+        jobs.sort((a, b) => b.startedAt - a.startedAt)
+
+        jobsList.innerHTML = jobs
+          .map(
+            (job) => `
+        <div class="job">
+          <div class="job-header">
+            <span class="job-id">${job.id}</span>
+            <span class="job-status ${job.status}">${job.status}</span>
+          </div>
+          <div class="job-message">${job.message}</div>
+          <div class="progress-container">
+            <div class="progress-bar" style="width: ${job.progress}%"></div>
+          </div>
+          <div class="progress-text">${job.progress}%</div>
+          ${job.error ? `<div class="job-error">❌ ${job.error}</div>` : ""}
+        </div>
+      `
+          )
+          .join("")
+      }
+
+      // Event listeners
+      document.getElementById("startJob")?.addEventListener("click", startJob)
+
+      // Initialize app
+      init()
+    </script>
+  </body>
+</html>

@@ -390,19 +390,14 @@ export interface HeadResult {
 }
 
 /**
- * Result from a read operation.
+ * Metadata extracted from a stream response.
+ * Contains headers and control information from the stream server.
  */
-export interface ReadResult {
+export interface ResponseMetadata {
   /**
-   * The data read from the stream.
+   * Next offset to read from (stream-offset header).
    */
-  data: Uint8Array
-
-  /**
-   * Next offset to read from.
-   * This is the HTTP stream-offset header value.
-   */
-  offset: Offset
+  offset: string
 
   /**
    * Cursor for CDN collapsing (stream-cursor header).
@@ -411,7 +406,6 @@ export interface ReadResult {
 
   /**
    * True if stream-up-to-date header was present.
-   * Indicates the response ends at the current end of the stream.
    */
   upToDate: boolean
 
@@ -421,16 +415,10 @@ export interface ReadResult {
   etag?: string
 
   /**
-   * Content type of the data.
+   * Content type of the stream.
    */
   contentType?: string
 }
-
-/**
- * A chunk returned from follow() or toReadableStream().
- * Same structure as ReadResult.
- */
-export interface StreamChunk extends ReadResult {}
 
 /**
  * Error codes for DurableStreamError.

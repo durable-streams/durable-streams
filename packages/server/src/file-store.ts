@@ -360,11 +360,11 @@ export class FileBackedStreamStore {
     if (existing) {
       // Check if config matches (idempotent create)
       // MIME types are case-insensitive per RFC 2045
-      const normalizeContentType = (ct: string | undefined) =>
+      const normalizeMimeType = (ct: string | undefined) =>
         (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        normalizeContentType(options.contentType) ===
-        normalizeContentType(existing.contentType)
+        normalizeMimeType(options.contentType) ===
+        normalizeMimeType(existing.contentType)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -419,6 +419,7 @@ export class FileBackedStreamStore {
     if (options.initialData && options.initialData.length > 0) {
       await this.append(streamPath, options.initialData, {
         contentType: options.contentType,
+        isInitialCreate: true,
       })
       // Re-fetch updated metadata
       const updated = this.db.get(key) as StreamMetadata
@@ -482,8 +483,12 @@ export class FileBackedStreamStore {
   async append(
     streamPath: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
-  ): Promise<StreamMessage> {
+    options: {
+      seq?: string
+      contentType?: string
+      isInitialCreate?: boolean
+    } = {}
+  ): Promise<StreamMessage | null> {
     const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
@@ -514,10 +519,14 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Process JSON mode data (throws on invalid JSON or empty arrays)
+    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      processedData = processJsonAppend(data)
+      processedData = processJsonAppend(data, options.isInitialCreate ?? false)
+      // If empty array in create mode, return null (empty stream created successfully)
+      if (processedData.length === 0) {
+        return null
+      }
     }
 
     // Parse current offset
@@ -721,12 +730,15 @@ export class FileBackedStreamStore {
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
    */
-  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const key = `stream:${path}`
+  formatResponse(
+    streamPath: string,
+    messages: Array<StreamMessage>
+  ): Uint8Array {
+    const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
     if (!streamMeta) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new Error(`Stream not found: ${streamPath}`)
     }
 
     // Concatenate all message data

@@ -18,9 +18,13 @@ export function normalizeContentType(contentType: string | undefined): string {
  * - Validates JSON
  * - Extracts array elements if data is an array
  * - Always appends trailing comma for easy concatenation
- * @throws Error if JSON is invalid or array is empty
+ * @param isInitialCreate - If true, empty arrays are allowed (creates empty stream)
+ * @throws Error if JSON is invalid or array is empty (for non-create operations)
  */
-export function processJsonAppend(data: Uint8Array): Uint8Array {
+export function processJsonAppend(
+  data: Uint8Array,
+  isInitialCreate = false
+): Uint8Array {
   const text = new TextDecoder().decode(data)
 
   // Validate JSON
@@ -35,6 +39,11 @@ export function processJsonAppend(data: Uint8Array): Uint8Array {
   let result: string
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
+      // Empty arrays are valid for PUT (creates empty stream)
+      // but invalid for POST (no-op append, likely a bug)
+      if (isInitialCreate) {
+        return new Uint8Array(0) // Return empty data for empty stream
+      }
       throw new Error(`Empty arrays are not allowed`)
     }
     const elements = parsed.map((item) => JSON.stringify(item))
@@ -122,7 +131,7 @@ export class StreamStore {
 
     // If initial data is provided, append it
     if (options.initialData && options.initialData.length > 0) {
-      this.appendToStream(stream, options.initialData)
+      this.appendToStream(stream, options.initialData, true) // isInitialCreate = true
     }
 
     this.streams.set(path, stream)
@@ -189,7 +198,9 @@ export class StreamStore {
       stream.lastSeq = options.seq
     }
 
-    const message = this.appendToStream(stream, data)
+    // appendToStream returns null only for empty arrays in create mode,
+    // but public append() never sets isInitialCreate, so empty arrays throw before this
+    const message = this.appendToStream(stream, data)!
 
     // Notify any pending long-polls
     this.notifyLongPolls(path)
@@ -346,11 +357,19 @@ export class StreamStore {
   // Private helpers
   // ============================================================================
 
-  private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
-    // Process JSON mode data (throws on invalid JSON or empty arrays)
+  private appendToStream(
+    stream: Stream,
+    data: Uint8Array,
+    isInitialCreate = false
+  ): StreamMessage | null {
+    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(stream.contentType) === `application/json`) {
-      processedData = processJsonAppend(data)
+      processedData = processJsonAppend(data, isInitialCreate)
+      // If empty array in create mode, return null (empty stream created successfully)
+      if (processedData.length === 0) {
+        return null
+      }
     }
 
     // Parse current offset
