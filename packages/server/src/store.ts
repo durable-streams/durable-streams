@@ -198,7 +198,9 @@ export class StreamStore {
       stream.lastSeq = options.seq
     }
 
-    const message = this.appendToStream(stream, data)
+    // appendToStream returns null only for empty arrays in create mode,
+    // but public append() never sets isInitialCreate, so empty arrays throw before this
+    const message = this.appendToStream(stream, data)!
 
     // Notify any pending long-polls
     this.notifyLongPolls(path)

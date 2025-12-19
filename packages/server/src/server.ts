@@ -731,12 +731,14 @@ export class DurableStreamTestServer {
     }
 
     // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+    // Note: append returns null only for empty arrays with isInitialCreate=true,
+    // which doesn't apply to POST requests (those throw on empty arrays)
     const message = await Promise.resolve(
       this.store.append(path, body, { seq, contentType })
     )
 
     res.writeHead(200, {
-      [STREAM_OFFSET_HEADER]: message.offset,
+      [STREAM_OFFSET_HEADER]: message!.offset,
     })
     res.end()
   }
