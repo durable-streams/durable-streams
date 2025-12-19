@@ -726,6 +726,10 @@ export function createStateSchema<
 /**
  * Create a stream-backed database with TanStack DB collections
  *
+ * This function is synchronous - it creates the stream handle and collections
+ * but does not start the stream connection. Call `db.preload()` to connect
+ * and sync initial data.
+ *
  * @example
  * ```typescript
  * const stateSchema = createStateSchema({
@@ -733,8 +737,8 @@ export function createStateSchema<
  *   messages: { schema: messageSchema, type: "message", primaryKey: "id" },
  * })
  *
- * // Create a stream DB (stream is created lazily on preload)
- * const db = await createStreamDB({
+ * // Create a stream DB (synchronous - stream is created lazily on preload)
+ * const db = createStreamDB({
  *   streamOptions: {
  *     url: "https://api.example.com/streams/my-stream",
  *     contentType: "application/json",
@@ -747,8 +751,7 @@ export function createStateSchema<
  * const user = await db.collections.users.get("123")
  * ```
  */
-// eslint-disable-next-line @typescript-eslint/require-await
-export async function createStreamDB<
+export function createStreamDB<
   TDef extends StreamStateDefinition,
   TActions extends Record<string, ActionDefinition<any>> = Record<
     string,
@@ -756,11 +759,9 @@ export async function createStreamDB<
   >,
 >(
   options: CreateStreamDBOptions<TDef, TActions>
-): Promise<
-  TActions extends Record<string, never>
-    ? StreamDB<TDef>
-    : StreamDBWithActions<TDef, TActions>
-> {
+): TActions extends Record<string, never>
+  ? StreamDB<TDef>
+  : StreamDBWithActions<TDef, TActions> {
   const { streamOptions, state, actions: actionsFactory } = options
 
   // Create a stream handle (lightweight, doesn't connect until stream() is called)

@@ -484,7 +484,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(404)
     })
 
-    test(`should return 400 or 409 on content-type mismatch`, async () => {
+    test(`should return 409 on content-type mismatch`, async () => {
       const streamPath = `/v1/stream/content-type-mismatch-test-${Date.now()}`
 
       // Create with text/plain
@@ -493,14 +493,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         headers: { "Content-Type": `text/plain` },
       })
 
-      // Try to append with application/json - protocol allows 400 or 409
+      // Try to append with application/json - valid content-type but doesn't match stream
       const response = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
         headers: { "Content-Type": `application/json` },
         body: `{}`,
       })
 
-      expect([400, 409]).toContain(response.status)
+      expect(response.status).toBe(409)
     })
 
     test(`should return correct headers on GET`, async () => {
@@ -937,14 +937,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         headers: { "Content-Type": `text/plain` },
       })
 
-      // Try to append with application/json - protocol allows 400 or 409
+      // Try to append with application/json - valid but doesn't match stream (409)
       const response = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `POST`,
         headers: { "Content-Type": `application/json` },
         body: `{"test": true}`,
       })
 
-      expect([400, 409]).toContain(response.status)
+      expect(response.status).toBe(409)
     })
 
     test(`should allow append with matching content-type`, async () => {
@@ -1063,6 +1063,52 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // ============================================================================
 
   describe(`Offset Validation and Resumability`, () => {
+    test(`should accept -1 as sentinel for stream beginning`, async () => {
+      const streamPath = `/v1/stream/offset-sentinel-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Using offset=-1 should return data from the beginning
+      const response = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      const text = await response.text()
+      expect(text).toBe(`test data`)
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should return same data for offset=-1 and no offset`, async () => {
+      const streamPath = `/v1/stream/offset-sentinel-equiv-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello world`,
+      })
+
+      // Request without offset
+      const response1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+      const text1 = await response1.text()
+
+      // Request with offset=-1
+      const response2 = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`, {
+        method: `GET`,
+      })
+      const text2 = await response2.text()
+
+      // Both should return the same data
+      expect(text1).toBe(text2)
+      expect(text1).toBe(`hello world`)
+    })
+
     test(`should reject malformed offset (contains comma)`, async () => {
       const streamPath = `/v1/stream/offset-comma-test-${Date.now()}`
 
@@ -1262,7 +1308,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(text2).toBe(`chunk2chunk3`)
     })
 
-    test(`should enforce monotonic offset progression`, async () => {
+    test(`should generate unique, monotonically increasing offsets`, async () => {
       const streamPath = `/v1/stream/monotonic-offset-test-${Date.now()}`
 
       // Create stream
@@ -1286,7 +1332,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         offsets.push(offset!)
       }
 
-      // Verify offsets are lexicographically increasing
+      // Verify offsets are unique and strictly increasing (lexicographically)
       for (let i = 1; i < offsets.length; i++) {
         expect(offsets[i]! > offsets[i - 1]!).toBe(true)
       }
@@ -1601,6 +1647,54 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(typeof cursor).toBe(`string`)
       }
     })
+
+    test(`should return Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`, async () => {
+      const streamPath = `/v1/stream/longpoll-204-headers-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Get the current tail offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const tailOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(tailOffset).toBeDefined()
+
+      // Long-poll at tail offset with a short timeout
+      // We use AbortController to limit wait time on our side
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=long-poll`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        clearTimeout(timeoutId)
+
+        // If we get a 204, verify headers
+        if (response.status === 204) {
+          expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+          expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+        }
+        // If we get a 200 (data arrived somehow), that's also valid
+        expect([200, 204]).toContain(response.status)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        // AbortError is expected if server timeout is longer than our 5s
+        if (e instanceof Error && e.name !== `AbortError`) {
+          throw e
+        }
+        // Test passes - server just has a longer timeout than our abort
+      }
+    }, 10000)
   })
 
   // ============================================================================
@@ -1821,8 +1915,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // ============================================================================
 
   describe(`Caching and ETag`, () => {
-    test(`should support ETag and If-None-Match for 304`, async () => {
-      const streamPath = `/v1/stream/etag-test-${Date.now()}`
+    test(`should generate ETag on GET responses`, async () => {
+      const streamPath = `/v1/stream/etag-generate-test-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `PUT`,
@@ -1830,7 +1924,26 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test data`,
       })
 
-      // First request
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      const etag = response.headers.get(`etag`)
+      expect(etag).toBeDefined()
+      expect(etag!.length).toBeGreaterThan(0)
+    })
+
+    test(`should return 304 Not Modified for matching If-None-Match`, async () => {
+      const streamPath = `/v1/stream/etag-304-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // First request to get ETag
       const response1 = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `GET`,
       })
@@ -1838,7 +1951,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       const etag = response1.headers.get(`etag`)
       expect(etag).toBeDefined()
 
-      // Second request with If-None-Match
+      // Second request with If-None-Match - MUST return 304
       const response2 = await fetch(`${getBaseUrl()}${streamPath}`, {
         method: `GET`,
         headers: {
@@ -1846,18 +1959,73 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
 
-      // Server MAY return 304 or 200
-      if (response2.status === 304) {
-        // 304 should have empty body
-        const text = await response2.text()
-        expect(text).toBe(``)
-      } else if (response2.status === 200) {
-        // 200 should have same data
-        const text = await response2.text()
-        expect(text).toBe(`test data`)
-      } else {
-        throw new Error(`Unexpected status: ${response2.status}`)
-      }
+      expect(response2.status).toBe(304)
+      // 304 should have empty body
+      const text = await response2.text()
+      expect(text).toBe(``)
+    })
+
+    test(`should return 200 for non-matching If-None-Match`, async () => {
+      const streamPath = `/v1/stream/etag-mismatch-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Request with wrong ETag - should return 200 with data
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+        headers: {
+          "If-None-Match": `"wrong-etag"`,
+        },
+      })
+
+      expect(response.status).toBe(200)
+      const text = await response.text()
+      expect(text).toBe(`test data`)
+    })
+
+    test(`should return new ETag after data changes`, async () => {
+      const streamPath = `/v1/stream/etag-change-test-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Get initial ETag
+      const response1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+      const etag1 = response1.headers.get(`etag`)
+
+      // Append more data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` more`,
+      })
+
+      // Get new ETag
+      const response2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+      const etag2 = response2.headers.get(`etag`)
+
+      // ETags should be different
+      expect(etag1).not.toBe(etag2)
+
+      // Old ETag should now return 200 (not 304)
+      const response3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+        headers: {
+          "If-None-Match": etag1!,
+        },
+      })
+      expect(response3.status).toBe(200)
     })
   })
 
@@ -2515,7 +2683,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(received).toContain(`data: line3`)
     })
 
-    test(`should maintain monotonic offsets over multiple messages`, async () => {
+    test(`should generate unique, monotonically increasing offsets in SSE mode`, async () => {
       const streamPath = `/v1/stream/sse-monotonic-offset-test-${Date.now()}`
 
       // Create stream
@@ -2553,9 +2721,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         offsets.push(data[`streamNextOffset`])
       }
 
-      // Verify offsets are monotonically increasing (lexicographically)
+      // Verify offsets are unique and strictly increasing (lexicographically)
       for (let i = 1; i < offsets.length; i++) {
-        expect(offsets[i]! >= offsets[i - 1]!).toBe(true)
+        expect(offsets[i]! > offsets[i - 1]!).toBe(true)
       }
     })
 
@@ -2621,6 +2789,44 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // ============================================================================
 
   describe(`JSON Mode`, () => {
+    test(`should allow PUT with empty array body (creates empty stream)`, async () => {
+      const streamPath = `/v1/stream/json-put-empty-array-test-${Date.now()}`
+
+      // PUT with empty array should create an empty stream
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[]`,
+      })
+
+      expect(response.status).toBe(201)
+
+      // Reading should return empty array
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = await readResponse.json()
+      expect(data).toEqual([])
+      expect(readResponse.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should reject POST with empty array body`, async () => {
+      const streamPath = `/v1/stream/json-post-empty-array-test-${Date.now()}`
+
+      // Create stream first
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // POST with empty array should be rejected
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[]`,
+      })
+
+      expect(response.status).toBe(400)
+    })
+
     test(`should handle content-type with charset parameter`, async () => {
       const streamPath = `/v1/stream/json-charset-test-${Date.now()}`
 

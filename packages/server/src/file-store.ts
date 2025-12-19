@@ -419,6 +419,7 @@ export class FileBackedStreamStore {
     if (options.initialData && options.initialData.length > 0) {
       await this.append(streamPath, options.initialData, {
         contentType: options.contentType,
+        isInitialCreate: true,
       })
       // Re-fetch updated metadata
       const updated = this.db.get(key) as StreamMetadata
@@ -482,8 +483,12 @@ export class FileBackedStreamStore {
   async append(
     streamPath: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
-  ): Promise<StreamMessage> {
+    options: {
+      seq?: string
+      contentType?: string
+      isInitialCreate?: boolean
+    } = {}
+  ): Promise<StreamMessage | null> {
     const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
@@ -514,10 +519,14 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Process JSON mode data (throws on invalid JSON or empty arrays)
+    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      processedData = processJsonAppend(data)
+      processedData = processJsonAppend(data, options.isInitialCreate ?? false)
+      // If empty array in create mode, return null (empty stream created successfully)
+      if (processedData.length === 0) {
+        return null
+      }
     }
 
     // Parse current offset

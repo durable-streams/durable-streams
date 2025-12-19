@@ -292,7 +292,7 @@ export class DurableStreamTestServer {
           res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Sequence conflict`)
         } else if (err.message.includes(`Content-type mismatch`)) {
-          res.writeHead(400, { "content-type": `text/plain` })
+          res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Content-type mismatch`)
         } else if (err.message.includes(`Invalid JSON`)) {
           res.writeHead(400, { "content-type": `text/plain` })
@@ -434,9 +434,9 @@ export class DurableStreamTestServer {
       headers[`content-type`] = stream.contentType
     }
 
-    // Generate ETag: {path}:{offset}
+    // Generate ETag: {path}:-1:{offset} (consistent with GET format)
     headers[`etag`] =
-      `"${Buffer.from(path).toString(`base64`)}:${stream.currentOffset}"`
+      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}"`
 
     res.writeHead(200, headers)
     res.end()
@@ -521,9 +521,10 @@ export class DurableStreamTestServer {
       )
 
       if (result.timedOut) {
-        // Return 204 No Content on timeout
+        // Return 204 No Content on timeout (per Protocol Section 5.6)
         res.writeHead(204, {
           [STREAM_OFFSET_HEADER]: offset,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
         })
         res.end()
         return
@@ -542,7 +543,8 @@ export class DurableStreamTestServer {
 
     // Set offset header to the last message's offset, or current if no messages
     const lastMessage = messages[messages.length - 1]
-    headers[STREAM_OFFSET_HEADER] = lastMessage?.offset ?? stream.currentOffset
+    const responseOffset = lastMessage?.offset ?? stream.currentOffset
+    headers[STREAM_OFFSET_HEADER] = responseOffset
 
     // Echo cursor if provided
     if (cursor) {
@@ -552,6 +554,19 @@ export class DurableStreamTestServer {
     // Set up-to-date header
     if (upToDate) {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
+    }
+
+    // Generate ETag: based on path, start offset, and end offset
+    const startOffset = offset ?? `-1`
+    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}"`
+    headers[`etag`] = etag
+
+    // Check If-None-Match for conditional GET (Protocol Section 8.1)
+    const ifNoneMatch = req.headers[`if-none-match`]
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      res.writeHead(304, { etag })
+      res.end()
+      return
     }
 
     // Format response (wraps JSON in array brackets)
@@ -716,12 +731,14 @@ export class DurableStreamTestServer {
     }
 
     // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+    // Note: append returns null only for empty arrays with isInitialCreate=true,
+    // which doesn't apply to POST requests (those throw on empty arrays)
     const message = await Promise.resolve(
       this.store.append(path, body, { seq, contentType })
     )
 
     res.writeHead(200, {
-      [STREAM_OFFSET_HEADER]: message.offset,
+      [STREAM_OFFSET_HEADER]: message!.offset,
     })
     res.end()
   }

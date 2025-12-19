@@ -124,7 +124,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
   - Sets the stream's content type. If omitted, the server **MAY** default to `application/octet-stream`.
 
 - `Stream-TTL: <seconds>`
-  - Sets a relative time-to-live in seconds from creation.
+  - Sets a relative time-to-live in seconds from creation. The value **MUST** be a non-negative integer in decimal notation without leading zeros, plus signs, decimal points, or scientific notation (e.g., `3600` is valid; `+3600`, `03600`, `3600.0`, and `3.6e3` are not).
 
 - `Stream-Expires-At: <rfc3339>`
   - Sets an absolute expiry time as an RFC 3339 timestamp.
@@ -165,7 +165,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Request Headers
 
 - `Content-Type: <stream-content-type>`
-  - **MUST** match the stream's existing content type. Servers **MUST** return `400 Bad Request` (or `409 Conflict` for state conflict) on mismatch.
+  - **MUST** match the stream's existing content type. Servers **MUST** return `409 Conflict` when the content type is valid but does not match the stream's configured type.
 
 - `Transfer-Encoding: chunked` (optional)
   - Indicates a streaming body. Servers **SHOULD** support HTTP/1.1 chunked encoding and HTTP/2 streaming semantics.
@@ -182,10 +182,10 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Codes
 
 - `204 No Content` (recommended) or `200 OK`: Append successful
+- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
-- `409 Conflict`: Sequence regression detected (if `Stream-Seq` provided) or content type mismatch
-- `400 Bad Request`: Invalid headers or parameters
+- `409 Conflict`: Content type mismatch with stream's configured type, or sequence regression (if `Stream-Seq` provided)
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
@@ -318,7 +318,8 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 204)
 
-- `Stream-Next-Offset: <offset>`: Servers **SHOULD** include a `Stream-Next-Offset` header indicating the current tail offset, so clients can confirm they're still up-to-date.
+- `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
+- `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
 
 #### Response Body (on 200)
 
@@ -391,8 +392,12 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 1. **Opaque**: Clients **MUST NOT** interpret offset structure or meaning
 2. **Lexicographically Sortable**: For any two valid offsets for the same stream, a lexicographic comparison determines their relative position in the stream. Clients **MAY** compare offsets lexicographically to determine ordering.
 3. **Persistent**: Offsets remain valid for the lifetime of the stream (until deletion or expiration)
+4. **Unique**: Each offset identifies exactly one position in the stream. No two positions **MAY** share the same offset.
+5. **Strictly Increasing**: Offsets assigned to appended data **MUST** be lexicographically greater than all previously assigned offsets. Server implementations **MUST NOT** use schemes (such as raw UTC timestamps) that can produce duplicate or non-monotonic offsets. Time-based identifiers like ULIDs, which combine timestamps with random components to guarantee uniqueness and monotonicity, are acceptable.
 
-**Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters.
+**Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters. Servers **SHOULD** keep offsets reasonably short (under 256 characters) since they appear in every request URL.
+
+**Sentinel Value**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
@@ -437,7 +442,9 @@ When a POST request body contains a JSON array, servers **MUST** flatten exactly
 
 #### Empty Arrays
 
-Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays represent no-op operations with no semantic meaning.
+Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays in append operations represent no-op operations with no semantic meaning and likely indicate a client bug.
+
+PUT requests with an empty array body (`[]`) are valid and create an empty stream. The empty array simply means no initial messages are being written.
 
 #### JSON Validation
 
@@ -476,7 +483,11 @@ This enables CDN/proxy caching while allowing stale content to be served during 
 
 **ETag Usage:**
 
-Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. Servers **MAY** respond with `304 Not Modified` when nothing changed for that offset range.
+Servers **MUST** generate `ETag` headers for GET responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
+
+**Query Parameter Ordering:**
+
+For optimal cache behavior, clients **SHOULD** order query parameters lexicographically by key name. This ensures consistent URL serialization across implementations and improves CDN cache hit rates.
 
 **Collapsing:**
 
