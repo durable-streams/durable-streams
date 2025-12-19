@@ -51,11 +51,5 @@
     "*.{json,md,yml,yaml}": [
       "prettier --write"
     ]
-  },
-  "pnpm": {
-    "overrides": {
-      "@tanstack/db": "https://pkg.pr.new/TanStack/db/@tanstack/db@ce63da0",
-      "@tanstack/solid-db": "https://pkg.pr.new/TanStack/db/@tanstack/solid-db@ce63da0"
-    }
   }
 }
