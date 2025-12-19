@@ -1,6 +1,6 @@
 # 📖 Tell Me a Story!
 
-A demonstration of **durable streaming** for AI-generated content, built with TanStack Start and Durable Streams.
+A demonstration of **durable streaming** for AI-generated content, built with TanStack Start, TanStack AI, and Durable Streams.
 
 The app itself is a fun, child-friendly story generator — kids enter a prompt and the app generates and narrates a unique story just for them. But under the hood, it's showcasing how durable streams solve real problems with streaming AI content.
 
@@ -23,19 +23,26 @@ Traditional streaming is ephemeral—if the connection drops, the data is lost. 
 ### How It Works
 
 1. **User submits a prompt** → Server creates a new durable stream
-2. **OpenAI generates the story** → Text and audio are streamed back
+2. **TanStack AI generates the story** → Text and audio are streamed back via the OpenAI adapter
 3. **Frames are appended to the stream** → Each chunk (text or audio) is encoded as a binary frame and durably persisted
 4. **Client subscribes to the stream** → Audio plays in real-time as frames arrive
 5. **On refresh/reconnect** → Client reloads the stream from the beginning, rebuilds the audio buffer, seeks to the saved position, and resumes playback
 
-The server returns the stream ID immediately and continues processing OpenAI's response in the background. This means the HTTP request completes quickly while generation continues asynchronously.
+The server returns the stream ID immediately and continues processing the AI response in the background. This means the HTTP request completes quickly while generation continues asynchronously.
 
 ## Features
 
-- **AI-Generated Stories** - Uses OpenAI's GPT-4o with audio to create unique narrated stories
+- **AI-Generated Stories** - Uses TanStack AI with OpenAI's GPT-4o Audio to create unique narrated stories
 - **Synchronized Text & Audio** - Text appears in sync with the spoken narration
 - **7-Day Persistence** - Stories remain available for a week
 - **Child-Friendly UI** - Colorful, playful design with intuitive controls
+
+## Technology Stack
+
+- **[TanStack AI](https://tanstack.com/ai)** - Type-safe AI SDK with OpenAI adapter for audio-enabled chat completions
+- **[TanStack Start](https://tanstack.com/start)** - Full-stack React framework with server functions
+- **Durable Streams** - Persistent streaming infrastructure for resilient content delivery
+- **Web Audio API** - Real-time PCM16 audio playback
 
 ## Setup
 
@@ -101,11 +108,44 @@ Each frame has a 5-byte header: 1 byte type + 4 bytes length (big-endian).
 
 ### Key Components
 
-- `src/server/functions.ts` - Server function that creates streams and calls OpenAI
+- `src/server/functions.ts` - Server function that creates streams and uses TanStack AI
 - `src/lib/frame-parser.ts` - Binary frame encoding/decoding
 - `src/lib/audio-player.ts` - Web Audio API PCM16 streaming player
 - `src/lib/storage.ts` - Session storage for playback position
 - `src/routes/story.$streamId.tsx` - Story playback page with resume logic
+
+### TanStack AI Audio Streaming
+
+The server function uses TanStack AI with the OpenAI adapter for audio output:
+
+```typescript
+import { chat } from "@tanstack/ai"
+import { createOpenAI } from "@tanstack/ai-openai"
+
+const adapter = createOpenAI(OPENAI_API_KEY)
+
+const stream = chat({
+  adapter,
+  model: "gpt-4o-audio-preview",
+  messages: [{ role: "user", content: prompt }],
+  systemPrompts: [SYSTEM_PROMPT],
+  providerOptions: {
+    modalities: ["text", "audio"],
+    audio: { voice: "alloy", format: "pcm16" },
+  },
+})
+
+for await (const chunk of stream) {
+  if (chunk.type === "audio") {
+    // Handle audio data (base64-encoded PCM16)
+  }
+  if (chunk.type === "content") {
+    // Handle transcript text
+  }
+}
+```
+
+The OpenAI adapter automatically detects when `modalities` includes `"audio"` and uses the Chat Completions API instead of the Responses API, enabling streaming audio output.
 
 ## License
 
