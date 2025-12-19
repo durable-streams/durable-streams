@@ -7,8 +7,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "go build -o caddy",
+    "build": "go build -o caddy ./cmd/caddy",
     "test": "go test ./...",
+    "test:run": "vitest run test/conformance.test.ts",
     "conformance": "pnpm build && cd ../.. && vitest run packages/caddy-plugin/test/conformance.test.ts"
   },
   "devDependencies": {

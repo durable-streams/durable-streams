@@ -40,3 +40,37 @@ jobs:
 
       - name: Test
         run: pnpm test:run
+
+  caddy-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: packages/caddy-plugin/go.sum
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript packages
+        run: pnpm build
+
+      - name: Build Caddy binary
+        working-directory: packages/caddy-plugin
+        run: go build -o caddy ./cmd/caddy
+
+      - name: Run Caddy conformance tests
+        run: pnpm --filter @durable-streams-internal/caddy-plugin test:run
