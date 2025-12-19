@@ -23,8 +23,8 @@ type memoryStream struct {
 }
 
 type longPollManager struct {
-	mu       sync.Mutex
-	waiters  map[string][]chan struct{}
+	mu      sync.Mutex
+	waiters map[string][]chan struct{}
 }
 
 // NewMemoryStore creates a new in-memory store

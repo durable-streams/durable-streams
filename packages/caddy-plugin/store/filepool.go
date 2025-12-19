@@ -8,10 +8,10 @@ import (
 
 // FilePool manages a pool of file handles with LRU eviction
 type FilePool struct {
-	mu       sync.Mutex
-	maxSize  int
-	files    map[string]*poolEntry
-	lru      *list.List // LRU list, front = most recently used
+	mu      sync.Mutex
+	maxSize int
+	files   map[string]*poolEntry
+	lru     *list.List // LRU list, front = most recently used
 }
 
 type poolEntry struct {
@@ -156,10 +156,10 @@ func (p *FilePool) evictIfNeeded() {
 
 // ReaderPool manages a pool of file handles for reading
 type ReaderPool struct {
-	mu       sync.Mutex
-	maxSize  int
-	files    map[string]*readerEntry
-	lru      *list.List
+	mu      sync.Mutex
+	maxSize int
+	files   map[string]*readerEntry
+	lru     *list.List
 }
 
 type readerEntry struct {

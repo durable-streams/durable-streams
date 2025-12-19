@@ -82,10 +82,10 @@ func ReadMessage(r io.Reader) ([]byte, error) {
 
 // SegmentReader reads messages from a segment file
 type SegmentReader struct {
-	file      *os.File
-	reader    *bufio.Reader
-	offset    uint64 // current byte offset in file
-	readSeq   uint64 // current read sequence (for offset calculation)
+	file    *os.File
+	reader  *bufio.Reader
+	offset  uint64 // current byte offset in file
+	readSeq uint64 // current read sequence (for offset calculation)
 }
 
 // NewSegmentReader creates a new segment reader

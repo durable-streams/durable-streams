@@ -32,9 +32,9 @@ type FileStore struct {
 
 // FileStoreConfig contains configuration for the file store
 type FileStoreConfig struct {
-	DataDir               string
-	MaxFileHandles        int
-	CleanupInterval       time.Duration // Interval for background cleanup (0 = disabled)
+	DataDir         string
+	MaxFileHandles  int
+	CleanupInterval time.Duration // Interval for background cleanup (0 = disabled)
 }
 
 // NewFileStore creates a new file-backed store

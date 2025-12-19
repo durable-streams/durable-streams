@@ -86,7 +86,7 @@ type StreamMetadata struct {
 	Path          string
 	ContentType   string
 	CurrentOffset Offset
-	LastSeq       string     // Last Stream-Seq value
+	LastSeq       string // Last Stream-Seq value
 	TTLSeconds    *int64
 	ExpiresAt     *time.Time
 	CreatedAt     time.Time

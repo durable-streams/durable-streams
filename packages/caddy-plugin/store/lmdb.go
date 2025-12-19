@@ -22,14 +22,14 @@ type LMDBMetadataStore struct {
 
 // lmdbMetadata is the serialized form of StreamMetadata
 type lmdbMetadata struct {
-	Path          string  `json:"path"`
-	ContentType   string  `json:"content_type"`
-	CurrentOffset string  `json:"current_offset"` // Offset as string for easy serialization
-	LastSeq       string  `json:"last_seq"`
-	TTLSeconds    *int64  `json:"ttl_seconds,omitempty"`
-	ExpiresAt     *int64  `json:"expires_at,omitempty"` // Unix timestamp
-	CreatedAt     int64   `json:"created_at"`           // Unix timestamp
-	DirectoryName string  `json:"directory_name"`
+	Path          string `json:"path"`
+	ContentType   string `json:"content_type"`
+	CurrentOffset string `json:"current_offset"` // Offset as string for easy serialization
+	LastSeq       string `json:"last_seq"`
+	TTLSeconds    *int64 `json:"ttl_seconds,omitempty"`
+	ExpiresAt     *int64 `json:"expires_at,omitempty"` // Unix timestamp
+	CreatedAt     int64  `json:"created_at"`           // Unix timestamp
+	DirectoryName string `json:"directory_name"`
 }
 
 // NewLMDBMetadataStore creates a new LMDB-backed metadata store
