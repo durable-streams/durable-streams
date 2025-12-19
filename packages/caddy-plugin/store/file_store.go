@@ -147,7 +147,7 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 
 	// Handle initial data
 	if len(opts.InitialData) > 0 {
-		newOffset, err := s.appendToStream(meta, dirName, opts.InitialData, AppendOptions{})
+		newOffset, err := s.appendToStream(meta, dirName, opts.InitialData, AppendOptions{}, true) // Allow empty arrays on create
 		if err != nil {
 			os.RemoveAll(streamDir)
 			return nil, false, err
@@ -262,7 +262,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Offset
 	}
 
 	// Append to segment
-	newOffset, err := s.appendToStream(meta, dirName, data, opts)
+	newOffset, err := s.appendToStream(meta, dirName, data, opts, false) // Don't allow empty arrays on append
 	if err != nil {
 		return Offset{}, err
 	}
@@ -286,7 +286,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Offset
 }
 
 // appendToStream appends data to the stream's segment file
-func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []byte, opts AppendOptions) (Offset, error) {
+func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []byte, opts AppendOptions, allowEmpty bool) (Offset, error) {
 	segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
 
 	file, err := s.writerPool.GetWriter(segPath)
@@ -298,7 +298,7 @@ func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []
 
 	if isJSON {
 		// JSON mode: parse and potentially flatten arrays
-		messages, err := processJSONAppend(data)
+		messages, err := processJSONAppend(data, allowEmpty)
 		if err != nil {
 			return Offset{}, err
 		}

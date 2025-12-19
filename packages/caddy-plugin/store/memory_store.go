@@ -73,7 +73,7 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 
 	// Handle initial data
 	if len(opts.InitialData) > 0 {
-		newOffset, err := s.appendToStream(stream, opts.InitialData, AppendOptions{})
+		newOffset, err := s.appendToStream(stream, opts.InitialData, AppendOptions{}, true) // Allow empty arrays on create
 		if err != nil {
 			return nil, false, err
 		}
@@ -150,7 +150,7 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Offs
 		}
 	}
 
-	newOffset, err := s.appendToStream(stream, data, opts)
+	newOffset, err := s.appendToStream(stream, data, opts, false) // Don't allow empty arrays on append
 	if err != nil {
 		return Offset{}, err
 	}
@@ -167,12 +167,12 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Offs
 }
 
 // appendToStream handles the actual append logic, including JSON mode
-func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts AppendOptions) (Offset, error) {
+func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts AppendOptions, allowEmpty bool) (Offset, error) {
 	isJSON := isJSONContentType(stream.metadata.ContentType)
 
 	if isJSON {
 		// JSON mode: parse and potentially flatten arrays
-		messages, err := processJSONAppend(data)
+		messages, err := processJSONAppend(data, allowEmpty)
 		if err != nil {
 			return Offset{}, err
 		}
@@ -335,7 +335,7 @@ func isJSONContentType(ct string) bool {
 }
 
 // processJSONAppend processes JSON data for append, flattening top-level arrays
-func processJSONAppend(data []byte) ([][]byte, error) {
+func processJSONAppend(data []byte, allowEmpty bool) ([][]byte, error) {
 	// Validate JSON
 	if !json.Valid(data) {
 		return nil, ErrInvalidJSON
@@ -349,7 +349,12 @@ func processJSONAppend(data []byte) ([][]byte, error) {
 			return nil, ErrInvalidJSON
 		}
 		if len(arr) == 0 {
-			return nil, ErrEmptyJSONArray
+			// Empty arrays are allowed on PUT (create) but not on POST (append)
+			if !allowEmpty {
+				return nil, ErrEmptyJSONArray
+			}
+			// Return empty slice for empty array on create
+			return [][]byte{}, nil
 		}
 		// Flatten one level
 		result := make([][]byte, len(arr))

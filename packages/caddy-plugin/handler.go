@@ -219,9 +219,14 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		return newHTTPError(http.StatusBadRequest, "offset required for long-poll mode")
 	}
 
+	// Validate SSE requires offset
+	if liveMode == "sse" && !offsetProvided {
+		return newHTTPError(http.StatusBadRequest, "offset required for SSE mode")
+	}
+
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
-		return h.handleSSE(w, r, path, offset)
+		return h.handleSSE(w, r, path, offset, cursor)
 	}
 
 	// Read messages
@@ -289,8 +294,10 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		w.Header().Set(HeaderStreamUpToDate, "true")
 	}
 
-	if cursor != "" {
-		w.Header().Set(HeaderStreamCursor, cursor)
+	// Generate Stream-Cursor for long-poll responses (CDN cache collision prevention)
+	if liveMode == "long-poll" {
+		responseCursor := generateResponseCursor(cursor)
+		w.Header().Set(HeaderStreamCursor, responseCursor)
 	}
 
 	// Set ETag for caching
@@ -321,8 +328,59 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	return nil
 }
 
+// Cursor epoch: October 9, 2024 00:00:00 UTC
+var cursorEpoch = time.Date(2024, 10, 9, 0, 0, 0, 0, time.UTC)
+
+// Default interval duration in seconds
+const cursorIntervalSeconds = 20
+
+// Jitter range in seconds (per protocol spec)
+const (
+	minJitterSeconds = 1
+	maxJitterSeconds = 3600
+)
+
+// generateCursor generates a time-based interval cursor for cache collision prevention
+func generateCursor() string {
+	now := time.Now()
+	epochMs := cursorEpoch.UnixMilli()
+	nowMs := now.UnixMilli()
+	intervalMs := cursorIntervalSeconds * 1000
+
+	// Calculate interval number since epoch
+	intervalNumber := (nowMs - epochMs) / int64(intervalMs)
+	return strconv.FormatInt(intervalNumber, 10)
+}
+
+// generateResponseCursor generates a cursor ensuring monotonic progression
+func generateResponseCursor(clientCursor string) string {
+	currentCursor := generateCursor()
+	currentInterval, _ := strconv.ParseInt(currentCursor, 10, 64)
+
+	// No client cursor - return current interval
+	if clientCursor == "" {
+		return currentCursor
+	}
+
+	// Parse client cursor
+	clientInterval, err := strconv.ParseInt(clientCursor, 10, 64)
+	if err != nil || clientInterval < currentInterval {
+		// Invalid or behind current time - return current interval
+		return currentCursor
+	}
+
+	// Client cursor is at or ahead - add random jitter to advance
+	jitterSeconds := minJitterSeconds + (maxJitterSeconds-minJitterSeconds)/2 // Use middle value for simplicity
+	jitterIntervals := int64(1)
+	if jitterSeconds/cursorIntervalSeconds > 1 {
+		jitterIntervals = int64(jitterSeconds / cursorIntervalSeconds)
+	}
+
+	return strconv.FormatInt(clientInterval+jitterIntervals, 10)
+}
+
 // handleSSE handles Server-Sent Events streaming
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset) error {
+func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string) error {
 	meta, err := h.store.Get(path)
 	if err != nil {
 		return err
@@ -353,6 +411,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 	defer reconnectTimer.Stop()
 
 	currentOffset := offset
+	sentInitialControl := false
 
 	for {
 		select {
@@ -377,16 +436,40 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				}
 				fmt.Fprintf(w, "\n")
 
-				// Send control event
+				// Update current offset
 				currentOffset = messages[len(messages)-1].Offset
+
+				// Generate cursor with collision handling
+				responseCursor := generateResponseCursor(cursor)
+
+				// Send control event
 				control := map[string]string{
 					"streamNextOffset": currentOffset.String(),
+					"streamCursor":     responseCursor,
 				}
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
 
 				flusher.Flush()
+				sentInitialControl = true
+			} else if !sentInitialControl {
+				// Send initial control event even for empty stream
+				currentMeta, _ := h.store.Get(path)
+
+				// Generate cursor with collision handling
+				responseCursor := generateResponseCursor(cursor)
+
+				control := map[string]string{
+					"streamNextOffset": currentMeta.CurrentOffset.String(),
+					"streamCursor":     responseCursor,
+				}
+				controlJSON, _ := json.Marshal(control)
+				fmt.Fprintf(w, "event: control\n")
+				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
+
+				flusher.Flush()
+				sentInitialControl = true
 			}
 
 			// Wait for more data
