@@ -26,7 +26,7 @@ export type AudioPlayerCallback = (state: AudioPlayerState) => void
 
 export class AudioPlayer {
   private audioContext: AudioContext | null = null
-  private allChunks: Array<Float32Array> = [] // All received chunks (for restart)
+  private allChunks: Array<Float32Array<ArrayBuffer>> = [] // All received chunks (for restart)
   private scheduledSources: Array<AudioBufferSourceNode> = []
   private totalBufferedSamples = 0
 
@@ -334,7 +334,7 @@ export class AudioPlayer {
     this.scheduleFloat32Data(this.allChunks[index])
   }
 
-  private scheduleFloat32Data(float32Data: Float32Array): void {
+  private scheduleFloat32Data(float32Data: Float32Array<ArrayBuffer>): void {
     if (!this.audioContext || float32Data.length === 0) return
 
     const buffer = this.audioContext.createBuffer(
