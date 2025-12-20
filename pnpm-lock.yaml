@@ -267,6 +267,22 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
 
+  packages/sse-proxy:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
+      hono:
+        specifier: ^4.6.0
+        version: 4.11.0
+    devDependencies:
+      '@durable-streams/server':
+        specifier: workspace:*
+        version: link:../server
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
+
   packages/test-ui:
     dependencies:
       '@durable-streams/client':
@@ -2585,6 +2601,10 @@ packages:
   he@1.2.0:
     resolution: {integrity: sha512-F/1DnUGPopORZi0ni+CvrCgHQ5FyEAHRLSApuYWMmrbSwoN2Mn/7k+Gl38gJnR7yyDZk6WLXwiGod1JOWNDKGw==}
     hasBin: true
+
+  hono@4.11.0:
+    resolution: {integrity: sha512-Jg8uZzN2ul8/qlyid5FO8O624F3AK0wKtkgoeEON1qBum1rM1itYBxoMKu/1SPJC7F1+xlIZsJMmc4HHhJ1AWg==}
+    engines: {node: '>=16.9.0'}
 
   hookable@5.5.3:
     resolution: {integrity: sha512-Yc+BQe8SvoXH1643Qez1zqLRmbA5rCL+sSmk6TVos0LWVfNIB7PGncdlId77WzLGSIB5KaWgTaNTs2lNVEI6VQ==}
@@ -6297,6 +6317,8 @@ snapshots:
       function-bind: 1.1.2
 
   he@1.2.0: {}
+
+  hono@4.11.0: {}
 
   hookable@5.5.3: {}
 
