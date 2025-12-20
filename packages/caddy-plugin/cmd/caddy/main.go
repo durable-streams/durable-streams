@@ -10,7 +10,7 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 
 	// Import our durable streams module
-	_ "github.com/electric-sql/caddy-durable-streams"
+	_ "github.com/durable-streams/durable-streams/packages/caddy-plugin"
 )
 
 const defaultCaddyfile = `{

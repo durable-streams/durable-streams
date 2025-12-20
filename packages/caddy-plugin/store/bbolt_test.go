@@ -7,18 +7,18 @@ import (
 	"time"
 )
 
-func TestLMDBMetadataStore_CreateAndGet(t *testing.T) {
+func TestBboltMetadataStore_CreateAndGet(t *testing.T) {
 	// Create temp directory
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
 
 	// Create store
-	store, err := NewLMDBMetadataStore(dbPath)
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -69,15 +69,15 @@ func TestLMDBMetadataStore_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_Has(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_Has(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -105,15 +105,15 @@ func TestLMDBMetadataStore_Has(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_Delete(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_Delete(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -147,15 +147,15 @@ func TestLMDBMetadataStore_Delete(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_UpdateOffset(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_UpdateOffset(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -197,15 +197,15 @@ func TestLMDBMetadataStore_UpdateOffset(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_List(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_List(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -243,15 +243,15 @@ func TestLMDBMetadataStore_List(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_ForEach(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_ForEach(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
@@ -287,18 +287,18 @@ func TestLMDBMetadataStore_ForEach(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_Persistence(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_Persistence(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
 
 	// Create store and add data
 	{
-		store, err := NewLMDBMetadataStore(dbPath)
+		store, err := NewBboltMetadataStore(dbPath)
 		if err != nil {
 			t.Fatalf("failed to create store: %v", err)
 		}
@@ -320,7 +320,7 @@ func TestLMDBMetadataStore_Persistence(t *testing.T) {
 
 	// Reopen and verify
 	{
-		store, err := NewLMDBMetadataStore(dbPath)
+		store, err := NewBboltMetadataStore(dbPath)
 		if err != nil {
 			t.Fatalf("failed to reopen store: %v", err)
 		}
@@ -342,15 +342,15 @@ func TestLMDBMetadataStore_Persistence(t *testing.T) {
 	}
 }
 
-func TestLMDBMetadataStore_GetNotFound(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "lmdb-test-*")
+func TestBboltMetadataStore_GetNotFound(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "metadata.lmdb")
-	store, err := NewLMDBMetadataStore(dbPath)
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}

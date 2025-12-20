@@ -1,2 +1,7 @@
-caddy
+# Test data
 data/
+
+# Built binaries
+durable-streams-server
+durable-streams-server-static
+caddy

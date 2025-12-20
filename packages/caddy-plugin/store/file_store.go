@@ -16,7 +16,7 @@ import (
 // FileStore is a file-backed implementation of the Store interface
 type FileStore struct {
 	dataDir    string
-	metaStore  *LMDBMetadataStore
+	metaStore  *BboltMetadataStore
 	writerPool *FilePool
 	longPoll   *longPollManager
 
@@ -48,9 +48,9 @@ func NewFileStore(cfg FileStoreConfig) (*FileStore, error) {
 		return nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	// Create LMDB metadata store
+	// Create bbolt metadata store
 	metaDir := filepath.Join(cfg.DataDir, "metadata")
-	metaStore, err := NewLMDBMetadataStore(metaDir)
+	metaStore, err := NewBboltMetadataStore(metaDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create metadata store: %w", err)
 	}
@@ -214,7 +214,7 @@ func (s *FileStore) Delete(path string) error {
 	segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
 	s.writerPool.Remove(segPath)
 
-	// Delete from LMDB
+	// Delete from bbolt
 	if err := s.metaStore.Delete(path); err != nil {
 		return err
 	}
@@ -273,7 +273,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Offset
 		meta.LastSeq = opts.Seq
 	}
 
-	// Persist to LMDB
+	// Persist to bbolt
 	if err := s.metaStore.UpdateOffset(path, newOffset, opts.Seq); err != nil {
 		// Log error but don't fail - the file is the source of truth
 		// On recovery, we'll reconcile
@@ -471,7 +471,7 @@ func (s *FileStore) cleanupExpiredStreams() {
 		segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
 		s.writerPool.Remove(segPath)
 
-		// Delete from LMDB
+		// Delete from bbolt
 		s.metaStore.Delete(path)
 
 		// Remove from cache
@@ -529,10 +529,10 @@ func generateDirectoryName(path string) (string, error) {
 
 // Recovery functions
 
-// RecoverStore performs recovery on a file store, reconciling LMDB with segment files
+// RecoverStore performs recovery on a file store, reconciling bbolt with segment files
 func RecoverStore(dataDir string) error {
 	metaDir := filepath.Join(dataDir, "metadata")
-	metaStore, err := NewLMDBMetadataStore(metaDir)
+	metaStore, err := NewBboltMetadataStore(metaDir)
 	if err != nil {
 		return fmt.Errorf("failed to open metadata store: %w", err)
 	}

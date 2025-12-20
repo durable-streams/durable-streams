@@ -1,9 +1,10 @@
-module github.com/electric-sql/caddy-durable-streams
+module github.com/durable-streams/durable-streams/packages/caddy-plugin
 
 go 1.25
 
 require (
 	github.com/caddyserver/caddy/v2 v2.10.2
+	go.etcd.io/bbolt v1.4.3
 	go.uber.org/zap v1.27.1
 )
 
@@ -21,7 +22,6 @@ require (
 	github.com/Masterminds/semver/v3 v3.3.0 // indirect
 	github.com/Masterminds/sprig/v3 v3.3.0 // indirect
 	github.com/Microsoft/go-winio v0.6.0 // indirect
-	github.com/PowerDNS/lmdb-go v1.9.3 // indirect
 	github.com/alecthomas/chroma/v2 v2.20.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/aryann/difflib v0.0.0-20210328193216-ff5ff6dc229b // indirect
@@ -114,7 +114,6 @@ require (
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc // indirect
 	github.com/zeebo/blake3 v0.2.4 // indirect
-	go.etcd.io/bbolt v1.3.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.61.0 // indirect
 	go.opentelemetry.io/contrib/propagators/autoprop v0.62.0 // indirect

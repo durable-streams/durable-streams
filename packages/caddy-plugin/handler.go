@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/electric-sql/caddy-durable-streams/store"
+	"github.com/durable-streams/durable-streams/packages/caddy-plugin/store"
 	"go.uber.org/zap"
 )
 
