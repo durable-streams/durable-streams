@@ -1,0 +1,122 @@
+id: consumer-longpoll
+name: Long-Poll Reads
+description: Tests for long-poll live reading from streams
+category: consumer
+tags:
+  - core
+  - read
+  - longpoll
+  - live
+requires:
+  - long-poll
+
+tests:
+  - id: longpoll-waits-for-data
+    name: Long-poll waits for new data
+    description: Client should wait for new data in long-poll mode
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: initialOffset
+    operations:
+      # Start long-poll read in background (will be waiting)
+      # Then append data which should unblock the read
+      - action: read
+        path: ${streamPath}
+        offset: ${initialOffset}
+        live: long-poll
+        timeoutMs: 5000
+        expect:
+          # The test runner will append data while this is waiting
+          dataContains: "new-data"
+
+  - id: longpoll-returns-immediately-with-data
+    name: Long-poll returns immediately if data exists
+    description: Long-poll should not wait if there's already data to return
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "existing-data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          data: "existing-data"
+          upToDate: true
+
+  - id: longpoll-timeout
+    name: Long-poll times out gracefully
+    description: Long-poll should timeout and return up-to-date when no new data arrives
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: offset
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: long-poll
+        timeoutMs: 500
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: longpoll-multiple-chunks
+    name: Long-poll receives multiple chunks
+    description: Long-poll should receive all available chunks
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "chunk1"
+      - action: append
+        path: ${streamPath}
+        data: "chunk2"
+      - action: append
+        path: ${streamPath}
+        data: "chunk3"
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          data: "chunk1chunk2chunk3"
+          upToDate: true
+
+  - id: longpoll-resume-from-offset
+    name: Long-poll resumes from offset
+    description: Long-poll should resume from the provided offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "old-data"
+        expect:
+          storeOffsetAs: offset
+      - action: append
+        path: ${streamPath}
+        data: "new-data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          data: "new-data"
+          upToDate: true

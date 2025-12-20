@@ -1,0 +1,148 @@
+id: producer-append
+name: Append Operations
+description: Tests for appending data to streams via the client SDK
+category: producer
+tags:
+  - core
+  - append
+
+tests:
+  - id: append-string
+    name: Append string data
+    description: Client should append string data to a stream
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "Hello, World!"
+        expect:
+          status: 200
+          storeOffsetAs: offset1
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "Hello, World!"
+          upToDate: true
+
+  - id: append-multiple
+    name: Append multiple times
+    description: Client should append multiple chunks and they should be concatenated
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "First "
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "Second "
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "Third"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "First Second Third"
+          upToDate: true
+
+  - id: append-binary
+    name: Append binary data
+    description: Client should append binary data to a stream
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      - action: append
+        path: ${streamPath}
+        binaryData: "SGVsbG8gQmluYXJ5IQ==" # "Hello Binary!" in base64
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "Hello Binary!"
+
+  - id: append-empty
+    name: Append empty data
+    description: Client should handle appending empty data
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: ""
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+
+  - id: append-large-data
+    name: Append large data
+    description: Client should handle appending larger chunks of data
+    tags:
+      - large
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: set
+        name: largeData
+        value: "${'X'.repeat(100000)}"
+      - action: append
+        path: ${streamPath}
+        data: ${largeData}
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+
+  - id: append-unicode
+    name: Append unicode data
+    description: Client should correctly handle unicode characters
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain; charset=utf-8
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "Hello 世界 🌍 Привет мир"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "Hello 世界 🌍 Привет мир"
+
+  - id: append-with-custom-headers
+    name: Append with custom headers
+    description: Client should pass through custom headers on append
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "test"
+        headers:
+          X-Request-Id: "12345"
+        expect:
+          status: 200
