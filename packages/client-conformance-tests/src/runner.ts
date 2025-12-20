@@ -71,11 +71,21 @@ export interface RunSummary {
   results: Array<TestRunResult>
 }
 
+/** Client feature flags reported by the adapter */
+interface ClientFeatures {
+  batching?: boolean
+  sse?: boolean
+  longPoll?: boolean
+  streaming?: boolean
+}
+
 interface ExecutionContext {
   serverUrl: string
   variables: Map<string, unknown>
   client: ClientAdapter
   verbose: boolean
+  /** Features supported by the client adapter */
+  clientFeatures: ClientFeatures
 }
 
 // =============================================================================
@@ -410,15 +420,55 @@ async function executeOperation(
     }
 
     case `assert`: {
-      const condition = resolveVariables(op.condition, variables)
-      // Simple evaluation - in production would need safer evaluation
-      try {
-        const result = eval(condition)
-        if (!result) {
-          return { error: op.message ?? `Assertion failed: ${op.condition}` }
+      // Structured assertions - no eval for safety
+      if (op.equals) {
+        const left = resolveVariables(op.equals.left, variables)
+        const right = resolveVariables(op.equals.right, variables)
+        if (left !== right) {
+          return {
+            error:
+              op.message ??
+              `Assertion failed: expected "${left}" to equal "${right}"`,
+          }
         }
-      } catch (err) {
-        return { error: `Assertion error: ${err}` }
+      }
+      if (op.notEquals) {
+        const left = resolveVariables(op.notEquals.left, variables)
+        const right = resolveVariables(op.notEquals.right, variables)
+        if (left === right) {
+          return {
+            error:
+              op.message ??
+              `Assertion failed: expected "${left}" to not equal "${right}"`,
+          }
+        }
+      }
+      if (op.contains) {
+        const value = resolveVariables(op.contains.value, variables)
+        const substring = resolveVariables(op.contains.substring, variables)
+        if (!value.includes(substring)) {
+          return {
+            error:
+              op.message ??
+              `Assertion failed: expected "${value}" to contain "${substring}"`,
+          }
+        }
+      }
+      if (op.matches) {
+        const value = resolveVariables(op.matches.value, variables)
+        const pattern = op.matches.pattern
+        try {
+          const regex = new RegExp(pattern)
+          if (!regex.test(value)) {
+            return {
+              error:
+                op.message ??
+                `Assertion failed: expected "${value}" to match /${pattern}/`,
+            }
+          }
+        } catch {
+          return { error: `Invalid regex pattern: ${pattern}` }
+        }
       }
       return {}
     }
@@ -529,6 +579,37 @@ function validateExpectation(
   return null
 }
 
+/**
+ * Map feature names from YAML (kebab-case) to client feature property names (camelCase).
+ */
+function featureToProperty(feature: string): keyof ClientFeatures | undefined {
+  const map: Record<string, keyof ClientFeatures> = {
+    batching: `batching`,
+    sse: `sse`,
+    "long-poll": `longPoll`,
+    longPoll: `longPoll`,
+    streaming: `streaming`,
+  }
+  return map[feature]
+}
+
+/**
+ * Check if client supports all required features.
+ * Returns list of missing features, or empty array if all satisfied.
+ */
+function getMissingFeatures(
+  requires: Array<string> | undefined,
+  clientFeatures: ClientFeatures
+): Array<string> {
+  if (!requires || requires.length === 0) {
+    return []
+  }
+  return requires.filter((feature) => {
+    const prop = featureToProperty(feature)
+    return !prop || !clientFeatures[prop]
+  })
+}
+
 async function runTestCase(
   test: TestCase,
   ctx: ExecutionContext
@@ -544,6 +625,19 @@ async function runTestCase(
       duration: 0,
       skipped: true,
       skipReason: typeof test.skip === `string` ? test.skip : undefined,
+    }
+  }
+
+  // Check if test requires features the client doesn't support
+  const missingFeatures = getMissingFeatures(test.requires, ctx.clientFeatures)
+  if (missingFeatures.length > 0) {
+    return {
+      suite: ``,
+      test: test.id,
+      passed: true,
+      duration: 0,
+      skipped: true,
+      skipReason: `missing features: ${missingFeatures.join(`, `)}`,
     }
   }
 
@@ -694,15 +788,18 @@ export async function runConformanceTests(
       )
     }
 
+    // Extract client features from init result
+    let clientFeatures: ClientFeatures = {}
     if (initResult.type === `init`) {
       console.log(
         `Client: ${initResult.clientName} v${initResult.clientVersion}`
       )
       if (initResult.features) {
-        const features = Object.entries(initResult.features)
+        clientFeatures = initResult.features
+        const featureList = Object.entries(initResult.features)
           .filter(([, v]) => v)
           .map(([k]) => k)
-        console.log(`Features: ${features.join(`, `) || `none`}\n`)
+        console.log(`Features: ${featureList.join(`, `) || `none`}\n`)
       }
     }
 
@@ -711,6 +808,7 @@ export async function runConformanceTests(
       variables: new Map(),
       client,
       verbose: options.verbose ?? false,
+      clientFeatures,
     }
 
     // Run test suites
@@ -718,7 +816,30 @@ export async function runConformanceTests(
       console.log(`\n${suite.name}`)
       console.log(`─`.repeat(suite.name.length))
 
+      // Check if suite requires features the client doesn't support
+      const suiteMissingFeatures = getMissingFeatures(
+        suite.requires,
+        clientFeatures
+      )
+
       for (const test of suite.tests) {
+        // If suite has missing features, skip all tests in it
+        if (suiteMissingFeatures.length > 0) {
+          const result: TestRunResult = {
+            suite: suite.id,
+            test: test.id,
+            passed: true,
+            duration: 0,
+            skipped: true,
+            skipReason: `missing features: ${suiteMissingFeatures.join(`, `)}`,
+          }
+          results.push(result)
+          console.log(
+            `  ○ ${test.name} (skipped: missing features: ${suiteMissingFeatures.join(`, `)})`
+          )
+          continue
+        }
+
         const result = await runTestCase(test, ctx)
         result.suite = suite.id
         results.push(result)

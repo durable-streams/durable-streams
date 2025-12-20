@@ -31,6 +31,8 @@ export interface TestSuite {
   category: `producer` | `consumer` | `lifecycle`
   /** Tags for filtering tests */
   tags?: Array<string>
+  /** Required client features for all tests in this suite */
+  requires?: Array<ClientFeature>
   /** Test cases in this suite */
   tests: Array<TestCase>
 }
@@ -194,12 +196,18 @@ export interface SetOperation {
 }
 
 /**
- * Assert a condition.
+ * Assert a condition using structured assertions (no eval).
  */
 export interface AssertOperation {
   action: `assert`
-  /** Condition to check */
-  condition: string
+  /** Check that two values are equal */
+  equals?: { left: string; right: string }
+  /** Check that two values are not equal */
+  notEquals?: { left: string; right: string }
+  /** Check that a string contains a substring */
+  contains?: { value: string; substring: string }
+  /** Check that a value matches a regex pattern */
+  matches?: { value: string; pattern: string }
   /** Message if assertion fails */
   message?: string
 }
