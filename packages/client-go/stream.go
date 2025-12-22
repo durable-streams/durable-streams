@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -375,6 +376,12 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 		opt(cfg)
 	}
 
+	// Handle LiveModeAuto: select SSE for text/* and application/json, long-poll otherwise
+	liveMode := cfg.live
+	if liveMode == LiveModeAuto {
+		liveMode = s.selectLiveMode()
+	}
+
 	// Create a cancellable context for the iterator
 	iterCtx, cancel := context.WithCancel(ctx)
 
@@ -383,13 +390,31 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 		ctx:      iterCtx,
 		cancel:   cancel,
 		offset:   cfg.offset,
-		live:     cfg.live,
+		live:     liveMode,
 		cursor:   cfg.cursor,
 		headers:  cfg.headers,
 		timeout:  cfg.timeout,
 		Offset:   cfg.offset,
 		UpToDate: false,
 	}
+}
+
+// selectLiveMode chooses the best live mode based on content type.
+// Returns SSE for text/* and application/json, long-poll otherwise.
+func (s *Stream) selectLiveMode() LiveMode {
+	ct := s.contentType
+	if ct == "" {
+		// No content type cached, use long-poll as safer default
+		return LiveModeLongPoll
+	}
+
+	// SSE is suitable for text types and JSON
+	if strings.HasPrefix(ct, "text/") || strings.HasPrefix(ct, "application/json") {
+		return LiveModeSSE
+	}
+
+	// For binary and other types, use long-poll
+	return LiveModeLongPoll
 }
 
 // buildReadURL constructs the URL for a read request with query parameters.
