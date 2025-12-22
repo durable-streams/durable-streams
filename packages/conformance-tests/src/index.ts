@@ -2489,6 +2489,38 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(controlData[`streamNextOffset`]).toBe(httpOffset)
     })
 
+    test(`should send upToDate flag in SSE control events when caught up`, async () => {
+      const streamPath = `/v1/stream/sse-uptodate-test-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Make SSE request and read until we get a control event
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `"upToDate"` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Parse the control event
+      const controlLine = received
+        .split(`\n`)
+        .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
+      expect(controlLine).toBeDefined()
+
+      const controlPayload = controlLine!.slice(`data: `.length)
+      const controlData = JSON.parse(controlPayload)
+
+      // When client has read all data, server MUST include upToDate: true
+      // This is essential for clients to know they've caught up to head
+      expect(controlData.upToDate).toBe(true)
+    })
+
     test(`should have correct SSE headers (no Content-Length, proper Cache-Control)`, async () => {
       const streamPath = `/v1/stream/sse-headers-test-${Date.now()}`
 
