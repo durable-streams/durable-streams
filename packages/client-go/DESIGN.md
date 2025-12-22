@@ -532,14 +532,14 @@ for chunk, err := range stream.Chunks(ctx, ds.WithLive(ds.LiveModeLongPoll)) {
 
 ### Tradeoff Analysis
 
-| Feature | Go 1.23 iter.Seq2 | Classic Iterator |
-|---------|-------------------|------------------|
-| Syntax | Clean `for range` | `for { Next() }` |
-| Cleanup | Automatic via break | Manual `Close()` required |
-| Go Version | 1.23+ only | Any version |
-| Ecosystem | New pattern | Well-established |
-| Cancel | Via context | Via context or Close() |
-| Metadata access | Need separate vars | `it.Offset`, `it.UpToDate` |
+| Feature         | Go 1.23 iter.Seq2   | Classic Iterator           |
+| --------------- | ------------------- | -------------------------- |
+| Syntax          | Clean `for range`   | `for { Next() }`           |
+| Cleanup         | Automatic via break | Manual `Close()` required  |
+| Go Version      | 1.23+ only          | Any version                |
+| Ecosystem       | New pattern         | Well-established           |
+| Cancel          | Via context         | Via context or Close()     |
+| Metadata access | Need separate vars  | `it.Offset`, `it.UpToDate` |
 
 **Recommendation**: Ship classic iterators as primary API. Add Go 1.23 range functions as additive API with build tags (`//go:build go1.23`) in a future phase.
 
@@ -559,6 +559,7 @@ for chunk, err := range stream.Chunks(ctx, ds.WithLive(ds.LiveModeLongPoll)) {
 ### Implementation Phases
 
 **Phase 1: Core Operations**
+
 - Client + Stream types
 - Create, Append (with AppendResult), Delete, Head
 - ChunkIterator for catch-up reads
@@ -566,17 +567,20 @@ for chunk, err := range stream.Chunks(ctx, ds.WithLive(ds.LiveModeLongPoll)) {
 - Automatic cursor propagation
 
 **Phase 2: Live Streaming**
+
 - Long-poll support
 - SSE support with parser
 - LiveModeAuto selection with fallback
 
 **Phase 3: Advanced Features**
+
 - JSONBatchIterator with generics
 - Automatic batching for appends (like TS client)
 - Retry with exponential backoff
 - Connection pooling optimization
 
 **Phase 4: Testing & Conformance**
+
 - Pass conformance test suite
 - Testing utilities (mock client)
 - Documentation

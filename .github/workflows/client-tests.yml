@@ -20,16 +20,31 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: packages/client-go/go.mod
+
       - name: Install dependencies
         run: pnpm install
 
       - name: Build packages
         run: pnpm build
 
+      - name: Build Go client adapter
+        run: |
+          cd packages/client-go
+          go build -o conformance-adapter ./cmd/conformance-adapter
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ts
+
+      - name: Run Go client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
 
   benchmarks:
     name: Client Benchmarks
@@ -47,41 +62,74 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache-dependency-path: packages/client-go/go.mod
+
       - name: Install dependencies
         run: pnpm install
 
       - name: Build packages
         run: pnpm build
 
+      - name: Build Go client adapter
+        run: |
+          cd packages/client-go
+          go build -o conformance-adapter ./cmd/conformance-adapter
+
       - name: Run TypeScript client benchmarks
-        id: benchmarks
+        id: ts_benchmarks
         continue-on-error: true
         run: |
           cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ts --format json > benchmark-results.json
-          cat benchmark-results.json
+          pnpm tsx src/cli.ts --bench ts --format json > benchmark-results-ts.json
+          cat benchmark-results-ts.json
 
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed' benchmark-results.json)
-          FAILED=$(jq -r '.failed' benchmark-results.json)
-          SKIPPED=$(jq -r '.skipped' benchmark-results.json)
+      - name: Run Go client benchmarks
+        id: go_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format json > benchmark-results-go.json
+          cat benchmark-results-go.json
 
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+      - name: Combine benchmark results
+        id: benchmarks
+        run: |
+          cd packages/client-conformance-tests
+          # Combine results for summary
+          TS_PASSED=$(jq -r '.passed // 0' benchmark-results-ts.json)
+          TS_FAILED=$(jq -r '.failed // 0' benchmark-results-ts.json)
+          GO_PASSED=$(jq -r '.passed // 0' benchmark-results-go.json)
+          GO_FAILED=$(jq -r '.failed // 0' benchmark-results-go.json)
+
+          TOTAL_PASSED=$((TS_PASSED + GO_PASSED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED))
+
+          echo "passed=$TOTAL_PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$TOTAL_FAILED" >> $GITHUB_OUTPUT
 
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-results
-          path: packages/client-conformance-tests/benchmark-results.json
+          path: |
+            packages/client-conformance-tests/benchmark-results-ts.json
+            packages/client-conformance-tests/benchmark-results-go.json
 
       - name: Generate benchmark report
         if: always() && github.event_name == 'pull_request'
         run: |
           cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ts --format markdown > benchmark-report.md
+          echo "# Client Benchmark Results" > benchmark-report.md
+          echo "" >> benchmark-report.md
+          echo "## TypeScript Client" >> benchmark-report.md
+          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+          echo "## Go Client" >> benchmark-report.md
+          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown >> benchmark-report.md
           cat benchmark-report.md
 
       - name: Comment on PR with benchmark results
