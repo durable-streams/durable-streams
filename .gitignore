@@ -186,3 +186,4 @@ htmlcov/
 # Claude local settings
 .claude/settings.local.json
 .beads
+packages/yjs-demo/.tanstack
