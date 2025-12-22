@@ -19,6 +19,3 @@ export type {
   AwarenessConfig,
   AwarenessUpdate,
 } from "./types"
-
-// Framing utilities (useful for custom implementations)
-export { frameUpdate, parseFramedUpdates } from "./framing"
