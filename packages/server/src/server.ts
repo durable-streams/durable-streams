@@ -22,6 +22,7 @@ const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 // SSE control event fields (Protocol Section 5.7)
 const SSE_OFFSET_FIELD = `streamNextOffset`
 const SSE_CURSOR_FIELD = `streamCursor`
+const SSE_UP_TO_DATE_FIELD = `upToDate`
 
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
@@ -90,6 +91,18 @@ function compressData(
  * HTTP server for testing durable streams.
  * Supports both in-memory and file-backed storage modes.
  */
+/**
+ * Configuration for injected errors (for testing retry/resilience).
+ */
+interface InjectedError {
+  /** HTTP status code to return */
+  status: number
+  /** Number of times to return this error (decremented on each use) */
+  count: number
+  /** Optional Retry-After header value (seconds) */
+  retryAfter?: number
+}
+
 export class DurableStreamTestServer {
   readonly store: StreamStore | FileBackedStreamStore
   private server: Server | null = null
@@ -113,6 +126,8 @@ export class DurableStreamTestServer {
   private _url: string | null = null
   private activeSSEResponses = new Set<ServerResponse>()
   private isShuttingDown = false
+  /** Injected errors for testing retry/resilience */
+  private injectedErrors = new Map<string, InjectedError>()
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -235,6 +250,42 @@ export class DurableStreamTestServer {
     this.store.clear()
   }
 
+  /**
+   * Inject an error to be returned on the next N requests to a path.
+   * Used for testing retry/resilience behavior.
+   */
+  injectError(
+    path: string,
+    status: number,
+    count: number = 1,
+    retryAfter?: number
+  ): void {
+    this.injectedErrors.set(path, { status, count, retryAfter })
+  }
+
+  /**
+   * Clear all injected errors.
+   */
+  clearInjectedErrors(): void {
+    this.injectedErrors.clear()
+  }
+
+  /**
+   * Check if there's an injected error for this path and consume it.
+   * Returns the error config if one should be returned, null otherwise.
+   */
+  private consumeInjectedError(path: string): InjectedError | null {
+    const error = this.injectedErrors.get(path)
+    if (!error) return null
+
+    error.count--
+    if (error.count <= 0) {
+      this.injectedErrors.delete(path)
+    }
+
+    return error
+  }
+
   // ============================================================================
   // Request handling
   // ============================================================================
@@ -266,6 +317,26 @@ export class DurableStreamTestServer {
     if (method === `OPTIONS`) {
       res.writeHead(204)
       res.end()
+      return
+    }
+
+    // Handle test control endpoints (for error injection)
+    if (path === `/_test/inject-error`) {
+      await this.handleTestInjectError(method, req, res)
+      return
+    }
+
+    // Check for injected errors (for testing retry/resilience)
+    const injectedError = this.consumeInjectedError(path)
+    if (injectedError) {
+      const headers: Record<string, string> = {
+        "content-type": `text/plain`,
+      }
+      if (injectedError.retryAfter !== undefined) {
+        headers[`retry-after`] = injectedError.retryAfter.toString()
+      }
+      res.writeHead(injectedError.status, headers)
+      res.end(`Injected error for testing`)
       return
     }
 
@@ -684,9 +755,14 @@ export class DurableStreamTestServer {
         cursor,
         this.options.cursorOptions
       )
-      const controlData: Record<string, string> = {
+      const controlData: Record<string, string | boolean> = {
         [SSE_OFFSET_FIELD]: controlOffset,
         [SSE_CURSOR_FIELD]: responseCursor,
+      }
+
+      // Include upToDate flag when client has caught up to head
+      if (upToDate) {
+        controlData[SSE_UP_TO_DATE_FIELD] = true
       }
 
       res.write(`event: control\n`)
@@ -714,9 +790,10 @@ export class DurableStreamTestServer {
             cursor,
             this.options.cursorOptions
           )
-          const keepAliveData: Record<string, string> = {
+          const keepAliveData: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
             [SSE_CURSOR_FIELD]: keepAliveCursor,
+            [SSE_UP_TO_DATE_FIELD]: true, // Still caught up after timeout
           }
           res.write(`event: control\n`)
           res.write(encodeSSEData(JSON.stringify(keepAliveData)))
@@ -795,6 +872,55 @@ export class DurableStreamTestServer {
 
     res.writeHead(204)
     res.end()
+  }
+
+  /**
+   * Handle test control endpoints for error injection.
+   * POST /_test/inject-error - inject an error
+   * DELETE /_test/inject-error - clear all injected errors
+   */
+  private async handleTestInjectError(
+    method: string | undefined,
+    req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<void> {
+    if (method === `POST`) {
+      const body = await this.readBody(req)
+      try {
+        const config = JSON.parse(new TextDecoder().decode(body)) as {
+          path: string
+          status: number
+          count?: number
+          retryAfter?: number
+        }
+
+        if (!config.path || !config.status) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Missing required fields: path, status`)
+          return
+        }
+
+        this.injectError(
+          config.path,
+          config.status,
+          config.count ?? 1,
+          config.retryAfter
+        )
+
+        res.writeHead(200, { "content-type": `application/json` })
+        res.end(JSON.stringify({ ok: true }))
+      } catch {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid JSON body`)
+      }
+    } else if (method === `DELETE`) {
+      this.clearInjectedErrors()
+      res.writeHead(200, { "content-type": `application/json` })
+      res.end(JSON.stringify({ ok: true }))
+    } else {
+      res.writeHead(405, { "content-type": `text/plain` })
+      res.end(`Method not allowed`)
+    }
   }
 
   // ============================================================================

@@ -1,0 +1,87 @@
+id: producer-create
+name: Stream Creation
+description: Tests for creating streams via the client SDK
+category: producer
+tags:
+  - core
+  - create
+
+tests:
+  - id: create-basic
+    name: Create a new stream
+    description: Client should successfully create a new stream with default settings
+    operations:
+      - action: create
+        as: streamPath
+        expect:
+          status: 201
+
+  - id: create-with-content-type
+    name: Create stream with custom content type
+    description: Client should set the content type when creating a stream
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          contentType: application/json
+
+  - id: create-idempotent
+    name: Create is idempotent
+    description: Creating the same stream twice should succeed (return 200 on second call)
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        expect:
+          status: 201
+      - action: create
+        path: ${streamPath}
+        contentType: text/plain
+        expect:
+          status: 200
+
+  - id: create-with-ttl
+    name: Create stream with TTL
+    description: Client should set TTL header when creating a stream
+    operations:
+      - action: create
+        as: streamPath
+        ttlSeconds: 3600
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          hasOffset: true
+
+  - id: create-with-custom-headers
+    name: Create stream with custom headers
+    description: Client should pass through custom headers
+    operations:
+      - action: create
+        as: streamPath
+        headers:
+          X-Custom-Header: test-value
+        expect:
+          status: 201
+
+  - id: create-binary-stream
+    name: Create binary stream
+    description: Client should create streams for binary content
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          contentType: application/octet-stream

@@ -279,5 +279,6 @@ async function streamInternal<TJson = unknown>(
     abortController,
     fetchNext,
     startSSE,
+    sseResilience: options.sseResilience,
   })
 }

@@ -635,12 +635,6 @@ data: {"id":1}
       startSSE,
     })
 
-    // Attach error handler to closed promise BEFORE consuming
-    let caughtError: Error | null = null
-    streamResponse.closed.catch((err) => {
-      caughtError = err
-    })
-
     // Start consuming with subscriber (triggers live mode)
     const items: Array<{ id: number }> = []
     streamResponse.subscribeJson((batch) => {
@@ -648,12 +642,8 @@ data: {"id":1}
       return Promise.resolve()
     })
 
-    // Wait a bit for the stream to process and error
-    await new Promise((resolve) => setTimeout(resolve, 100))
-
-    // Error should have been caught
-    expect(caughtError).toBeInstanceOf(Error)
-    expect((caughtError as unknown as Error).message).toBe(`Network error`)
+    // The closed promise should reject with the reconnection error
+    await expect(streamResponse.closed).rejects.toThrow(`Network error`)
 
     // startSSE should have been called for reconnection
     expect(startSSE).toHaveBeenCalled()

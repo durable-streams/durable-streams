@@ -1,0 +1,117 @@
+id: lifecycle-headers
+name: Headers and Parameters
+description: Tests for header and parameter handling
+category: lifecycle
+tags:
+  - headers
+  - params
+  - auth
+
+tests:
+  - id: custom-headers-create
+    name: Custom headers on create
+    description: Client should send custom headers on create
+    operations:
+      - action: create
+        as: streamPath
+        headers:
+          X-Custom-Header: "custom-value"
+          X-Another-Header: "another-value"
+        expect:
+          status: 201
+
+  - id: custom-headers-append
+    name: Custom headers on append
+    description: Client should send custom headers on append
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "with-headers"
+        headers:
+          X-Request-Id: "req-12345"
+          Authorization: "Bearer test-token"
+        expect:
+          status: 200
+
+  - id: custom-headers-read
+    name: Custom headers on read
+    description: Client should send custom headers on read
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        headers:
+          Authorization: "Bearer read-token"
+        live: false
+        expect:
+          status: 200
+
+  - id: custom-headers-head
+    name: Custom headers on head
+    description: Client should send custom headers on HEAD
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: head
+        path: ${streamPath}
+        headers:
+          X-Trace-Id: "trace-abc"
+        expect:
+          status: 200
+
+  - id: custom-headers-delete
+    name: Custom headers on delete
+    description: Client should send custom headers on delete
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: delete
+        path: ${streamPath}
+        headers:
+          Authorization: "Bearer delete-token"
+        expect:
+          status: 200
+
+  - id: content-type-preserved
+    name: Content type is preserved
+    description: Content type set on create should be returned on read
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/x-custom-type
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          contentType: application/x-custom-type
+    cleanup:
+      - action: delete
+        path: ${streamPath}
+
+  - id: content-type-with-charset
+    name: Content type with charset
+    description: Content type with charset parameter should be preserved
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain; charset=utf-8
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          contentType: text/plain; charset=utf-8
+    cleanup:
+      - action: delete
+        path: ${streamPath}

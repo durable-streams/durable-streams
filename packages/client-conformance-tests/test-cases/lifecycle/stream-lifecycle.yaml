@@ -1,0 +1,148 @@
+id: lifecycle-stream
+name: Stream Lifecycle
+description: Tests for complete stream lifecycle operations
+category: lifecycle
+tags:
+  - core
+  - lifecycle
+
+tests:
+  - id: full-lifecycle
+    name: Full stream lifecycle
+    description: Create, append, read, and delete a stream
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        expect:
+          status: 201
+      - action: append
+        path: ${streamPath}
+        data: "lifecycle-test-data"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "lifecycle-test-data"
+          upToDate: true
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 404
+
+  - id: connect-existing
+    name: Connect to existing stream
+    description: Connect should work for existing streams
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "pre-existing"
+    operations:
+      - action: connect
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "pre-existing"
+
+  - id: head-metadata
+    name: HEAD returns metadata
+    description: HEAD should return stream metadata without body
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        data: '{"key": "value"}'
+    operations:
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          contentType: application/json
+          hasOffset: true
+
+  - id: head-empty-stream
+    name: HEAD on empty stream
+    description: HEAD should work on empty stream
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          hasOffset: true
+
+  - id: multiple-streams
+    name: Multiple independent streams
+    description: Operations on one stream should not affect others
+    operations:
+      - action: create
+        as: stream1
+      - action: create
+        as: stream2
+      - action: append
+        path: ${stream1}
+        data: "stream1-data"
+      - action: append
+        path: ${stream2}
+        data: "stream2-data"
+      - action: read
+        path: ${stream1}
+        live: false
+        expect:
+          data: "stream1-data"
+      - action: read
+        path: ${stream2}
+        live: false
+        expect:
+          data: "stream2-data"
+      - action: delete
+        path: ${stream1}
+      - action: read
+        path: ${stream2}
+        live: false
+        expect:
+          data: "stream2-data"
+    cleanup:
+      - action: delete
+        path: ${stream2}
+
+  - id: recreate-after-delete
+    name: Create after delete
+    description: Creating after delete should succeed as a new stream
+    operations:
+      - action: create
+        as: streamPath
+        expect:
+          status: 201
+      - action: append
+        path: ${streamPath}
+        data: "original"
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      # Create at same path should succeed as a new stream
+      - action: create
+        path: ${streamPath}
+        expect:
+          status: 201
+    cleanup:
+      - action: delete
+        path: ${streamPath}

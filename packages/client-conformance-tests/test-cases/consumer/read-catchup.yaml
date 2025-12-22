@@ -1,0 +1,173 @@
+id: consumer-catchup
+name: Catch-up Reads
+description: Tests for reading existing data from streams (catch-up mode)
+category: consumer
+tags:
+  - core
+  - read
+  - catchup
+
+tests:
+  - id: read-empty-stream
+    name: Read empty stream
+    description: Client should handle reading from an empty stream
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          chunkCount: 0
+          upToDate: true
+
+  - id: read-single-chunk
+    name: Read single chunk
+    description: Client should read a single chunk of data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "Hello, World!"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          data: "Hello, World!"
+          upToDate: true
+
+  - id: read-multiple-chunks
+    name: Read multiple chunks
+    description: Client should read all chunks concatenated
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "Chunk1 "
+      - action: append
+        path: ${streamPath}
+        data: "Chunk2 "
+      - action: append
+        path: ${streamPath}
+        data: "Chunk3"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "Chunk1 Chunk2 Chunk3"
+          upToDate: true
+
+  - id: read-from-offset
+    name: Read from specific offset
+    description: Client should resume reading from a given offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "First"
+        expect:
+          storeOffsetAs: firstOffset
+      - action: append
+        path: ${streamPath}
+        data: "Second"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${firstOffset}
+        live: false
+        expect:
+          data: "Second"
+          upToDate: true
+
+  - id: read-from-beginning
+    name: Read from beginning after offset
+    description: Reading without offset should start from beginning
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "Beginning"
+      - action: append
+        path: ${streamPath}
+        data: "End"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "BeginningEnd"
+          upToDate: true
+
+  - id: read-preserves-offset
+    name: Read returns usable offset
+    description: Offset from read result can be used to resume
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "Part1"
+      - action: append
+        path: ${streamPath}
+        data: "Part2"
+    operations:
+      - action: read
+        path: ${streamPath}
+        maxChunks: 1
+        live: false
+        expect:
+          storeOffsetAs: resumeOffset
+      - action: append
+        path: ${streamPath}
+        data: "Part3"
+      - action: read
+        path: ${streamPath}
+        offset: ${resumeOffset}
+        live: false
+        expect:
+          dataContains: "Part3"
+
+  - id: read-binary-data
+    name: Read binary data
+    description: Client should correctly read binary data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID" # [1, 2, 3] in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          upToDate: true
+
+  - id: read-unicode-data
+    name: Read unicode data
+    description: Client should correctly handle unicode in reads
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain; charset=utf-8
+      - action: append
+        path: ${streamPath}
+        data: "Unicode: 日本語 🎉 Ñoño"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "Unicode: 日本語 🎉 Ñoño"
+          upToDate: true

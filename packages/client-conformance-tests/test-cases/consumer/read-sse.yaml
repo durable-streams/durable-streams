@@ -1,0 +1,145 @@
+id: consumer-sse
+name: SSE Reads
+description: Tests for Server-Sent Events live reading from streams
+category: consumer
+tags:
+  - core
+  - read
+  - sse
+  - live
+requires:
+  - sse
+
+tests:
+  - id: sse-receives-existing-data
+    name: SSE receives existing data
+    description: SSE stream should first deliver existing data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "existing1"
+      - action: append
+        path: ${streamPath}
+        data: "existing2"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 2
+        waitForUpToDate: true
+        expect:
+          dataContainsAll:
+            - "existing1"
+            - "existing2"
+          minChunks: 1
+
+  - id: sse-receives-new-data
+    name: SSE receives new data
+    description: SSE stream should receive data appended after connection
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: offset
+    operations:
+      # Start SSE read in background (will be waiting for new data)
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      # Wait for the SSE connection to establish
+      - action: wait
+        ms: 200
+      # Append data via direct server HTTP (adapter is blocked on read)
+      - action: server-append
+        path: ${streamPath}
+        data: "new-data"
+      # Wait for the background read to complete
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: "new-data"
+          minChunks: 1
+
+  - id: sse-resumes-from-offset
+    name: SSE resumes from offset
+    description: SSE should start from specified offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "skip-this"
+        expect:
+          storeOffsetAs: skipOffset
+      - action: append
+        path: ${streamPath}
+        data: "include-this"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${skipOffset}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "include-this"
+
+  - id: sse-up-to-date-signal
+    name: SSE signals up-to-date
+    description: SSE should indicate when caught up to head
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+
+  - id: sse-empty-stream
+    name: SSE on empty stream
+    description: SSE should work on empty stream and signal up-to-date
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          chunkCount: 0
+
+  - id: sse-binary-data
+    name: SSE with binary data
+    description: SSE should correctly transmit binary data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "/f7/AA==" # some binary bytes
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true

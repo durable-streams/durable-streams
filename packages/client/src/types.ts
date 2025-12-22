@@ -150,6 +150,50 @@ export interface StreamOptions {
    * Error handler for recoverable errors (following Electric client pattern).
    */
   onError?: StreamErrorHandler
+
+  /**
+   * SSE resilience options.
+   * When SSE connections fail repeatedly, the client can automatically
+   * fall back to long-polling mode.
+   */
+  sseResilience?: SSEResilienceOptions
+}
+
+/**
+ * Options for SSE connection resilience.
+ */
+export interface SSEResilienceOptions {
+  /**
+   * Minimum expected SSE connection duration in milliseconds.
+   * Connections shorter than this are considered "short" and may indicate
+   * proxy buffering or server misconfiguration.
+   * @default 1000
+   */
+  minConnectionDuration?: number
+
+  /**
+   * Maximum number of consecutive short connections before falling back to long-poll.
+   * @default 3
+   */
+  maxShortConnections?: number
+
+  /**
+   * Base delay for exponential backoff between short connection retries (ms).
+   * @default 100
+   */
+  backoffBaseDelay?: number
+
+  /**
+   * Maximum delay cap for exponential backoff (ms).
+   * @default 5000
+   */
+  backoffMaxDelay?: number
+
+  /**
+   * Whether to log warnings when falling back to long-poll.
+   * @default true
+   */
+  logWarnings?: boolean
 }
 
 // ============================================================================
