@@ -1,0 +1,131 @@
+name: Client Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  conformance:
+    name: Client Conformance Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run TypeScript client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ts
+
+  benchmarks:
+    name: Client Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Run TypeScript client benchmarks
+        id: benchmarks
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ts --format json > benchmark-results.json
+          cat benchmark-results.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq '.passed' benchmark-results.json)
+          FAILED=$(jq '.failed' benchmark-results.json)
+          SKIPPED=$(jq '.skipped' benchmark-results.json)
+
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: packages/client-conformance-tests/benchmark-results.json
+
+      - name: Generate benchmark report
+        if: github.event_name == 'pull_request'
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ts --format markdown > benchmark-report.md
+          cat benchmark-report.md
+
+      - name: Comment on PR with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('packages/client-conformance-tests/benchmark-report.md', 'utf8');
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Client Benchmark Results')
+            );
+
+            const body = report;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Check benchmark criteria
+        run: |
+          FAILED=${{ steps.benchmarks.outputs.failed }}
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED benchmark(s) failed to meet performance criteria"
+            exit 1
+          fi
+          echo "All benchmarks passed!"
