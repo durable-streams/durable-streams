@@ -1,0 +1,12 @@
+[build]
+  base = "packages/yjs-demo"
+  command = "pnpm build"
+  publish = "dist"
+
+[build.environment]
+  VITE_SERVER_URL = "https://api-pr-995.electric-sql.dev"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
