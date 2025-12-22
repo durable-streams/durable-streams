@@ -101,7 +101,10 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
 
         console.log(`[Registry] Connecting to registry stream...`, registryUrl)
         // Create registry stream
-        const registryStream = new DurableStream({ url: registryUrl })
+        const registryStream = new DurableStream({
+          url: registryUrl,
+          contentType: `application/json`,
+        })
 
         // Check if registry exists, create it if it doesn't
         console.log(`[Registry] Checking if registry stream exists...`)
