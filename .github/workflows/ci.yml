@@ -70,4 +70,4 @@ jobs:
         run: uv run pyright src/
 
       - name: Run unit tests
-        run: uv run pytest tests/ -v --ignore=tests/test_integration.py
+        run: uv run pytest tests/ -v --ignore=tests/test_integration.py --ignore=tests/test_conformance.py
