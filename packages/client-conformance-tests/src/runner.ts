@@ -560,6 +560,59 @@ async function executeOperation(
       return { result }
     }
 
+    case `inject-error`: {
+      // Inject an error via the test server's control endpoint
+      const path = resolveVariables(op.path, variables)
+
+      try {
+        const response = await fetch(`${ctx.serverUrl}/_test/inject-error`, {
+          method: `POST`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            path,
+            status: op.status,
+            count: op.count ?? 1,
+            retryAfter: op.retryAfter,
+          }),
+        })
+
+        if (verbose) {
+          console.log(
+            `  inject-error ${path} ${op.status}x${op.count ?? 1}: ${response.ok ? `ok` : `failed`}`
+          )
+        }
+
+        if (!response.ok) {
+          return { error: `Failed to inject error: ${response.status}` }
+        }
+
+        return {}
+      } catch (err) {
+        return {
+          error: `Failed to inject error: ${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
+    }
+
+    case `clear-errors`: {
+      // Clear all injected errors via the test server's control endpoint
+      try {
+        const response = await fetch(`${ctx.serverUrl}/_test/inject-error`, {
+          method: `DELETE`,
+        })
+
+        if (verbose) {
+          console.log(`  clear-errors: ${response.ok ? `ok` : `failed`}`)
+        }
+
+        return {}
+      } catch (err) {
+        return {
+          error: `Failed to clear errors: ${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
+    }
+
     default:
       return { error: `Unknown operation: ${(op as TestOperation).action}` }
   }

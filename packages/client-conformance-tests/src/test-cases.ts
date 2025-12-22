@@ -238,6 +238,29 @@ export interface AwaitOperation {
 }
 
 /**
+ * Inject an error to be returned on the next N requests to a path.
+ * Used for testing retry/resilience behavior.
+ */
+export interface InjectErrorOperation {
+  action: `inject-error`
+  /** Stream path to inject error for */
+  path: string
+  /** HTTP status code to return */
+  status: number
+  /** Number of times to return this error (default: 1) */
+  count?: number
+  /** Optional Retry-After header value (seconds) */
+  retryAfter?: number
+}
+
+/**
+ * Clear all injected errors.
+ */
+export interface ClearErrorsOperation {
+  action: `clear-errors`
+}
+
+/**
  * All possible test operations.
  */
 export type TestOperation =
@@ -253,6 +276,8 @@ export type TestOperation =
   | AssertOperation
   | ServerAppendOperation
   | AwaitOperation
+  | InjectErrorOperation
+  | ClearErrorsOperation
 
 // =============================================================================
 // Expectations
