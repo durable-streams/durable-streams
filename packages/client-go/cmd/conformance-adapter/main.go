@@ -841,6 +841,10 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 		stream.SetContentType(ct)
 	}
 
+	// Use BatchedStream for automatic batching - this is what makes Go competitive
+	batched := durablestreams.NewBatchedStream(stream)
+	defer batched.Close()
+
 	// Pre-generate all data
 	allData := make([][]byte, count)
 	for i := range allData {
@@ -860,7 +864,7 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 		go func(data []byte) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			_, _ = stream.Append(ctx, data)
+			_, _ = batched.Append(ctx, data)
 		}(allData[i])
 	}
 
