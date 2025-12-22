@@ -164,7 +164,7 @@ export function YjsRoomProvider({
 
   useEffect(() => {
     const documentStreamUrl = `${serverEndpoint}/v1/stream/rooms/${roomId}`
-    const presenceStreamUrl = `${serverEndpoint}/v1/streams/presence/${roomId}`
+    const presenceStreamUrl = `${serverEndpoint}/v1/stream/presence/${roomId}`
 
     const provider = new DurableStreamsProvider({
       doc,

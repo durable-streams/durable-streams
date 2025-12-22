@@ -38,7 +38,7 @@ const AWARENESS_HEARTBEAT_INTERVAL = 15000 // 15 seconds
  *     url: 'http://localhost:4437/v1/stream/rooms/my-room',
  *   },
  *   awarenessStream: {
- *     url: 'http://localhost:4437/v1/streams/presence/my-room',
+ *     url: 'http://localhost:4437/v1/stream/presence/my-room',
  *     protocol: awareness,
  *   },
  * })

@@ -50,7 +50,7 @@ describe(`y-durable-streams`, () => {
         },
         awarenessStream: awarenessProtocol
           ? {
-              url: `${baseUrl}/v1/streams/presence/${roomId}`,
+              url: `${baseUrl}/v1/stream/presence/${roomId}`,
               protocol: awarenessProtocol,
             }
           : undefined,
