@@ -121,26 +121,11 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
           })
         }
 
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (cancelled) return
-
         // Create StreamDB with actions
         registryDB = await createRegistryDB(registryUrl)
 
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (cancelled) {
-          registryDB.close()
-          return
-        }
-
         // Preload the DB
         await registryDB.preload()
-
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (cancelled) {
-          registryDB.close()
-          return
-        }
 
         setState({ registryDB, error: null, isLoading: false })
       } catch (err) {
