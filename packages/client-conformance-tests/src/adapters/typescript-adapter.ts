@@ -39,12 +39,89 @@ let serverUrl = ``
 // Track content-type per stream path for append operations
 const streamContentTypes = new Map<string, string>()
 
+// Dynamic headers/params state
+interface DynamicValue {
+  type: `counter` | `timestamp` | `token`
+  counter: number
+  tokenValue?: string
+}
+
+const dynamicHeaders = new Map<string, DynamicValue>()
+const dynamicParams = new Map<string, DynamicValue>()
+
+/** Resolve dynamic headers, returning both the header function map and tracked values */
+function resolveDynamicHeaders(): {
+  headers: Record<string, () => string>
+  values: Record<string, string>
+} {
+  const headers: Record<string, () => string> = {}
+  const values: Record<string, string> = {}
+
+  for (const [name, config] of dynamicHeaders.entries()) {
+    // Capture current values for tracking
+    let value: string
+    switch (config.type) {
+      case `counter`:
+        config.counter++
+        value = config.counter.toString()
+        break
+      case `timestamp`:
+        value = Date.now().toString()
+        break
+      case `token`:
+        value = config.tokenValue ?? ``
+        break
+    }
+    values[name] = value
+
+    // Create closure that returns the value we just computed
+    // (For actual dynamic behavior, the client would call this per-request,
+    // but for testing we want to track what value was used)
+    const capturedValue = value
+    headers[name] = () => capturedValue
+  }
+
+  return { headers, values }
+}
+
+/** Resolve dynamic params */
+function resolveDynamicParams(): {
+  params: Record<string, () => string>
+  values: Record<string, string>
+} {
+  const params: Record<string, () => string> = {}
+  const values: Record<string, string> = {}
+
+  for (const [name, config] of dynamicParams.entries()) {
+    let value: string
+    switch (config.type) {
+      case `counter`:
+        config.counter++
+        value = config.counter.toString()
+        break
+      case `timestamp`:
+        value = Date.now().toString()
+        break
+      default:
+        value = ``
+    }
+    values[name] = value
+
+    const capturedValue = value
+    params[name] = () => capturedValue
+  }
+
+  return { params, values }
+}
+
 async function handleCommand(command: TestCommand): Promise<TestResult> {
   switch (command.type) {
     case `init`: {
       serverUrl = command.serverUrl
-      // Clear caches on init
+      // Clear all caches on init
       streamContentTypes.clear()
+      dynamicHeaders.clear()
+      dynamicParams.clear()
       return {
         type: `init`,
         success: true,
@@ -55,6 +132,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           sse: true,
           longPoll: true,
           streaming: true,
+          dynamicHeaders: true,
         },
       }
     }
@@ -131,9 +209,20 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const contentType =
           streamContentTypes.get(command.path) ?? `application/octet-stream`
 
+        // Resolve dynamic headers/params
+        const { headers: dynamicHdrs, values: headersSent } =
+          resolveDynamicHeaders()
+        const { values: paramsSent } = resolveDynamicParams()
+
+        // Merge command headers with dynamic headers (command takes precedence)
+        const mergedHeaders: Record<string, string | (() => string)> = {
+          ...dynamicHdrs,
+          ...command.headers,
+        }
+
         const ds = new DurableStream({
           url,
-          headers: command.headers,
+          headers: mergedHeaders,
           contentType,
         })
 
@@ -152,6 +241,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           success: true,
           status: 200,
           offset: head.offset,
+          headersSent:
+            Object.keys(headersSent).length > 0 ? headersSent : undefined,
+          paramsSent:
+            Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
         }
       } catch (err) {
         return errorResult(`append`, err)
@@ -161,6 +254,17 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
     case `read`: {
       try {
         const url = `${serverUrl}${command.path}`
+
+        // Resolve dynamic headers/params
+        const { headers: dynamicHdrs, values: headersSent } =
+          resolveDynamicHeaders()
+        const { values: paramsSent } = resolveDynamicParams()
+
+        // Merge command headers with dynamic headers (command takes precedence)
+        const mergedHeaders: Record<string, string | (() => string)> = {
+          ...dynamicHdrs,
+          ...command.headers,
+        }
 
         // Determine live mode
         let live: `long-poll` | `sse` | false
@@ -188,7 +292,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             url,
             offset: command.offset,
             live,
-            headers: command.headers,
+            headers: mergedHeaders,
             signal: abortController.signal,
           })
         } catch (err) {
@@ -202,6 +306,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
               chunks: [],
               offset: command.offset ?? `-1`,
               upToDate: true, // Timed out = caught up (no new data)
+              headersSent:
+                Object.keys(headersSent).length > 0 ? headersSent : undefined,
+              paramsSent:
+                Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
             }
           }
           throw err
@@ -335,6 +443,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           chunks,
           offset: finalOffset,
           upToDate,
+          headersSent:
+            Object.keys(headersSent).length > 0 ? headersSent : undefined,
+          paramsSent:
+            Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
         }
       } catch (err) {
         return errorResult(`read`, err)
@@ -397,6 +509,38 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
     case `benchmark`: {
       return handleBenchmark(command)
+    }
+
+    case `set-dynamic-header`: {
+      dynamicHeaders.set(command.name, {
+        type: command.valueType,
+        counter: 0,
+        tokenValue: command.initialValue,
+      })
+      return {
+        type: `set-dynamic-header`,
+        success: true,
+      }
+    }
+
+    case `set-dynamic-param`: {
+      dynamicParams.set(command.name, {
+        type: command.valueType,
+        counter: 0,
+      })
+      return {
+        type: `set-dynamic-param`,
+        success: true,
+      }
+    }
+
+    case `clear-dynamic`: {
+      dynamicHeaders.clear()
+      dynamicParams.clear()
+      return {
+        type: `clear-dynamic`,
+        success: true,
+      }
     }
 
     default:

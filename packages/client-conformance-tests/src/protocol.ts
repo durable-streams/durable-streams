@@ -114,6 +114,45 @@ export interface ShutdownCommand {
 }
 
 // =============================================================================
+// Dynamic Headers/Params Commands
+// =============================================================================
+
+/**
+ * Configure a dynamic header that is evaluated per-request.
+ * The adapter should store this and apply it to subsequent operations.
+ *
+ * This tests the client's ability to support header functions for scenarios
+ * like OAuth token refresh, request correlation IDs, etc.
+ */
+export interface SetDynamicHeaderCommand {
+  type: `set-dynamic-header`
+  /** Header name to set */
+  name: string
+  /** Type of dynamic value */
+  valueType: `counter` | `timestamp` | `token`
+  /** Initial value (for token type) */
+  initialValue?: string
+}
+
+/**
+ * Configure a dynamic URL parameter that is evaluated per-request.
+ */
+export interface SetDynamicParamCommand {
+  type: `set-dynamic-param`
+  /** Param name to set */
+  name: string
+  /** Type of dynamic value */
+  valueType: `counter` | `timestamp`
+}
+
+/**
+ * Clear all dynamic headers and params.
+ */
+export interface ClearDynamicCommand {
+  type: `clear-dynamic`
+}
+
+// =============================================================================
 // Benchmark Commands
 // =============================================================================
 
@@ -200,6 +239,9 @@ export type TestCommand =
   | HeadCommand
   | DeleteCommand
   | ShutdownCommand
+  | SetDynamicHeaderCommand
+  | SetDynamicParamCommand
+  | ClearDynamicCommand
   | BenchmarkCommand
 
 // =============================================================================
@@ -226,6 +268,8 @@ export interface InitResult {
     longPoll?: boolean
     /** Supports streaming reads */
     streaming?: boolean
+    /** Supports dynamic headers/params (functions evaluated per-request) */
+    dynamicHeaders?: boolean
   }
 }
 
@@ -263,7 +307,12 @@ export interface AppendResult {
   status: number
   /** New offset after append */
   offset?: string
+  /** Response headers */
   headers?: Record<string, string>
+  /** Headers that were sent in the request (for dynamic header testing) */
+  headersSent?: Record<string, string>
+  /** Params that were sent in the request (for dynamic param testing) */
+  paramsSent?: Record<string, string>
 }
 
 /**
@@ -293,7 +342,12 @@ export interface ReadResult {
   upToDate?: boolean
   /** Cursor value if provided */
   cursor?: string
+  /** Response headers */
   headers?: Record<string, string>
+  /** Headers that were sent in the request (for dynamic header testing) */
+  headersSent?: Record<string, string>
+  /** Params that were sent in the request (for dynamic param testing) */
+  paramsSent?: Record<string, string>
 }
 
 /**
@@ -329,6 +383,30 @@ export interface DeleteResult {
  */
 export interface ShutdownResult {
   type: `shutdown`
+  success: true
+}
+
+/**
+ * Successful set-dynamic-header result.
+ */
+export interface SetDynamicHeaderResult {
+  type: `set-dynamic-header`
+  success: true
+}
+
+/**
+ * Successful set-dynamic-param result.
+ */
+export interface SetDynamicParamResult {
+  type: `set-dynamic-param`
+  success: true
+}
+
+/**
+ * Successful clear-dynamic result.
+ */
+export interface ClearDynamicResult {
+  type: `clear-dynamic`
   success: true
 }
 
@@ -384,6 +462,9 @@ export type TestResult =
   | HeadResult
   | DeleteResult
   | ShutdownResult
+  | SetDynamicHeaderResult
+  | SetDynamicParamResult
+  | ClearDynamicResult
   | BenchmarkResult
   | ErrorResult
 

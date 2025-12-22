@@ -49,10 +49,14 @@ type Command struct {
 	MaxChunks       int    `json:"maxChunks,omitempty"`
 	WaitForUpToDate bool   `json:"waitForUpToDate,omitempty"`
 	// Benchmark fields
-	IterationID string             `json:"iterationId,omitempty"`
+	IterationID string              `json:"iterationId,omitempty"`
 	Operation   *BenchmarkOperation `json:"operation,omitempty"`
 	// Headers
 	Headers map[string]string `json:"headers,omitempty"`
+	// Dynamic header/param fields
+	Name         string `json:"name,omitempty"`
+	ValueType    string `json:"valueType,omitempty"` // "counter" | "timestamp" | "token"
+	InitialValue string `json:"initialValue,omitempty"`
 }
 
 // BenchmarkOperation represents a benchmark operation
@@ -85,9 +89,12 @@ type Result struct {
 	ErrorCode     string            `json:"errorCode,omitempty"`
 	Message       string            `json:"message,omitempty"`
 	// Benchmark fields
-	IterationID string           `json:"iterationId,omitempty"`
-	DurationNs  string           `json:"durationNs,omitempty"`
+	IterationID string            `json:"iterationId,omitempty"`
+	DurationNs  string            `json:"durationNs,omitempty"`
 	Metrics     *BenchmarkMetrics `json:"metrics,omitempty"`
+	// Dynamic header/param tracking
+	HeadersSent map[string]string `json:"headersSent,omitempty"`
+	ParamsSent  map[string]string `json:"paramsSent,omitempty"`
 }
 
 // BenchmarkMetrics contains optional benchmark metrics
@@ -99,10 +106,11 @@ type BenchmarkMetrics struct {
 }
 
 type Features struct {
-	Batching  bool `json:"batching"`
-	SSE       bool `json:"sse"`
-	LongPoll  bool `json:"longPoll"`
-	Streaming bool `json:"streaming"`
+	Batching       bool `json:"batching"`
+	SSE            bool `json:"sse"`
+	LongPoll       bool `json:"longPoll"`
+	Streaming      bool `json:"streaming"`
+	DynamicHeaders bool `json:"dynamicHeaders"`
 }
 
 type ReadChunk struct {
@@ -127,6 +135,50 @@ var (
 	client             *durablestreams.Client
 	streamContentTypes = make(map[string]string)
 )
+
+// Dynamic header/param state
+type DynamicValue struct {
+	Type       string // "counter", "timestamp", "token"
+	Counter    int
+	TokenValue string
+}
+
+var (
+	dynamicHeaders = make(map[string]*DynamicValue)
+	dynamicParams  = make(map[string]*DynamicValue)
+)
+
+// resolveDynamicHeaders evaluates all dynamic headers and returns the values
+func resolveDynamicHeaders() map[string]string {
+	result := make(map[string]string)
+	for name, dv := range dynamicHeaders {
+		switch dv.Type {
+		case "counter":
+			dv.Counter++
+			result[name] = strconv.Itoa(dv.Counter)
+		case "timestamp":
+			result[name] = strconv.FormatInt(time.Now().UnixMilli(), 10)
+		case "token":
+			result[name] = dv.TokenValue
+		}
+	}
+	return result
+}
+
+// resolveDynamicParams evaluates all dynamic params and returns the values
+func resolveDynamicParams() map[string]string {
+	result := make(map[string]string)
+	for name, dv := range dynamicParams {
+		switch dv.Type {
+		case "counter":
+			dv.Counter++
+			result[name] = strconv.Itoa(dv.Counter)
+		case "timestamp":
+			result[name] = strconv.FormatInt(time.Now().UnixMilli(), 10)
+		}
+	}
+	return result
+}
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -178,6 +230,12 @@ func handleCommand(cmd Command) Result {
 		return handleDelete(cmd)
 	case "benchmark":
 		return handleBenchmark(cmd)
+	case "set-dynamic-header":
+		return handleSetDynamicHeader(cmd)
+	case "set-dynamic-param":
+		return handleSetDynamicParam(cmd)
+	case "clear-dynamic":
+		return handleClearDynamic(cmd)
 	case "shutdown":
 		return Result{Type: "shutdown", Success: true}
 	default:
@@ -188,6 +246,8 @@ func handleCommand(cmd Command) Result {
 func handleInit(cmd Command) Result {
 	serverURL = cmd.ServerURL
 	streamContentTypes = make(map[string]string)
+	dynamicHeaders = make(map[string]*DynamicValue)
+	dynamicParams = make(map[string]*DynamicValue)
 	client = durablestreams.NewClient(
 		durablestreams.WithBaseURL(serverURL),
 	)
@@ -198,10 +258,11 @@ func handleInit(cmd Command) Result {
 		ClientName:    "durable-streams-go",
 		ClientVersion: clientVersion,
 		Features: &Features{
-			Batching:  true,
-			SSE:       true,
-			LongPoll:  true,
-			Streaming: true,
+			Batching:       true,
+			SSE:            true,
+			LongPoll:       true,
+			Streaming:      true,
+			DynamicHeaders: true,
 		},
 	}
 }
@@ -306,6 +367,10 @@ func handleAppend(cmd Command) Result {
 		stream.SetContentType(ct)
 	}
 
+	// Resolve dynamic headers/params
+	headersSent := resolveDynamicHeaders()
+	paramsSent := resolveDynamicParams()
+
 	// Get data
 	var data []byte
 	if cmd.Binary {
@@ -318,12 +383,21 @@ func handleAppend(cmd Command) Result {
 		data = []byte(cmd.Data)
 	}
 
+	// Merge dynamic headers with command headers
+	mergedHeaders := make(map[string]string)
+	for k, v := range headersSent {
+		mergedHeaders[k] = v
+	}
+	for k, v := range cmd.Headers {
+		mergedHeaders[k] = v
+	}
+
 	var opts []durablestreams.AppendOption
 	if cmd.Seq > 0 {
 		opts = append(opts, durablestreams.WithSeq(strconv.Itoa(cmd.Seq)))
 	}
-	if len(cmd.Headers) > 0 {
-		opts = append(opts, durablestreams.WithAppendHeaders(cmd.Headers))
+	if len(mergedHeaders) > 0 {
+		opts = append(opts, durablestreams.WithAppendHeaders(mergedHeaders))
 	}
 
 	result, err := stream.Append(ctx, data, opts...)
@@ -331,12 +405,19 @@ func handleAppend(cmd Command) Result {
 		return errorResult("append", err)
 	}
 
-	return Result{
+	res := Result{
 		Type:    "append",
 		Success: true,
 		Status:  200,
 		Offset:  string(result.NextOffset),
 	}
+	if len(headersSent) > 0 {
+		res.HeadersSent = headersSent
+	}
+	if len(paramsSent) > 0 {
+		res.ParamsSent = paramsSent
+	}
+	return res
 }
 
 func handleRead(cmd Command) Result {
@@ -349,6 +430,19 @@ func handleRead(cmd Command) Result {
 	defer cancel()
 
 	stream := client.Stream(cmd.Path)
+
+	// Resolve dynamic headers/params
+	headersSent := resolveDynamicHeaders()
+	paramsSent := resolveDynamicParams()
+
+	// Merge dynamic headers with command headers
+	mergedHeaders := make(map[string]string)
+	for k, v := range headersSent {
+		mergedHeaders[k] = v
+	}
+	for k, v := range cmd.Headers {
+		mergedHeaders[k] = v
+	}
 
 	// Determine live mode
 	var liveMode durablestreams.LiveMode
@@ -374,8 +468,8 @@ func handleRead(cmd Command) Result {
 	if cmd.Offset != "" {
 		opts = append(opts, durablestreams.WithOffset(durablestreams.Offset(cmd.Offset)))
 	}
-	if len(cmd.Headers) > 0 {
-		opts = append(opts, durablestreams.WithReadHeaders(cmd.Headers))
+	if len(mergedHeaders) > 0 {
+		opts = append(opts, durablestreams.WithReadHeaders(mergedHeaders))
 	}
 
 	it := stream.Read(ctx, opts...)
@@ -437,7 +531,7 @@ func handleRead(cmd Command) Result {
 		}
 	}
 
-	return Result{
+	res := Result{
 		Type:     "read",
 		Success:  true,
 		Status:   200,
@@ -445,6 +539,13 @@ func handleRead(cmd Command) Result {
 		Offset:   finalOffset,
 		UpToDate: upToDate,
 	}
+	if len(headersSent) > 0 {
+		res.HeadersSent = headersSent
+	}
+	if len(paramsSent) > 0 {
+		res.ParamsSent = paramsSent
+	}
+	return res
 }
 
 func handleHead(cmd Command) Result {
@@ -495,6 +596,38 @@ func handleDelete(cmd Command) Result {
 		Type:    "delete",
 		Success: true,
 		Status:  200,
+	}
+}
+
+func handleSetDynamicHeader(cmd Command) Result {
+	dynamicHeaders[cmd.Name] = &DynamicValue{
+		Type:       cmd.ValueType,
+		Counter:    0,
+		TokenValue: cmd.InitialValue,
+	}
+	return Result{
+		Type:    "set-dynamic-header",
+		Success: true,
+	}
+}
+
+func handleSetDynamicParam(cmd Command) Result {
+	dynamicParams[cmd.Name] = &DynamicValue{
+		Type:    cmd.ValueType,
+		Counter: 0,
+	}
+	return Result{
+		Type:    "set-dynamic-param",
+		Success: true,
+	}
+}
+
+func handleClearDynamic(cmd Command) Result {
+	dynamicHeaders = make(map[string]*DynamicValue)
+	dynamicParams = make(map[string]*DynamicValue)
+	return Result{
+		Type:    "clear-dynamic",
+		Success: true,
 	}
 }
 
