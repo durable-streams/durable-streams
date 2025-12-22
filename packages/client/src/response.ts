@@ -19,6 +19,7 @@ import type {
   JsonBatch,
   LiveMode,
   Offset,
+  SSEResilienceOptions,
   TextChunk,
 } from "./types"
 
@@ -58,6 +59,8 @@ export interface StreamResponseConfig {
     cursor: string | undefined,
     signal: AbortSignal
   ) => Promise<Response>
+  /** SSE resilience options */
+  sseResilience?: SSEResilienceOptions
 }
 
 /**
@@ -95,6 +98,12 @@ export class StreamResponseImpl<
   #stopAfterUpToDate = false
   #consumptionMethod: string | null = null
 
+  // --- SSE Resilience State ---
+  #sseResilience: Required<SSEResilienceOptions>
+  #lastSSEConnectionStartTime?: number
+  #consecutiveShortSSEConnections = 0
+  #sseFallbackToLongPoll = false
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -121,6 +130,16 @@ export class StreamResponseImpl<
     this.#abortController = config.abortController
     this.#fetchNext = config.fetchNext
     this.#startSSE = config.startSSE
+
+    // Initialize SSE resilience options with defaults
+    this.#sseResilience = {
+      minConnectionDuration:
+        config.sseResilience?.minConnectionDuration ?? 1000,
+      maxShortConnections: config.sseResilience?.maxShortConnections ?? 3,
+      backoffBaseDelay: config.sseResilience?.backoffBaseDelay ?? 100,
+      backoffMaxDelay: config.sseResilience?.backoffMaxDelay ?? 5000,
+      logWarnings: config.sseResilience?.logWarnings ?? true,
+    }
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -277,6 +296,70 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Mark the start of an SSE connection for duration tracking.
+   */
+  #markSSEConnectionStart(): void {
+    this.#lastSSEConnectionStartTime = Date.now()
+  }
+
+  /**
+   * Handle SSE connection end - check duration and manage fallback state.
+   * Returns a delay to wait before reconnecting, or null if should not reconnect.
+   */
+  async #handleSSEConnectionEnd(): Promise<number | null> {
+    if (this.#lastSSEConnectionStartTime === undefined) {
+      return 0 // No tracking, allow immediate reconnect
+    }
+
+    const connectionDuration = Date.now() - this.#lastSSEConnectionStartTime
+    const wasAborted = this.#abortController.signal.aborted
+
+    if (
+      connectionDuration < this.#sseResilience.minConnectionDuration &&
+      !wasAborted
+    ) {
+      // Connection was too short - likely proxy buffering or misconfiguration
+      this.#consecutiveShortSSEConnections++
+
+      if (
+        this.#consecutiveShortSSEConnections >=
+        this.#sseResilience.maxShortConnections
+      ) {
+        // Too many short connections - fall back to long polling
+        this.#sseFallbackToLongPoll = true
+
+        if (this.#sseResilience.logWarnings) {
+          console.warn(
+            `[Durable Streams] SSE connections are closing immediately (possibly due to proxy buffering or misconfiguration). ` +
+              `Falling back to long polling. ` +
+              `Your proxy must support streaming SSE responses (not buffer the complete response). ` +
+              `Configuration: Nginx add 'X-Accel-Buffering: no', Caddy add 'flush_interval -1' to reverse_proxy.`
+          )
+        }
+        return null // Signal to not reconnect SSE
+      } else {
+        // Add exponential backoff with full jitter to prevent tight infinite loop
+        // Formula: random(0, min(cap, base * 2^attempt))
+        const maxDelay = Math.min(
+          this.#sseResilience.backoffMaxDelay,
+          this.#sseResilience.backoffBaseDelay *
+            Math.pow(2, this.#consecutiveShortSSEConnections)
+        )
+        const delayMs = Math.floor(Math.random() * maxDelay)
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        return delayMs
+      }
+    } else if (
+      connectionDuration >= this.#sseResilience.minConnectionDuration
+    ) {
+      // Connection was healthy - reset counter
+      this.#consecutiveShortSSEConnections = 0
+    }
+
+    return 0 // Allow immediate reconnect
+  }
+
+  /**
    * Try to reconnect SSE and return the new iterator, or null if reconnection
    * is not possible or fails.
    */
@@ -285,9 +368,24 @@ export class StreamResponseImpl<
     void,
     undefined
   > | null> {
+    // Check if we should fall back to long-poll due to repeated short connections
+    if (this.#sseFallbackToLongPoll) {
+      return null // Will cause fallback to long-poll
+    }
+
     if (!this.#shouldContinueLive() || !this.#startSSE) {
       return null
     }
+
+    // Handle short connection detection and backoff
+    const delayOrNull = await this.#handleSSEConnectionEnd()
+    if (delayOrNull === null) {
+      return null // Fallback to long-poll was triggered
+    }
+
+    // Track new connection start
+    this.#markSSEConnectionStart()
+
     const newSSEResponse = await this.#startSSE(
       this.offset,
       this.cursor,
@@ -448,6 +546,8 @@ export class StreamResponseImpl<
                 ?.includes(`text/event-stream`) ?? false
 
             if (isSSE && firstResponse.body) {
+              // Track SSE connection start for resilience monitoring
+              this.#markSSEConnectionStart()
               // Start parsing SSE events
               sseEventIterator = parseSSEStream(
                 firstResponse.body,

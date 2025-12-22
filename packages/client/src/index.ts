@@ -35,6 +35,7 @@ export type {
   StreamOptions,
   StreamHandleOptions,
   LiveMode,
+  SSEResilienceOptions,
 
   // Chunk & batch types (new API)
   JsonBatchMeta,
