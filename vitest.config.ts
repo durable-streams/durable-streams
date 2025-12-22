@@ -9,6 +9,14 @@ const alias = {
     __dirname,
     "./packages/conformance-tests/src"
   ),
+  "@durable-streams/yjs-demo": path.resolve(
+    __dirname,
+    "./packages/yjs-demo/src"
+  ),
+  "y-durable-streams": path.resolve(
+    __dirname,
+    "./packages/y-durable-streams/src"
+  ),
 }
 
 export default defineConfig({
@@ -34,6 +42,22 @@ export default defineConfig({
         test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "yjs-demo",
+          include: ["packages/yjs-demo/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "y-durable-streams",
+          include: ["packages/y-durable-streams/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
         },
         resolve: { alias },
