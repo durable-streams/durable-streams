@@ -149,13 +149,15 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
 
     try {
       await this.connectDocumentStream()
-      if (this.abortController.signal.aborted) return
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abortController can be null if disconnect() called during async
+      if (this.abortController?.signal.aborted) return
 
       if (this.awarenessStreamConfig) {
         await this.connectAwarenessStream()
       }
     } catch (err) {
-      if (!this.abortController.signal.aborted) {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- abortController can be null if disconnect() called during async
+      if (this.abortController && !this.abortController.signal.aborted) {
         this.emit(`error`, [
           err instanceof Error ? err : new Error(String(err)),
         ])
