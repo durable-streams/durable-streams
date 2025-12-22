@@ -12,7 +12,7 @@
     "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' build",
     "dev": "pnpm -r --parallel dev",
     "test": "vitest",
-    "test:run": "vitest run",
+    "test:run": "vitest run --project client --project server --project state",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
