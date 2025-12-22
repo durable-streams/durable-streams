@@ -121,7 +121,7 @@ def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
         "clientVersion": __version__,
         "features": {
             "batching": True,
-            "sse": False,  # SSE support is partial in Python client
+            "sse": True,
             "longPoll": True,
             "streaming": True,
         },
@@ -233,10 +233,12 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     # Determine live mode
     live: bool | str
     cmd_live = cmd.get("live")
+    is_sse = False
     if cmd_live == "long-poll":
         live = "long-poll"
     elif cmd_live == "sse":
         live = "sse"
+        is_sse = True
     elif cmd_live is False:
         live = False
     else:
@@ -279,8 +281,33 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             except Exception:
                 # Stream might be empty
                 pass
+        elif is_sse:
+            # For SSE mode, use iter_text() which properly handles SSE events
+            try:
+                chunk_count = 0
+                for text_chunk in response.iter_text():
+                    if text_chunk:
+                        chunks.append(
+                            {
+                                "data": text_chunk,
+                                "offset": response.offset,
+                            }
+                        )
+                        chunk_count += 1
+
+                    final_offset = response.offset
+                    up_to_date = response.up_to_date
+
+                    if chunk_count >= max_chunks:
+                        break
+
+                    if wait_for_up_to_date and up_to_date:
+                        break
+            except httpx.TimeoutException:
+                # Timeout is expected
+                pass
         else:
-            # For live mode, iterate with timeout
+            # For long-poll mode, iterate raw bytes
             try:
                 chunk_count = 0
                 for chunk in response:
