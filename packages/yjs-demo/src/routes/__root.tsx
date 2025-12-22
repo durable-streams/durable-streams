@@ -28,6 +28,7 @@ function RoomItem({ room }: { room: RoomMetadata }) {
       // Delete the room stream
       const stream = new DurableStream({
         url: `${serverEndpoint}/v1/stream/rooms/${room.roomId}`,
+        contentType: `application/octet-stream`,
       })
       await stream.delete()
 
