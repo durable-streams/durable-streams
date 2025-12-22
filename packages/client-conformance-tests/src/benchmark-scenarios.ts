@@ -291,6 +291,7 @@ export const sseLatencyScenario: BenchmarkScenario = {
     path: `${ctx.basePath}/sse-latency-${ctx.iteration}`,
     size: 100,
     live: `sse`,
+    contentType: `application/json`, // SSE requires JSON-compatible content type
   }),
 }
 

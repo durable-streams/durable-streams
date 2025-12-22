@@ -280,8 +280,14 @@ async function runScenario(
 
       // For read throughput, pre-populate with data
       if (scenario.id === `throughput-read`) {
+        const url = `${serverUrl}${basePath}/throughput-read`
+        // Create the stream first
+        await DurableStream.create({
+          url,
+          contentType: `application/octet-stream`,
+        })
         const stream = new DurableStream({
-          url: `${serverUrl}${basePath}/throughput-read`,
+          url,
           contentType: `application/octet-stream`,
         })
         // Populate with ~10MB
@@ -314,6 +320,9 @@ async function runScenario(
       )
     }
 
+    let totalMessagesProcessed = 0
+    let totalBytesTransferred = 0
+
     for (let i = 0; i < scenario.config.measureIterations; i++) {
       const ctx: ScenarioContext = {
         basePath,
@@ -325,6 +334,11 @@ async function runScenario(
 
       if (result) {
         durations.push(BigInt(result.durationNs))
+        // Track metrics for throughput calculations
+        if (result.metrics) {
+          totalMessagesProcessed += result.metrics.messagesProcessed ?? 0
+          totalBytesTransferred += result.metrics.bytesTransferred ?? 0
+        }
       }
     }
 
@@ -335,6 +349,13 @@ async function runScenario(
 
     // Calculate statistics
     const stats = calculateStats(durations)
+
+    // Calculate total time in seconds for throughput
+    const totalTimeMs = durations.reduce(
+      (sum, ns) => sum + Number(ns) / 1_000_000,
+      0
+    )
+    const totalTimeSec = totalTimeMs / 1000
 
     // Check criteria
     const criteriaDetails: Array<CriteriaResult> = []
@@ -364,14 +385,35 @@ async function runScenario(
       }
 
       if (scenario.criteria.minOpsPerSecond !== undefined) {
-        // Calculate ops/sec from mean latency
-        const opsPerSec = stats.mean > 0 ? 1000 / stats.mean : 0
+        // For throughput scenarios, use actual messages processed
+        // For latency scenarios, use 1000/mean as ops/sec
+        let opsPerSec: number
+        if (totalMessagesProcessed > 0 && totalTimeSec > 0) {
+          opsPerSec = totalMessagesProcessed / totalTimeSec
+        } else {
+          opsPerSec = stats.mean > 0 ? 1000 / stats.mean : 0
+        }
         const met = opsPerSec >= scenario.criteria.minOpsPerSecond
         criteriaDetails.push({
           criterion: `ops/sec >= ${scenario.criteria.minOpsPerSecond}`,
           met,
           actual: opsPerSec,
           expected: scenario.criteria.minOpsPerSecond,
+        })
+        if (!met) criteriaMet = false
+      }
+
+      if (scenario.criteria.minMBPerSecond !== undefined) {
+        const mbPerSec =
+          totalTimeSec > 0
+            ? totalBytesTransferred / 1024 / 1024 / totalTimeSec
+            : 0
+        const met = mbPerSec >= scenario.criteria.minMBPerSecond
+        criteriaDetails.push({
+          criterion: `MB/sec >= ${scenario.criteria.minMBPerSecond}`,
+          met,
+          actual: mbPerSec,
+          expected: scenario.criteria.minMBPerSecond,
         })
         if (!met) criteriaMet = false
       }

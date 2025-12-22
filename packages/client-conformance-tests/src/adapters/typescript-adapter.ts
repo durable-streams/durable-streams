@@ -545,7 +545,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
 
       case `roundtrip`: {
         const url = `${serverUrl}${operation.path}`
-        const contentType = `application/octet-stream`
+        const contentType = operation.contentType ?? `application/octet-stream`
 
         // Create stream first
         const ds = await DurableStream.create({ url, contentType })

@@ -160,6 +160,8 @@ export interface BenchmarkRoundtripOp {
   size: number
   /** Live mode for reading */
   live?: `long-poll` | `sse`
+  /** Content type for SSE compatibility */
+  contentType?: string
 }
 
 export interface BenchmarkCreateOp {
