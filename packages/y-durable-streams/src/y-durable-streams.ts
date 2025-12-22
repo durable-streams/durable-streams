@@ -265,6 +265,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Subscribe to incoming document updates
+    // @ts-expect-error
     this.unsubscribeDocument = response.subscribeBytes((chunk) => {
       if (this.abortController?.signal.aborted) return
 
@@ -333,6 +334,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Subscribe to incoming awareness updates (binary format)
+    // @ts-expect-error
     this.unsubscribeAwareness = response.subscribeBytes((chunk) => {
       if (this.abortController?.signal.aborted) return
 
