@@ -9,7 +9,8 @@ import { DurableStream } from "@durable-streams/client"
 import * as Y from "yjs"
 import * as awarenessProtocol from "y-protocols/awareness"
 import { ObservableV2 } from "lib0/observable"
-import { frameUpdate, parseFramedUpdates } from "./framing"
+import * as encoding from "lib0/encoding"
+import * as decoding from "lib0/decoding"
 import type {
   AwarenessUpdate,
   DurableStreamsProviderEvents,
@@ -265,13 +266,16 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.unsubscribeDocument = response.subscribeBytes((chunk) => {
       if (this.abortController?.signal.aborted) return
 
-      // Apply updates from the server
+      // Apply updates from the server (lib0 VarUint8Array framing)
       if (chunk.data.length > 0) {
-        for (const update of parseFramedUpdates(chunk.data)) {
+        const decoder = decoding.createDecoder(chunk.data)
+        while (decoding.hasContent(decoder)) {
           try {
+            const update = decoding.readVarUint8Array(decoder)
             Y.applyUpdate(this.doc, update, `server`)
           } catch {
             // Ignore invalid updates
+            break
           }
         }
       }
@@ -330,10 +334,12 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.unsubscribeAwareness = response.subscribeBytes((chunk) => {
       if (this.abortController?.signal.aborted) return
 
-      // Apply awareness updates from the server
+      // Apply awareness updates from the server (lib0 VarUint8Array framing)
       if (chunk.data.length > 0) {
-        for (const update of parseFramedUpdates(chunk.data)) {
+        const decoder = decoding.createDecoder(chunk.data)
+        while (decoding.hasContent(decoder)) {
           try {
+            const update = decoding.readVarUint8Array(decoder)
             awarenessProtocol.applyAwarenessUpdate(
               this.awarenessStreamConfig!.protocol,
               update,
@@ -344,6 +350,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
               `[y-durable-streams] Failed to apply awareness update:`,
               err
             )
+            break
           }
         }
       }
@@ -418,8 +425,10 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         lastSending = this.pendingDocumentChanges
         this.pendingDocumentChanges = null
 
-        const framed = frameUpdate(lastSending)
-        await this.documentStream.append(framed)
+        // Frame with lib0 VarUint8Array encoding
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint8Array(encoder, lastSending)
+        await this.documentStream.append(encoding.toUint8Array(encoder))
         lastSending = null // Clear on success
       }
       this.synced = true
@@ -491,15 +500,14 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         const { added, updated, removed } = update
         const changedClients = added.concat(updated).concat(removed)
 
-        // Encode awareness update as binary
+        // Encode awareness update as binary and frame with lib0 VarUint8Array
         const encoded = awarenessProtocol.encodeAwarenessUpdate(
           this.awarenessStreamConfig.protocol,
           changedClients
         )
-
-        // Frame the update (same format as document updates)
-        const framed = frameUpdate(encoded)
-        await this.awarenessStream.append(framed)
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint8Array(encoder, encoded)
+        await this.awarenessStream.append(encoding.toUint8Array(encoder))
       }
     } catch (err) {
       console.error(`[y-durable-streams] Failed to send awareness:`, err)

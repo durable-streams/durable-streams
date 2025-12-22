@@ -1,16 +1,8 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
-import { DurableStreamsProvider, frameUpdate, parseFramedUpdates } from "../src"
+import { DurableStreamsProvider } from "../src"
 import type { ProviderStatus } from "../src"
 
 describe(`y-durable-streams`, () => {
@@ -25,60 +17,6 @@ describe(`y-durable-streams`, () => {
 
   afterAll(async () => {
     await server.stop()
-  })
-
-  describe(`Framing utilities`, () => {
-    it(`should frame and parse a single update`, () => {
-      const original = new Uint8Array([1, 2, 3, 4, 5])
-      const framed = frameUpdate(original)
-
-      // VarUint uses 1 byte for lengths < 128, so 1 + 5 = 6 bytes
-      expect(framed.length).toBe(1 + original.length)
-
-      const parsed = [...parseFramedUpdates(framed)]
-      expect(parsed.length).toBe(1)
-      expect(parsed[0]).toEqual(original)
-    })
-
-    it(`should frame and parse multiple updates`, () => {
-      const update1 = new Uint8Array([1, 2, 3])
-      const update2 = new Uint8Array([4, 5, 6, 7])
-      const update3 = new Uint8Array([8])
-
-      const framed1 = frameUpdate(update1)
-      const framed2 = frameUpdate(update2)
-      const framed3 = frameUpdate(update3)
-
-      // Concatenate all framed updates
-      const combined = new Uint8Array(
-        framed1.length + framed2.length + framed3.length
-      )
-      combined.set(framed1, 0)
-      combined.set(framed2, framed1.length)
-      combined.set(framed3, framed1.length + framed2.length)
-
-      const parsed = [...parseFramedUpdates(combined)]
-      expect(parsed.length).toBe(3)
-      expect(parsed[0]).toEqual(update1)
-      expect(parsed[1]).toEqual(update2)
-      expect(parsed[2]).toEqual(update3)
-    })
-
-    it(`should handle empty data`, () => {
-      const parsed = [...parseFramedUpdates(new Uint8Array(0))]
-      expect(parsed.length).toBe(0)
-    })
-
-    it(`should handle incomplete frames gracefully`, () => {
-      // VarUint encoding: first byte is 10 (length), but only 3 bytes follow instead of 10
-      const incomplete = new Uint8Array([10, 1, 2, 3])
-
-      const consoleSpy = vi.spyOn(console, `error`).mockImplementation(() => {})
-      const parsed = [...parseFramedUpdates(incomplete)]
-      expect(parsed.length).toBe(0)
-      expect(consoleSpy).toHaveBeenCalled()
-      consoleSpy.mockRestore()
-    })
   })
 
   describe(`DurableStreamsProvider`, () => {
