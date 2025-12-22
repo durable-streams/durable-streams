@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/cli",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "CLI tool for working with Durable Streams",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
@@ -9,6 +9,11 @@
     "durable-stream": "./dist/index.js",
     "durable-stream-dev": "./bin/durable-stream-dev.mjs"
   },
+  "main": "./dist/index.js",
+  "files": [
+    "dist",
+    "bin"
+  ],
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -24,5 +29,8 @@
     "tsdown": "^0.9.0",
     "tsx": "^4.19.2",
     "typescript": "^5.5.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

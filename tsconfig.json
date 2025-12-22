@@ -23,12 +23,7 @@
     "target": "ES2020",
     "noErrorTruncation": true
   },
-  "include": [
-    "packages/**/*.ts",
-    "packages/**/*.tsx",
-    "examples/**/*.ts",
-    "examples/**/*.tsx"
-  ],
+  "include": ["packages/**/*.ts", "packages/**/*.tsx"],
   "exclude": [
     "node_modules",
     "**/dist/**",
@@ -36,7 +31,6 @@
     "**/*.config.ts",
     "**/test/**",
     "**/*.test.ts",
-    "packages/test-ui/**",
-    "packages/state/examples/**"
+    "packages/caddy-plugin/**"
   ]
 }
