@@ -271,8 +271,8 @@ importers:
         specifier: workspace:^
         version: link:../state
       '@tanstack/react-db':
-        specifier: latest
-        version: 0.1.56(react@19.2.3)(typescript@5.9.3)
+        specifier: ^0.1.59
+        version: 0.1.59(react@19.2.3)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: ^1.139.14
         version: 1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -351,8 +351,8 @@ importers:
         specifier: workspace:^
         version: link:../state
       '@tanstack/react-db':
-        specifier: latest
-        version: 0.1.56(react@19.2.3)(typescript@5.9.3)
+        specifier: ^0.1.59
+        version: 0.1.59(react@19.2.3)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: ^1.139.14
         version: 1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -1622,8 +1622,8 @@ packages:
     resolution: {integrity: sha512-hTW2rLeZLBMmpwVzWmUJ5L50hPlf4Ea74rZtecbT6qQYCT16JEAbryfHm1u07KIICI2vEArsm2YguckjODqx0w==}
     engines: {node: '>=18'}
 
-  '@tanstack/react-db@0.1.56':
-    resolution: {integrity: sha512-7vfwx3tD6tgcUBu6tzpYVMFuYUGzYX7GHw8AtsW/P24eBhr7RR/dyF2ucoUGW6TZzdm8/bN/ql+8ftAV3iFsfA==}
+  '@tanstack/react-db@0.1.59':
+    resolution: {integrity: sha512-MK+GUngo8VQJRQRU/1wvBGDr7GhJaJqGV8jeKduLDSGiA8v9ZPGOjPiSbqNhNOccYRlEdIusCq3UstsqrbBXSg==}
     peerDependencies:
       react: '>=16.8.0'
 
@@ -5301,7 +5301,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@tanstack/react-db@0.1.56(react@19.2.3)(typescript@5.9.3)':
+  '@tanstack/react-db@0.1.59(react@19.2.3)(typescript@5.9.3)':
     dependencies:
       '@tanstack/db': https://pkg.pr.new/TanStack/db/@tanstack/db@ce63da0(typescript@5.9.3)
       react: 19.2.3

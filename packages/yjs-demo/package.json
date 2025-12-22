@@ -24,7 +24,7 @@
     "@durable-streams/client": "workspace:^",
     "@durable-streams/state": "workspace:^",
     "y-durable-streams": "workspace:^",
-    "@tanstack/react-db": "latest",
+    "@tanstack/react-db": "^0.1.59",
     "@tanstack/react-router": "^1.139.14",
     "@tanstack/router-plugin": "^1.139.14",
     "codemirror": "^6.0.1",
