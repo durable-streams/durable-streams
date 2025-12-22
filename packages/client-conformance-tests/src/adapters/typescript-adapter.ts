@@ -23,6 +23,8 @@ import {
   serializeResult,
 } from "../protocol.js"
 import type {
+  BenchmarkCommand,
+  BenchmarkOperation,
   ErrorCode,
   ReadChunk,
   TestCommand,
@@ -393,6 +395,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       }
     }
 
+    case `benchmark`: {
+      return handleBenchmark(command)
+    }
+
     default:
       return {
         type: `error`,
@@ -497,6 +503,171 @@ function errorResult(
     commandType,
     errorCode: ErrorCodes.INTERNAL_ERROR,
     message: String(err),
+  }
+}
+
+/**
+ * Handle benchmark commands with high-resolution timing.
+ */
+async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
+  const { iterationId, operation } = command
+
+  try {
+    const startTime = process.hrtime.bigint()
+    const metrics: { bytesTransferred?: number; messagesProcessed?: number } =
+      {}
+
+    switch (operation.op) {
+      case `append`: {
+        const url = `${serverUrl}${operation.path}`
+        const contentType =
+          streamContentTypes.get(operation.path) ?? `application/octet-stream`
+        const ds = new DurableStream({ url, contentType })
+
+        // Generate random payload
+        const payload = new Uint8Array(operation.size)
+        for (let i = 0; i < payload.length; i++) {
+          payload[i] = Math.floor(Math.random() * 256)
+        }
+
+        await ds.append(payload)
+        metrics.bytesTransferred = operation.size
+        break
+      }
+
+      case `read`: {
+        const url = `${serverUrl}${operation.path}`
+        const res = await stream({ url, offset: operation.offset, live: false })
+        const data = await res.body()
+        metrics.bytesTransferred = data.length
+        break
+      }
+
+      case `roundtrip`: {
+        const url = `${serverUrl}${operation.path}`
+        const contentType = `application/octet-stream`
+
+        // Create stream first
+        const ds = await DurableStream.create({ url, contentType })
+
+        // Generate payload
+        const payload = new Uint8Array(operation.size)
+        for (let i = 0; i < payload.length; i++) {
+          payload[i] = Math.floor(Math.random() * 256)
+        }
+
+        // Start reading before appending (to catch the data via live mode)
+        const readPromise = (async () => {
+          const res = await ds.stream({
+            live: operation.live ?? `long-poll`,
+          })
+
+          // Wait for data
+          return new Promise<Uint8Array>((resolve) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
+              if (chunk.data.length > 0) {
+                unsubscribe()
+                res.cancel()
+                resolve(chunk.data)
+              }
+            })
+          })
+        })()
+
+        // Append the data
+        await ds.append(payload)
+
+        // Wait for read to complete
+        const readData = await readPromise
+
+        metrics.bytesTransferred = operation.size + readData.length
+        break
+      }
+
+      case `create`: {
+        const url = `${serverUrl}${operation.path}`
+        await DurableStream.create({
+          url,
+          contentType: operation.contentType ?? `application/octet-stream`,
+        })
+        break
+      }
+
+      case `throughput_append`: {
+        const url = `${serverUrl}${operation.path}`
+        const contentType =
+          streamContentTypes.get(operation.path) ?? `application/octet-stream`
+
+        // Ensure stream exists
+        try {
+          await DurableStream.create({ url, contentType })
+        } catch {
+          // Stream may already exist
+        }
+
+        const ds = new DurableStream({ url, contentType })
+
+        // Generate payload
+        const payload = new Uint8Array(operation.size)
+        for (let i = 0; i < payload.length; i++) {
+          payload[i] = Math.floor(Math.random() * 256)
+        }
+
+        // Send messages in concurrent batches
+        const batchSize = operation.concurrency
+        const batches = Math.ceil(operation.count / batchSize)
+
+        for (let batch = 0; batch < batches; batch++) {
+          const remaining = operation.count - batch * batchSize
+          const thisSize = Math.min(batchSize, remaining)
+
+          await Promise.all(
+            Array.from({ length: thisSize }, () => ds.append(payload))
+          )
+        }
+
+        metrics.bytesTransferred = operation.count * operation.size
+        metrics.messagesProcessed = operation.count
+        break
+      }
+
+      case `throughput_read`: {
+        const url = `${serverUrl}${operation.path}`
+        const res = await stream({ url, live: false })
+        const data = await res.body()
+        metrics.bytesTransferred = data.length
+        break
+      }
+
+      default: {
+        return {
+          type: `error`,
+          success: false,
+          commandType: `benchmark`,
+          errorCode: ErrorCodes.NOT_SUPPORTED,
+          message: `Unknown benchmark operation: ${(operation as BenchmarkOperation).op}`,
+        }
+      }
+    }
+
+    const endTime = process.hrtime.bigint()
+    const durationNs = endTime - startTime
+
+    return {
+      type: `benchmark`,
+      success: true,
+      iterationId,
+      durationNs: durationNs.toString(),
+      metrics,
+    }
+  } catch (err) {
+    return {
+      type: `error`,
+      success: false,
+      commandType: `benchmark`,
+      errorCode: ErrorCodes.INTERNAL_ERROR,
+      message: err instanceof Error ? err.message : String(err),
+    }
   }
 }
 
