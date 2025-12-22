@@ -44,7 +44,6 @@ interface PooledHandle {
 
 class FileHandlePool {
   private cache: SieveCache<string, PooledHandle>
-  private pendingOpens: Map<string, Promise<fs.WriteStream>> = new Map()
 
   constructor(maxSize: number) {
     this.cache = new SieveCache<string, PooledHandle>(maxSize, {
@@ -55,44 +54,6 @@ class FileHandlePool {
         })
       },
     })
-  }
-
-  /**
-   * Get a write stream, waiting for it to be fully opened.
-   * This ensures the file descriptor is available for writing.
-   */
-  async getWriteStreamAsync(filePath: string): Promise<fs.WriteStream> {
-    let handle = this.cache.get(filePath)
-
-    if (handle) {
-      return handle.stream
-    }
-
-    // Check if there's a pending open for this file
-    const pending = this.pendingOpens.get(filePath)
-    if (pending) {
-      return pending
-    }
-
-    // Create and wait for the stream to open
-    const openPromise = new Promise<fs.WriteStream>((resolve, reject) => {
-      const stream = fs.createWriteStream(filePath, { flags: `a` })
-
-      stream.on(`open`, () => {
-        const newHandle = { stream }
-        this.cache.set(filePath, newHandle)
-        this.pendingOpens.delete(filePath)
-        resolve(stream)
-      })
-
-      stream.on(`error`, (err) => {
-        this.pendingOpens.delete(filePath)
-        reject(err)
-      })
-    })
-
-    this.pendingOpens.set(filePath, openPromise)
-    return openPromise
   }
 
   getWriteStream(filePath: string): fs.WriteStream {
@@ -120,9 +81,21 @@ class FileHandlePool {
       // Cast to any to access fd property (exists at runtime but not in types)
       const fd = (handle.stream as any).fd
 
-      // If fd is null, stream hasn't been opened yet - skip fsync
+      // If fd is null, stream hasn't been opened yet - wait for open event
       if (typeof fd !== `number`) {
-        resolve()
+        const onOpen = (openedFd: number): void => {
+          handle.stream.off(`error`, onError)
+          fs.fdatasync(openedFd, (err) => {
+            if (err) reject(err)
+            else resolve()
+          })
+        }
+        const onError = (err: Error): void => {
+          handle.stream.off(`open`, onOpen)
+          reject(err)
+        }
+        handle.stream.once(`open`, onOpen)
+        handle.stream.once(`error`, onError)
         return
       }
 
