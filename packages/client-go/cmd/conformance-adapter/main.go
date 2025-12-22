@@ -167,7 +167,7 @@ func handleInit(cmd Command) Result {
 		ClientName:    "durable-streams-go",
 		ClientVersion: clientVersion,
 		Features: &Features{
-			Batching:  false, // Not implemented yet
+			Batching:  true,
 			SSE:       true,
 			LongPoll:  true,
 			Streaming: true,
