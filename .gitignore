@@ -139,6 +139,50 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 core
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Python virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Python type checking
+.mypy_cache/
+.pyright/
+
+# Python tools
+.ruff_cache/
+
+# uv
+.uv/
+
 # Claude local settings
 .claude/settings.local.json
 .beads

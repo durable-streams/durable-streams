@@ -160,6 +160,8 @@ importers:
         specifier: ^5.0.0
         version: 5.9.3
 
+  packages/client-py: {}
+
   packages/conformance-tests:
     dependencies:
       '@durable-streams/client':

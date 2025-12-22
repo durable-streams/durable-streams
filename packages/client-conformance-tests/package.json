@@ -25,7 +25,9 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "test:run": "tsx src/cli.ts --run ts",
-    "test:run:verbose": "tsx src/cli.ts --run ts --verbose"
+    "test:run:verbose": "tsx src/cli.ts --run ts --verbose",
+    "test:run:python": "tsx src/cli.ts --run ../client-py/run-conformance-adapter.sh",
+    "test:run:python:verbose": "tsx src/cli.ts --run ../client-py/run-conformance-adapter.sh --verbose"
   },
   "dependencies": {
     "@durable-streams/client": "workspace:*",

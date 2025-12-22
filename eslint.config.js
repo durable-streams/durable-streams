@@ -16,6 +16,8 @@ export default [
       `**/vite.config.ts`,
       `**/tsdown.config.ts`,
       `**/tsup.config.ts`,
+      `packages/client-py/**`,
+      `scripts/**`,
     ],
   },
   {
