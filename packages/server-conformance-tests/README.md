@@ -1,4 +1,4 @@
-# @durable-streams/conformance-tests
+# @durable-streams/server-conformance-tests
 
 Protocol compliance test suite for Durable Streams server implementations.
 
@@ -7,9 +7,9 @@ This package provides a comprehensive test suite to verify that a server correct
 ## Installation
 
 ```bash
-npm install @durable-streams/conformance-tests
+npm install @durable-streams/server-conformance-tests
 # or
-pnpm add @durable-streams/conformance-tests
+pnpm add @durable-streams/server-conformance-tests
 ```
 
 ## CLI Usage
@@ -19,7 +19,7 @@ The easiest way to run conformance tests against your server:
 ### Run Once (CI)
 
 ```bash
-npx @durable-streams/conformance-tests --run http://localhost:4437
+npx @durable-streams/server-conformance-tests --run http://localhost:4437
 ```
 
 ### Watch Mode (Development)
@@ -27,18 +27,18 @@ npx @durable-streams/conformance-tests --run http://localhost:4437
 Watch source files and automatically rerun tests when changes are detected:
 
 ```bash
-npx @durable-streams/conformance-tests --watch src http://localhost:4437
+npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
 
 # Watch multiple directories
-npx @durable-streams/conformance-tests --watch src lib http://localhost:4437
+npx @durable-streams/server-conformance-tests --watch src lib http://localhost:4437
 ```
 
 ### CLI Options
 
 ```
 Usage:
-  npx @durable-streams/conformance-tests --run <url>
-  npx @durable-streams/conformance-tests --watch <path> [path...] <url>
+  npx @durable-streams/server-conformance-tests --run <url>
+  npx @durable-streams/server-conformance-tests --watch <path> [path...] <url>
 
 Options:
   --run              Run tests once and exit (for CI)
@@ -54,7 +54,7 @@ Arguments:
 You can also run the conformance tests programmatically within your own test suite:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 // In your test file (e.g., with vitest)
 describe("My Server Implementation", () => {
@@ -100,7 +100,7 @@ jobs:
         run: npx wait-on http://localhost:4437
 
       - name: Run conformance tests
-        run: npx @durable-streams/conformance-tests --run http://localhost:4437
+        run: npx @durable-streams/server-conformance-tests --run http://localhost:4437
 ```
 
 ## Test Coverage

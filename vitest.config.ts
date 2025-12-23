@@ -5,9 +5,9 @@ const alias = {
   "@durable-streams/client": path.resolve(__dirname, "./packages/client/src"),
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
-  "@durable-streams/conformance-tests": path.resolve(
+  "@durable-streams/server-conformance-tests": path.resolve(
     __dirname,
-    "./packages/conformance-tests/src"
+    "./packages/server-conformance-tests/src"
   ),
 }
 

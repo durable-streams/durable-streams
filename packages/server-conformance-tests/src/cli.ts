@@ -4,8 +4,8 @@
  * CLI for running Durable Streams conformance tests
  *
  * Usage:
- *   npx @durable-streams/conformance-tests --run http://localhost:4473
- *   npx @durable-streams/conformance-tests --watch src http://localhost:4473
+ *   npx @durable-streams/server-conformance-tests --run http://localhost:4473
+ *   npx @durable-streams/server-conformance-tests --watch src http://localhost:4473
  */
 
 import { spawn } from "node:child_process"
@@ -28,8 +28,8 @@ function printUsage() {
 Durable Streams Conformance Test Runner
 
 Usage:
-  npx @durable-streams/conformance-tests --run <url>
-  npx @durable-streams/conformance-tests --watch <path> [path...] <url>
+  npx @durable-streams/server-conformance-tests --run <url>
+  npx @durable-streams/server-conformance-tests --watch <path> [path...] <url>
 
 Options:
   --run              Run tests once and exit (for CI)
@@ -41,13 +41,13 @@ Arguments:
 
 Examples:
   # Run tests once in CI
-  npx @durable-streams/conformance-tests --run http://localhost:4473
+  npx @durable-streams/server-conformance-tests --run http://localhost:4473
 
   # Watch src directory and rerun tests on changes
-  npx @durable-streams/conformance-tests --watch src http://localhost:4473
+  npx @durable-streams/server-conformance-tests --watch src http://localhost:4473
 
   # Watch multiple directories
-  npx @durable-streams/conformance-tests --watch src lib http://localhost:4473
+  npx @durable-streams/server-conformance-tests --watch src lib http://localhost:4473
 `)
 }
 

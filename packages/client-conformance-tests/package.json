@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/client-conformance-tests",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Conformance test suite for Durable Streams client implementations (producer and consumer)",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",

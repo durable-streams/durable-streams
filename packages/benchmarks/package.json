@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/benchmarks",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "Performance benchmark suite for Durable Streams server implementations",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",

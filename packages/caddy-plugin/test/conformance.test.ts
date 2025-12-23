@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process"
 import * as path from "node:path"
 import { afterAll, beforeAll, describe } from "vitest"
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 import type { ChildProcess } from "node:child_process"
 
 // ============================================================================
