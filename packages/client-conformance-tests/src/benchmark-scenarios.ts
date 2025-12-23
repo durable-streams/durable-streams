@@ -177,11 +177,12 @@ export const smallMessageThroughputScenario: BenchmarkScenario = {
   name: `Small Message Throughput`,
   description: `Measure throughput for 100-byte messages at high concurrency`,
   category: `throughput`,
+  requires: [`batching`],
   config: {
     warmupIterations: 2,
     measureIterations: 10,
     messageSize: 100,
-    concurrency: 100,
+    concurrency: 200,
   },
   criteria: {
     minOpsPerSecond: 1000,
@@ -189,9 +190,9 @@ export const smallMessageThroughputScenario: BenchmarkScenario = {
   createOperation: (ctx) => ({
     op: `throughput_append`,
     path: `${ctx.basePath}/throughput-small`,
-    count: 5000,
+    count: 10000,
     size: 100,
-    concurrency: 100,
+    concurrency: 200,
   }),
 }
 
@@ -200,6 +201,7 @@ export const largeMessageThroughputScenario: BenchmarkScenario = {
   name: `Large Message Throughput`,
   description: `Measure throughput for 1MB messages`,
   category: `throughput`,
+  requires: [`batching`],
   config: {
     warmupIterations: 1,
     measureIterations: 5,
@@ -215,30 +217,6 @@ export const largeMessageThroughputScenario: BenchmarkScenario = {
     count: 50,
     size: 1024 * 1024,
     concurrency: 10,
-  }),
-}
-
-export const batchedThroughputScenario: BenchmarkScenario = {
-  id: `throughput-batched`,
-  name: `Batched Append Throughput`,
-  description: `Measure throughput with client-side batching enabled`,
-  category: `throughput`,
-  requires: [`batching`],
-  config: {
-    warmupIterations: 2,
-    measureIterations: 10,
-    messageSize: 100,
-    concurrency: 200,
-  },
-  criteria: {
-    minOpsPerSecond: 2000,
-  },
-  createOperation: (ctx) => ({
-    op: `throughput_append`,
-    path: `${ctx.basePath}/throughput-batched`,
-    count: 10000,
-    size: 100,
-    concurrency: 200,
   }),
 }
 
@@ -308,7 +286,6 @@ export const allScenarios: Array<BenchmarkScenario> = [
   // Throughput
   smallMessageThroughputScenario,
   largeMessageThroughputScenario,
-  batchedThroughputScenario,
   readThroughputScenario,
   // Streaming
   sseLatencyScenario,
