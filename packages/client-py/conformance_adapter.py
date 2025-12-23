@@ -544,6 +544,7 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
             # Don't close - we passed in a shared client
 
         elif op_type == "throughput_append":
+            import asyncio
             url = f"{server_url}{operation['path']}"
             content_type = stream_content_types.get(operation["path"], "application/octet-stream")
 
@@ -553,24 +554,21 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
             except StreamExistsError:
                 pass
 
-            ds = DurableStream(url, content_type=content_type, client=shared_client)
-
             # Generate payload efficiently
             payload = b"\x2a" * operation["size"]
 
             count = operation["count"]
-            concurrency = operation["concurrency"]
 
-            def do_append():
-                ds.append(payload)
+            # Use asyncio for high-throughput - much more efficient than threads
+            async def run_appends():
+                from durable_streams import AsyncDurableStream
+                async with httpx.AsyncClient(timeout=30.0) as async_client:
+                    ds = AsyncDurableStream(url, content_type=content_type, client=async_client)
+                    # Submit all appends concurrently - asyncio handles this efficiently
+                    tasks = [ds.append(payload) for _ in range(count)]
+                    await asyncio.gather(*tasks)
 
-            # Submit all at once - the client's batching mechanism will
-            # automatically batch concurrent appends together
-            with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-                futures = [executor.submit(do_append) for _ in range(count)]
-                concurrent.futures.wait(futures)
-
-            # Don't close - we passed in a shared client
+            asyncio.run(run_appends())
 
             metrics["bytesTransferred"] = count * operation["size"]
             metrics["messagesProcessed"] = count
