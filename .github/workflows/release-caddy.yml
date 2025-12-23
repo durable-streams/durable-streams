@@ -32,6 +32,7 @@ jobs:
           workdir: packages/caddy-plugin
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
