@@ -193,13 +193,14 @@ def handle_connect(cmd: dict[str, Any]) -> dict[str, Any]:
 
 def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle append command."""
+    import time
+    
     url = f"{server_url}{cmd['path']}"
 
     # Get content type from cache or default
     content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
 
     headers = cmd.get("headers")
-    ds = DurableStream(url, content_type=content_type, headers=headers, batching=False)
 
     # Decode data
     data: bytes | str
@@ -213,22 +214,40 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     if cmd.get("seq") is not None:
         seq = str(cmd["seq"])
 
-    ds.append(data, seq=seq)
-    head = ds.head()
-    ds.close()
-
-    return {
-        "type": "append",
-        "success": True,
-        "status": 200,
-        "offset": head.offset,
-    }
+    # Retry loop for 5xx errors (matching TypeScript client behavior)
+    max_retries = 3
+    base_delay = 0.1  # 100ms
+    
+    for attempt in range(max_retries + 1):
+        try:
+            ds = DurableStream(url, content_type=content_type, headers=headers, batching=False)
+            ds.append(data, seq=seq)
+            head = ds.head()
+            ds.close()
+            
+            return {
+                "type": "append",
+                "success": True,
+                "status": 200,
+                "offset": head.offset,
+            }
+        except (FetchError, DurableStreamError) as e:
+            # Check if it's a retryable 5xx error
+            status = getattr(e, 'status', None)
+            if status is not None and 500 <= status < 600 and attempt < max_retries:
+                # Exponential backoff with jitter
+                delay = base_delay * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            # Not retryable or max retries reached
+            raise
 
 
 def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle read command."""
     url = f"{server_url}{cmd['path']}"
-    offset = cmd.get("offset")
+    # Default to -1 (read from beginning) if no offset provided, matching TypeScript client behavior
+    offset = cmd.get("offset") if cmd.get("offset") is not None else "-1"
 
     # Determine live mode
     live: bool | str
@@ -282,30 +301,41 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                 # Stream might be empty
                 pass
         elif is_sse:
-            # For SSE mode, use iter_text() which properly handles SSE events
+            # For SSE mode, use iter_events() which yields StreamEvent objects for each 
+            # SSE data event, with metadata updated after control events.
+            # Note: iter_events() buffers data events and yields them all after the control
+            # event, so all yielded events will have up_to_date set to the same value.
+            # We should consume all available events before checking wait_for_up_to_date.
             try:
                 chunk_count = 0
-                for text_chunk in response.iter_text():
-                    if text_chunk:
+                for event in response.iter_events(mode="text"):
+                    if event.data:
                         chunks.append(
                             {
-                                "data": text_chunk,
-                                "offset": response.offset,
+                                "data": event.data,
+                                "offset": event.next_offset,
                             }
                         )
                         chunk_count += 1
 
-                    final_offset = response.offset
-                    up_to_date = response.up_to_date
+                    final_offset = event.next_offset
+                    up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
                         break
-
-                    if wait_for_up_to_date and up_to_date:
-                        break
+                    
+                    # Don't break on up_to_date inside the loop - SSE yields all buffered
+                    # data at once after control event, so we need to consume them all
             except httpx.TimeoutException:
                 # Timeout is expected
                 pass
+            
+            # Capture final state from response
+            final_offset = response.offset
+            up_to_date = response.up_to_date
+            
+            # For waitForUpToDate, the test expects us to have reached up_to_date
+            # This should naturally happen when we've consumed all buffered data
         else:
             # For long-poll mode, iterate raw bytes
             try:
@@ -331,6 +361,10 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             except httpx.TimeoutException:
                 # Timeout is expected for long-poll
                 pass
+            
+            # Capture final state from response
+            final_offset = response.offset
+            up_to_date = response.up_to_date
 
     return {
         "type": "read",
