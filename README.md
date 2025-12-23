@@ -70,7 +70,7 @@ This monorepo contains:
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
 - **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
-- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Protocol compliance test suite
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
@@ -470,7 +470,7 @@ Client implementations need only support standard HTTP requests and offset track
 We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:4437",
@@ -600,10 +600,10 @@ The easiest way to run conformance tests against your server:
 
 ```bash
 # Run tests once (for CI)
-npx @durable-streams/conformance-tests --run http://localhost:4437
+npx @durable-streams/server-conformance-tests --run http://localhost:4437
 
 # Watch mode - reruns tests when source files change (for development)
-npx @durable-streams/conformance-tests --watch src http://localhost:4437
+npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
 ```
 
 ### Programmatic Usage
@@ -611,7 +611,7 @@ npx @durable-streams/conformance-tests --watch src http://localhost:4437
 You can also run the tests programmatically in your own test suite:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:4437",

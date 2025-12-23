@@ -1,5 +1,5 @@
 {
-  "name": "@durable-streams/conformance-tests",
+  "name": "@durable-streams/server-conformance-tests",
   "version": "0.1.0",
   "description": "Conformance test suite for Durable Streams server implementations",
   "author": "Durable Stream contributors",
@@ -8,8 +8,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "durable-streams-conformance": "./dist/cli.js",
-    "durable-streams-conformance-dev": "./bin/conformance-dev.mjs"
+    "durable-streams-server-conformance": "./dist/cli.js",
+    "durable-streams-server-conformance-dev": "./bin/conformance-dev.mjs"
   },
   "exports": {
     ".": {

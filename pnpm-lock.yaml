@@ -208,9 +208,9 @@ importers:
 
   packages/caddy-plugin:
     devDependencies:
-      '@durable-streams/conformance-tests':
+      '@durable-streams/server-conformance-tests':
         specifier: workspace:*
-        version: link:../conformance-tests
+        version: link:../server-conformance-tests
       vitest:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
@@ -283,7 +283,38 @@ importers:
 
   packages/client-py: {}
 
-  packages/conformance-tests:
+  packages/server:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../state
+      '@neophi/sieve-cache':
+        specifier: ^1.0.0
+        version: 1.5.0
+      lmdb:
+        specifier: ^3.3.0
+        version: 3.4.4
+    devDependencies:
+      '@durable-streams/server-conformance-tests':
+        specifier: workspace:*
+        version: link:../server-conformance-tests
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.3
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+
+  packages/server-conformance-tests:
     dependencies:
       '@durable-streams/client':
         specifier: workspace:*
@@ -304,37 +335,6 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
-
-  packages/server:
-    dependencies:
-      '@durable-streams/client':
-        specifier: workspace:*
-        version: link:../client
-      '@durable-streams/state':
-        specifier: workspace:*
-        version: link:../state
-      '@neophi/sieve-cache':
-        specifier: ^1.0.0
-        version: 1.5.0
-      lmdb:
-        specifier: ^3.3.0
-        version: 3.4.4
-    devDependencies:
-      '@durable-streams/conformance-tests':
-        specifier: workspace:*
-        version: link:../conformance-tests
-      '@types/node':
-        specifier: ^22.0.0
-        version: 22.19.3
-      tsdown:
-        specifier: ^0.9.0
-        version: 0.9.9(typescript@5.9.3)
-      typescript:
-        specifier: ^5.0.0
-        version: 5.9.3
-      vitest:
-        specifier: ^3.2.4
-        version: 3.2.4(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/state:
     dependencies:

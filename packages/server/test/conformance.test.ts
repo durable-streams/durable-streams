@@ -6,7 +6,7 @@ import * as fs from "node:fs"
 import * as path from "node:path"
 import { tmpdir } from "node:os"
 import { afterAll, beforeAll, describe } from "vitest"
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 import { DurableStreamTestServer } from "../src/server"
 
 // ============================================================================

@@ -11,7 +11,7 @@ const baseUrl = process.env.CONFORMANCE_TEST_URL
 if (!baseUrl) {
   throw new Error(
     `CONFORMANCE_TEST_URL environment variable is required. ` +
-      `Use the CLI: npx @durable-streams/conformance-tests --run <url>`
+      `Use the CLI: npx @durable-streams/server-conformance-tests --run <url>`
   )
 }
 
