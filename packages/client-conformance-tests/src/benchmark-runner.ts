@@ -524,19 +524,24 @@ function printConsoleResults(summary: BenchmarkSummary): void {
       if (!result.skipped && !result.error) {
         const formatted = formatStats(result.stats)
         // Show ops/sec and MB/sec for throughput scenarios, latency for others
+        // For read throughput, only show MB/sec (ops/sec is not meaningful)
         if (result.scenario.category === `throughput`) {
-          const opsStr = result.opsPerSec
-            ? result.opsPerSec.toLocaleString(`en-US`, {
-                maximumFractionDigits: 0,
-              })
-            : `N/A`
           const mbStr = result.mbPerSec
             ? result.mbPerSec.toLocaleString(`en-US`, {
                 minimumFractionDigits: 1,
                 maximumFractionDigits: 1,
               })
             : `N/A`
-          console.log(`    Ops/sec: ${opsStr}  MB/sec: ${mbStr}`)
+          if (result.scenario.id === `throughput-read`) {
+            console.log(`    MB/sec: ${mbStr}`)
+          } else {
+            const opsStr = result.opsPerSec
+              ? result.opsPerSec.toLocaleString(`en-US`, {
+                  maximumFractionDigits: 0,
+                })
+              : `N/A`
+            console.log(`    Ops/sec: ${opsStr}  MB/sec: ${mbStr}`)
+          }
         } else {
           console.log(`    Median: ${formatted.Median}  P99: ${formatted.P99}`)
         }
@@ -599,10 +604,13 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     lines.push(`| Scenario | Ops/sec | MB/sec | Status |`)
     lines.push(`|----------|---------|--------|--------|`)
     for (const r of throughputResults) {
+      // For read throughput, ops/sec is not meaningful - show "-"
       const opsPerSec =
-        r.opsPerSec !== undefined
-          ? r.opsPerSec.toLocaleString(`en-US`, { maximumFractionDigits: 0 })
-          : `N/A`
+        r.scenario.id === `throughput-read`
+          ? `-`
+          : r.opsPerSec !== undefined
+            ? r.opsPerSec.toLocaleString(`en-US`, { maximumFractionDigits: 0 })
+            : `N/A`
       const mbPerSec =
         r.mbPerSec !== undefined
           ? r.mbPerSec.toLocaleString(`en-US`, {
@@ -731,19 +739,24 @@ export async function runBenchmarks(
       } else {
         const icon = result.criteriaMet ? `✓` : `✗`
         // Show ops/sec and MB/sec for throughput, latency for others
+        // For read throughput, only show MB/sec (ops/sec is not meaningful)
         if (result.scenario.category === `throughput`) {
-          const opsStr = result.opsPerSec
-            ? result.opsPerSec.toLocaleString(`en-US`, {
-                maximumFractionDigits: 0,
-              })
-            : `N/A`
           const mbStr = result.mbPerSec
             ? result.mbPerSec.toLocaleString(`en-US`, {
                 minimumFractionDigits: 1,
                 maximumFractionDigits: 1,
               })
             : `N/A`
-          log(`  ${icon} Ops/sec: ${opsStr}, MB/sec: ${mbStr}`)
+          if (result.scenario.id === `throughput-read`) {
+            log(`  ${icon} MB/sec: ${mbStr}`)
+          } else {
+            const opsStr = result.opsPerSec
+              ? result.opsPerSec.toLocaleString(`en-US`, {
+                  maximumFractionDigits: 0,
+                })
+              : `N/A`
+            log(`  ${icon} Ops/sec: ${opsStr}, MB/sec: ${mbStr}`)
+          }
         } else {
           log(
             `  ${icon} Median: ${result.stats.median.toFixed(2)}ms, P99: ${result.stats.p99.toFixed(2)}ms`
