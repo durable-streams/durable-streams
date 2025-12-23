@@ -59,7 +59,7 @@ class _QueuedMessage:
     data: Any
     seq: str | None
     content_type: str | None
-    future: "Future[AppendResult]" = field(default_factory=lambda: Future())
+    future: Future[AppendResult] = field(default_factory=lambda: Future())
 
 
 class DurableStream:
