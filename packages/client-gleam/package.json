@@ -1,0 +1,6 @@
+{
+  "name": "@durable-streams/client-gleam",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gleam client for the Durable Streams protocol"
+}

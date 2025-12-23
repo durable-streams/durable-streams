@@ -1,0 +1,18 @@
+name = "durable_streams"
+version = "0.1.0"
+description = "Gleam client for the Durable Streams protocol"
+licences = ["MIT"]
+repository = { type = "github", user = "durable-streams", repo = "durable-streams" }
+
+# Target Erlang/OTP for HTTP capabilities
+target = "erlang"
+
+[dependencies]
+gleam_stdlib = ">= 0.34.0 and < 2.0.0"
+gleam_http = ">= 3.6.0 and < 4.0.0"
+gleam_httpc = ">= 2.2.0 and < 3.0.0"
+gleam_json = ">= 2.0.0 and < 3.0.0"
+gleam_erlang = ">= 0.25.0 and < 1.0.0"
+
+[dev-dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
