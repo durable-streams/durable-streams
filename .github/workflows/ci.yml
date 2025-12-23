@@ -109,8 +109,11 @@ jobs:
         run: uv sync --extra dev
         working-directory: packages/client-py
 
-      - name: Run Python conformance tests
+      - name: Run Python conformance tests (sync)
         run: pnpm --filter @durable-streams/client-conformance-tests test:run:python
+
+      - name: Run Python conformance tests (async)
+        run: pnpm --filter @durable-streams/client-conformance-tests test:run:python-async
 
   caddy-conformance:
     runs-on: ubuntu-latest

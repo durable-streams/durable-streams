@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Python client adapter for Durable Streams conformance testing.
+Async Python client adapter for Durable Streams conformance testing.
 
 This adapter implements the stdin/stdout JSON-line protocol for the
-durable-streams Python client package.
+durable-streams Python client package using the async API.
 
 Run directly:
-    python conformance_adapter.py
+    python conformance_adapter_async.py
 
 Or via uv:
-    uv run conformance_adapter.py
+    uv run conformance_adapter_async.py
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import sys
@@ -22,14 +23,14 @@ from typing import Any
 import httpx
 
 from durable_streams import (
-    DurableStream,
+    AsyncDurableStream,
     DurableStreamError,
     FetchError,
     SeqConflictError,
     StreamExistsError,
     StreamNotFoundError,
     __version__,
-    stream,
+    astream,
 )
 
 # Error code constants matching the TypeScript protocol
@@ -108,7 +109,7 @@ def error_result(command_type: str, err: Exception) -> dict[str, Any]:
     return result
 
 
-def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle init command."""
     global server_url, stream_content_types
     server_url = cmd["serverUrl"]
@@ -117,7 +118,7 @@ def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "init",
         "success": True,
-        "clientName": "durable-streams-python",
+        "clientName": "durable-streams-python-async",
         "clientVersion": __version__,
         "features": {
             "batching": True,
@@ -128,7 +129,7 @@ def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle create command."""
     global stream_content_types
     url = f"{server_url}{cmd['path']}"
@@ -137,14 +138,14 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     # Check if stream already exists
     already_exists = False
     try:
-        DurableStream.head_static(url)
+        await AsyncDurableStream.head_static(url)
         already_exists = True
     except StreamNotFoundError:
         pass
 
     # Create the stream
     headers = cmd.get("headers")
-    ds = DurableStream.create(
+    ds = await AsyncDurableStream.create(
         url,
         content_type=content_type,
         ttl_seconds=cmd.get("ttlSeconds"),
@@ -156,8 +157,8 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     stream_content_types[cmd["path"]] = content_type
 
     # Get the current offset
-    head = ds.head()
-    ds.close()
+    head = await ds.head()
+    await ds.aclose()
 
     return {
         "type": "create",
@@ -167,21 +168,21 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_connect(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_connect(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle connect command."""
     global stream_content_types
     url = f"{server_url}{cmd['path']}"
 
     headers = cmd.get("headers")
-    ds = DurableStream.connect(url, headers=headers)
+    ds = await AsyncDurableStream.connect(url, headers=headers)
 
-    head = ds.head()
+    head = await ds.head()
 
     # Cache content type
     if head.content_type:
         stream_content_types[cmd["path"]] = head.content_type
 
-    ds.close()
+    await ds.aclose()
 
     return {
         "type": "connect",
@@ -191,10 +192,8 @@ def handle_connect(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle append command."""
-    import time
-
     url = f"{server_url}{cmd['path']}"
 
     # Get content type from cache or default
@@ -220,10 +219,10 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
 
     for attempt in range(max_retries + 1):
         try:
-            ds = DurableStream(url, content_type=content_type, headers=headers, batching=False)
-            ds.append(data, seq=seq)
-            head = ds.head()
-            ds.close()
+            ds = AsyncDurableStream(url, content_type=content_type, headers=headers, batching=False)
+            await ds.append(data, seq=seq)
+            head = await ds.head()
+            await ds.aclose()
 
             return {
                 "type": "append",
@@ -233,17 +232,20 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
             }
         except (FetchError, DurableStreamError) as e:
             # Check if it's a retryable 5xx error
-            status = getattr(e, 'status', None)
+            status = getattr(e, "status", None)
             if status is not None and 500 <= status < 600 and attempt < max_retries:
                 # Exponential backoff with jitter
-                delay = base_delay * (2 ** attempt)
-                time.sleep(delay)
+                delay = base_delay * (2**attempt)
+                await asyncio.sleep(delay)
                 continue
             # Not retryable or max retries reached
             raise
 
+    # This should never be reached - the loop always returns or raises
+    raise RuntimeError("Unreachable: append retry loop completed without result")
 
-def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
+
+async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle read command."""
     url = f"{server_url}{cmd['path']}"
     # Default to -1 (read from beginning) if no offset provided, matching TypeScript client behavior
@@ -274,20 +276,21 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     final_offset = offset
     up_to_date = False
 
-    with stream(
+    response = await astream(
         url,
         offset=offset,
         live=live,
         headers=headers,
         timeout=timeout_seconds,
-    ) as response:
+    )
+    async with response:
         final_offset = response.offset
         up_to_date = response.up_to_date
 
         if live is False:
             # For non-live mode, get all available data
             try:
-                data = response.read_bytes()
+                data = await response.read_bytes()
                 if data:
                     chunks.append(
                         {
@@ -308,7 +311,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             # We should consume all available events before checking wait_for_up_to_date.
             try:
                 chunk_count = 0
-                for event in response.iter_events(mode="text"):
+                async for event in response.iter_events(mode="text"):
                     if event.data:
                         chunks.append(
                             {
@@ -340,7 +343,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             # For long-poll mode, iterate raw bytes
             try:
                 chunk_count = 0
-                for chunk in response:
+                async for chunk in response:
                     if chunk:
                         chunks.append(
                             {
@@ -376,13 +379,13 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle head command."""
     global stream_content_types
     url = f"{server_url}{cmd['path']}"
 
     headers = cmd.get("headers")
-    result = DurableStream.head_static(url, headers=headers)
+    result = await AsyncDurableStream.head_static(url, headers=headers)
 
     # Cache content type
     if result.content_type:
@@ -397,13 +400,13 @@ def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle delete command."""
     global stream_content_types
     url = f"{server_url}{cmd['path']}"
 
     headers = cmd.get("headers")
-    DurableStream.delete_static(url, headers=headers)
+    await AsyncDurableStream.delete_static(url, headers=headers)
 
     # Remove from cache
     stream_content_types.pop(cmd["path"], None)
@@ -415,7 +418,7 @@ def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle shutdown command."""
     return {
         "type": "shutdown",
@@ -423,27 +426,27 @@ def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
+async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
     """Route command to appropriate handler."""
     cmd_type = cmd["type"]
 
     try:
         if cmd_type == "init":
-            return handle_init(cmd)
+            return await handle_init(cmd)
         elif cmd_type == "create":
-            return handle_create(cmd)
+            return await handle_create(cmd)
         elif cmd_type == "connect":
-            return handle_connect(cmd)
+            return await handle_connect(cmd)
         elif cmd_type == "append":
-            return handle_append(cmd)
+            return await handle_append(cmd)
         elif cmd_type == "read":
-            return handle_read(cmd)
+            return await handle_read(cmd)
         elif cmd_type == "head":
-            return handle_head(cmd)
+            return await handle_head(cmd)
         elif cmd_type == "delete":
-            return handle_delete(cmd)
+            return await handle_delete(cmd)
         elif cmd_type == "shutdown":
-            return handle_shutdown(cmd)
+            return await handle_shutdown(cmd)
         else:
             return {
                 "type": "error",
@@ -456,8 +459,8 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
         return error_result(cmd_type, e)
 
 
-def main() -> None:
-    """Main entry point for the adapter."""
+async def main() -> None:
+    """Main entry point for the async adapter."""
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -465,7 +468,7 @@ def main() -> None:
 
         try:
             command = json.loads(line)
-            result = handle_command(command)
+            result = await handle_command(command)
             print(json.dumps(result), flush=True)
 
             if command["type"] == "shutdown":
@@ -486,4 +489,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
