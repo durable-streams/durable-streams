@@ -181,17 +181,17 @@ export const smallMessageThroughputScenario: BenchmarkScenario = {
     warmupIterations: 2,
     measureIterations: 10,
     messageSize: 100,
-    concurrency: 50,
+    concurrency: 100,
   },
   criteria: {
-    minOpsPerSecond: 500,
+    minOpsPerSecond: 1000,
   },
   createOperation: (ctx) => ({
     op: `throughput_append`,
     path: `${ctx.basePath}/throughput-small`,
-    count: 500,
+    count: 5000,
     size: 100,
-    concurrency: 50,
+    concurrency: 100,
   }),
 }
 
@@ -228,17 +228,17 @@ export const batchedThroughputScenario: BenchmarkScenario = {
     warmupIterations: 2,
     measureIterations: 10,
     messageSize: 100,
-    concurrency: 100,
+    concurrency: 200,
   },
   criteria: {
-    minOpsPerSecond: 1000,
+    minOpsPerSecond: 2000,
   },
   createOperation: (ctx) => ({
     op: `throughput_append`,
     path: `${ctx.basePath}/throughput-batched`,
-    count: 1000,
+    count: 10000,
     size: 100,
-    concurrency: 100,
+    concurrency: 200,
   }),
 }
 
