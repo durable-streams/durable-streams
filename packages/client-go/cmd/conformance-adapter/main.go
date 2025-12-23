@@ -852,18 +852,16 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 		rand.Read(allData[i])
 	}
 
-	// Use a semaphore for concurrency control
-	sem := make(chan struct{}, concurrency)
+	// Submit all appends at once - let BatchedStream handle batching
+	// This matches TypeScript's Promise.all approach for fair comparison
 	var wg sync.WaitGroup
 
 	start := time.Now()
 
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		sem <- struct{}{}
 		go func(data []byte) {
 			defer wg.Done()
-			defer func() { <-sem }()
 			_, _ = batched.Append(ctx, data)
 		}(allData[i])
 	}
