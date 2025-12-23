@@ -63,6 +63,9 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
     ): AsyncIterator<T> & AsyncIterable<T> {
       const reader = this.getReader()
       let finished = false
+      // Track pending reads to match spec behavior:
+      // return()/throw() must reject with TypeError if there are pending reads
+      let pendingRead = false
 
       const iterator: AsyncIterator<T> & AsyncIterable<T> = {
         async next() {
@@ -70,44 +73,52 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
             return { done: true, value: undefined as unknown as T }
           }
 
-          const { value, done } = await reader.read()
-          if (done) {
-            finished = true
-            try {
-              reader.releaseLock()
-            } catch {
-              // Ignore release errors
-            }
-            return { done: true, value: undefined as unknown as T }
-          }
+          pendingRead = true
+          try {
+            const { value, done } = await reader.read()
+            pendingRead = false
 
-          return { done: false, value: value }
+            if (done) {
+              finished = true
+              reader.releaseLock()
+              return { done: true, value: undefined as unknown as T }
+            }
+
+            return { done: false, value: value }
+          } catch (err) {
+            pendingRead = false
+            throw err
+          }
         },
 
         async return() {
-          finished = true
-          // Match native behavior: start cancel, release lock immediately,
-          // then await cancel (propagating any rejection)
-          const cancelPromise = reader.cancel()
-          try {
-            reader.releaseLock()
-          } catch {
-            // Ignore release errors - lock may already be released
+          // Per WHATWG Streams spec: reject with TypeError if there are pending reads
+          if (pendingRead) {
+            throw new TypeError(
+              `Cannot close a readable stream reader when it has pending read requests`
+            )
           }
+
+          finished = true
+          // Per spec: start cancel, release lock, then await cancel
+          const cancelPromise = reader.cancel()
+          reader.releaseLock()
           await cancelPromise
           return { done: true, value: undefined as unknown as T }
         },
 
         async throw(err?: unknown) {
-          finished = true
-          // Match native behavior: start cancel with error, release lock,
-          // then await cancel before re-throwing
-          const cancelPromise = reader.cancel(err)
-          try {
-            reader.releaseLock()
-          } catch {
-            // Ignore release errors - lock may already be released
+          // Per WHATWG Streams spec: reject with TypeError if there are pending reads
+          if (pendingRead) {
+            throw new TypeError(
+              `Cannot close a readable stream reader when it has pending read requests`
+            )
           }
+
+          finished = true
+          // Per spec: start cancel with error, release lock, then await cancel
+          const cancelPromise = reader.cancel(err)
+          reader.releaseLock()
           await cancelPromise
           throw err
         },
