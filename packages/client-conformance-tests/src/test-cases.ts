@@ -64,7 +64,12 @@ export interface TestCase {
 /**
  * Client features that may be required for certain tests.
  */
-export type ClientFeature = `batching` | `sse` | `long-poll` | `streaming`
+export type ClientFeature =
+  | `batching`
+  | `sse`
+  | `long-poll`
+  | `streaming`
+  | `dynamicHeaders`
 
 // =============================================================================
 // Test Operations
@@ -261,6 +266,38 @@ export interface ClearErrorsOperation {
 }
 
 /**
+ * Set a dynamic header that is evaluated per-request.
+ * Useful for testing token refresh scenarios.
+ */
+export interface SetDynamicHeaderOperation {
+  action: `set-dynamic-header`
+  /** Header name */
+  name: string
+  /** Type of dynamic value */
+  valueType: `counter` | `timestamp` | `token`
+  /** Initial value (for token type) */
+  initialValue?: string
+}
+
+/**
+ * Set a dynamic URL parameter that is evaluated per-request.
+ */
+export interface SetDynamicParamOperation {
+  action: `set-dynamic-param`
+  /** Param name */
+  name: string
+  /** Type of dynamic value */
+  valueType: `counter` | `timestamp`
+}
+
+/**
+ * Clear all dynamic headers and params.
+ */
+export interface ClearDynamicOperation {
+  action: `clear-dynamic`
+}
+
+/**
  * All possible test operations.
  */
 export type TestOperation =
@@ -278,6 +315,9 @@ export type TestOperation =
   | AwaitOperation
   | InjectErrorOperation
   | ClearErrorsOperation
+  | SetDynamicHeaderOperation
+  | SetDynamicParamOperation
+  | ClearDynamicOperation
 
 // =============================================================================
 // Expectations
@@ -308,6 +348,10 @@ export interface AppendExpectation extends BaseExpectation {
   status?: 200 | 404 | 409 | number
   /** Store the returned offset */
   storeOffsetAs?: string
+  /** Expected headers that were sent (for dynamic header testing) */
+  headersSent?: Record<string, string>
+  /** Expected params that were sent (for dynamic param testing) */
+  paramsSent?: Record<string, string>
 }
 
 export interface AppendBatchExpectation extends BaseExpectation {
@@ -339,6 +383,10 @@ export interface ReadExpectation extends BaseExpectation {
   storeOffsetAs?: string
   /** Store all data concatenated */
   storeDataAs?: string
+  /** Expected headers that were sent (for dynamic header testing) */
+  headersSent?: Record<string, string>
+  /** Expected params that were sent (for dynamic param testing) */
+  paramsSent?: Record<string, string>
 }
 
 export interface HeadExpectation extends BaseExpectation {

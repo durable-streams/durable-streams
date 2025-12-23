@@ -20,6 +20,7 @@ import {
 } from "./test-cases.js"
 import type { Interface as ReadlineInterface } from "node:readline"
 import type {
+  AppendResult,
   ErrorResult,
   HeadResult,
   ReadResult,
@@ -77,6 +78,7 @@ interface ClientFeatures {
   sse?: boolean
   longPoll?: boolean
   streaming?: boolean
+  dynamicHeaders?: boolean
 }
 
 interface ExecutionContext {
@@ -649,6 +651,60 @@ async function executeOperation(
       }
     }
 
+    case `set-dynamic-header`: {
+      const result = await client.send(
+        {
+          type: `set-dynamic-header`,
+          name: op.name,
+          valueType: op.valueType,
+          initialValue: op.initialValue,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  set-dynamic-header ${op.name}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
+    case `set-dynamic-param`: {
+      const result = await client.send(
+        {
+          type: `set-dynamic-param`,
+          name: op.name,
+          valueType: op.valueType,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  set-dynamic-param ${op.name}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
+    case `clear-dynamic`: {
+      const result = await client.send(
+        {
+          type: `clear-dynamic`,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(`  clear-dynamic: ${result.success ? `ok` : `failed`}`)
+      }
+
+      return { result }
+    }
+
     default:
       return { error: `Unknown operation: ${(op as TestOperation).action}` }
   }
@@ -656,6 +712,10 @@ async function executeOperation(
 
 function isReadResult(result: TestResult): result is ReadResult {
   return result.type === `read` && result.success
+}
+
+function isAppendResult(result: TestResult): result is AppendResult {
+  return result.type === `append` && result.success
 }
 
 function isHeadResult(result: TestResult): result is HeadResult {
@@ -752,6 +812,52 @@ function validateExpectation(
     }
   }
 
+  // Check headersSent (for append or read results with dynamic headers)
+  if (expect.headersSent !== undefined) {
+    const expectedHeaders = expect.headersSent as Record<string, string>
+    let actualHeaders: Record<string, string> | undefined
+
+    if (isAppendResult(result)) {
+      actualHeaders = result.headersSent
+    } else if (isReadResult(result)) {
+      actualHeaders = result.headersSent
+    }
+
+    if (!actualHeaders) {
+      return `Expected headersSent but result does not contain headersSent`
+    }
+
+    for (const [key, expectedValue] of Object.entries(expectedHeaders)) {
+      const actualValue = actualHeaders[key]
+      if (actualValue !== expectedValue) {
+        return `Expected headersSent[${key}]="${expectedValue}", got "${actualValue ?? `undefined`}"`
+      }
+    }
+  }
+
+  // Check paramsSent (for append or read results with dynamic params)
+  if (expect.paramsSent !== undefined) {
+    const expectedParams = expect.paramsSent as Record<string, string>
+    let actualParams: Record<string, string> | undefined
+
+    if (isAppendResult(result)) {
+      actualParams = result.paramsSent
+    } else if (isReadResult(result)) {
+      actualParams = result.paramsSent
+    }
+
+    if (!actualParams) {
+      return `Expected paramsSent but result does not contain paramsSent`
+    }
+
+    for (const [key, expectedValue] of Object.entries(expectedParams)) {
+      const actualValue = actualParams[key]
+      if (actualValue !== expectedValue) {
+        return `Expected paramsSent[${key}]="${expectedValue}", got "${actualValue ?? `undefined`}"`
+      }
+    }
+  }
+
   return null
 }
 
@@ -765,6 +871,8 @@ function featureToProperty(feature: string): keyof ClientFeatures | undefined {
     "long-poll": `longPoll`,
     longPoll: `longPoll`,
     streaming: `streaming`,
+    dynamicHeaders: `dynamicHeaders`,
+    "dynamic-headers": `dynamicHeaders`,
   }
   return map[feature]
 }
