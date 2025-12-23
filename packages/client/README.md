@@ -332,7 +332,19 @@ console.log("Full content:", text)
 
 Web Streams API for piping to other streams or using with streaming APIs. ReadableStreams can be consumed using either `getReader()` or `for await...of` syntax.
 
-#### `bodyStream(): ReadableStream<Uint8Array>`
+> **Safari/iOS Compatibility**: The client ensures all returned streams are async-iterable by defining `[Symbol.asyncIterator]` on stream instances when missing. This allows `for await...of` consumption without requiring a global polyfill, while preserving `instanceof ReadableStream` behavior.
+>
+> **Derived streams**: Streams created via `.pipeThrough()` or similar transformations are NOT automatically patched. Use the exported `asAsyncIterableReadableStream()` helper:
+>
+> ```typescript
+> import { asAsyncIterableReadableStream } from "@durable-streams/client"
+>
+> const derived = res.bodyStream().pipeThrough(myTransform)
+> const iterable = asAsyncIterableReadableStream(derived)
+> for await (const chunk of iterable) { ... }
+> ```
+
+#### `bodyStream(): ReadableStream<Uint8Array> & AsyncIterable<Uint8Array>`
 
 Raw bytes as a ReadableStream.
 
@@ -373,7 +385,7 @@ await pipeline(
 )
 ```
 
-#### `jsonStream(): ReadableStream<TJson>`
+#### `jsonStream(): ReadableStream<TJson> & AsyncIterable<TJson>`
 
 Individual JSON items as a ReadableStream.
 
@@ -401,7 +413,7 @@ for await (const item of res.jsonStream()) {
 }
 ```
 
-#### `textStream(): ReadableStream<string>`
+#### `textStream(): ReadableStream<string> & AsyncIterable<string>`
 
 Text chunks as a ReadableStream.
 

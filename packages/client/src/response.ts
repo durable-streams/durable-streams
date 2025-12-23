@@ -5,13 +5,15 @@
  * Supports multiple consumption styles: Promise helpers, ReadableStreams, and Subscribers.
  */
 
-import { DurableStreamError } from "./error"
+import { asAsyncIterableReadableStream } from "./asyncIterableReadableStream"
 import {
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
+import { DurableStreamError } from "./error"
 import { parseSSEStream } from "./sse"
+import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEControlEvent, SSEEvent } from "./sse"
 import type {
   ByteChunk,
@@ -806,18 +808,18 @@ export class StreamResponseImpl<
     return readable
   }
 
-  bodyStream(): ReadableStream<Uint8Array> {
+  bodyStream(): ReadableStreamAsyncIterable<Uint8Array> {
     this.#ensureNoConsumption(`bodyStream`)
-    return this.#createBodyStreamInternal()
+    return asAsyncIterableReadableStream(this.#createBodyStreamInternal())
   }
 
-  jsonStream(): ReadableStream<TJson> {
+  jsonStream(): ReadableStreamAsyncIterable<TJson> {
     this.#ensureNoConsumption(`jsonStream`)
     this.#ensureJsonMode()
     const reader = this.#getResponseReader()
     let pendingItems: Array<TJson> = []
 
-    return new ReadableStream<TJson>({
+    const stream = new ReadableStream<TJson>({
       pull: async (controller) => {
         // Drain pending items first
         if (pendingItems.length > 0) {
@@ -850,13 +852,15 @@ export class StreamResponseImpl<
         this.cancel()
       },
     })
+
+    return asAsyncIterableReadableStream(stream)
   }
 
-  textStream(): ReadableStream<string> {
+  textStream(): ReadableStreamAsyncIterable<string> {
     this.#ensureNoConsumption(`textStream`)
     const decoder = new TextDecoder()
 
-    return this.#createBodyStreamInternal().pipeThrough(
+    const stream = this.#createBodyStreamInternal().pipeThrough(
       new TransformStream<Uint8Array, string>({
         transform(chunk, controller) {
           controller.enqueue(decoder.decode(chunk, { stream: true }))
@@ -869,6 +873,8 @@ export class StreamResponseImpl<
         },
       })
     )
+
+    return asAsyncIterableReadableStream(stream)
   }
 
   // =====================
