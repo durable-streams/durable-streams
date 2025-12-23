@@ -58,6 +58,7 @@ class _QueuedMessage:
     data: Any
     seq: str | None
     content_type: str | None
+    future: asyncio.Future[AppendResult] | None = None
 
 
 class AsyncDurableStream:
@@ -398,15 +399,16 @@ class AsyncDurableStream:
         *,
         seq: str | None = None,
         content_type: str | None = None,
-    ) -> AppendResult | None:
+    ) -> AppendResult:
         """
         Append data to the stream.
 
-        When batching is enabled (default), multiple append() calls made while
-        a POST is in-flight will be batched together into a single request.
+        When batching is enabled (default), multiple concurrent append() calls
+        will be batched together into a single request. All callers await until
+        their data is durably acknowledged or an error occurs.
 
         Returns:
-            AppendResult with the new tail offset, or None if batched
+            AppendResult with the new tail offset
         """
         if self._batching:
             return await self._append_with_batching(data, seq, content_type)
@@ -454,7 +456,12 @@ class AsyncDurableStream:
                 headers=headers_dict,
             )
 
-        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+        if not next_offset:
+            raise ValueError(
+                f"Server did not return {STREAM_NEXT_OFFSET_HEADER} header. "
+                "This indicates a protocol violation."
+            )
         return AppendResult(next_offset=next_offset)
 
     async def _append_with_batching(
@@ -462,51 +469,69 @@ class AsyncDurableStream:
         data: Any,
         seq: str | None,
         content_type: str | None,
-    ) -> AppendResult | None:
-        """Append with batching."""
-        should_flush = False
+    ) -> AppendResult:
+        """Append with batching.
+
+        All callers await until their data is durably acknowledged or an error
+        occurs. The "leader" task (first to see _batch_in_flight=False)
+        performs the flush and fulfills all queued futures.
+        """
+        is_leader = False
+        loop = asyncio.get_running_loop()
+        msg = _QueuedMessage(
+            data=data, seq=seq, content_type=content_type, future=loop.create_future()
+        )
 
         async with self._batch_lock:
-            self._batch_queue.append(
-                _QueuedMessage(data=data, seq=seq, content_type=content_type)
-            )
+            self._batch_queue.append(msg)
 
+            # If no request in flight, this task becomes the leader
             if not self._batch_in_flight:
-                should_flush = True
+                self._batch_in_flight = True
+                is_leader = True
 
-        # Flush outside the lock to avoid deadlock
-        if should_flush:
-            return await self._flush_batch()
+        if is_leader:
+            # Leader performs the flush loop
+            await self._flush_batch()
 
-        return None
+        # All callers (including leader) await their future
+        # This blocks until the batch containing this message completes
+        assert msg.future is not None  # For type checker
+        return await msg.future
 
-    async def _flush_batch(self) -> AppendResult | None:
+    async def _flush_batch(self) -> None:
         """Flush the batch queue.
 
         Uses a loop instead of recursion to avoid stack overflow under
-        sustained high-throughput writes.
+        sustained high-throughput writes. Fulfills all queued futures
+        with either the result or the exception.
         """
-        result: AppendResult | None = None
-
         while True:
             async with self._batch_lock:
                 if not self._batch_queue:
                     self._batch_in_flight = False
-                    return result
+                    return
 
                 # Take all queued messages
                 messages = list(self._batch_queue)
                 self._batch_queue.clear()
-                self._batch_in_flight = True
 
             try:
                 result = await self._send_batch(messages)
+                # Fulfill all futures with the shared result
+                for msg in messages:
+                    if msg.future is not None:
+                        msg.future.set_result(result)
                 # Loop continues to check if more messages accumulated
-            except Exception:
-                # On error, reset the in-flight flag
+            except Exception as e:
+                # Propagate error to all waiting callers
+                for msg in messages:
+                    if msg.future is not None:
+                        msg.future.set_exception(e)
+                # Reset the in-flight flag and exit
                 async with self._batch_lock:
                     self._batch_in_flight = False
-                raise
+                return
 
     async def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
         """Send a batch of messages."""
@@ -553,7 +578,12 @@ class AsyncDurableStream:
                 headers=headers_dict,
             )
 
-        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+        if not next_offset:
+            raise ValueError(
+                f"Server did not return {STREAM_NEXT_OFFSET_HEADER} header. "
+                "This indicates a protocol violation."
+            )
         return AppendResult(next_offset=next_offset)
 
     def stream(

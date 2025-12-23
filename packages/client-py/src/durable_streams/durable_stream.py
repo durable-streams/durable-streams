@@ -11,7 +11,8 @@ import json
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -58,6 +59,7 @@ class _QueuedMessage:
     data: Any
     seq: str | None
     content_type: str | None
+    future: "Future[AppendResult]" = field(default_factory=lambda: Future())
 
 
 class DurableStream:
@@ -469,12 +471,13 @@ class DurableStream:
         *,
         seq: str | None = None,
         content_type: str | None = None,
-    ) -> AppendResult | None:
+    ) -> AppendResult:
         """
         Append data to the stream.
 
-        When batching is enabled (default), multiple append() calls made while
-        a POST is in-flight will be batched together into a single request.
+        When batching is enabled (default), multiple concurrent append() calls
+        will be batched together into a single request. All callers block until
+        their data is durably acknowledged or an error occurs.
 
         Args:
             data: Data to append (bytes, string, or JSON-serializable value)
@@ -482,7 +485,7 @@ class DurableStream:
             content_type: Optional content type override
 
         Returns:
-            AppendResult with the new tail offset, or None if batched
+            AppendResult with the new tail offset
 
         Raises:
             SeqConflictError: If seq is lower than last appended
@@ -535,7 +538,12 @@ class DurableStream:
                 headers=headers_dict,
             )
 
-        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+        if not next_offset:
+            raise ValueError(
+                f"Server did not return {STREAM_NEXT_OFFSET_HEADER} header. "
+                "This indicates a protocol violation."
+            )
         return AppendResult(next_offset=next_offset)
 
     def _append_with_batching(
@@ -543,52 +551,63 @@ class DurableStream:
         data: Any,
         seq: str | None,
         content_type: str | None,
-    ) -> AppendResult | None:
-        """Append with batching - collect messages and send in batches."""
-        should_flush = False
+    ) -> AppendResult:
+        """Append with batching - collect messages and send in batches.
+
+        All callers block until their data is durably acknowledged or an error
+        occurs. The "leader" thread (first to see _batch_in_flight=False)
+        performs the flush and fulfills all queued futures.
+        """
+        is_leader = False
+        msg = _QueuedMessage(data=data, seq=seq, content_type=content_type)
 
         with self._batch_lock:
-            self._batch_queue.append(
-                _QueuedMessage(data=data, seq=seq, content_type=content_type)
-            )
+            self._batch_queue.append(msg)
 
-            # If no request in flight, we should flush
+            # If no request in flight, this thread becomes the leader
             if not self._batch_in_flight:
-                should_flush = True
+                self._batch_in_flight = True
+                is_leader = True
 
-        # Flush outside the lock to avoid deadlock
-        if should_flush:
-            return self._flush_batch()
+        if is_leader:
+            # Leader performs the flush loop
+            self._flush_batch()
 
-        return None
+        # All callers (including leader) wait on their future
+        # This blocks until the batch containing this message completes
+        return msg.future.result()
 
-    def _flush_batch(self) -> AppendResult | None:
+    def _flush_batch(self) -> None:
         """Flush the batch queue and send a single request.
 
         Uses a loop instead of recursion to avoid stack overflow under
-        sustained high-throughput writes.
+        sustained high-throughput writes. Fulfills all queued futures
+        with either the result or the exception.
         """
-        result: AppendResult | None = None
-
         while True:
             with self._batch_lock:
                 if not self._batch_queue:
                     self._batch_in_flight = False
-                    return result
+                    return
 
                 # Take all queued messages
                 messages = list(self._batch_queue)
                 self._batch_queue.clear()
-                self._batch_in_flight = True
 
             try:
                 result = self._send_batch(messages)
+                # Fulfill all futures with the shared result
+                for msg in messages:
+                    msg.future.set_result(result)
                 # Loop continues to check if more messages accumulated
-            except Exception:
-                # On error, reset the in-flight flag
+            except Exception as e:
+                # Propagate error to all waiting callers
+                for msg in messages:
+                    msg.future.set_exception(e)
+                # Reset the in-flight flag and exit
                 with self._batch_lock:
                     self._batch_in_flight = False
-                raise
+                return
 
     def _send_batch(self, messages: list[_QueuedMessage]) -> AppendResult:
         """Send a batch of messages as a single POST request."""
@@ -640,7 +659,12 @@ class DurableStream:
                 headers=headers_dict,
             )
 
-        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        next_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+        if not next_offset:
+            raise ValueError(
+                f"Server did not return {STREAM_NEXT_OFFSET_HEADER} header. "
+                "This indicates a protocol violation."
+            )
         return AppendResult(next_offset=next_offset)
 
     def stream(

@@ -6,6 +6,7 @@ This is the primary async API for read-only stream consumption.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Coroutine, Generator
 from typing import Any, cast
 
@@ -397,34 +398,59 @@ async def _astream_internal(
         final_hdrs = {**resolved_hdrs, **captured_header_mutations}
         final_prms = {**resolved_prms, **captured_param_mutations}
 
+        # Add Accept header for SSE mode (consistent with initial request)
+        if is_sse and "accept" not in {k.lower() for k in final_hdrs}:
+            final_hdrs["Accept"] = "text/event-stream"
+
         all_prms = {**final_prms, **next_params}
         next_url = build_url_with_params(url, all_prms)
 
-        # Use streaming mode for live fetches
-        request = client.build_request(
-            "GET",
-            next_url,
-            headers=final_hdrs,
-            timeout=timeout,
-            **kwargs,
-        )
-        resp = await client.send(request, stream=True)
+        # Retry loop with on_error for follow-up requests
+        while True:
+            try:
+                # Use streaming mode for live fetches
+                request = client.build_request(
+                    "GET",
+                    next_url,
+                    headers=final_hdrs,
+                    timeout=timeout,
+                    **kwargs,
+                )
+                resp = await client.send(request, stream=True)
 
-        if not resp.is_success and resp.status_code != 204:
-            # For errors, read body for error details then close
-            body_bytes = await resp.aread()
-            await resp.aclose()
-            body = body_bytes.decode("utf-8", errors="replace")
-            hdrs = parse_httpx_headers(resp.headers)
-            error = error_from_status(
-                resp.status_code,
-                url,
-                body=body,
-                headers=hdrs,
-            )
-            raise error
+                if not resp.is_success and resp.status_code != 204:
+                    # For errors, read body for error details then close
+                    body_bytes = await resp.aread()
+                    await resp.aclose()
+                    body = body_bytes.decode("utf-8", errors="replace")
+                    hdrs = parse_httpx_headers(resp.headers)
+                    error = error_from_status(
+                        resp.status_code,
+                        url,
+                        body=body,
+                        headers=hdrs,
+                    )
+                    raise error
 
-        return resp
+                return resp
+            except Exception as e:
+                # Apply on_error for follow-up requests too
+                if on_error is not None:
+                    result = on_error(e)
+                    if asyncio.iscoroutine(result):
+                        retry_opts = await result
+                    else:
+                        retry_opts = result
+                    if retry_opts is not None:
+                        # Apply retry mutations
+                        if "params" in retry_opts:
+                            final_prms = {**final_prms, **retry_opts["params"]}
+                            all_prms = {**final_prms, **next_params}
+                            next_url = build_url_with_params(url, all_prms)
+                        if "headers" in retry_opts:
+                            final_hdrs = {**final_hdrs, **retry_opts["headers"]}
+                        continue
+                raise
 
     return AsyncStreamResponse(
         url=url,
