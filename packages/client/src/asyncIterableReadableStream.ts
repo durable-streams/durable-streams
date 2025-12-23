@@ -48,8 +48,9 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
   }
 
   if (
-    typeof (stream as Record<symbol, unknown>)[Symbol.asyncIterator] ===
-    `function`
+    typeof (stream as unknown as Record<symbol, unknown>)[
+      Symbol.asyncIterator
+    ] === `function`
   ) {
     return
   }
