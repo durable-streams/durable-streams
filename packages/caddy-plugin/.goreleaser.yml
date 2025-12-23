@@ -1,8 +1,5 @@
 version: 2
 
-monorepo:
-  tag_prefix: caddy-
-
 before:
   hooks:
     - go mod tidy
