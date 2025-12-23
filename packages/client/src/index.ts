@@ -57,6 +57,9 @@ export type {
   StreamErrorHandler,
 } from "./types"
 
+// Re-export async iterable helper type
+export type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
+
 // ============================================================================
 // Errors
 // ============================================================================

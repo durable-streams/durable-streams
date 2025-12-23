@@ -4,6 +4,7 @@
  * Following the Electric Durable Stream Protocol specification.
  */
 
+import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { BackoffOptions } from "./fetch"
 
 /**
@@ -666,19 +667,28 @@ export interface StreamResponse<TJson = unknown> {
 
   /**
    * Raw bytes as a ReadableStream<Uint8Array>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  bodyStream: () => ReadableStream<Uint8Array>
+  bodyStream: () => ReadableStreamAsyncIterable<Uint8Array>
 
   /**
    * Individual JSON items (flattened) as a ReadableStream<TJson>.
    * Built on jsonBatches().
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  jsonStream: () => ReadableStream<TJson>
+  jsonStream: () => ReadableStreamAsyncIterable<TJson>
 
   /**
    * Text chunks as ReadableStream<string>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  textStream: () => ReadableStream<string>
+  textStream: () => ReadableStreamAsyncIterable<string>
 
   // =====================
   // 3) Subscriber APIs
