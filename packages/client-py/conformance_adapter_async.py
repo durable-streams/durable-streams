@@ -51,6 +51,56 @@ ERROR_CODES = {
 server_url = ""
 stream_content_types: dict[str, str] = {}
 
+# Dynamic headers/params state
+class DynamicValue:
+    """Represents a dynamic value that can be evaluated per-request."""
+    def __init__(self, value_type: str, initial_value: str | None = None):
+        self.type = value_type  # "counter", "timestamp", or "token"
+        self.counter = 0
+        self.token_value = initial_value
+
+    def get_value(self) -> str:
+        """Get the current value, incrementing counter if applicable."""
+        if self.type == "counter":
+            self.counter += 1
+            return str(self.counter)
+        elif self.type == "timestamp":
+            import time
+            return str(int(time.time() * 1000))
+        elif self.type == "token":
+            return self.token_value or ""
+        return ""
+
+
+dynamic_headers: dict[str, DynamicValue] = {}
+dynamic_params: dict[str, DynamicValue] = {}
+
+
+def resolve_dynamic_headers() -> tuple[dict[str, str], dict[str, str]]:
+    """Resolve dynamic headers, returning both header values and tracked values."""
+    headers: dict[str, str] = {}
+    values: dict[str, str] = {}
+
+    for name, config in dynamic_headers.items():
+        value = config.get_value()
+        values[name] = value
+        headers[name] = value
+
+    return headers, values
+
+
+def resolve_dynamic_params() -> tuple[dict[str, str], dict[str, str]]:
+    """Resolve dynamic params, returning both param values and tracked values."""
+    params: dict[str, str] = {}
+    values: dict[str, str] = {}
+
+    for name, config in dynamic_params.items():
+        value = config.get_value()
+        values[name] = value
+        params[name] = value
+
+    return params, values
+
 
 def decode_base64(data: str) -> bytes:
     """Decode base64 string to bytes."""
@@ -114,6 +164,8 @@ async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     global server_url, stream_content_types
     server_url = cmd["serverUrl"]
     stream_content_types.clear()
+    dynamic_headers.clear()
+    dynamic_params.clear()
 
     return {
         "type": "init",
@@ -125,6 +177,7 @@ async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
             "sse": True,
             "longPoll": True,
             "streaming": True,
+            "dynamicHeaders": True,
         },
     }
 
@@ -199,7 +252,13 @@ async def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     # Get content type from cache or default
     content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
 
-    headers = cmd.get("headers")
+    # Resolve dynamic headers/params
+    dynamic_hdrs, headers_sent = resolve_dynamic_headers()
+    _, params_sent = resolve_dynamic_params()
+
+    # Merge command headers with dynamic headers (command takes precedence)
+    cmd_headers: dict[str, str] = cmd.get("headers") or {}
+    merged_headers: dict[str, str] = {**dynamic_hdrs, **cmd_headers}
 
     # Decode data
     data: bytes | str
@@ -219,17 +278,22 @@ async def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
 
     for attempt in range(max_retries + 1):
         try:
-            ds = AsyncDurableStream(url, content_type=content_type, headers=headers, batching=False)
+            ds = AsyncDurableStream(url, content_type=content_type, headers=merged_headers, batching=False)
             await ds.append(data, seq=seq)
             head = await ds.head()
             await ds.aclose()
 
-            return {
+            result: dict[str, Any] = {
                 "type": "append",
                 "success": True,
                 "status": 200,
                 "offset": head.offset,
             }
+            if headers_sent:
+                result["headersSent"] = headers_sent
+            if params_sent:
+                result["paramsSent"] = params_sent
+            return result
         except (FetchError, DurableStreamError) as e:
             # Check if it's a retryable 5xx error
             status = getattr(e, "status", None)
@@ -269,7 +333,13 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     max_chunks = cmd.get("maxChunks", 100)
     wait_for_up_to_date = cmd.get("waitForUpToDate", False)
 
-    headers = cmd.get("headers")
+    # Resolve dynamic headers/params
+    dynamic_hdrs, headers_sent = resolve_dynamic_headers()
+    _, params_sent = resolve_dynamic_params()
+
+    # Merge command headers with dynamic headers (command takes precedence)
+    cmd_headers: dict[str, str] = cmd.get("headers") or {}
+    merged_headers: dict[str, str] = {**dynamic_hdrs, **cmd_headers}
     timeout_seconds = timeout_ms / 1000.0
 
     chunks: list[dict[str, Any]] = []
@@ -280,7 +350,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         url,
         offset=offset,
         live=live,
-        headers=headers,
+        headers=merged_headers,
         timeout=timeout_seconds,
     )
     async with response:
@@ -369,7 +439,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             final_offset = response.offset
             up_to_date = response.up_to_date
 
-    return {
+    result: dict[str, Any] = {
         "type": "read",
         "success": True,
         "status": 200,
@@ -377,6 +447,11 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "offset": final_offset,
         "upToDate": up_to_date,
     }
+    if headers_sent:
+        result["headersSent"] = headers_sent
+    if params_sent:
+        result["paramsSent"] = params_sent
+    return result
 
 
 async def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
@@ -426,6 +501,39 @@ async def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_set_dynamic_header(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle set-dynamic-header command."""
+    name = cmd["name"]
+    value_type = cmd["valueType"]
+    initial_value = cmd.get("initialValue")
+    dynamic_headers[name] = DynamicValue(value_type, initial_value)
+    return {
+        "type": "set-dynamic-header",
+        "success": True,
+    }
+
+
+def handle_set_dynamic_param(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle set-dynamic-param command."""
+    name = cmd["name"]
+    value_type = cmd["valueType"]
+    dynamic_params[name] = DynamicValue(value_type)
+    return {
+        "type": "set-dynamic-param",
+        "success": True,
+    }
+
+
+def handle_clear_dynamic(_cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle clear-dynamic command."""
+    dynamic_headers.clear()
+    dynamic_params.clear()
+    return {
+        "type": "clear-dynamic",
+        "success": True,
+    }
+
+
 async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
     """Route command to appropriate handler."""
     cmd_type = cmd["type"]
@@ -447,6 +555,12 @@ async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return await handle_delete(cmd)
         elif cmd_type == "shutdown":
             return await handle_shutdown(cmd)
+        elif cmd_type == "set-dynamic-header":
+            return handle_set_dynamic_header(cmd)
+        elif cmd_type == "set-dynamic-param":
+            return handle_set_dynamic_param(cmd)
+        elif cmd_type == "clear-dynamic":
+            return handle_clear_dynamic(cmd)
         else:
             return {
                 "type": "error",
