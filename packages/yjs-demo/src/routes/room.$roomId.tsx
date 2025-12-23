@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react"
 import { EditorState } from "@codemirror/state"
 import { EditorView, basicSetup } from "codemirror"
 import { keymap } from "@codemirror/view"
-import { javascript } from "@codemirror/lang-javascript"
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next"
 import { useLiveQuery } from "@tanstack/react-db"
 import { YjsRoomProvider, useYjsRoom } from "../lib/yjs-provider"
@@ -24,7 +23,7 @@ interface TrackedUser {
   lastActive: number
 }
 
-const INACTIVE_TIMEOUT = 5000 // 5 seconds
+const INACTIVE_TIMEOUT = 35000 // 35 seconds
 
 function PresenceList() {
   const { awareness } = useYjsRoom()
@@ -192,27 +191,27 @@ function CollaborativeEditor() {
     // Get Y.Text for document content
     const ytext = doc.getText(`content`)
 
-    // Create CodeMirror state with Yjs collaboration
+    // Create CodeMirror state with Yjs collaboration (plain text, no syntax highlighting)
     const state = EditorState.create({
       doc: ytext.toString(),
       extensions: [
         keymap.of([...yUndoManagerKeymap]),
         basicSetup,
-        javascript(),
         EditorView.lineWrapping,
         yCollab(ytext, awareness),
         EditorView.theme({
           "&": {
             height: `100%`,
-            backgroundColor: `var(--bg-dark)`,
+            backgroundColor: `var(--bg-main)`,
           },
           ".cm-content": {
-            fontFamily: `"SF Mono", Monaco, "Cascadia Code", "Roboto Mono", Consolas, "Liberation Mono", Menlo, Courier, monospace`,
-            fontSize: `14px`,
+            fontFamily: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif`,
+            fontSize: `15px`,
+            lineHeight: `1.6`,
             color: `var(--text-primary)`,
           },
           ".cm-gutters": {
-            backgroundColor: `var(--bg-darker)`,
+            backgroundColor: `var(--bg-secondary)`,
             color: `var(--text-dim)`,
             border: `none`,
           },
@@ -220,16 +219,16 @@ function CollaborativeEditor() {
             borderLeftColor: `var(--accent)`,
           },
           ".cm-activeLine": {
-            backgroundColor: `rgba(255, 255, 255, 0.05)`,
+            backgroundColor: `var(--active-line-bg)`,
           },
           ".cm-activeLineGutter": {
-            backgroundColor: `rgba(255, 255, 255, 0.05)`,
+            backgroundColor: `var(--active-line-bg)`,
           },
           ".cm-selectionBackground": {
-            backgroundColor: `rgba(86, 156, 214, 0.3) !important`,
+            backgroundColor: `var(--selection-bg) !important`,
           },
           "&.cm-focused .cm-selectionBackground": {
-            backgroundColor: `rgba(86, 156, 214, 0.3) !important`,
+            backgroundColor: `var(--selection-bg) !important`,
           },
           ".cm-scroller": {
             overflow: `auto`,
