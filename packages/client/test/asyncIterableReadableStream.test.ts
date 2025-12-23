@@ -453,4 +453,211 @@ describe(`asAsyncIterableReadableStream`, () => {
       }
     })
   })
+
+  describe(`concurrent reads handling`, () => {
+    // These tests validate our polyfill behavior. In environments with native
+    // async iterators (like Node.js), we skip these since our polyfill isn't applied.
+
+    const hasNativeIterator = (() => {
+      const testStream = new ReadableStream<number>()
+      return (
+        typeof (testStream as unknown as Record<symbol, unknown>)[
+          Symbol.asyncIterator
+        ] === `function`
+      )
+    })()
+
+    it.skipIf(hasNativeIterator)(
+      `should correctly track multiple concurrent pending reads (polyfill only)`,
+      async () => {
+        // Create a slow stream that can be read from multiple times concurrently
+        let resolveChunk: ((value: number) => void) | null = null
+        const stream = new ReadableStream<number>({
+          async pull(controller) {
+            // Wait for external resolution
+            const value = await new Promise<number>((resolve) => {
+              resolveChunk = resolve
+            })
+            controller.enqueue(value)
+          },
+        })
+
+        const result = asAsyncIterableReadableStream(stream)
+        const iterator = result[Symbol.asyncIterator]()
+
+        // Start first read (will be pending)
+        const read1Promise = iterator.next()
+
+        // Attempting return() while read is pending should throw
+        await expect(iterator.return!()).rejects.toThrow(TypeError)
+
+        // Now resolve the pending read
+        resolveChunk!(1)
+        const read1Result = await read1Promise
+        expect(read1Result.value).toBe(1)
+
+        // After read completes, return() should work
+        await expect(iterator.return!()).resolves.toEqual({
+          done: true,
+          value: undefined,
+        })
+      }
+    )
+
+    it.skipIf(hasNativeIterator)(
+      `should handle return() rejecting with TypeError if there are pending reads (polyfill only)`,
+      async () => {
+        let enqueuedCount = 0
+        const stream = new ReadableStream<number>({
+          async pull(controller) {
+            enqueuedCount++
+            // Simulate async delay
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            controller.enqueue(enqueuedCount)
+          },
+        })
+
+        const result = asAsyncIterableReadableStream(stream)
+        const iterator = result[Symbol.asyncIterator]()
+
+        // Start a read but don't await it
+        const readPromise = iterator.next()
+
+        // Try to return while read is pending - should reject
+        try {
+          await iterator.return!()
+          // If we get here, something is wrong
+          expect(true).toBe(false)
+        } catch (e) {
+          expect(e).toBeInstanceOf(TypeError)
+          expect((e as TypeError).message).toContain(`pending read requests`)
+        }
+
+        // Clean up - await the pending read
+        await readPromise
+        await iterator.return!()
+      }
+    )
+  })
+
+  describe(`.values() method`, () => {
+    it(`should define .values() method on the instance`, () => {
+      const stream = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(1)
+          controller.close()
+        },
+      })
+
+      // Check if native .values() exists
+      const hasNativeValues =
+        typeof (stream as unknown as Record<string, unknown>)[`values`] ===
+        `function`
+
+      const result = asAsyncIterableReadableStream(stream)
+
+      // values() should be available
+      expect(
+        typeof (result as unknown as Record<string, unknown>)[`values`]
+      ).toBe(`function`)
+
+      // If there was no native values(), it should be our own property
+      if (!hasNativeValues) {
+        expect(Object.prototype.hasOwnProperty.call(result, `values`)).toBe(
+          true
+        )
+      }
+    })
+
+    it(`should allow iteration via .values()`, async () => {
+      const stream = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(1)
+          controller.enqueue(2)
+          controller.enqueue(3)
+          controller.close()
+        },
+      })
+
+      const result = asAsyncIterableReadableStream(stream)
+      const valuesMethod = (
+        result as unknown as Record<
+          string,
+          () => AsyncIterator<number> & AsyncIterable<number>
+        >
+      )[`values`]
+
+      const collected: Array<number> = []
+      const iterator = valuesMethod.call(result)
+
+      for await (const chunk of iterator) {
+        collected.push(chunk)
+      }
+
+      expect(collected).toEqual([1, 2, 3])
+    })
+  })
+
+  describe(`return() behavior`, () => {
+    // These tests validate our polyfill behavior. In environments with native
+    // async iterators, we skip or adapt since native has different behavior.
+
+    const hasNativeIterator = (() => {
+      const testStream = new ReadableStream<number>()
+      return (
+        typeof (testStream as unknown as Record<symbol, unknown>)[
+          Symbol.asyncIterator
+        ] === `function`
+      )
+    })()
+
+    it(`should pass optional value to cancel()`, async () => {
+      let cancelReason: unknown = null
+
+      const stream = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(1)
+          // Don't close - simulate infinite stream
+        },
+        cancel(reason) {
+          cancelReason = reason
+        },
+      })
+
+      const result = asAsyncIterableReadableStream(stream)
+      const iterator = result[Symbol.asyncIterator]()
+
+      // Read one chunk
+      await iterator.next()
+
+      // Return with a reason
+      await iterator.return!(`custom reason`)
+
+      expect(cancelReason).toBe(`custom reason`)
+    })
+
+    it.skipIf(hasNativeIterator)(
+      `should always return { done: true, value: undefined } regardless of input (polyfill only)`,
+      async () => {
+        // Note: Our polyfill always returns undefined, matching for-await-of semantics.
+        // Native iterators may return the value passed to return().
+        const stream = new ReadableStream<number>({
+          start(controller) {
+            controller.enqueue(1)
+          },
+        })
+
+        const result = asAsyncIterableReadableStream(stream)
+        const iterator = result[Symbol.asyncIterator]()
+
+        // Read one chunk
+        await iterator.next()
+
+        // Return with a value - should still return undefined
+        const returnResult = await iterator.return!(`some value`)
+
+        expect(returnResult).toEqual({ done: true, value: undefined })
+      }
+    )
+  })
 })
