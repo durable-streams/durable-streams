@@ -1,6 +1,6 @@
 {
-  "name": "@durable-streams/wikipedia-worker",
-  "version": "0.1.0",
+  "name": "@durable-streams/example-wikipedia-worker",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {

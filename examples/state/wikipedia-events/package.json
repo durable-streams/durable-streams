@@ -1,6 +1,6 @@
 {
-  "name": "@durable-streams/wikipedia-events-example",
-  "version": "0.1.0",
+  "name": "@durable-streams/example-wikipedia-events",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -12,6 +12,7 @@
   "dependencies": {
     "@durable-streams/client": "workspace:*",
     "@durable-streams/state": "workspace:*",
+    "@tanstack/db": "latest",
     "@tanstack/solid-db": "latest",
     "solid-js": "^1.9.3",
     "zod": "^3.24.1"

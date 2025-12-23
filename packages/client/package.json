@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/client",
   "description": "TypeScript client for the Durable Streams protocol",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "type": "module",
@@ -39,5 +39,8 @@
     "build": "tsdown",
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

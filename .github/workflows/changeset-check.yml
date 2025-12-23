@@ -1,0 +1,61 @@
+name: Changeset Check
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  changeset-check:
+    name: Changeset Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check for changeset
+        run: |
+          # Check if there are any changeset files (excluding README.md and config.json)
+          CHANGESETS=$(find .changeset -name "*.md" ! -name "README.md" 2>/dev/null | wc -l)
+
+          if [ "$CHANGESETS" -eq 0 ]; then
+            echo "::warning::No changeset found. If this PR includes changes that should be released, please run 'pnpm changeset' to create a changeset."
+            echo ""
+            echo "## No Changeset Found"
+            echo ""
+            echo "This PR does not include a changeset. If your changes should trigger a release, please run:"
+            echo ""
+            echo '```bash'
+            echo "pnpm changeset"
+            echo '```'
+            echo ""
+            echo "If your changes are internal (documentation, tests, refactoring) and should not trigger a release, you can ignore this message."
+          else
+            echo "Found $CHANGESETS changeset(s)"
+            echo ""
+            echo "## Changeset Found"
+            echo ""
+            pnpm changeset status
+          fi

@@ -25,7 +25,7 @@ A web interface for testing the Durable Streams protocol. Create, monitor, and i
 2. **Run the test UI**:
 
    ```bash
-   cd packages/test-ui
+   cd examples/test-ui
    pnpm dev
    ```
 
@@ -87,7 +87,7 @@ The test UI is built with:
 ### Project Structure
 
 ```
-packages/test-ui/
+examples/test-ui/
 ├── src/
 │   ├── routes/
 │   │   ├── __root.tsx      # Root layout with router devtools

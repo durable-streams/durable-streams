@@ -65,7 +65,7 @@ The worker will:
 ### 4. Start the Solid.js Client
 
 ```bash
-cd packages/state/examples/wikipedia-events
+cd examples/state/wikipedia-events
 pnpm install
 pnpm dev
 ```

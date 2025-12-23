@@ -66,6 +66,127 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
+  examples/state:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../../packages/state
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+
+  examples/state/wikipedia-events:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../../../packages/state
+      '@tanstack/db':
+        specifier: latest
+        version: 0.5.15(typescript@5.9.3)
+      '@tanstack/solid-db':
+        specifier: latest
+        version: 0.1.58(solid-js@1.9.10)(typescript@5.9.3)
+      solid-js:
+        specifier: ^1.9.3
+        version: 1.9.10
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.21
+        version: 22.19.3
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+      vite-plugin-solid:
+        specifier: ^2.10.2
+        version: 2.11.10(solid-js@1.9.10)(vite@6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
+
+  examples/state/wikipedia-worker:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../../../packages/state
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.21
+        version: 22.19.3
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+
+  examples/test-ui:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:^
+        version: link:../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:^
+        version: link:../../packages/state
+      '@tanstack/react-db':
+        specifier: latest
+        version: 0.1.59(react@19.2.3)(typescript@5.9.3)
+      '@tanstack/react-router':
+        specifier: ^1.139.14
+        version: 1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@tanstack/react-virtual':
+        specifier: ^3.13.13
+        version: 3.13.13(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@tanstack/router-devtools':
+        specifier: ^1.139.15
+        version: 1.141.6(@tanstack/react-router@1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(@tanstack/router-core@1.141.6)(csstype@3.2.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(solid-js@1.9.10)
+      '@tanstack/router-plugin':
+        specifier: ^1.139.14
+        version: 1.141.7(@tanstack/react-router@1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(vite-plugin-solid@2.11.10(solid-js@1.9.10)(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)))(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
+      react:
+        specifier: ^19.2.1
+        version: 19.2.3
+      react-dom:
+        specifier: ^19.2.1
+        version: 19.2.3(react@19.2.3)
+      react-json-view:
+        specifier: ^1.21.3
+        version: 1.21.3(@types/react@19.2.7)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.7
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.7)
+      '@vitejs/plugin-react':
+        specifier: ^5.1.1
+        version: 5.1.2(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.2.4
+        version: 7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+
   packages/benchmarks:
     dependencies:
       '@durable-streams/client':
@@ -233,124 +354,6 @@ importers:
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
-
-  packages/state/examples:
-    dependencies:
-      '@durable-streams/client':
-        specifier: workspace:*
-        version: link:../../client
-      '@durable-streams/state':
-        specifier: workspace:*
-        version: link:..
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
-    devDependencies:
-      vite:
-        specifier: ^6.0.0
-        version: 6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
-
-  packages/state/examples/wikipedia-events:
-    dependencies:
-      '@durable-streams/client':
-        specifier: workspace:*
-        version: link:../../../client
-      '@durable-streams/state':
-        specifier: workspace:*
-        version: link:../..
-      '@tanstack/solid-db':
-        specifier: latest
-        version: 0.1.58(solid-js@1.9.10)(typescript@5.9.3)
-      solid-js:
-        specifier: ^1.9.3
-        version: 1.9.10
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
-    devDependencies:
-      '@types/node':
-        specifier: ^22.15.21
-        version: 22.19.3
-      typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
-      vite:
-        specifier: ^6.0.0
-        version: 6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
-      vite-plugin-solid:
-        specifier: ^2.10.2
-        version: 2.11.10(solid-js@1.9.10)(vite@6.4.1(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
-
-  packages/state/examples/wikipedia-worker:
-    dependencies:
-      '@durable-streams/client':
-        specifier: workspace:*
-        version: link:../../../client
-      '@durable-streams/state':
-        specifier: workspace:*
-        version: link:../..
-      zod:
-        specifier: ^3.24.1
-        version: 3.25.76
-    devDependencies:
-      '@types/node':
-        specifier: ^22.15.21
-        version: 22.19.3
-      tsx:
-        specifier: ^4.19.2
-        version: 4.21.0
-      typescript:
-        specifier: ^5.9.2
-        version: 5.9.3
-
-  packages/test-ui:
-    dependencies:
-      '@durable-streams/client':
-        specifier: workspace:^
-        version: link:../client
-      '@durable-streams/state':
-        specifier: workspace:^
-        version: link:../state
-      '@tanstack/react-db':
-        specifier: latest
-        version: 0.1.59(react@19.2.3)(typescript@5.9.3)
-      '@tanstack/react-router':
-        specifier: ^1.139.14
-        version: 1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tanstack/react-virtual':
-        specifier: ^3.13.13
-        version: 3.13.13(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tanstack/router-devtools':
-        specifier: ^1.139.15
-        version: 1.141.6(@tanstack/react-router@1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(@tanstack/router-core@1.141.6)(csstype@3.2.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(solid-js@1.9.10)
-      '@tanstack/router-plugin':
-        specifier: ^1.139.14
-        version: 1.141.7(@tanstack/react-router@1.141.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(vite-plugin-solid@2.11.10(solid-js@1.9.10)(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)))(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
-      react:
-        specifier: ^19.2.1
-        version: 19.2.3
-      react-dom:
-        specifier: ^19.2.1
-        version: 19.2.3(react@19.2.3)
-      react-json-view:
-        specifier: ^1.21.3
-        version: 1.21.3(@types/react@19.2.7)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-    devDependencies:
-      '@types/react':
-        specifier: ^19.2.7
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19.2.3
-        version: 19.2.3(@types/react@19.2.7)
-      '@vitejs/plugin-react':
-        specifier: ^5.1.1
-        version: 5.1.2(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
-      typescript:
-        specifier: ~5.9.3
-        version: 5.9.3
-      vite:
-        specifier: ^7.2.4
-        version: 7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
 packages:
 

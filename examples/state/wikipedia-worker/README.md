@@ -30,7 +30,7 @@ The worker needs the DurableStream server to be running first:
 pnpm --filter @durable-streams/server dev
 
 # Terminal 2: Start Wikipedia worker
-cd packages/state/examples/wikipedia-worker
+cd examples/state/wikipedia-worker
 pnpm dev
 ```
 

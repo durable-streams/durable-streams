@@ -1,6 +1,6 @@
 {
-  "name": "@durable-streams/examples",
-  "version": "0.1.0",
+  "name": "@durable-streams/example-state-background-jobs",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "scripts": {

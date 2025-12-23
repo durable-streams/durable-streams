@@ -69,7 +69,7 @@ This monorepo contains:
 - **[@durable-streams/client](./packages/client)** - TypeScript client with full read/write support and automatic batching
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
-- **[@durable-streams/test-ui](./packages/test-ui)** - Visual web interface for testing and exploring streams
+- **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
 - **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
@@ -93,7 +93,7 @@ pnpm build
 pnpm start:dev
 
 # Terminal 2: Launch the Test UI
-cd packages/test-ui
+cd examples/test-ui
 pnpm dev
 ```
 
@@ -105,7 +105,7 @@ Open `http://localhost:3000` to:
 - View the stream registry to see all active streams
 - Inspect stream metadata and content-type rendering
 
-See the [Test UI README](./packages/test-ui/README.md) for details.
+See the [Test UI README](./examples/test-ui/README.md) for details.
 
 ### Option 2: CLI
 

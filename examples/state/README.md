@@ -26,8 +26,8 @@ This directory contains single-file HTML examples demonstrating the Durable Stre
 We use Vite for fast development:
 
 ```bash
-# From this directory (packages/state/examples)
-cd packages/state/examples
+# From this directory (examples/state)
+cd examples/state
 pnpm install
 pnpm dev
 ```
@@ -86,14 +86,14 @@ In addition to the standard prerequisites above, you need to:
 1. Start the Wikipedia worker:
    ```bash
    # In a separate terminal
-   cd packages/state/examples/wikipedia-worker
+   cd examples/state/wikipedia-worker
    pnpm dev
    ```
 
 **Run the example:**
 
 ```bash
-cd packages/state/examples/wikipedia-events
+cd examples/state/wikipedia-events
 pnpm install
 pnpm dev
 ```
