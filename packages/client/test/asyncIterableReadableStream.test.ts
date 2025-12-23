@@ -337,4 +337,120 @@ describe(`asAsyncIterableReadableStream`, () => {
       }
     })
   })
+
+  describe(`error during read() releases lock`, () => {
+    it(`should release lock and rethrow when read() errors`, async () => {
+      const testError = new Error(`Stream read error`)
+      let readCount = 0
+
+      const stream = new ReadableStream<number>({
+        pull(controller) {
+          readCount++
+          if (readCount === 1) {
+            controller.enqueue(1)
+          } else {
+            controller.error(testError)
+          }
+        },
+      })
+
+      const result = asAsyncIterableReadableStream(stream)
+      const collected: Array<number> = []
+      let caughtError: Error | null = null
+
+      try {
+        for await (const chunk of result) {
+          collected.push(chunk)
+        }
+      } catch (e) {
+        caughtError = e as Error
+      }
+
+      // Should have collected the first chunk before error
+      expect(collected).toEqual([1])
+
+      // Error should be rethrown
+      expect(caughtError).toBe(testError)
+
+      // The stream should now be unlocked - verify by trying to get a new reader
+      // (This would throw if the lock wasn't released)
+      expect(() => stream.getReader()).not.toThrow()
+    })
+  })
+
+  describe(`no global prototype mutation`, () => {
+    it(`should not modify ReadableStream.prototype`, () => {
+      // Capture original prototype state
+      const originalPrototype = Object.getOwnPropertyNames(
+        ReadableStream.prototype
+      )
+      const originalAsyncIterator = Object.getOwnPropertyDescriptor(
+        ReadableStream.prototype,
+        Symbol.asyncIterator
+      )
+
+      // Create and process a stream
+      const stream = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(1)
+          controller.close()
+        },
+      })
+      asAsyncIterableReadableStream(stream)
+
+      // Verify prototype wasn't modified
+      const newPrototype = Object.getOwnPropertyNames(ReadableStream.prototype)
+      expect(newPrototype).toEqual(originalPrototype)
+
+      const newAsyncIterator = Object.getOwnPropertyDescriptor(
+        ReadableStream.prototype,
+        Symbol.asyncIterator
+      )
+      expect(newAsyncIterator).toEqual(originalAsyncIterator)
+    })
+
+    it(`should only add async iterator to the specific instance`, () => {
+      const stream1 = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(1)
+          controller.close()
+        },
+      })
+
+      const stream2 = new ReadableStream<number>({
+        start(controller) {
+          controller.enqueue(2)
+          controller.close()
+        },
+      })
+
+      // Check if native async iterator exists on prototype
+      const hasNativeIterator =
+        typeof ReadableStream.prototype[
+          Symbol.asyncIterator as keyof ReadableStream
+        ] === `function`
+
+      // Process only stream1
+      asAsyncIterableReadableStream(stream1)
+
+      // If there's no native iterator, stream1 should have it as an own property
+      // If there IS a native iterator, we don't add our own
+      if (!hasNativeIterator) {
+        expect(
+          Object.prototype.hasOwnProperty.call(stream1, Symbol.asyncIterator)
+        ).toBe(true)
+
+        // stream2 should NOT have the iterator as an own property
+        // (we didn't process it, and there's no native one)
+        expect(
+          Object.prototype.hasOwnProperty.call(stream2, Symbol.asyncIterator)
+        ).toBe(false)
+      } else {
+        // Native iterator exists - we don't add our own, so neither should have own property
+        // Both inherit from prototype
+        expect(typeof stream1[Symbol.asyncIterator]).toBe(`function`)
+        expect(typeof stream2[Symbol.asyncIterator]).toBe(`function`)
+      }
+    })
+  })
 })

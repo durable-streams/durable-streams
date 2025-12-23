@@ -86,12 +86,19 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
 
             return { done: false, value: value }
           } catch (err) {
+            // On read error, release lock to avoid leaking it
             pendingRead = false
+            finished = true
+            try {
+              reader.releaseLock()
+            } catch {
+              // Ignore release errors - lock may already be released
+            }
             throw err
           }
         },
 
-        async return() {
+        async return(value?: unknown) {
           // Per WHATWG Streams spec: reject with TypeError if there are pending reads
           if (pendingRead) {
             throw new TypeError(
@@ -100,8 +107,8 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
           }
 
           finished = true
-          // Per spec: start cancel, release lock, then await cancel
-          const cancelPromise = reader.cancel()
+          // Per spec: start cancel with optional reason, release lock, then await cancel
+          const cancelPromise = reader.cancel(value)
           reader.releaseLock()
           await cancelPromise
           return { done: true, value: undefined as unknown as T }
