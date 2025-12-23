@@ -570,9 +570,20 @@ function printConsoleResults(summary: BenchmarkSummary): void {
 function generateMarkdownReport(summary: BenchmarkSummary): string {
   const lines: Array<string> = []
 
-  lines.push(`# Client Benchmark Results`)
+  // Create collapsible section with summary status
+  const statusIcon = summary.failed === 0 ? `✓` : `✗`
+  const statusText =
+    summary.failed === 0
+      ? `${summary.passed} passed`
+      : `${summary.passed} passed, ${summary.failed} failed`
+
+  lines.push(`<details>`)
+  lines.push(
+    `<summary><strong>${summary.adapter}</strong>: ${statusText} ${statusIcon}</summary>`
+  )
   lines.push(``)
-  lines.push(`**Adapter**: ${summary.adapter} v${summary.adapterVersion}`)
+  lines.push(`### ${summary.adapter} v${summary.adapterVersion}`)
+  lines.push(``)
   lines.push(`**Server**: ${summary.serverUrl}`)
   lines.push(`**Date**: ${summary.timestamp}`)
   lines.push(`**Duration**: ${(summary.duration / 1000).toFixed(2)}s`)
@@ -583,7 +594,7 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     (r) => r.scenario.category === `latency` && !r.skipped && !r.error
   )
   if (latencyResults.length > 0) {
-    lines.push(`## Latency`)
+    lines.push(`#### Latency`)
     lines.push(``)
     lines.push(
       `Single-operation latency tests measure the time for individual operations to complete.`
@@ -610,7 +621,7 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     (r) => r.scenario.category === `throughput` && !r.skipped && !r.error
   )
   if (throughputResults.length > 0) {
-    lines.push(`## Throughput`)
+    lines.push(`#### Throughput`)
     lines.push(``)
     lines.push(
       `Throughput tests measure how quickly the client can batch and send/receive data.`
@@ -650,7 +661,7 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     (r) => r.scenario.category === `streaming` && !r.skipped && !r.error
   )
   if (streamingResults.length > 0) {
-    lines.push(`## Streaming`)
+    lines.push(`#### Streaming`)
     lines.push(``)
     lines.push(
       `Streaming tests measure real-time event delivery via SSE (Server-Sent Events).`
@@ -673,11 +684,13 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
   }
 
   // Summary
-  lines.push(`## Summary`)
+  lines.push(`#### Summary`)
   lines.push(``)
   lines.push(`- **Passed**: ${summary.passed}`)
   lines.push(`- **Failed**: ${summary.failed}`)
   lines.push(`- **Skipped**: ${summary.skipped}`)
+  lines.push(``)
+  lines.push(`</details>`)
 
   return lines.join(`\n`)
 }
