@@ -86,31 +86,29 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
 
         async return() {
           finished = true
-          try {
-            await reader.cancel()
-          } catch {
-            // Ignore cancel errors
-          }
+          // Match native behavior: start cancel, release lock immediately,
+          // then await cancel (propagating any rejection)
+          const cancelPromise = reader.cancel()
           try {
             reader.releaseLock()
           } catch {
-            // Ignore release errors
+            // Ignore release errors - lock may already be released
           }
+          await cancelPromise
           return { done: true, value: undefined as unknown as T }
         },
 
         async throw(err?: unknown) {
           finished = true
-          try {
-            await reader.cancel(err)
-          } catch {
-            // Ignore cancel errors
-          }
+          // Match native behavior: start cancel with error, release lock,
+          // then await cancel before re-throwing
+          const cancelPromise = reader.cancel(err)
           try {
             reader.releaseLock()
           } catch {
-            // Ignore release errors
+            // Ignore release errors - lock may already be released
           }
+          await cancelPromise
           throw err
         },
 
