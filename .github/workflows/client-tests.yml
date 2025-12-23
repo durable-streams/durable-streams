@@ -158,19 +158,13 @@ jobs:
           echo "# Client Benchmark Results" > benchmark-report.md
           echo "" >> benchmark-report.md
 
-          echo "## TypeScript Client" >> benchmark-report.md
+          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
-          pnpm tsx src/cli.ts --bench ts --format markdown | tail -n +2 >> benchmark-report.md
 
+          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
-          echo "## Go Client" >> benchmark-report.md
-          echo "" >> benchmark-report.md
-          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown | tail -n +2 >> benchmark-report.md
 
-          echo "" >> benchmark-report.md
-          echo "## Python Client" >> benchmark-report.md
-          echo "" >> benchmark-report.md
-          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown | tail -n +2 >> benchmark-report.md
+          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
 
           cat benchmark-report.md
 
