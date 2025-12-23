@@ -5,16 +5,18 @@
 }
 
 :root {
-  --bg-dark: #1e1e1e;
-  --bg-darker: #181818;
-  --bg-sidebar: #252526;
-  --border-color: #3c3c3c;
-  --text-primary: #cccccc;
-  --text-dim: #888888;
-  --accent: #569cd6;
-  --accent-hover: #6cb0e0;
-  --success: #4ec9b0;
-  --warning: #dcdcaa;
+  --bg-main: #ffffff;
+  --bg-secondary: #f5f5f5;
+  --bg-sidebar: #fafafa;
+  --border-color: #e0e0e0;
+  --text-primary: #1a1a1a;
+  --text-dim: #666666;
+  --accent: #0066cc;
+  --accent-hover: #0052a3;
+  --success: #2e8b57;
+  --warning: #b8860b;
+  --selection-bg: rgba(0, 102, 204, 0.2);
+  --active-line-bg: rgba(0, 0, 0, 0.03);
 }
 
 html,
@@ -22,7 +24,7 @@ body {
   height: 100%;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
     Ubuntu, Cantarell, sans-serif;
-  background: var(--bg-dark);
+  background: var(--bg-main);
   color: var(--text-primary);
 }
 
@@ -76,7 +78,7 @@ body {
     padding: 6px 10px;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: var(--bg-dark);
+    background: var(--bg-main);
     color: var(--text-primary);
     font-size: 11px;
     cursor: pointer;
@@ -103,7 +105,7 @@ body {
     padding: 6px 10px;
     border: 1px solid var(--accent);
     border-radius: 4px;
-    background: var(--bg-dark);
+    background: var(--bg-main);
     color: var(--text-primary);
     font-size: 11px;
     outline: none;
@@ -123,7 +125,7 @@ body {
   padding: 8px 12px;
   border: 1px solid var(--border-color);
   border-radius: 4px;
-  background: var(--bg-dark);
+  background: var(--bg-main);
   color: var(--text-primary);
   font-size: 13px;
 }
@@ -297,7 +299,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 8px 16px;
-  background: var(--bg-darker);
+  background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   gap: 16px;
 }
@@ -344,7 +346,7 @@ body {
   padding: 4px 10px;
   border: 1px solid var(--accent);
   border-radius: 4px;
-  background: var(--bg-dark);
+  background: var(--bg-main);
   color: var(--text-primary);
   font-size: 12px;
   outline: none;
@@ -499,3 +501,4 @@ body {
 .cm-yCaret:hover > .cm-ySelectionInfo {
   opacity: 1;
 }
+
