@@ -2110,6 +2110,46 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(postAfter.status).toBe(404)
       }
     )
+
+    test.concurrent(
+      `should allow recreating stream after TTL expires`,
+      async () => {
+        const streamPath = uniquePath(`ttl-recreate`)
+
+        // Create stream with 1 second TTL
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `1`,
+          },
+          body: `original data`,
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait for TTL to expire
+        await sleep(1500)
+
+        // Recreate stream with different config - should succeed (201)
+        const recreateResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `application/json`,
+            "Stream-TTL": `3600`,
+          },
+          body: `["new data"]`,
+        })
+        expect(recreateResponse.status).toBe(201)
+
+        // Verify the new stream is accessible
+        const getResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `GET`,
+        })
+        expect(getResponse.status).toBe(200)
+        const body = await getResponse.text()
+        expect(body).toContain(`new data`)
+      }
+    )
   })
 
   // ============================================================================

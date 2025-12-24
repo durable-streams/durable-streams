@@ -92,7 +92,8 @@ export class StreamStore {
     // Check absolute expiry time
     if (stream.expiresAt) {
       const expiryTime = new Date(stream.expiresAt).getTime()
-      if (now >= expiryTime) {
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
         return true
       }
     }
@@ -139,7 +140,8 @@ export class StreamStore {
       initialData?: Uint8Array
     } = {}
   ): Stream {
-    const existing = this.streams.get(path)
+    // Use getIfNotExpired to treat expired streams as non-existent
+    const existing = this.getIfNotExpired(path)
     if (existing) {
       // Check if config matches (idempotent create)
       const contentTypeMatches =

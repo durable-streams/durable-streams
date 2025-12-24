@@ -341,7 +341,8 @@ export class FileBackedStreamStore {
     // Check absolute expiry time
     if (meta.expiresAt) {
       const expiryTime = new Date(meta.expiresAt).getTime()
-      if (now >= expiryTime) {
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
         return true
       }
     }
@@ -397,8 +398,8 @@ export class FileBackedStreamStore {
       initialData?: Uint8Array
     } = {}
   ): Promise<Stream> {
-    const key = `stream:${streamPath}`
-    const existing = this.db.get(key) as StreamMetadata | undefined
+    // Use getMetaIfNotExpired to treat expired streams as non-existent
+    const existing = this.getMetaIfNotExpired(streamPath)
 
     if (existing) {
       // Check if config matches (idempotent create)
@@ -421,6 +422,9 @@ export class FileBackedStreamStore {
         )
       }
     }
+
+    // Define key for LMDB operations
+    const key = `stream:${streamPath}`
 
     // Initialize metadata
     const streamMeta: StreamMetadata = {
