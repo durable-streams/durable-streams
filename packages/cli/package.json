@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/cli",
   "description": "CLI tool for working with Durable Streams",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Durable Stream contributors",
   "bin": {
     "durable-stream": "./dist/index.js",

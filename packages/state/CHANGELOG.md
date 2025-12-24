@@ -1,5 +1,19 @@
 # @durable-streams/state
 
+## 0.1.2
+
+### Patch Changes
+
+- Standardize package.json exports across all packages ([`bf9bc19`](https://github.com/durable-streams/durable-streams/commit/bf9bc19ef13eb22b2c0f98a175fad02b221d7860))
+  - Add dual ESM/CJS exports to all packages
+  - Fix export order to have "." first, then "./package.json"
+  - Add proper main/module/types fields
+  - Add sideEffects: false
+  - Remove duplicate fields
+
+- Updated dependencies [[`bf9bc19`](https://github.com/durable-streams/durable-streams/commit/bf9bc19ef13eb22b2c0f98a175fad02b221d7860)]:
+  - @durable-streams/client@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes
