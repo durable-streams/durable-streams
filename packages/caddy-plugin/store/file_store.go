@@ -103,12 +103,18 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	s.metaCacheMu.Lock()
 	defer s.metaCacheMu.Unlock()
 
-	// Check if stream already exists
+	// Check if stream already exists (and is not expired)
 	if existing, ok := s.metaCache[path]; ok {
-		if existing.ConfigMatches(opts) {
+		// If expired, delete it and allow recreation
+		if existing.IsExpired() {
+			if dirName, hasDirName := s.dirCache[path]; hasDirName {
+				s.deleteStreamUnlocked(path, dirName)
+			}
+		} else if existing.ConfigMatches(opts) {
 			return existing, false, nil
+		} else {
+			return nil, false, ErrConfigMismatch
 		}
-		return nil, false, ErrConfigMismatch
 	}
 
 	// Generate unique directory name
@@ -210,14 +216,18 @@ func (s *FileStore) Delete(path string) error {
 		return ErrStreamNotFound
 	}
 
+	s.deleteStreamUnlocked(path, dirName)
+	return nil
+}
+
+// deleteStreamUnlocked removes a stream without acquiring the lock (caller must hold metaCacheMu)
+func (s *FileStore) deleteStreamUnlocked(path string, dirName string) {
 	// Remove from writer pool
 	segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
 	s.writerPool.Remove(segPath)
 
-	// Delete from bbolt
-	if err := s.metaStore.Delete(path); err != nil {
-		return err
-	}
+	// Delete from bbolt (ignore errors on expired stream cleanup)
+	s.metaStore.Delete(path)
 
 	// Remove from cache
 	delete(s.metaCache, path)
@@ -228,8 +238,6 @@ func (s *FileStore) Delete(path string) error {
 	deletedDir := filepath.Join(s.dataDir, "streams", ".deleted~"+dirName+"~"+fmt.Sprintf("%d", time.Now().UnixNano()))
 	os.Rename(streamDir, deletedDir)
 	go os.RemoveAll(deletedDir)
-
-	return nil
 }
 
 // Append adds data to a stream

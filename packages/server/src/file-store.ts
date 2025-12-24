@@ -333,6 +333,50 @@ export class FileBackedStreamStore {
   }
 
   /**
+   * Check if a stream is expired based on TTL or Expires-At.
+   */
+  private isExpired(meta: StreamMetadata): boolean {
+    const now = Date.now()
+
+    // Check absolute expiry time
+    if (meta.expiresAt) {
+      const expiryTime = new Date(meta.expiresAt).getTime()
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+        return true
+      }
+    }
+
+    // Check TTL (relative to creation time)
+    if (meta.ttlSeconds !== undefined) {
+      const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  /**
+   * Get stream metadata, deleting it if expired.
+   * Returns undefined if stream doesn't exist or is expired.
+   */
+  private getMetaIfNotExpired(streamPath: string): StreamMetadata | undefined {
+    const key = `stream:${streamPath}`
+    const meta = this.db.get(key) as StreamMetadata | undefined
+    if (!meta) {
+      return undefined
+    }
+    if (this.isExpired(meta)) {
+      // Delete expired stream
+      this.delete(streamPath)
+      return undefined
+    }
+    return meta
+  }
+
+  /**
    * Close the store, closing all file handles and database.
    * All data is already fsynced on each append, so no final flush needed.
    */
@@ -354,8 +398,8 @@ export class FileBackedStreamStore {
       initialData?: Uint8Array
     } = {}
   ): Promise<Stream> {
-    const key = `stream:${streamPath}`
-    const existing = this.db.get(key) as StreamMetadata | undefined
+    // Use getMetaIfNotExpired to treat expired streams as non-existent
+    const existing = this.getMetaIfNotExpired(streamPath)
 
     if (existing) {
       // Check if config matches (idempotent create)
@@ -378,6 +422,9 @@ export class FileBackedStreamStore {
         )
       }
     }
+
+    // Define key for LMDB operations
+    const key = `stream:${streamPath}`
 
     // Initialize metadata
     const streamMeta: StreamMetadata = {
@@ -430,14 +477,12 @@ export class FileBackedStreamStore {
   }
 
   get(streamPath: string): Stream | undefined {
-    const key = `stream:${streamPath}`
-    const meta = this.db.get(key) as StreamMetadata | undefined
+    const meta = this.getMetaIfNotExpired(streamPath)
     return meta ? this.streamMetaToStream(meta) : undefined
   }
 
   has(streamPath: string): boolean {
-    const key = `stream:${streamPath}`
-    return this.db.get(key) !== undefined
+    return this.getMetaIfNotExpired(streamPath) !== undefined
   }
 
   delete(streamPath: string): boolean {
@@ -489,8 +534,7 @@ export class FileBackedStreamStore {
       isInitialCreate?: boolean
     } = {}
   ): Promise<StreamMessage | null> {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -583,6 +627,7 @@ export class FileBackedStreamStore {
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
     }
+    const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
 
     // 5. Notify long-polls (data is now readable from disk)
@@ -596,8 +641,7 @@ export class FileBackedStreamStore {
     streamPath: string,
     offset?: string
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -690,8 +734,7 @@ export class FileBackedStreamStore {
     offset: string,
     timeoutMs: number
   ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -729,13 +772,13 @@ export class FileBackedStreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
+   * @throws Error if stream doesn't exist or is expired
    */
   formatResponse(
     streamPath: string,
     messages: Array<StreamMessage>
   ): Uint8Array {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -759,8 +802,7 @@ export class FileBackedStreamStore {
   }
 
   getCurrentOffset(streamPath: string): string | undefined {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
     return streamMeta?.currentOffset
   }
 

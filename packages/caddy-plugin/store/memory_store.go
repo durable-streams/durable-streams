@@ -41,13 +41,17 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check if stream already exists
+	// Check if stream already exists (and is not expired)
 	if existing, ok := s.streams[path]; ok {
-		if existing.metadata.ConfigMatches(opts) {
+		// If expired, delete it and allow recreation
+		if existing.metadata.IsExpired() {
+			delete(s.streams, path)
+		} else if existing.metadata.ConfigMatches(opts) {
 			// Idempotent success - return false to indicate not newly created
 			return &existing.metadata, false, nil
+		} else {
+			return nil, false, ErrConfigMismatch
 		}
-		return nil, false, ErrConfigMismatch
 	}
 
 	// Create new stream
