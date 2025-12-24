@@ -62,6 +62,37 @@ The protocol provides:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
+## Installation
+
+### npm packages
+
+```bash
+npm install @durable-streams/client   # TypeScript client
+npm install @durable-streams/server   # Reference Node.js server
+npm install @durable-streams/state    # State Protocol primitives
+npm install @durable-streams/cli      # Development & testing CLI
+```
+
+### Other languages
+
+```bash
+# Go
+go get github.com/durable-streams/durable-streams-go
+
+# Python
+pip install durable-streams
+```
+
+### Server binary
+
+For production use, download the Caddy-based server binary from [GitHub releases](https://github.com/durable-streams/durable-streams/releases). Available for macOS (Intel & ARM), Linux (AMD64 & ARM64), and Windows.
+
+```bash
+# Start the server
+./durable-streams-server dev
+# Server runs on http://localhost:4437
+```
+
 ## Packages
 
 This monorepo contains:
