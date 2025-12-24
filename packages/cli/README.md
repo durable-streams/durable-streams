@@ -4,30 +4,37 @@ A command-line tool for interacting with durable streams.
 
 ## Installation
 
-### Local Development
+### From npm
 
 ```bash
+# Global installation
+npm install -g @durable-streams/cli
+
+# Or run directly with npx
+npx @durable-streams/cli create my-stream
+npx @durable-streams/cli read my-stream
+```
+
+### From source (for development)
+
+```bash
+# Clone the repository
+git clone https://github.com/durable-streams/durable-streams.git
+cd durable-streams
+
 # Install dependencies
 pnpm install
 
-# Build the CLI (for production bin)
+# Build the CLI
 pnpm build
-```
 
-### Global Installation for Development
-
-For development, you can link the CLI globally with live TypeScript execution (no rebuild needed):
-
-```bash
-# From the CLI package directory
+# Link globally for development (uses tsx, no rebuild needed)
+cd packages/cli
 pnpm link:dev
 
 # Now you can use durable-stream-dev anywhere
-# Changes to src/index.ts are immediately available
 durable-stream-dev create my-stream
 ```
-
-This uses `tsx` to run the TypeScript source directly, so you see changes immediately without rebuilding.
 
 ## Quick Start
 

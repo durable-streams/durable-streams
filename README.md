@@ -62,6 +62,37 @@ The protocol provides:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
+## Installation
+
+### npm packages
+
+```bash
+npm install @durable-streams/client   # TypeScript client
+npm install @durable-streams/server   # Reference Node.js server
+npm install @durable-streams/state    # State Protocol primitives
+npm install @durable-streams/cli      # Development & testing CLI
+```
+
+### Other languages
+
+```bash
+# Go
+go get github.com/durable-streams/durable-streams-go
+
+# Python
+pip install durable-streams
+```
+
+### Server binary
+
+For production use, download the Caddy-based server binary from [GitHub releases](https://github.com/durable-streams/durable-streams/releases). Available for macOS (Intel & ARM), Linux (AMD64 & ARM64), and Windows.
+
+```bash
+# Start the server
+./durable-streams-server dev
+# Server runs on http://localhost:4437
+```
+
 ## Packages
 
 This monorepo contains:
@@ -70,7 +101,8 @@ This monorepo contains:
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
 - **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
-- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Protocol compliance test suite
+- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (124 tests)
+- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (110 tests)
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
@@ -480,15 +512,15 @@ runConformanceTests({
 ### Node.js Reference Server
 
 ```typescript
-import { createDurableStreamServer } from "@durable-streams/server"
+import { DurableStreamTestServer } from "@durable-streams/server"
 
-const server = createDurableStreamServer({
+const server = new DurableStreamTestServer({
   port: 4437,
-  // In-memory storage (for development)
-  // Add file-backed storage for production
+  host: "127.0.0.1",
 })
 
 await server.start()
+console.log(`Server running on ${server.baseUrl}`)
 ```
 
 See [@durable-streams/server](./packages/server) for more details.
@@ -497,7 +529,7 @@ See [@durable-streams/server](./packages/server) for more details.
 
 **Go**
 
-- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation that has full coverage of the conformance test suite.
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
 
 ## CLI Tool
 

@@ -1,6 +1,12 @@
 # @durable-streams/client
 
-TypeScript client for the Electric Durable Streams protocol.
+TypeScript client for the Durable Streams protocol.
+
+## Installation
+
+```bash
+npm install @durable-streams/client
+```
 
 ## Overview
 
