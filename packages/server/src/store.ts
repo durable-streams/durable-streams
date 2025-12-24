@@ -84,6 +84,48 @@ export class StreamStore {
   private pendingLongPolls: Array<PendingLongPoll> = []
 
   /**
+   * Check if a stream is expired based on TTL or Expires-At.
+   */
+  private isExpired(stream: Stream): boolean {
+    const now = Date.now()
+
+    // Check absolute expiry time
+    if (stream.expiresAt) {
+      const expiryTime = new Date(stream.expiresAt).getTime()
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    // Check TTL (relative to creation time)
+    if (stream.ttlSeconds !== undefined) {
+      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  /**
+   * Get a stream, deleting it if expired.
+   * Returns undefined if stream doesn't exist or is expired.
+   */
+  private getIfNotExpired(path: string): Stream | undefined {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      return undefined
+    }
+    if (this.isExpired(stream)) {
+      // Delete expired stream
+      this.delete(path)
+      return undefined
+    }
+    return stream
+  }
+
+  /**
    * Create a new stream.
    * @throws Error if stream already exists with different config
    * @returns existing stream if config matches (idempotent)
@@ -140,16 +182,17 @@ export class StreamStore {
 
   /**
    * Get a stream by path.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   get(path: string): Stream | undefined {
-    return this.streams.get(path)
+    return this.getIfNotExpired(path)
   }
 
   /**
-   * Check if a stream exists.
+   * Check if a stream exists (and is not expired).
    */
   has(path: string): boolean {
-    return this.streams.has(path)
+    return this.getIfNotExpired(path) !== undefined
   }
 
   /**
@@ -163,7 +206,7 @@ export class StreamStore {
 
   /**
    * Append data to a stream.
-   * @throws Error if stream doesn't exist
+   * @throws Error if stream doesn't exist or is expired
    * @throws Error if seq is lower than lastSeq
    * @throws Error if JSON mode and array is empty
    */
@@ -172,7 +215,7 @@ export class StreamStore {
     data: Uint8Array,
     options: { seq?: string; contentType?: string } = {}
   ): StreamMessage {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -210,12 +253,13 @@ export class StreamStore {
 
   /**
    * Read messages from a stream starting at the given offset.
+   * @throws Error if stream doesn't exist or is expired
    */
   read(
     path: string,
     offset?: string
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -247,9 +291,10 @@ export class StreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
+   * @throws Error if stream doesn't exist or is expired
    */
   formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -273,13 +318,14 @@ export class StreamStore {
 
   /**
    * Wait for new messages (long-poll).
+   * @throws Error if stream doesn't exist or is expired
    */
   async waitForMessages(
     path: string,
     offset: string,
     timeoutMs: number
   ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -315,9 +361,10 @@ export class StreamStore {
 
   /**
    * Get the current offset for a stream.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   getCurrentOffset(path: string): string | undefined {
-    return this.streams.get(path)?.currentOffset
+    return this.getIfNotExpired(path)?.currentOffset
   }
 
   /**
