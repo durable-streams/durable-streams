@@ -3,28 +3,25 @@
   "description": "CLI tool for working with Durable Streams",
   "version": "0.1.1",
   "author": "Durable Stream contributors",
-  "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/durable-streams/durable-streams.git",
-    "directory": "packages/cli"
+  "bin": {
+    "durable-stream": "./dist/index.js",
+    "durable-stream-dev": "./bin/durable-stream-dev.mjs"
   },
   "bugs": {
     "url": "https://github.com/durable-streams/durable-streams/issues"
   },
-  "keywords": [
-    "durable-streams",
-    "streaming",
-    "cli",
-    "typescript"
-  ],
-  "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "bin": {
-    "durable-stream": "./dist/index.js",
-    "durable-stream-dev": "./bin/durable-stream-dev.mjs"
+  "dependencies": {
+    "@durable-streams/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "@types/node": "^22.15.21",
+    "tsdown": "^0.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   },
   "exports": {
     ".": {
@@ -39,28 +36,31 @@
     },
     "./package.json": "./package.json"
   },
-  "sideEffects": false,
   "files": [
     "dist",
     "bin"
   ],
-  "dependencies": {
-    "@durable-streams/client": "workspace:*"
-  },
-  "devDependencies": {
-    "@durable-streams/server": "workspace:*",
-    "@types/node": "^22.15.21",
-    "tsdown": "^0.9.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.5.2"
-  },
-  "engines": {
-    "node": ">=18.0.0"
+  "keywords": [
+    "cli",
+    "durable-streams",
+    "streaming",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/cli"
   },
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
     "link:dev": "pnpm link --global",
     "start:dev": "tsx --watch example-server.ts"
-  }
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "./dist/index.d.ts"
 }
