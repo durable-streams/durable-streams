@@ -46,7 +46,7 @@ const server = new DurableStreamTestServer({
 
 ### File-Backed
 
-Persistent storage using LMDB:
+Persistent storage with streams stored as log files and LMDB for metadata:
 
 ```typescript
 import { DurableStreamTestServer, FileBackedStreamStore } from "@durable-streams/server"
@@ -116,7 +116,7 @@ class StreamStore {
 
 ### FileBackedStreamStore
 
-LMDB-backed persistent storage with the same interface as `StreamStore`.
+File-backed persistent storage (log files for streams, LMDB for metadata) with the same interface as `StreamStore`.
 
 ## Exports
 
