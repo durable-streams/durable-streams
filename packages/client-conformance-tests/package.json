@@ -19,21 +19,41 @@
     "typescript"
   ],
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
     "durable-streams-client-conformance": "./dist/cli.js"
   },
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./protocol": {
-      "import": "./dist/protocol.js",
-      "types": "./dist/protocol.d.ts"
-    }
+      "import": {
+        "types": "./dist/protocol.d.ts",
+        "default": "./dist/protocol.js"
+      },
+      "require": {
+        "types": "./dist/protocol.d.cts",
+        "default": "./dist/protocol.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "test-cases"
+  ],
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -56,11 +76,6 @@
     "tsdown": "^0.9.0",
     "typescript": "^5.0.0"
   },
-  "files": [
-    "dist",
-    "src",
-    "test-cases"
-  ],
   "engines": {
     "node": ">=20.11.0"
   }

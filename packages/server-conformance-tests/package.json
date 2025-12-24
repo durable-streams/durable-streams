@@ -19,7 +19,8 @@
     "typescript"
   ],
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
     "durable-streams-server-conformance": "./dist/cli.js",
@@ -27,10 +28,23 @@
   },
   "exports": {
     ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "bin"
+  ],
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -46,11 +60,6 @@
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
   },
-  "files": [
-    "dist",
-    "src",
-    "bin"
-  ],
   "engines": {
     "node": ">=18.0.0"
   }
