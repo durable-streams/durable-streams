@@ -559,10 +559,6 @@ See [@durable-streams/server](./packages/server) for more details.
 
 - [durable-streams](https://pypi.org/project/durable-streams/): Python client (`pip install durable-streams`)
 
-**Yjs (Collaborative Editing)**
-
-- Yjs provider for real-time collaborative editing with conflict-free sync semantics. Includes awareness/presence support.
-
 ## CLI Tool
 
 ```bash
