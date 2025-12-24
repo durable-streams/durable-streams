@@ -1,5 +1,20 @@
 # @durable-streams/server-conformance-tests
 
+## 0.1.3
+
+### Patch Changes
+
+- Add TTL expiration conformance tests and implement expiration in stores ([#101](https://github.com/durable-streams/durable-streams/pull/101))
+  - Add 7 new conformance tests verifying streams return 404 after TTL/Expires-At passes
+  - Add "recreate after expiry" test ensuring expired streams don't block new stream creation
+  - Add 4 new TTL format validation tests (leading zeros, plus sign, decimal, scientific notation)
+  - Implement expiration checking in both in-memory and file-backed stores
+  - Fix: expired streams no longer block PUT to recreate at same path
+  - Fix: malformed Expires-At dates now treated as expired (fail closed)
+
+- Updated dependencies []:
+  - @durable-streams/client@0.1.2
+
 ## 0.1.2
 
 ### Patch Changes
