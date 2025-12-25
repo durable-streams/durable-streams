@@ -3861,3 +3861,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     })
   })
 }
+
+// Re-export golden test utilities
+export * from "./golden.js"

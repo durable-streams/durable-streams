@@ -45,6 +45,16 @@
         "default": "./dist/protocol.cjs"
       }
     },
+    "./golden-client": {
+      "import": {
+        "types": "./dist/golden-client.d.ts",
+        "default": "./dist/golden-client.js"
+      },
+      "require": {
+        "types": "./dist/golden-client.d.cts",
+        "default": "./dist/golden-client.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "files": [
