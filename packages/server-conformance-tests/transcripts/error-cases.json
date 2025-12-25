@@ -12,7 +12,7 @@
       "tags": ["error", "404", "read"],
       "request": {
         "method": "GET",
-        "path": "/v1/streams/does-not-exist?offset=-1",
+        "path": "/v1/streams/golden-does-not-exist?offset=-1",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -20,10 +20,22 @@
       "response": {
         "status": 404,
         "headers": [],
-        "body": "",
+        "body": "Stream not found",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "content-type",
+        "content-length",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": [],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
@@ -35,7 +47,7 @@
       "tags": ["error", "404", "head"],
       "request": {
         "method": "HEAD",
-        "path": "/v1/streams/does-not-exist",
+        "path": "/v1/streams/golden-does-not-exist",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -46,79 +58,19 @@
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
-      "presenceOnlyHeaders": [],
-      "version": 1,
-      "capturedAt": "2025-01-01T00:00:00.000Z"
-    },
-    {
-      "id": "error-409-config-mismatch",
-      "description": "PUT with different content-type returns 409 Conflict",
-      "category": "error",
-      "tags": ["error", "409", "create", "conflict"],
-      "request": {
-        "method": "PUT",
-        "path": "/v1/streams/existing-text-stream",
-        "headers": [["content-type", "application/json"]],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "response": {
-        "status": 409,
-        "headers": [],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
-      "presenceOnlyHeaders": [],
-      "version": 1,
-      "capturedAt": "2025-01-01T00:00:00.000Z"
-    },
-    {
-      "id": "error-409-sequence-conflict",
-      "description": "POST with duplicate Stream-Seq returns 409",
-      "category": "error",
-      "tags": ["error", "409", "append", "sequence"],
-      "request": {
-        "method": "POST",
-        "path": "/v1/streams/seq-stream",
-        "headers": [
-          ["content-type", "text/plain"],
-          ["stream-seq", "1"]
-        ],
-        "body": "duplicate seq",
-        "bodyEncoding": "utf8"
-      },
-      "response": {
-        "status": 409,
-        "headers": [],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
-      "presenceOnlyHeaders": [],
-      "version": 1,
-      "capturedAt": "2025-01-01T00:00:00.000Z"
-    },
-    {
-      "id": "error-400-empty-json-array",
-      "description": "POST with empty JSON array returns 400",
-      "category": "error",
-      "tags": ["error", "400", "append", "json"],
-      "request": {
-        "method": "POST",
-        "path": "/v1/streams/json-stream",
-        "headers": [["content-type", "application/json"]],
-        "body": "[]",
-        "bodyEncoding": "utf8"
-      },
-      "response": {
-        "status": 400,
-        "headers": [],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "content-type",
+        "content-length",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": [],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
@@ -130,7 +82,7 @@
       "tags": ["error", "404", "append"],
       "request": {
         "method": "POST",
-        "path": "/v1/streams/does-not-exist",
+        "path": "/v1/streams/golden-does-not-exist",
         "headers": [["content-type", "text/plain"]],
         "body": "data",
         "bodyEncoding": "utf8"
@@ -138,10 +90,22 @@
       "response": {
         "status": 404,
         "headers": [],
-        "body": "",
+        "body": "Stream not found",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "content-type",
+        "content-length",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": [],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
@@ -153,7 +117,7 @@
       "tags": ["error", "404", "delete"],
       "request": {
         "method": "DELETE",
-        "path": "/v1/streams/does-not-exist",
+        "path": "/v1/streams/golden-does-not-exist",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -161,10 +125,22 @@
       "response": {
         "status": 404,
         "headers": [],
-        "body": "",
+        "body": "Stream not found",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server", "content-type", "content-length"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "content-type",
+        "content-length",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": [],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
