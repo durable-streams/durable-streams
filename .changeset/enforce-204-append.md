@@ -1,7 +1,6 @@
 ---
 "@durable-streams/server": patch
 "@durable-streams/server-conformance-tests": patch
-"@durable-streams-internal/caddy-plugin": patch
 ---
 
 Standardize HTTP status codes for protocol operations
