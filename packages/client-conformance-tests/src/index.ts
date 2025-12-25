@@ -48,3 +48,16 @@ export {
 
 // Re-export protocol types for adapter implementers
 export * from "./protocol.js"
+
+// Golden/wire-level client testing
+export {
+  MockServer,
+  verifyRequest,
+  formatClientResult,
+  runClientGoldenTest,
+  type ExpectedRequest,
+  type MockResponse,
+  type ClientGoldenTest,
+  type CapturedClientRequest,
+  type ClientVerifyResult,
+} from "./golden-client.js"

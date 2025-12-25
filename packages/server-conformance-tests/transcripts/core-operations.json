@@ -1,0 +1,222 @@
+{
+  "meta": {
+    "name": "Core Operations",
+    "description": "Golden transcripts for fundamental Durable Streams operations",
+    "protocolVersion": "1.0"
+  },
+  "transcripts": [
+    {
+      "id": "create-stream-text-plain",
+      "description": "Create a new text/plain stream",
+      "category": "create",
+      "tags": ["core", "create", "text"],
+      "request": {
+        "method": "PUT",
+        "path": "/v1/streams/test-stream",
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 201,
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "create-stream-json",
+      "description": "Create a new application/json stream",
+      "category": "create",
+      "tags": ["core", "create", "json"],
+      "request": {
+        "method": "PUT",
+        "path": "/v1/streams/json-stream",
+        "headers": [["content-type", "application/json"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 201,
+        "headers": [["content-type", "application/json"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "create-stream-with-ttl",
+      "description": "Create a stream with TTL header",
+      "category": "create",
+      "tags": ["core", "create", "ttl"],
+      "request": {
+        "method": "PUT",
+        "path": "/v1/streams/ttl-stream",
+        "headers": [
+          ["content-type", "text/plain"],
+          ["stream-ttl", "3600"]
+        ],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 201,
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "create-idempotent-same-config",
+      "description": "Creating the same stream twice returns 200",
+      "category": "create",
+      "tags": ["core", "create", "idempotent"],
+      "request": {
+        "method": "PUT",
+        "path": "/v1/streams/existing-stream",
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 200,
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "append-text-data",
+      "description": "Append text data to a stream",
+      "category": "append",
+      "tags": ["core", "append", "text"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/streams/test-stream",
+        "headers": [["content-type", "text/plain"]],
+        "body": "Hello, World!",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 204,
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "append-json-array",
+      "description": "Append JSON array (flattens to individual messages)",
+      "category": "append",
+      "tags": ["core", "append", "json", "batching"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/streams/json-stream",
+        "headers": [["content-type", "application/json"]],
+        "body": "[{\"msg\":1},{\"msg\":2},{\"msg\":3}]",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 204,
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "read-empty-stream",
+      "description": "Read from an empty stream",
+      "category": "read",
+      "tags": ["core", "read"],
+      "request": {
+        "method": "GET",
+        "path": "/v1/streams/empty-stream?offset=-1",
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 200,
+        "headers": [
+          ["content-type", "text/plain"],
+          ["stream-up-to-date", "true"]
+        ],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": ["stream-next-offset", "stream-cursor"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "head-stream-metadata",
+      "description": "HEAD request for stream metadata",
+      "category": "head",
+      "tags": ["core", "head", "metadata"],
+      "request": {
+        "method": "HEAD",
+        "path": "/v1/streams/test-stream",
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 200,
+        "headers": [["content-type", "text/plain"]],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server", "content-length"],
+      "presenceOnlyHeaders": ["stream-next-offset"],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "delete-stream",
+      "description": "Delete a stream",
+      "category": "delete",
+      "tags": ["core", "delete"],
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/streams/to-delete",
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "response": {
+        "status": 204,
+        "headers": [],
+        "body": "",
+        "bodyEncoding": "utf8"
+      },
+      "ignoreHeaders": ["date", "server"],
+      "presenceOnlyHeaders": [],
+      "version": 1,
+      "capturedAt": "2025-01-01T00:00:00.000Z"
+    }
+  ]
+}

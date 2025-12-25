@@ -1,7 +1,7 @@
 import type { Options } from "tsdown"
 
 const config: Options = {
-  entry: ["src/index.ts", "src/cli.ts", "src/test-runner.ts"],
+  entry: ["src/index.ts", "src/cli.ts", "src/test-runner.ts", "src/golden.ts", "src/golden-cli.ts"],
   format: ["esm", "cjs"],
   platform: "node",
   dts: true,
