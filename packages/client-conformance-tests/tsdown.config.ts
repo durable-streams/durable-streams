@@ -6,7 +6,6 @@ const config: Options = {
     "src/cli.ts",
     "src/protocol.ts",
     "src/adapters/typescript-adapter.ts",
-    "src/golden-client.ts",
   ],
   format: ["esm", "cjs"],
   platform: "node",

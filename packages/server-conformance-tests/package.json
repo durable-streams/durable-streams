@@ -25,8 +25,7 @@
   "bin": {
     "server-conformance-tests": "./dist/cli.js",
     "durable-streams-server-conformance": "./dist/cli.js",
-    "durable-streams-server-conformance-dev": "./bin/conformance-dev.mjs",
-    "durable-streams-golden": "./dist/golden-cli.js"
+    "durable-streams-server-conformance-dev": "./bin/conformance-dev.mjs"
   },
   "exports": {
     ".": {
@@ -39,24 +38,13 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./golden": {
-      "import": {
-        "types": "./dist/golden.d.ts",
-        "default": "./dist/golden.js"
-      },
-      "require": {
-        "types": "./dist/golden.d.cts",
-        "default": "./dist/golden.cjs"
-      }
-    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
   "files": [
     "dist",
     "src",
-    "bin",
-    "transcripts"
+    "bin"
   ],
   "scripts": {
     "build": "tsdown",
