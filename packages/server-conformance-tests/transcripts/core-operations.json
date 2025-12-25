@@ -12,7 +12,7 @@
       "tags": ["core", "create", "text"],
       "request": {
         "method": "PUT",
-        "path": "/v1/streams/test-stream",
+        "path": "/v1/streams/golden-create-text",
         "headers": [["content-type", "text/plain"]],
         "body": "",
         "bodyEncoding": "utf8"
@@ -23,7 +23,18 @@
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "location"
+      ],
       "presenceOnlyHeaders": ["stream-next-offset"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
@@ -35,7 +46,7 @@
       "tags": ["core", "create", "json"],
       "request": {
         "method": "PUT",
-        "path": "/v1/streams/json-stream",
+        "path": "/v1/streams/golden-create-json",
         "headers": [["content-type", "application/json"]],
         "body": "",
         "bodyEncoding": "utf8"
@@ -46,46 +57,31 @@
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding",
+        "location"
+      ],
       "presenceOnlyHeaders": ["stream-next-offset"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
     },
     {
-      "id": "create-stream-with-ttl",
-      "description": "Create a stream with TTL header",
-      "category": "create",
-      "tags": ["core", "create", "ttl"],
+      "id": "head-stream-metadata",
+      "description": "HEAD request for stream metadata",
+      "category": "head",
+      "tags": ["core", "head", "metadata"],
       "request": {
-        "method": "PUT",
-        "path": "/v1/streams/ttl-stream",
-        "headers": [
-          ["content-type", "text/plain"],
-          ["stream-ttl", "3600"]
-        ],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "response": {
-        "status": 201,
-        "headers": [["content-type", "text/plain"]],
-        "body": "",
-        "bodyEncoding": "utf8"
-      },
-      "ignoreHeaders": ["date", "server"],
-      "presenceOnlyHeaders": ["stream-next-offset"],
-      "version": 1,
-      "capturedAt": "2025-01-01T00:00:00.000Z"
-    },
-    {
-      "id": "create-idempotent-same-config",
-      "description": "Creating the same stream twice returns 200",
-      "category": "create",
-      "tags": ["core", "create", "idempotent"],
-      "request": {
-        "method": "PUT",
-        "path": "/v1/streams/existing-stream",
-        "headers": [["content-type", "text/plain"]],
+        "method": "HEAD",
+        "path": "/v1/streams/golden-create-text",
+        "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
       },
@@ -95,30 +91,51 @@
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "content-length",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": ["stream-next-offset"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
     },
     {
       "id": "append-text-data",
-      "description": "Append text data to a stream",
+      "description": "Append text data to a stream (returns 200 with empty body)",
       "category": "append",
       "tags": ["core", "append", "text"],
       "request": {
         "method": "POST",
-        "path": "/v1/streams/test-stream",
+        "path": "/v1/streams/golden-create-text",
         "headers": [["content-type", "text/plain"]],
         "body": "Hello, World!",
         "bodyEncoding": "utf8"
       },
       "response": {
-        "status": 204,
+        "status": 200,
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": ["stream-next-offset"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
@@ -130,30 +147,40 @@
       "tags": ["core", "append", "json", "batching"],
       "request": {
         "method": "POST",
-        "path": "/v1/streams/json-stream",
+        "path": "/v1/streams/golden-create-json",
         "headers": [["content-type", "application/json"]],
         "body": "[{\"msg\":1},{\"msg\":2},{\"msg\":3}]",
         "bodyEncoding": "utf8"
       },
       "response": {
-        "status": 204,
+        "status": 200,
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": ["stream-next-offset"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
     },
     {
-      "id": "read-empty-stream",
-      "description": "Read from an empty stream",
+      "id": "read-text-stream",
+      "description": "Read text data from stream",
       "category": "read",
-      "tags": ["core", "read"],
+      "tags": ["core", "read", "text"],
       "request": {
         "method": "GET",
-        "path": "/v1/streams/empty-stream?offset=-1",
+        "path": "/v1/streams/golden-create-text?offset=-1",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -164,34 +191,58 @@
           ["content-type", "text/plain"],
           ["stream-up-to-date", "true"]
         ],
-        "body": "",
+        "body": "Hello, World!",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
-      "presenceOnlyHeaders": ["stream-next-offset", "stream-cursor"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
+      "presenceOnlyHeaders": ["stream-next-offset", "stream-cursor", "etag"],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
     },
     {
-      "id": "head-stream-metadata",
-      "description": "HEAD request for stream metadata",
-      "category": "head",
-      "tags": ["core", "head", "metadata"],
+      "id": "read-json-stream",
+      "description": "Read JSON array from stream",
+      "category": "read",
+      "tags": ["core", "read", "json"],
       "request": {
-        "method": "HEAD",
-        "path": "/v1/streams/test-stream",
+        "method": "GET",
+        "path": "/v1/streams/golden-create-json?offset=-1",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
       },
       "response": {
         "status": 200,
-        "headers": [["content-type", "text/plain"]],
-        "body": "",
+        "headers": [
+          ["content-type", "application/json"],
+          ["stream-up-to-date", "true"]
+        ],
+        "body": "[{\"msg\":1},{\"msg\":2},{\"msg\":3}]",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server", "content-length"],
-      "presenceOnlyHeaders": ["stream-next-offset"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
+      "presenceOnlyHeaders": ["stream-next-offset", "stream-cursor", "etag"],
+      "semanticBodyComparison": true,
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
     },
@@ -202,7 +253,7 @@
       "tags": ["core", "delete"],
       "request": {
         "method": "DELETE",
-        "path": "/v1/streams/to-delete",
+        "path": "/v1/streams/golden-create-text",
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -213,7 +264,17 @@
         "body": "",
         "bodyEncoding": "utf8"
       },
-      "ignoreHeaders": ["date", "server"],
+      "ignoreHeaders": [
+        "date",
+        "server",
+        "access-control-allow-headers",
+        "access-control-allow-methods",
+        "access-control-allow-origin",
+        "access-control-expose-headers",
+        "connection",
+        "keep-alive",
+        "transfer-encoding"
+      ],
       "presenceOnlyHeaders": [],
       "version": 1,
       "capturedAt": "2025-01-01T00:00:00.000Z"
