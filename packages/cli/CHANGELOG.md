@@ -1,5 +1,11 @@
 # @durable-streams/cli
 
+## 0.1.3
+
+### Patch Changes
+
+- Fix npx executable discovery for all CLI packages. When running `npx @durable-streams/<package>`, npm now correctly finds the executable. Also fixes vitest binary path resolution in server-conformance-tests for scoped packages installed via npx. ([#103](https://github.com/durable-streams/durable-streams/pull/103))
+
 ## 0.1.2
 
 ### Patch Changes

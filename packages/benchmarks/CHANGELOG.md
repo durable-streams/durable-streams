@@ -1,5 +1,11 @@
 # @durable-streams/benchmarks
 
+## 0.1.3
+
+### Patch Changes
+
+- Upgrade vitest from v3 to v4 for improved performance and compatibility with the latest testing features. ([#105](https://github.com/durable-streams/durable-streams/pull/105))
+
 ## 0.1.2
 
 ### Patch Changes

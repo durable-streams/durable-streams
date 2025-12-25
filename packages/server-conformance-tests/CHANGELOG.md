@@ -1,5 +1,13 @@
 # @durable-streams/server-conformance-tests
 
+## 0.1.4
+
+### Patch Changes
+
+- Fix npx executable discovery for all CLI packages. When running `npx @durable-streams/<package>`, npm now correctly finds the executable. Also fixes vitest binary path resolution in server-conformance-tests for scoped packages installed via npx. ([#103](https://github.com/durable-streams/durable-streams/pull/103))
+
+- Upgrade vitest from v3 to v4 for improved performance and compatibility with the latest testing features. ([#105](https://github.com/durable-streams/durable-streams/pull/105))
+
 ## 0.1.3
 
 ### Patch Changes
