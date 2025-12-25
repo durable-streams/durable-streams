@@ -109,7 +109,7 @@
     },
     {
       "id": "append-text-data",
-      "description": "Append text data to a stream (returns 200 with empty body)",
+      "description": "Append text data to a stream (returns 204 No Content)",
       "category": "append",
       "tags": ["core", "append", "text"],
       "request": {
@@ -120,7 +120,7 @@
         "bodyEncoding": "utf8"
       },
       "response": {
-        "status": 200,
+        "status": 204,
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"
@@ -153,7 +153,7 @@
         "bodyEncoding": "utf8"
       },
       "response": {
-        "status": 200,
+        "status": 204,
         "headers": [],
         "body": "",
         "bodyEncoding": "utf8"

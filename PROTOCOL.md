@@ -181,7 +181,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 
 #### Response Codes
 
-- `204 No Content` (recommended) or `200 OK`: Append successful
+- `204 No Content`: Append successful
 - `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
