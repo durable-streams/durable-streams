@@ -1,0 +1,61 @@
+{
+  "name": "@durable-streams/tanstack-db-sync",
+  "description": "Sync TanStack DB collection changes to Durable Streams",
+  "version": "0.1.0",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/tanstack-db-sync"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "tanstack-db",
+    "sync",
+    "state",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "@tanstack/db": "latest"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "tsdown": "^0.9.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
