@@ -113,7 +113,7 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` (or `204 No Content`) if the existing stream's configuration (content type, TTL/expiry) matches the request, or
+- return `200 OK` if the existing stream's configuration (content type, TTL/expiry) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
@@ -137,7 +137,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 #### Response Codes
 
 - `201 Created`: Stream created successfully
-- `200 OK` or `204 No Content`: Stream already exists with matching configuration (idempotent success)
+- `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
 - `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
 - `429 Too Many Requests`: Rate limit exceeded

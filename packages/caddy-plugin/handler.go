@@ -542,7 +542,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
