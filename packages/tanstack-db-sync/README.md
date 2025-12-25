@@ -143,6 +143,189 @@ Converts a single TanStack DB ChangeMessage to a State Protocol ChangeEvent.
 
 Converts an array of TanStack DB changes to State Protocol events.
 
+## Examples
+
+### Electric SQL: Join Two Tables and Sync the Result
+
+This example shows how to sync two Electric SQL tables (users and posts), join them with a live query, and sync the joined results to a durable stream.
+
+```typescript
+import { createCollection, createQuery } from "@tanstack/db"
+import { electricSync } from "@tanstack/db-electric"
+import { syncCollectionToStream } from "@durable-streams/tanstack-db-sync"
+import { DurableStream } from "@durable-streams/client"
+
+// Create Electric-synced collections for two tables
+const usersCollection = createCollection({
+  id: "users",
+  getKey: (user) => user.id,
+  sync: electricSync({
+    url: "http://localhost:3000/v1/shape",
+    table: "users",
+  }),
+})
+
+const postsCollection = createCollection({
+  id: "posts",
+  getKey: (post) => post.id,
+  sync: electricSync({
+    url: "http://localhost:3000/v1/shape",
+    table: "posts",
+  }),
+})
+
+// Create a live query that joins users and posts
+const postsWithAuthors = createQuery({
+  id: "posts-with-authors",
+  getKey: (item) => item.postId,
+  query: () => ({
+    from: postsCollection,
+    join: {
+      author: {
+        from: usersCollection,
+        on: (post) => post.authorId,
+      },
+    },
+    select: (post, { author }) => ({
+      postId: post.id,
+      title: post.title,
+      content: post.content,
+      authorName: author?.name ?? "Unknown",
+      authorEmail: author?.email,
+    }),
+  }),
+})
+
+// Create the output stream
+const stream = await DurableStream.create({
+  url: "https://api.example.com/streams/posts-feed",
+  contentType: "application/json",
+})
+
+// Sync the joined query results to the stream
+// Whenever a user or post changes, the join is recomputed
+// and the changes are synced to the stream
+const subscription = syncCollectionToStream({
+  collection: postsWithAuthors,
+  stream,
+  entityType: "post-with-author",
+  primaryKeyField: "postId",
+})
+
+// The stream now receives events like:
+// {
+//   type: "post-with-author",
+//   key: "post-123",
+//   value: {
+//     title: "Hello World",
+//     content: "...",
+//     authorName: "Alice",
+//     authorEmail: "alice@example.com"
+//   },
+//   headers: { operation: "insert" }
+// }
+```
+
+### API Polling: Sync External API Data
+
+This example shows how to poll an external API every 3 seconds and sync changes to a durable stream.
+
+```typescript
+import { createCollection } from "@tanstack/db"
+import { syncCollectionToStream } from "@durable-streams/tanstack-db-sync"
+import { DurableStream } from "@durable-streams/client"
+
+interface StockQuote {
+  symbol: string
+  price: number
+  change: number
+  volume: number
+  timestamp: string
+}
+
+// Create a collection with a polling sync
+const stocksCollection = createCollection<StockQuote, string>({
+  id: "stocks",
+  getKey: (stock) => stock.symbol,
+  sync: {
+    sync: ({ begin, write, commit, markReady }) => {
+      let isReady = false
+
+      const poll = async () => {
+        try {
+          const response = await fetch("https://api.example.com/stocks/quotes")
+          const quotes: StockQuote[] = await response.json()
+
+          begin()
+          for (const quote of quotes) {
+            write({
+              type: "insert", // Use insert - collection handles upsert logic
+              value: quote,
+            })
+          }
+          commit()
+
+          if (!isReady) {
+            markReady()
+            isReady = true
+          }
+        } catch (error) {
+          console.error("Failed to fetch stock quotes:", error)
+        }
+      }
+
+      // Initial poll
+      poll()
+
+      // Poll every 3 seconds
+      const intervalId = setInterval(poll, 3000)
+
+      // Return cleanup function
+      return () => {
+        clearInterval(intervalId)
+      }
+    },
+  },
+})
+
+// Create the output stream
+const stream = await DurableStream.create({
+  url: "https://api.example.com/streams/stock-updates",
+  contentType: "application/json",
+})
+
+// Sync stock changes to the stream
+// Only actual changes are synced (TanStack DB tracks diffs)
+const subscription = syncCollectionToStream({
+  collection: stocksCollection,
+  stream,
+  entityType: "stock",
+  primaryKeyField: "symbol",
+  transformHeaders: () => ({
+    timestamp: new Date().toISOString(),
+  }),
+})
+
+// The stream receives events only when prices actually change:
+// {
+//   type: "stock",
+//   key: "AAPL",
+//   value: {
+//     price: 178.52,
+//     change: 2.34,
+//     volume: 52340000,
+//     timestamp: "2024-01-15T14:30:00Z"
+//   },
+//   headers: {
+//     operation: "update",
+//     timestamp: "2024-01-15T14:30:01.234Z"
+//   }
+// }
+
+// Cleanup when done
+subscription.unsubscribe()
+```
+
 ## State Protocol Format
 
 Changes are converted to the State Protocol format:
