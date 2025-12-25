@@ -4,6 +4,7 @@
   "version": "0.1.2",
   "author": "Durable Stream contributors",
   "bin": {
+    "cli": "./dist/index.js",
     "durable-stream": "./dist/index.js",
     "durable-stream-dev": "./bin/durable-stream-dev.mjs"
   },

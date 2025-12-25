@@ -4,6 +4,7 @@
   "version": "0.1.3",
   "author": "Durable Stream contributors",
   "bin": {
+    "client-conformance-tests": "./dist/cli.js",
     "durable-streams-client-conformance": "./dist/cli.js"
   },
   "bugs": {

@@ -131,28 +131,31 @@ function getTestRunnerPath(): string {
   return runnerInSrc
 }
 
+// Find vitest binary in various possible locations
+function findVitestBinary(): string {
+  const possiblePaths = [
+    // Package's own node_modules (bundled dependency)
+    join(__dirname, `..`, `node_modules`, `.bin`, `vitest`),
+    // Hoisted location for scoped packages (@scope/package-name/dist -> node_modules/.bin)
+    join(__dirname, `..`, `..`, `..`, `..`, `.bin`, `vitest`),
+    // Monorepo root node_modules (for development)
+    join(__dirname, `..`, `..`, `..`, `node_modules`, `.bin`, `vitest`),
+  ]
+
+  for (const vitestPath of possiblePaths) {
+    if (existsSync(vitestPath)) {
+      return vitestPath
+    }
+  }
+
+  // Fallback to vitest in PATH
+  return `vitest`
+}
+
 function runTests(baseUrl: string): Promise<number> {
   return new Promise((resolvePromise) => {
     const runnerPath = getTestRunnerPath()
-
-    // Find vitest binary
-    const vitestBin = join(__dirname, `..`, `node_modules`, `.bin`, `vitest`)
-    const vitestBinAlt = join(
-      __dirname,
-      `..`,
-      `..`,
-      `..`,
-      `node_modules`,
-      `.bin`,
-      `vitest`
-    )
-
-    let vitestPath = `vitest`
-    if (existsSync(vitestBin)) {
-      vitestPath = vitestBin
-    } else if (existsSync(vitestBinAlt)) {
-      vitestPath = vitestBinAlt
-    }
+    const vitestPath = findVitestBinary()
 
     const args = [
       `run`,
@@ -199,25 +202,7 @@ async function runWatch(
 
   const spawnTests = (): ChildProcess => {
     const runnerPath = getTestRunnerPath()
-
-    // Find vitest binary
-    const vitestBin = join(__dirname, `..`, `node_modules`, `.bin`, `vitest`)
-    const vitestBinAlt = join(
-      __dirname,
-      `..`,
-      `..`,
-      `..`,
-      `node_modules`,
-      `.bin`,
-      `vitest`
-    )
-
-    let vitestPath = `vitest`
-    if (existsSync(vitestBin)) {
-      vitestPath = vitestBin
-    } else if (existsSync(vitestBinAlt)) {
-      vitestPath = vitestBinAlt
-    }
+    const vitestPath = findVitestBinary()
 
     const args = [
       `run`,
