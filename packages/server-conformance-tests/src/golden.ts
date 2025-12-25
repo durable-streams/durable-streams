@@ -277,14 +277,24 @@ export async function captureExchange(
     fetchHeaders.set(k, v)
   }
 
+  // Convert body to a format fetch accepts
+  let bodyInit: BodyInit | undefined
+  if (request.body) {
+    if (typeof request.body === `string`) {
+      bodyInit = request.body
+    } else {
+      // Copy to new ArrayBuffer for fetch compatibility
+      bodyInit = request.body.buffer.slice(
+        request.body.byteOffset,
+        request.body.byteOffset + request.body.byteLength
+      ) as ArrayBuffer
+    }
+  }
+
   const response = await fetch(url.toString(), {
     method: request.method,
     headers: fetchHeaders,
-    body: request.body
-      ? typeof request.body === `string`
-        ? request.body
-        : request.body
-      : undefined,
+    body: bodyInit,
   })
 
   // Capture response
@@ -343,17 +353,29 @@ export async function verifyTranscript(
     headers.set(k, v)
   }
 
-  // Decode request body
-  const body =
-    transcript.request.body.length > 0
-      ? decodeBody(transcript.request.body, transcript.request.bodyEncoding)
-      : undefined
+  // Decode request body and convert to fetch-compatible format
+  let fetchBody: BodyInit | undefined
+  if (transcript.request.body.length > 0) {
+    const decoded = decodeBody(
+      transcript.request.body,
+      transcript.request.bodyEncoding
+    )
+    if (decoded instanceof Uint8Array) {
+      // Copy to new ArrayBuffer for fetch compatibility
+      fetchBody = decoded.buffer.slice(
+        decoded.byteOffset,
+        decoded.byteOffset + decoded.byteLength
+      ) as ArrayBuffer
+    } else {
+      fetchBody = decoded
+    }
+  }
 
   // Make the request
   const response = await fetch(url.toString(), {
     method: transcript.request.method,
     headers,
-    body,
+    body: fetchBody,
   })
 
   // Capture actual response
