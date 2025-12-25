@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@durable-streams/client": "workspace:*",
-    "vitest": "^3.2.4"
+    "vitest": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
