@@ -1,9 +1,9 @@
 /**
- * Golden/wire transcript testing for Durable Streams servers.
+ * Golden transcript testing for Durable Streams servers.
  *
- * Golden tests capture byte-for-byte HTTP exchanges and replay them
- * to verify wire-level protocol compliance. This catches subtle issues
- * like header casing, whitespace in JSON, chunking differences, etc.
+ * Golden tests capture HTTP exchanges and replay them to verify protocol
+ * compliance. Headers are normalized (lowercase, sorted) and compared at
+ * the HTTP semantic level rather than raw wire bytes.
  *
  * Inspired by:
  * - Protocol Buffers conformance suite (stdin/stdout, golden comparisons)
@@ -431,17 +431,17 @@ export async function verifyTranscript(
     }
   }
 
-  // Check for unexpected headers (optional - can be noisy)
-  // for (const [name] of actualHeaderMap) {
-  //   if (!expectedHeaderMap.has(name)) {
-  //     differences.push({
-  //       type: `header-extra`,
-  //       path: `headers.${name}`,
-  //       expected: `(not present)`,
-  //       actual: actualHeaderMap.get(name)!,
-  //     })
-  //   }
-  // }
+  // Check presence-only headers are actually present
+  for (const name of presenceOnlySet) {
+    if (!expectedHeaderMap.has(name) && !actualHeaderMap.has(name)) {
+      differences.push({
+        type: `header-missing`,
+        path: `headers.${name}`,
+        expected: `(present)`,
+        actual: `(missing)`,
+      })
+    }
+  }
 
   // Body comparison
   if (transcript.semanticBodyComparison) {

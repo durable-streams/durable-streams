@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * CLI for golden/wire transcript testing.
+ * CLI for golden transcript testing.
  *
  * Usage:
  *   # Verify transcripts against a server
- *   npx @durable-streams/server-conformance-tests golden verify http://localhost:4473 transcripts/*.json
+ *   npx durable-streams-golden verify http://localhost:4473 transcripts/*.json
  *
  *   # Capture a new transcript
- *   npx @durable-streams/server-conformance-tests golden capture http://localhost:4473
+ *   npx durable-streams-golden capture http://localhost:4473
  */
 
 import { readFile, writeFile } from "node:fs/promises"
@@ -54,13 +54,13 @@ Options:
 
 Examples:
   # Verify all transcripts
-  golden verify http://localhost:4473 transcripts/*.json
+  durable-streams-golden verify http://localhost:4473 transcripts/*.json
 
   # Verify only error cases
-  golden verify http://localhost:4473 transcripts/*.json --tags error
+  durable-streams-golden verify http://localhost:4473 transcripts/*.json --tags error
 
   # Capture new transcripts
-  golden capture http://localhost:4473 --output my-transcripts.json
+  durable-streams-golden capture http://localhost:4473 --output my-transcripts.json
 `)
 }
 
