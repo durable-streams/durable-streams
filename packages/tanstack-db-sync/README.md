@@ -150,51 +150,49 @@ Converts an array of TanStack DB changes to State Protocol events.
 This example shows how to sync two Electric SQL tables (users and posts), join them with a live query, and sync the joined results to a durable stream.
 
 ```typescript
-import { createCollection, createQuery } from "@tanstack/db"
-import { electricSync } from "@tanstack/db-electric"
+import { createCollection, createLiveQueryCollection, eq } from "@tanstack/db"
+import { electricCollectionOptions } from "@tanstack/db-electric"
 import { syncCollectionToStream } from "@durable-streams/tanstack-db-sync"
 import { DurableStream } from "@durable-streams/client"
 
 // Create Electric-synced collections for two tables
-const usersCollection = createCollection({
-  id: "users",
-  getKey: (user) => user.id,
-  sync: electricSync({
-    url: "http://localhost:3000/v1/shape",
-    table: "users",
-  }),
-})
+const usersCollection = createCollection(
+  electricCollectionOptions({
+    id: "users",
+    getKey: (user) => user.id,
+    shapeOptions: {
+      url: "http://localhost:3000/v1/shape",
+      params: { table: "users" },
+    },
+  })
+)
 
-const postsCollection = createCollection({
-  id: "posts",
-  getKey: (post) => post.id,
-  sync: electricSync({
-    url: "http://localhost:3000/v1/shape",
-    table: "posts",
-  }),
-})
+const postsCollection = createCollection(
+  electricCollectionOptions({
+    id: "posts",
+    getKey: (post) => post.id,
+    shapeOptions: {
+      url: "http://localhost:3000/v1/shape",
+      params: { table: "posts" },
+    },
+  })
+)
 
 // Create a live query that joins users and posts
-const postsWithAuthors = createQuery({
-  id: "posts-with-authors",
-  getKey: (item) => item.postId,
-  query: () => ({
-    from: postsCollection,
-    join: {
-      author: {
-        from: usersCollection,
-        on: (post) => post.authorId,
-      },
-    },
-    select: (post, { author }) => ({
-      postId: post.id,
-      title: post.title,
-      content: post.content,
-      authorName: author?.name ?? "Unknown",
-      authorEmail: author?.email,
-    }),
-  }),
-})
+const postsWithAuthors = createLiveQueryCollection((q) =>
+  q
+    .from({ post: postsCollection })
+    .join({ user: usersCollection }, ({ post, user }) =>
+      eq(post.userId, user.id)
+    )
+    .select(({ post, user }) => ({
+      postId: post!.id,
+      title: post!.title,
+      content: post!.content,
+      authorName: user?.name ?? "Unknown",
+      authorEmail: user?.email,
+    }))
+)
 
 // Create the output stream
 const stream = await DurableStream.create({
@@ -228,10 +226,12 @@ const subscription = syncCollectionToStream({
 
 ### API Polling: Sync External API Data
 
-This example shows how to poll an external API every 3 seconds and sync changes to a durable stream.
+This example shows how to poll an external API every 3 seconds and sync changes to a durable stream using TanStack Query.
 
 ```typescript
 import { createCollection } from "@tanstack/db"
+import { queryCollectionOptions } from "@tanstack/db-query"
+import { QueryClient } from "@tanstack/query-core"
 import { syncCollectionToStream } from "@durable-streams/tanstack-db-sync"
 import { DurableStream } from "@durable-streams/client"
 
@@ -243,50 +243,23 @@ interface StockQuote {
   timestamp: string
 }
 
-// Create a collection with a polling sync
-const stocksCollection = createCollection<StockQuote, string>({
-  id: "stocks",
-  getKey: (stock) => stock.symbol,
-  sync: {
-    sync: ({ begin, write, commit, markReady }) => {
-      let isReady = false
+// Create a TanStack Query client
+const queryClient = new QueryClient()
 
-      const poll = async () => {
-        try {
-          const response = await fetch("https://api.example.com/stocks/quotes")
-          const quotes: StockQuote[] = await response.json()
-
-          begin()
-          for (const quote of quotes) {
-            write({
-              type: "insert", // Use insert - collection handles upsert logic
-              value: quote,
-            })
-          }
-          commit()
-
-          if (!isReady) {
-            markReady()
-            isReady = true
-          }
-        } catch (error) {
-          console.error("Failed to fetch stock quotes:", error)
-        }
-      }
-
-      // Initial poll
-      poll()
-
-      // Poll every 3 seconds
-      const intervalId = setInterval(poll, 3000)
-
-      // Return cleanup function
-      return () => {
-        clearInterval(intervalId)
-      }
+// Create a collection with polling via TanStack Query
+const stocksCollection = createCollection<StockQuote, string>(
+  queryCollectionOptions({
+    id: "stocks",
+    queryKey: ["stocks", "quotes"],
+    queryFn: async () => {
+      const response = await fetch("https://api.example.com/stocks/quotes")
+      return response.json() as Promise<StockQuote[]>
     },
-  },
-})
+    queryClient,
+    getKey: (stock) => stock.symbol,
+    refetchInterval: 3000, // Poll every 3 seconds
+  })
+)
 
 // Create the output stream
 const stream = await DurableStream.create({
