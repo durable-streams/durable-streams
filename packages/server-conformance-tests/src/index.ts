@@ -479,7 +479,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `PUT`,
         headers: { "Content-Type": `text/plain` },
       })
-      expect([200, 204]).toContain(secondResponse.status)
+      expect(secondResponse.status).toBe(200)
     })
 
     test(`should return 409 on PUT with different config`, async () => {
@@ -945,7 +945,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `PUT`,
         headers: { "Content-Type": `APPLICATION/JSON` },
       })
-      expect([200, 204]).toContain(response2.status)
+      expect(response2.status).toBe(200)
     })
 
     test(`should accept headers with different casing`, async () => {
@@ -1828,7 +1828,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           "Stream-TTL": `3600`,
         },
       })
-      expect([200, 204]).toContain(response2.status)
+      expect(response2.status).toBe(200)
     })
 
     test(`should reject idempotent PUT with different TTL`, async () => {

@@ -1,10 +1,12 @@
 ---
 "@durable-streams/server": patch
 "@durable-streams/server-conformance-tests": patch
+"@durable-streams-internal/caddy-plugin": patch
 ---
 
-Enforce 204 No Content for append responses
+Standardize HTTP status codes for protocol operations
 
-The protocol now mandates `204 No Content` for successful append operations,
-removing the previous allowance for `200 OK`. This is a breaking change for
-servers that returned 200, but clients should already accept both status codes.
+- Append (POST): Now mandates `204 No Content` (previously allowed 200 or 204)
+- Idempotent create (PUT): Now mandates `200 OK` (previously allowed 200 or 204)
+
+This removes ambiguity from the protocol. Clients should already accept these status codes.
