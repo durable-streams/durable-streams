@@ -334,6 +334,70 @@ Defer WebSocket API until latency is a proven bottleneck.
 | Batching (concurrency=1) | Replace | Upgrade to pipelining (concurrency=5) |
 | `If-Match` (OCC) | Yes | Optional, orthogonal feature |
 
+### Two-Layer Sequence Design
+
+The system uses **two independent sequence mechanisms** that serve different purposes:
+
+| Layer | Headers | Scope | Purpose | Managed by |
+|-------|---------|-------|---------|------------|
+| **Transport dedup** | `X-Producer-Id` + `X-Producer-Seq` | Per-producer session | Retry safety within session | Client library (automatic) |
+| **Application coord** | `Stream-Seq` | Per-stream (all producers) | Cross-restart/cross-producer ordering | Application (opt-in) |
+
+**Why both are needed:**
+
+#### Transport-level deduplication (automatic)
+```
+Producer session: writes seq 0, 1, 2
+Network timeout on seq 2
+Retry seq 2 → server sees duplicate, returns 204
+```
+Handled automatically by `IdempotentProducer`. Users don't think about it.
+
+#### Application-level coordination (opt-in)
+
+**Scenario 1: Cross-restart protection**
+```
+Session 1: writes to offsets 0-99, crashes
+Session 2: restarts, doesn't know where it left off
+           idempotent producer resets to seq=0, epoch bumps
+           → could accidentally re-send same data
+
+With Stream-Seq:
+           application tracks "I wrote up to Stream-Seq 99"
+           new session sends Stream-Seq: 99
+           → server rejects if stream already past that point
+```
+
+**Scenario 2: Multi-producer coordination**
+```
+Producer A (order-service-1): writes to "events" stream
+Producer B (order-service-2): also writes to "events" stream
+
+X-Producer-Seq: each has independent sequence, no coordination
+Stream-Seq: both can coordinate against the same stream-level sequence
+```
+
+**Scenario 3: Exactly-once across system boundaries**
+```
+External system: "process events starting at offset 500"
+Producer sends Stream-Seq: 499
+→ server rejects if accidentally re-sending earlier events
+```
+
+**Combined usage:**
+```http
+POST /stream/my-stream HTTP/1.1
+X-Producer-Id: order-service-1    # Transport dedup (automatic)
+X-Producer-Seq: 42                # This producer's internal sequence
+Stream-Seq: 10005                 # Application-level coordination (opt-in)
+
+{"order": "..."}
+```
+
+Server validates both independently:
+1. **Transport check**: Is `X-Producer-Seq: 42` valid for this producer/epoch? (dedup)
+2. **Application check**: Is `Stream-Seq: 10005` > stream's `lastSeq`? (coordination)
+
 ---
 
 ## Proposed API
