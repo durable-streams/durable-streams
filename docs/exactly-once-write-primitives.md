@@ -395,38 +395,48 @@ await producer.flush()
 
 ### Server Protocol
 
-**Request:**
+**Request (client-provided producer ID, server-managed epoch):**
 ```http
 POST /stream/my-stream HTTP/1.1
 Content-Type: application/json
-X-Producer-Id: <assigned-id>
-X-Producer-Epoch: <epoch>
-X-Producer-Seq: <sequence>
+X-Producer-Id: order-service-1
+X-Producer-Seq: 0
 
 [{"event": "click"}, {"event": "scroll"}]
 ```
 
-**Response (success):**
+Note: Client sends `X-Producer-Id` and `X-Producer-Seq`. Server manages epochs internally.
+
+**Response (success - first write or new epoch):**
 ```http
 HTTP/1.1 201 Created
 X-Stream-Offset: 00000042
+X-Producer-Epoch: 1
 ```
 
-**Response (duplicate):**
+**Response (success - subsequent write):**
+```http
+HTTP/1.1 201 Created
+X-Stream-Offset: 00000043
+```
+
+**Response (duplicate - already received this seq):**
 ```http
 HTTP/1.1 204 No Content
 ```
 
-**Response (sequence gap):**
+**Response (sequence gap - missing messages):**
 ```http
 HTTP/1.1 409 Conflict
-X-Expected-Seq: <expected>
+X-Expected-Seq: 5
+X-Received-Seq: 7
 ```
 
-**Response (stale epoch - zombie producer):**
+**Response (stale epoch - zombie producer from old session):**
 ```http
 HTTP/1.1 403 Forbidden
 X-Error: stale-epoch
+X-Current-Epoch: 2
 ```
 
 ---
@@ -505,17 +515,54 @@ Response:
 }
 ```
 
-**Option B: Client-provided with server validation (like Pulsar)**
+Downside: Requires 1 RTT before first write. For low-latency use cases, this overhead is significant.
+
+**Option B: Client-provided with server-managed epochs (like Pulsar)** ✅ RECOMMENDED
 ```http
 POST /stream/my-stream HTTP/1.1
-X-Producer-Name: order-service-1
+X-Producer-Id: order-service-1
+X-Producer-Seq: 0
 
 Response:
-X-Producer-Id: order-service-1
+HTTP/1.1 201 Created
 X-Producer-Epoch: 1
 ```
 
-**Recommendation:** Server-assigned for simplicity, with optional client hint for debugging.
+**Why client-provided is better for durable-streams:**
+
+1. **Zero RTT to first byte**: Producer can send data immediately, no handshake required
+2. **Simpler protocol**: No separate producer registration endpoint
+3. **Better debugging**: Meaningful names like `order-service-1` vs opaque IDs like `p-abc123`
+4. **Stateless clients**: Client doesn't need to persist server-assigned ID
+
+**How epochs work with client-provided IDs:**
+
+- Server tracks `(producerId, epoch, lastSeq)` per stream
+- On first write from a producer ID: epoch=1, accept
+- On write with seq=0 (restart): bump epoch, reset sequence tracking
+- Old epoch writes rejected as stale (zombie fencing)
+
+```typescript
+// Client generates stable ID (e.g., from config, hostname, or UUID persisted to disk)
+const producerId = process.env.PRODUCER_ID ?? `${hostname()}-${processId}`
+
+// First write includes producer ID, server assigns epoch
+producer.append(data)  // X-Producer-Id: web-server-1, X-Producer-Seq: 0
+                       // Response: X-Producer-Epoch: 1
+
+// Subsequent writes in same session
+producer.append(data)  // X-Producer-Id: web-server-1, X-Producer-Seq: 1
+```
+
+**Epoch bump on restart:**
+```
+Session 1: seq 0, 1, 2, 3... (epoch 1)
+[crash/restart]
+Session 2: seq 0 → server sees seq reset, bumps to epoch 2
+           seq 1, 2, 3... (epoch 2)
+
+If zombie from session 1 sends seq=4 with epoch=1 → rejected (stale epoch)
+```
 
 ### Pipelining Implementation
 
@@ -544,7 +591,6 @@ class IdempotentProducer {
       method: 'POST',
       headers: {
         'X-Producer-Id': this.#producerId,
-        'X-Producer-Epoch': String(this.#epoch),
         'X-Producer-Seq': String(pending.seq),
       },
       body: JSON.stringify(pending.batch.map(m => m.data))
@@ -555,11 +601,12 @@ class IdempotentProducer {
       this.#inFlight.delete(pending.seq)
       pending.promise.resolve()
     } else if (response.status === 409) {
-      // Gap - need to retry with correct sequence
-      await this.#handleGap(pending)
+      // Gap - missing messages, surface error to application
+      this.#handleGap(pending, response)
     } else if (response.status === 403) {
-      // Stale epoch - need new producer session
-      await this.#handleStaleEpoch()
+      // Stale epoch - this producer session is zombied
+      // Another instance with same ID started a new session
+      this.#handleStaleEpoch(pending, response)
     }
   }
 }
@@ -598,9 +645,9 @@ class IdempotentProducer {
    - Kafka: Until log segment is deleted
    - Could use TTL with periodic refresh
 
-3. **Epoch assignment**: Server-assigned vs. client-provided?
-   - Server-assigned is simpler
-   - Client-provided allows named producers (better debugging)
+3. ~~**Epoch assignment**: Server-assigned vs. client-provided?~~ **RESOLVED**
+   - **Decision**: Client-provided IDs with server-managed epochs (Pulsar-style)
+   - **Rationale**: Zero RTT to first byte is critical for low-latency use cases
 
 4. **Gap handling**: Reject vs. buffer-and-reorder?
    - Kafka rejects (client retries)
