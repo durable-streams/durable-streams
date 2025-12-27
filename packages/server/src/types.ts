@@ -101,6 +101,66 @@ export type StreamLifecycleHook = (
 ) => void | Promise<void>
 
 /**
+ * Options for configuring the DurableStreamRouter.
+ */
+export interface RouterOptions {
+  /**
+   * The backing store for streams.
+   * Can be StreamStore (in-memory) or FileBackedStreamStore (persistent).
+   */
+  store: unknown // Will be StreamStore | FileBackedStreamStore, but avoiding circular import
+
+  /**
+   * Default long-poll timeout in milliseconds.
+   * Default: 30000 (30 seconds).
+   */
+  longPollTimeout?: number
+
+  /**
+   * Enable gzip/deflate compression for responses.
+   * Default: true.
+   */
+  compression?: boolean
+
+  /**
+   * Interval in seconds for cursor calculation.
+   * Used for CDN cache collapsing to prevent infinite cache loops.
+   * Default: 20 seconds.
+   */
+  cursorIntervalSeconds?: number
+
+  /**
+   * Epoch timestamp for cursor interval calculation.
+   * Default: October 9, 2024 00:00:00 UTC.
+   */
+  cursorEpoch?: Date
+
+  /**
+   * Hook called when a stream is created.
+   */
+  onStreamCreated?: StreamLifecycleHook
+
+  /**
+   * Hook called when a stream is deleted.
+   */
+  onStreamDeleted?: StreamLifecycleHook
+
+  /**
+   * Enable CORS headers in responses.
+   * Default: true.
+   */
+  cors?: boolean
+
+  /**
+   * Base URL path prefix to strip from incoming requests.
+   * For example, if set to "/api/streams", a request to "/api/streams/my-stream"
+   * will be processed as "/my-stream".
+   * Default: undefined (no prefix stripping).
+   */
+  baseUrl?: string
+}
+
+/**
  * Options for creating the test server.
  */
 export interface TestServerOptions {

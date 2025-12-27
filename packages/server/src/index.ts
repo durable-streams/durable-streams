@@ -5,6 +5,12 @@
  */
 
 export { DurableStreamTestServer } from "./server"
+export { DurableStreamRouter } from "./router"
+export {
+  FaultInjectionMiddleware,
+  type InjectedError,
+  type FaultInjectionOptions,
+} from "./fault-injection"
 export { StreamStore } from "./store"
 export { FileBackedStreamStore } from "./file-store"
 export { encodeStreamPath, decodeStreamPath } from "./path-encoding"
@@ -21,6 +27,7 @@ export type {
   Stream,
   StreamMessage,
   TestServerOptions,
+  RouterOptions,
   PendingLongPoll,
   StreamLifecycleEvent,
   StreamLifecycleHook,
