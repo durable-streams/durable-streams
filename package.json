@@ -13,6 +13,7 @@
     "dev": "pnpm -r --parallel dev",
     "test": "vitest",
     "test:run": "vitest run --project client --project server --project state",
+    "test:webapi": "vitest --config vitest.webapi.config.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
