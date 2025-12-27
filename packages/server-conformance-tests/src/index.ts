@@ -2829,6 +2829,154 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(received).toContain(`data: line3`)
     })
 
+    test(`should prevent CRLF injection in payloads - embedded event boundaries become literal data`, async () => {
+      const streamPath = `/v1/stream/sse-crlf-injection-test-${Date.now()}`
+
+      // Payload attempts to inject a fake control event via CRLF sequences
+      // If vulnerable, this would terminate the current event and inject a new one
+      const maliciousPayload = `safe content\r\n\r\nevent: control\r\ndata: {"injected":true}\r\n\r\nmore safe content`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: maliciousPayload,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Parse all events from the response
+      const events = parseSSEEvents(received)
+
+      // Should have exactly 1 data event and 1 control event (the real one from server)
+      const dataEvents = events.filter((e) => e.type === `data`)
+      const controlEvents = events.filter((e) => e.type === `control`)
+
+      expect(dataEvents.length).toBe(1)
+      expect(controlEvents.length).toBe(1)
+
+      // The "injected" control event should NOT exist as a real event
+      // Instead, "event: control" should appear as literal text within the data
+      const dataContent = dataEvents[0]!.data
+      expect(dataContent).toContain(`event: control`)
+      expect(dataContent).toContain(`data: {"injected":true}`)
+
+      // The real control event should have server-generated fields, not injected ones
+      const controlContent = JSON.parse(controlEvents[0]!.data)
+      expect(controlContent.injected).toBeUndefined()
+      expect(controlContent.streamNextOffset).toBeDefined()
+    })
+
+    test(`should prevent CRLF injection - LF-only attack vectors`, async () => {
+      const streamPath = `/v1/stream/sse-lf-injection-test-${Date.now()}`
+
+      // Attempt injection using Unix-style line endings only
+      const maliciousPayload = `start\n\nevent: data\ndata: fake-event\n\nend`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: maliciousPayload,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      const events = parseSSEEvents(received)
+      const dataEvents = events.filter((e) => e.type === `data`)
+
+      // Should be exactly 1 data event (the injected one should be escaped)
+      expect(dataEvents.length).toBe(1)
+
+      // The payload should be preserved as literal content, including the
+      // "event: data" and "data: fake-event" as text, not parsed as SSE commands
+      const dataContent = dataEvents[0]!.data
+      expect(dataContent).toContain(`event: data`)
+      expect(dataContent).toContain(`data: fake-event`)
+    })
+
+    test(`should prevent CRLF injection - carriage return only attack vectors`, async () => {
+      const streamPath = `/v1/stream/sse-cr-injection-test-${Date.now()}`
+
+      // Attempt injection using CR-only line endings (per SSE spec, CR is a valid line terminator)
+      const maliciousPayload = `start\r\revent: control\rdata: {"cr_injected":true}\r\rend`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: maliciousPayload,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      const events = parseSSEEvents(received)
+      const controlEvents = events.filter((e) => e.type === `control`)
+
+      // Should have exactly 1 control event (the real one from server)
+      expect(controlEvents.length).toBe(1)
+
+      // The real control event should not contain injected fields
+      const controlContent = JSON.parse(controlEvents[0]!.data)
+      expect(controlContent.cr_injected).toBeUndefined()
+      expect(controlContent.streamNextOffset).toBeDefined()
+    })
+
+    test(`should handle JSON payloads with embedded newlines safely`, async () => {
+      const streamPath = `/v1/stream/sse-json-newline-test-${Date.now()}`
+
+      // JSON content that contains literal newlines in string values
+      // These should be JSON-escaped, but we test that even if they're not,
+      // SSE encoding handles them safely
+      const jsonPayload = JSON.stringify({
+        message: `line1\nline2\nline3`,
+        attack: `try\r\n\r\nevent: control\r\ndata: {"bad":true}`,
+      })
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: jsonPayload,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      const events = parseSSEEvents(received)
+      const dataEvents = events.filter((e) => e.type === `data`)
+      const controlEvents = events.filter((e) => e.type === `control`)
+
+      expect(dataEvents.length).toBe(1)
+      expect(controlEvents.length).toBe(1)
+
+      // Parse the data event - should be valid JSON array wrapping the original object
+      const parsedData = JSON.parse(dataEvents[0]!.data)
+      expect(Array.isArray(parsedData)).toBe(true)
+      expect(parsedData[0].message).toBe(`line1\nline2\nline3`)
+      expect(parsedData[0].attack).toContain(`event: control`)
+
+      // Control event should be the real server-generated one
+      const controlContent = JSON.parse(controlEvents[0]!.data)
+      expect(controlContent.bad).toBeUndefined()
+      expect(controlContent.streamNextOffset).toBeDefined()
+    })
+
     test(`should generate unique, monotonically increasing offsets in SSE mode`, async () => {
       const streamPath = `/v1/stream/sse-monotonic-offset-test-${Date.now()}`
 

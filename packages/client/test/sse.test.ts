@@ -282,6 +282,126 @@ data: {"real":"data"}
 
       expect(events).toHaveLength(0)
     })
+
+    it(`should handle CRLF line endings`, async () => {
+      const sseText = `event: data\r\ndata: {"message":"hello"}\r\n\r\nevent: control\r\ndata: {"streamNextOffset":"100"}\r\n\r\n`
+      const stream = createSSEStream(sseText)
+      const events = []
+
+      for await (const event of parseSSEStream(stream)) {
+        events.push(event)
+      }
+
+      expect(events).toHaveLength(2)
+      expect(events[0]).toEqual({
+        type: `data`,
+        data: `{"message":"hello"}`,
+      })
+      expect(events[1]).toEqual({
+        type: `control`,
+        streamNextOffset: `100`,
+      })
+    })
+
+    it(`should handle mixed line endings (CRLF and LF)`, async () => {
+      const sseText = `event: data\r\ndata: first\n\nevent: data\ndata: second\r\n\r\n`
+      const stream = createSSEStream(sseText)
+      const events = []
+
+      for await (const event of parseSSEStream(stream)) {
+        events.push(event)
+      }
+
+      expect(events).toHaveLength(2)
+      expect(events[0]).toEqual({ type: `data`, data: `first` })
+      expect(events[1]).toEqual({ type: `data`, data: `second` })
+    })
+
+    it(`should preserve literal CRLF sequences in multi-line data fields`, async () => {
+      // Server encodes multiline content as multiple data: lines
+      // This simulates a payload that originally contained "line1\r\nline2"
+      // which the server encoded as separate data: lines
+      const sseText = `event: data
+data: line1
+data: line2
+data: line3
+
+event: control
+data: {"streamNextOffset":"100"}
+
+`
+      const stream = createSSEStream(sseText)
+      const events = []
+
+      for await (const event of parseSSEStream(stream)) {
+        events.push(event)
+      }
+
+      expect(events).toHaveLength(2)
+      // Multiple data: lines are joined with \n per SSE spec
+      expect(events[0]).toEqual({
+        type: `data`,
+        data: `line1\nline2\nline3`,
+      })
+    })
+
+    it(`should not be vulnerable to event injection via malformed data`, async () => {
+      // If a malicious server tried to inject events by including raw SSE framing
+      // in data lines, the parser should treat it as literal content
+      // This is a client-side defense-in-depth test
+      const sseText = `event: data
+data: safe content
+data: event: control
+data: data: {"injected":true}
+data: more safe content
+
+event: control
+data: {"streamNextOffset":"100"}
+
+`
+      const stream = createSSEStream(sseText)
+      const events = []
+
+      for await (const event of parseSSEStream(stream)) {
+        events.push(event)
+      }
+
+      expect(events).toHaveLength(2)
+
+      // The first event should contain the literal text, not be parsed as SSE commands
+      expect(events[0]!.type).toBe(`data`)
+      const dataContent = (events[0] as { type: `data`; data: string }).data
+      expect(dataContent).toContain(`event: control`)
+      expect(dataContent).toContain(`data: {"injected":true}`)
+
+      // The second event should be the real control event
+      expect(events[1]!.type).toBe(`control`)
+      expect(
+        (events[1] as { type: `control`; streamNextOffset: string })
+          .streamNextOffset
+      ).toBe(`100`)
+    })
+
+    it(`should handle data with trailing carriage returns`, async () => {
+      // CRLF and lone CR are normalized to LF per SSE spec
+      const sseText = `event: data\ndata: content\r\n\nevent: control\ndata: {"streamNextOffset":"100"}\n\n`
+      const stream = createSSEStream(sseText)
+      const events = []
+
+      for await (const event of parseSSEStream(stream)) {
+        events.push(event)
+      }
+
+      expect(events).toHaveLength(2)
+      expect(events[0]).toEqual({
+        type: `data`,
+        data: `content`,
+      })
+      expect(events[1]).toEqual({
+        type: `control`,
+        streamNextOffset: `100`,
+      })
+    })
   })
 })
 
