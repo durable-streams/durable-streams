@@ -1,32 +1,29 @@
 /**
- * Vitest configuration for running conformance tests with Web APIs only.
+ * Vitest configuration for running tests that use only Web APIs.
  *
- * This configuration is designed for non-Node.js runtimes:
- * - Bun: `bun vitest --config vitest.webapi.config.ts`
- * - Deno: Can also run with Deno's vitest compatibility
- * - Cloudflare Workers: Use @cloudflare/vitest-pool-workers
+ * This config excludes Node.js-specific tests (file system, child_process, etc.)
+ * and includes only tests that use standard Web APIs (fetch, ReadableStream, etc.).
  *
- * Usage:
- *   1. Start a server: npx @durable-streams/server start --port 8080
- *   2. Run tests: CONFORMANCE_TEST_URL=http://localhost:8080 pnpm test:webapi
+ * Runtimes supported:
+ * - Node.js: CONFORMANCE_TEST_URL=http://localhost:8080 pnpm test:webapi
+ * - Bun: CONFORMANCE_TEST_URL=http://localhost:8080 bun run test:webapi
  *
- * The conformance tests use only Web APIs (fetch, ReadableStream, etc.)
- * and can run in any JavaScript runtime that supports them.
+ * For Cloudflare Workers, use @cloudflare/vitest-pool-workers with defineWorkersConfig().
+ * See: https://developers.cloudflare.com/workers/testing/vitest-integration/
  */
 
 import { fileURLToPath } from "node:url"
 import { dirname, resolve } from "node:path"
 import { defineConfig } from "vitest/config"
 
-// Get directory of this config file (works in Node.js, Bun, and Deno)
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   test: {
     name: `webapi`,
     include: [
-      // Conformance test runner (web API only)
-      `packages/server-conformance-tests/src/test-runner.webapi.ts`,
+      // Conformance tests (web API only - requires CONFORMANCE_TEST_URL env var)
+      `packages/server-conformance-tests/src/test-runner.ts`,
       // Client tests (web API only)
       `packages/client/test/**/*.test.ts`,
       // State tests (web API only)
@@ -37,9 +34,9 @@ export default defineConfig({
       // Exclude tests that require Node.js-specific features
       `packages/server/test/file-backed.test.ts`,
       `packages/server/test/conformance.test.ts`,
+      `packages/server/test/compression.test.ts`,
       `packages/caddy-plugin/**/*.test.ts`,
     ],
-    // Increase timeout for network operations
     testTimeout: 30000,
     hookTimeout: 30000,
   },
