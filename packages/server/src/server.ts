@@ -313,6 +313,10 @@ export class DurableStreamTestServer {
       `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
     )
 
+    // Browser security headers (Protocol Section 10.7)
+    res.setHeader(`x-content-type-options`, `nosniff`)
+    res.setHeader(`cross-origin-resource-policy`, `cross-origin`)
+
     // Handle CORS preflight
     if (method === `OPTIONS`) {
       res.writeHead(204)
@@ -511,6 +515,8 @@ export class DurableStreamTestServer {
 
     const headers: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
+      // HEAD responses should not be cached to avoid stale tail offsets (Protocol Section 5.4)
+      "cache-control": `no-store`,
     }
 
     if (stream.contentType) {
@@ -697,12 +703,14 @@ export class DurableStreamTestServer {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
-    // Set SSE headers
+    // Set SSE headers (including security headers since writeHead bypasses setHeader)
     res.writeHead(200, {
       "content-type": `text/event-stream`,
       "cache-control": `no-cache`,
       connection: `keep-alive`,
       "access-control-allow-origin": `*`,
+      "x-content-type-options": `nosniff`,
+      "cross-origin-resource-policy": `cross-origin`,
     })
 
     let currentOffset = initialOffset
