@@ -9,6 +9,7 @@ import { DurableStreamRouter } from "./router"
 import { FaultInjectionMiddleware } from "./fault-injection"
 import type { Server } from "node:http"
 import type { TestServerOptions } from "./types"
+import type { StreamStorage } from "./storage"
 
 /**
  * HTTP server for testing durable streams.
@@ -16,7 +17,7 @@ import type { TestServerOptions } from "./types"
  * Includes fault injection capabilities for testing retry/resilience.
  */
 export class DurableStreamTestServer {
-  readonly store: StreamStore | FileBackedStreamStore
+  readonly store: StreamStorage
   private router: DurableStreamRouter
   private faultInjection: FaultInjectionMiddleware
   private server: Server | null = null

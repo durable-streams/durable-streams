@@ -17,6 +17,13 @@ import {
 } from "./store"
 import type { Database } from "lmdb"
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  AppendOptions,
+  CreateStreamOptions,
+  ReadResult,
+  StreamStorage,
+  WaitResult,
+} from "./storage"
 
 /**
  * Stream metadata stored in LMDB.
@@ -159,10 +166,11 @@ function generateUniqueDirectoryName(streamPath: string): string {
 }
 
 /**
- * File-backed implementation of StreamStore.
+ * File-backed implementation of StreamStorage.
  * Maintains the same interface as the in-memory StreamStore for drop-in compatibility.
+ * Uses append-only log files for stream data and LMDB for metadata.
  */
-export class FileBackedStreamStore {
+export class FileBackedStreamStore implements StreamStorage {
   private db: Database
   private fileManager: StreamFileManager
   private fileHandlePool: FileHandlePool
@@ -391,12 +399,7 @@ export class FileBackedStreamStore {
 
   async create(
     streamPath: string,
-    options: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-    } = {}
+    options: CreateStreamOptions = {}
   ): Promise<Stream> {
     // Use getMetaIfNotExpired to treat expired streams as non-existent
     const existing = this.getMetaIfNotExpired(streamPath)
@@ -528,11 +531,7 @@ export class FileBackedStreamStore {
   async append(
     streamPath: string,
     data: Uint8Array,
-    options: {
-      seq?: string
-      contentType?: string
-      isInitialCreate?: boolean
-    } = {}
+    options: AppendOptions & { isInitialCreate?: boolean } = {}
   ): Promise<StreamMessage | null> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
@@ -637,10 +636,7 @@ export class FileBackedStreamStore {
     return message
   }
 
-  read(
-    streamPath: string,
-    offset?: string
-  ): { messages: Array<StreamMessage>; upToDate: boolean } {
+  read(streamPath: string, offset?: string): ReadResult {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
@@ -733,7 +729,7 @@ export class FileBackedStreamStore {
     streamPath: string,
     offset: string,
     timeoutMs: number
-  ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
+  ): Promise<WaitResult> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {

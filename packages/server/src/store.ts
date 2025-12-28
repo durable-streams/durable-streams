@@ -3,6 +3,13 @@
  */
 
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  AppendOptions,
+  CreateStreamOptions,
+  ReadResult,
+  StreamStorage,
+  WaitResult,
+} from "./storage"
 
 /**
  * Normalize content-type by extracting the media type (before any semicolon).
@@ -78,8 +85,9 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 
 /**
  * In-memory store for durable streams.
+ * Implements the StreamStorage interface with synchronous operations.
  */
-export class StreamStore {
+export class StreamStore implements StreamStorage {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
 
@@ -131,15 +139,7 @@ export class StreamStore {
    * @throws Error if stream already exists with different config
    * @returns existing stream if config matches (idempotent)
    */
-  create(
-    path: string,
-    options: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-    } = {}
-  ): Stream {
+  create(path: string, options: CreateStreamOptions = {}): Stream {
     // Use getIfNotExpired to treat expired streams as non-existent
     const existing = this.getIfNotExpired(path)
     if (existing) {
@@ -215,8 +215,8 @@ export class StreamStore {
   append(
     path: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
-  ): StreamMessage {
+    options: AppendOptions = {}
+  ): StreamMessage | null {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
@@ -257,10 +257,7 @@ export class StreamStore {
    * Read messages from a stream starting at the given offset.
    * @throws Error if stream doesn't exist or is expired
    */
-  read(
-    path: string,
-    offset?: string
-  ): { messages: Array<StreamMessage>; upToDate: boolean } {
+  read(path: string, offset?: string): ReadResult {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
@@ -326,7 +323,7 @@ export class StreamStore {
     path: string,
     offset: string,
     timeoutMs: number
-  ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
+  ): Promise<WaitResult> {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)

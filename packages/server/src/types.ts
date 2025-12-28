@@ -2,6 +2,8 @@
  * Types for the in-memory durable streams test server.
  */
 
+import type { StreamStorage } from "./storage"
+
 /**
  * A single message in a stream.
  */
@@ -106,9 +108,9 @@ export type StreamLifecycleHook = (
 export interface RouterOptions {
   /**
    * The backing store for streams.
-   * Can be StreamStore (in-memory) or FileBackedStreamStore (persistent).
+   * Can be any implementation of StreamStorage (e.g., StreamStore, FileBackedStreamStore).
    */
-  store: unknown // Will be StreamStore | FileBackedStreamStore, but avoiding circular import
+  store: StreamStorage
 
   /**
    * Default long-poll timeout in milliseconds.

@@ -13,6 +13,13 @@ export {
 } from "./fault-injection"
 export { StreamStore } from "./store"
 export { FileBackedStreamStore } from "./file-store"
+export type {
+  StreamStorage,
+  CreateStreamOptions,
+  AppendOptions,
+  ReadResult,
+  WaitResult,
+} from "./storage"
 export { encodeStreamPath, decodeStreamPath } from "./path-encoding"
 export { createRegistryHooks } from "./registry-hook"
 export {

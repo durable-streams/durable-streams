@@ -5,11 +5,10 @@
 
 import { deflateSync, gzipSync } from "node:zlib"
 import { generateResponseCursor } from "./cursor"
-import type { StreamStore } from "./store"
-import type { FileBackedStreamStore } from "./file-store"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { RouterOptions, StreamLifecycleEvent } from "./types"
+import type { StreamStorage } from "./storage"
 
 // Protocol headers (aligned with PROTOCOL.md)
 const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
@@ -93,7 +92,7 @@ function compressData(
  * embedded into any Node.js HTTP server (Express, Fastify, vanilla http, etc.).
  */
 export class DurableStreamRouter {
-  readonly store: StreamStore | FileBackedStreamStore
+  readonly store: StreamStorage
   private options: {
     longPollTimeout: number
     compression: boolean
@@ -107,7 +106,7 @@ export class DurableStreamRouter {
   private isShuttingDown = false
 
   constructor(options: RouterOptions) {
-    this.store = options.store as StreamStore | FileBackedStreamStore
+    this.store = options.store
 
     this.options = {
       longPollTimeout: options.longPollTimeout ?? 30_000,
@@ -545,7 +544,7 @@ export class DurableStreamRouter {
    */
   private async handleSSE(
     path: string,
-    stream: ReturnType<StreamStore[`get`]>,
+    stream: ReturnType<StreamStorage[`get`]>,
     initialOffset: string,
     cursor: string | undefined,
     res: ServerResponse
