@@ -77,7 +77,7 @@ npm install @durable-streams/cli      # Development & testing CLI
 
 ```bash
 # Go
-go get github.com/durable-streams/durable-streams-go
+go get github.com/durable-streams/durable-streams/packages/client-go
 
 # Python
 pip install durable-streams
