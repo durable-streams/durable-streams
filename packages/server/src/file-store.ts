@@ -8,6 +8,12 @@ import * as path from "node:path"
 import { randomBytes } from "node:crypto"
 import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
+import {
+  ContentTypeMismatchError,
+  SequenceConflictError,
+  StreamAlreadyExistsError,
+  StreamNotFoundError,
+} from "./errors"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import { normalizeContentType, processJsonAppend } from "./store"
@@ -414,9 +420,7 @@ export class FileBackedStreamStore implements StreamStorage {
         return this.streamMetaToStream(existing)
       } else {
         // Config mismatch - conflict
-        throw new Error(
-          `Stream already exists with different configuration: ${streamPath}`
-        )
+        throw new StreamAlreadyExistsError(streamPath)
       }
     }
 
@@ -527,7 +531,7 @@ export class FileBackedStreamStore implements StreamStorage {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
+      throw new StreamNotFoundError(streamPath)
     }
 
     // Check content type match using normalization (handles charset parameters)
@@ -535,8 +539,9 @@ export class FileBackedStreamStore implements StreamStorage {
       const providedType = normalizeContentType(options.contentType)
       const streamType = normalizeContentType(streamMeta.contentType)
       if (providedType !== streamType) {
-        throw new Error(
-          `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
+        throw new ContentTypeMismatchError(
+          streamMeta.contentType,
+          options.contentType
         )
       }
     }
@@ -547,9 +552,7 @@ export class FileBackedStreamStore implements StreamStorage {
         streamMeta.lastSeq !== undefined &&
         options.seq <= streamMeta.lastSeq
       ) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
-        )
+        throw new SequenceConflictError(options.seq, streamMeta.lastSeq)
       }
     }
 
@@ -628,7 +631,7 @@ export class FileBackedStreamStore implements StreamStorage {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
+      throw new StreamNotFoundError(streamPath)
     }
 
     // Parse offsets

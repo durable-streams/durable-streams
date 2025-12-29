@@ -3,6 +3,14 @@
  * Can be embedded into any Node.js HTTP server.
  */
 
+import {
+  ContentTypeMismatchError,
+  EmptyArrayNotAllowedError,
+  InvalidJsonError,
+  SequenceConflictError,
+  StreamAlreadyExistsError,
+  StreamNotFoundError,
+} from "./errors"
 import { generateResponseCursor } from "./cursor"
 import { formatJsonResponse, normalizeContentType } from "./store"
 import type { CursorOptions } from "./cursor"
@@ -119,31 +127,27 @@ export class DurableStreamRouter {
           res.end(`Method not allowed`)
       }
     } catch (err) {
-      if (err instanceof Error) {
-        if (err.message.includes(`not found`)) {
-          res.writeHead(404, { "content-type": `text/plain` })
-          res.end(`Stream not found`)
-        } else if (
-          err.message.includes(`already exists with different configuration`)
-        ) {
-          res.writeHead(409, { "content-type": `text/plain` })
-          res.end(`Stream already exists with different configuration`)
-        } else if (err.message.includes(`Sequence conflict`)) {
-          res.writeHead(409, { "content-type": `text/plain` })
-          res.end(`Sequence conflict`)
-        } else if (err.message.includes(`Content-type mismatch`)) {
-          res.writeHead(409, { "content-type": `text/plain` })
-          res.end(`Content-type mismatch`)
-        } else if (err.message.includes(`Invalid JSON`)) {
-          res.writeHead(400, { "content-type": `text/plain` })
-          res.end(`Invalid JSON`)
-        } else if (err.message.includes(`Empty arrays are not allowed`)) {
-          res.writeHead(400, { "content-type": `text/plain` })
-          res.end(`Empty arrays are not allowed`)
-        } else {
-          throw err
-        }
+      // Handle known storage errors with appropriate HTTP status codes
+      if (err instanceof StreamNotFoundError) {
+        res.writeHead(404, { "content-type": `text/plain` })
+        res.end(err.message)
+      } else if (err instanceof StreamAlreadyExistsError) {
+        res.writeHead(409, { "content-type": `text/plain` })
+        res.end(err.message)
+      } else if (err instanceof SequenceConflictError) {
+        res.writeHead(409, { "content-type": `text/plain` })
+        res.end(err.message)
+      } else if (err instanceof ContentTypeMismatchError) {
+        res.writeHead(409, { "content-type": `text/plain` })
+        res.end(err.message)
+      } else if (err instanceof InvalidJsonError) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(err.message)
+      } else if (err instanceof EmptyArrayNotAllowedError) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(err.message)
       } else {
+        // Unknown error - rethrow
         throw err
       }
     }

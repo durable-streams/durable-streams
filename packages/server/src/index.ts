@@ -6,6 +6,15 @@
 
 export { DurableStreamTestServer } from "./server"
 export { DurableStreamRouter } from "./router"
+export {
+  DurableStreamError,
+  StreamNotFoundError,
+  StreamAlreadyExistsError,
+  SequenceConflictError,
+  ContentTypeMismatchError,
+  InvalidJsonError,
+  EmptyArrayNotAllowedError,
+} from "./errors"
 export { CORSMiddleware, type CORSOptions } from "./cors-middleware"
 export {
   CompressionMiddleware,

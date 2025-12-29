@@ -2,6 +2,14 @@
  * In-memory stream storage.
  */
 
+import {
+  ContentTypeMismatchError,
+  EmptyArrayNotAllowedError,
+  InvalidJsonError,
+  SequenceConflictError,
+  StreamAlreadyExistsError,
+  StreamNotFoundError,
+} from "./errors"
 import type { Stream, StreamMessage } from "./types"
 import type {
   AppendOptions,
@@ -38,7 +46,7 @@ export function processJsonAppend(
   try {
     parsed = JSON.parse(text)
   } catch {
-    throw new Error(`Invalid JSON`)
+    throw new InvalidJsonError()
   }
 
   // If it's an array, extract elements and join with commas
@@ -50,7 +58,7 @@ export function processJsonAppend(
       if (isInitialCreate) {
         return new Uint8Array(0) // Return empty data for empty stream
       }
-      throw new Error(`Empty arrays are not allowed`)
+      throw new EmptyArrayNotAllowedError()
     }
     const elements = parsed.map((item) => JSON.stringify(item))
     result = elements.join(`,`) + `,`
@@ -155,9 +163,7 @@ export class StreamStore implements StreamStorage {
         return existing
       } else {
         // Config mismatch - conflict
-        throw new Error(
-          `Stream already exists with different configuration: ${path}`
-        )
+        throw new StreamAlreadyExistsError(path)
       }
     }
 
@@ -217,7 +223,7 @@ export class StreamStore implements StreamStorage {
   ): StreamMessage | null {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // Check content type match using normalization (handles charset parameters)
@@ -225,8 +231,9 @@ export class StreamStore implements StreamStorage {
       const providedType = normalizeContentType(options.contentType)
       const streamType = normalizeContentType(stream.contentType)
       if (providedType !== streamType) {
-        throw new Error(
-          `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
+        throw new ContentTypeMismatchError(
+          stream.contentType,
+          options.contentType
         )
       }
     }
@@ -234,9 +241,7 @@ export class StreamStore implements StreamStorage {
     // Check sequence for writer coordination
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
-        )
+        throw new SequenceConflictError(options.seq, stream.lastSeq)
       }
       stream.lastSeq = options.seq
     }
@@ -255,7 +260,7 @@ export class StreamStore implements StreamStorage {
   read(path: string, offset?: string): ReadResult {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // No offset or -1 means start from beginning
