@@ -3936,17 +3936,28 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
               const responses = await Promise.all(writePromises)
 
-              // All unique seq values should succeed
-              for (const response of responses) {
-                expect([200, 204]).toContain(response.status)
+              // With concurrent writes, some may succeed (200/204) and some may conflict (409)
+              // due to out-of-order arrival at the server. All responses should be valid.
+              const successIndices: Array<number> = []
+              for (let i = 0; i < responses.length; i++) {
+                expect([200, 204, 409]).toContain(responses[i]!.status)
+                if (
+                  responses[i]!.status === 200 ||
+                  responses[i]!.status === 204
+                ) {
+                  successIndices.push(i)
+                }
               }
 
-              // Read back and verify ordering
+              // At least one write should succeed
+              expect(successIndices.length).toBeGreaterThanOrEqual(1)
+
+              // Read back and verify successful writes are present
               const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
               const content = await readResponse.text()
 
-              // All data should be present
-              for (let i = 0; i < numWriters; i++) {
+              // All successful writes should have their data in the stream
+              for (const i of successIndices) {
                 expect(content).toContain(`data-${i}`)
               }
 
