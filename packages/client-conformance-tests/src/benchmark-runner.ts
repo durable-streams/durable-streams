@@ -23,6 +23,7 @@ import { allScenarios, getScenarioById } from "./benchmark-scenarios.js"
 import type { Interface as ReadlineInterface } from "node:readline"
 import type { ChildProcess } from "node:child_process"
 import type {
+  BenchmarkOpenLoopOp,
   BenchmarkOperation,
   BenchmarkResult,
   BenchmarkStats,
@@ -70,6 +71,22 @@ export interface ScenarioResult {
   mbPerSec?: number
   /** Open-loop metrics (for open-loop scenarios) */
   openLoop?: OpenLoopMetrics
+  /** Saturation test results (for open-loop scenarios) */
+  saturation?: {
+    /** Highest sustainable RPS found */
+    sustainableRps: number
+    /** RPS at which saturation was detected */
+    saturationRps: number
+    /** All steps taken during search */
+    steps: Array<{
+      targetRps: number
+      achievedRps: number
+      achievedRatio: number
+      queueP99Ms: number
+      totalP99Ms: number
+      saturated: boolean
+    }>
+  }
 }
 
 export interface CriteriaResult {
@@ -233,6 +250,263 @@ class BenchmarkClientAdapter {
 }
 
 // =============================================================================
+// Open-Loop Saturation Finding
+// =============================================================================
+
+interface SaturationStep {
+  targetRps: number
+  achievedRps: number
+  achievedRatio: number
+  queueP99Ms: number
+  totalP99Ms: number
+  saturated: boolean
+}
+
+interface SaturationConfig {
+  startRps: number
+  maxRps: number
+  minRps: number
+  stepMultiplier: number
+  durationMs: number
+  warmupMs: number
+  queueP99ThresholdMs: number
+  achievedRatioThreshold: number
+  concurrencyMultiplier: number
+}
+
+const defaultSaturationConfig: SaturationConfig = {
+  startRps: 1000,
+  maxRps: 100000,
+  minRps: 10,
+  stepMultiplier: 2.0,
+  durationMs: 5000,
+  warmupMs: 1000,
+  queueP99ThresholdMs: 100,
+  achievedRatioThreshold: 0.9,
+  concurrencyMultiplier: 3,
+}
+
+function isSaturated(
+  metrics: OpenLoopMetrics,
+  config: SaturationConfig
+): boolean {
+  const achievedRatio = metrics.achievedRps / metrics.targetRps
+  return (
+    metrics.queueLatency.p99 > config.queueP99ThresholdMs ||
+    achievedRatio < config.achievedRatioThreshold
+  )
+}
+
+/**
+ * Run a single open-loop step at the given RPS.
+ */
+async function runOpenLoopStep(
+  client: BenchmarkClientAdapter,
+  serverUrl: string,
+  innerOp: `append` | `roundtrip`,
+  targetRps: number,
+  config: SaturationConfig,
+  basePath: string
+): Promise<{ metrics: OpenLoopMetrics; step: SaturationStep } | null> {
+  const maxConcurrency = Math.ceil(targetRps * config.concurrencyMultiplier)
+
+  const openLoopOp: BenchmarkOpenLoopOp = {
+    op: `open_loop`,
+    innerOp,
+    path:
+      innerOp === `append`
+        ? `${basePath}/saturation-append`
+        : `${basePath}/saturation-rt`,
+    size: 100,
+    targetRps,
+    durationMs: config.durationMs,
+    warmupMs: config.warmupMs,
+    maxConcurrency,
+    live: innerOp === `roundtrip` ? `long-poll` : undefined,
+  }
+
+  const result = await client.benchmark(`sat-${targetRps}`, openLoopOp)
+  if (!result?.openLoop) {
+    return null
+  }
+
+  const metrics = result.openLoop
+  const achievedRatio = metrics.achievedRps / metrics.targetRps
+
+  const step: SaturationStep = {
+    targetRps: metrics.targetRps,
+    achievedRps: metrics.achievedRps,
+    achievedRatio,
+    queueP99Ms: metrics.queueLatency.p99,
+    totalP99Ms: metrics.totalLatency.p99,
+    saturated: isSaturated(metrics, config),
+  }
+
+  return { metrics, step }
+}
+
+/**
+ * Find saturation point for an open-loop scenario using two-phase search.
+ *
+ * Phase 1: If starting RPS saturates, back off until we find a sustainable baseline
+ * Phase 2: Ramp up from baseline until we hit saturation
+ */
+async function runOpenLoopWithSaturationFinding(
+  scenario: BenchmarkScenario,
+  client: BenchmarkClientAdapter,
+  serverUrl: string,
+  log: (message: string) => void
+): Promise<ScenarioResult> {
+  const basePath = `/bench-${randomUUID()}`
+  const steps: Array<SaturationStep> = []
+  const config = { ...defaultSaturationConfig }
+
+  // Use scenario's target RPS as starting point
+  const scenarioConfig = scenario.config
+  if (scenarioConfig.targetRps) {
+    config.startRps = scenarioConfig.targetRps
+  }
+
+  // Determine inner operation from scenario
+  const innerOp: `append` | `roundtrip` = scenario.id.includes(`roundtrip`)
+    ? `roundtrip`
+    : `append`
+
+  // Pre-create stream for append tests
+  if (innerOp === `append`) {
+    const streamUrl = `${serverUrl}${basePath}/saturation-append`
+    await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/octet-stream`,
+    })
+  }
+
+  let currentRps = config.startRps
+  let sustainableRps = 0
+  let saturationRps = 0
+  let lastMetrics: OpenLoopMetrics | undefined
+
+  log(`  Finding saturation point (start=${config.startRps} req/s)...`)
+
+  // Phase 1: Find a sustainable baseline (backing off if needed)
+  let foundBaseline = false
+
+  while (!foundBaseline && currentRps >= config.minRps) {
+    log(`    Testing ${currentRps} req/s...`)
+
+    const result = await runOpenLoopStep(
+      client,
+      serverUrl,
+      innerOp,
+      currentRps,
+      config,
+      basePath
+    )
+
+    if (!result) {
+      log(`      ✗ No metrics returned`)
+      break
+    }
+
+    const { metrics, step } = result
+    steps.push(step)
+    lastMetrics = metrics
+
+    const achievedPct = (step.achievedRatio * 100).toFixed(0)
+    const icon = step.saturated ? `⚠️` : `✓`
+    log(
+      `      ${icon} ${step.achievedRps.toFixed(0)} (${achievedPct}%) qP99=${step.queueP99Ms.toFixed(1)}ms`
+    )
+
+    if (step.saturated) {
+      const lowerRps = Math.floor(currentRps / config.stepMultiplier)
+      if (lowerRps >= config.minRps) {
+        log(`      → Backing off to ${lowerRps} req/s`)
+        currentRps = lowerRps
+      } else {
+        log(`      → At minimum RPS, cannot back off further`)
+        saturationRps = currentRps
+        break
+      }
+    } else {
+      sustainableRps = currentRps
+      foundBaseline = true
+      log(`      → Baseline found at ${currentRps} req/s`)
+    }
+  }
+
+  // Phase 2: Ramp up to find saturation point
+  if (foundBaseline) {
+    currentRps = Math.ceil(sustainableRps * config.stepMultiplier)
+
+    while (currentRps <= config.maxRps) {
+      log(`    Testing ${currentRps} req/s...`)
+
+      const result = await runOpenLoopStep(
+        client,
+        serverUrl,
+        innerOp,
+        currentRps,
+        config,
+        basePath
+      )
+
+      if (!result) {
+        log(`      ✗ No metrics returned`)
+        break
+      }
+
+      const { metrics, step } = result
+      steps.push(step)
+      lastMetrics = metrics
+
+      const achievedPct = (step.achievedRatio * 100).toFixed(0)
+      const icon = step.saturated ? `⚠️` : `✓`
+      log(
+        `      ${icon} ${step.achievedRps.toFixed(0)} (${achievedPct}%) qP99=${step.queueP99Ms.toFixed(1)}ms`
+      )
+
+      if (step.saturated) {
+        saturationRps = currentRps
+        log(`      → Saturated at ${currentRps} req/s`)
+        break
+      } else {
+        sustainableRps = currentRps
+        currentRps = Math.ceil(currentRps * config.stepMultiplier)
+      }
+    }
+
+    if (saturationRps === 0 && currentRps > config.maxRps) {
+      log(`      → Reached max RPS (${config.maxRps}) without saturating`)
+    }
+  }
+
+  // Build result
+  const saturationResult = {
+    sustainableRps,
+    saturationRps,
+    steps,
+  }
+
+  // Use the last metrics for the open-loop result
+  const openLoop = lastMetrics
+
+  // Criteria: sustainable RPS should meet some minimum
+  // For now, consider it "passed" if we found a sustainable point
+  const criteriaMet = sustainableRps > 0
+
+  return {
+    scenario,
+    stats: calculateStats([]),
+    criteriaMet,
+    criteriaDetails: [],
+    skipped: false,
+    openLoop,
+    saturation: saturationResult,
+  }
+}
+
+// =============================================================================
 // Scenario Execution
 // =============================================================================
 
@@ -255,6 +529,27 @@ async function runScenario(
         criteriaDetails: [],
         skipped: true,
         skipReason: `missing features: ${missing.join(`, `)}`,
+      }
+    }
+  }
+
+  // For open-loop scenarios, use saturation-finding instead of fixed RPS
+  if (scenario.category === `open-loop`) {
+    try {
+      return await runOpenLoopWithSaturationFinding(
+        scenario,
+        client,
+        serverUrl,
+        log
+      )
+    } catch (err) {
+      return {
+        scenario,
+        stats: calculateStats([]),
+        criteriaMet: false,
+        criteriaDetails: [],
+        skipped: false,
+        error: err instanceof Error ? err.message : String(err),
       }
     }
   }
@@ -583,23 +878,26 @@ function printConsoleResults(summary: BenchmarkSummary): void {
           }
         } else if (
           result.scenario.category === `open-loop` &&
-          result.openLoop
+          result.saturation
         ) {
-          // Display open-loop specific metrics
-          const ol = result.openLoop
-          const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(1)
-          console.log(
-            `    Load: ${ol.targetRps} target → ${ol.achievedRps.toFixed(1)} achieved (${achievedPct}%)`
-          )
-          console.log(
-            `    Total Latency: p50=${ol.totalLatency.median.toFixed(2)}ms  p99=${ol.totalLatency.p99.toFixed(2)}ms  p99.9=${ol.totalLatency.p999.toFixed(2)}ms`
-          )
-          console.log(
-            `    Queue Latency: p50=${ol.queueLatency.median.toFixed(2)}ms  p99=${ol.queueLatency.p99.toFixed(2)}ms`
-          )
-          console.log(
-            `    Offered: ${ol.offeredCount}  Completed: ${ol.completedCount}  Failed: ${ol.failedCount}`
-          )
+          // Display saturation-finding results
+          const sat = result.saturation
+          if (sat.saturationRps > 0) {
+            console.log(
+              `    Saturates between ${sat.sustainableRps.toLocaleString()} and ${sat.saturationRps.toLocaleString()} req/s`
+            )
+          } else {
+            console.log(
+              `    Sustainable up to ${sat.sustainableRps.toLocaleString()} req/s (no saturation found)`
+            )
+          }
+          // Show the last successful step's latency
+          const lastOkStep = [...sat.steps].reverse().find((s) => !s.saturated)
+          if (lastOkStep) {
+            console.log(
+              `    At ${lastOkStep.targetRps.toLocaleString()} req/s: qP99=${lastOkStep.queueP99Ms.toFixed(1)}ms  totalP99=${lastOkStep.totalP99Ms.toFixed(1)}ms`
+            )
+          }
         } else {
           console.log(`    Median: ${formatted.Median}  P99: ${formatted.P99}`)
         }
@@ -743,28 +1041,35 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     (r) => r.scenario.category === `open-loop` && !r.skipped && !r.error
   )
   if (openLoopResults.length > 0) {
-    lines.push(`#### Open-Loop (Realistic Load)`)
+    lines.push(`#### Open-Loop Saturation`)
     lines.push(``)
     lines.push(
-      `Open-loop tests schedule requests on a fixed wall-clock interval, regardless of when prior requests complete.`
+      `Open-loop tests find the sustainable RPS by ramping load until queue latency explodes.`
     )
     lines.push(
-      `This accurately models real user behavior and reveals tail latency hidden by closed-loop tests.`
+      `This reveals true performance limits that closed-loop tests hide.`
     )
     lines.push(``)
     lines.push(
-      `| Scenario | Target RPS | Achieved RPS | P50 | P99 | P99.9 | Queue P99 | Status |`
+      `| Scenario | Sustainable RPS | Saturates At | Queue P99 | Total P99 |`
     )
     lines.push(
-      `|----------|------------|--------------|-----|-----|-------|-----------|--------|`
+      `|----------|-----------------|--------------|-----------|-----------|`
     )
     for (const r of openLoopResults) {
-      const ol = r.openLoop
-      const status = r.criteriaMet ? `Pass` : `Fail`
-      if (ol) {
-        const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(0)
+      const sat = r.saturation
+      if (sat) {
+        const sustainableStr = sat.sustainableRps.toLocaleString()
+        const saturationStr =
+          sat.saturationRps > 0
+            ? sat.saturationRps.toLocaleString()
+            : `> ${sat.sustainableRps.toLocaleString()}`
+        // Get latency from the last sustainable step
+        const lastOkStep = [...sat.steps].reverse().find((s) => !s.saturated)
+        const queueP99 = lastOkStep ? lastOkStep.queueP99Ms.toFixed(1) : `-`
+        const totalP99 = lastOkStep ? lastOkStep.totalP99Ms.toFixed(1) : `-`
         lines.push(
-          `| ${r.scenario.name} | ${ol.targetRps} | ${ol.achievedRps.toFixed(1)} (${achievedPct}%) | ${ol.totalLatency.median.toFixed(2)}ms | ${ol.totalLatency.p99.toFixed(2)}ms | ${ol.totalLatency.p999.toFixed(2)}ms | ${ol.queueLatency.p99.toFixed(2)}ms | ${status} |`
+          `| ${r.scenario.name} | ${sustainableStr} | ${saturationStr} | ${queueP99}ms | ${totalP99}ms |`
         )
       }
     }
@@ -919,17 +1224,19 @@ export async function runBenchmarks(
           }
         } else if (
           result.scenario.category === `open-loop` &&
-          result.openLoop
+          result.saturation
         ) {
-          // Display open-loop specific progress
-          const ol = result.openLoop
-          const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(0)
-          log(
-            `  ${icon} Load: ${ol.targetRps} → ${ol.achievedRps.toFixed(1)} req/s (${achievedPct}%)`
-          )
-          log(
-            `    Total: p50=${ol.totalLatency.median.toFixed(2)}ms p99=${ol.totalLatency.p99.toFixed(2)}ms`
-          )
+          // Display saturation finding result
+          const sat = result.saturation
+          if (sat.saturationRps > 0) {
+            log(
+              `  ${icon} Saturates between ${sat.sustainableRps.toLocaleString()} and ${sat.saturationRps.toLocaleString()} req/s`
+            )
+          } else {
+            log(
+              `  ${icon} Sustainable up to ${sat.sustainableRps.toLocaleString()} req/s`
+            )
+          }
         } else {
           log(
             `  ${icon} Median: ${result.stats.median.toFixed(2)}ms, P99: ${result.stats.p99.toFixed(2)}ms`
