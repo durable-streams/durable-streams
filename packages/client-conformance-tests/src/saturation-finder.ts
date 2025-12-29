@@ -421,6 +421,12 @@ async function runSaturationStep(
 
 /**
  * Find the saturation point for an operation by ramping up load.
+ *
+ * Algorithm:
+ * 1. Start at startRps
+ * 2. If saturated and no sustainable point found yet, back off (divide by multiplier)
+ * 3. If not saturated, ramp up (multiply by multiplier)
+ * 4. Stop when we find the boundary between sustainable and saturated
  */
 async function findSaturationPoint(
   client: SaturationClientAdapter,
@@ -455,8 +461,11 @@ async function findSaturationPoint(
   )
   log(``)
 
-  let running = true
-  while (running) {
+  // Phase 1: Find a sustainable baseline (backing off if needed)
+  let foundBaseline = false
+  const minRps = 10 // Minimum RPS to test
+
+  while (!foundBaseline && currentRps >= minRps) {
     log(`  Testing ${currentRps} req/s...`)
 
     const result = await runSaturationStep(
@@ -483,42 +492,86 @@ async function findSaturationPoint(
     )
 
     if (step.saturated) {
-      // If we saturated on the first step, back off and try lower
-      if (sustainableRps === 0 && currentRps > 50) {
-        const lowerRps = Math.floor(currentRps / config.stepMultiplier)
-        log(`    → Backing off to ${lowerRps} req/s (saturated on first step)`)
+      // Back off to find a sustainable baseline
+      const lowerRps = Math.floor(currentRps / config.stepMultiplier)
+      if (lowerRps >= minRps) {
+        log(`    → Backing off to ${lowerRps} req/s`)
         currentRps = lowerRps
-        steps.pop() // Remove the saturated step, we'll try again lower
-        continue
-      }
-
-      saturationRps = currentRps
-      saturationQueueP99Ms = step.queueP99Ms
-
-      // Determine reason
-      if (step.queueP99Ms > config.queueP99ThresholdMs) {
-        saturationReason = `queue_latency`
-        log(
-          `    → Saturated: queue latency exceeded ${config.queueP99ThresholdMs}ms threshold`
-        )
       } else {
-        saturationReason = `achieved_ratio`
-        log(
-          `    → Saturated: achieved ratio below ${config.achievedRatioThreshold * 100}% threshold`
-        )
+        log(`    → Cannot back off further (at minimum ${minRps} req/s)`)
+        // Record this as saturation at the minimum level
+        saturationRps = currentRps
+        saturationQueueP99Ms = step.queueP99Ms
+        saturationReason =
+          step.queueP99Ms > config.queueP99ThresholdMs
+            ? `queue_latency`
+            : `achieved_ratio`
+        break
       }
-
-      running = false
     } else {
+      // Found a sustainable baseline
       sustainableRps = currentRps
-      currentRps = Math.ceil(currentRps * config.stepMultiplier)
+      foundBaseline = true
+      log(`    → Found sustainable baseline at ${currentRps} req/s`)
+    }
+  }
 
-      if (currentRps > config.maxRps) {
-        log(`    → Reached max RPS limit (${config.maxRps})`)
-        sustainableRps = config.maxRps
-        saturationReason = `max_rps_reached`
-        running = false
+  // Phase 2: Ramp up to find saturation point
+  if (foundBaseline) {
+    currentRps = Math.ceil(sustainableRps * config.stepMultiplier)
+
+    while (currentRps <= config.maxRps) {
+      log(`  Testing ${currentRps} req/s...`)
+
+      const result = await runSaturationStep(
+        client,
+        serverUrl,
+        operation,
+        currentRps,
+        config,
+        basePath
+      )
+
+      if (!result) {
+        log(`    ✗ No metrics returned`)
+        break
       }
+
+      const { step } = result
+      steps.push(step)
+
+      const achievedPct = (step.achievedRatio * 100).toFixed(1)
+      const statusIcon = step.saturated ? `⚠️` : `✓`
+      log(
+        `    ${statusIcon} Achieved: ${step.achievedRps.toFixed(0)} (${achievedPct}%) | Queue P99: ${step.queueP99Ms.toFixed(2)}ms | Total P99: ${step.totalP99Ms.toFixed(2)}ms`
+      )
+
+      if (step.saturated) {
+        saturationRps = currentRps
+        saturationQueueP99Ms = step.queueP99Ms
+
+        if (step.queueP99Ms > config.queueP99ThresholdMs) {
+          saturationReason = `queue_latency`
+          log(
+            `    → Saturated: queue latency exceeded ${config.queueP99ThresholdMs}ms threshold`
+          )
+        } else {
+          saturationReason = `achieved_ratio`
+          log(
+            `    → Saturated: achieved ratio below ${config.achievedRatioThreshold * 100}% threshold`
+          )
+        }
+        break
+      } else {
+        sustainableRps = currentRps
+        currentRps = Math.ceil(currentRps * config.stepMultiplier)
+      }
+    }
+
+    // Check if we hit max RPS without saturating
+    if (saturationRps === 0 && sustainableRps > 0) {
+      log(`    → Reached max RPS limit (${config.maxRps}) without saturating`)
+      saturationReason = `max_rps_reached`
     }
   }
 
