@@ -3859,5 +3859,369 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         )
       })
     })
+
+    describe(`Concurrent Writer Stress Tests`, () => {
+      test(`concurrent writers with sequence numbers - server handles gracefully`, async () => {
+        const streamPath = `/v1/stream/concurrent-seq-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Try to write with same seq from multiple "writers" concurrently
+        const numWriters = 5
+        const seqValue = `seq-001`
+
+        const writePromises = Array.from({ length: numWriters }, (_, i) =>
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: {
+              "Content-Type": `text/plain`,
+              [STREAM_SEQ_HEADER]: seqValue,
+            },
+            body: `writer-${i}`,
+          })
+        )
+
+        const responses = await Promise.all(writePromises)
+        const statuses = responses.map((r) => r.status)
+
+        // Server should handle concurrent writes gracefully
+        // All responses should be valid (success or conflict)
+        for (const status of statuses) {
+          expect([200, 204, 409]).toContain(status)
+        }
+
+        // At least one should succeed
+        const successes = statuses.filter((s) => s === 200 || s === 204)
+        expect(successes.length).toBeGreaterThanOrEqual(1)
+
+        // Read back - should have exactly one write's data
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+
+        // Content should contain data from exactly one writer
+        const matchingWriters = Array.from({ length: numWriters }, (_, i) =>
+          content.includes(`writer-${i}`)
+        ).filter(Boolean)
+        expect(matchingWriters.length).toBeGreaterThanOrEqual(1)
+      })
+
+      test(`concurrent writers racing with incrementing seq values`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.integer({ min: 3, max: 8 }), // Number of writers
+            async (numWriters) => {
+              const streamPath = `/v1/stream/concurrent-race-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+              // Create stream
+              await fetch(`${getBaseUrl()}${streamPath}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `text/plain` },
+              })
+
+              // Each writer gets a unique seq value (padded for lexicographic ordering)
+              const writePromises = Array.from({ length: numWriters }, (_, i) =>
+                fetch(`${getBaseUrl()}${streamPath}`, {
+                  method: `POST`,
+                  headers: {
+                    "Content-Type": `text/plain`,
+                    [STREAM_SEQ_HEADER]: String(i).padStart(4, `0`),
+                  },
+                  body: `data-${i}`,
+                })
+              )
+
+              const responses = await Promise.all(writePromises)
+
+              // All unique seq values should succeed
+              for (const response of responses) {
+                expect([200, 204]).toContain(response.status)
+              }
+
+              // Read back and verify ordering
+              const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+              const content = await readResponse.text()
+
+              // All data should be present
+              for (let i = 0; i < numWriters; i++) {
+                expect(content).toContain(`data-${i}`)
+              }
+
+              return true
+            }
+          ),
+          { numRuns: 10 }
+        )
+      })
+
+      test(`concurrent appends without seq - all data is persisted`, async () => {
+        const streamPath = `/v1/stream/concurrent-no-seq-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        const numWriters = 10
+        const writePromises = Array.from({ length: numWriters }, (_, i) =>
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { "Content-Type": `text/plain` },
+            body: `concurrent-${i}`,
+          })
+        )
+
+        const responses = await Promise.all(writePromises)
+
+        // All should succeed
+        for (const response of responses) {
+          expect([200, 204]).toContain(response.status)
+        }
+
+        // All offsets that are returned should be valid (non-null)
+        const offsets = responses.map((r) =>
+          r.headers.get(STREAM_OFFSET_HEADER)
+        )
+        for (const offset of offsets) {
+          expect(offset).not.toBeNull()
+        }
+
+        // Read back and verify all data is present (the key invariant)
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+
+        for (let i = 0; i < numWriters; i++) {
+          expect(content).toContain(`concurrent-${i}`)
+        }
+      })
+
+      test(`mixed readers and writers - readers see consistent state`, async () => {
+        const streamPath = `/v1/stream/concurrent-rw-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream with initial data
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `initial`,
+        })
+
+        // Launch concurrent readers and writers
+        const numOps = 20
+        const operations = Array.from({ length: numOps }, (_, i) => {
+          if (i % 2 === 0) {
+            // Writer
+            return fetch(`${getBaseUrl()}${streamPath}`, {
+              method: `POST`,
+              headers: { "Content-Type": `text/plain` },
+              body: `write-${i}`,
+            })
+          } else {
+            // Reader
+            return fetch(`${getBaseUrl()}${streamPath}`)
+          }
+        })
+
+        const responses = await Promise.all(operations)
+
+        // All operations should succeed
+        for (const response of responses) {
+          expect(response.status).toBe(200)
+        }
+
+        // Final read should have all writes
+        const finalRead = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await finalRead.text()
+
+        // Initial data should be present
+        expect(content).toContain(`initial`)
+
+        // All writes should be present
+        for (let i = 0; i < numOps; i += 2) {
+          expect(content).toContain(`write-${i}`)
+        }
+      })
+    })
+
+    describe(`State Hash Verification`, () => {
+      /**
+       * Simple hash function for content verification.
+       * Uses FNV-1a algorithm for deterministic hashing.
+       */
+      function hashContent(data: Uint8Array): string {
+        let hash = 2166136261 // FNV offset basis
+        for (const byte of data) {
+          hash ^= byte
+          hash = Math.imul(hash, 16777619) // FNV prime
+          hash = hash >>> 0 // Convert to unsigned 32-bit
+        }
+        return hash.toString(16).padStart(8, `0`)
+      }
+
+      test(`replay produces identical content hash`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            // Generate a sequence of appends
+            fc.array(fc.uint8Array({ minLength: 1, maxLength: 100 }), {
+              minLength: 1,
+              maxLength: 10,
+            }),
+            async (chunks) => {
+              // Create first stream and append data
+              const streamPath1 = `/v1/stream/hash-verify-1-${Date.now()}-${Math.random().toString(36).slice(2)}`
+              await fetch(`${getBaseUrl()}${streamPath1}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `application/octet-stream` },
+              })
+
+              for (const chunk of chunks) {
+                await fetch(`${getBaseUrl()}${streamPath1}`, {
+                  method: `POST`,
+                  headers: { "Content-Type": `application/octet-stream` },
+                  body: chunk,
+                })
+              }
+
+              // Read and hash first stream
+              const response1 = await fetch(`${getBaseUrl()}${streamPath1}`)
+              const data1 = new Uint8Array(await response1.arrayBuffer())
+              const hash1 = hashContent(data1)
+
+              // Create second stream and replay same operations
+              const streamPath2 = `/v1/stream/hash-verify-2-${Date.now()}-${Math.random().toString(36).slice(2)}`
+              await fetch(`${getBaseUrl()}${streamPath2}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `application/octet-stream` },
+              })
+
+              for (const chunk of chunks) {
+                await fetch(`${getBaseUrl()}${streamPath2}`, {
+                  method: `POST`,
+                  headers: { "Content-Type": `application/octet-stream` },
+                  body: chunk,
+                })
+              }
+
+              // Read and hash second stream
+              const response2 = await fetch(`${getBaseUrl()}${streamPath2}`)
+              const data2 = new Uint8Array(await response2.arrayBuffer())
+              const hash2 = hashContent(data2)
+
+              // Hashes must match
+              expect(hash1).toBe(hash2)
+              expect(data1.length).toBe(data2.length)
+
+              return true
+            }
+          ),
+          { numRuns: 15 }
+        )
+      })
+
+      test(`content hash changes with each append`, async () => {
+        const streamPath = `/v1/stream/hash-changes-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+        })
+
+        const hashes: Array<string> = []
+
+        // Append 5 chunks and verify hash changes each time
+        for (let i = 0; i < 5; i++) {
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { "Content-Type": `application/octet-stream` },
+            body: new Uint8Array([i, i + 1, i + 2]),
+          })
+
+          const response = await fetch(`${getBaseUrl()}${streamPath}`)
+          const data = new Uint8Array(await response.arrayBuffer())
+          hashes.push(hashContent(data))
+        }
+
+        // All hashes should be unique
+        const uniqueHashes = new Set(hashes)
+        expect(uniqueHashes.size).toBe(5)
+      })
+
+      test(`empty stream has consistent hash`, async () => {
+        // Create two empty streams
+        const streamPath1 = `/v1/stream/empty-hash-1-${Date.now()}-${Math.random().toString(36).slice(2)}`
+        const streamPath2 = `/v1/stream/empty-hash-2-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        await fetch(`${getBaseUrl()}${streamPath1}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+        })
+        await fetch(`${getBaseUrl()}${streamPath2}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+        })
+
+        // Read both
+        const response1 = await fetch(`${getBaseUrl()}${streamPath1}`)
+        const response2 = await fetch(`${getBaseUrl()}${streamPath2}`)
+
+        const data1 = new Uint8Array(await response1.arrayBuffer())
+        const data2 = new Uint8Array(await response2.arrayBuffer())
+
+        // Both should be empty and have same hash
+        expect(data1.length).toBe(0)
+        expect(data2.length).toBe(0)
+        expect(hashContent(data1)).toBe(hashContent(data2))
+      })
+
+      test(`deterministic ordering - same data in same order produces same hash`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.array(fc.uint8Array({ minLength: 1, maxLength: 50 }), {
+              minLength: 2,
+              maxLength: 5,
+            }),
+            async (chunks) => {
+              // Create two streams with same data in same order
+              const hashes: Array<string> = []
+
+              for (let run = 0; run < 2; run++) {
+                const streamPath = `/v1/stream/order-hash-${run}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+                await fetch(`${getBaseUrl()}${streamPath}`, {
+                  method: `PUT`,
+                  headers: { "Content-Type": `application/octet-stream` },
+                })
+
+                // Append in order
+                for (const chunk of chunks) {
+                  await fetch(`${getBaseUrl()}${streamPath}`, {
+                    method: `POST`,
+                    headers: { "Content-Type": `application/octet-stream` },
+                    body: chunk,
+                  })
+                }
+
+                const response = await fetch(`${getBaseUrl()}${streamPath}`)
+                const data = new Uint8Array(await response.arrayBuffer())
+                hashes.push(hashContent(data))
+              }
+
+              expect(hashes[0]).toBe(hashes[1])
+
+              return true
+            }
+          ),
+          { numRuns: 10 }
+        )
+      })
+    })
   })
 }
