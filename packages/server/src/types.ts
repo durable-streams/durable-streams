@@ -119,12 +119,6 @@ export interface RouterOptions {
   longPollTimeout?: number
 
   /**
-   * Enable gzip/deflate compression for responses.
-   * Default: true.
-   */
-  compression?: boolean
-
-  /**
    * Interval in seconds for cursor calculation.
    * Used for CDN cache collapsing to prevent infinite cache loops.
    * Default: 20 seconds.
@@ -146,12 +140,6 @@ export interface RouterOptions {
    * Hook called when a stream is deleted.
    */
   onStreamDeleted?: StreamLifecycleHook
-
-  /**
-   * Enable CORS headers in responses.
-   * Default: true.
-   */
-  cors?: boolean
 
   /**
    * Base URL path prefix to strip from incoming requests.

@@ -6,6 +6,8 @@ import { createServer } from "node:http"
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { DurableStreamRouter } from "./router"
+import { CORSMiddleware } from "./cors-middleware"
+import { CompressionMiddleware } from "./compression-middleware"
 import { FaultInjectionMiddleware } from "./fault-injection"
 import type { Server } from "node:http"
 import type { TestServerOptions } from "./types"
@@ -14,11 +16,13 @@ import type { StreamStorage } from "./storage"
 /**
  * HTTP server for testing durable streams.
  * Supports both in-memory and file-backed storage modes.
- * Includes fault injection capabilities for testing retry/resilience.
+ * Includes CORS, compression, and fault injection capabilities for testing.
  */
 export class DurableStreamTestServer {
   readonly store: StreamStorage
   private router: DurableStreamRouter
+  private corsMiddleware: CORSMiddleware
+  private compressionMiddleware: CompressionMiddleware
   private faultInjection: FaultInjectionMiddleware
   private server: Server | null = null
   private options: Required<Pick<TestServerOptions, `port` | `host`>> & {
@@ -42,16 +46,22 @@ export class DurableStreamTestServer {
       dataDir: options.dataDir,
     }
 
-    // Create router with all routing options
+    // Create router with core routing options
     this.router = new DurableStreamRouter({
       store: this.store,
       longPollTimeout: options.longPollTimeout,
-      compression: options.compression,
-      cors: true, // Always enabled for test server
       cursorIntervalSeconds: options.cursorIntervalSeconds,
       cursorEpoch: options.cursorEpoch,
       onStreamCreated: options.onStreamCreated,
       onStreamDeleted: options.onStreamDeleted,
+    })
+
+    // Create CORS middleware (always enabled for test server)
+    this.corsMiddleware = new CORSMiddleware()
+
+    // Create compression middleware (configurable threshold)
+    this.compressionMiddleware = new CompressionMiddleware({
+      threshold: options.compression === false ? Number.MAX_SAFE_INTEGER : 1024,
     })
 
     // Create fault injection middleware with test endpoint enabled
@@ -70,9 +80,15 @@ export class DurableStreamTestServer {
 
     return new Promise((resolve, reject) => {
       this.server = createServer((req, res) => {
-        // Compose fault injection middleware with router
-        this.faultInjection
-          .handleRequest(req, res, () => this.router.handleRequest(req, res))
+        // Compose middleware chain: CORS -> Compression -> FaultInjection -> Router
+        this.corsMiddleware
+          .handleRequest(req, res, () =>
+            this.compressionMiddleware.handleRequest(req, res, () =>
+              this.faultInjection.handleRequest(req, res, () =>
+                this.router.handleRequest(req, res)
+              )
+            )
+          )
           .catch((err) => {
             console.error(`Request error:`, err)
             if (!res.headersSent) {

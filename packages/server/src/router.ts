@@ -3,7 +3,6 @@
  * Can be embedded into any Node.js HTTP server.
  */
 
-import { deflateSync, gzipSync } from "node:zlib"
 import { generateResponseCursor } from "./cursor"
 import { formatJsonResponse, normalizeContentType } from "./store"
 import type { CursorOptions } from "./cursor"
@@ -45,54 +44,6 @@ function encodeSSEData(payload: string): string {
 }
 
 /**
- * Minimum response size to consider for compression.
- * Responses smaller than this won't benefit from compression.
- */
-const COMPRESSION_THRESHOLD = 1024
-
-/**
- * Determine the best compression encoding from Accept-Encoding header.
- * Returns 'gzip', 'deflate', or null if no compression should be used.
- */
-function getCompressionEncoding(
-  acceptEncoding: string | undefined
-): `gzip` | `deflate` | null {
-  if (!acceptEncoding) return null
-
-  // Parse Accept-Encoding header (e.g., "gzip, deflate, br" or "gzip;q=1.0, deflate;q=0.5")
-  const encodings = acceptEncoding
-    .toLowerCase()
-    .split(`,`)
-    .map((e) => e.trim())
-
-  // Prefer gzip over deflate (better compression, wider support)
-  for (const encoding of encodings) {
-    const name = encoding.split(`;`)[0]?.trim()
-    if (name === `gzip`) return `gzip`
-  }
-  for (const encoding of encodings) {
-    const name = encoding.split(`;`)[0]?.trim()
-    if (name === `deflate`) return `deflate`
-  }
-
-  return null
-}
-
-/**
- * Compress data using the specified encoding.
- */
-function compressData(
-  data: Uint8Array,
-  encoding: `gzip` | `deflate`
-): Uint8Array {
-  if (encoding === `gzip`) {
-    return gzipSync(data)
-  } else {
-    return deflateSync(data)
-  }
-}
-
-/**
  * Router for durable streams HTTP endpoints.
  * Handles all stream operations (create, read, append, delete) and can be
  * embedded into any Node.js HTTP server (Express, Fastify, vanilla http, etc.).
@@ -101,8 +52,6 @@ export class DurableStreamRouter {
   readonly store: StreamStorage
   private options: {
     longPollTimeout: number
-    compression: boolean
-    cors: boolean
     baseUrl: string | undefined
     cursorOptions: CursorOptions
     onStreamCreated?: (event: StreamLifecycleEvent) => void | Promise<void>
@@ -117,8 +66,6 @@ export class DurableStreamRouter {
 
     this.options = {
       longPollTimeout: options.longPollTimeout ?? 30_000,
-      compression: options.compression ?? true,
-      cors: options.cors ?? true,
       baseUrl: options.baseUrl,
       cursorOptions: {
         intervalSeconds: options.cursorIntervalSeconds,
@@ -148,30 +95,6 @@ export class DurableStreamRouter {
       if (!path.startsWith(`/`)) {
         path = `/${path}`
       }
-    }
-
-    // CORS headers for browser testing (if enabled)
-    if (this.options.cors) {
-      res.setHeader(`access-control-allow-origin`, `*`)
-      res.setHeader(
-        `access-control-allow-methods`,
-        `GET, POST, PUT, DELETE, HEAD, OPTIONS`
-      )
-      res.setHeader(
-        `access-control-allow-headers`,
-        `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
-      )
-      res.setHeader(
-        `access-control-expose-headers`,
-        `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
-      )
-    }
-
-    // Handle CORS preflight
-    if (method === `OPTIONS`) {
-      res.writeHead(204)
-      res.end()
-      return
     }
 
     try {
@@ -524,24 +447,8 @@ export class DurableStreamRouter {
     // Format response (wraps JSON in array brackets)
     const responseData = this.formatResponse(path, messages)
 
-    // Apply compression if enabled and response is large enough
-    let finalData: Uint8Array = responseData
-    if (
-      this.options.compression &&
-      responseData.length >= COMPRESSION_THRESHOLD
-    ) {
-      const acceptEncoding = req.headers[`accept-encoding`]
-      const encoding = getCompressionEncoding(acceptEncoding)
-      if (encoding) {
-        finalData = compressData(responseData, encoding)
-        headers[`content-encoding`] = encoding
-        // Add Vary header to indicate response varies by Accept-Encoding
-        headers[`vary`] = `accept-encoding`
-      }
-    }
-
     res.writeHead(200, headers)
-    res.end(Buffer.from(finalData))
+    res.end(Buffer.from(responseData))
   }
 
   /**

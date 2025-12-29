@@ -6,6 +6,11 @@
 
 export { DurableStreamTestServer } from "./server"
 export { DurableStreamRouter } from "./router"
+export { CORSMiddleware, type CORSOptions } from "./cors-middleware"
+export {
+  CompressionMiddleware,
+  type CompressionOptions,
+} from "./compression-middleware"
 export {
   FaultInjectionMiddleware,
   type InjectedError,
