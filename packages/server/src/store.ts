@@ -5,13 +5,6 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
- * Leeway in milliseconds to account for clock skew between servers/clients/CDNs.
- * Streams are considered valid until `expiryTime + EXPIRY_LEEWAY_MS`.
- * This prevents "just expired" errors due to minor clock drift.
- */
-export const EXPIRY_LEEWAY_MS = 10_000 // 10 seconds
-
-/**
  * Normalize content-type by extracting the media type (before any semicolon).
  * Handles cases like "application/json; charset=utf-8".
  */
@@ -92,27 +85,23 @@ export class StreamStore {
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
-   * Allows a small leeway window to account for clock skew.
    */
   private isExpired(stream: Stream): boolean {
     const now = Date.now()
 
-    // Check absolute expiry time (with leeway for clock skew)
+    // Check absolute expiry time
     if (stream.expiresAt) {
       const expiryTime = new Date(stream.expiresAt).getTime()
       // Treat invalid dates (NaN) as expired (fail closed)
-      if (
-        !Number.isFinite(expiryTime) ||
-        now >= expiryTime + EXPIRY_LEEWAY_MS
-      ) {
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
         return true
       }
     }
 
-    // Check TTL (relative to creation time, with leeway for clock skew)
+    // Check TTL (relative to creation time)
     if (stream.ttlSeconds !== undefined) {
       const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
-      if (now >= expiryTime + EXPIRY_LEEWAY_MS) {
+      if (now >= expiryTime) {
         return true
       }
     }
