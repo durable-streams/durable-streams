@@ -143,3 +143,90 @@ tests:
         expect:
           minChunks: 1
           upToDate: true
+
+  - id: sse-preserves-nel-character
+    name: SSE preserves NEL character (U+0085)
+    description: |
+      SSE parsers must NOT split on U+0085 (Next Line / NEL).
+      Per HTML Living Standard, SSE lines end only with CRLF, LF, or CR.
+      Other Unicode line separators must be preserved as data.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "before\u0085after"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "before\u0085after"
+          minChunks: 1
+
+  - id: sse-preserves-line-separator
+    name: SSE preserves Line Separator (U+2028)
+    description: |
+      SSE parsers must NOT split on U+2028 (Line Separator).
+      This character can appear in JSON payloads and AI token streams.
+      It must be preserved as ordinary data, not treated as a line break.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "hello\u2028world"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "hello\u2028world"
+          minChunks: 1
+
+  - id: sse-preserves-paragraph-separator
+    name: SSE preserves Paragraph Separator (U+2029)
+    description: |
+      SSE parsers must NOT split on U+2029 (Paragraph Separator).
+      This character can appear in JSON payloads and AI token streams.
+      It must be preserved as ordinary data, not treated as a line break.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "para1\u2029para2"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "para1\u2029para2"
+          minChunks: 1
+
+  - id: sse-preserves-all-unicode-separators
+    name: SSE preserves all Unicode line separators together
+    description: |
+      Combined test ensuring NEL (U+0085), LS (U+2028), and PS (U+2029)
+      are all preserved in the same payload without being split.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "a\u0085b\u2028c\u2029d"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "a\u0085b\u2028c\u2029d"
+          minChunks: 1
