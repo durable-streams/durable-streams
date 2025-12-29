@@ -821,6 +821,218 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
+  // Browser Security Headers (Protocol Section 10.7)
+  // ============================================================================
+
+  describe(`Browser Security Headers`, () => {
+    test(`should include X-Content-Type-Options: nosniff on GET responses`, async () => {
+      const streamPath = `/v1/stream/security-get-nosniff-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      // Read data
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+    })
+
+    test(`should include X-Content-Type-Options: nosniff on PUT responses`, async () => {
+      const streamPath = `/v1/stream/security-put-nosniff-${Date.now()}`
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      expect(response.status).toBe(201)
+      expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+    })
+
+    test(`should include X-Content-Type-Options: nosniff on POST responses`, async () => {
+      const streamPath = `/v1/stream/security-post-nosniff-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append data
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+      expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+    })
+
+    test(`should include X-Content-Type-Options: nosniff on HEAD responses`, async () => {
+      const streamPath = `/v1/stream/security-head-nosniff-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // HEAD request
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+    })
+
+    test(`should include Cross-Origin-Resource-Policy header on GET responses`, async () => {
+      const streamPath = `/v1/stream/security-corp-get-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: new Uint8Array([1, 2, 3, 4]),
+      })
+
+      // Read data
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      const corp = response.headers.get(`cross-origin-resource-policy`)
+      expect(corp).toBeDefined()
+      expect([`cross-origin`, `same-origin`, `same-site`]).toContain(corp)
+    })
+
+    test(`should include Cache-Control: no-store on HEAD responses`, async () => {
+      const streamPath = `/v1/stream/security-head-cache-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // HEAD request
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+
+      expect(response.status).toBe(200)
+      const cacheControl = response.headers.get(`cache-control`)
+      expect(cacheControl).toBeDefined()
+      expect(cacheControl).toContain(`no-store`)
+    })
+
+    test(`should include X-Content-Type-Options: nosniff on SSE responses`, async () => {
+      const streamPath = `/v1/stream/security-sse-nosniff-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ test: `data` }),
+      })
+
+      // Get offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const offset = headResponse.headers.get(STREAM_OFFSET_HEADER) ?? `-1`
+
+      // SSE request with abort controller
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 500)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=${offset}&live=sse`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+      } catch (e) {
+        // AbortError is expected
+        if (!(e instanceof Error && e.name === `AbortError`)) {
+          throw e
+        }
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    })
+
+    test(`should include X-Content-Type-Options: nosniff on long-poll responses`, async () => {
+      const streamPath = `/v1/stream/security-longpoll-nosniff-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial data`,
+      })
+
+      // Get offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const offset = headResponse.headers.get(STREAM_OFFSET_HEADER) ?? `-1`
+
+      // Long-poll request (will likely return 204 if no new data)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 500)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=${offset}&live=long-poll`,
+          {
+            method: `GET`,
+            signal: controller.signal,
+          }
+        )
+
+        // Either 200 (data) or 204 (timeout) - both should have nosniff
+        expect([200, 204]).toContain(response.status)
+        expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+      } catch (e) {
+        // AbortError is acceptable if request times out
+        if (!(e instanceof Error && e.name === `AbortError`)) {
+          throw e
+        }
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    })
+
+    test(`should include security headers on error responses`, async () => {
+      const streamPath = `/v1/stream/security-error-headers-${Date.now()}`
+
+      // Try to read non-existent stream (404)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(404)
+      // Security headers should be present even on error responses
+      expect(response.headers.get(`x-content-type-options`)).toBe(`nosniff`)
+    })
+  })
+
+  // ============================================================================
   // TTL and Expiry Validation
   // ============================================================================
 
