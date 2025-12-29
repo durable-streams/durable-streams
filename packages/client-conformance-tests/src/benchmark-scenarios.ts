@@ -295,52 +295,16 @@ export const sseLatencyScenario: BenchmarkScenario = {
 export const openLoopAppendScenario: BenchmarkScenario = {
   id: `open-loop-append`,
   name: `Open-Loop Append Latency`,
-  description: `Measure append latency under realistic open-loop load (100 req/s)`,
+  description: `Measure append latency under sustained open-loop load (1000 req/s)`,
   category: `open-loop`,
   config: {
     warmupIterations: 0, // Open-loop uses its own warmup
     measureIterations: 1, // Single iteration runs the full open-loop test
     messageSize: 100,
-    targetRps: 100,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 200,
-  },
-  criteria: {
-    maxP50Ms: 30,
-    maxP99Ms: 200,
-  },
-  createOperation: (ctx) => ({
-    op: `open_loop`,
-    innerOp: `append`,
-    path: `${ctx.basePath}/open-loop-append`,
-    size: 100,
-    targetRps: 100,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 200,
-  }),
-}
-
-/**
- * Open-loop append latency at high load.
- *
- * Tests system behavior under stress to reveal coordinated omission
- * that would be hidden in closed-loop tests.
- */
-export const openLoopAppendHighLoadScenario: BenchmarkScenario = {
-  id: `open-loop-append-high`,
-  name: `Open-Loop Append (High Load)`,
-  description: `Measure append latency under high open-loop load (500 req/s)`,
-  category: `open-loop`,
-  config: {
-    warmupIterations: 0,
-    measureIterations: 1,
-    messageSize: 100,
-    targetRps: 500,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 1000,
+    targetRps: 1000,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 2000,
   },
   criteria: {
     maxP50Ms: 50,
@@ -349,37 +313,76 @@ export const openLoopAppendHighLoadScenario: BenchmarkScenario = {
   createOperation: (ctx) => ({
     op: `open_loop`,
     innerOp: `append`,
-    path: `${ctx.basePath}/open-loop-append-high`,
+    path: `${ctx.basePath}/open-loop-append`,
     size: 100,
-    targetRps: 500,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 1000,
+    targetRps: 1000,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 2000,
   }),
 }
 
 /**
- * Open-loop roundtrip latency.
+ * Open-loop append latency at high load (stress test).
  *
- * Measures end-to-end latency for append + read under realistic load.
+ * Tests system behavior under stress to reveal coordinated omission
+ * that would be hidden in closed-loop tests. At 5000 req/s, most systems
+ * will show significant queueing and tail latency degradation.
+ */
+export const openLoopAppendHighLoadScenario: BenchmarkScenario = {
+  id: `open-loop-append-high`,
+  name: `Open-Loop Append (Stress)`,
+  description: `Stress test: append latency under heavy open-loop load (5000 req/s)`,
+  category: `open-loop`,
+  config: {
+    warmupIterations: 0,
+    measureIterations: 1,
+    messageSize: 100,
+    targetRps: 5000,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 10000,
+  },
+  criteria: {
+    maxP50Ms: 100,
+    maxP99Ms: 2000,
+  },
+  createOperation: (ctx) => ({
+    op: `open_loop`,
+    innerOp: `append`,
+    path: `${ctx.basePath}/open-loop-append-high`,
+    size: 100,
+    targetRps: 5000,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 10000,
+  }),
+}
+
+/**
+ * Open-loop roundtrip latency under load.
+ *
+ * Measures end-to-end latency for append + read under sustained load.
+ * Roundtrips are heavier operations (create stream + append + long-poll read),
+ * so we use lower RPS. At 200 req/s we're near the sustainable limit.
  */
 export const openLoopRoundtripScenario: BenchmarkScenario = {
   id: `open-loop-roundtrip`,
   name: `Open-Loop Roundtrip Latency`,
-  description: `Measure roundtrip latency under open-loop load (50 req/s)`,
+  description: `Measure roundtrip latency under sustained open-loop load (200 req/s)`,
   category: `open-loop`,
   requires: [`longPoll`],
   config: {
     warmupIterations: 0,
     measureIterations: 1,
     messageSize: 100,
-    targetRps: 50,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 100,
+    targetRps: 200,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 500,
   },
   criteria: {
-    maxP50Ms: 100,
+    maxP50Ms: 50,
     maxP99Ms: 500,
   },
   createOperation: (ctx) => ({
@@ -387,10 +390,10 @@ export const openLoopRoundtripScenario: BenchmarkScenario = {
     innerOp: `roundtrip`,
     path: `${ctx.basePath}/open-loop-rt`,
     size: 100,
-    targetRps: 50,
-    durationMs: 5000,
-    warmupMs: 1000,
-    maxConcurrency: 100,
+    targetRps: 200,
+    durationMs: 10000,
+    warmupMs: 2000,
+    maxConcurrency: 500,
     live: `long-poll`,
   }),
 }
