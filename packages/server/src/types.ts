@@ -51,21 +51,35 @@ export interface Stream {
 
   /**
    * Last sequence number for writer coordination.
+   * Used with the `seq` parameter in append operations to prevent
+   * conflicting concurrent writes (optimistic concurrency control).
    */
   lastSeq?: string
 
   /**
-   * TTL in seconds.
+   * Time-to-live in seconds, relative to stream creation time.
+   * The stream automatically expires `ttlSeconds` seconds after creation.
+   *
+   * Expiry time = createdAt + ttlSeconds
+   *
+   * Mutually exclusive with `expiresAt` - only one can be set.
    */
   ttlSeconds?: number
 
   /**
-   * Absolute expiry time (ISO 8601).
+   * Absolute expiration timestamp (ISO 8601 format).
+   * The stream automatically expires at this specific time.
+   *
+   * Example: "2025-12-31T23:59:59Z"
+   *
+   * Mutually exclusive with `ttlSeconds` - only one can be set.
+   * Invalid timestamps are treated as expired (fail-closed).
    */
   expiresAt?: string
 
   /**
-   * Timestamp when the stream was created.
+   * Timestamp (milliseconds since epoch) when the stream was created.
+   * Used with `ttlSeconds` to calculate relative expiration.
    */
   createdAt: number
 }
