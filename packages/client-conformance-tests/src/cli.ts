@@ -11,8 +11,10 @@
 
 import { runConformanceTests } from "./runner.js"
 import { runBenchmarks } from "./benchmark-runner.js"
+import { runSaturationTests } from "./saturation-finder.js"
 import type { RunnerOptions } from "./runner.js"
 import type { BenchmarkRunnerOptions } from "./benchmark-runner.js"
+import type { SaturationRunnerOptions } from "./saturation-finder.js"
 
 const HELP = `
 Durable Streams Client Conformance Test Suite
@@ -20,6 +22,7 @@ Durable Streams Client Conformance Test Suite
 Usage:
   npx @durable-streams/client-conformance-tests --run <adapter> [options]
   npx @durable-streams/client-conformance-tests --bench <adapter> [options]
+  npx @durable-streams/client-conformance-tests --saturation <adapter> [options]
 
 Arguments:
   <adapter>           Path to client adapter executable, or "ts" for built-in TypeScript adapter
@@ -40,6 +43,16 @@ Benchmark Options:
   --category <name>   Run only scenarios in category: latency, throughput, streaming, open-loop
                       Can be specified multiple times
   --format <fmt>      Output format: console, json, markdown (default: console)
+
+Saturation Finder Options:
+  --saturation <adapter>  Find saturation point by ramping up load
+  --op <type>             Operations to test: append, roundtrip (default: both)
+                          Can be specified multiple times
+  --start-rps <n>         Starting RPS (default: 100)
+  --max-rps <n>           Maximum RPS to test (default: 50000)
+  --step <n>              Multiplier per step (default: 2.0)
+  --queue-threshold <ms>  Queue P99 threshold for saturation (default: 100)
+  --format <fmt>          Output format: console, json, markdown (default: console)
 
 Common Options:
   --verbose           Show detailed output for each operation
@@ -72,6 +85,19 @@ Benchmark Examples:
   # Output as JSON for CI
   npx @durable-streams/client-conformance-tests --bench ts --format json
 
+Saturation Finder Examples:
+  # Find saturation point for TypeScript client
+  npx @durable-streams/client-conformance-tests --saturation ts
+
+  # Test only append operations
+  npx @durable-streams/client-conformance-tests --saturation ts --op append
+
+  # Use smaller step multiplier for finer granularity
+  npx @durable-streams/client-conformance-tests --saturation ts --step 1.5
+
+  # Lower queue threshold for stricter saturation detection
+  npx @durable-streams/client-conformance-tests --saturation ts --queue-threshold 50
+
 Implementing a Client Adapter:
   A client adapter is an executable that communicates via stdin/stdout using
   JSON-line protocol. See the documentation for the protocol specification
@@ -93,10 +119,11 @@ Implementing a Client Adapter:
 type ParsedOptions =
   | { mode: `conformance`; options: RunnerOptions }
   | { mode: `benchmark`; options: BenchmarkRunnerOptions }
+  | { mode: `saturation`; options: SaturationRunnerOptions }
   | null
 
 function parseArgs(args: Array<string>): ParsedOptions {
-  let mode: `conformance` | `benchmark` | null = null
+  let mode: `conformance` | `benchmark` | `saturation` | null = null
   let clientAdapter = ``
 
   // Conformance-specific options
@@ -111,6 +138,13 @@ function parseArgs(args: Array<string>): ParsedOptions {
     `latency` | `throughput` | `streaming` | `open-loop`
   > = []
   let format: `console` | `json` | `markdown` = `console`
+
+  // Saturation-specific options
+  const operations: Array<`append` | `roundtrip`> = []
+  let startRps: number | undefined
+  let maxRps: number | undefined
+  let stepMultiplier: number | undefined
+  let queueThreshold: number | undefined
 
   // Common options
   let verbose = false
@@ -138,6 +172,14 @@ function parseArgs(args: Array<string>): ParsedOptions {
       i++
       if (i >= args.length) {
         console.error(`Error: --bench requires an adapter path`)
+        return null
+      }
+      clientAdapter = args[i]!
+    } else if (arg === `--saturation`) {
+      mode = `saturation`
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --saturation requires an adapter path`)
         return null
       }
       clientAdapter = args[i]!
@@ -229,6 +271,64 @@ function parseArgs(args: Array<string>): ParsedOptions {
         console.error(`Error: --port must be a number`)
         return null
       }
+    } else if (arg === `--op`) {
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --op requires an operation type`)
+        return null
+      }
+      const op = args[i] as `append` | `roundtrip`
+      if (![`append`, `roundtrip`].includes(op)) {
+        console.error(
+          `Error: Invalid operation "${op}". Must be: append, roundtrip`
+        )
+        return null
+      }
+      operations.push(op)
+    } else if (arg === `--start-rps`) {
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --start-rps requires a number`)
+        return null
+      }
+      startRps = parseInt(args[i]!, 10)
+      if (isNaN(startRps)) {
+        console.error(`Error: --start-rps must be a number`)
+        return null
+      }
+    } else if (arg === `--max-rps`) {
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --max-rps requires a number`)
+        return null
+      }
+      maxRps = parseInt(args[i]!, 10)
+      if (isNaN(maxRps)) {
+        console.error(`Error: --max-rps must be a number`)
+        return null
+      }
+    } else if (arg === `--step`) {
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --step requires a number`)
+        return null
+      }
+      stepMultiplier = parseFloat(args[i]!)
+      if (isNaN(stepMultiplier)) {
+        console.error(`Error: --step must be a number`)
+        return null
+      }
+    } else if (arg === `--queue-threshold`) {
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --queue-threshold requires a number in ms`)
+        return null
+      }
+      queueThreshold = parseFloat(args[i]!)
+      if (isNaN(queueThreshold)) {
+        console.error(`Error: --queue-threshold must be a number`)
+        return null
+      }
     } else if (arg.startsWith(`-`)) {
       console.error(`Error: Unknown option "${arg}"`)
       return null
@@ -239,7 +339,9 @@ function parseArgs(args: Array<string>): ParsedOptions {
 
   // Validate required options
   if (!mode || !clientAdapter) {
-    console.error(`Error: --run <adapter> or --bench <adapter> is required`)
+    console.error(
+      `Error: --run <adapter>, --bench <adapter>, or --saturation <adapter> is required`
+    )
     console.log(`\nRun with --help for usage information`)
     return null
   }
@@ -255,7 +357,7 @@ function parseArgs(args: Array<string>): ParsedOptions {
     if (suites.length > 0) options.suites = suites
     if (tags.length > 0) options.tags = tags
     return { mode: `conformance`, options }
-  } else {
+  } else if (mode === `benchmark`) {
     const options: BenchmarkRunnerOptions = {
       clientAdapter,
       verbose,
@@ -265,6 +367,23 @@ function parseArgs(args: Array<string>): ParsedOptions {
     if (scenarios.length > 0) options.scenarios = scenarios
     if (categories.length > 0) options.categories = categories
     return { mode: `benchmark`, options }
+  } else {
+    const config: SaturationRunnerOptions[`config`] = {}
+    if (startRps !== undefined) config.startRps = startRps
+    if (maxRps !== undefined) config.maxRps = maxRps
+    if (stepMultiplier !== undefined) config.stepMultiplier = stepMultiplier
+    if (queueThreshold !== undefined)
+      config.queueP99ThresholdMs = queueThreshold
+
+    const options: SaturationRunnerOptions = {
+      clientAdapter,
+      verbose,
+      serverPort,
+      format,
+      config,
+    }
+    if (operations.length > 0) options.operations = operations
+    return { mode: `saturation`, options }
   }
 }
 
@@ -287,11 +406,14 @@ async function main(): Promise<void> {
       if (summary.failed > 0) {
         process.exit(1)
       }
-    } else {
+    } else if (parsed.mode === `benchmark`) {
       const summary = await runBenchmarks(parsed.options)
       if (summary.failed > 0) {
         process.exit(1)
       }
+    } else {
+      // Saturation mode - just run and report
+      await runSaturationTests(parsed.options)
     }
   } catch (err) {
     console.error(`Error running ${parsed.mode}:`, err)
