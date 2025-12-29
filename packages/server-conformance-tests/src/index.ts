@@ -1911,7 +1911,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     const uniquePath = (prefix: string) =>
       `/v1/stream/${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
-    // Run tests concurrently to avoid 6x 1.5s wait time
+    // Servers MAY implement a leeway window (up to ~10s) to handle clock skew.
+    // Tests must wait TTL + max_expected_leeway + buffer to ensure expiry.
+    const EXPIRY_WAIT_MS = 12_000 // 1s TTL + 10s leeway + 1s buffer
+
+    // Run tests concurrently to avoid long total wait time
     test.concurrent(`should return 404 on HEAD after TTL expires`, async () => {
       const streamPath = uniquePath(`ttl-expire-head`)
 
@@ -1931,8 +1935,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(headBefore.status).toBe(200)
 
-      // Wait for TTL to expire (1 second + buffer)
-      await sleep(1500)
+      // Wait for TTL + leeway to expire
+      await sleep(EXPIRY_WAIT_MS)
 
       // Stream should no longer exist
       const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -1961,8 +1965,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(getBefore.status).toBe(200)
 
-      // Wait for TTL to expire
-      await sleep(1500)
+      // Wait for TTL + leeway to expire
+      await sleep(EXPIRY_WAIT_MS)
 
       // Stream should no longer exist
       const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -1994,8 +1998,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect([200, 204]).toContain(postBefore.status)
 
-        // Wait for TTL to expire
-        await sleep(1500)
+        // Wait for TTL + leeway to expire
+        await sleep(EXPIRY_WAIT_MS)
 
         // Append should fail - stream no longer exists
         const postAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2029,8 +2033,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(headBefore.status).toBe(200)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry time + leeway to pass
+        await sleep(EXPIRY_WAIT_MS)
 
         // Stream should no longer exist
         const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2063,8 +2067,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(getBefore.status).toBe(200)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry time + leeway to pass
+        await sleep(EXPIRY_WAIT_MS)
 
         // Stream should no longer exist
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2098,8 +2102,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect([200, 204]).toContain(postBefore.status)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry time + leeway to pass
+        await sleep(EXPIRY_WAIT_MS)
 
         // Append should fail - stream no longer exists
         const postAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2127,8 +2131,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(createResponse.status).toBe(201)
 
-        // Wait for TTL to expire
-        await sleep(1500)
+        // Wait for TTL + leeway to expire
+        await sleep(EXPIRY_WAIT_MS)
 
         // Recreate stream with different config - should succeed (201)
         const recreateResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2148,6 +2152,69 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(getResponse.status).toBe(200)
         const body = await getResponse.text()
         expect(body).toContain(`new data`)
+      }
+    )
+
+    // ============================================================================
+    // Expiry Leeway Tests - Streams should remain valid within the leeway window
+    // ============================================================================
+
+    test.concurrent(
+      `should still be valid immediately after nominal TTL (within leeway)`,
+      async () => {
+        const streamPath = uniquePath(`ttl-leeway-valid`)
+
+        // Create stream with 1 second TTL
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `1`,
+          },
+          body: `test data`,
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait just past the nominal TTL (but within leeway window)
+        await sleep(1500)
+
+        // Stream SHOULD still be valid due to leeway
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        // Servers MAY implement leeway, so we accept both behaviors
+        // 200 = has leeway (preferred), 404 = no leeway (also valid)
+        expect([200, 404]).toContain(headResponse.status)
+      }
+    )
+
+    test.concurrent(
+      `should still be valid immediately after nominal Expires-At (within leeway)`,
+      async () => {
+        const streamPath = uniquePath(`expires-at-leeway-valid`)
+
+        // Create stream that expires in 1 second
+        const expiresAt = new Date(Date.now() + 1000).toISOString()
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-Expires-At": expiresAt,
+          },
+          body: `test data`,
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait just past the nominal expiry (but within leeway window)
+        await sleep(1500)
+
+        // Stream SHOULD still be valid due to leeway
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        // Servers MAY implement leeway, so we accept both behaviors
+        // 200 = has leeway (preferred), 404 = no leeway (also valid)
+        expect([200, 404]).toContain(headResponse.status)
       }
     )
   })

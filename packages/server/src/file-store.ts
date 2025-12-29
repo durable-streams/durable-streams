@@ -11,6 +11,7 @@ import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import {
+  EXPIRY_LEEWAY_MS,
   formatJsonResponse,
   normalizeContentType,
   processJsonAppend,
@@ -334,23 +335,27 @@ export class FileBackedStreamStore {
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
+   * Allows a small leeway window to account for clock skew.
    */
   private isExpired(meta: StreamMetadata): boolean {
     const now = Date.now()
 
-    // Check absolute expiry time
+    // Check absolute expiry time (with leeway for clock skew)
     if (meta.expiresAt) {
       const expiryTime = new Date(meta.expiresAt).getTime()
       // Treat invalid dates (NaN) as expired (fail closed)
-      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+      if (
+        !Number.isFinite(expiryTime) ||
+        now >= expiryTime + EXPIRY_LEEWAY_MS
+      ) {
         return true
       }
     }
 
-    // Check TTL (relative to creation time)
+    // Check TTL (relative to creation time, with leeway for clock skew)
     if (meta.ttlSeconds !== undefined) {
       const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
-      if (now >= expiryTime) {
+      if (now >= expiryTime + EXPIRY_LEEWAY_MS) {
         return true
       }
     }
