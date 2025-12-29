@@ -26,6 +26,7 @@ import type {
   BenchmarkOperation,
   BenchmarkResult,
   BenchmarkStats,
+  OpenLoopMetrics,
   TestCommand,
   TestResult,
 } from "./protocol.js"
@@ -46,7 +47,7 @@ export interface BenchmarkRunnerOptions {
   /** Specific scenarios to run (default: all) */
   scenarios?: Array<string>
   /** Categories to run (default: all) */
-  categories?: Array<`latency` | `throughput` | `streaming`>
+  categories?: Array<`latency` | `throughput` | `streaming` | `open-loop`>
   /** Verbose output */
   verbose?: boolean
   /** Port for reference server (0 for random) */
@@ -67,6 +68,8 @@ export interface ScenarioResult {
   opsPerSec?: number
   /** Computed MB/sec for throughput scenarios */
   mbPerSec?: number
+  /** Open-loop metrics (for open-loop scenarios) */
+  openLoop?: OpenLoopMetrics
 }
 
 export interface CriteriaResult {
@@ -342,6 +345,7 @@ async function runScenario(
 
     let totalMessagesProcessed = 0
     let totalBytesTransferred = 0
+    let openLoopMetrics: OpenLoopMetrics | undefined
 
     for (let i = 0; i < scenario.config.measureIterations; i++) {
       const ctx: ScenarioContext = {
@@ -358,6 +362,10 @@ async function runScenario(
         if (result.metrics) {
           totalMessagesProcessed += result.metrics.messagesProcessed ?? 0
           totalBytesTransferred += result.metrics.bytesTransferred ?? 0
+        }
+        // Capture open-loop metrics
+        if (result.openLoop) {
+          openLoopMetrics = result.openLoop
         }
       }
     }
@@ -409,24 +417,32 @@ async function runScenario(
     const criteriaDetails: Array<CriteriaResult> = []
     let criteriaMet = true
 
+    // For open-loop scenarios, use the total latency from open-loop metrics
+    const effectiveMedian = openLoopMetrics
+      ? openLoopMetrics.totalLatency.median
+      : stats.median
+    const effectiveP99 = openLoopMetrics
+      ? openLoopMetrics.totalLatency.p99
+      : stats.p99
+
     if (scenario.criteria) {
       if (scenario.criteria.maxP50Ms !== undefined) {
-        const met = stats.median <= scenario.criteria.maxP50Ms
+        const met = effectiveMedian <= scenario.criteria.maxP50Ms
         criteriaDetails.push({
           criterion: `p50 <= ${scenario.criteria.maxP50Ms}ms`,
           met,
-          actual: stats.median,
+          actual: effectiveMedian,
           expected: scenario.criteria.maxP50Ms,
         })
         if (!met) criteriaMet = false
       }
 
       if (scenario.criteria.maxP99Ms !== undefined) {
-        const met = stats.p99 <= scenario.criteria.maxP99Ms
+        const met = effectiveP99 <= scenario.criteria.maxP99Ms
         criteriaDetails.push({
           criterion: `p99 <= ${scenario.criteria.maxP99Ms}ms`,
           met,
-          actual: stats.p99,
+          actual: effectiveP99,
           expected: scenario.criteria.maxP99Ms,
         })
         if (!met) criteriaMet = false
@@ -468,6 +484,7 @@ async function runScenario(
       skipped: false,
       opsPerSec: computedOpsPerSec,
       mbPerSec: computedMbPerSec,
+      openLoop: openLoopMetrics,
     }
   } catch (err) {
     return {
@@ -503,6 +520,9 @@ function printConsoleResults(summary: BenchmarkSummary): void {
     ),
     streaming: summary.results.filter(
       (r) => r.scenario.category === `streaming`
+    ),
+    "open-loop": summary.results.filter(
+      (r) => r.scenario.category === `open-loop`
     ),
   }
 
@@ -545,6 +565,25 @@ function printConsoleResults(summary: BenchmarkSummary): void {
               : `N/A`
             console.log(`    Ops/sec: ${opsStr}  MB/sec: ${mbStr}`)
           }
+        } else if (
+          result.scenario.category === `open-loop` &&
+          result.openLoop
+        ) {
+          // Display open-loop specific metrics
+          const ol = result.openLoop
+          const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(1)
+          console.log(
+            `    Load: ${ol.targetRps} target → ${ol.achievedRps.toFixed(1)} achieved (${achievedPct}%)`
+          )
+          console.log(
+            `    Total Latency: p50=${ol.totalLatency.median.toFixed(2)}ms  p99=${ol.totalLatency.p99.toFixed(2)}ms  p99.9=${ol.totalLatency.p999.toFixed(2)}ms`
+          )
+          console.log(
+            `    Queue Latency: p50=${ol.queueLatency.median.toFixed(2)}ms  p99=${ol.queueLatency.p99.toFixed(2)}ms`
+          )
+          console.log(
+            `    Offered: ${ol.offeredCount}  Completed: ${ol.completedCount}  Failed: ${ol.failedCount}`
+          )
         } else {
           console.log(`    Median: ${formatted.Median}  P99: ${formatted.P99}`)
         }
@@ -683,6 +722,39 @@ function generateMarkdownReport(summary: BenchmarkSummary): string {
     lines.push(``)
   }
 
+  // Open-loop section
+  const openLoopResults = summary.results.filter(
+    (r) => r.scenario.category === `open-loop` && !r.skipped && !r.error
+  )
+  if (openLoopResults.length > 0) {
+    lines.push(`#### Open-Loop (Realistic Load)`)
+    lines.push(``)
+    lines.push(
+      `Open-loop tests schedule requests on a fixed wall-clock interval, regardless of when prior requests complete.`
+    )
+    lines.push(
+      `This accurately models real user behavior and reveals tail latency hidden by closed-loop tests.`
+    )
+    lines.push(``)
+    lines.push(
+      `| Scenario | Target RPS | Achieved RPS | P50 | P99 | P99.9 | Queue P99 | Status |`
+    )
+    lines.push(
+      `|----------|------------|--------------|-----|-----|-------|-----------|--------|`
+    )
+    for (const r of openLoopResults) {
+      const ol = r.openLoop
+      const status = r.criteriaMet ? `Pass` : `Fail`
+      if (ol) {
+        const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(0)
+        lines.push(
+          `| ${r.scenario.name} | ${ol.targetRps} | ${ol.achievedRps.toFixed(1)} (${achievedPct}%) | ${ol.totalLatency.median.toFixed(2)}ms | ${ol.totalLatency.p99.toFixed(2)}ms | ${ol.totalLatency.p999.toFixed(2)}ms | ${ol.queueLatency.p99.toFixed(2)}ms | ${status} |`
+        )
+      }
+    }
+    lines.push(``)
+  }
+
   // Summary
   lines.push(`#### Summary`)
   lines.push(``)
@@ -741,10 +813,10 @@ export async function runBenchmarks(
   let adapterArgs = options.clientArgs ?? []
 
   if (adapterPath === `ts` || adapterPath === `typescript`) {
-    adapterPath = `npx`
+    // Use the compiled adapter directly - it has a shebang and is executable
+    adapterPath = `node`
     adapterArgs = [
-      `tsx`,
-      new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
+      new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
     ]
   }
 
@@ -816,6 +888,19 @@ export async function runBenchmarks(
               : `N/A`
             log(`  ${icon} Ops/sec: ${opsStr}, MB/sec: ${mbStr}`)
           }
+        } else if (
+          result.scenario.category === `open-loop` &&
+          result.openLoop
+        ) {
+          // Display open-loop specific progress
+          const ol = result.openLoop
+          const achievedPct = ((ol.achievedRps / ol.targetRps) * 100).toFixed(0)
+          log(
+            `  ${icon} Load: ${ol.targetRps} → ${ol.achievedRps.toFixed(1)} req/s (${achievedPct}%)`
+          )
+          log(
+            `    Total: p50=${ol.totalLatency.median.toFixed(2)}ms p99=${ol.totalLatency.p99.toFixed(2)}ms`
+          )
         } else {
           log(
             `  ${icon} Median: ${result.stats.median.toFixed(2)}ms, P99: ${result.stats.p99.toFixed(2)}ms`

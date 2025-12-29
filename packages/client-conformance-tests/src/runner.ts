@@ -1053,11 +1053,10 @@ export async function runConformanceTests(
   let adapterArgs = options.clientArgs ?? []
 
   if (adapterPath === `ts` || adapterPath === `typescript`) {
-    // Use built-in TypeScript adapter via tsx
-    adapterPath = `npx`
+    // Use the compiled adapter directly - it has a shebang and is executable
+    adapterPath = `node`
     adapterArgs = [
-      `tsx`,
-      new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
+      new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
     ]
   }
 

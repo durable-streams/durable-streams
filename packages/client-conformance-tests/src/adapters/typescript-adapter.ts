@@ -22,14 +22,19 @@ import {
   parseCommand,
   serializeResult,
 } from "../protocol.js"
+import { calculateOpenLoopStats, runOpenLoop } from "../open-loop-scheduler.js"
 import type {
   BenchmarkCommand,
+  BenchmarkOpenLoopOp,
   BenchmarkOperation,
   ErrorCode,
+  LatencyPercentiles,
+  OpenLoopMetrics,
   ReadChunk,
   TestCommand,
   TestResult,
 } from "../protocol.js"
+import type { LatencyStats } from "../open-loop-scheduler.js"
 
 // Package version - read from package.json would be ideal
 const CLIENT_VERSION = `0.0.1`
@@ -775,6 +780,25 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         break
       }
 
+      case `open_loop`: {
+        // Run open-loop benchmark with the specified parameters
+        const openLoopResult = await runOpenLoopBenchmark(operation)
+
+        const endTime = process.hrtime.bigint()
+        const durationNs = endTime - startTime
+
+        return {
+          type: `benchmark`,
+          success: true,
+          iterationId,
+          durationNs: durationNs.toString(),
+          metrics: {
+            messagesProcessed: openLoopResult.completedCount,
+          },
+          openLoop: openLoopResult,
+        }
+      }
+
       default: {
         return {
           type: `error`,
@@ -804,6 +828,131 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
       errorCode: ErrorCodes.INTERNAL_ERROR,
       message: err instanceof Error ? err.message : String(err),
     }
+  }
+}
+
+/**
+ * Convert LatencyStats to LatencyPercentiles for protocol response.
+ */
+function toLatencyPercentiles(stats: LatencyStats): LatencyPercentiles {
+  return {
+    min: stats.min,
+    max: stats.max,
+    mean: stats.mean,
+    median: stats.median,
+    p75: stats.p75,
+    p90: stats.p90,
+    p95: stats.p95,
+    p99: stats.p99,
+    p999: stats.p999,
+  }
+}
+
+/**
+ * Run an open-loop benchmark with the specified operation.
+ */
+async function runOpenLoopBenchmark(
+  operation: BenchmarkOpenLoopOp
+): Promise<OpenLoopMetrics> {
+  const url = `${serverUrl}${operation.path}`
+  const contentType = operation.contentType ?? `application/octet-stream`
+
+  // Ensure stream exists for append/roundtrip operations
+  if (operation.innerOp === `append` || operation.innerOp === `roundtrip`) {
+    try {
+      await DurableStream.create({ url, contentType })
+    } catch {
+      // Stream may already exist
+    }
+  }
+
+  // Create the operation function based on innerOp
+  let opFn: () => Promise<void>
+
+  switch (operation.innerOp) {
+    case `append`: {
+      const ds = new DurableStream({ url, contentType })
+      const payload = new Uint8Array(operation.size).fill(42)
+      opFn = async () => {
+        await ds.append(payload)
+      }
+      break
+    }
+
+    case `read`: {
+      opFn = async () => {
+        const res = await stream({ url, live: false })
+        await res.body()
+      }
+      break
+    }
+
+    case `roundtrip`: {
+      // Each roundtrip creates a unique stream path to avoid conflicts
+      let rtCounter = 0
+      const basePath = operation.path
+      opFn = async () => {
+        const rtPath = `${basePath}-${Date.now()}-${rtCounter++}`
+        const rtUrl = `${serverUrl}${rtPath}`
+
+        // Create stream
+        const ds = await DurableStream.create({
+          url: rtUrl,
+          contentType,
+        })
+
+        const payload = new Uint8Array(operation.size).fill(42)
+
+        // Start reading before appending
+        const readPromise = (async () => {
+          const res = await ds.stream({
+            live: operation.live ?? `long-poll`,
+          })
+          return new Promise<void>((resolve) => {
+            const unsubscribe = res.subscribeBytes(async (chunk) => {
+              if (chunk.data.length > 0) {
+                unsubscribe()
+                res.cancel()
+                resolve()
+              }
+            })
+          })
+        })()
+
+        // Append
+        await ds.append(payload)
+
+        // Wait for read
+        await readPromise
+      }
+      break
+    }
+
+    default:
+      throw new Error(`Unknown innerOp: ${operation.innerOp}`)
+  }
+
+  // Run the open-loop benchmark
+  const result = await runOpenLoop(opFn, {
+    targetRps: operation.targetRps,
+    durationMs: operation.durationMs,
+    maxConcurrency: operation.maxConcurrency ?? 1000,
+    warmupMs: operation.warmupMs ?? 0,
+  })
+
+  // Calculate statistics
+  const stats = calculateOpenLoopStats(result)
+
+  return {
+    targetRps: result.targetRps,
+    achievedRps: result.achievedRps,
+    offeredCount: result.offeredCount,
+    completedCount: result.completedCount,
+    failedCount: result.failedCount,
+    successRate: stats.load.successRate,
+    totalLatency: toLatencyPercentiles(stats.total),
+    queueLatency: toLatencyPercentiles(stats.queue),
+    serviceLatency: toLatencyPercentiles(stats.service),
   }
 }
 

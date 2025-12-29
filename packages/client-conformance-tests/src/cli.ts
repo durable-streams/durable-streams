@@ -37,7 +37,7 @@ Benchmark Options:
   --bench <adapter>   Run benchmarks with the specified adapter
   --scenario <id>     Run only specific scenario(s) by ID
                       Can be specified multiple times
-  --category <name>   Run only scenarios in category: latency, throughput, streaming
+  --category <name>   Run only scenarios in category: latency, throughput, streaming, open-loop
                       Can be specified multiple times
   --format <fmt>      Output format: console, json, markdown (default: console)
 
@@ -107,7 +107,9 @@ function parseArgs(args: Array<string>): ParsedOptions {
 
   // Benchmark-specific options
   const scenarios: Array<string> = []
-  const categories: Array<`latency` | `throughput` | `streaming`> = []
+  const categories: Array<
+    `latency` | `throughput` | `streaming` | `open-loop`
+  > = []
   let format: `console` | `json` | `markdown` = `console`
 
   // Common options
@@ -173,10 +175,16 @@ function parseArgs(args: Array<string>): ParsedOptions {
         console.error(`Error: --category requires a category name`)
         return null
       }
-      const category = args[i] as `latency` | `throughput` | `streaming`
-      if (![`latency`, `throughput`, `streaming`].includes(category)) {
+      const category = args[i] as
+        | `latency`
+        | `throughput`
+        | `streaming`
+        | `open-loop`
+      if (
+        ![`latency`, `throughput`, `streaming`, `open-loop`].includes(category)
+      ) {
         console.error(
-          `Error: Invalid category "${category}". Must be: latency, throughput, streaming`
+          `Error: Invalid category "${category}". Must be: latency, throughput, streaming, open-loop`
         )
         return null
       }

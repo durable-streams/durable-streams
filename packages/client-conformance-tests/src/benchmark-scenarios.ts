@@ -19,7 +19,7 @@ export interface BenchmarkScenario {
   /** Description */
   description: string
   /** Category for grouping */
-  category: `latency` | `throughput` | `streaming`
+  category: `latency` | `throughput` | `streaming` | `open-loop`
   /** Required client features */
   requires?: Array<`batching` | `sse` | `longPoll` | `streaming`>
   /** Scenario configuration */
@@ -43,6 +43,14 @@ export interface BenchmarkScenarioConfig {
   messageSize: number
   /** Concurrency level (for throughput tests) */
   concurrency?: number
+  /** Target RPS for open-loop scenarios */
+  targetRps?: number
+  /** Duration in ms for open-loop scenarios */
+  durationMs?: number
+  /** Max concurrency for open-loop scenarios */
+  maxConcurrency?: number
+  /** Warmup duration in ms for open-loop scenarios */
+  warmupMs?: number
 }
 
 export interface BenchmarkCriteria {
@@ -274,30 +282,149 @@ export const sseLatencyScenario: BenchmarkScenario = {
 }
 
 // =============================================================================
+// Open-Loop Scenarios
+// =============================================================================
+
+/**
+ * Open-loop append latency at moderate load.
+ *
+ * Unlike closed-loop benchmarks, this schedules requests on a fixed
+ * wall-clock interval regardless of when prior requests complete.
+ * This reveals true tail latency including queue wait time.
+ */
+export const openLoopAppendScenario: BenchmarkScenario = {
+  id: `open-loop-append`,
+  name: `Open-Loop Append Latency`,
+  description: `Measure append latency under realistic open-loop load (100 req/s)`,
+  category: `open-loop`,
+  config: {
+    warmupIterations: 0, // Open-loop uses its own warmup
+    measureIterations: 1, // Single iteration runs the full open-loop test
+    messageSize: 100,
+    targetRps: 100,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 200,
+  },
+  criteria: {
+    maxP50Ms: 30,
+    maxP99Ms: 200,
+  },
+  createOperation: (ctx) => ({
+    op: `open_loop`,
+    innerOp: `append`,
+    path: `${ctx.basePath}/open-loop-append`,
+    size: 100,
+    targetRps: 100,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 200,
+  }),
+}
+
+/**
+ * Open-loop append latency at high load.
+ *
+ * Tests system behavior under stress to reveal coordinated omission
+ * that would be hidden in closed-loop tests.
+ */
+export const openLoopAppendHighLoadScenario: BenchmarkScenario = {
+  id: `open-loop-append-high`,
+  name: `Open-Loop Append (High Load)`,
+  description: `Measure append latency under high open-loop load (500 req/s)`,
+  category: `open-loop`,
+  config: {
+    warmupIterations: 0,
+    measureIterations: 1,
+    messageSize: 100,
+    targetRps: 500,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 1000,
+  },
+  criteria: {
+    maxP50Ms: 50,
+    maxP99Ms: 500,
+  },
+  createOperation: (ctx) => ({
+    op: `open_loop`,
+    innerOp: `append`,
+    path: `${ctx.basePath}/open-loop-append-high`,
+    size: 100,
+    targetRps: 500,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 1000,
+  }),
+}
+
+/**
+ * Open-loop roundtrip latency.
+ *
+ * Measures end-to-end latency for append + read under realistic load.
+ */
+export const openLoopRoundtripScenario: BenchmarkScenario = {
+  id: `open-loop-roundtrip`,
+  name: `Open-Loop Roundtrip Latency`,
+  description: `Measure roundtrip latency under open-loop load (50 req/s)`,
+  category: `open-loop`,
+  requires: [`longPoll`],
+  config: {
+    warmupIterations: 0,
+    measureIterations: 1,
+    messageSize: 100,
+    targetRps: 50,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 100,
+  },
+  criteria: {
+    maxP50Ms: 100,
+    maxP99Ms: 500,
+  },
+  createOperation: (ctx) => ({
+    op: `open_loop`,
+    innerOp: `roundtrip`,
+    path: `${ctx.basePath}/open-loop-rt`,
+    size: 100,
+    targetRps: 50,
+    durationMs: 5000,
+    warmupMs: 1000,
+    maxConcurrency: 100,
+    live: `long-poll`,
+  }),
+}
+
+// =============================================================================
 // All Scenarios
 // =============================================================================
 
 export const allScenarios: Array<BenchmarkScenario> = [
-  // Latency
+  // Latency (closed-loop)
   appendLatencyScenario,
   readLatencyScenario,
   roundtripLatencyScenario,
   createLatencyScenario,
-  // Throughput
+  // Throughput (closed-loop)
   smallMessageThroughputScenario,
   largeMessageThroughputScenario,
   readThroughputScenario,
   // Streaming
   sseLatencyScenario,
+  // Open-loop (realistic user load simulation)
+  openLoopAppendScenario,
+  openLoopAppendHighLoadScenario,
+  openLoopRoundtripScenario,
 ]
 
 export const scenariosByCategory: Record<
-  `latency` | `throughput` | `streaming`,
+  `latency` | `throughput` | `streaming` | `open-loop`,
   Array<BenchmarkScenario>
 > = {
   latency: allScenarios.filter((s) => s.category === `latency`),
   throughput: allScenarios.filter((s) => s.category === `throughput`),
   streaming: allScenarios.filter((s) => s.category === `streaming`),
+  "open-loop": allScenarios.filter((s) => s.category === `open-loop`),
 }
 
 export function getScenarioById(id: string): BenchmarkScenario | undefined {
@@ -305,7 +432,7 @@ export function getScenarioById(id: string): BenchmarkScenario | undefined {
 }
 
 export function getScenariosByCategory(
-  category: `latency` | `throughput` | `streaming`
+  category: `latency` | `throughput` | `streaming` | `open-loop`
 ): Array<BenchmarkScenario> {
   return scenariosByCategory[category]
 }
