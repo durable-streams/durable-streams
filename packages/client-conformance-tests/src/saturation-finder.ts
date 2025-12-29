@@ -385,7 +385,11 @@ async function runSaturationStep(
   const openLoopOp: BenchmarkOpenLoopOp = {
     op: `open_loop`,
     innerOp: operation,
-    path: `${basePath}/saturation-${operation}-${targetRps}`,
+    // Use consistent path - for append, use the pre-created stream
+    path:
+      operation === `append`
+        ? `${basePath}/saturation-append`
+        : `${basePath}/saturation-${operation}-${targetRps}`,
     size: 100,
     targetRps,
     durationMs: config.durationMs,
