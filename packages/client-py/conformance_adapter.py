@@ -510,6 +510,280 @@ def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def run_open_loop_benchmark(operation: dict[str, Any]) -> dict[str, Any]:
+    """
+    Run open-loop benchmark with wall-clock scheduling.
+
+    Fires requests on a fixed schedule regardless of when previous requests complete,
+    measuring queue latency (scheduled vs actual start) and service latency.
+    """
+    import threading
+    import time
+    import statistics
+    from dataclasses import dataclass
+    from typing import Callable
+
+    @dataclass
+    class Sample:
+        scheduled_at: float
+        started_at: float
+        completed_at: float
+        failed: bool
+
+    inner_op = operation.get("innerOp", "append")
+    target_rps = operation.get("targetRps", 100)
+    duration_ms = operation.get("durationMs", 10000)
+    max_concurrency = operation.get("maxConcurrency", 1000)
+    warmup_ms = operation.get("warmupMs", 0)
+    live_mode = operation.get("live", "long-poll")
+
+    period_s = 1.0 / target_rps
+    duration_s = duration_ms / 1000.0
+    warmup_s = warmup_ms / 1000.0
+
+    # Pre-generate payload
+    size = operation.get("size", 100)
+    payload = b"\x2a" * size
+
+    # Base URL
+    url = f"{server_url}{operation['path']}"
+    content_type = stream_content_types.get(operation["path"], "application/octet-stream")
+
+    # Create operation function based on inner op
+    roundtrip_counter = [0]  # Use list for mutable closure
+
+    def create_op_fn() -> Callable[[], bool]:
+        """Create the operation function - returns True on success."""
+        if inner_op == "append":
+            ds = DurableStream(url, content_type=content_type, client=shared_client)
+            def op_fn() -> bool:
+                try:
+                    ds.append(payload)
+                    return True
+                except Exception:
+                    return False
+            return op_fn
+
+        elif inner_op == "read":
+            def op_fn() -> bool:
+                try:
+                    with stream(url, offset="-1", live=False, client=shared_client) as res:
+                        res.read_bytes()
+                    return True
+                except Exception:
+                    return False
+            return op_fn
+
+        elif inner_op == "roundtrip":
+            def op_fn() -> bool:
+                try:
+                    # Each roundtrip uses a unique stream to avoid conflicts
+                    roundtrip_counter[0] += 1
+                    rt_url = f"{url}/rt-{roundtrip_counter[0]}"
+                    rt_ds = DurableStream.create(rt_url, content_type="application/octet-stream", client=shared_client)
+
+                    # Start reading before appending
+                    read_data = [None]
+                    read_error = [None]
+
+                    def read_thread():
+                        try:
+                            with rt_ds.stream(live=live_mode, offset="-1") as res:
+                                for chunk in res:
+                                    if chunk:
+                                        read_data[0] = chunk
+                                        break
+                        except Exception as e:
+                            read_error[0] = e
+
+                    reader = threading.Thread(target=read_thread, daemon=True)
+                    reader.start()
+
+                    # Brief delay to ensure reader is ready
+                    time.sleep(0.001)
+
+                    # Append
+                    rt_ds.append(payload)
+
+                    # Wait for read to complete
+                    reader.join(timeout=10.0)
+
+                    if read_error[0]:
+                        return False
+                    if read_data[0] is None:
+                        return False
+                    return True
+                except Exception:
+                    return False
+            return op_fn
+        else:
+            def op_fn() -> bool:
+                return True
+            return op_fn
+
+    op_fn = create_op_fn()
+
+    # Collect samples
+    samples: list[Sample] = []
+    samples_lock = threading.Lock()
+
+    # Semaphore for concurrency limiting
+    semaphore = threading.Semaphore(max_concurrency)
+
+    # Track in-flight requests
+    in_flight_count = [0]
+    in_flight_lock = threading.Lock()
+    all_done = threading.Event()
+
+    def run_request(scheduled_at: float, is_warmup: bool):
+        try:
+            started_at = time.perf_counter()
+            success = op_fn()
+            completed_at = time.perf_counter()
+
+            if not is_warmup:
+                with samples_lock:
+                    samples.append(Sample(
+                        scheduled_at=scheduled_at,
+                        started_at=started_at,
+                        completed_at=completed_at,
+                        failed=not success,
+                    ))
+        finally:
+            semaphore.release()
+            with in_flight_lock:
+                in_flight_count[0] -= 1
+                if in_flight_count[0] == 0:
+                    all_done.set()
+
+    # Start scheduling requests
+    start_time = time.perf_counter()
+    seq = 0
+    total_duration_s = duration_s + warmup_s
+
+    while True:
+        scheduled_offset = seq * period_s
+        scheduled_at = start_time + scheduled_offset
+
+        # Check if we've exceeded duration
+        if scheduled_offset >= total_duration_s:
+            break
+
+        # Wait until scheduled time
+        now = time.perf_counter()
+        if scheduled_at > now:
+            time.sleep(scheduled_at - now)
+
+        # Acquire semaphore slot
+        semaphore.acquire()
+
+        # Track in-flight
+        with in_flight_lock:
+            in_flight_count[0] += 1
+            all_done.clear()
+
+        is_warmup = scheduled_offset < warmup_s
+
+        # Launch request in thread
+        t = threading.Thread(
+            target=run_request,
+            args=(scheduled_at, is_warmup),
+            daemon=True,
+        )
+        t.start()
+
+        seq += 1
+
+    # Wait for all in-flight requests to complete
+    all_done.wait(timeout=60.0)
+
+    # Calculate metrics
+    return calculate_open_loop_metrics(samples, target_rps, duration_ms)
+
+
+def calculate_open_loop_metrics(samples: list, target_rps: int, duration_ms: int) -> dict[str, Any]:
+    """Calculate open-loop metrics from samples."""
+    import statistics
+
+    if not samples:
+        return {
+            "targetRps": float(target_rps),
+            "achievedRps": 0.0,
+            "offeredCount": 0,
+            "completedCount": 0,
+            "failedCount": 0,
+            "successRate": 0.0,
+            "totalLatency": {"min": 0, "max": 0, "mean": 0, "median": 0, "p75": 0, "p90": 0, "p95": 0, "p99": 0, "p999": 0},
+            "queueLatency": {"min": 0, "max": 0, "mean": 0, "median": 0, "p75": 0, "p90": 0, "p95": 0, "p99": 0, "p999": 0},
+            "serviceLatency": {"min": 0, "max": 0, "mean": 0, "median": 0, "p75": 0, "p90": 0, "p95": 0, "p99": 0, "p999": 0},
+        }
+
+    completed_count = 0
+    failed_count = 0
+    queue_latencies: list[float] = []
+    service_latencies: list[float] = []
+    total_latencies: list[float] = []
+
+    for s in samples:
+        if s.failed:
+            failed_count += 1
+            continue
+        completed_count += 1
+
+        queue_ms = (s.started_at - s.scheduled_at) * 1000
+        service_ms = (s.completed_at - s.started_at) * 1000
+        total_ms = (s.completed_at - s.scheduled_at) * 1000
+
+        queue_latencies.append(queue_ms)
+        service_latencies.append(service_ms)
+        total_latencies.append(total_ms)
+
+    offered_count = len(samples)
+    success_rate = completed_count / offered_count if offered_count > 0 else 0.0
+    achieved_rps = completed_count / (duration_ms / 1000.0)
+
+    return {
+        "targetRps": float(target_rps),
+        "achievedRps": achieved_rps,
+        "offeredCount": offered_count,
+        "completedCount": completed_count,
+        "failedCount": failed_count,
+        "successRate": success_rate,
+        "totalLatency": calculate_percentiles(total_latencies),
+        "queueLatency": calculate_percentiles(queue_latencies),
+        "serviceLatency": calculate_percentiles(service_latencies),
+    }
+
+
+def calculate_percentiles(values: list[float]) -> dict[str, float]:
+    """Calculate percentile statistics for a list of values."""
+    if not values:
+        return {"min": 0, "max": 0, "mean": 0, "median": 0, "p75": 0, "p90": 0, "p95": 0, "p99": 0, "p999": 0}
+
+    import statistics
+
+    sorted_vals = sorted(values)
+    n = len(sorted_vals)
+
+    def percentile(p: float) -> float:
+        idx = int((n - 1) * p)
+        if idx >= n:
+            idx = n - 1
+        return sorted_vals[idx]
+
+    return {
+        "min": sorted_vals[0],
+        "max": sorted_vals[-1],
+        "mean": statistics.mean(values),
+        "median": percentile(0.5),
+        "p75": percentile(0.75),
+        "p90": percentile(0.90),
+        "p95": percentile(0.95),
+        "p99": percentile(0.99),
+        "p999": percentile(0.999),
+    }
+
+
 def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle benchmark command with high-resolution timing."""
     import concurrent.futures
@@ -683,6 +957,17 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
 
             metrics["bytesTransferred"] = total_bytes
             metrics["messagesProcessed"] = count
+
+        elif op_type == "open_loop":
+            # Open-loop benchmark - schedule requests on fixed wall-clock intervals
+            open_loop_result = run_open_loop_benchmark(operation)
+            return {
+                "type": "benchmark",
+                "success": True,
+                "iterationId": iteration_id,
+                "durationNs": "0",
+                "openLoop": open_loop_result,
+            }
 
         else:
             return {
