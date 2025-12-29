@@ -813,11 +813,24 @@ export async function runBenchmarks(
   let adapterArgs = options.clientArgs ?? []
 
   if (adapterPath === `ts` || adapterPath === `typescript`) {
-    // Use the compiled adapter directly - it has a shebang and is executable
-    adapterPath = `node`
-    adapterArgs = [
-      new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
-    ]
+    // Determine if we're running from compiled dist or source
+    // import.meta.url will be .../dist/... or .../src/...
+    const isCompiledDist = import.meta.url.includes(`/dist/`)
+
+    if (isCompiledDist) {
+      // Use the compiled adapter directly
+      adapterPath = `node`
+      adapterArgs = [
+        new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
+      ]
+    } else {
+      // Running from source via tsx
+      adapterPath = `npx`
+      adapterArgs = [
+        `tsx`,
+        new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
+      ]
+    }
   }
 
   // Start client adapter
