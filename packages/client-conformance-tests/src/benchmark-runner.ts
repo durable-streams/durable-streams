@@ -323,6 +323,22 @@ async function runScenario(
       }
     }
 
+    // Pre-create streams for open-loop append scenarios
+    if (scenario.id === `open-loop-append`) {
+      const streamUrl = `${serverUrl}${basePath}/open-loop-append`
+      await DurableStream.create({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+      })
+    }
+    if (scenario.id === `open-loop-append-high`) {
+      const streamUrl = `${serverUrl}${basePath}/open-loop-append-high`
+      await DurableStream.create({
+        url: streamUrl,
+        contentType: `application/octet-stream`,
+      })
+    }
+
     // Warmup iterations
     if (verbose) {
       log(`  Warmup: ${scenario.config.warmupIterations} iterations...`)
