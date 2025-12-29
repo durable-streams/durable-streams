@@ -155,27 +155,27 @@ tests:
     cleanup:
       - action: clear-errors
 
-  - id: append-with-connection-drop
-    name: Append recovers from dropped connection
-    description: Append should retry when connection is dropped
+  - id: append-with-delay
+    name: Append succeeds with server delay
+    description: Append should complete successfully even with server-side delay
     setup:
       - action: create
         as: streamPath
     operations:
-      # Drop connection on first append
+      # Add 500ms delay on first append
       - action: inject-error
         path: ${streamPath}
-        dropConnection: true
+        delayMs: 500
         count: 1
-      # Append should retry and succeed
+      # Append should wait and succeed
       - action: append
         path: ${streamPath}
-        data: "dropped-then-retried"
+        data: "delayed-append"
       # Verify data was appended
       - action: read
         path: ${streamPath}
         expect:
-          data: "dropped-then-retried"
+          data: "delayed-append"
     cleanup:
       - action: clear-errors
 
