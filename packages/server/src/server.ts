@@ -105,7 +105,7 @@ export class DurableStreamTestServer {
     }
 
     // Shutdown router (closes SSE connections, cancels pending polls)
-    await this.router.shutdown()
+    this.router.shutdown()
 
     return new Promise((resolve, reject) => {
       this.server!.close(async (err) => {

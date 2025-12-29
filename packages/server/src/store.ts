@@ -2,13 +2,12 @@
  * In-memory stream storage.
  */
 
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type { Stream, StreamMessage } from "./types"
 import type {
   AppendOptions,
   CreateStreamOptions,
   ReadResult,
   StreamStorage,
-  WaitResult,
 } from "./storage"
 
 /**
@@ -89,7 +88,6 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
  */
 export class StreamStore implements StreamStorage {
   private streams = new Map<string, Stream>()
-  private pendingLongPolls: Array<PendingLongPoll> = []
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
@@ -247,9 +245,6 @@ export class StreamStore implements StreamStorage {
     // but public append() never sets isInitialCreate, so empty arrays throw before this
     const message = this.appendToStream(stream, data)!
 
-    // Notify any pending long-polls
-    this.notifyLongPolls(path)
-
     return message
   }
 
@@ -288,108 +283,10 @@ export class StreamStore implements StreamStorage {
   }
 
   /**
-   * Format messages for response.
-   * For JSON mode, wraps concatenated data in array brackets.
-   * @throws Error if stream doesn't exist or is expired
-   */
-  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const stream = this.getIfNotExpired(path)
-    if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
-    }
-
-    // Concatenate all message data
-    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
-    const concatenated = new Uint8Array(totalSize)
-    let offset = 0
-    for (const msg of messages) {
-      concatenated.set(msg.data, offset)
-      offset += msg.data.length
-    }
-
-    // For JSON mode, wrap in array brackets
-    if (normalizeContentType(stream.contentType) === `application/json`) {
-      return formatJsonResponse(concatenated)
-    }
-
-    return concatenated
-  }
-
-  /**
-   * Wait for new messages (long-poll).
-   * @throws Error if stream doesn't exist or is expired
-   */
-  async waitForMessages(
-    path: string,
-    offset: string,
-    timeoutMs: number
-  ): Promise<WaitResult> {
-    const stream = this.getIfNotExpired(path)
-    if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
-    }
-
-    // Check if there are already new messages
-    const { messages } = this.read(path, offset)
-    if (messages.length > 0) {
-      return { messages, timedOut: false }
-    }
-
-    // Wait for new messages
-    return new Promise((resolve) => {
-      const timeoutId = setTimeout(() => {
-        // Remove from pending
-        this.removePendingLongPoll(pending)
-        resolve({ messages: [], timedOut: true })
-      }, timeoutMs)
-
-      const pending: PendingLongPoll = {
-        path,
-        offset,
-        resolve: (msgs) => {
-          clearTimeout(timeoutId)
-          this.removePendingLongPoll(pending)
-          resolve({ messages: msgs, timedOut: false })
-        },
-        timeoutId,
-      }
-
-      this.pendingLongPolls.push(pending)
-    })
-  }
-
-  /**
-   * Get the current offset for a stream.
-   * Returns undefined if stream doesn't exist or is expired.
-   */
-  getCurrentOffset(path: string): string | undefined {
-    return this.getIfNotExpired(path)?.currentOffset
-  }
-
-  /**
    * Clear all streams.
    */
   clear(): void {
-    // Cancel all pending long-polls and resolve them with timeout
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
-      // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
-    }
-    this.pendingLongPolls = []
     this.streams.clear()
-  }
-
-  /**
-   * Cancel all pending long-polls (used during shutdown).
-   */
-  cancelAllWaits(): void {
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
-      // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
-    }
-    this.pendingLongPolls = []
   }
 
   /**

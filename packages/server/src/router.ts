@@ -5,9 +5,15 @@
 
 import { deflateSync, gzipSync } from "node:zlib"
 import { generateResponseCursor } from "./cursor"
+import { formatJsonResponse, normalizeContentType } from "./store"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import type { RouterOptions, StreamLifecycleEvent } from "./types"
+import type {
+  PendingLongPoll,
+  RouterOptions,
+  StreamLifecycleEvent,
+  StreamMessage,
+} from "./types"
 import type { StreamStorage } from "./storage"
 
 // Protocol headers (aligned with PROTOCOL.md)
@@ -104,6 +110,7 @@ export class DurableStreamRouter {
   }
   private activeSSEResponses = new Set<ServerResponse>()
   private isShuttingDown = false
+  private pendingLongPolls: Array<PendingLongPoll> = []
 
   constructor(options: RouterOptions) {
     this.store = options.store
@@ -223,14 +230,12 @@ export class DurableStreamRouter {
    * Gracefully shutdown the router.
    * Closes all active SSE connections and pending long-polls.
    */
-  async shutdown(): Promise<void> {
+  shutdown(): void {
     // Mark as shutting down to stop SSE handlers
     this.isShuttingDown = true
 
     // Cancel all pending long-polls and SSE waits to unblock connection handlers
-    if (`cancelAllWaits` in this.store) {
-      ;(this.store as { cancelAllWaits: () => void }).cancelAllWaits()
-    }
+    this.cancelAllWaits()
 
     // Force-close all active SSE connections
     for (const res of this.activeSSEResponses) {
@@ -452,7 +457,7 @@ export class DurableStreamRouter {
     // 4. No new messages
     const clientIsCaughtUp = offset && offset === stream.currentOffset
     if (live === `long-poll` && clientIsCaughtUp && messages.length === 0) {
-      const result = await this.store.waitForMessages(
+      const result = await this.waitForMessages(
         path,
         offset,
         this.options.longPollTimeout
@@ -517,7 +522,7 @@ export class DurableStreamRouter {
     }
 
     // Format response (wraps JSON in array brackets)
-    const responseData = this.store.formatResponse(path, messages)
+    const responseData = this.formatResponse(path, messages)
 
     // Apply compression if enabled and response is large enough
     let finalData: Uint8Array = responseData
@@ -586,7 +591,7 @@ export class DurableStreamRouter {
         let dataPayload: string
         if (isJsonStream) {
           // Use formatResponse to get properly formatted JSON (strips trailing commas)
-          const jsonBytes = this.store.formatResponse(path, [message])
+          const jsonBytes = this.formatResponse(path, [message])
           dataPayload = decoder.decode(jsonBytes)
         } else {
           dataPayload = decoder.decode(message.data)
@@ -628,7 +633,7 @@ export class DurableStreamRouter {
 
       // If caught up, wait for new messages
       if (upToDate) {
-        const result = await this.store.waitForMessages(
+        const result = await this.waitForMessages(
           path,
           currentOffset,
           this.options.longPollTimeout
@@ -696,6 +701,9 @@ export class DurableStreamRouter {
       this.store.append(path, body, { seq, contentType })
     )
 
+    // Notify any pending long-polls
+    this.notifyLongPolls(path)
+
     res.writeHead(200, {
       [STREAM_OFFSET_HEADER]: message!.offset,
     })
@@ -732,6 +740,121 @@ export class DurableStreamRouter {
   // ============================================================================
   // Helpers
   // ============================================================================
+
+  /**
+   * Format messages for HTTP response.
+   * For JSON streams, wraps in array brackets and strips trailing commas.
+   * For binary streams, concatenates raw data.
+   */
+  private formatResponse(
+    path: string,
+    messages: Array<StreamMessage>
+  ): Uint8Array {
+    const stream = this.store.get(path)
+    if (!stream) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Concatenate all message data
+    const concatenated = new Uint8Array(
+      messages.reduce((total, msg) => total + msg.data.length, 0)
+    )
+    let offset = 0
+    for (const message of messages) {
+      concatenated.set(message.data, offset)
+      offset += message.data.length
+    }
+
+    // For JSON mode, wrap in array brackets
+    if (normalizeContentType(stream.contentType) === `application/json`) {
+      return formatJsonResponse(concatenated)
+    }
+
+    return concatenated
+  }
+
+  /**
+   * Wait for new messages to arrive (long-polling).
+   */
+  private async waitForMessages(
+    path: string,
+    offset: string,
+    timeoutMs: number
+  ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
+    const stream = this.store.get(path)
+    if (!stream) {
+      throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Check if there are already new messages
+    const { messages } = this.store.read(path, offset)
+    if (messages.length > 0) {
+      return { messages, timedOut: false }
+    }
+
+    // Wait for new messages
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => {
+        // Remove from pending list
+        this.pendingLongPolls = this.pendingLongPolls.filter(
+          (p) => p !== pending
+        )
+        resolve({ messages: [], timedOut: true })
+      }, timeoutMs)
+
+      const pending: PendingLongPoll = {
+        path,
+        offset,
+        resolve: (msgs) => {
+          clearTimeout(timeoutId)
+          resolve({ messages: msgs, timedOut: false })
+        },
+        timeoutId,
+      }
+
+      this.pendingLongPolls.push(pending)
+    })
+  }
+
+  /**
+   * Get the current offset of a stream.
+   */
+  private getCurrentOffset(path: string): string | undefined {
+    return this.store.get(path)?.currentOffset
+  }
+
+  /**
+   * Cancel all pending long-poll waits.
+   * Used during server shutdown.
+   */
+  private cancelAllWaits(): void {
+    for (const pending of this.pendingLongPolls) {
+      clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
+    }
+    this.pendingLongPolls = []
+  }
+
+  /**
+   * Notify pending long-polls that new messages are available.
+   */
+  private notifyLongPolls(path: string): void {
+    const toNotify = this.pendingLongPolls.filter((p) => p.path === path)
+
+    for (const pending of toNotify) {
+      const { messages } = this.store.read(path, pending.offset)
+      if (messages.length > 0) {
+        clearTimeout(pending.timeoutId)
+        pending.resolve(messages)
+        // Remove from pending list
+        const index = this.pendingLongPolls.indexOf(pending)
+        if (index !== -1) {
+          this.pendingLongPolls.splice(index, 1)
+        }
+      }
+    }
+  }
 
   private readBody(req: IncomingMessage): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {

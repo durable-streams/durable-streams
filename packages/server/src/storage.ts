@@ -114,48 +114,9 @@ export interface StreamStorage {
   read: (path: string, offset?: string) => ReadResult
 
   /**
-   * Wait for new messages to arrive (long-polling).
-   *
-   * @param path - Stream path
-   * @param offset - Current offset to wait from
-   * @param timeout - Timeout in milliseconds
-   * @returns Wait result with messages or timeout flag
-   */
-  waitForMessages: (
-    path: string,
-    offset: string,
-    timeout: number
-  ) => Promise<WaitResult>
-
-  /**
-   * Format messages for HTTP response.
-   * For JSON streams, wraps in array brackets and strips trailing commas.
-   * For binary streams, concatenates raw data.
-   *
-   * @param path - Stream path (used to determine content type)
-   * @param messages - Messages to format
-   * @returns Formatted response data
-   */
-  formatResponse: (path: string, messages: Array<StreamMessage>) => Uint8Array
-
-  /**
-   * Get the current offset of a stream.
-   *
-   * @param path - Stream path
-   * @returns Current offset, or undefined if stream not found
-   */
-  getCurrentOffset: (path: string) => string | undefined
-
-  /**
    * Clear all streams from storage.
    */
   clear: () => void
-
-  /**
-   * Cancel all pending long-poll waits.
-   * Used during server shutdown.
-   */
-  cancelAllWaits: () => void
 
   /**
    * List all stream paths.

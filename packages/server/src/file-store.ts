@@ -10,19 +10,14 @@ import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
-import {
-  formatJsonResponse,
-  normalizeContentType,
-  processJsonAppend,
-} from "./store"
+import { normalizeContentType, processJsonAppend } from "./store"
 import type { Database } from "lmdb"
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type { Stream, StreamMessage } from "./types"
 import type {
   AppendOptions,
   CreateStreamOptions,
   ReadResult,
   StreamStorage,
-  WaitResult,
 } from "./storage"
 
 /**
@@ -174,7 +169,6 @@ export class FileBackedStreamStore implements StreamStorage {
   private db: Database
   private fileManager: StreamFileManager
   private fileHandlePool: FileHandlePool
-  private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
 
   constructor(options: FileBackedStreamStoreOptions) {
@@ -496,9 +490,6 @@ export class FileBackedStreamStore implements StreamStorage {
       return false
     }
 
-    // Cancel any pending long-polls for this stream
-    this.cancelLongPollsForStream(streamPath)
-
     // Close any open file handle for this stream's segment file
     // This is important especially on Windows where open handles block deletion
     const segmentPath = path.join(
@@ -629,10 +620,7 @@ export class FileBackedStreamStore implements StreamStorage {
     const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
 
-    // 5. Notify long-polls (data is now readable from disk)
-    this.notifyLongPolls(streamPath)
-
-    // 6. Return (client knows data is durable)
+    // 5. Return (client knows data is durable)
     return message
   }
 
@@ -725,92 +713,7 @@ export class FileBackedStreamStore implements StreamStorage {
     return { messages, upToDate: true }
   }
 
-  async waitForMessages(
-    streamPath: string,
-    offset: string,
-    timeoutMs: number
-  ): Promise<WaitResult> {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
-    }
-
-    // Check if there are already new messages
-    const { messages } = this.read(streamPath, offset)
-    if (messages.length > 0) {
-      return { messages, timedOut: false }
-    }
-
-    // Wait for new messages
-    return new Promise((resolve) => {
-      const timeoutId = setTimeout(() => {
-        // Remove from pending
-        this.removePendingLongPoll(pending)
-        resolve({ messages: [], timedOut: true })
-      }, timeoutMs)
-
-      const pending: PendingLongPoll = {
-        path: streamPath,
-        offset,
-        resolve: (msgs) => {
-          clearTimeout(timeoutId)
-          this.removePendingLongPoll(pending)
-          resolve({ messages: msgs, timedOut: false })
-        },
-        timeoutId,
-      }
-
-      this.pendingLongPolls.push(pending)
-    })
-  }
-
-  /**
-   * Format messages for response.
-   * For JSON mode, wraps concatenated data in array brackets.
-   * @throws Error if stream doesn't exist or is expired
-   */
-  formatResponse(
-    streamPath: string,
-    messages: Array<StreamMessage>
-  ): Uint8Array {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
-    }
-
-    // Concatenate all message data
-    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
-    const concatenated = new Uint8Array(totalSize)
-    let offset = 0
-    for (const msg of messages) {
-      concatenated.set(msg.data, offset)
-      offset += msg.data.length
-    }
-
-    // For JSON mode, wrap in array brackets
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      return formatJsonResponse(concatenated)
-    }
-
-    return concatenated
-  }
-
-  getCurrentOffset(streamPath: string): string | undefined {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-    return streamMeta?.currentOffset
-  }
-
   clear(): void {
-    // Cancel all pending long-polls and resolve them with empty result
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
-      // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
-    }
-    this.pendingLongPolls = []
-
     // Clear all streams from LMDB
     const range = this.db.getRange({
       start: `stream:`,
@@ -833,18 +736,6 @@ export class FileBackedStreamStore implements StreamStorage {
     // New streams get fresh directories, so old files won't interfere
   }
 
-  /**
-   * Cancel all pending long-polls (used during shutdown).
-   */
-  cancelAllWaits(): void {
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
-      // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
-    }
-    this.pendingLongPolls = []
-  }
-
   list(): Array<string> {
     const paths: Array<string> = []
 
@@ -864,38 +755,5 @@ export class FileBackedStreamStore implements StreamStorage {
     }
 
     return paths
-  }
-
-  // ============================================================================
-  // Private helper methods for long-poll support
-  // ============================================================================
-
-  private notifyLongPolls(streamPath: string): void {
-    const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
-
-    for (const pending of toNotify) {
-      const { messages } = this.read(streamPath, pending.offset)
-      if (messages.length > 0) {
-        pending.resolve(messages)
-      }
-    }
-  }
-
-  private cancelLongPollsForStream(streamPath: string): void {
-    const toCancel = this.pendingLongPolls.filter((p) => p.path === streamPath)
-    for (const pending of toCancel) {
-      clearTimeout(pending.timeoutId)
-      pending.resolve([])
-    }
-    this.pendingLongPolls = this.pendingLongPolls.filter(
-      (p) => p.path !== streamPath
-    )
-  }
-
-  private removePendingLongPoll(pending: PendingLongPoll): void {
-    const index = this.pendingLongPolls.indexOf(pending)
-    if (index !== -1) {
-      this.pendingLongPolls.splice(index, 1)
-    }
   }
 }
