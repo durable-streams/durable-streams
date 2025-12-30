@@ -2,7 +2,7 @@
 
 ## Summary
 
-_To be written last._
+Existing workflow engines (Inngest, Temporal, Cloudflare Workflows, Vercel WDK) provide durable execution primitives but treat browser integration as an afterthought — developers must build separate APIs and client subscriptions to enable human-in-the-loop workflows. This RFC proposes a workflow engine built on Durable Streams and the State Protocol, where workflows can make RPC calls that pause execution until a browser client responds, and clients observe workflow state changes in real-time through the same stream. The result is a unified system for building interactive workflows — from AI agent approval flows to multi-step forms — without custom plumbing between server and client.
 
 ## Background
 
@@ -286,4 +286,25 @@ Areas requiring prototyping to resolve:
 3. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
 
 4. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
+
+## Definition of Success
+
+This is an early-stage exploration. Success is qualitative, not quantitative.
+
+### Can we build something compelling?
+
+The prototype should enable building a real application that demonstrates the value proposition: a workflow that pauses for human input, with the client seeing state changes in real-time, without custom API plumbing.
+
+Example applications to validate:
+- Human-in-the-loop AI agent (agent proposes action, user approves/rejects)
+- Multi-step onboarding flow with server-side validation between steps
+- Expense approval workflow with manager notification and response
+
+### Do developers get excited?
+
+When showing the prototype to developers familiar with existing workflow engines (Inngest, Temporal, etc.), do they recognize the value of tight client integration? Do they have use cases that would benefit from this?
+
+### Does it feel simpler than alternatives?
+
+For use cases involving browser interaction, the workflow + client code should be meaningfully simpler than the equivalent built with Inngest/Temporal plus custom API endpoints and client subscriptions.
 
