@@ -679,9 +679,9 @@ export class DurableStreamTestServer {
         return
       }
 
-      // Validate offset format: must be "-1" or match our offset format (digits_digits)
+      // Validate offset format: must be "-1", "now", or match our offset format (digits_digits)
       // This prevents path traversal, injection attacks, and invalid characters
-      const validOffsetPattern = /^(-1|\d+_\d+)$/
+      const validOffsetPattern = /^(-1|now|\d+_\d+)$/
       if (!validOffsetPattern.test(offset)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid offset format`)
@@ -700,7 +700,42 @@ export class DurableStreamTestServer {
 
     // Handle SSE mode
     if (live === `sse`) {
-      await this.handleSSE(path, stream, offset!, cursor, res)
+      // For SSE with offset=now, convert to actual tail offset
+      const sseOffset = offset === `now` ? stream.currentOffset : offset!
+      await this.handleSSE(path, stream, sseOffset, cursor, res)
+      return
+    }
+
+    // Handle offset=now sentinel: return empty response with tail offset (Protocol Section 6)
+    // This allows clients to skip historical data and start from the current position
+    if (offset === `now`) {
+      const headers: Record<string, string> = {
+        [STREAM_OFFSET_HEADER]: stream.currentOffset,
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+      }
+
+      if (stream.contentType) {
+        headers[`content-type`] = stream.contentType
+      }
+
+      // Generate cursor for long-poll mode (Protocol Section 8.1)
+      if (live === `long-poll`) {
+        headers[STREAM_CURSOR_HEADER] = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
+      }
+
+      // Generate ETag for cache validation
+      const etag = `"${Buffer.from(path).toString(`base64`)}:now:${stream.currentOffset}"`
+      headers[`etag`] = etag
+
+      // For JSON mode, return empty array; otherwise empty body
+      const isJsonMode = stream.contentType?.includes(`application/json`)
+      const responseBody = isJsonMode ? `[]` : ``
+
+      res.writeHead(200, headers)
+      res.end(responseBody)
       return
     }
 
