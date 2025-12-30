@@ -1,0 +1,58 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TERM=xterm-256color
+ENV LANG=en_US.UTF-8
+ENV LC_ALL=en_US.UTF-8
+
+RUN apt-get update && apt-get install -y \
+    locales \
+    bash-completion \
+    nano \
+    git \
+    curl \
+    wget \
+    htop \
+    tree \
+    jq \
+    less \
+    man-db \
+    sudo \
+    ca-certificates \
+    unzip \
+    ripgrep \
+    fd-find \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/* \
+    && locale-gen en_US.UTF-8
+
+# Install Neovim 0.11 (build from source for ARM64 compatibility)
+RUN apt-get update && apt-get install -y \
+    ninja-build gettext cmake \
+    && git clone --depth 1 --branch v0.11.0 https://github.com/neovim/neovim.git /tmp/neovim \
+    && cd /tmp/neovim \
+    && make CMAKE_BUILD_TYPE=Release \
+    && make install \
+    && rm -rf /tmp/neovim \
+    && apt-get remove -y ninja-build gettext cmake \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/local/bin/nvim /usr/local/bin/vim
+
+# Create a non-root user
+RUN useradd -m -s /bin/bash dev && echo "dev ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Copy nvim config before switching to dev user
+COPY --chown=dev:dev nvim-init.lua /home/dev/.config/nvim/init.lua
+
+USER dev
+WORKDIR /home/dev
+
+# Pre-run nvim headless to install plugins
+RUN nvim --headless "+Lazy! sync" +qa 2>/dev/null || true
+
+# Ensure proper terminal settings in bashrc
+RUN echo 'export TERM=xterm-256color' >> ~/.bashrc && \
+    echo 'stty sane' >> ~/.bashrc
+
+CMD ["/bin/bash"]
