@@ -318,7 +318,10 @@ Areas requiring prototyping to resolve:
 
 4. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
 
-5. **RPC race conditions**: If multiple clients respond to the same RPC call (e.g., user has two tabs open), what's the semantics? First-write-wins (second response ignored)? Error on duplicate? Needs explicit behavior.
+5. **Multi-client RPC targeting**: RPCs need explicit support for targeting specific users or clients. For example, an expense approval should be sent to the manager, not broadcast to all connected clients. This includes:
+   - How to address RPCs to specific users/roles
+   - What happens if the targeted user has multiple tabs (first-write-wins?)
+   - Authorization: can only the targeted client respond?
 
 6. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
 
