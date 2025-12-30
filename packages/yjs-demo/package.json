@@ -10,7 +10,6 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@durable-streams/server": "workspace:*",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
