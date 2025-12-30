@@ -147,6 +147,8 @@ export function YjsRoomProvider({
   const [isSynced, setIsSynced] = useState(false)
   const [error, setError] = useState<Error | null>(null)
   const providerRef = useRef<DurableStreamsProvider | null>(null)
+  const usernameRef = useRef(username)
+  usernameRef.current = username
 
   const setUsername = (name: string) => {
     setUsernameState(name)
@@ -202,7 +204,7 @@ export function YjsRoomProvider({
     if (awareness.getLocalState() === null) {
       awareness.setLocalState({
         user: {
-          name: username,
+          name: usernameRef.current,
           color: userInfo.color.color,
           colorLight: userInfo.color.light,
         },
@@ -216,7 +218,7 @@ export function YjsRoomProvider({
       provider.destroy()
       providerRef.current = null
     }
-  }, [roomId, doc, awareness, serverEndpoint])
+  }, [roomId, doc, awareness, serverEndpoint, userInfo])
 
   const value: YjsRoomContextValue = {
     doc,

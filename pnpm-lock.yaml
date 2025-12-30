@@ -335,15 +335,9 @@ importers:
 
   packages/yjs-demo:
     dependencies:
-      '@codemirror/lang-javascript':
-        specifier: ^6.2.3
-        version: 6.2.4
       '@codemirror/state':
         specifier: ^6.5.2
         version: 6.5.2
-      '@codemirror/view':
-        specifier: ^6.36.5
-        version: 6.39.4
       '@durable-streams/client':
         specifier: workspace:^
         version: link:../client
@@ -625,9 +619,6 @@ packages:
 
   '@codemirror/commands@6.10.1':
     resolution: {integrity: sha512-uWDWFypNdQmz2y1LaNJzK7fL7TYKLeUAU0npEC685OKTF3KcQ2Vu3klIM78D7I6wGhktme0lh3CuQLv0ZCrD9Q==}
-
-  '@codemirror/lang-javascript@6.2.4':
-    resolution: {integrity: sha512-0WVmhp1QOqZ4Rt6GlVGwKJN3KW7Xh4H2q8ZZNGZaP6lRdxXJzmjm4FqvmOojVj6khWJHIb9sp7U/72W7xQgqAA==}
 
   '@codemirror/language@6.11.3':
     resolution: {integrity: sha512-9HBM2XnwDj7fnu0551HkGdrUrrqmYq/WC5iv6nbY2WdicXdGbhR/gfbZOH73Aqj4351alY1+aoG9rCNfiwS1RA==}
@@ -1082,9 +1073,6 @@ packages:
 
   '@lezer/highlight@1.2.3':
     resolution: {integrity: sha512-qXdH7UqTvGfdVBINrgKhDsVTJTxactNNxLk7+UMwZhU13lMHaOBlJe9Vqp907ya56Y3+ed2tlqzys7jDkTmW0g==}
-
-  '@lezer/javascript@1.5.4':
-    resolution: {integrity: sha512-vvYx3MhWqeZtGPwDStM2dwgljd5smolYD2lR2UyFcHfxbBQebqx8yjmFmxtJ/E6nN6u1D9srOiVWm3Rb4tmcUA==}
 
   '@lezer/lr@1.4.5':
     resolution: {integrity: sha512-/YTRKP5yPPSo1xImYQk7AZZMAgap0kegzqCSYHjAL9x1AZ0ZQW+IpcEzMKagCsbTsLnVeWkxYrCNeXG8xEPrjg==}
@@ -4474,16 +4462,6 @@ snapshots:
       '@codemirror/view': 6.39.4
       '@lezer/common': 1.4.0
 
-  '@codemirror/lang-javascript@6.2.4':
-    dependencies:
-      '@codemirror/autocomplete': 6.20.0
-      '@codemirror/language': 6.11.3
-      '@codemirror/lint': 6.9.2
-      '@codemirror/state': 6.5.2
-      '@codemirror/view': 6.39.4
-      '@lezer/common': 1.4.0
-      '@lezer/javascript': 1.5.4
-
   '@codemirror/language@6.11.3':
     dependencies:
       '@codemirror/state': 6.5.2
@@ -4820,12 +4798,6 @@ snapshots:
   '@lezer/highlight@1.2.3':
     dependencies:
       '@lezer/common': 1.4.0
-
-  '@lezer/javascript@1.5.4':
-    dependencies:
-      '@lezer/common': 1.4.0
-      '@lezer/highlight': 1.2.3
-      '@lezer/lr': 1.4.5
 
   '@lezer/lr@1.4.5':
     dependencies:

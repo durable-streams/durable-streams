@@ -7,8 +7,11 @@
  * @packageDocumentation
  */
 
-// Main provider class
-export { DurableStreamsProvider } from "./y-durable-streams"
+// Main provider class and constants
+export {
+  DurableStreamsProvider,
+  AWARENESS_HEARTBEAT_INTERVAL,
+} from "./y-durable-streams"
 
 // Types
 export type {
