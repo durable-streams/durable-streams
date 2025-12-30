@@ -10,7 +10,7 @@ import type { ReactNode } from "react"
 // StreamDB Factory with Actions
 // ============================================================================
 
-async function createRegistryDB(url: string) {
+function createRegistryDB(url: string) {
   return createStreamDB({
     streamOptions: {
       url,
