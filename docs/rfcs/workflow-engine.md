@@ -128,7 +128,7 @@ Events are sent to the workflow by appending to the stream with a matching event
 
 ### RPC-Style Client Interaction
 
-Beyond generic `waitForEvent`, workflows can define RPC methods that clients call. This follows the pattern established by Cloudflare's Cap'n Proto-based Workers RPC.
+Beyond generic `waitForEvent`, workflows can define RPC methods that clients call. The RPC system is based on Cloudflare's Cap'n Proto-inspired Workers RPC and will be developed as a standalone project — it's useful outside of workflows for any server-client communication over durable streams. However, it integrates seamlessly into workflows, similar to how the State Protocol is a standalone spec that workflows build on.
 
 ```typescript
 // Server: define an RPC call and wait for response
