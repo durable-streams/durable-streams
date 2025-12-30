@@ -59,3 +59,230 @@ Instead of workflow engine + custom API + custom client subscriptions, developer
 3. **Deterministic replay**: Workflows must survive restarts and redeploys by replaying from the event log.
 4. **No build-time magic**: Unlike Vercel's `"use workflow"` directive, this should work without special compilation steps.
 
+## Proposal
+
+### Architecture
+
+The workflow engine is a thin protocol layer on top of the State Protocol:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Application Layer                                      │
+│  Custom RPC methods (approveExpense, selectProduct)     │
+├─────────────────────────────────────────────────────────┤
+│  UI Primitives (optional)                               │
+│  input(), output(), confirm()                           │
+├─────────────────────────────────────────────────────────┤
+│  Core Workflow Primitives                               │
+│  step.run(), sleep(), waitForEvent()                    │
+├─────────────────────────────────────────────────────────┤
+│  Workflow Protocol                                      │
+│  Event types, replay semantics, determinism rules       │
+├─────────────────────────────────────────────────────────┤
+│  State Protocol + Durable Streams                       │
+│  Event log, real-time sync, multi-client                │
+└─────────────────────────────────────────────────────────┘
+```
+
+A workflow instance is identified by a stream URL. All workflow events — step completions, sleep timers, input requests, responses — are appended to that stream. The workflow executor replays from the stream to rebuild state, then continues execution.
+
+### Core Primitives
+
+Following conventions established by Inngest, Cloudflare, and Vercel:
+
+#### `step.run(id, fn)`
+
+Execute a function as a durable, retriable step.
+
+```typescript
+const user = await step.run("fetch-user", async () => {
+  return await db.users.findById(userId);
+});
+```
+
+- If the step previously completed, returns the cached result (replay)
+- If the step fails, retries with configurable backoff
+- After max retries, workflow moves to error state
+
+#### `sleep(duration)`
+
+Pause the workflow for a duration without consuming compute.
+
+```typescript
+await sleep("7 days");
+// Workflow resumes here after 7 days
+```
+
+#### `waitForEvent(id, options)`
+
+Pause until an external event arrives.
+
+```typescript
+const approval = await waitForEvent("manager-approval", {
+  timeout: "48 hours",
+});
+
+if (approval.decision === "approved") {
+  // continue
+}
+```
+
+Events are sent to the workflow by appending to the stream with a matching event type.
+
+### RPC-Style Client Interaction
+
+Beyond generic `waitForEvent`, workflows can expose RPC-style methods that clients call. This follows the pattern established by Cloudflare's Cap'n Proto-based Workers RPC.
+
+```typescript
+// Server: define what the workflow needs
+const name = await rpc.getString("What is your name?");
+
+const { email, subscribe } = await rpc.getFields("Enter details", {
+  email: { type: "email", label: "Email address" },
+  subscribe: { type: "checkbox", label: "Subscribe to newsletter?" },
+});
+```
+
+```typescript
+// Client: sees the pending RPC call, renders UI, sends response
+const workflow = useWorkflow({ url: workflowStreamUrl });
+
+// workflow.pendingRpc contains { method: "getFields", args: [...] }
+// Client renders appropriate UI
+// On submit, client calls workflow.respond(value)
+```
+
+The `input()` helper from the prototype is sugar for this pattern. Applications can define their own RPC methods (`approveExpense()`, `selectProduct()`) with domain-specific types.
+
+### Step Identification
+
+Steps are identified by **explicit string IDs**, following Inngest's approach. This ensures stable replay across code changes.
+
+```typescript
+// Good: explicit ID survives refactoring
+await step.run("send-welcome-email", () => sendEmail(user));
+
+// Bad: positional/implicit IDs break when code changes
+await step.run(() => sendEmail(user)); // Don't do this
+```
+
+For loops, the SDK maintains a counter per ID:
+
+```typescript
+for (const item of items) {
+  // Becomes "process-item:0", "process-item:1", etc.
+  await step.run("process-item", () => processItem(item));
+}
+```
+
+### Determinism
+
+Workflows must be deterministic — replaying with the same event history must produce the same sequence of step calls.
+
+**Rules:**
+
+1. All side effects must be inside `step.run()`
+2. No `Math.random()` or `Date.now()` in workflow code (use `workflow.random()`, `workflow.now()`)
+3. No reading external state that might change between replays
+4. Step IDs and call order must be stable
+
+**Enforcement:**
+
+1. **Development mode**: Warn when detecting non-deterministic patterns (e.g., `Math.random` usage)
+2. **Runtime detection**: During replay, if a step ID doesn't match the expected sequence, throw an error
+3. **Replay testing**: Support running historical event logs against current code in CI
+
+### Retry and Error Handling
+
+Following conventions from existing engines:
+
+```typescript
+await step.run(
+  "call-external-api",
+  async () => {
+    return await externalApi.call();
+  },
+  {
+    retries: 3,
+    backoff: "exponential", // or "linear", "constant"
+    maxBackoff: "1 hour",
+  }
+);
+```
+
+When a step exhausts retries, the workflow moves to an error state. The error is recorded in the stream. Clients observing the workflow see the error state and can display appropriate UI.
+
+### Wire Protocol
+
+The workflow protocol defines event types appended to the stream. This is a thin layer on the State Protocol.
+
+**Core event types** (high-level, formal spec TBD):
+
+```typescript
+// Step lifecycle
+{ type: "workflow:step_started", stepId: string, name: string }
+{ type: "workflow:step_completed", stepId: string, result: any }
+{ type: "workflow:step_failed", stepId: string, error: Error, attempt: number }
+
+// Flow control
+{ type: "workflow:sleeping", until: timestamp }
+{ type: "workflow:waiting", eventType: string, timeout?: timestamp }
+
+// External events
+{ type: "workflow:event", eventType: string, payload: any }
+
+// Terminal states
+{ type: "workflow:completed", result: any }
+{ type: "workflow:failed", error: Error }
+```
+
+The formal protocol specification will be developed as a separate document, following the pattern of PROTOCOL.md and STATE-PROTOCOL.md.
+
+### Client Integration
+
+The client SDK wraps StreamDB with workflow-specific state:
+
+```typescript
+const workflow = useWorkflow({ url: "https://example.com/v1/stream/workflow-123" });
+
+// Workflow state
+workflow.status; // "running" | "sleeping" | "waiting" | "completed" | "failed"
+workflow.pendingRpc; // Current RPC call waiting for response, if any
+workflow.error; // Error details if failed
+
+// Send response to pending RPC
+workflow.respond(value);
+
+// Send arbitrary event
+workflow.sendEvent("approval", { decision: "approved" });
+
+// Access underlying StreamDB for custom state
+workflow.db.collections.myCustomState;
+```
+
+No default UI rendering — the client exposes data through TanStack DB, and developers build their own UI.
+
+### Multi-Language Support
+
+The workflow protocol is language-agnostic. Initial implementation:
+
+- **TypeScript SDK**: Full implementation (server + client)
+- **Python SDK**: Thin wrapper for server-side workflow execution
+- **Go SDK**: Thin wrapper for server-side workflow execution
+
+All SDKs read/write the same event types to the stream, enabling cross-language workflows (e.g., Python workflow with React client).
+
+### Open Questions
+
+Areas requiring prototyping to resolve:
+
+1. **Step ID in loops**: The counter-per-ID approach works, but needs validation with complex nested loops and conditionals.
+
+2. **Determinism detection**: What specific patterns should dev mode detect? How aggressive should runtime enforcement be?
+
+3. **RPC type safety**: How do we ensure type safety between server RPC definitions and client rendering? Schema generation?
+
+4. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
+
+5. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
+
