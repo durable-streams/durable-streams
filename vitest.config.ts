@@ -11,7 +11,7 @@ const alias = {
   ),
   "@durable-streams/yjs-demo": path.resolve(
     __dirname,
-    "./packages/yjs-demo/src"
+    "./examples/yjs-demo/src"
   ),
   "y-durable-streams": path.resolve(
     __dirname,
@@ -56,7 +56,7 @@ export default defineConfig({
       defineProject({
         test: {
           name: "yjs-demo",
-          include: ["packages/yjs-demo/test/**/*.test.ts"],
+          include: ["examples/yjs-demo/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
         },
         resolve: { alias },

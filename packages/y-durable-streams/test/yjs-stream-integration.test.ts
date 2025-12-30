@@ -64,7 +64,7 @@ describe(`Yjs + DurableStream Integration`, () => {
 
       expect(updates.length).toBe(1)
       expect(updates[0]).toBeInstanceOf(Uint8Array)
-      expect(updates[0].length).toBeGreaterThan(0)
+      expect(updates[0]!.length).toBeGreaterThan(0)
     })
 
     it(`should apply updates from one doc to another`, () => {
@@ -220,7 +220,7 @@ describe(`Yjs + DurableStream Integration`, () => {
           () => reject(new Error(`Timeout waiting for updates`)),
           4000
         )
-        response.subscribeBytes((chunk) => {
+        response.subscribeBytes(async (chunk) => {
           receivedChunks.push(chunk.data)
           Y.applyUpdate(readerDoc, chunk.data)
 
