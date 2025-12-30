@@ -4,7 +4,7 @@ import { EditorState } from "@codemirror/state"
 import { EditorView, basicSetup } from "codemirror"
 import { yCollab } from "y-codemirror.next"
 import { useLiveQuery } from "@tanstack/react-db"
-import { AWARENESS_HEARTBEAT_INTERVAL } from "y-durable-streams"
+import { AWARENESS_HEARTBEAT_INTERVAL } from "@durable-streams/y-durable-streams"
 import { YjsRoomProvider, useYjsRoom } from "../lib/yjs-provider"
 import { useRegistryContext } from "../lib/registry-context"
 

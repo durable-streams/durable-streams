@@ -1,11 +1,11 @@
 {
   "name": "@durable-streams/yjs-demo",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"
   },
@@ -20,9 +20,10 @@
     "@codemirror/state": "^6.5.2",
     "@durable-streams/client": "workspace:^",
     "@durable-streams/state": "workspace:^",
-    "y-durable-streams": "workspace:^",
+    "@durable-streams/y-durable-streams": "workspace:^",
     "@tanstack/react-db": "latest",
     "@tanstack/react-router": "^1.139.14",
+    "@tanstack/router-devtools": "^1.139.15",
     "@tanstack/router-plugin": "^1.139.14",
     "codemirror": "^6.0.1",
     "lib0": "^0.2.99",

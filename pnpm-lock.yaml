@@ -187,6 +187,70 @@ importers:
         specifier: ^7.2.4
         version: 7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
+  examples/yjs-demo:
+    dependencies:
+      '@codemirror/state':
+        specifier: ^6.5.2
+        version: 6.5.2
+      '@durable-streams/client':
+        specifier: workspace:^
+        version: link:../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:^
+        version: link:../../packages/state
+      '@durable-streams/y-durable-streams':
+        specifier: workspace:^
+        version: link:../../packages/y-durable-streams
+      '@tanstack/react-db':
+        specifier: latest
+        version: 0.1.60(react@19.2.3)(typescript@5.9.3)
+      '@tanstack/react-router':
+        specifier: ^1.139.14
+        version: 1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@tanstack/router-devtools':
+        specifier: ^1.139.15
+        version: 1.141.4(@tanstack/react-router@1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(@tanstack/router-core@1.141.4)(csstype@3.2.3)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(solid-js@1.9.10)
+      '@tanstack/router-plugin':
+        specifier: ^1.139.14
+        version: 1.141.4(@tanstack/react-router@1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(vite-plugin-solid@2.11.10(solid-js@1.9.10)(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)))(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
+      codemirror:
+        specifier: ^6.0.1
+        version: 6.0.2
+      lib0:
+        specifier: ^0.2.99
+        version: 0.2.115
+      react:
+        specifier: ^19.2.1
+        version: 19.2.3
+      react-dom:
+        specifier: ^19.2.1
+        version: 19.2.3(react@19.2.3)
+      y-codemirror.next:
+        specifier: ^0.3.5
+        version: 0.3.5(@codemirror/state@6.5.2)(@codemirror/view@6.39.4)(yjs@13.6.28)
+      y-protocols:
+        specifier: ^1.0.6
+        version: 1.0.7(yjs@13.6.28)
+      yjs:
+        specifier: ^13.6.24
+        version: 13.6.28
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.7
+        version: 19.2.7
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.7)
+      '@vitejs/plugin-react':
+        specifier: ^5.1.1
+        version: 5.1.2(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vite:
+        specifier: ^7.2.4
+        version: 7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+
   packages/benchmarks:
     dependencies:
       '@durable-streams/client':
@@ -379,67 +443,6 @@ importers:
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
-
-  packages/yjs-demo:
-    dependencies:
-      '@codemirror/state':
-        specifier: ^6.5.2
-        version: 6.5.2
-      '@durable-streams/client':
-        specifier: workspace:^
-        version: link:../client
-      '@durable-streams/state':
-        specifier: workspace:^
-        version: link:../state
-      '@tanstack/react-db':
-        specifier: latest
-        version: 0.1.56(react@19.2.3)(typescript@5.9.3)
-      '@tanstack/react-router':
-        specifier: ^1.139.14
-        version: 1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tanstack/router-plugin':
-        specifier: ^1.139.14
-        version: 1.141.4(@tanstack/react-router@1.141.4(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(vite-plugin-solid@2.11.10(solid-js@1.9.10)(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)))(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
-      codemirror:
-        specifier: ^6.0.1
-        version: 6.0.2
-      lib0:
-        specifier: ^0.2.99
-        version: 0.2.115
-      react:
-        specifier: ^19.2.1
-        version: 19.2.3
-      react-dom:
-        specifier: ^19.2.1
-        version: 19.2.3(react@19.2.3)
-      y-codemirror.next:
-        specifier: ^0.3.5
-        version: 0.3.5(@codemirror/state@6.5.2)(@codemirror/view@6.39.4)(yjs@13.6.28)
-      y-durable-streams:
-        specifier: workspace:^
-        version: link:../y-durable-streams
-      y-protocols:
-        specifier: ^1.0.6
-        version: 1.0.7(yjs@13.6.28)
-      yjs:
-        specifier: ^13.6.24
-        version: 13.6.28
-    devDependencies:
-      '@types/react':
-        specifier: ^19.2.7
-        version: 19.2.7
-      '@types/react-dom':
-        specifier: ^19.2.3
-        version: 19.2.3(@types/react@19.2.7)
-      '@vitejs/plugin-react':
-        specifier: ^5.1.1
-        version: 5.1.2(vite@7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2))
-      typescript:
-        specifier: ~5.9.3
-        version: 5.9.3
-      vite:
-        specifier: ^7.2.4
-        version: 7.3.0(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
 
 packages:
 
@@ -1615,17 +1618,6 @@ packages:
     peerDependencies:
       typescript: '>=4.7'
 
-  '@tanstack/db-ivm@https://pkg.pr.new/TanStack/db/@tanstack/db-ivm@ce63da0':
-    resolution: {tarball: https://pkg.pr.new/TanStack/db/@tanstack/db-ivm@ce63da0}
-    version: 0.1.14
-    peerDependencies:
-      typescript: '>=4.7'
-
-  '@tanstack/db@0.5.12':
-    resolution: {integrity: sha512-NpQa+Mo9Y4YZ7qL7ugD7/z+ezcZJ67o1BlR63cr3OOxiBbb4Lx9OphWYsJy3g5eBcNI6DhS2hu9mYdlgAwsJlQ==}
-    peerDependencies:
-      typescript: '>=4.7'
-
   '@tanstack/db@0.5.16':
     resolution: {integrity: sha512-V4oCsGlighwgKGWldw1umaXaVYiDR0sK/1fCWictrx2lqxqmBMUEfmNtWnt0CFJXEbyRA/LF8TyFn1ooXtyZ3w==}
     peerDependencies:
@@ -1646,11 +1638,6 @@ packages:
   '@tanstack/publish-config@0.2.2':
     resolution: {integrity: sha512-hTW2rLeZLBMmpwVzWmUJ5L50hPlf4Ea74rZtecbT6qQYCT16JEAbryfHm1u07KIICI2vEArsm2YguckjODqx0w==}
     engines: {node: '>=18'}
-
-  '@tanstack/react-db@0.1.56':
-    resolution: {integrity: sha512-7vfwx3tD6tgcUBu6tzpYVMFuYUGzYX7GHw8AtsW/P24eBhr7RR/dyF2ucoUGW6TZzdm8/bN/ql+8ftAV3iFsfA==}
-    peerDependencies:
-      react: '>=16.8.0'
 
   '@tanstack/react-db@0.1.60':
     resolution: {integrity: sha512-Pz3pwH4vgRxlS/L3+BszINjNlIUXahJ6EqSEsYBMBT19G36GzTzyd5Qq98JaOXuu8V0dkiFWEoyEoTv3BiHcrg==}
@@ -5282,19 +5269,6 @@ snapshots:
       sorted-btree: 1.8.1
       typescript: 5.9.3
 
-  '@tanstack/db-ivm@https://pkg.pr.new/TanStack/db/@tanstack/db-ivm@ce63da0(typescript@5.9.3)':
-    dependencies:
-      fractional-indexing: 3.2.0
-      sorted-btree: 1.8.1
-      typescript: 5.9.3
-
-  '@tanstack/db@0.5.12(typescript@5.9.3)':
-    dependencies:
-      '@standard-schema/spec': 1.1.0
-      '@tanstack/db-ivm': https://pkg.pr.new/TanStack/db/@tanstack/db-ivm@ce63da0(typescript@5.9.3)
-      '@tanstack/pacer-lite': 0.1.1
-      typescript: 5.9.3
-
   '@tanstack/db@0.5.16(typescript@5.9.3)':
     dependencies:
       '@standard-schema/spec': 1.1.0
@@ -5330,14 +5304,6 @@ snapshots:
       simple-git: 3.30.0
     transitivePeerDependencies:
       - supports-color
-
-  '@tanstack/react-db@0.1.56(react@19.2.3)(typescript@5.9.3)':
-    dependencies:
-      '@tanstack/db': 0.5.12(typescript@5.9.3)
-      react: 19.2.3
-      use-sync-external-store: 1.6.0(react@19.2.3)
-    transitivePeerDependencies:
-      - typescript
 
   '@tanstack/react-db@0.1.60(react@19.2.3)(typescript@5.9.3)':
     dependencies:

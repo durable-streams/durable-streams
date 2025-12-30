@@ -1,12 +1,31 @@
 {
-  "name": "y-durable-streams",
+  "name": "@durable-streams/y-durable-streams",
   "description": "Yjs provider for Durable Streams - sync Yjs documents over append-only streams",
   "version": "0.1.0",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/y-durable-streams"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "yjs",
+    "durable-streams",
+    "crdt",
+    "sync",
+    "collaborative",
+    "real-time",
+    "typescript"
+  ],
   "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    "./package.json": "./package.json",
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
@@ -16,16 +35,14 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
-    }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "files": [
     "dist",
     "src"
   ],
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "sideEffects": false,
   "dependencies": {
     "@durable-streams/client": "workspace:*",
     "lib0": "^0.2.99",
@@ -43,5 +60,8 @@
   },
   "peerDependencies": {
     "yjs": "^13.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
