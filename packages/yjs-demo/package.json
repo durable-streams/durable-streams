@@ -18,9 +18,7 @@
     "vite": "^7.2.4"
   },
   "dependencies": {
-    "@codemirror/lang-javascript": "^6.2.3",
     "@codemirror/state": "^6.5.2",
-    "@codemirror/view": "^6.36.5",
     "@durable-streams/client": "workspace:^",
     "@durable-streams/state": "workspace:^",
     "y-durable-streams": "workspace:^",

@@ -2,9 +2,9 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { useEffect, useRef, useState } from "react"
 import { EditorState } from "@codemirror/state"
 import { EditorView, basicSetup } from "codemirror"
-import { keymap } from "@codemirror/view"
-import { yCollab, yUndoManagerKeymap } from "y-codemirror.next"
+import { yCollab } from "y-codemirror.next"
 import { useLiveQuery } from "@tanstack/react-db"
+import { AWARENESS_HEARTBEAT_INTERVAL } from "y-durable-streams"
 import { YjsRoomProvider, useYjsRoom } from "../lib/yjs-provider"
 import { useRegistryContext } from "../lib/registry-context"
 
@@ -23,7 +23,9 @@ interface TrackedUser {
   lastActive: number
 }
 
-const INACTIVE_TIMEOUT = 35000 // 35 seconds
+// Presence timeout is slightly more than 2x the heartbeat interval
+// to allow for network latency and timing variations
+const INACTIVE_TIMEOUT = AWARENESS_HEARTBEAT_INTERVAL * 2 + 5000
 
 function PresenceList() {
   const { awareness } = useYjsRoom()
@@ -195,7 +197,6 @@ function CollaborativeEditor() {
     const state = EditorState.create({
       doc: ytext.toString(),
       extensions: [
-        keymap.of([...yUndoManagerKeymap]),
         basicSetup,
         EditorView.lineWrapping,
         yCollab(ytext, awareness),

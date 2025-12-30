@@ -18,7 +18,12 @@ import type {
 } from "./types"
 
 const BINARY_CONTENT_TYPE = `application/octet-stream`
-const AWARENESS_HEARTBEAT_INTERVAL = 15000 // 15 seconds
+
+/**
+ * Interval in milliseconds between awareness heartbeat broadcasts.
+ * Awareness times out after ~30 seconds, so we heartbeat every 15 seconds.
+ */
+export const AWARENESS_HEARTBEAT_INTERVAL = 15000 // 15 seconds
 
 /**
  * Provider for synchronizing Yjs documents over Durable Streams.
@@ -265,8 +270,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Subscribe to incoming document updates
-    // @ts-expect-error
-    this.unsubscribeDocument = response.subscribeBytes((chunk) => {
+    this.unsubscribeDocument = response.subscribeBytes(async (chunk) => {
       if (this.abortController?.signal.aborted) return
 
       // Apply updates from the server (lib0 VarUint8Array framing)
@@ -276,8 +280,11 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
           try {
             const update = decoding.readVarUint8Array(decoder)
             Y.applyUpdate(this.doc, update, `server`)
-          } catch {
-            // Ignore invalid updates
+          } catch (err) {
+            console.debug(
+              `[y-durable-streams] Invalid update in document stream, skipping:`,
+              err
+            )
             break
           }
         }
@@ -334,8 +341,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Subscribe to incoming awareness updates (binary format)
-    // @ts-expect-error
-    this.unsubscribeAwareness = response.subscribeBytes((chunk) => {
+    this.unsubscribeAwareness = response.subscribeBytes(async (chunk) => {
       if (this.abortController?.signal.aborted) return
 
       // Apply awareness updates from the server (lib0 VarUint8Array framing)
@@ -350,8 +356,8 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
               this
             )
           } catch (err) {
-            console.error(
-              `[y-durable-streams] Failed to apply awareness update:`,
+            console.debug(
+              `[y-durable-streams] Invalid update in awareness stream, skipping:`,
               err
             )
             break
