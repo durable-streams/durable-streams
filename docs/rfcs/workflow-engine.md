@@ -70,11 +70,8 @@ The workflow engine is a thin protocol layer on top of the State Protocol:
 │  Application Layer                                      │
 │  Custom RPC methods (approveExpense, selectProduct)     │
 ├─────────────────────────────────────────────────────────┤
-│  UI Primitives (optional)                               │
-│  input(), output(), confirm()                           │
-├─────────────────────────────────────────────────────────┤
 │  Core Workflow Primitives                               │
-│  step.run(), sleep(), waitForEvent()                    │
+│  step.run(), sleep(), waitForEvent(), rpc()             │
 ├─────────────────────────────────────────────────────────┤
 │  Workflow Protocol                                      │
 │  Event types, replay semantics, determinism rules       │
@@ -131,28 +128,34 @@ Events are sent to the workflow by appending to the stream with a matching event
 
 ### RPC-Style Client Interaction
 
-Beyond generic `waitForEvent`, workflows can expose RPC-style methods that clients call. This follows the pattern established by Cloudflare's Cap'n Proto-based Workers RPC.
+Beyond generic `waitForEvent`, workflows can define RPC methods that clients call. This follows the pattern established by Cloudflare's Cap'n Proto-based Workers RPC.
 
 ```typescript
-// Server: define what the workflow needs
-const name = await rpc.getString("What is your name?");
-
-const { email, subscribe } = await rpc.getFields("Enter details", {
-  email: { type: "email", label: "Email address" },
-  subscribe: { type: "checkbox", label: "Subscribe to newsletter?" },
+// Server: define an RPC call and wait for response
+const expense = await rpc.call("approveExpense", {
+  amount: 1500,
+  description: "Team offsite dinner",
+  submittedBy: "alice@example.com",
 });
+
+if (expense.approved) {
+  await step.run("process-reimbursement", () => processReimbursement(expense));
+}
 ```
 
 ```typescript
-// Client: sees the pending RPC call, renders UI, sends response
+// Client: sees pending RPC, renders appropriate UI, sends response
 const workflow = useWorkflow({ url: workflowStreamUrl });
 
-// workflow.pendingRpc contains { method: "getFields", args: [...] }
-// Client renders appropriate UI
-// On submit, client calls workflow.respond(value)
+// workflow.pendingRpc contains:
+// { method: "approveExpense", args: { amount: 1500, description: "...", ... } }
+
+// Client renders domain-specific approval UI
+// On submit, client responds:
+workflow.respond({ approved: true, approverNotes: "Looks good" });
 ```
 
-The `input()` helper from the prototype is sugar for this pattern. Applications can define their own RPC methods (`approveExpense()`, `selectProduct()`) with domain-specific types.
+Applications define their own RPC methods with domain-specific types. The workflow SDK provides the primitive; the application defines semantics like `approveExpense()`, `selectProduct()`, `confirmIdentity()`, etc.
 
 ### Step Identification
 
@@ -276,13 +279,11 @@ All SDKs read/write the same event types to the stream, enabling cross-language 
 
 Areas requiring prototyping to resolve:
 
-1. **Step ID in loops**: The counter-per-ID approach works, but needs validation with complex nested loops and conditionals.
+1. **Determinism detection**: What specific patterns should dev mode detect? How aggressive should runtime enforcement be?
 
-2. **Determinism detection**: What specific patterns should dev mode detect? How aggressive should runtime enforcement be?
+2. **RPC type safety**: How do we ensure type safety between server RPC definitions and client rendering? Schema generation?
 
-3. **RPC type safety**: How do we ensure type safety between server RPC definitions and client rendering? Schema generation?
+3. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
 
-4. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
-
-5. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
+4. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
 
