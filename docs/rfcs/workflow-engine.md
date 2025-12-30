@@ -215,31 +215,52 @@ await step.run(
 
 When a step exhausts retries, the workflow moves to an error state. The error is recorded in the stream. Clients observing the workflow see the error state and can display appropriate UI.
 
-### Wire Protocol
+### Workflow Schema
 
-The workflow protocol defines event types appended to the stream. This is a thin layer on the State Protocol.
+Workflow state is persisted using the State Protocol's insert/update/delete ChangeEvents. The workflow engine defines entity types and their state machines.
 
-**Core event types** (high-level, formal spec TBD):
+**Entity types** (high-level, formal spec TBD):
 
 ```typescript
-// Step lifecycle
-{ type: "workflow:step_started", stepId: string, name: string }
-{ type: "workflow:step_completed", stepId: string, result: any }
-{ type: "workflow:step_failed", stepId: string, error: Error, attempt: number }
+// Workflow instance state
+type: "workflow"
+key: workflowId
+value: {
+  status: "running" | "sleeping" | "waiting" | "completed" | "failed"
+  result?: any
+  error?: Error
+  sleepUntil?: timestamp
+  waitingFor?: { type: string, timeout?: timestamp }
+}
 
-// Flow control
-{ type: "workflow:sleeping", until: timestamp }
-{ type: "workflow:waiting", eventType: string, timeout?: timestamp }
+// Step execution records
+type: "step"
+key: `${workflowId}:${stepId}:${counter}`
+value: {
+  status: "running" | "completed" | "failed"
+  result?: any
+  error?: Error
+  attempt: number
+}
 
-// External events
-{ type: "workflow:event", eventType: string, payload: any }
-
-// Terminal states
-{ type: "workflow:completed", result: any }
-{ type: "workflow:failed", error: Error }
+// Pending RPC calls
+type: "rpc"
+key: `${workflowId}:${rpcId}`
+value: {
+  method: string
+  args: any
+  response?: any
+  respondedAt?: timestamp
+}
 ```
 
-The formal protocol specification will be developed as a separate document, following the pattern of PROTOCOL.md and STATE-PROTOCOL.md.
+**State machines:**
+
+- Workflow: `running → sleeping → running → waiting → running → completed|failed`
+- Step: `running → completed|failed` (with retries: `failed → running → ...`)
+- RPC: created (pending) → updated with response → deleted on workflow completion
+
+The formal schema specification will be developed as a separate document, building on STATE-PROTOCOL.md.
 
 ### Client Integration
 
