@@ -30,6 +30,155 @@ tests:
         expect:
           data: "beginningmiddleend"
 
+  - id: offset-now-skips-historical
+    name: Offset 'now' skips historical data
+    description: Using offset=now should return empty body with tail offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "historical"
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        expect:
+          chunkCount: 0
+          upToDate: true
+          storeOffsetAs: nowOffset
+      # Verify we can resume from the offset
+      - action: append
+        path: ${streamPath}
+        data: "future"
+      - action: read
+        path: ${streamPath}
+        offset: ${nowOffset}
+        expect:
+          data: "future"
+
+  - id: offset-now-empty-stream
+    name: Offset 'now' on empty stream
+    description: Using offset=now on an empty stream should work correctly
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        expect:
+          chunkCount: 0
+          upToDate: true
+          storeOffsetAs: startOffset
+      # Verify the offset works for future data
+      - action: append
+        path: ${streamPath}
+        data: "firstdata"
+      - action: read
+        path: ${streamPath}
+        offset: ${startOffset}
+        expect:
+          data: "firstdata"
+
+  - id: offset-now-matches-tail
+    name: Offset 'now' returns same offset as tail
+    description: The offset from offset=now should match the stream tail offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "somedata"
+    operations:
+      # Get tail offset via normal read
+      - action: read
+        path: ${streamPath}
+        expect:
+          storeOffsetAs: tailOffset
+      # Get offset via offset=now
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        expect:
+          storeOffsetAs: nowOffset
+      # Append and verify both offsets work identically
+      - action: append
+        path: ${streamPath}
+        data: "newdata"
+      - action: read
+        path: ${streamPath}
+        offset: ${tailOffset}
+        expect:
+          data: "newdata"
+      - action: read
+        path: ${streamPath}
+        offset: ${nowOffset}
+        expect:
+          data: "newdata"
+
+  - id: offset-now-longpoll
+    name: Offset 'now' with long-poll mode
+    description: Using offset=now with long-poll should return immediately with up-to-date
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "existingdata"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          chunkCount: 0
+          upToDate: true
+          storeOffsetAs: pollOffset
+      # Verify we can use the offset to get future data
+      - action: append
+        path: ${streamPath}
+        data: "afterpoll"
+      - action: read
+        path: ${streamPath}
+        offset: ${pollOffset}
+        expect:
+          data: "afterpoll"
+
+  - id: offset-now-sse
+    name: Offset 'now' with SSE mode
+    description: Using offset=now with SSE should skip historical data and provide correct offset
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "historicalsse"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        live: sse
+        waitForUpToDate: true
+        expect:
+          chunkCount: 0
+          storeOffsetAs: sseOffset
+      # Verify offset works
+      - action: append
+        path: ${streamPath}
+        data: "futuredata"
+      - action: read
+        path: ${streamPath}
+        offset: ${sseOffset}
+        expect:
+          data: "futuredata"
+
   - id: offset-empty-stream
     name: Read from empty stream
     description: Reading from an empty stream should return no data and up-to-date
