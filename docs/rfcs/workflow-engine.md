@@ -169,12 +169,22 @@ await step.run("send-welcome-email", () => sendEmail(user));
 await step.run(() => sendEmail(user)); // Don't do this
 ```
 
-For loops, the SDK maintains a counter per ID:
+For loops, use explicit IDs that include a stable identifier from the item:
 
 ```typescript
 for (const item of items) {
-  // Becomes "process-item:0", "process-item:1", etc.
-  await step.run("process-item", () => processItem(item));
+  // Good: ID is stable even if items array changes between replays
+  await step.run(`process-item-${item.id}`, () => processItem(item));
+}
+```
+
+If items lack stable identifiers, the collection itself must be deterministic — fetched inside a prior `step.run()` so the same items appear on replay:
+
+```typescript
+const items = await step.run("fetch-items", () => db.items.list());
+for (const item of items) {
+  // Safe: items is replayed from step result, so order is stable
+  await step.run(`process-item-${item.id}`, () => processItem(item));
 }
 ```
 
@@ -307,6 +317,10 @@ Areas requiring prototyping to resolve:
 3. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
 
 4. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
+
+5. **RPC race conditions**: If multiple clients respond to the same RPC call (e.g., user has two tabs open), what's the semantics? First-write-wins (second response ignored)? Error on duplicate? Needs explicit behavior.
+
+6. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
 
 ## Definition of Success
 
