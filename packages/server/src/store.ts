@@ -9,22 +9,22 @@ import {
   SequenceConflictError,
   StreamAlreadyExistsError,
   StreamNotFoundError,
-} from "./errors"
-import type { Stream, StreamMessage } from "./types"
+} from "./errors";
+import type { Stream, StreamMessage } from "./types";
 import type {
   AppendOptions,
   CreateStreamOptions,
   ReadResult,
   StreamStorage,
-} from "./storage"
+} from "./storage";
 
 /**
  * Normalize content-type by extracting the media type (before any semicolon).
  * Handles cases like "application/json; charset=utf-8".
  */
 export function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
+  if (!contentType) return ``;
+  return contentType.split(`;`)[0]!.trim().toLowerCase();
 }
 
 /**
@@ -39,35 +39,35 @@ export function processJsonAppend(
   data: Uint8Array,
   isInitialCreate = false
 ): Uint8Array {
-  const text = new TextDecoder().decode(data)
+  const text = new TextDecoder().decode(data);
 
   // Validate JSON
-  let parsed: unknown
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(text)
+    parsed = JSON.parse(text);
   } catch {
-    throw new InvalidJsonError()
+    throw new InvalidJsonError();
   }
 
   // If it's an array, extract elements and join with commas
-  let result: string
+  let result: string;
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
       // Empty arrays are valid for PUT (creates empty stream)
       // but invalid for POST (no-op append, likely a bug)
       if (isInitialCreate) {
-        return new Uint8Array(0) // Return empty data for empty stream
+        return new Uint8Array(0); // Return empty data for empty stream
       }
-      throw new EmptyArrayNotAllowedError()
+      throw new EmptyArrayNotAllowedError();
     }
-    const elements = parsed.map((item) => JSON.stringify(item))
-    result = elements.join(`,`) + `,`
+    const elements = parsed.map((item) => JSON.stringify(item));
+    result = elements.join(`,`) + `,`;
   } else {
     // Single value - re-serialize to normalize whitespace (single-line JSON)
-    result = JSON.stringify(parsed) + `,`
+    result = JSON.stringify(parsed) + `,`;
   }
 
-  return new TextEncoder().encode(result)
+  return new TextEncoder().encode(result);
 }
 
 /**
@@ -76,18 +76,18 @@ export function processJsonAppend(
  */
 export function formatJsonResponse(data: Uint8Array): Uint8Array {
   if (data.length === 0) {
-    return new TextEncoder().encode(`[]`)
+    return new TextEncoder().encode(`[]`);
   }
 
-  let text = new TextDecoder().decode(data)
+  let text = new TextDecoder().decode(data);
   // Strip trailing comma if present
-  text = text.trimEnd()
+  text = text.trimEnd();
   if (text.endsWith(`,`)) {
-    text = text.slice(0, -1)
+    text = text.slice(0, -1);
   }
 
-  const wrapped = `[${text}]`
-  return new TextEncoder().encode(wrapped)
+  const wrapped = `[${text}]`;
+  return new TextEncoder().encode(wrapped);
 }
 
 /**
@@ -95,32 +95,32 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
  * Implements the StreamStorage interface with synchronous operations.
  */
 export class StreamStore implements StreamStorage {
-  private streams = new Map<string, Stream>()
+  private streams = new Map<string, Stream>();
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
    */
   private isExpired(stream: Stream): boolean {
-    const now = Date.now()
+    const now = Date.now();
 
     // Check absolute expiry time
     if (stream.expiresAt) {
-      const expiryTime = new Date(stream.expiresAt).getTime()
+      const expiryTime = new Date(stream.expiresAt).getTime();
       // Treat invalid dates (NaN) as expired (fail closed)
       if (!Number.isFinite(expiryTime) || now >= expiryTime) {
-        return true
+        return true;
       }
     }
 
     // Check TTL (relative to creation time)
     if (stream.ttlSeconds !== undefined) {
-      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
+      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000;
       if (now >= expiryTime) {
-        return true
+        return true;
       }
     }
 
-    return false
+    return false;
   }
 
   /**
@@ -128,16 +128,16 @@ export class StreamStore implements StreamStorage {
    * Returns undefined if stream doesn't exist or is expired.
    */
   private getIfNotExpired(path: string): Stream | undefined {
-    const stream = this.streams.get(path)
+    const stream = this.streams.get(path);
     if (!stream) {
-      return undefined
+      return undefined;
     }
     if (this.isExpired(stream)) {
       // Delete expired stream
-      this.delete(path)
-      return undefined
+      this.delete(path);
+      return undefined;
     }
-    return stream
+    return stream;
   }
 
   /**
@@ -147,23 +147,23 @@ export class StreamStore implements StreamStorage {
    */
   create(path: string, options: CreateStreamOptions = {}): Stream {
     // Use getIfNotExpired to treat expired streams as non-existent
-    const existing = this.getIfNotExpired(path)
+    const existing = this.getIfNotExpired(path);
     if (existing) {
       // Check if config matches (idempotent create)
       const contentTypeMatches =
         (normalizeContentType(options.contentType) ||
           `application/octet-stream`) ===
         (normalizeContentType(existing.contentType) ||
-          `application/octet-stream`)
-      const ttlMatches = options.ttlSeconds === existing.ttlSeconds
-      const expiresMatches = options.expiresAt === existing.expiresAt
+          `application/octet-stream`);
+      const ttlMatches = options.ttlSeconds === existing.ttlSeconds;
+      const expiresMatches = options.expiresAt === existing.expiresAt;
 
       if (contentTypeMatches && ttlMatches && expiresMatches) {
         // Idempotent success - return existing stream
-        return existing
+        return existing;
       } else {
         // Config mismatch - conflict
-        throw new StreamAlreadyExistsError(path)
+        throw new StreamAlreadyExistsError(path);
       }
     }
 
@@ -175,15 +175,15 @@ export class StreamStore implements StreamStorage {
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
       createdAt: Date.now(),
-    }
+    };
 
     // If initial data is provided, append it
     if (options.initialData && options.initialData.length > 0) {
-      this.appendToStream(stream, options.initialData, true) // isInitialCreate = true
+      this.appendToStream(stream, options.initialData, true); // isInitialCreate = true
     }
 
-    this.streams.set(path, stream)
-    return stream
+    this.streams.set(path, stream);
+    return stream;
   }
 
   /**
@@ -191,14 +191,14 @@ export class StreamStore implements StreamStorage {
    * Returns undefined if stream doesn't exist or is expired.
    */
   get(path: string): Stream | undefined {
-    return this.getIfNotExpired(path)
+    return this.getIfNotExpired(path);
   }
 
   /**
    * Check if a stream exists (and is not expired).
    */
   has(path: string): boolean {
-    return this.getIfNotExpired(path) !== undefined
+    return this.getIfNotExpired(path) !== undefined;
   }
 
   /**
@@ -206,8 +206,7 @@ export class StreamStore implements StreamStorage {
    */
   delete(path: string): boolean {
     // Cancel any pending long-polls for this stream
-    this.cancelLongPollsForStream(path)
-    return this.streams.delete(path)
+    return this.streams.delete(path);
   }
 
   /**
@@ -221,36 +220,36 @@ export class StreamStore implements StreamStorage {
     data: Uint8Array,
     options: AppendOptions = {}
   ): StreamMessage | null {
-    const stream = this.getIfNotExpired(path)
+    const stream = this.getIfNotExpired(path);
     if (!stream) {
-      throw new StreamNotFoundError(path)
+      throw new StreamNotFoundError(path);
     }
 
     // Check content type match using normalization (handles charset parameters)
     if (options.contentType && stream.contentType) {
-      const providedType = normalizeContentType(options.contentType)
-      const streamType = normalizeContentType(stream.contentType)
+      const providedType = normalizeContentType(options.contentType);
+      const streamType = normalizeContentType(stream.contentType);
       if (providedType !== streamType) {
         throw new ContentTypeMismatchError(
           stream.contentType,
           options.contentType
-        )
+        );
       }
     }
 
     // Check sequence for writer coordination
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new SequenceConflictError(options.seq, stream.lastSeq)
+        throw new SequenceConflictError(options.seq, stream.lastSeq);
       }
-      stream.lastSeq = options.seq
+      stream.lastSeq = options.seq;
     }
 
     // appendToStream returns null only for empty arrays in create mode,
     // but public append() never sets isInitialCreate, so empty arrays throw before this
-    const message = this.appendToStream(stream, data)!
+    const message = this.appendToStream(stream, data)!;
 
-    return message
+    return message;
   }
 
   /**
@@ -258,9 +257,9 @@ export class StreamStore implements StreamStorage {
    * @throws Error if stream doesn't exist or is expired
    */
   read(path: string, offset?: string): ReadResult {
-    const stream = this.getIfNotExpired(path)
+    const stream = this.getIfNotExpired(path);
     if (!stream) {
-      throw new StreamNotFoundError(path)
+      throw new StreamNotFoundError(path);
     }
 
     // No offset or -1 means start from beginning
@@ -268,37 +267,37 @@ export class StreamStore implements StreamStorage {
       return {
         messages: [...stream.messages],
         upToDate: true,
-      }
+      };
     }
 
     // Find messages after the given offset
-    const offsetIndex = this.findOffsetIndex(stream, offset)
+    const offsetIndex = this.findOffsetIndex(stream, offset);
     if (offsetIndex === -1) {
       // Offset is at or past the end
       return {
         messages: [],
         upToDate: true,
-      }
+      };
     }
 
     return {
       messages: stream.messages.slice(offsetIndex),
       upToDate: true,
-    }
+    };
   }
 
   /**
    * Clear all streams.
    */
   clear(): void {
-    this.streams.clear()
+    this.streams.clear();
   }
 
   /**
    * Get all stream paths.
    */
   list(): Array<string> {
-    return Array.from(this.streams.keys())
+    return Array.from(this.streams.keys());
   }
 
   // ============================================================================
@@ -311,34 +310,36 @@ export class StreamStore implements StreamStorage {
     isInitialCreate = false
   ): StreamMessage | null {
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
-    let processedData = data
+    let processedData = data;
     if (normalizeContentType(stream.contentType) === `application/json`) {
-      processedData = processJsonAppend(data, isInitialCreate)
+      processedData = processJsonAppend(data, isInitialCreate);
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
-        return null
+        return null;
       }
     }
 
     // Parse current offset
-    const parts = stream.currentOffset.split(`_`).map(Number)
-    const readSeq = parts[0]!
-    const byteOffset = parts[1]!
+    const parts = stream.currentOffset.split(`_`).map(Number);
+    const readSeq = parts[0]!;
+    const byteOffset = parts[1]!;
 
     // Calculate new offset with zero-padding for lexicographic sorting
-    const newByteOffset = byteOffset + processedData.length
-    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
+    const newByteOffset = byteOffset + processedData.length;
+    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(
+      newByteOffset
+    ).padStart(16, `0`)}`;
 
     const message: StreamMessage = {
       data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
-    }
+    };
 
-    stream.messages.push(message)
-    stream.currentOffset = newOffset
+    stream.messages.push(message);
+    stream.currentOffset = newOffset;
 
-    return message
+    return message;
   }
 
   private findOffsetIndex(stream: Stream, offset: string): number {
@@ -346,36 +347,9 @@ export class StreamStore implements StreamStorage {
     // Use lexicographic comparison as required by protocol
     for (let i = 0; i < stream.messages.length; i++) {
       if (stream.messages[i]!.offset > offset) {
-        return i
+        return i;
       }
     }
-    return -1 // No messages after the offset
-  }
-
-  private notifyLongPolls(path: string): void {
-    const toNotify = this.pendingLongPolls.filter((p) => p.path === path)
-
-    for (const pending of toNotify) {
-      const { messages } = this.read(path, pending.offset)
-      if (messages.length > 0) {
-        pending.resolve(messages)
-      }
-    }
-  }
-
-  private cancelLongPollsForStream(path: string): void {
-    const toCancel = this.pendingLongPolls.filter((p) => p.path === path)
-    for (const pending of toCancel) {
-      clearTimeout(pending.timeoutId)
-      pending.resolve([])
-    }
-    this.pendingLongPolls = this.pendingLongPolls.filter((p) => p.path !== path)
-  }
-
-  private removePendingLongPoll(pending: PendingLongPoll): void {
-    const index = this.pendingLongPolls.indexOf(pending)
-    if (index !== -1) {
-      this.pendingLongPolls.splice(index, 1)
-    }
+    return -1; // No messages after the offset
   }
 }
