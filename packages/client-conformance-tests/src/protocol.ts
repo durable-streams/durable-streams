@@ -254,6 +254,12 @@ export interface BenchmarkOpenLoopOp {
   live?: `long-poll` | `sse`
   /** Content type for the stream */
   contentType?: string
+  /**
+   * Maximum time to wait for in-flight requests after measurement ends (ms).
+   * If requests don't complete within this time, return with partial results.
+   * Default: 10000 (10 seconds)
+   */
+  drainTimeoutMs?: number
 }
 
 /**

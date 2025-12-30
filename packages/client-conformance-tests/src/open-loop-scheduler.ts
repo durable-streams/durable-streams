@@ -60,6 +60,13 @@ export interface OpenLoopOptions {
   maxConcurrency?: number
   /** Optional warmup duration in milliseconds (not measured) */
   warmupMs?: number
+  /**
+   * Maximum time to wait for in-flight requests after measurement ends (ms).
+   * If requests don't complete within this time, return with partial results.
+   * This prevents indefinite blocking when the system is saturated.
+   * Default: 10000 (10 seconds)
+   */
+  drainTimeoutMs?: number
 }
 
 /**
@@ -84,7 +91,13 @@ export async function runOpenLoop(
   operation: () => Promise<void>,
   options: OpenLoopOptions
 ): Promise<OpenLoopResult> {
-  const { targetRps, durationMs, maxConcurrency = 1000, warmupMs = 0 } = options
+  const {
+    targetRps,
+    durationMs,
+    maxConcurrency = 1000,
+    warmupMs = 0,
+    drainTimeoutMs = 10000,
+  } = options
 
   const periodMs = 1000 / targetRps
   const samples: Array<OpenLoopSample> = []
@@ -185,8 +198,14 @@ export async function runOpenLoop(
     }
   }
 
-  // Wait for all in-flight requests to complete
-  await Promise.allSettled(inFlight)
+  // Wait for in-flight requests to complete, but with a timeout
+  // This prevents indefinite blocking when the system is saturated
+  if (inFlight.size > 0) {
+    const drainPromise = Promise.allSettled(inFlight)
+    const timeoutPromise = sleep(drainTimeoutMs)
+
+    await Promise.race([drainPromise, timeoutPromise])
+  }
 
   const completedCount = samples.filter((s) => s.success).length
   const failedCount = samples.filter((s) => !s.success).length

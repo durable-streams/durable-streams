@@ -178,7 +178,7 @@ class BenchmarkClientAdapter {
     })
   }
 
-  async send(command: TestCommand, timeoutMs = 60000): Promise<TestResult> {
+  async send(command: TestCommand, timeoutMs = 180000): Promise<TestResult> {
     if (!this.process.stdin) {
       throw new Error(`Client adapter stdin not available`)
     }

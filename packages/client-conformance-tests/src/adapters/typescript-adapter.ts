@@ -938,6 +938,7 @@ async function runOpenLoopBenchmark(
     durationMs: operation.durationMs,
     maxConcurrency: operation.maxConcurrency ?? 1000,
     warmupMs: operation.warmupMs ?? 0,
+    drainTimeoutMs: operation.drainTimeoutMs ?? 10000,
   })
 
   // Calculate statistics
