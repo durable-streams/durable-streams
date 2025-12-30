@@ -7,9 +7,12 @@ import {
 import { useState } from "react"
 import { useLiveQuery } from "@tanstack/react-db"
 import { DurableStream } from "@durable-streams/client"
-import { RegistryProvider, useRegistryContext } from "../lib/registry-context"
-import { ServerEndpointProvider } from "../lib/server-endpoint-context"
-import type { RoomMetadata } from "../lib/schemas"
+import {
+  RegistryProvider,
+  useRegistryContext,
+} from "../components/registry-context"
+import { ServerEndpointProvider } from "../components/server-endpoint-context"
+import type { RoomMetadata } from "../utils/schemas"
 import "../styles.css"
 
 function RoomItem({ room }: { room: RoomMetadata }) {
