@@ -1,0 +1,590 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Durable Streams - Browser Input Workflow</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+          Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 2rem;
+        color: #2d3748;
+      }
+
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+      }
+
+      .header {
+        text-align: center;
+        margin-bottom: 2rem;
+        color: white;
+      }
+
+      .header h1 {
+        font-size: 2.5rem;
+        margin-bottom: 0.5rem;
+        font-weight: 700;
+      }
+
+      .header p {
+        font-size: 1.1rem;
+        opacity: 0.9;
+      }
+
+      .workflow-card {
+        background: white;
+        padding: 2rem;
+        border-radius: 16px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15);
+      }
+
+      .workflow-step {
+        margin-bottom: 1.5rem;
+        padding: 1rem;
+        border-radius: 8px;
+        background: #f7fafc;
+        border-left: 4px solid #e2e8f0;
+      }
+
+      .workflow-step.active {
+        border-left-color: #667eea;
+        background: #eef2ff;
+      }
+
+      .workflow-step.completed {
+        border-left-color: #10b981;
+        background: #ecfdf5;
+      }
+
+      .step-label {
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #718096;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 0.5rem;
+      }
+
+      .step-content {
+        font-size: 1rem;
+        color: #2d3748;
+      }
+
+      .input-group {
+        margin-top: 1rem;
+      }
+
+      .input-group label {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 0.5rem;
+        color: #4a5568;
+      }
+
+      .input-group input[type="text"],
+      .input-group input[type="email"] {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border: 2px solid #e2e8f0;
+        border-radius: 8px;
+        font-size: 1rem;
+        transition: border-color 0.2s;
+      }
+
+      .input-group input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        margin-top: 1rem;
+        padding: 0.75rem;
+        background: white;
+        border-radius: 8px;
+        cursor: pointer;
+      }
+
+      .checkbox-group input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+      }
+
+      .checkbox-group label {
+        cursor: pointer;
+        color: #4a5568;
+      }
+
+      button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 0.875rem 2rem;
+        border-radius: 8px;
+        font-size: 1rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3);
+        margin-top: 1rem;
+        width: 100%;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4);
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+      }
+
+      button.secondary {
+        background: #e2e8f0;
+        color: #4a5568;
+        box-shadow: none;
+      }
+
+      button.secondary:hover:not(:disabled) {
+        background: #cbd5e0;
+        box-shadow: none;
+      }
+
+      .loading-state {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1rem;
+        background: #eef2ff;
+        border-radius: 8px;
+        margin-top: 1rem;
+      }
+
+      .spinner {
+        width: 24px;
+        height: 24px;
+        border: 3px solid #e2e8f0;
+        border-radius: 50%;
+        border-top-color: #667eea;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      .output-message {
+        padding: 1.5rem;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 12px;
+        font-size: 1.1rem;
+        text-align: center;
+        margin-top: 1rem;
+      }
+
+      .output-message .checkmark {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+      }
+
+      .workflow-controls {
+        margin-top: 2rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid #e2e8f0;
+      }
+
+      .loading-overlay {
+        text-align: center;
+        padding: 3rem;
+        color: white;
+      }
+
+      .loading-overlay .spinner {
+        width: 40px;
+        height: 40px;
+        margin: 0 auto 1rem;
+        border-color: rgba(255, 255, 255, 0.3);
+        border-top-color: white;
+      }
+
+      .completed-value {
+        font-weight: 600;
+        color: #10b981;
+      }
+
+      .error-message {
+        padding: 1rem;
+        background: #fee2e2;
+        border-left: 4px solid #dc2626;
+        border-radius: 8px;
+        color: #991b1b;
+        margin-bottom: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Await Browser Input</h1>
+        <p>Durable workflow that pauses for user input</p>
+      </div>
+
+      <div id="loading" class="loading-overlay">
+        <div class="spinner"></div>
+        <div>Connecting to stream...</div>
+      </div>
+
+      <div id="app" style="display: none">
+        <div class="workflow-card">
+          <div id="error-container"></div>
+          <div id="workflow-steps"></div>
+          <div class="workflow-controls">
+            <button id="restartBtn" class="secondary">Start New Workflow</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script type="module">
+      import { DurableStream } from "@durable-streams/client"
+      import { createStreamDB, createStateSchema } from "@durable-streams/state"
+      import { z } from "zod"
+
+      const SERVER_URL = "http://localhost:4437"
+
+      // Define workflow state schema
+      const workflowSchema = z.object({
+        id: z.string(),
+        status: z.enum([
+          "awaiting_name",
+          "awaiting_details",
+          "processing",
+          "completed",
+        ]),
+        name: z.string().optional(),
+        email: z.string().optional(),
+        subscribe: z.boolean().optional(),
+        outputMessage: z.string().optional(),
+        createdAt: z.number(),
+        updatedAt: z.number(),
+      })
+
+      const stateSchema = createStateSchema({
+        workflows: {
+          schema: workflowSchema,
+          type: "workflow",
+          primaryKey: "id",
+        },
+      })
+
+      let db
+      let currentWorkflowId = null
+      const streamPath = "/browser-input-workflow"
+
+      // Sleep utility
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+      async function init() {
+        try {
+          const streamUrl = `${SERVER_URL}/v1/stream${streamPath}`
+
+          // Create stream if it doesn't exist
+          try {
+            const testStream = new DurableStream({ url: streamUrl })
+            await testStream.head()
+          } catch {
+            await DurableStream.create({
+              url: streamUrl,
+              contentType: "application/json",
+            })
+          }
+
+          db = createStreamDB({
+            streamOptions: {
+              url: streamUrl,
+              contentType: "application/json",
+            },
+            state: stateSchema,
+          })
+
+          await db.preload()
+
+          // Subscribe to changes
+          db.collections.workflows.subscribeChanges(() => {
+            renderWorkflow()
+          })
+
+          // Show UI
+          document.getElementById("loading").style.display = "none"
+          document.getElementById("app").style.display = "block"
+
+          // Find active workflow or start new one
+          const workflows = Array.from(db.collections.workflows.values())
+          const activeWorkflow = workflows.find(
+            (w) => w.status !== "completed"
+          )
+          if (activeWorkflow) {
+            currentWorkflowId = activeWorkflow.id
+          } else {
+            await startNewWorkflow()
+          }
+
+          renderWorkflow()
+        } catch (err) {
+          document.getElementById("loading").innerHTML = `
+            <div style="color: #fee2e2;">
+              Failed to connect: ${err.message}
+              <br><br>
+              Make sure the Durable Streams server is running on ${SERVER_URL}
+            </div>
+          `
+        }
+      }
+
+      async function startNewWorkflow() {
+        const workflowId = `wf-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+        currentWorkflowId = workflowId
+
+        await db.stream.append(
+          stateSchema.workflows.insert({
+            value: {
+              id: workflowId,
+              status: "awaiting_name",
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            },
+          })
+        )
+      }
+
+      function getCurrentWorkflow() {
+        if (!currentWorkflowId) return null
+        return db.collections.workflows.get(currentWorkflowId)
+      }
+
+      // Handle name submission - workflow continues after await
+      async function submitName(name) {
+        const workflow = getCurrentWorkflow()
+        if (!workflow) return
+
+        await db.stream.append(
+          stateSchema.workflows.update({
+            key: workflow.id,
+            value: {
+              ...workflow,
+              name,
+              status: "awaiting_details",
+              updatedAt: Date.now(),
+            },
+          })
+        )
+      }
+
+      // Handle details submission - workflow continues after await
+      async function submitDetails(email, subscribe) {
+        const workflow = getCurrentWorkflow()
+        if (!workflow) return
+
+        // Update to processing state
+        await db.stream.append(
+          stateSchema.workflows.update({
+            key: workflow.id,
+            value: {
+              ...workflow,
+              email,
+              subscribe,
+              status: "processing",
+              updatedAt: Date.now(),
+            },
+          })
+        )
+
+        // Simulate async work (like the loading() function in the example)
+        if (subscribe) {
+          await sleep(2000) // Simulating "Subscribing to newsletter..."
+        }
+
+        // Complete workflow with output message
+        const outputMessage = `Thanks, ${workflow.name}! Check ${email} for next steps.`
+
+        await db.stream.append(
+          stateSchema.workflows.update({
+            key: workflow.id,
+            value: {
+              ...workflow,
+              email,
+              subscribe,
+              status: "completed",
+              outputMessage,
+              updatedAt: Date.now(),
+            },
+          })
+        )
+      }
+
+      function renderWorkflow() {
+        const workflow = getCurrentWorkflow()
+        const container = document.getElementById("workflow-steps")
+
+        if (!workflow) {
+          container.innerHTML = `<div class="step-content">No active workflow</div>`
+          return
+        }
+
+        let html = ""
+
+        // Step 1: Name input
+        const step1Completed = workflow.name !== undefined
+        const step1Active = workflow.status === "awaiting_name"
+        html += `
+          <div class="workflow-step ${step1Active ? "active" : ""} ${step1Completed ? "completed" : ""}">
+            <div class="step-label">Step 1</div>
+            <div class="step-content">
+              ${
+                step1Completed
+                  ? `<span class="completed-value">Name: ${workflow.name}</span>`
+                  : step1Active
+                    ? `
+                <div class="input-group">
+                  <label for="nameInput">What is your name?</label>
+                  <input type="text" id="nameInput" placeholder="Enter your name" />
+                </div>
+                <button id="submitNameBtn">Continue</button>
+              `
+                    : "Waiting..."
+              }
+            </div>
+          </div>
+        `
+
+        // Step 2: Details input
+        const step2Completed =
+          workflow.email !== undefined && workflow.subscribe !== undefined
+        const step2Active = workflow.status === "awaiting_details"
+        html += `
+          <div class="workflow-step ${step2Active ? "active" : ""} ${step2Completed ? "completed" : ""}">
+            <div class="step-label">Step 2</div>
+            <div class="step-content">
+              ${
+                step2Completed
+                  ? `
+                <span class="completed-value">Email: ${workflow.email}</span><br>
+                <span class="completed-value">Subscribe: ${workflow.subscribe ? "Yes" : "No"}</span>
+              `
+                  : step2Active
+                    ? `
+                <div class="input-group">
+                  <label for="emailInput">Email address</label>
+                  <input type="email" id="emailInput" placeholder="you@example.com" />
+                </div>
+                <div class="checkbox-group">
+                  <input type="checkbox" id="subscribeInput" />
+                  <label for="subscribeInput">Subscribe to newsletter?</label>
+                </div>
+                <button id="submitDetailsBtn">Continue</button>
+              `
+                    : "Waiting for previous step..."
+              }
+            </div>
+          </div>
+        `
+
+        // Step 3: Processing / Output
+        const step3Active =
+          workflow.status === "processing" || workflow.status === "completed"
+        html += `
+          <div class="workflow-step ${step3Active ? "active" : ""} ${workflow.status === "completed" ? "completed" : ""}">
+            <div class="step-label">Step 3</div>
+            <div class="step-content">
+              ${
+                workflow.status === "processing"
+                  ? `
+                <div class="loading-state">
+                  <div class="spinner"></div>
+                  <span>${workflow.subscribe ? "Subscribing to newsletter..." : "Processing..."}</span>
+                </div>
+              `
+                  : workflow.status === "completed"
+                    ? `
+                <div class="output-message">
+                  <div class="checkmark">✓</div>
+                  ${workflow.outputMessage}
+                </div>
+              `
+                    : "Waiting for previous steps..."
+              }
+            </div>
+          </div>
+        `
+
+        container.innerHTML = html
+
+        // Attach event listeners
+        const submitNameBtn = document.getElementById("submitNameBtn")
+        const submitDetailsBtn = document.getElementById("submitDetailsBtn")
+
+        if (submitNameBtn) {
+          submitNameBtn.addEventListener("click", async () => {
+            const nameInput = document.getElementById("nameInput")
+            const name = nameInput.value.trim()
+            if (name) {
+              submitNameBtn.disabled = true
+              await submitName(name)
+            }
+          })
+
+          // Handle Enter key
+          document.getElementById("nameInput")?.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") submitNameBtn.click()
+          })
+        }
+
+        if (submitDetailsBtn) {
+          submitDetailsBtn.addEventListener("click", async () => {
+            const emailInput = document.getElementById("emailInput")
+            const subscribeInput = document.getElementById("subscribeInput")
+            const email = emailInput.value.trim()
+            if (email) {
+              submitDetailsBtn.disabled = true
+              await submitDetails(email, subscribeInput.checked)
+            }
+          })
+
+          // Handle Enter key
+          document.getElementById("emailInput")?.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") submitDetailsBtn.click()
+          })
+        }
+      }
+
+      // Restart button
+      document.getElementById("restartBtn")?.addEventListener("click", async () => {
+        await startNewWorkflow()
+        renderWorkflow()
+      })
+
+      // Initialize
+      init()
+    </script>
+  </body>
+</html>

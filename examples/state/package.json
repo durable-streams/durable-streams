@@ -1,12 +1,14 @@
 {
-  "name": "@durable-streams/example-state-background-jobs",
+  "name": "@durable-streams/example-state",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite background-jobs --open",
     "dev:background-jobs": "vite background-jobs --open",
-    "build": "vite build background-jobs"
+    "dev:browser-input-workflow": "vite browser-input-workflow --open",
+    "build": "vite build background-jobs",
+    "build:browser-input-workflow": "vite build browser-input-workflow"
   },
   "dependencies": {
     "@durable-streams/client": "workspace:*",
