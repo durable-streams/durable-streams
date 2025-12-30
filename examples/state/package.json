@@ -7,6 +7,7 @@
     "dev": "vite background-jobs --open",
     "dev:background-jobs": "vite background-jobs --open",
     "dev:browser-input-workflow": "vite browser-input-workflow --open",
+    "workflow": "tsx browser-input-workflow/server.ts",
     "build": "vite build background-jobs",
     "build:browser-input-workflow": "vite build browser-input-workflow"
   },
@@ -16,6 +17,7 @@
     "zod": "^3.24.1"
   },
   "devDependencies": {
+    "tsx": "^4.7.0",
     "vite": "^6.0.0"
   }
 }
