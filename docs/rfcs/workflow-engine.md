@@ -2,6 +2,8 @@
 
 ## Summary
 
+Most workflow engines are excellent at durability and mediocre at interactive state. The workflow history is already an event stream — so let the browser be a first-class consumer and participant. This inverts the usual "server owns truth, UI bolts on" pattern.
+
 Existing workflow engines (Inngest, Temporal, Cloudflare Workflows, Vercel WDK) provide durable execution primitives but treat browser integration as an afterthought — developers must build separate APIs and client subscriptions to enable human-in-the-loop workflows. This RFC proposes a workflow engine built on Durable Streams and the State Protocol, where workflows can make RPC calls that pause execution until a browser client responds, and clients observe workflow state changes in real-time through the same stream. The result is a unified system for building interactive workflows — from AI agent approval flows to multi-step forms — without custom plumbing between server and client.
 
 ## Background
@@ -205,6 +207,16 @@ Workflows must be deterministic — replaying with the same event history must p
 2. **Runtime detection**: During replay, if a step ID doesn't match the expected sequence, throw an error
 3. **Replay testing**: Support running historical event logs against current code in CI
 
+### Execution Semantics
+
+The workflow engine provides **at-least-once** execution semantics for steps:
+
+- Steps may be executed multiple times if the workflow crashes after execution but before recording completion
+- Step functions must be idempotent — producing the same result when called multiple times with the same inputs
+- For operations that cannot be made idempotent (e.g., sending emails, charging credit cards), use external idempotency keys or check-then-act patterns within the step
+
+This matches the semantics of Temporal, Inngest, and other durable execution engines. Exactly-once semantics would require distributed transactions with external systems, which is impractical for most use cases.
+
 ### Retry and Error Handling
 
 Following conventions from existing engines:
@@ -324,6 +336,22 @@ Areas requiring prototyping to resolve:
    - Authorization: can only the targeted client respond?
 
 6. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
+
+7. **Visibility boundaries**: What workflow state should clients be able to observe? Security-sensitive workflows may need to hide internal step results while still exposing RPC requests. This includes:
+   - Should clients see all step completions, or only explicit outputs?
+   - How do we prevent leaking sensitive data through the stream?
+   - Can different clients have different visibility into the same workflow?
+
+8. **Runtime and wake-up model**: How does a suspended workflow get re-invoked when events arrive? Options include:
+   - Polling-based: Runtime polls for pending events
+   - Push-based: Stream server triggers webhook/queue on append
+   - Hybrid: Long-poll with fallback to scheduled wake-up
+   - This affects latency, cost, and serverless compatibility
+
+9. **Data retention and compaction**: Workflow streams grow unbounded as steps complete. How do we handle:
+   - Archiving completed workflows
+   - Compacting step history while preserving replay capability
+   - Configurable retention policies per workflow type
 
 ## Definition of Success
 
