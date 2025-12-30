@@ -12,7 +12,7 @@ export default [
       `**/.output/**`,
       `**/coverage/**`,
       `eslint.config.js`,
-      `vitest.config.ts`,
+      `**/vitest*.config.ts`,
       `**/vite.config.ts`,
       `**/tsdown.config.ts`,
       `**/tsup.config.ts`,
