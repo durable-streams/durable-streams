@@ -4,13 +4,15 @@
 
 Most workflow engines are excellent at durability and mediocre at interactive state. The workflow history is already an event stream — so let the browser be a first-class consumer and participant. This inverts the usual "server owns truth, UI bolts on" pattern.
 
-Existing workflow engines (Inngest, Temporal, Cloudflare Workflows, Vercel WDK) provide durable execution primitives but treat browser integration as an afterthought — developers must build separate APIs and client subscriptions to enable human-in-the-loop workflows. This RFC proposes a workflow engine built on Durable Streams and the State Protocol, where workflows can make RPC calls that pause execution until a browser client responds, and clients observe workflow state changes in real-time through the same stream. The result is a unified system for building interactive workflows — from AI agent approval flows to multi-step forms — without custom plumbing between server and client.
+Existing workflow engines now offer human-in-the-loop primitives: Inngest has Realtime streaming, Cloudflare has `waitForEvent` with 365-day timeouts, Vercel WDK has hooks, Restate has awakeables, Trigger.dev has waitpoint tokens. But these systems still don't unify **durable event history + client-visible state + client response** into one protocol-first stream that clients can materialize directly.
+
+This RFC proposes a workflow engine built on Durable Streams and the State Protocol, where the workflow event log *is* the UI transport. Clients subscribe to the same stream the executor uses — offset-resumable, CDN-cacheable, replayable. The result is a unified system for building interactive workflows without custom plumbing between server and client.
 
 ## Background
 
 ### Durable Streams
 
-Durable Streams is an HTTP-based protocol for reliable, resumable data streaming. Clients can disconnect and reconnect at any point, resuming from an offset without data loss. The protocol supports multiple languages (TypeScript, Go, Python) and provides exactly-once delivery guarantees.
+Durable Streams is an HTTP-based protocol for reliable, resumable data streaming. Clients can disconnect and reconnect at any point, resuming from an offset without data loss. The protocol supports multiple languages (TypeScript, Go, Python) and provides exactly-once delivery guarantees with CDN-friendly semantics.
 
 ### State Protocol
 
@@ -18,41 +20,56 @@ The State Protocol extends Durable Streams with structured change events (insert
 
 ### Existing Workflow Engines
 
-Several workflow engines exist for building durable, multi-step applications:
+Several workflow engines exist for building durable, multi-step applications. Many now have explicit human-in-the-loop support:
 
-**Inngest** provides `step.run()`, `step.sleep()`, and `step.waitForEvent()` primitives. Steps are identified by explicit string IDs. Functions are triggered by events and execute on serverless infrastructure.
+**Inngest** provides `step.run()`, `step.sleep()`, and `step.waitForEvent()` primitives with explicit string IDs for memoization. Recently added **Inngest Realtime**: WebSocket streaming from functions to browsers with channels, topics, and subscription tokens. However, Realtime delivery is currently described as at-most-once and ephemeral.
 
-**Temporal** offers a comprehensive workflow orchestration platform with strong determinism guarantees. Workflows replay from event history to rebuild state. The system provides replacement APIs for non-deterministic operations and supports replay testing in CI.
+**Temporal** offers comprehensive workflow orchestration with strong determinism guarantees. Workflows replay from event history to rebuild state. Supports external events and human-in-the-loop patterns, though browser integration remains an application concern.
 
-**Cloudflare Workflows** provides `step.do()`, `step.sleep()`, and `step.waitForEvent()` for durable execution on Workers. Their `waitForEvent` primitive enables human-in-the-loop patterns with configurable timeouts up to 365 days.
+**Cloudflare Workflows** provides `step.do()`, `step.sleep()`, and `step.waitForEvent()` for durable execution on Workers. Their `waitForEvent` supports timeouts up to 365 days, events can be buffered before the workflow reaches the wait, and waiting instances don't count toward concurrency limits. They publish explicit human-in-the-loop examples with Next.js UIs.
 
-**Vercel Workflow Development Kit** uses `"use workflow"` and `"use step"` directives with build-time transformation. It includes `sleep()` and `defineHook()` for external events, plus a "Worlds" abstraction for different runtime environments.
+**Vercel Workflow Development Kit** uses `"use workflow"` and `"use step"` directives with build-time transformation. Hooks generate tokens that external systems use to resume workflows. The managed Vercel Workflow service builds on this.
 
-All of these engines focus primarily on server-side orchestration. Client integration requires separate implementation — the workflow engine doesn't know about the UI, and the UI polls or subscribes to learn about workflow state.
+**Restate** has "durable promises" via `ctx.awakeable()`, explicitly pitched for human-in-the-loop. Workflows suspend until the awakeable is resolved externally. Their model is also log-based replay.
+
+**Trigger.dev** has waitpoint tokens completable via SDK or by POSTing to a callback URL, aimed at approvals and human oversight.
+
+All of these engines now offer *some* way to pause for input and *some* way to show progress. But they don't unify durable event history with client-visible state into one stream that clients can materialize directly.
 
 ## Problem
 
-### The Client Integration Gap
+### The Remaining Gap
 
-Existing workflow engines treat the browser as an afterthought. When a workflow needs human input — approving a request, filling out a form, confirming an action — developers must:
+Existing workflow engines have added human-in-the-loop primitives, but the integration story is still fragmented:
 
-1. Build a separate API layer to expose workflow state
-2. Implement polling or WebSocket subscriptions in the client
-3. Create forms that POST back to trigger workflow resumption
-4. Handle the edge cases: what if the user submits twice? What if the workflow moved on?
+- **Inngest Realtime** streams to browsers, but delivery is at-most-once/ephemeral — disconnect and you lose events
+- **Cloudflare/Vercel/Trigger.dev tokens** pause the workflow, but you still build a separate subscription model for UI state
+- **Restate awakeables** are durable promises, but the browser integration story isn't "subscribe to the same history"
 
-This creates friction for use cases that are increasingly common:
+Developers still face friction:
 
-- **Human-in-the-loop AI agents**: An agent generates a response, pauses for user confirmation, then continues
-- **Multi-step forms**: A wizard where each step might trigger server-side validation or processing
-- **Approval workflows**: Expense reports, document reviews, access requests
-- **Interactive onboarding**: Collect information progressively, with server-side logic between steps
+1. Workflow engine provides durable execution and pause/resume
+2. But you build a separate API layer to expose workflow state
+3. And a separate subscription model (polling, WebSocket, SSE) for the client
+4. And handle edge cases: duplicate submissions, stale state, reconnection
 
-### Why This Matters Now
+### The Unified Stream Opportunity
 
-The State Protocol already solves real-time client synchronization. Adding workflow primitives creates a complete solution: server-side logic that can pause, resume, and coordinate with browser clients through a single abstraction.
+What if the workflow event log *is* the UI transport?
 
-Instead of workflow engine + custom API + custom client subscriptions, developers get one system where the workflow can directly request input from the browser and the browser sees workflow state changes instantly.
+- Clients subscribe to the same durable stream the executor uses
+- Disconnect and reconnect at any offset — no lost events
+- Materialize workflow state into reactive collections (State Protocol)
+- Respond to pending requests by appending to the stream
+
+This is what Durable Streams + State Protocol enable. The "custom plumbing" disappears because there's only one stream, and both executor and UI consume it.
+
+**Use cases that benefit:**
+
+- **Human-in-the-loop AI agents**: Agent pauses for approval; client sees pending request via stream; response appends to same stream
+- **Multi-step forms**: Each step is a workflow step; client materializes progress from stream
+- **Approval workflows**: Manager sees pending approval in their stream view; response is durable
+- **Interactive onboarding**: Server-side validation between steps; client state rebuilds from any offset
 
 ### Constraints
 
@@ -60,6 +77,16 @@ Instead of workflow engine + custom API + custom client subscriptions, developer
 2. **Runtime-agnostic**: Workflows must run on serverless functions, long-running servers, or edge runtimes.
 3. **Deterministic replay**: Workflows must survive restarts and redeploys by replaying from the event log.
 4. **No build-time magic**: Unlike Vercel's `"use workflow"` directive, this should work without special compilation steps.
+
+### Differentiators
+
+What makes this approach distinct from existing solutions:
+
+1. **Durable UI stream**: The workflow event log is offset-resumable, CDN-cacheable, and shareable via URL. Unlike Inngest Realtime (at-most-once/ephemeral) or WebSocket subscriptions, clients can disconnect, reconnect at any offset, and rebuild complete state. The stream URL *is* the API.
+
+2. **State Protocol projection**: Clients don't just receive events — they materialize workflow state into reactive collections via TanStack DB. No bespoke API endpoints; the client consumes the same event log as the executor and derives UI state automatically.
+
+3. **Bidirectional input as awaitables**: RPC calls, external events, and human input all share a unified "awaitable" model. The workflow creates a pending awaitable; the client sees it in the stream; the response appends to the same stream. Both sides use one transport.
 
 ## Proposal
 
@@ -127,6 +154,29 @@ if (approval.decision === "approved") {
 ```
 
 Events are sent to the workflow by appending to the stream with a matching event type.
+
+#### The Awaitable Primitive
+
+Under the hood, `waitForEvent()` and `rpc.call()` are specializations of a lower-level construct: the **awaitable**. This mirrors patterns in Restate (durable promises), Trigger.dev (waitpoint tokens), and Vercel WDK (hooks).
+
+```typescript
+// Low-level awaitable API (conceptual)
+const awaitable = workflow.awaitable.create({
+  id: "approval-request",
+  schema: ApprovalSchema,        // optional type validation
+  timeout: "48 hours",
+  audience: { user: "manager@example.com" }  // who can respond
+});
+
+// Workflow suspends until resolved
+const result = await awaitable.wait();
+```
+
+Then:
+- `waitForEvent(id, opts)` = create awaitable + wait for matching event
+- `rpc.call(method, args)` = create awaitable + publish request object with method signature
+
+This unification clarifies semantics for timeout behavior, late responses, cancellation, and multi-tab conflicts — all awaitables share the same lifecycle.
 
 ### RPC-Style Client Interaction
 
@@ -308,6 +358,28 @@ workflow.db.collections.myCustomState;
 
 No default UI rendering — the client exposes data through TanStack DB, and developers build their own UI.
 
+### Stream Views
+
+A key design constraint: Durable Streams' power comes from CDN caching, shared URLs, and request collapsing. But if different viewers need to see different subsets of events (for security or relevance), a single stream URL breaks down.
+
+**Solution: separate internal and public streams**
+
+```
+stream://workflow/<id>/internal    # Full fidelity: all step results, traces, internal state
+stream://workflow/<id>/view/client # Public: only entities/fields this audience can see
+stream://workflow/<id>/view/admin  # Admin: more visibility than client, less than internal
+```
+
+Each view is a **State Protocol projection** of the canonical internal stream:
+
+- Views have their own offset sequences (clients can resume cleanly)
+- Views preserve CDN cacheability (all clients watching the same view share the cache)
+- Visibility rules are defined at the schema level, not ad-hoc filtering
+
+This addresses the "visibility boundaries" concern: the workflow can include sensitive step results in the internal stream, while the client view only exposes pending awaitables and workflow status.
+
+**Capability-based access**: Following Cloudflare's Workers RPC security model (object-capability based), stream URLs themselves can be capabilities. Possession of the URL = authority to read that view. The workflow can issue scoped, unguessable URLs for specific audiences or one-shot responses.
+
 ### Multi-Language Support
 
 The workflow protocol is language-agnostic. Initial implementation:
@@ -326,32 +398,28 @@ Areas requiring prototyping to resolve:
 
 2. **RPC type safety**: How do we ensure type safety between server RPC definitions and client rendering? Schema generation?
 
-3. **Timeout handling**: When `waitForEvent` times out, should it throw, return null, or support a default value?
+3. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient? If concurrent, what is the deterministic ordering of commands (sort by step ID? creation order?)?
 
-4. **Concurrent steps**: Should there be a `step.parallel()` primitive, or is `Promise.all()` with multiple `step.run()` sufficient?
+4. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
 
-5. **Multi-client RPC targeting**: RPCs need explicit support for targeting specific users or clients. For example, an expense approval should be sent to the manager, not broadcast to all connected clients. This includes:
-   - How to address RPCs to specific users/roles
-   - What happens if the targeted user has multiple tabs (first-write-wins?)
-   - Authorization: can only the targeted client respond?
-
-6. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
-
-7. **Visibility boundaries**: What workflow state should clients be able to observe? Security-sensitive workflows may need to hide internal step results while still exposing RPC requests. This includes:
-   - Should clients see all step completions, or only explicit outputs?
-   - How do we prevent leaking sensitive data through the stream?
-   - Can different clients have different visibility into the same workflow?
-
-8. **Runtime and wake-up model**: How does a suspended workflow get re-invoked when events arrive? Options include:
+5. **Runtime and wake-up model**: How does a suspended workflow get re-invoked when events arrive? Options include:
    - Polling-based: Runtime polls for pending events
    - Push-based: Stream server triggers webhook/queue on append
    - Hybrid: Long-poll with fallback to scheduled wake-up
    - This affects latency, cost, and serverless compatibility
 
-9. **Data retention and compaction**: Workflow streams grow unbounded as steps complete. How do we handle:
+6. **Data retention and compaction**: Workflow streams grow unbounded as steps complete. How do we handle:
    - Archiving completed workflows
    - Compacting step history while preserving replay capability
    - Configurable retention policies per workflow type
+
+7. **Awaitable lifecycle**: The unified awaitable primitive needs precise semantics:
+   - **ID generation**: Must IDs be deterministic, or can the workflow generate them freely?
+   - **Timeout behavior**: Throw (Cloudflare) vs return null (Inngest) vs tagged result type?
+   - **Late responses**: What happens if a response arrives after timeout? After workflow completion?
+   - **Cancellation**: Can the workflow cancel a pending awaitable?
+   - **Multi-tab conflict**: If the targeted user has multiple tabs, first-write-wins? Claim-then-respond?
+   - **Idempotency**: Can the same awaitable be responded to multiple times?
 
 ## Definition of Success
 
