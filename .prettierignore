@@ -7,4 +7,5 @@ pnpm-lock.yaml
 .changeset
 examples/test-ui/src/routeTree.gen.ts
 packages/client-py
+packages/yjs-demo/src/routeTree.gen.ts
 scripts
