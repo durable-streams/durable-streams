@@ -399,7 +399,17 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
 **Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters. Servers **SHOULD** keep offsets reasonably short (under 256 characters) since they appear in every request URL.
 
-**Sentinel Value**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
+**Sentinel Values**: The protocol defines two special offset sentinel values:
+
+- **`-1` (Stream Beginning)**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
+
+- **`now` (Current Tail Position)**: The special offset value `now` allows clients to skip all existing data and begin reading from the current tail position. This is useful for applications that only care about future data (e.g., presence tracking, live monitoring, late joiners to a conversation). When a client requests `offset=now`:
+  - Servers **MUST** return `200 OK` with an empty response body
+  - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
+  - Servers **MUST** include `Stream-Up-To-Date: true` header
+  - The response **MUST** contain no data, regardless of stream content
+
+  This eliminates the need for a separate HEAD request when clients want to start following a stream from the current position without downloading historical data. Servers **MUST** recognize `now` as a valid offset value. The `offset=now` value is valid in all read modes: catch-up, long-poll, and SSE.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
