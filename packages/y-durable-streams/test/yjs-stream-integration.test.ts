@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
 import * as Y from "yjs"
@@ -9,19 +9,50 @@ describe(`Yjs + DurableStream Integration`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
 
+  // Track Y.Doc instances for cleanup
+  const docs: Array<Y.Doc> = []
+
   beforeAll(async () => {
     server = new DurableStreamTestServer({ port: 0 })
     await server.start()
     baseUrl = server.url
   })
 
+  afterEach(() => {
+    // Clean up Y.Doc instances
+    for (const doc of docs) {
+      doc.destroy()
+    }
+    docs.length = 0
+  })
+
   afterAll(async () => {
     await server.stop()
   })
 
+  function createDoc(): Y.Doc {
+    const doc = new Y.Doc()
+    docs.push(doc)
+    return doc
+  }
+
+  async function createStream(path: string): Promise<DurableStream> {
+    return DurableStream.create({
+      url: `${baseUrl}${path}`,
+      contentType: BINARY_CONTENT_TYPE,
+    })
+  }
+
+  function openStream(path: string): DurableStream {
+    return new DurableStream({
+      url: `${baseUrl}${path}`,
+      contentType: BINARY_CONTENT_TYPE,
+    })
+  }
+
   describe(`Basic Y.Doc operations`, () => {
     it(`should emit binary updates when Y.Doc changes`, () => {
-      const doc = new Y.Doc()
+      const doc = createDoc()
       const updates: Array<Uint8Array> = []
 
       doc.on(`update`, (update: Uint8Array) => {
@@ -37,8 +68,8 @@ describe(`Yjs + DurableStream Integration`, () => {
     })
 
     it(`should apply updates from one doc to another`, () => {
-      const doc1 = new Y.Doc()
-      const doc2 = new Y.Doc()
+      const doc1 = createDoc()
+      const doc2 = createDoc()
 
       // Collect updates from doc1
       doc1.on(`update`, (update: Uint8Array) => {
@@ -60,13 +91,10 @@ describe(`Yjs + DurableStream Integration`, () => {
       const streamPath = `/yjs/write-test-${Date.now()}`
 
       // Create a binary stream
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
       // Create Y.Doc and capture update
-      const doc = new Y.Doc()
+      const doc = createDoc()
       let capturedUpdate: Uint8Array | null = null
 
       doc.on(`update`, (update: Uint8Array) => {
@@ -93,12 +121,9 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should write multiple Y.Doc updates to a stream`, async () => {
       const streamPath = `/yjs/multi-write-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const doc = new Y.Doc()
+      const doc = createDoc()
       const updates: Array<Uint8Array> = []
 
       doc.on(`update`, (update: Uint8Array) => {
@@ -128,11 +153,8 @@ describe(`Yjs + DurableStream Integration`, () => {
       const streamPath = `/yjs/read-test-${Date.now()}`
 
       // Writer: create doc and stream
-      const writerDoc = new Y.Doc()
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const writerDoc = createDoc()
+      const stream = await createStream(streamPath)
 
       // Collect updates first, then write
       const updates: Array<Uint8Array> = []
@@ -149,11 +171,8 @@ describe(`Yjs + DurableStream Integration`, () => {
       }
 
       // Reader: create new doc and read from stream
-      const readerDoc = new Y.Doc()
-      const readerStream = new DurableStream({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const readerDoc = createDoc()
+      const readerStream = openStream(streamPath)
 
       const response = await readerStream.stream({ live: false })
       const body = await response.body()
@@ -170,12 +189,9 @@ describe(`Yjs + DurableStream Integration`, () => {
       const streamPath = `/yjs/subscribe-test-${Date.now()}`
 
       // Create stream
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const writerDoc = new Y.Doc()
+      const writerDoc = createDoc()
       const writerText = writerDoc.getText(`content`)
 
       // Collect updates synchronously
@@ -193,11 +209,8 @@ describe(`Yjs + DurableStream Integration`, () => {
       await stream.append(mergedUpdate)
 
       // Reader uses subscribeBytes
-      const readerDoc = new Y.Doc()
-      const readerStream = new DurableStream({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const readerDoc = createDoc()
+      const readerStream = openStream(streamPath)
 
       const receivedChunks: Array<Uint8Array> = []
       const response = await readerStream.stream({ live: false })
@@ -230,13 +243,10 @@ describe(`Yjs + DurableStream Integration`, () => {
       const streamPath = `/yjs/sync-test-${Date.now()}`
 
       // Create the shared stream
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
       // Client A
-      const docA = new Y.Doc()
+      const docA = createDoc()
       const updatesA: Array<Uint8Array> = []
       docA.on(`update`, (update: Uint8Array, origin: unknown) => {
         if (origin !== `remote`) {
@@ -254,11 +264,8 @@ describe(`Yjs + DurableStream Integration`, () => {
       }
 
       // Client B reads from stream
-      const docB = new Y.Doc()
-      const streamB = new DurableStream({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const docB = createDoc()
+      const streamB = openStream(streamPath)
 
       const responseB = await streamB.stream({ live: false })
       const bodyB = await responseB.body()
@@ -272,14 +279,11 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should handle concurrent edits from multiple clients`, async () => {
       const streamPath = `/yjs/concurrent-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
       // Create two docs
-      const doc1 = new Y.Doc()
-      const doc2 = new Y.Doc()
+      const doc1 = createDoc()
+      const doc2 = createDoc()
 
       // Client 1 makes changes
       const text1 = doc1.getText(`content`)
@@ -321,12 +325,9 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should resume reading from a saved offset`, async () => {
       const streamPath = `/yjs/resume-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const writerDoc = new Y.Doc()
+      const writerDoc = createDoc()
       const updates: Array<Uint8Array> = []
 
       writerDoc.on(`update`, (update: Uint8Array) => {
@@ -342,7 +343,7 @@ describe(`Yjs + DurableStream Integration`, () => {
       }
 
       // Reader 1: read and save offset
-      const reader1Doc = new Y.Doc()
+      const reader1Doc = createDoc()
       const response1 = await stream.stream({ live: false })
       const body1 = await response1.body()
       Y.applyUpdate(reader1Doc, body1)
@@ -361,7 +362,7 @@ describe(`Yjs + DurableStream Integration`, () => {
       }
 
       // Reader 2: resume from saved offset
-      const reader2Doc = new Y.Doc()
+      const reader2Doc = createDoc()
       // First, apply what we had before
       Y.applyUpdate(reader2Doc, body1)
 
@@ -387,13 +388,10 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should use state vectors for efficient synchronization`, async () => {
       const streamPath = `/yjs/statevector-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const doc1 = new Y.Doc()
-      const doc2 = new Y.Doc()
+      const doc1 = createDoc()
+      const doc2 = createDoc()
 
       // Doc1 makes changes
       const text1 = doc1.getText(`content`)
@@ -426,12 +424,9 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should sync Y.Map through stream`, async () => {
       const streamPath = `/yjs/map-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const writerDoc = new Y.Doc()
+      const writerDoc = createDoc()
 
       // Use Y.Map
       const map = writerDoc.getMap(`settings`)
@@ -444,7 +439,7 @@ describe(`Yjs + DurableStream Integration`, () => {
       await stream.append(fullState)
 
       // Reader
-      const readerDoc = new Y.Doc()
+      const readerDoc = createDoc()
       const response = await stream.stream({ live: false })
       const body = await response.body()
       Y.applyUpdate(readerDoc, body)
@@ -461,12 +456,9 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should sync Y.Array through stream`, async () => {
       const streamPath = `/yjs/array-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const writerDoc = new Y.Doc()
+      const writerDoc = createDoc()
 
       // Use Y.Array
       const array = writerDoc.getArray(`items`)
@@ -479,7 +471,7 @@ describe(`Yjs + DurableStream Integration`, () => {
       await stream.append(fullState)
 
       // Reader
-      const readerDoc = new Y.Doc()
+      const readerDoc = createDoc()
       const response = await stream.stream({ live: false })
       const body = await response.body()
       Y.applyUpdate(readerDoc, body)
@@ -491,12 +483,9 @@ describe(`Yjs + DurableStream Integration`, () => {
     it(`should sync incremental Y.Map updates using mergeUpdates`, async () => {
       const streamPath = `/yjs/map-incremental-${Date.now()}`
 
-      const stream = await DurableStream.create({
-        url: `${baseUrl}${streamPath}`,
-        contentType: BINARY_CONTENT_TYPE,
-      })
+      const stream = await createStream(streamPath)
 
-      const writerDoc = new Y.Doc()
+      const writerDoc = createDoc()
       const updates: Array<Uint8Array> = []
       writerDoc.on(`update`, (update: Uint8Array) => {
         updates.push(update)
@@ -512,7 +501,7 @@ describe(`Yjs + DurableStream Integration`, () => {
       await stream.append(mergedUpdate)
 
       // Reader
-      const readerDoc = new Y.Doc()
+      const readerDoc = createDoc()
       const response = await stream.stream({ live: false })
       const body = await response.body()
       Y.applyUpdate(readerDoc, body)
