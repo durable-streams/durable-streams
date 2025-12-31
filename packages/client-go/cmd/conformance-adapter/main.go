@@ -77,6 +77,7 @@ type BenchmarkOperation struct {
 	DurationMs     int    `json:"durationMs,omitempty"`
 	MaxConcurrency int    `json:"maxConcurrency,omitempty"`
 	WarmupMs       int    `json:"warmupMs,omitempty"`
+	DrainTimeoutMs int    `json:"drainTimeoutMs,omitempty"`
 }
 
 // Result types sent back to test runner
@@ -981,9 +982,13 @@ func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMet
 	durationMs := op.DurationMs
 	maxConcurrency := op.MaxConcurrency
 	warmupMs := op.WarmupMs
+	drainTimeoutMs := op.DrainTimeoutMs
 
 	if maxConcurrency == 0 {
 		maxConcurrency = 1000
+	}
+	if drainTimeoutMs == 0 {
+		drainTimeoutMs = 10000 // 10 second default
 	}
 
 	periodNs := int64(1_000_000_000 / targetRps)
@@ -1121,8 +1126,20 @@ func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMet
 		seq++
 	}
 
-	// Wait for all in-flight requests to complete
-	inFlight.Wait()
+	// Wait for in-flight requests to complete, but with a timeout
+	// This prevents indefinite blocking when the system is saturated
+	done := make(chan struct{})
+	go func() {
+		inFlight.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All requests completed
+	case <-time.After(time.Duration(drainTimeoutMs) * time.Millisecond):
+		// Timeout - return with partial results
+	}
 
 	// Calculate metrics
 	return calculateOpenLoopMetrics(samples, float64(targetRps), durationMs)
