@@ -222,7 +222,7 @@ class ConnectionManager {
  * Singleton instance of the connection manager.
  * @internal
  */
-export const connectionManager = new ConnectionManager()
+export const connectionManager: ConnectionManager = new ConnectionManager()
 
 /**
  * Check if a URL should use connection pooling.
