@@ -1278,4 +1278,4 @@ export async function runBenchmarks(
   return summary
 }
 
-export { allScenarios, getScenarioById }
+export { allScenarios, getScenarioById, generateMarkdownReport }
