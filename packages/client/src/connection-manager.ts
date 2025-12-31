@@ -46,6 +46,7 @@ type StreamId = object
 class ConnectionManager {
   #streams = new Map<StreamId, StreamState>()
   #rebalanceTimer: ReturnType<typeof setInterval> | null = null
+  #hasWarnedAboutShortPolling = false
 
   /**
    * Register a stream for connection pool management.
@@ -56,6 +57,17 @@ class ConnectionManager {
 
     // New streams get a slot if available, otherwise short-poll
     const hasSlot = this.#countLongPollSlots() < MAX_LONG_POLL_SLOTS
+
+    // Warn once when we first need to use short-polling
+    if (!hasSlot && !this.#hasWarnedAboutShortPolling) {
+      this.#hasWarnedAboutShortPolling = true
+      console.warn(
+        `[Durable Streams] More than ${MAX_LONG_POLL_SLOTS} streams are active over HTTP/1.1, ` +
+          `which limits browsers to ~6 concurrent connections. ` +
+          `Some streams will use short-polling (${SHORT_POLL_INTERVAL_MS}ms intervals) instead of long-polling. ` +
+          `For better performance, use HTTPS which enables HTTP/2 multiplexing.`
+      )
+    }
 
     this.#streams.set(streamId, {
       lastActivity: Date.now(),
@@ -211,6 +223,7 @@ class ConnectionManager {
    */
   reset(): void {
     this.#streams.clear()
+    this.#hasWarnedAboutShortPolling = false
     if (this.#rebalanceTimer) {
       clearInterval(this.#rebalanceTimer)
       this.#rebalanceTimer = null
