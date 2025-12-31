@@ -191,13 +191,15 @@ async function streamInternal<TJson = unknown>(
   const fetchNext = async (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    shortPoll?: boolean
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
     // For subsequent requests in auto mode, use long-poll
-    if (live === `auto` || live === `long-poll`) {
+    // Unless shortPoll is requested (for HTTP/1.1 connection pool overflow)
+    if (!shortPoll && (live === `auto` || live === `long-poll`)) {
       nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
     } else if (live === `sse`) {
       nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
