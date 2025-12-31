@@ -20,6 +20,9 @@ export { stream } from "./stream-api"
 // DurableStream class for read/write operations
 export { DurableStream, type DurableStreamOptions } from "./stream"
 
+// HTTP warning utility
+export { warnIfUsingHttpInBrowser } from "./utils"
+
 // ============================================================================
 // Types
 // ============================================================================
