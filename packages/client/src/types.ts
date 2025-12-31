@@ -158,6 +158,15 @@ export interface StreamOptions {
    * fall back to long-polling mode.
    */
   sseResilience?: SSEResilienceOptions
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
 }
 
 /**
@@ -310,6 +319,15 @@ export interface StreamHandleOptions {
    * @default true
    */
   batching?: boolean
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
 }
 
 /**

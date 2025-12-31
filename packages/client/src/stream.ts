@@ -24,7 +24,12 @@ import {
   createFetchWithConsumedBody,
 } from "./fetch"
 import { stream as streamFn } from "./stream-api"
-import { handleErrorResponse, resolveHeaders, resolveParams } from "./utils"
+import {
+  handleErrorResponse,
+  resolveHeaders,
+  resolveParams,
+  warnIfUsingHttpInBrowser,
+} from "./utils"
 import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
 import type {
@@ -864,4 +869,5 @@ function validateOptions(options: Partial<DurableStreamOptions>): void {
   if (options.signal && !(options.signal instanceof AbortSignal)) {
     throw new InvalidSignalError()
   }
+  warnIfUsingHttpInBrowser(options.url, options.warnOnHttp)
 }

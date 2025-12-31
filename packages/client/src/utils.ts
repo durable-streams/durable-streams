@@ -102,3 +102,45 @@ export async function resolveValue<T>(
   }
   return value
 }
+
+/**
+ * Warn if using HTTP (not HTTPS) URL in a browser environment.
+ * HTTP limits browsers to 6 concurrent connections per host (HTTP/1.1),
+ * which can cause slow streams and app freezes with multiple active streams.
+ */
+export function warnIfUsingHttpInBrowser(
+  url: string | URL,
+  warnOnHttp?: boolean
+): void {
+  // Skip warning if explicitly disabled
+  if (warnOnHttp === false) return
+
+  // Skip warning during tests
+  if (typeof process !== `undefined` && process.env.NODE_ENV === `test`) {
+    return
+  }
+
+  // Only warn in browser environments
+  if (
+    typeof window === `undefined` ||
+    typeof console === `undefined` ||
+    typeof console.warn !== `function`
+  ) {
+    return
+  }
+
+  // Check if URL uses HTTP protocol
+  try {
+    const urlStr = url instanceof URL ? url.toString() : url
+    const parsedUrl = new URL(urlStr)
+    if (parsedUrl.protocol === `http:`) {
+      console.warn(
+        `[DurableStream] Using HTTP (not HTTPS) limits browsers to 6 concurrent connections (HTTP/1.1). ` +
+          `This can cause slow streams and app freezes with multiple active streams. ` +
+          `Use HTTPS for HTTP/2 support. See https://bit.ly/streams-http2 for more information.`
+      )
+    }
+  } catch {
+    // Ignore URL parsing errors
+  }
+}
