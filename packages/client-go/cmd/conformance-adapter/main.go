@@ -991,6 +991,11 @@ func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMet
 		drainTimeoutMs = 10000 // 10 second default
 	}
 
+	// Create a cancellable context for all operations
+	// This lets us abort in-flight requests when drain times out
+	opCtx, cancelOps := context.WithCancel(ctx)
+	defer cancelOps()
+
 	periodNs := int64(1_000_000_000 / targetRps)
 	totalDurationNs := int64(durationMs) * 1_000_000
 	warmupNs := int64(warmupMs) * 1_000_000
@@ -1105,7 +1110,7 @@ func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMet
 			defer func() { <-sem }()
 
 			started := time.Now()
-			err := opFn(ctx)
+			err := opFn(opCtx)
 			completed := time.Now()
 
 			// Skip warmup samples
@@ -1138,7 +1143,8 @@ func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMet
 	case <-done:
 		// All requests completed
 	case <-time.After(time.Duration(drainTimeoutMs) * time.Millisecond):
-		// Timeout - return with partial results
+		// Timeout - cancel all in-flight operations to close their connections
+		cancelOps()
 	}
 
 	// Calculate metrics
