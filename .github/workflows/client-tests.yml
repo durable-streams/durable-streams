@@ -155,18 +155,27 @@ jobs:
         run: |
           cd packages/client-conformance-tests
 
-          echo "# Client Benchmark Results" > benchmark-report.md
-          echo "" >> benchmark-report.md
+          # Convert existing JSON results to markdown (don't run benchmarks again)
+          node -e "
+            const fs = require('fs');
+            const { generateMarkdownReport } = require('./dist/index.cjs');
 
-          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
+            let report = '# Client Benchmark Results\n\n';
 
-          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
+            for (const file of ['benchmark-results-ts.json', 'benchmark-results-go.json', 'benchmark-results-py.json']) {
+              try {
+                if (fs.existsSync(file)) {
+                  const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                  report += generateMarkdownReport(data) + '\n\n';
+                }
+              } catch (e) {
+                console.error('Error processing ' + file + ':', e.message);
+              }
+            }
 
-          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-
-          cat benchmark-report.md
+            fs.writeFileSync('benchmark-report.md', report);
+            console.log(report);
+          "
 
       - name: Comment on PR with benchmark results
         if: always() && github.event_name == 'pull_request'
