@@ -634,6 +634,19 @@ export class StreamResponseImpl<
               return
             }
 
+            // For HTTP/1.1, pause polling entirely when tab is hidden
+            if (this.#usesConnectionPool) {
+              while (!connectionManager.isTabVisible()) {
+                await new Promise((resolve) => setTimeout(resolve, 500))
+                // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                if (this.#abortController.signal.aborted) {
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
+              }
+            }
+
             // Check if we should use short-polling (HTTP/1.1 connection pool overflow)
             const useShortPoll =
               this.#usesConnectionPool &&

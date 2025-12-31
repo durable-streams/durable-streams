@@ -47,6 +47,8 @@ class ConnectionManager {
   #streams = new Map<StreamId, StreamState>()
   #rebalanceTimer: ReturnType<typeof setInterval> | null = null
   #hasWarnedAboutShortPolling = false
+  #isTabVisible = true
+  #visibilityListenerAttached = false
 
   /**
    * Register a stream for connection pool management.
@@ -54,6 +56,9 @@ class ConnectionManager {
    */
   register(streamId: StreamId): void {
     if (this.#streams.has(streamId)) return
+
+    // Attach visibility listener on first registration
+    this.#attachVisibilityListener()
 
     // New streams get a slot if available, otherwise short-poll
     const hasSlot = this.#countLongPollSlots() < MAX_LONG_POLL_SLOTS
@@ -103,6 +108,15 @@ class ConnectionManager {
   }
 
   /**
+   * Check if the browser tab is currently visible.
+   * When the tab is hidden, streams should pause polling to save resources.
+   * @returns true if tab is visible (or if not in a browser environment)
+   */
+  isTabVisible(): boolean {
+    return this.#isTabVisible
+  }
+
+  /**
    * Mark that a stream received data. Updates activity timestamp for
    * priority-based slot allocation.
    */
@@ -111,6 +125,22 @@ class ConnectionManager {
     if (state) {
       state.lastActivity = Date.now()
     }
+  }
+
+  /**
+   * Attach visibility change listener to pause polling when tab is hidden.
+   * Only attaches once, and only in browser environments.
+   */
+  #attachVisibilityListener(): void {
+    if (this.#visibilityListenerAttached) return
+    if (typeof document === `undefined`) return
+
+    this.#visibilityListenerAttached = true
+    this.#isTabVisible = document.visibilityState === `visible`
+
+    document.addEventListener(`visibilitychange`, () => {
+      this.#isTabVisible = document.visibilityState === `visible`
+    })
   }
 
   /**
