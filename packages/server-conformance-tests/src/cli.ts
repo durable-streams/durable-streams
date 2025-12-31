@@ -131,6 +131,25 @@ function getTestRunnerPath(): string {
   return runnerInSrc
 }
 
+// Get the path to the vitest config file bundled with this package
+function getVitestConfigPath(): string {
+  // Config is always in src/ folder (included in package files)
+  // When running from dist/, look in ../src/
+  // When running from src/ (dev), look in same directory
+  const configInSrc = join(__dirname, `vitest.conformance.config.ts`)
+  const configFromDist = join(
+    __dirname,
+    `..`,
+    `src`,
+    `vitest.conformance.config.ts`
+  )
+
+  if (existsSync(configInSrc)) {
+    return configInSrc
+  }
+  return configFromDist
+}
+
 // Find vitest binary in various possible locations
 function findVitestBinary(): string {
   const possiblePaths = [
@@ -156,10 +175,15 @@ function runTests(baseUrl: string): Promise<number> {
   return new Promise((resolvePromise) => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
+    const configPath = getVitestConfigPath()
 
     const args = [
       `run`,
       runnerPath,
+      `--config`,
+      configPath,
+      `--dir`,
+      dirname(runnerPath),
       `--no-coverage`,
       `--reporter=default`,
       `--passWithNoTests=false`,
@@ -203,10 +227,15 @@ async function runWatch(
   const spawnTests = (): ChildProcess => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
+    const configPath = getVitestConfigPath()
 
     const args = [
       `run`,
       runnerPath,
+      `--config`,
+      configPath,
+      `--dir`,
+      dirname(runnerPath),
       `--no-coverage`,
       `--reporter=default`,
       `--passWithNoTests=false`,
