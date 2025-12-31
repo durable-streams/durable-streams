@@ -7,6 +7,11 @@
 
 import { asAsyncIterableReadableStream } from "./asyncIterableReadableStream"
 import {
+  SHORT_POLL_INTERVAL_MS,
+  connectionManager,
+  shouldUseConnectionPool,
+} from "./connection-manager"
+import {
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
@@ -49,11 +54,13 @@ export interface StreamResponseConfig {
   firstResponse: Response
   /** Abort controller for the session */
   abortController: AbortController
-  /** Function to fetch the next chunk (for long-poll) */
+  /** Function to fetch the next chunk (for long-poll or short-poll) */
   fetchNext: (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    /** If true, make a quick request without ?live=long-poll */
+    shortPoll?: boolean
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -106,6 +113,13 @@ export class StreamResponseImpl<
   #consecutiveShortSSEConnections = 0
   #sseFallbackToLongPoll = false
 
+  // --- Connection Pool State ---
+  // HTTP/1.1 limits browsers to ~6 connections per domain. When many streams
+  // are long-polling, this can cause connection starvation. For http:// URLs,
+  // we use a connection manager to limit concurrent long-polls and fall back
+  // to short-polling for overflow streams.
+  #usesConnectionPool: boolean
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -148,6 +162,13 @@ export class StreamResponseImpl<
       this.#closedReject = reject
     })
 
+    // Register with connection manager for http:// URLs (HTTP/1.1)
+    // This helps prevent connection starvation when many streams are active
+    this.#usesConnectionPool = shouldUseConnectionPool(config.url)
+    if (this.#usesConnectionPool) {
+      connectionManager.register(this)
+    }
+
     // Create the core response stream
     this.#responseStream = this.#createResponseStream(config.firstResponse)
   }
@@ -189,6 +210,9 @@ export class StreamResponseImpl<
   }
 
   #markClosed(): void {
+    if (this.#usesConnectionPool) {
+      connectionManager.unregister(this)
+    }
     this.#closedResolve()
   }
 
@@ -610,13 +634,52 @@ export class StreamResponseImpl<
               return
             }
 
+            // For HTTP/1.1, pause polling entirely when tab is hidden
+            if (this.#usesConnectionPool) {
+              while (!connectionManager.isTabVisible()) {
+                await new Promise((resolve) => setTimeout(resolve, 500))
+                // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+                if (this.#abortController.signal.aborted) {
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
+              }
+            }
+
+            // Check if we should use short-polling (HTTP/1.1 connection pool overflow)
+            const useShortPoll =
+              this.#usesConnectionPool &&
+              !connectionManager.shouldLongPoll(this)
+
+            // For short-polling, wait before making the request
+            if (useShortPoll) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, SHORT_POLL_INTERVAL_MS)
+              )
+              // Check abort again after delay - signal can change during await
+              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             const response = await this.#fetchNext(
               this.offset,
               this.cursor,
-              this.#abortController.signal
+              this.#abortController.signal,
+              useShortPoll
             )
 
             this.#updateStateFromResponse(response)
+
+            // Mark activity for connection pool prioritization
+            if (this.#usesConnectionPool) {
+              connectionManager.markActivity(this)
+            }
+
             controller.enqueue(response)
             // Let the next pull() decide whether to close based on upToDate
             return
