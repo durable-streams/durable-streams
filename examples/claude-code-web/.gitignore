@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build output
+.output/
+.vinxi/
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test coverage
+coverage/
+
+# TypeScript
+*.tsbuildinfo

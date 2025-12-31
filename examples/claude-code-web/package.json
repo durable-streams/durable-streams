@@ -1,0 +1,33 @@
+{
+  "name": "@durable-streams/example-claude-code-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vinxi dev",
+    "build": "vinxi build",
+    "start": "vinxi start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:^",
+    "@tanstack/react-router": "^1.139.14",
+    "@tanstack/start": "^1.139.14",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/addon-web-links": "^0.11.0",
+    "clsx": "^2.1.1",
+    "nanoid": "^5.1.5",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "vinxi": "^0.6.3",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4",
+    "vite-tsconfig-paths": "^5.1.4"
+  }
+}

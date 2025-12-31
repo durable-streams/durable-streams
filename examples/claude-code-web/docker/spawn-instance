@@ -1,0 +1,134 @@
+#!/bin/bash
+# spawn-instance - Spawn a Claude Code sub-instance for parallel task execution
+#
+# Usage:
+#   spawn-instance --task "Brief task description" --context "Detailed context"
+#
+# Or with heredoc for longer context:
+#   spawn-instance --task "Implement feature X" <<EOF
+#   Context about the feature:
+#   - Requirement 1
+#   - Requirement 2
+#   EOF
+
+set -e
+
+TASK=""
+CONTEXT=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --task)
+      TASK="$2"
+      shift 2
+      ;;
+    --context)
+      CONTEXT="$2"
+      shift 2
+      ;;
+    --help|-h)
+      echo "Usage: spawn-instance --task <description> [--context <context>]"
+      echo ""
+      echo "Spawn a Claude Code sub-instance for parallel task execution."
+      echo "Each sub-instance works on its own branch and operates independently."
+      echo ""
+      echo "Options:"
+      echo "  --task     Brief description of the task (required)"
+      echo "  --context  Additional context for the task (optional, can also be piped via stdin)"
+      echo ""
+      echo "Examples:"
+      echo "  spawn-instance --task 'Fix authentication bug' --context 'JWT validation failing'"
+      echo ""
+      echo "  spawn-instance --task 'Implement dark mode' <<EOF"
+      echo "  Context about the feature..."
+      echo "  EOF"
+      exit 0
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+# Read context from stdin if not provided and stdin is not a terminal
+if [[ -z "$CONTEXT" ]] && [[ ! -t 0 ]]; then
+  CONTEXT=$(cat)
+fi
+
+# Validate required arguments
+if [[ -z "$TASK" ]]; then
+  echo "Error: --task is required" >&2
+  echo "Use --help for usage information" >&2
+  exit 1
+fi
+
+# Validate environment
+if [[ -z "$CLAUDE_WEB_API_URL" ]]; then
+  echo "Error: CLAUDE_WEB_API_URL environment variable is not set" >&2
+  exit 1
+fi
+
+if [[ -z "$CLAUDE_WEB_API_TOKEN" ]]; then
+  echo "Error: CLAUDE_WEB_API_TOKEN environment variable is not set" >&2
+  exit 1
+fi
+
+if [[ -z "$SESSION_ID" ]]; then
+  echo "Error: SESSION_ID environment variable is not set" >&2
+  exit 1
+fi
+
+if [[ -z "$REPO_FULL_NAME" ]]; then
+  echo "Error: REPO_FULL_NAME environment variable is not set" >&2
+  exit 1
+fi
+
+# Generate unique branch name
+BRANCH_PREFIX="claude-code"
+BRANCH_SUFFIX=$(head -c 4 /dev/urandom | xxd -p)
+BRANCH="${BRANCH_PREFIX}/${BRANCH_SUFFIX}"
+
+# Escape JSON strings properly
+escape_json() {
+  local str="$1"
+  # Escape backslashes, quotes, and newlines for JSON
+  str="${str//\\/\\\\}"
+  str="${str//\"/\\\"}"
+  str="${str//$'\n'/\\n}"
+  str="${str//$'\r'/\\r}"
+  str="${str//$'\t'/\\t}"
+  echo "$str"
+}
+
+TASK_ESCAPED=$(escape_json "$TASK")
+CONTEXT_ESCAPED=$(escape_json "$CONTEXT")
+
+# Call API to spawn new instance
+response=$(curl -s -w "\n%{http_code}" -X POST "${CLAUDE_WEB_API_URL}/api/sessions/${SESSION_ID}/spawn" \
+  -H "Authorization: Bearer ${CLAUDE_WEB_API_TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"task\": \"${TASK_ESCAPED}\",
+    \"context\": \"${CONTEXT_ESCAPED}\",
+    \"branch\": \"${BRANCH}\",
+    \"parentSessionId\": \"${SESSION_ID}\",
+    \"repo\": \"${REPO_FULL_NAME}\"
+  }")
+
+# Parse response
+http_code=$(echo "$response" | tail -n1)
+body=$(echo "$response" | sed '$d')
+
+if [[ "$http_code" -ge 200 ]] && [[ "$http_code" -lt 300 ]]; then
+  session_id=$(echo "$body" | jq -r '.sessionId // .session_id // empty')
+  if [[ -n "$session_id" ]]; then
+    echo "Spawned sub-instance on branch: ${BRANCH}"
+    echo "Session ID: ${session_id}"
+  else
+    echo "Spawned sub-instance on branch: ${BRANCH}"
+  fi
+else
+  echo "Error spawning sub-instance: ${body}" >&2
+  exit 1
+fi
