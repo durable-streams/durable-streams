@@ -273,6 +273,138 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
+  // Multi-Stream Isolation
+  // ============================================================================
+
+  describe(`Multi-Stream Isolation`, () => {
+    test(`concurrent operations on different streams are isolated`, async () => {
+      const streamA = `/v1/stream/isolation-a-${Date.now()}`
+      const streamB = `/v1/stream/isolation-b-${Date.now()}`
+
+      // Create both streams concurrently
+      await Promise.all([
+        fetch(`${getBaseUrl()}${streamA}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        }),
+        fetch(`${getBaseUrl()}${streamB}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        }),
+      ])
+
+      // Concurrently append distinct data to each stream
+      await Promise.all([
+        fetch(`${getBaseUrl()}${streamA}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `STREAM_A_ONLY_DATA`,
+        }),
+        fetch(`${getBaseUrl()}${streamB}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `STREAM_B_ONLY_DATA`,
+        }),
+      ])
+
+      // Read both streams concurrently
+      const [responseA, responseB] = await Promise.all([
+        fetch(`${getBaseUrl()}${streamA}`),
+        fetch(`${getBaseUrl()}${streamB}`),
+      ])
+
+      const textA = await responseA.text()
+      const textB = await responseB.text()
+
+      // Stream A should only have its data
+      expect(textA).toBe(`STREAM_A_ONLY_DATA`)
+      expect(textA).not.toContain(`STREAM_B`)
+
+      // Stream B should only have its data
+      expect(textB).toBe(`STREAM_B_ONLY_DATA`)
+      expect(textB).not.toContain(`STREAM_A`)
+    })
+
+    test(`deleting one stream does not affect another`, async () => {
+      const streamA = `/v1/stream/delete-isolation-a-${Date.now()}`
+      const streamB = `/v1/stream/delete-isolation-b-${Date.now()}`
+
+      // Create both streams with data
+      await fetch(`${getBaseUrl()}${streamA}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `stream-a-data`,
+      })
+      await fetch(`${getBaseUrl()}${streamB}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `stream-b-survives`,
+      })
+
+      // Delete stream A
+      const deleteResponse = await fetch(`${getBaseUrl()}${streamA}`, {
+        method: `DELETE`,
+      })
+      expect(deleteResponse.status).toBe(204)
+
+      // Stream A should be gone
+      const readA = await fetch(`${getBaseUrl()}${streamA}`)
+      expect(readA.status).toBe(404)
+
+      // Stream B should be completely unaffected
+      const readB = await fetch(`${getBaseUrl()}${streamB}`)
+      expect(readB.status).toBe(200)
+      const textB = await readB.text()
+      expect(textB).toBe(`stream-b-survives`)
+    })
+
+    test(`concurrent appends to multiple streams maintain isolation`, async () => {
+      const streams = Array.from(
+        { length: 5 },
+        (_, i) => `/v1/stream/multi-isolation-${i}-${Date.now()}`
+      )
+
+      // Create all streams
+      await Promise.all(
+        streams.map((path) =>
+          fetch(`${getBaseUrl()}${path}`, {
+            method: `PUT`,
+            headers: { "Content-Type": `text/plain` },
+          })
+        )
+      )
+
+      // Concurrently append unique data to each stream
+      await Promise.all(
+        streams.map((path, i) =>
+          fetch(`${getBaseUrl()}${path}`, {
+            method: `POST`,
+            headers: { "Content-Type": `text/plain` },
+            body: `unique-data-for-stream-${i}`,
+          })
+        )
+      )
+
+      // Read all streams concurrently and verify isolation
+      const responses = await Promise.all(
+        streams.map((path) => fetch(`${getBaseUrl()}${path}`))
+      )
+
+      for (let i = 0; i < streams.length; i++) {
+        const text = await responses[i]!.text()
+        // Should contain only its own data
+        expect(text).toBe(`unique-data-for-stream-${i}`)
+        // Should not contain any other stream's data
+        for (let j = 0; j < streams.length; j++) {
+          if (i !== j) {
+            expect(text).not.toContain(`unique-data-for-stream-${j}`)
+          }
+        }
+      }
+    })
+  })
+
+  // ============================================================================
   // Append Operations
   // ============================================================================
 
@@ -1374,6 +1506,49 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Verify offsets are unique and strictly increasing (lexicographically)
       for (let i = 1; i < offsets.length; i++) {
         expect(offsets[i]! > offsets[i - 1]!).toBe(true)
+      }
+    })
+
+    test(`should generate unique offsets under concurrent appends`, async () => {
+      const streamPath = `/v1/stream/concurrent-offset-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Fire 10 concurrent append requests
+      const appendPromises = Array.from({ length: 10 }, (_, i) =>
+        fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `concurrent-${i}`,
+        })
+      )
+
+      const responses = await Promise.all(appendPromises)
+
+      // Collect all offsets
+      const offsets = responses.map((r) =>
+        r.headers.get(STREAM_OFFSET_HEADER)
+      )
+
+      // All should succeed
+      responses.forEach((r) => expect(r.status).toBe(200))
+
+      // All offsets should be defined
+      offsets.forEach((o) => expect(o).toBeDefined())
+
+      // All offsets should be unique
+      const uniqueOffsets = new Set(offsets)
+      expect(uniqueOffsets.size).toBe(10)
+
+      // Verify all data is readable (no lost writes)
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+      const text = await readResponse.text()
+      for (let i = 0; i < 10; i++) {
+        expect(text).toContain(`concurrent-${i}`)
       }
     })
 
@@ -3649,6 +3824,167 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
             }
           ),
           { numRuns: 30 }
+        )
+      })
+    })
+
+    describe(`Concurrent Access Properties`, () => {
+      test(`readers see consistent snapshots during concurrent writes`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            // Generate data chunks to append
+            fc.array(fc.string({ minLength: 1, maxLength: 50 }), {
+              minLength: 3,
+              maxLength: 8,
+            }),
+            async (chunks) => {
+              const streamPath = `/v1/stream/fc-concurrent-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+              // Create stream with first chunk
+              await fetch(`${getBaseUrl()}${streamPath}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `text/plain` },
+                body: chunks[0],
+              })
+
+              // Launch concurrent writers and readers
+              const operations = chunks.slice(1).flatMap((chunk) => [
+                // Writer
+                fetch(`${getBaseUrl()}${streamPath}`, {
+                  method: `POST`,
+                  headers: { "Content-Type": `text/plain` },
+                  body: chunk,
+                }),
+                // Concurrent reader
+                fetch(`${getBaseUrl()}${streamPath}`, {
+                  method: `GET`,
+                }),
+              ])
+
+              const results = await Promise.all(operations)
+
+              // All operations should succeed
+              results.forEach((r) => {
+                expect([200, 204]).toContain(r.status)
+              })
+
+              // Get final stream state
+              const finalRead = await fetch(`${getBaseUrl()}${streamPath}`)
+              const finalText = await finalRead.text()
+
+              // Readers should see consistent data:
+              // Each read result should be a prefix of the final state
+              // (writes are atomic - never see partial/torn data)
+              for (let i = 1; i < results.length; i += 2) {
+                const readerResponse = results[i]!
+                const readText = await readerResponse.clone().text()
+                // Reader's view should be a prefix of final state
+                expect(finalText.startsWith(readText)).toBe(true)
+              }
+
+              return true
+            }
+          ),
+          { numRuns: 15 }
+        )
+      })
+
+      test(`concurrent appends all succeed with unique offsets`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            // Generate number of concurrent appends
+            fc.integer({ min: 5, max: 15 }),
+            async (concurrency) => {
+              const streamPath = `/v1/stream/fc-concurrent-append-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+              // Create stream
+              await fetch(`${getBaseUrl()}${streamPath}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `text/plain` },
+              })
+
+              // Launch concurrent appends
+              const appendPromises = Array.from({ length: concurrency }, (_, i) =>
+                fetch(`${getBaseUrl()}${streamPath}`, {
+                  method: `POST`,
+                  headers: { "Content-Type": `text/plain` },
+                  body: `data-${i}`,
+                })
+              )
+
+              const responses = await Promise.all(appendPromises)
+
+              // All should succeed
+              responses.forEach((r) => expect(r.status).toBe(200))
+
+              // Collect offsets
+              const offsets = responses.map((r) =>
+                r.headers.get(STREAM_OFFSET_HEADER)
+              )
+
+              // All offsets should be defined
+              offsets.forEach((o) => expect(o).toBeDefined())
+
+              // All offsets should be unique
+              const uniqueOffsets = new Set(offsets)
+              expect(uniqueOffsets.size).toBe(concurrency)
+
+              // All data should be readable
+              const finalRead = await fetch(`${getBaseUrl()}${streamPath}`)
+              const finalText = await finalRead.text()
+              for (let i = 0; i < concurrency; i++) {
+                expect(finalText).toContain(`data-${i}`)
+              }
+
+              return true
+            }
+          ),
+          { numRuns: 10 }
+        )
+      })
+
+      test(`concurrent reads return consistent data`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.uint8Array({ minLength: 10, maxLength: 200 }),
+            fc.integer({ min: 5, max: 15 }),
+            async (data, readerCount) => {
+              const streamPath = `/v1/stream/fc-concurrent-read-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+              // Create stream with data
+              await fetch(`${getBaseUrl()}${streamPath}`, {
+                method: `PUT`,
+                headers: { "Content-Type": `application/octet-stream` },
+                body: data,
+              })
+
+              // Launch many concurrent reads
+              const readPromises = Array.from({ length: readerCount }, () =>
+                fetch(`${getBaseUrl()}${streamPath}`)
+              )
+
+              const responses = await Promise.all(readPromises)
+
+              // All should succeed
+              responses.forEach((r) => expect(r.status).toBe(200))
+
+              // All should return identical data
+              const firstBuffer = await responses[0]!.arrayBuffer()
+              const firstData = new Uint8Array(firstBuffer)
+
+              for (let i = 1; i < responses.length; i++) {
+                const buffer = await responses[i]!.arrayBuffer()
+                const readData = new Uint8Array(buffer)
+                expect(readData.length).toBe(firstData.length)
+                for (let j = 0; j < firstData.length; j++) {
+                  expect(readData[j]).toBe(firstData[j])
+                }
+              }
+
+              return true
+            }
+          ),
+          { numRuns: 15 }
         )
       })
     })
