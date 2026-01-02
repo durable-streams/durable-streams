@@ -1533,9 +1533,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       responses.forEach((r) => expect(r.status).toBe(200))
 
       // Collect all offsets
-      const offsets = responses.map((r) =>
-        r.headers.get(STREAM_OFFSET_HEADER)
-      )
+      const offsets = responses.map((r) => r.headers.get(STREAM_OFFSET_HEADER))
 
       // All offsets should be defined
       offsets.forEach((o) => expect(o).toBeDefined())
@@ -3904,12 +3902,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               })
 
               // Launch concurrent appends
-              const appendPromises = Array.from({ length: concurrency }, (_, i) =>
-                fetch(`${getBaseUrl()}${streamPath}`, {
-                  method: `POST`,
-                  headers: { "Content-Type": `text/plain` },
-                  body: `data-${i}`,
-                })
+              const appendPromises = Array.from(
+                { length: concurrency },
+                (_, i) =>
+                  fetch(`${getBaseUrl()}${streamPath}`, {
+                    method: `POST`,
+                    headers: { "Content-Type": `text/plain` },
+                    body: `data-${i}`,
+                  })
               )
 
               const responses = await Promise.all(appendPromises)

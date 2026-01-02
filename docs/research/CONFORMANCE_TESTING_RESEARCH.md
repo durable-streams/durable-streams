@@ -4,13 +4,13 @@ This document summarizes research on [Jepsen](https://jepsen.io/) and [Antithesi
 
 ## Executive Summary
 
-| Approach | Jepsen | Antithesis |
-|----------|--------|------------|
-| **Focus** | Distributed systems correctness under failures | Autonomous bug discovery with deterministic replay |
-| **Key Technique** | Property-based testing + fault injection | Deterministic simulation testing (DST) |
-| **Verification** | Linearizability/serializability checking | Always/sometimes property assertions |
-| **Reproducibility** | History-based analysis | Perfect deterministic replay |
-| **Fault Types** | Network partitions, clock skew, process crashes | Node throttling, hangs, thread pauses |
+| Approach            | Jepsen                                          | Antithesis                                         |
+| ------------------- | ----------------------------------------------- | -------------------------------------------------- |
+| **Focus**           | Distributed systems correctness under failures  | Autonomous bug discovery with deterministic replay |
+| **Key Technique**   | Property-based testing + fault injection        | Deterministic simulation testing (DST)             |
+| **Verification**    | Linearizability/serializability checking        | Always/sometimes property assertions               |
+| **Reproducibility** | History-based analysis                          | Perfect deterministic replay                       |
+| **Fault Types**     | Network partitions, clock skew, process crashes | Node throttling, hangs, thread pauses              |
 
 ---
 
@@ -19,6 +19,7 @@ This document summarizes research on [Jepsen](https://jepsen.io/) and [Antithesi
 ### Overview
 
 Jepsen is a Clojure-based framework that tests distributed systems by:
+
 1. Deploying a cluster (typically 5 nodes)
 2. Running concurrent operations via "generators"
 3. Injecting faults via a "nemesis" process
@@ -27,6 +28,7 @@ Jepsen is a Clojure-based framework that tests distributed systems by:
 ### Key Components
 
 #### 1. Generators
+
 Produce operations for concurrent clients to execute. Control both normal operations and fault-injection timing.
 
 ```clojure
@@ -39,44 +41,48 @@ Produce operations for concurrent clients to execute. Control both normal operat
 **Relevance to Durable Streams:** Our current test YAML files are static sequences. We could add randomized operation generators using fast-check.
 
 #### 2. Nemesis (Fault Injection)
+
 A special client that introduces failures across the cluster:
 
-| Fault Type | Description | DS Applicability |
-|------------|-------------|------------------|
+| Fault Type         | Description                          | DS Applicability               |
+| ------------------ | ------------------------------------ | ------------------------------ |
 | `partition-halves` | Network split into majority/minority | Test SSE during network issues |
-| `partition-one` | Isolate single node | Test client reconnection |
-| `clock-skew` | Randomized clock drift | Test TTL/expiry behavior |
-| `kill` | Kill random processes | Test crash recovery |
-| `pause` | SIGSTOP/SIGCONT processes | Test timeout handling |
-| `packet-loss` | Random packet drops | Test retry resilience |
-| `file-corruption` | Corrupt storage files | Test recovery on restart |
+| `partition-one`    | Isolate single node                  | Test client reconnection       |
+| `clock-skew`       | Randomized clock drift               | Test TTL/expiry behavior       |
+| `kill`             | Kill random processes                | Test crash recovery            |
+| `pause`            | SIGSTOP/SIGCONT processes            | Test timeout handling          |
+| `packet-loss`      | Random packet drops                  | Test retry resilience          |
+| `file-corruption`  | Corrupt storage files                | Test recovery on restart       |
 
 #### 3. Checkers
 
 **Knossos** - Linearizability verification for single-object operations:
+
 - Verifies that concurrent operations appear to take effect instantaneously
 - Works on register-based models (read/write/CAS)
 - Limited to ~hundreds of operations due to NP-complete complexity
 
 **Elle** - Transactional consistency checker:
+
 - Handles hundreds of thousands of operations in linear time
 - Detects isolation anomalies via dependency graph cycle detection
 - Provides minimal counterexamples for violations
 
 **Relevance to Durable Streams:** We should verify:
+
 - Offset monotonicity (never go backwards)
 - Append linearizability (writes appear atomic)
 - Read-your-writes consistency
 
 #### 4. Workload Patterns
 
-| Workload | What It Tests | DS Equivalent |
-|----------|---------------|---------------|
-| `register` | Single-key read/write linearizability | Single stream append/read |
-| `set` | Set membership (no duplicates, no loss) | All appended messages readable |
-| `counter` | Increment/decrement correctness | Stream offset progression |
-| `list-append` | Ordered list append correctness | **Direct match** - stream append ordering |
-| `bank` | Transfer consistency (no money created/lost) | N/A |
+| Workload      | What It Tests                                | DS Equivalent                             |
+| ------------- | -------------------------------------------- | ----------------------------------------- |
+| `register`    | Single-key read/write linearizability        | Single stream append/read                 |
+| `set`         | Set membership (no duplicates, no loss)      | All appended messages readable            |
+| `counter`     | Increment/decrement correctness              | Stream offset progression                 |
+| `list-append` | Ordered list append correctness              | **Direct match** - stream append ordering |
+| `bank`        | Transfer consistency (no money created/lost) | N/A                                       |
 
 ### Common Bugs Found by Jepsen
 
@@ -91,6 +97,7 @@ From [Jepsen analyses](https://jepsen.io/analyses), common distributed systems b
 7. **Lost updates** - Concurrent writes losing one operation
 
 **For Durable Streams, focus on:**
+
 - Stale reads (client reads old offset after append acknowledged)
 - Lost writes (append acknowledged but data not persisted)
 - Ordering violations (messages appear out of order)
@@ -115,6 +122,7 @@ Antithesis uses Deterministic Simulation Testing (DST) with a custom hypervisor 
 Antithesis distinguishes two property types:
 
 **Always Properties** - Invariants that must never be violated:
+
 ```typescript
 // Pseudo-code for Durable Streams
 always("offset monotonicity", () => {
@@ -122,7 +130,7 @@ always("offset monotonicity", () => {
 })
 
 always("no data loss", () => {
-  return appendedData.every(d => canReadData(d))
+  return appendedData.every((d) => canReadData(d))
 })
 
 always("append atomicity", () => {
@@ -132,6 +140,7 @@ always("append atomicity", () => {
 ```
 
 **Sometimes Properties** - Reachability assertions that should trigger at least once:
+
 ```typescript
 // Ensures test coverage reaches important states
 sometimes("reader catches up during write", () => {
@@ -148,7 +157,8 @@ sometimes("retry logic exercised", () => {
 ```
 
 **Why Sometimes Properties Matter:**
-- Better than code coverage (covers *situations*, not just *locations*)
+
+- Better than code coverage (covers _situations_, not just _locations_)
 - Detects dead code paths
 - Validates test effectiveness
 - Catches unreachable states (e.g., checkout flow broken)
@@ -157,17 +167,18 @@ sometimes("retry logic exercised", () => {
 
 Antithesis supports:
 
-| Fault | Description | DS Application |
-|-------|-------------|----------------|
-| Node throttle | Limit CPU resources | Slow server response |
-| Node hang | Completely unresponsive | Test client timeouts |
-| Thread pause | Individual thread delays | Race condition detection |
-| Network partition | Node isolation | SSE reconnection |
-| Disk I/O delays | Storage latency | Append timeout handling |
+| Fault             | Description              | DS Application           |
+| ----------------- | ------------------------ | ------------------------ |
+| Node throttle     | Limit CPU resources      | Slow server response     |
+| Node hang         | Completely unresponsive  | Test client timeouts     |
+| Thread pause      | Individual thread delays | Race condition detection |
+| Network partition | Node isolation           | SSE reconnection         |
+| Disk I/O delays   | Storage latency          | Append timeout handling  |
 
 #### 3. Deterministic Replay
 
 Unlike traditional testing where bugs may not reproduce:
+
 - Every execution is recorded with a seed
 - Any state can be rewound and replayed
 - Debugging can step backwards in time
@@ -179,7 +190,7 @@ From [Antithesis documentation](https://antithesis.com/docs/test_templates/test_
 
 1. **Distinguish always vs eventually properties**
    - Don't fail tests for temporary violations during fault injection
-   - After faults clear, system should *eventually* recover
+   - After faults clear, system should _eventually_ recover
 
 2. **Validate throughout, not just at end**
    - Check invariants continuously during test execution
@@ -205,10 +216,19 @@ Expand the existing fast-check usage to cover more scenarios:
 import fc from "fast-check"
 
 const streamOperationArb = fc.oneof(
-  fc.record({ type: fc.constant("append"), data: fc.uint8Array({ maxLength: 10000 }) }),
+  fc.record({
+    type: fc.constant("append"),
+    data: fc.uint8Array({ maxLength: 10000 }),
+  }),
   fc.record({ type: fc.constant("read"), offset: fc.option(fc.string()) }),
-  fc.record({ type: fc.constant("read-sse"), maxChunks: fc.integer({ min: 1, max: 100 }) }),
-  fc.record({ type: fc.constant("read-longpoll"), timeout: fc.integer({ min: 100, max: 5000 }) })
+  fc.record({
+    type: fc.constant("read-sse"),
+    maxChunks: fc.integer({ min: 1, max: 100 }),
+  }),
+  fc.record({
+    type: fc.constant("read-longpoll"),
+    timeout: fc.integer({ min: 100, max: 5000 }),
+  })
 )
 
 test("stream operations maintain invariants", async () => {
@@ -288,22 +308,22 @@ Define Jepsen-style checkers for Durable Streams properties:
 
 interface Operation {
   type: "append" | "read"
-  invocation: number  // timestamp
-  completion: number  // timestamp
+  invocation: number // timestamp
+  completion: number // timestamp
   input: any
   output: any
 }
 
 function checkOffsetMonotonicity(history: Operation[]): CheckResult {
-  const appendOps = history.filter(op => op.type === "append")
-  const offsets = appendOps.map(op => op.output.offset)
+  const appendOps = history.filter((op) => op.type === "append")
+  const offsets = appendOps.map((op) => op.output.offset)
 
   for (let i = 1; i < offsets.length; i++) {
-    if (compareOffsets(offsets[i], offsets[i-1]) <= 0) {
+    if (compareOffsets(offsets[i], offsets[i - 1]) <= 0) {
       return {
         valid: false,
-        violation: `Offset ${offsets[i]} not greater than ${offsets[i-1]}`,
-        operations: [appendOps[i-1], appendOps[i]]
+        violation: `Offset ${offsets[i]} not greater than ${offsets[i - 1]}`,
+        operations: [appendOps[i - 1], appendOps[i]],
       }
     }
   }
@@ -312,10 +332,9 @@ function checkOffsetMonotonicity(history: Operation[]): CheckResult {
 
 function checkReadYourWrites(history: Operation[]): CheckResult {
   // For each append, verify subsequent reads include that data
-  for (const append of history.filter(op => op.type === "append")) {
-    const laterReads = history.filter(op =>
-      op.type === "read" &&
-      op.invocation > append.completion
+  for (const append of history.filter((op) => op.type === "append")) {
+    const laterReads = history.filter(
+      (op) => op.type === "read" && op.invocation > append.completion
     )
 
     for (const read of laterReads) {
@@ -323,7 +342,7 @@ function checkReadYourWrites(history: Operation[]): CheckResult {
         return {
           valid: false,
           violation: `Read at ${read.invocation} missing append from ${append.completion}`,
-          operations: [append, read]
+          operations: [append, read],
         }
       }
     }
@@ -342,14 +361,17 @@ Create a "chaotic" server wrapper for client tests:
 // packages/client-conformance-tests/src/chaotic-server.ts
 
 interface FaultConfig {
-  errorRate: number        // 0-1, chance of returning 500/503
-  latencyMs: number        // Added delay
-  partitionChance: number  // Chance of timing out
-  clockSkewMs: number      // Offset for TTL testing
+  errorRate: number // 0-1, chance of returning 500/503
+  latencyMs: number // Added delay
+  partitionChance: number // Chance of timing out
+  clockSkewMs: number // Offset for TTL testing
 }
 
 class ChaoticServer {
-  constructor(private realServer: Server, private faults: FaultConfig) {}
+  constructor(
+    private realServer: Server,
+    private faults: FaultConfig
+  ) {}
 
   async handleRequest(req: Request): Promise<Response> {
     // Inject partition (timeout)
@@ -368,7 +390,7 @@ class ChaoticServer {
       const errorCode = Math.random() < 0.5 ? 500 : 503
       return new Response(null, {
         status: errorCode,
-        headers: { "Retry-After": "1" }
+        headers: { "Retry-After": "1" },
       })
     }
 
@@ -485,7 +507,7 @@ interface HistoryEntry {
   id: string
   type: "invoke" | "complete" | "fail"
   operation: string
-  process: number  // client ID
+  process: number // client ID
   timestamp: number
   value?: any
 }
@@ -496,23 +518,35 @@ class HistoryRecorder {
   invoke(process: number, operation: string, value?: any): string {
     const id = crypto.randomUUID()
     this.entries.push({
-      id, type: "invoke", operation, process,
-      timestamp: Date.now(), value
+      id,
+      type: "invoke",
+      operation,
+      process,
+      timestamp: Date.now(),
+      value,
     })
     return id
   }
 
   complete(id: string, value?: any) {
     this.entries.push({
-      id, type: "complete", operation: "",
-      process: 0, timestamp: Date.now(), value
+      id,
+      type: "complete",
+      operation: "",
+      process: 0,
+      timestamp: Date.now(),
+      value,
     })
   }
 
   fail(id: string, error: Error) {
     this.entries.push({
-      id, type: "fail", operation: "",
-      process: 0, timestamp: Date.now(), value: error.message
+      id,
+      type: "fail",
+      operation: "",
+      process: 0,
+      timestamp: Date.now(),
+      value: error.message,
     })
   }
 
@@ -521,7 +555,7 @@ class HistoryRecorder {
       linearizable: checkLinearizability(this.entries),
       monotonic: checkOffsetMonotonicity(this.entries),
       readYourWrites: checkReadYourWrites(this.entries),
-      timeline: this.entries
+      timeline: this.entries,
     }
   }
 
@@ -564,7 +598,7 @@ class DeterministicRandom {
 }
 
 class DeterministicScheduler {
-  private pending: Array<{ time: number, fn: () => void }> = []
+  private pending: Array<{ time: number; fn: () => void }> = []
 
   schedule(delay: number, fn: () => void) {
     this.pending.push({ time: this.clock.now() + delay, fn })
@@ -588,11 +622,14 @@ Define a reference model and verify implementation matches:
 // packages/shared/src/model/stream-model.ts
 
 class StreamModel {
-  private streams: Map<string, {
-    chunks: Array<{ offset: string, data: Uint8Array }>
-    contentType: string
-    nextOffset: number
-  }> = new Map()
+  private streams: Map<
+    string,
+    {
+      chunks: Array<{ offset: string; data: Uint8Array }>
+      contentType: string
+      nextOffset: number
+    }
+  > = new Map()
 
   create(path: string, contentType: string): boolean {
     if (this.streams.has(path)) return false
@@ -614,10 +651,10 @@ class StreamModel {
     const stream = this.streams.get(path)
     if (!stream) return null
 
-    const startIdx = stream.chunks.findIndex(c => c.offset >= fromOffset)
+    const startIdx = stream.chunks.findIndex((c) => c.offset >= fromOffset)
     if (startIdx === -1) return []
 
-    return stream.chunks.slice(startIdx).map(c => c.data)
+    return stream.chunks.slice(startIdx).map((c) => c.data)
   }
 }
 
@@ -663,7 +700,7 @@ interface JepsenReport {
   checks: {
     name: string
     valid: boolean
-    errors: Array<{ description: string, operations: Operation[] }>
+    errors: Array<{ description: string; operations: Operation[] }>
   }[]
 
   // Timing statistics
@@ -686,7 +723,10 @@ interface JepsenReport {
   }
 }
 
-function generateReport(history: HistoryEntry[], config: TestConfig): JepsenReport {
+function generateReport(
+  history: HistoryEntry[],
+  config: TestConfig
+): JepsenReport {
   return {
     name: config.name,
     startTime: new Date(history[0].timestamp),
@@ -694,26 +734,29 @@ function generateReport(history: HistoryEntry[], config: TestConfig): JepsenRepo
 
     nemesis: config.nemesis,
     concurrency: config.concurrency,
-    operationCount: history.filter(h => h.type === "invoke").length,
+    operationCount: history.filter((h) => h.type === "invoke").length,
 
-    valid: runAllCheckers(history).every(c => c.valid),
+    valid: runAllCheckers(history).every((c) => c.valid),
 
     checks: runAllCheckers(history),
 
     latency: calculateLatencyStats(history),
 
-    faultsInjected: history.filter(h => h.operation.startsWith("nemesis")).length,
+    faultsInjected: history.filter((h) => h.operation.startsWith("nemesis"))
+      .length,
     faultTypes: groupBy(
-      history.filter(h => h.operation.startsWith("nemesis")),
-      h => h.operation
+      history.filter((h) => h.operation.startsWith("nemesis")),
+      (h) => h.operation
     ),
 
     operations: {
-      total: history.filter(h => h.type === "invoke").length,
-      successful: history.filter(h => h.type === "complete").length,
-      failed: history.filter(h => h.type === "fail").length,
-      timedOut: history.filter(h => h.type === "fail" && h.value?.includes("timeout")).length
-    }
+      total: history.filter((h) => h.type === "invoke").length,
+      successful: history.filter((h) => h.type === "complete").length,
+      failed: history.filter((h) => h.type === "fail").length,
+      timedOut: history.filter(
+        (h) => h.type === "fail" && h.value?.includes("timeout")
+      ).length,
+    },
   }
 }
 ```
@@ -724,30 +767,30 @@ function generateReport(history: HistoryEntry[], config: TestConfig): JepsenRepo
 
 ### Phase 1: Quick Wins (1-2 weeks)
 
-| Item | Effort | Impact | Location |
-|------|--------|--------|----------|
-| Property-based fuzz tests | Low | High | `server-conformance-tests/src/fuzzing/` |
-| "Sometimes" coverage tracking | Low | Medium | `client-conformance-tests/src/runner.ts` |
-| Offset monotonicity checker | Low | High | `shared/src/checkers/` |
-| Read-your-writes checker | Low | High | `shared/src/checkers/` |
+| Item                          | Effort | Impact | Location                                 |
+| ----------------------------- | ------ | ------ | ---------------------------------------- |
+| Property-based fuzz tests     | Low    | High   | `server-conformance-tests/src/fuzzing/`  |
+| "Sometimes" coverage tracking | Low    | Medium | `client-conformance-tests/src/runner.ts` |
+| Offset monotonicity checker   | Low    | High   | `shared/src/checkers/`                   |
+| Read-your-writes checker      | Low    | High   | `shared/src/checkers/`                   |
 
 ### Phase 2: Core Improvements (2-4 weeks)
 
-| Item | Effort | Impact | Location |
-|------|--------|--------|----------|
-| Chaos server wrapper | Medium | High | `client-conformance-tests/src/` |
-| Concurrent operation tests | Medium | High | `test-cases/concurrent/` |
-| History recording | Medium | Medium | `shared/src/history/` |
-| Latency injection tests | Medium | Medium | `test-cases/chaos/` |
+| Item                       | Effort | Impact | Location                        |
+| -------------------------- | ------ | ------ | ------------------------------- |
+| Chaos server wrapper       | Medium | High   | `client-conformance-tests/src/` |
+| Concurrent operation tests | Medium | High   | `test-cases/concurrent/`        |
+| History recording          | Medium | Medium | `shared/src/history/`           |
+| Latency injection tests    | Medium | Medium | `test-cases/chaos/`             |
 
 ### Phase 3: Advanced Features (4-8 weeks)
 
-| Item | Effort | Impact | Location |
-|------|--------|--------|----------|
-| Deterministic simulation | High | High | `server/src/simulation/` |
-| Model-based testing | High | High | `shared/src/model/` |
-| Full Jepsen-style reports | Medium | Medium | `shared/src/reports/` |
-| Clock skew testing | Medium | Medium | TTL/expiry behavior |
+| Item                      | Effort | Impact | Location                 |
+| ------------------------- | ------ | ------ | ------------------------ |
+| Deterministic simulation  | High   | High   | `server/src/simulation/` |
+| Model-based testing       | High   | High   | `shared/src/model/`      |
+| Full Jepsen-style reports | Medium | Medium | `shared/src/reports/`    |
+| Clock skew testing        | Medium | Medium | TTL/expiry behavior      |
 
 ---
 
@@ -784,6 +827,7 @@ test-cases/
 ## Sources
 
 ### Jepsen
+
 - [Jepsen GitHub Repository](https://github.com/jepsen-io/jepsen)
 - [Jepsen Nemesis Documentation](https://github.com/jepsen-io/jepsen/blob/main/doc/tutorial/05-nemesis.md)
 - [Elle Transactional Checker](https://github.com/jepsen-io/elle)
@@ -793,6 +837,7 @@ test-cases/
 - [Testing Distributed Systems Resources](https://asatarin.github.io/testing-distributed-systems/)
 
 ### Antithesis
+
 - [Antithesis: Autonomous Software Testing](https://antithesis.com/)
 - [Deterministic Simulation Testing](https://antithesis.com/resources/deterministic_simulation_testing/)
 - [How Antithesis Works](https://antithesis.com/product/how_antithesis_works/)
@@ -802,6 +847,7 @@ test-cases/
 - [Test Composition Principles](https://antithesis.com/docs/test_templates/test_best_practices/)
 
 ### Related
+
 - [The Pragmatic Engineer: Antithesis Deep Dive](https://newsletter.pragmaticengineer.com/p/antithesis)
 - [Building Open-Source Antithesis](https://databases.systems/posts/open-source-antithesis-p1)
 - [Elle: Inferring Isolation Anomalies (Paper)](https://blog.acolyer.org/2020/11/23/elle/)
