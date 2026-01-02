@@ -19,6 +19,34 @@ import type { Database } from "lmdb"
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Simple async mutex for serializing operations.
+ */
+class AsyncMutex {
+  private queue: Array<() => void> = []
+  private locked = false
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true
+      return
+    }
+
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve)
+    })
+  }
+
+  release(): void {
+    const next = this.queue.shift()
+    if (next) {
+      next()
+    } else {
+      this.locked = false
+    }
+  }
+}
+
+/**
  * Stream metadata stored in LMDB.
  */
 interface StreamMetadata {
@@ -168,6 +196,7 @@ export class FileBackedStreamStore {
   private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
+  private streamMutexes = new Map<string, AsyncMutex>()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -525,7 +554,60 @@ export class FileBackedStreamStore {
     return true
   }
 
+  /**
+   * Get or create a mutex for a stream path.
+   */
+  private getMutex(path: string): AsyncMutex {
+    let mutex = this.streamMutexes.get(path)
+    if (!mutex) {
+      mutex = new AsyncMutex()
+      this.streamMutexes.set(path, mutex)
+    }
+    return mutex
+  }
+
+  /**
+   * Append data to a stream (async version with proper locking).
+   * Use this from async contexts to ensure concurrent appends are serialized.
+   */
+  async appendAsync(
+    streamPath: string,
+    data: Uint8Array,
+    options: {
+      seq?: string
+      contentType?: string
+      isInitialCreate?: boolean
+    } = {}
+  ): Promise<StreamMessage | null> {
+    const mutex = this.getMutex(streamPath)
+    await mutex.acquire()
+    try {
+      return await this.appendInternal(streamPath, data, options)
+    } finally {
+      mutex.release()
+    }
+  }
+
+  /**
+   * Append data to a stream (no locking, for internal use).
+   * @deprecated Use appendAsync() for concurrent access safety.
+   */
   async append(
+    streamPath: string,
+    data: Uint8Array,
+    options: {
+      seq?: string
+      contentType?: string
+      isInitialCreate?: boolean
+    } = {}
+  ): Promise<StreamMessage | null> {
+    return this.appendInternal(streamPath, data, options)
+  }
+
+  /**
+   * Internal append implementation (no locking).
+   */
+  private async appendInternal(
     streamPath: string,
     data: Uint8Array,
     options: {
