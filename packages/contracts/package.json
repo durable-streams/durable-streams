@@ -1,22 +1,23 @@
 {
-  "name": "@durable-streams/client",
-  "description": "TypeScript client for the Durable Streams protocol",
-  "version": "0.1.2",
+  "name": "@durable-streams/contracts",
+  "description": "Protocol contracts and invariants for Durable Streams - the single source of truth for correctness properties",
+  "version": "0.1.0",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/durable-streams/durable-streams.git",
-    "directory": "packages/client"
+    "directory": "packages/contracts"
   },
   "bugs": {
     "url": "https://github.com/durable-streams/durable-streams/issues"
   },
   "keywords": [
     "durable-streams",
-    "streaming",
-    "client",
-    "typescript"
+    "contracts",
+    "invariants",
+    "testing",
+    "property-based-testing"
   ],
   "type": "module",
   "main": "./dist/index.cjs",
@@ -40,15 +41,18 @@
     "dist",
     "src"
   ],
-  "dependencies": {
-    "@microsoft/fetch-event-source": "^2.0.1",
-    "fastq": "^1.19.1"
-  },
+  "dependencies": {},
   "devDependencies": {
-    "@durable-streams/contracts": "workspace:*",
-    "@durable-streams/server": "workspace:*",
     "fast-check": "^4.4.0",
     "tsdown": "^0.9.0"
+  },
+  "peerDependencies": {
+    "fast-check": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "fast-check": {
+      "optional": true
+    }
   },
   "scripts": {
     "build": "tsdown",

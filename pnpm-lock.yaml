@@ -246,6 +246,9 @@ importers:
         specifier: ^1.19.1
         version: 1.19.1
     devDependencies:
+      '@durable-streams/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@durable-streams/server':
         specifier: workspace:*
         version: link:../server
@@ -282,6 +285,15 @@ importers:
         version: 5.9.3
 
   packages/client-py: {}
+
+  packages/contracts:
+    devDependencies:
+      fast-check:
+        specifier: ^4.4.0
+        version: 4.4.0
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
 
   packages/server:
     dependencies:

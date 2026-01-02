@@ -2,11 +2,25 @@
  * Property-based tests using fast-check for the Durable Streams client.
  *
  * These tests verify invariants across a wide range of inputs rather than
- * just specific hardcoded values.
+ * just specific hardcoded values. Invariants are defined in the contracts
+ * package, which serves as the single source of truth.
+ *
+ * @see @durable-streams/contracts for contract definitions
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as fc from "fast-check"
+import {
+  BackoffDelayCapped,
+  BackoffDelayMonotonic,
+  InitialDelayRespected,
+  NoRetryOn4xx,
+  RetryAfterHttpDateCapped,
+  RetryAfterNonNegative,
+  RetryAfterSecondsToMs,
+  RetryOn429,
+  RetryOn5xx,
+} from "@durable-streams/contracts"
 import {
   BackoffDefaults,
   createFetchWithBackoff,
@@ -15,25 +29,38 @@ import {
 import { FetchError } from "../src/error"
 import type { Mock } from "vitest"
 
+// Import contracts - single source of truth for invariants
+
 describe(`Property-Based Tests`, () => {
   describe(`parseRetryAfterHeader`, () => {
-    it(`always returns a non-negative number`, () => {
+    it(`CONTRACT: ${RetryAfterNonNegative.description}`, () => {
       fc.assert(
         fc.property(fc.string(), (input) => {
           const result = parseRetryAfterHeader(input)
-          expect(result).toBeGreaterThanOrEqual(0)
+
+          // Use contract assertion
+          RetryAfterNonNegative.assert({
+            headerValue: input,
+            parsedMs: result,
+          })
+
           return true
         }),
         { numRuns: 100 }
       )
     })
 
-    it(`returns milliseconds for valid positive integers`, () => {
+    it(`CONTRACT: ${RetryAfterSecondsToMs.description}`, () => {
       fc.assert(
         fc.property(fc.integer({ min: 1, max: 100000 }), (seconds) => {
           const result = parseRetryAfterHeader(String(seconds))
-          // Should convert seconds to milliseconds
-          expect(result).toBe(seconds * 1000)
+
+          // Use contract assertion
+          RetryAfterSecondsToMs.assert({
+            seconds,
+            parsedMs: result,
+          })
+
           return true
         }),
         { numRuns: 50 }
@@ -48,7 +75,6 @@ describe(`Property-Based Tests`, () => {
     it(`handles decimal numbers by converting to milliseconds`, () => {
       fc.assert(
         fc.property(
-          // Use double instead of float, with reasonable range
           fc.double({
             min: 0.1,
             max: 1000,
@@ -68,31 +94,33 @@ describe(`Property-Based Tests`, () => {
 
     it(`returns 0 for non-numeric non-date strings`, () => {
       fc.assert(
-        fc.property(
-          // Generate strings that are clearly not numbers or valid dates
-          fc.stringMatching(/^[a-z]{3,10}$/),
-          (input) => {
-            const result = parseRetryAfterHeader(input)
-            expect(result).toBe(0)
-            return true
-          }
-        ),
+        fc.property(fc.stringMatching(/^[a-z]{3,10}$/), (input) => {
+          const result = parseRetryAfterHeader(input)
+          expect(result).toBe(0)
+          return true
+        }),
         { numRuns: 50 }
       )
     })
 
-    it(`caps HTTP-date format to 1 hour maximum`, () => {
+    it(`CONTRACT: ${RetryAfterHttpDateCapped.description}`, () => {
+      const MAX_RETRY_AFTER_MS = 3600000 // 1 hour
+
       fc.assert(
         fc.property(
-          // Generate future dates well beyond 1 hour (2+ hours)
           fc.integer({ min: 7200000, max: 36000000 }),
           (msInFuture) => {
             const futureDate = new Date(Date.now() + msInFuture)
             const httpDate = futureDate.toUTCString()
             const result = parseRetryAfterHeader(httpDate)
-            // Should be capped at 1 hour (3600000 ms) - allow 2 second tolerance for test execution
-            expect(result).toBeGreaterThanOrEqual(3598000)
-            expect(result).toBeLessThanOrEqual(3600000)
+
+            // Use contract assertion
+            RetryAfterHttpDateCapped.assert({
+              httpDate,
+              parsedMs: result,
+              maxMs: MAX_RETRY_AFTER_MS,
+            })
+
             return true
           }
         ),
@@ -102,19 +130,15 @@ describe(`Property-Based Tests`, () => {
 
     it(`returns approximately correct delay for near-future HTTP-dates`, () => {
       fc.assert(
-        fc.property(
-          // Generate delays between 5 and 60 seconds
-          fc.integer({ min: 5000, max: 60000 }),
-          (msInFuture) => {
-            const futureDate = new Date(Date.now() + msInFuture)
-            const httpDate = futureDate.toUTCString()
-            const result = parseRetryAfterHeader(httpDate)
-            // Should be close to the expected delay (within 2 seconds tolerance for test execution)
-            expect(result).toBeGreaterThan(msInFuture - 2000)
-            expect(result).toBeLessThanOrEqual(msInFuture + 1000)
-            return true
-          }
-        ),
+        fc.property(fc.integer({ min: 5000, max: 60000 }), (msInFuture) => {
+          const futureDate = new Date(Date.now() + msInFuture)
+          const httpDate = futureDate.toUTCString()
+          const result = parseRetryAfterHeader(httpDate)
+          // Should be close to the expected delay (within 2 seconds tolerance)
+          expect(result).toBeGreaterThan(msInFuture - 2000)
+          expect(result).toBeLessThanOrEqual(msInFuture + 1000)
+          return true
+        }),
         { numRuns: 20 }
       )
     })
@@ -127,10 +151,9 @@ describe(`Property-Based Tests`, () => {
       mockFetchClient = vi.fn()
     })
 
-    it(`should not retry on 4xx errors (except 429)`, async () => {
+    it(`CONTRACT: ${NoRetryOn4xx.description}`, async () => {
       await fc.assert(
         fc.asyncProperty(
-          // Generate 4xx status codes excluding 429
           fc.integer({ min: 400, max: 499 }).filter((code) => code !== 429),
           async (statusCode) => {
             mockFetchClient.mockResolvedValue(
@@ -146,8 +169,13 @@ describe(`Property-Based Tests`, () => {
               fetchWithBackoff(`https://example.com`)
             ).rejects.toThrow(FetchError)
 
-            // Should only be called once (no retry)
-            expect(mockFetchClient).toHaveBeenCalledTimes(1)
+            const retryAttempts = mockFetchClient.mock.calls.length - 1
+
+            // Use contract assertion
+            NoRetryOn4xx.assert({
+              statusCode,
+              retryAttempts,
+            })
 
             mockFetchClient.mockClear()
             return true
@@ -157,7 +185,7 @@ describe(`Property-Based Tests`, () => {
       )
     })
 
-    it(`should retry on 429 (rate limit) errors`, async () => {
+    it(`CONTRACT: ${RetryOn429.description}`, async () => {
       mockFetchClient
         .mockResolvedValueOnce(new Response(null, { status: 429 }))
         .mockResolvedValueOnce(new Response(null, { status: 200 }))
@@ -169,11 +197,16 @@ describe(`Property-Based Tests`, () => {
 
       const result = await fetchWithBackoff(`https://example.com`)
 
+      // Use contract assertion
+      RetryOn429.assert({
+        statusCode: 429,
+        didRetry: mockFetchClient.mock.calls.length > 1,
+      })
+
       expect(result.status).toBe(200)
-      expect(mockFetchClient).toHaveBeenCalledTimes(2)
     })
 
-    it(`should retry on 5xx errors`, async () => {
+    it(`CONTRACT: ${RetryOn5xx.description}`, async () => {
       await fc.assert(
         fc.asyncProperty(
           fc.integer({ min: 500, max: 599 }),
@@ -189,8 +222,13 @@ describe(`Property-Based Tests`, () => {
 
             const result = await fetchWithBackoff(`https://example.com`)
 
+            // Use contract assertion
+            RetryOn5xx.assert({
+              statusCode,
+              didRetry: mockFetchClient.mock.calls.length > 1,
+            })
+
             expect(result.status).toBe(200)
-            expect(mockFetchClient).toHaveBeenCalledTimes(2)
 
             mockFetchClient.mockClear()
             return true
@@ -229,18 +267,18 @@ describe(`Property-Based Tests`, () => {
   })
 
   describe(`Backoff Delay Properties`, () => {
-    it(`delay increases with each retry (exponential backoff)`, () => {
+    it(`CONTRACT: ${BackoffDelayMonotonic.description}`, () => {
       fc.assert(
         fc.property(
-          fc.integer({ min: 10, max: 1000 }), // initialDelay
+          fc.integer({ min: 10, max: 1000 }),
           fc.double({
             min: 1.1,
             max: 3.0,
             noNaN: true,
             noDefaultInfinity: true,
-          }), // multiplier
-          fc.integer({ min: 100, max: 100000 }), // maxDelay
-          fc.integer({ min: 1, max: 10 }), // number of retries to check
+          }),
+          fc.integer({ min: 100, max: 100000 }),
+          fc.integer({ min: 2, max: 10 }),
           (initialDelay, multiplier, maxDelay, retries) => {
             const delays: Array<number> = []
 
@@ -252,15 +290,8 @@ describe(`Property-Based Tests`, () => {
               delays.push(delay)
             }
 
-            // Verify delays are monotonically increasing (or equal when capped)
-            for (let i = 1; i < delays.length; i++) {
-              expect(delays[i]).toBeGreaterThanOrEqual(delays[i - 1]!)
-            }
-
-            // Verify no delay exceeds maxDelay
-            for (const delay of delays) {
-              expect(delay).toBeLessThanOrEqual(maxDelay)
-            }
+            // Use contract assertion
+            BackoffDelayMonotonic.assert({ delays })
 
             return true
           }
@@ -269,25 +300,27 @@ describe(`Property-Based Tests`, () => {
       )
     })
 
-    it(`delay never exceeds maxDelay regardless of parameters`, () => {
+    it(`CONTRACT: ${BackoffDelayCapped.description}`, () => {
       fc.assert(
         fc.property(
-          fc.integer({ min: 1, max: 10000 }), // initialDelay
+          fc.integer({ min: 1, max: 10000 }),
           fc.double({
             min: 1.0,
             max: 10.0,
             noNaN: true,
             noDefaultInfinity: true,
-          }), // multiplier
-          fc.integer({ min: 1, max: 100000 }), // maxDelay
-          fc.integer({ min: 0, max: 100 }), // retry number (even very high)
+          }),
+          fc.integer({ min: 1, max: 100000 }),
+          fc.integer({ min: 0, max: 100 }),
           (initialDelay, multiplier, maxDelay, retryNumber) => {
             const delay = Math.min(
               initialDelay * Math.pow(multiplier, retryNumber),
               maxDelay
             )
 
-            expect(delay).toBeLessThanOrEqual(maxDelay)
+            // Use contract assertion
+            BackoffDelayCapped.assert({ delay, maxDelay })
+
             expect(delay).toBeGreaterThanOrEqual(0)
 
             return true
@@ -297,14 +330,21 @@ describe(`Property-Based Tests`, () => {
       )
     })
 
-    it(`first delay equals initialDelay (when less than maxDelay)`, () => {
+    it(`CONTRACT: ${InitialDelayRespected.description}`, () => {
       fc.assert(
         fc.property(
-          fc.integer({ min: 1, max: 1000 }), // initialDelay
-          fc.integer({ min: 1001, max: 100000 }), // maxDelay (always greater than initialDelay)
+          fc.integer({ min: 1, max: 1000 }),
+          fc.integer({ min: 1001, max: 100000 }),
           (initialDelay, maxDelay) => {
             const firstDelay = Math.min(initialDelay, maxDelay)
-            expect(firstDelay).toBe(initialDelay)
+
+            // Use contract assertion
+            InitialDelayRespected.assert({
+              firstDelay,
+              initialDelay,
+              maxDelay,
+            })
+
             return true
           }
         ),
