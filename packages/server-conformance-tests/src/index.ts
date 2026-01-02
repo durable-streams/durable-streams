@@ -1509,7 +1509,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       }
     })
 
-    test(`should handle concurrent appends without data loss`, async () => {
+    test(`should generate unique offsets under concurrent appends`, async () => {
       const streamPath = `/v1/stream/concurrent-offset-test-${Date.now()}`
 
       // Create stream
@@ -1532,13 +1532,19 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // All should succeed
       responses.forEach((r) => expect(r.status).toBe(200))
 
-      // All offsets should be defined
+      // Collect all offsets
       const offsets = responses.map((r) =>
         r.headers.get(STREAM_OFFSET_HEADER)
       )
+
+      // All offsets should be defined
       offsets.forEach((o) => expect(o).toBeDefined())
 
-      // Verify all data is readable (no lost writes) - this is the key invariant
+      // Each concurrent append should get a unique offset
+      const uniqueOffsets = new Set(offsets)
+      expect(uniqueOffsets.size).toBe(10)
+
+      // Verify all data is readable (no lost writes)
       const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
       const text = await readResponse.text()
       for (let i = 0; i < 10; i++) {
@@ -3883,7 +3889,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         )
       })
 
-      test(`concurrent appends all succeed without data loss`, async () => {
+      test(`concurrent appends all succeed with unique offsets`, async () => {
         await fc.assert(
           fc.asyncProperty(
             // Generate number of concurrent appends
@@ -3911,14 +3917,19 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               // All should succeed
               responses.forEach((r) => expect(r.status).toBe(200))
 
-              // All offsets should be defined
+              // Collect offsets
               const offsets = responses.map((r) =>
                 r.headers.get(STREAM_OFFSET_HEADER)
               )
+
+              // All offsets should be defined
               offsets.forEach((o) => expect(o).toBeDefined())
 
-              // Key invariant: All data should be readable (no lost writes)
-              // Note: Concurrent appends may be batched, so offsets may not be unique
+              // Each append should get a unique offset
+              const uniqueOffsets = new Set(offsets)
+              expect(uniqueOffsets.size).toBe(concurrency)
+
+              // All data should be readable (no lost writes)
               const finalRead = await fetch(`${getBaseUrl()}${streamPath}`)
               const finalText = await finalRead.text()
               for (let i = 0; i < concurrency; i++) {
