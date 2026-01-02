@@ -5,6 +5,34 @@
 import type { PendingLongPoll, Stream, StreamMessage } from "./types"
 
 /**
+ * Simple async mutex for serializing operations.
+ */
+class AsyncMutex {
+  private queue: Array<() => void> = []
+  private locked = false
+
+  async acquire(): Promise<void> {
+    if (!this.locked) {
+      this.locked = true
+      return
+    }
+
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve)
+    })
+  }
+
+  release(): void {
+    const next = this.queue.shift()
+    if (next) {
+      next()
+    } else {
+      this.locked = false
+    }
+  }
+}
+
+/**
  * Normalize content-type by extracting the media type (before any semicolon).
  * Handles cases like "application/json; charset=utf-8".
  */
@@ -82,6 +110,7 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 export class StreamStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
+  private streamMutexes = new Map<string, AsyncMutex>()
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
@@ -207,12 +236,57 @@ export class StreamStore {
   }
 
   /**
-   * Append data to a stream.
+   * Get or create a mutex for a stream path.
+   */
+  private getMutex(path: string): AsyncMutex {
+    let mutex = this.streamMutexes.get(path)
+    if (!mutex) {
+      mutex = new AsyncMutex()
+      this.streamMutexes.set(path, mutex)
+    }
+    return mutex
+  }
+
+  /**
+   * Append data to a stream (async version with proper locking).
+   * Use this from async contexts to ensure concurrent appends are serialized.
+   * @throws Error if stream doesn't exist or is expired
+   * @throws Error if seq is lower than lastSeq
+   * @throws Error if JSON mode and array is empty
+   */
+  async appendAsync(
+    path: string,
+    data: Uint8Array,
+    options: { seq?: string; contentType?: string } = {}
+  ): Promise<StreamMessage> {
+    const mutex = this.getMutex(path)
+    await mutex.acquire()
+    try {
+      return this.appendInternal(path, data, options)
+    } finally {
+      mutex.release()
+    }
+  }
+
+  /**
+   * Append data to a stream (sync version, no locking).
+   * @deprecated Use appendAsync() for concurrent access safety.
    * @throws Error if stream doesn't exist or is expired
    * @throws Error if seq is lower than lastSeq
    * @throws Error if JSON mode and array is empty
    */
   append(
+    path: string,
+    data: Uint8Array,
+    options: { seq?: string; contentType?: string } = {}
+  ): StreamMessage {
+    return this.appendInternal(path, data, options)
+  }
+
+  /**
+   * Internal append implementation (no locking).
+   */
+  private appendInternal(
     path: string,
     data: Uint8Array,
     options: { seq?: string; contentType?: string } = {}
