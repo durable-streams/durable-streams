@@ -5,6 +5,43 @@ import { DurableStream } from "@durable-streams/client"
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 
+export interface ParsedWriteArgs {
+  contentType: string
+  content: string
+}
+
+/**
+ * Parse write command arguments, extracting content-type flags and content.
+ * @param args - Arguments after the stream_id (starting from index 2)
+ * @returns Parsed content type and content string
+ * @throws Error if --content-type is missing its value
+ */
+export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
+  let contentType = `application/octet-stream`
+  const contentParts: Array<string> = []
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+    if (arg === `--json`) {
+      contentType = `application/json`
+    } else if (arg === `--content-type`) {
+      const nextArg = args[i + 1]
+      if (!nextArg || nextArg.startsWith(`--`)) {
+        throw new Error(`--content-type requires a value`)
+      }
+      contentType = nextArg
+      i++ // Skip the value
+    } else if (!arg.startsWith(`--`)) {
+      contentParts.push(arg)
+    }
+  }
+
+  return {
+    contentType,
+    content: contentParts.join(` `),
+  }
+}
+
 function printUsage() {
   console.error(`
 Usage:
@@ -13,6 +50,10 @@ Usage:
   cat file.txt | durable-stream write <stream_id>    Write stdin to a stream
   durable-stream read <stream_id>                Follow a stream and write to stdout
   durable-stream delete <stream_id>              Delete a stream
+
+Write Options:
+  --content-type <type>   Content-Type for the message (default: application/octet-stream)
+  --json                  Shorthand for --content-type application/json
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
@@ -36,11 +77,15 @@ async function createStream(streamId: string) {
   }
 }
 
-async function writeStream(streamId: string, content?: string) {
+async function writeStream(
+  streamId: string,
+  contentType: string,
+  content?: string
+) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
 
   try {
-    const stream = new DurableStream({ url })
+    const stream = new DurableStream({ url, contentType })
 
     if (content) {
       // Write provided content, interpreting escape sequences
@@ -143,15 +188,24 @@ async function main() {
         process.exit(1)
       }
       const streamId = args[1]!
-      const content = args.slice(2).join(` `)
+
+      let parsed: ParsedWriteArgs
+      try {
+        parsed = parseWriteArgs(args.slice(2))
+      } catch (error) {
+        if (error instanceof Error) {
+          stderr.write(`Error: ${error.message}\n`)
+        }
+        process.exit(1)
+      }
 
       // Check if stdin is being piped
       if (!stdin.isTTY) {
         // Reading from stdin
-        await writeStream(streamId)
-      } else if (content) {
+        await writeStream(streamId, parsed.contentType)
+      } else if (parsed.content) {
         // Content provided as argument
-        await writeStream(streamId, content)
+        await writeStream(streamId, parsed.contentType, parsed.content)
       } else {
         stderr.write(
           `Error: content required (provide as argument or pipe to stdin)\n`
@@ -189,7 +243,14 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  stderr.write(`Fatal error: ${error.message}\n`)
-  process.exit(1)
-})
+// Only run when executed directly, not when imported as a module
+const isMain =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith(`/cli/src/index.ts`)
+
+if (isMain) {
+  main().catch((error) => {
+    stderr.write(`Fatal error: ${error.message}\n`)
+    process.exit(1)
+  })
+}

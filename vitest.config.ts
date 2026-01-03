@@ -3,6 +3,7 @@ import path from "node:path"
 
 const alias = {
   "@durable-streams/client": path.resolve(__dirname, "./packages/client/src"),
+  "@durable-streams/cli": path.resolve(__dirname, "./packages/cli/src"),
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
   "@durable-streams/server-conformance-tests": path.resolve(
@@ -41,6 +42,14 @@ export default defineConfig({
         test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "cli",
+          include: ["packages/cli/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
         },
         resolve: { alias },
