@@ -531,6 +531,10 @@ See [@durable-streams/server](./packages/server) for more details.
 
 - [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
 
+
+**Java**
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformace test coverage.
+
 ## CLI Tool
 
 ```bash
