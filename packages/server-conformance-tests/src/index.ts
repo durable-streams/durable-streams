@@ -1532,7 +1532,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         /event: control\s*\n\s*data: ({[^}]+})/
       )
       expect(controlMatch).toBeDefined()
-      if (controlMatch) {
+      if (controlMatch && controlMatch[1]) {
         const controlData = JSON.parse(controlMatch[1])
         expect(controlData[`upToDate`]).toBe(true)
         expect(controlData[`streamNextOffset`]).toBe(tailOffset)

@@ -239,7 +239,38 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
-		return h.handleSSE(w, r, path, offset, cursor)
+		// For SSE with offset=now, convert to actual tail offset
+		sseOffset := offset
+		if offset.IsNow() {
+			sseOffset = meta.CurrentOffset
+		}
+		return h.handleSSE(w, r, path, sseOffset, cursor)
+	}
+
+	// Handle offset=now sentinel: return empty response with tail offset (Protocol Section 6)
+	// This allows clients to skip historical data and start from the current position
+	if offset.IsNow() {
+		w.Header().Set("Content-Type", meta.ContentType)
+		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+		w.Header().Set(HeaderStreamUpToDate, "true")
+
+		// Generate cursor for long-poll mode
+		if liveMode == "long-poll" {
+			responseCursor := generateResponseCursor(cursor)
+			w.Header().Set(HeaderStreamCursor, responseCursor)
+		}
+
+		// Set ETag for cache validation
+		w.Header().Set("ETag", fmt.Sprintf(`"now:%s"`, meta.CurrentOffset.String()))
+
+		// For JSON mode, return empty array; otherwise empty body
+		if store.IsJSONContentType(meta.ContentType) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("[]"))
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		return nil
 	}
 
 	// Read messages
