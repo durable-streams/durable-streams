@@ -42,6 +42,11 @@ type Command struct {
 	Data   string `json:"data,omitempty"`
 	Binary bool   `json:"binary,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
+	// IdempotentProducer fields
+	ProducerID string              `json:"producerId,omitempty"`
+	Epoch      int                 `json:"epoch,omitempty"`
+	AutoClaim  bool                `json:"autoClaim,omitempty"`
+	Items      []IdempotentItem    `json:"items,omitempty"`
 	// Read fields
 	Offset          string `json:"offset,omitempty"`
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
@@ -56,6 +61,11 @@ type Command struct {
 	Name         string `json:"name,omitempty"`
 	ValueType    string `json:"valueType,omitempty"` // "counter" | "timestamp" | "token"
 	InitialValue string `json:"initialValue,omitempty"`
+}
+
+// IdempotentItem is a single item for batch append
+type IdempotentItem struct {
+	Data string `json:"data"`
 }
 
 // BenchmarkOperation represents a benchmark operation
@@ -87,6 +97,8 @@ type Result struct {
 	CommandType   string            `json:"commandType,omitempty"`
 	ErrorCode     string            `json:"errorCode,omitempty"`
 	Message       string            `json:"message,omitempty"`
+	// IdempotentProducer fields
+	Duplicate bool `json:"duplicate,omitempty"`
 	// Benchmark fields
 	IterationID string            `json:"iterationId,omitempty"`
 	DurationNs  string            `json:"durationNs,omitempty"`
@@ -235,6 +247,10 @@ func handleCommand(cmd Command) Result {
 		return handleSetDynamicParam(cmd)
 	case "clear-dynamic":
 		return handleClearDynamic(cmd)
+	case "idempotent-append":
+		return handleIdempotentAppend(cmd)
+	case "idempotent-append-batch":
+		return handleIdempotentAppendBatch(cmd)
 	case "shutdown":
 		return Result{Type: "shutdown", Success: true}
 	default:
@@ -634,6 +650,96 @@ func handleClearDynamic(cmd Command) Result {
 	return Result{
 		Type:    "clear-dynamic",
 		Success: true,
+	}
+}
+
+func handleIdempotentAppend(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := serverURL + cmd.Path
+
+	// Get content-type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Create producer with maxInFlight=1 (required when autoClaim is true)
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+		Epoch:       cmd.Epoch,
+		AutoClaim:   cmd.AutoClaim,
+		MaxInFlight: 1,
+		LingerMs:    0, // Send immediately for testing
+		ContentType: contentType,
+	})
+	if err != nil {
+		return errorResult("idempotent-append", err)
+	}
+	defer producer.Close()
+
+	result, err := producer.Append(ctx, []byte(cmd.Data))
+	if err != nil {
+		return errorResult("idempotent-append", err)
+	}
+
+	status := 200
+	if result.Duplicate {
+		status = 204
+	}
+
+	return Result{
+		Type:      "idempotent-append",
+		Success:   true,
+		Status:    status,
+		Offset:    string(result.Offset),
+		Duplicate: result.Duplicate,
+	}
+}
+
+func handleIdempotentAppendBatch(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := serverURL + cmd.Path
+
+	// Get content-type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Create producer with large linger to batch all items together
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+		Epoch:         cmd.Epoch,
+		AutoClaim:     cmd.AutoClaim,
+		MaxInFlight:   1,
+		LingerMs:      1000, // Large linger - we'll flush explicitly
+		MaxBatchBytes: 1024 * 1024,
+		ContentType:   contentType,
+	})
+	if err != nil {
+		return errorResult("idempotent-append-batch", err)
+	}
+	defer producer.Close()
+
+	// Queue all items using AppendAsync (non-blocking)
+	for _, item := range cmd.Items {
+		err := producer.AppendAsync([]byte(item.Data))
+		if err != nil {
+			return errorResult("idempotent-append-batch", err)
+		}
+	}
+
+	// Flush to send the batch
+	if err := producer.Flush(ctx); err != nil {
+		return errorResult("idempotent-append-batch", err)
+	}
+
+	return Result{
+		Type:    "idempotent-append-batch",
+		Success: true,
+		Status:  200,
 	}
 }
 

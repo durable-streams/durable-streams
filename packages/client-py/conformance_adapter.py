@@ -851,7 +851,8 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
             )
             try:
                 # Queue all items, they will be batched by linger_ms or flush
-                tasks = [producer.append(item) for item in items]
+                # Extract "data" field from each item
+                tasks = [producer.append(item["data"]) for item in items]
 
                 # Flush to send the batch
                 await producer.flush()
