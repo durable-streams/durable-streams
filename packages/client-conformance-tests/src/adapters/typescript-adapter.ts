@@ -792,7 +792,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
 
           // Wait for data
           return new Promise<Uint8Array>((resolve) => {
-            const unsubscribe = res.subscribeBytes((chunk) => {
+            const unsubscribe = res.subscribeBytes(async (chunk) => {
               if (chunk.data.length > 0) {
                 unsubscribe()
                 res.cancel()
