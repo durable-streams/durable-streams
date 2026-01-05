@@ -596,6 +596,10 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		opts.ProducerId = producerId
 
 		if producerEpochStr != "" {
+			// Validate format: must be a valid integer (no floats, no trailing chars)
+			if !isValidIntegerString(producerEpochStr) {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+			}
 			epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
 			if err != nil {
 				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
@@ -604,6 +608,10 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		}
 
 		if producerSeqStr != "" {
+			// Validate format: must be a valid integer (no floats, no trailing chars)
+			if !isValidIntegerString(producerSeqStr) {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+			}
 			seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
 			if err != nil {
 				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
@@ -651,6 +659,11 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+
+	// Echo Producer-Epoch on success when producer headers were provided
+	if opts.ProducerEpoch != nil {
+		w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(*opts.ProducerEpoch, 10))
+	}
 
 	// Handle duplicate detection (204 No Content)
 	if result.ProducerResult == store.ProducerResultDuplicate {
@@ -723,6 +736,14 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 
 	h.logger.Error("internal error", zap.Error(err))
 	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// integerRegex matches valid integer strings (with optional leading minus, no floats)
+var integerRegex = regexp.MustCompile(`^-?[0-9]+$`)
+
+// isValidIntegerString checks if a string is a valid integer (no floats, no trailing chars)
+func isValidIntegerString(s string) bool {
+	return integerRegex.MatchString(s)
 }
 
 // parseTTL parses and validates a TTL string according to the protocol
