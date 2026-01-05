@@ -626,7 +626,6 @@ const stream = await DurableStream.create({
 // Use IdempotentProducer for reliable, exactly-once token delivery
 const producer = new IdempotentProducer(stream, `llm-worker-${workerId}`, {
   autoClaim: true, // Auto-recover if another worker took over
-  maxBatchBytes: 4096, // Batch small tokens together
   lingerMs: 10, // Send batches every 10ms for low latency
 })
 
