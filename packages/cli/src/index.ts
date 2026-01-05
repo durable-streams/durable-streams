@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 
-import { resolve } from "node:path"
+import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
-import { parseWriteArgs, type ParsedWriteArgs } from "./parseWriteArgs.js"
+import type { ParsedWriteArgs } from "./parseWriteArgs.js"
+import { parseWriteArgs } from "./parseWriteArgs.js"
 
-export { parseWriteArgs, type ParsedWriteArgs }
+export type { ParsedWriteArgs }
+export { parseWriteArgs }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 
@@ -214,7 +216,7 @@ async function main() {
 // Only run when executed directly, not when imported as a module
 function isMainModule(): boolean {
   if (!process.argv[1]) return false
-  const scriptPath = resolve(process.argv[1])
+  const scriptPath = resolvePath(process.argv[1])
   const modulePath = fileURLToPath(import.meta.url)
   return scriptPath === modulePath
 }
