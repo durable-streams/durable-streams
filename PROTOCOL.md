@@ -269,7 +269,7 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
-- `Stream-Cursor: <cursor>` (optional)
+- `Stream-Cursor: <cursor>`
   - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
