@@ -697,6 +697,20 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
+    // IMPORTANT: Do this BEFORE producer validation to ensure atomicity.
+    // If this check fails, we don't want to have already mutated producer state.
+    if (options.seq !== undefined) {
+      if (
+        streamMeta.lastSeq !== undefined &&
+        options.seq <= streamMeta.lastSeq
+      ) {
+        throw new Error(
+          `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
+        )
+      }
+    }
+
     // Handle producer validation if producer headers are present
     let producerResult: ProducerValidationResult | undefined
     if (
@@ -714,18 +728,6 @@ export class FileBackedStreamStore {
       // Return early for non-accepted results
       if (producerResult.status !== `accepted`) {
         return { message: null, producerResult }
-      }
-    }
-
-    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
-    if (options.seq !== undefined) {
-      if (
-        streamMeta.lastSeq !== undefined &&
-        options.seq <= streamMeta.lastSeq
-      ) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
-        )
       }
     }
 

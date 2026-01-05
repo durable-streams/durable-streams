@@ -386,6 +386,17 @@ export class StreamStore {
       }
     }
 
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
+    // IMPORTANT: Do this BEFORE producer validation to ensure atomicity.
+    // If this check fails, we don't want to have already mutated producer state.
+    if (options.seq !== undefined) {
+      if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
+        throw new Error(
+          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
+        )
+      }
+    }
+
     // Handle producer validation if producer headers are present
     if (
       options.producerId !== undefined &&
@@ -405,13 +416,8 @@ export class StreamStore {
       }
     }
 
-    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
+    // Update Stream-Seq after validation passes (atomicity: only mutate on success path)
     if (options.seq !== undefined) {
-      if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
-        )
-      }
       stream.lastSeq = options.seq
     }
 

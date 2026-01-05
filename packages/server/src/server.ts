@@ -1027,27 +1027,30 @@ export class DurableStreamTestServer {
     }
 
     // Parse and validate producer epoch and seq as integers
+    // Use strict digit-only validation to reject values like "1abc" or "1e3"
+    const STRICT_INTEGER_REGEX = /^\d+$/
     let producerEpoch: number | undefined
     let producerSeq: number | undefined
     if (hasAllProducerHeaders) {
-      producerEpoch = parseInt(producerEpochStr, 10)
-      producerSeq = parseInt(producerSeqStr, 10)
-
-      if (
-        isNaN(producerEpoch) ||
-        producerEpoch < 0 ||
-        !Number.isInteger(producerEpoch)
-      ) {
+      if (!STRICT_INTEGER_REGEX.test(producerEpochStr)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Epoch: must be a non-negative integer`)
+        return
+      }
+      producerEpoch = Number(producerEpochStr)
+      if (!Number.isSafeInteger(producerEpoch)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Producer-Epoch: must be a non-negative integer`)
         return
       }
 
-      if (
-        isNaN(producerSeq) ||
-        producerSeq < 0 ||
-        !Number.isInteger(producerSeq)
-      ) {
+      if (!STRICT_INTEGER_REGEX.test(producerSeqStr)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Seq: must be a non-negative integer`)
+        return
+      }
+      producerSeq = Number(producerSeqStr)
+      if (!Number.isSafeInteger(producerSeq)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Producer-Seq: must be a non-negative integer`)
         return

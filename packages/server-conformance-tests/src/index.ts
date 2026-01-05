@@ -5283,6 +5283,81 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(r3.status).toBe(400)
     })
 
+    test(`should reject invalid integer formats in producer headers`, async () => {
+      const streamPath = `/v1/stream/producer-invalid-format-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Producer-Seq with trailing junk (e.g., "1abc")
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1abc`,
+        },
+        body: `msg`,
+      })
+      expect(r1.status).toBe(400)
+
+      // Producer-Epoch with trailing junk
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0xyz`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r2.status).toBe(400)
+
+      // Scientific notation should be rejected
+      const r3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1e3`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r3.status).toBe(400)
+
+      // Negative values should be rejected
+      const r4 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `-1`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r4.status).toBe(400)
+
+      // Valid integers should still work
+      const r5 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r5.status).toBe(200)
+    })
+
     test(`multiple producers should have independent state`, async () => {
       const streamPath = `/v1/stream/producer-multi-${Date.now()}`
 

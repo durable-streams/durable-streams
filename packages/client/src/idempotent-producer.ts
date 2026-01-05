@@ -209,13 +209,29 @@ export class IdempotentProducer {
       this.#lingerTimeout = null
     }
 
-    // Send current batch if any
-    if (this.#pendingBatch.length > 0) {
-      this.#sendCurrentBatch()
-    }
+    // Loop until both pending and in-flight are drained
+    // This handles the case where #sendCurrentBatch() bails due to maxInFlight,
+    // and new in-flight promises are created after Promise.all() snapshot
+    while (this.#pendingBatch.length > 0 || this.#inFlight.size > 0) {
+      // Try to send pending batch
+      if (this.#pendingBatch.length > 0) {
+        this.#sendCurrentBatch()
+      }
 
-    // Wait for all in-flight batches
-    await Promise.all(this.#inFlight.values())
+      // If still have pending but at capacity, wait for one to complete
+      if (
+        this.#pendingBatch.length > 0 &&
+        this.#inFlight.size >= this.#maxInFlight
+      ) {
+        await Promise.race(this.#inFlight.values())
+        continue
+      }
+
+      // Wait for all current in-flight to complete
+      if (this.#inFlight.size > 0) {
+        await Promise.all(this.#inFlight.values())
+      }
+    }
   }
 
   /**
@@ -341,7 +357,9 @@ export class IdempotentProducer {
   }
 
   /**
-   * Actually send the batch with retry logic.
+   * Actually send the batch to the server.
+   * Handles auto-claim retry on 403 (stale epoch) if autoClaim is enabled.
+   * Does NOT implement general retry/backoff for network errors or 5xx responses.
    */
   async #doSendBatch(
     batch: Array<PendingEntry>,
