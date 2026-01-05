@@ -106,6 +106,8 @@ export interface IdempotentAppendBatchCommand {
   epoch: number
   /** Auto-claim epoch on 403 */
   autoClaim: boolean
+  /** Max concurrent batches in flight (default 1, set higher to test 409 retry) */
+  maxInFlight?: number
   /** Custom headers to include */
   headers?: Record<string, string>
 }

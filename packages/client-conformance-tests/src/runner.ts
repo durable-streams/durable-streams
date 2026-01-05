@@ -416,6 +416,7 @@ async function executeOperation(
           producerId: op.producerId,
           epoch: op.epoch ?? 0,
           autoClaim: op.autoClaim ?? false,
+          maxInFlight: op.maxInFlight,
           headers: op.headers,
         },
         commandTimeout

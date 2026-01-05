@@ -180,6 +180,8 @@ export interface IdempotentAppendBatchOperation {
   }>
   /** Auto-claim epoch on 403 */
   autoClaim?: boolean
+  /** Max concurrent batches in flight (default 1, set higher to test 409 retry) */
+  maxInFlight?: number
   headers?: Record<string, string>
   expect?: IdempotentAppendBatchExpectation
 }

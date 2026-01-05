@@ -137,6 +137,21 @@ export class IdempotentProducer {
   readonly #queue: queueAsPromised<BatchTask>
   #closed = false
 
+  // Track sequence completions for 409 retry coordination
+  // When HTTP requests arrive out of order, we get 409 errors.
+  // Maps epoch -> (seq -> { resolved, error?, waiters })
+  #seqState: Map<
+    number,
+    Map<
+      number,
+      {
+        resolved: boolean
+        error?: Error
+        waiters: Array<(err?: Error) => void>
+      }
+    >
+  > = new Map()
+
   /**
    * Create an idempotent producer for a stream.
    *
@@ -400,15 +415,22 @@ export class IdempotentProducer {
    */
   async #batchWorker(task: BatchTask): Promise<void> {
     const { batch, seq } = task
+    const epoch = this.#epoch
 
     try {
-      const result = await this.#doSendBatch(batch, seq, this.#epoch)
+      const result = await this.#doSendBatch(batch, seq, epoch)
+
+      // Signal success for this sequence (for 409 retry coordination)
+      this.#signalSeqComplete(epoch, seq, undefined)
 
       // Resolve all entries in the batch
       for (const entry of batch) {
         entry.resolve(result)
       }
     } catch (error) {
+      // Signal failure so waiting batches can fail too
+      this.#signalSeqComplete(epoch, seq, error as Error)
+
       // Call onError callback if configured (for fire-and-forget error handling)
       if (this.#onError) {
         this.#onError(error as Error)
@@ -419,6 +441,70 @@ export class IdempotentProducer {
       }
       throw error
     }
+  }
+
+  /**
+   * Signal that a sequence has completed (success or failure).
+   */
+  #signalSeqComplete(
+    epoch: number,
+    seq: number,
+    error: Error | undefined
+  ): void {
+    let epochMap = this.#seqState.get(epoch)
+    if (!epochMap) {
+      epochMap = new Map()
+      this.#seqState.set(epoch, epochMap)
+    }
+
+    const state = epochMap.get(seq)
+    if (state) {
+      // Mark resolved and notify all waiters
+      state.resolved = true
+      state.error = error
+      for (const waiter of state.waiters) {
+        waiter(error)
+      }
+      state.waiters = []
+    } else {
+      // No waiters yet, just mark as resolved
+      epochMap.set(seq, { resolved: true, error, waiters: [] })
+    }
+  }
+
+  /**
+   * Wait for a specific sequence to complete.
+   * Returns immediately if already completed.
+   * Throws if the sequence failed.
+   */
+  #waitForSeq(epoch: number, seq: number): Promise<void> {
+    let epochMap = this.#seqState.get(epoch)
+    if (!epochMap) {
+      epochMap = new Map()
+      this.#seqState.set(epoch, epochMap)
+    }
+
+    const state = epochMap.get(seq)
+    if (state?.resolved) {
+      // Already completed
+      if (state.error) {
+        return Promise.reject(state.error)
+      }
+      return Promise.resolve()
+    }
+
+    // Not yet completed, add a waiter
+    return new Promise((resolve, reject) => {
+      const waiter = (err?: Error) => {
+        if (err) reject(err)
+        else resolve()
+      }
+      if (state) {
+        state.waiters.push(waiter)
+      } else {
+        epochMap.set(seq, { resolved: false, waiters: [waiter] })
+      }
+    })
   }
 
   /**
@@ -506,12 +592,26 @@ export class IdempotentProducer {
     }
 
     if (response.status === 409) {
-      // Sequence gap
+      // Sequence gap - our request arrived before an earlier sequence
       const expectedSeqStr = response.headers.get(PRODUCER_EXPECTED_SEQ_HEADER)
-      const receivedSeqStr = response.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)
       const expectedSeq = expectedSeqStr ? parseInt(expectedSeqStr, 10) : 0
-      const receivedSeq = receivedSeqStr ? parseInt(receivedSeqStr, 10) : seq
 
+      // If our seq is ahead of expectedSeq, wait for earlier sequences to complete then retry
+      // This handles HTTP request reordering with maxInFlight > 1
+      if (expectedSeq < seq) {
+        // Wait for all sequences from expectedSeq to seq-1
+        const waitPromises: Array<Promise<void>> = []
+        for (let s = expectedSeq; s < seq; s++) {
+          waitPromises.push(this.#waitForSeq(epoch, s))
+        }
+        await Promise.all(waitPromises)
+        // Retry now that earlier sequences have completed
+        return this.#doSendBatch(batch, seq, epoch)
+      }
+
+      // If expectedSeq >= seq, something is wrong (shouldn't happen) - throw error
+      const receivedSeqStr = response.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)
+      const receivedSeq = receivedSeqStr ? parseInt(receivedSeqStr, 10) : seq
       throw new SequenceGapError(expectedSeq, receivedSeq)
     }
 
