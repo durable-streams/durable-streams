@@ -4,8 +4,8 @@ import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
-import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 import { parseWriteArgs } from "./parseWriteArgs.js"
+import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 
 export type { ParsedWriteArgs }
 export { parseWriteArgs }
