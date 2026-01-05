@@ -823,12 +823,6 @@ export interface IdempotentProducerOptions {
    * AbortSignal for the producer lifecycle.
    */
   signal?: AbortSignal
-
-  /**
-   * Callback for batch errors.
-   * Called when a batch fails to send. Useful with fire-and-forget patterns.
-   */
-  onError?: (error: Error) => void
 }
 
 /**

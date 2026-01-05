@@ -104,7 +104,6 @@ export class IdempotentProducer {
   readonly #maxInFlight: number
   readonly #fetchClient: typeof fetch
   readonly #signal?: AbortSignal
-  readonly #onError?: (error: Error) => void
 
   // Batching state
   #pendingBatch: Array<PendingEntry> = []
@@ -135,7 +134,6 @@ export class IdempotentProducer {
     this.#lingerMs = opts?.lingerMs ?? 5
     this.#maxInFlight = opts?.maxInFlight ?? 5
     this.#signal = opts?.signal
-    this.#onError = opts?.onError
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
@@ -363,11 +361,6 @@ export class IdempotentProducer {
         entry.resolve(result)
       }
     } catch (error) {
-      // Call onError callback if configured
-      if (this.#onError) {
-        this.#onError(error as Error)
-      }
-
       // Reject all entries in the batch
       for (const entry of batch) {
         entry.reject(error as Error)

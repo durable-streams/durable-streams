@@ -50,10 +50,6 @@ async function main() {
   const producer = new IdempotentProducer(stream, PRODUCER_ID, {
     autoClaim: true, // Auto-claim producer ID on restart
     lingerMs: 10, // Batch events for 10ms for better throughput
-    onError: (error) => {
-      errorCount++
-      console.error(`[Worker] Producer batch error:`, error.message)
-    },
   })
 
   // Start Wikipedia client

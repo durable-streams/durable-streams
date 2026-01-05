@@ -58,7 +58,6 @@ function StreamViewer() {
     producerRef.current = new IdempotentProducer(stream, producerId, {
       autoClaim: true,
       lingerMs: 0, // Send immediately for interactive UI
-      onError: (err) => setError(`Write error: ${err.message}`),
     })
 
     return () => {
