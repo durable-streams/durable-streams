@@ -8,6 +8,8 @@
  * - Automatic batching and pipelining for throughput
  */
 
+import fastq from "fastq"
+
 import { DurableStreamError, FetchError } from "./error"
 import {
   PRODUCER_EPOCH_HEADER,
@@ -17,6 +19,7 @@ import {
   PRODUCER_SEQ_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
+import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
 import type { IdempotentProducerOptions, Offset } from "./types"
 
@@ -79,6 +82,14 @@ interface PendingEntry {
 }
 
 /**
+ * Internal type for batch tasks submitted to the queue.
+ */
+interface BatchTask {
+  batch: Array<PendingEntry>
+  seq: number
+}
+
+/**
  * An idempotent producer for exactly-once writes to a durable stream.
  *
  * Features:
@@ -113,7 +124,6 @@ export class IdempotentProducer {
   readonly #autoClaim: boolean
   readonly #maxBatchBytes: number
   readonly #lingerMs: number
-  readonly #maxInFlight: number
   readonly #fetchClient: typeof fetch
   readonly #signal?: AbortSignal
   readonly #onError?: (error: Error) => void
@@ -123,8 +133,8 @@ export class IdempotentProducer {
   #batchBytes = 0
   #lingerTimeout: ReturnType<typeof setTimeout> | null = null
 
-  // Pipelining state
-  #inFlight = new Map<number, Promise<void>>() // seq -> pending request
+  // Pipelining via fastq
+  readonly #queue: queueAsPromised<BatchTask>
   #closed = false
 
   /**
@@ -145,22 +155,26 @@ export class IdempotentProducer {
     this.#autoClaim = opts?.autoClaim ?? false
     this.#maxBatchBytes = opts?.maxBatchBytes ?? 1024 * 1024 // 1MB
     this.#lingerMs = opts?.lingerMs ?? 5
-    // Default to 1 for safety: HTTP request reordering with maxInFlight > 1
-    // can cause 409 sequence gaps when seq=N arrives before seq=N-1
-    this.#maxInFlight = opts?.maxInFlight ?? 1
     this.#signal = opts?.signal
     this.#onError = opts?.onError
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
+    // Default to 1 for safety: HTTP request reordering with maxInFlight > 1
+    // can cause 409 sequence gaps when seq=N arrives before seq=N-1
+    const maxInFlight = opts?.maxInFlight ?? 1
+
     // Guardrail: autoClaim + maxInFlight > 1 is unsafe
     // Multiple concurrent batches hitting 403 would race to claim epochs
-    if (this.#autoClaim && this.#maxInFlight > 1) {
+    if (this.#autoClaim && maxInFlight > 1) {
       throw new Error(
         `autoClaim requires maxInFlight=1. With maxInFlight > 1, concurrent ` +
           `batches hitting 403 would race to claim epochs, causing split-brain.`
       )
     }
+
+    // Initialize fastq with maxInFlight concurrency
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), maxInFlight)
 
     // Handle signal abort (use { once: true } to auto-cleanup)
     if (this.#signal) {
@@ -268,13 +282,13 @@ export class IdempotentProducer {
 
       // Check if batch should be sent immediately
       if (this.#batchBytes >= this.#maxBatchBytes) {
-        this.#sendCurrentBatch()
+        this.#enqueuePendingBatch()
       } else if (!this.#lingerTimeout) {
         // Start linger timer
         this.#lingerTimeout = setTimeout(() => {
           this.#lingerTimeout = null
           if (this.#pendingBatch.length > 0) {
-            this.#sendCurrentBatch()
+            this.#enqueuePendingBatch()
           }
         }, this.#lingerMs)
       }
@@ -293,29 +307,13 @@ export class IdempotentProducer {
       this.#lingerTimeout = null
     }
 
-    // Loop until both pending and in-flight are drained
-    // This handles the case where #sendCurrentBatch() bails due to maxInFlight,
-    // and new in-flight promises are created after Promise.all() snapshot
-    while (this.#pendingBatch.length > 0 || this.#inFlight.size > 0) {
-      // Try to send pending batch
-      if (this.#pendingBatch.length > 0) {
-        this.#sendCurrentBatch()
-      }
-
-      // If still have pending but at capacity, wait for one to complete
-      if (
-        this.#pendingBatch.length > 0 &&
-        this.#inFlight.size >= this.#maxInFlight
-      ) {
-        await Promise.race(this.#inFlight.values())
-        continue
-      }
-
-      // Wait for all current in-flight to complete
-      if (this.#inFlight.size > 0) {
-        await Promise.all(this.#inFlight.values())
-      }
+    // Enqueue any pending batch
+    if (this.#pendingBatch.length > 0) {
+      this.#enqueuePendingBatch()
     }
+
+    // Wait for queue to drain
+    await this.#queue.drained()
   }
 
   /**
@@ -372,7 +370,7 @@ export class IdempotentProducer {
    * Number of batches currently in flight.
    */
   get inFlightCount(): number {
-    return this.#inFlight.size
+    return this.#queue.length()
   }
 
   // ============================================================================
@@ -380,16 +378,10 @@ export class IdempotentProducer {
   // ============================================================================
 
   /**
-   * Send the current batch and track it in flight.
+   * Enqueue the current pending batch for processing.
    */
-  #sendCurrentBatch(): void {
+  #enqueuePendingBatch(): void {
     if (this.#pendingBatch.length === 0) return
-
-    // Wait if we've hit the in-flight limit
-    if (this.#inFlight.size >= this.#maxInFlight) {
-      // The batch will be sent when an in-flight request completes
-      return
-    }
 
     // Take the current batch
     const batch = this.#pendingBatch
@@ -399,31 +391,18 @@ export class IdempotentProducer {
     this.#batchBytes = 0
     this.#nextSeq++
 
-    // Track this batch in flight
-    const promise = this.#sendBatch(batch, seq)
-    this.#inFlight.set(seq, promise)
-
-    // Clean up when done and maybe send pending batch
-    promise
-      .finally(() => {
-        this.#inFlight.delete(seq)
-        // Try to send pending batch if any
-        if (
-          this.#pendingBatch.length > 0 &&
-          this.#inFlight.size < this.#maxInFlight
-        ) {
-          this.#sendCurrentBatch()
-        }
-      })
-      .catch(() => {
-        // Error handling is done in #sendBatch
-      })
+    // Push to fastq - it handles concurrency automatically
+    this.#queue.push({ batch, seq }).catch(() => {
+      // Error handling is done in #batchWorker
+    })
   }
 
   /**
-   * Send a batch to the server.
+   * Batch worker - processes batches via fastq.
    */
-  async #sendBatch(batch: Array<PendingEntry>, seq: number): Promise<void> {
+  async #batchWorker(task: BatchTask): Promise<void> {
+    const { batch, seq } = task
+
     try {
       const result = await this.#doSendBatch(batch, seq, this.#epoch)
 
