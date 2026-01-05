@@ -240,7 +240,10 @@ class EventDispatcher {
   private handlers = new Map<string, CollectionSyncHandler>()
 
   /** Map from event type to field parsers */
-  private parsers = new Map<string, FieldParsers<unknown>>()
+  private parsers = new Map<
+    string,
+    Record<string, (value: unknown) => unknown>
+  >()
 
   /** Handlers that have pending writes (need commit) */
   private pendingHandlers = new Set<CollectionSyncHandler>()
@@ -285,7 +288,10 @@ class EventDispatcher {
   /**
    * Register field parsers for a specific event type
    */
-  registerParser(eventType: string, parser: FieldParsers<unknown>): void {
+  registerParser(
+    eventType: string,
+    parser: Record<string, (value: unknown) => unknown>
+  ): void {
     this.parsers.set(eventType, parser)
   }
 
@@ -328,7 +334,7 @@ class EventDispatcher {
     const parser = this.parsers.get(event.type)
     if (parser) {
       for (const [field, parse] of Object.entries(parser)) {
-        if (field in value && parse) {
+        if (field in value) {
           ;(value as Record<string, unknown>)[field] = parse(
             (value as Record<string, unknown>)[field]
           )
