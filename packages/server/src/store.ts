@@ -2,7 +2,17 @@
  * In-memory stream storage.
  */
 
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  PendingLongPoll,
+  ProducerValidationResult,
+  Stream,
+  StreamMessage,
+} from "./types"
+
+/**
+ * TTL for in-memory producer state cleanup (7 days).
+ */
+const PRODUCER_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Normalize content-type by extracting the media type (before any semicolon).
@@ -79,9 +89,33 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 /**
  * In-memory store for durable streams.
  */
+/**
+ * Options for append operations.
+ */
+export interface AppendOptions {
+  seq?: string
+  contentType?: string
+  producerId?: string
+  producerEpoch?: number
+  producerSeq?: number
+}
+
+/**
+ * Result of an append operation.
+ */
+export interface AppendResult {
+  message: StreamMessage | null
+  producerResult?: ProducerValidationResult
+}
+
 export class StreamStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
+  /**
+   * Per-producer locks for serializing validation+append operations.
+   * Key: "{streamPath}:{producerId}"
+   */
+  private producerLocks = new Map<string, Promise<unknown>>()
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
@@ -207,6 +241,125 @@ export class StreamStore {
   }
 
   /**
+   * Validate producer state and update if valid.
+   * Implements Kafka-style idempotent producer validation.
+   */
+  private validateProducer(
+    stream: Stream,
+    producerId: string,
+    epoch: number,
+    seq: number
+  ): ProducerValidationResult {
+    // Initialize producers map if needed
+    if (!stream.producers) {
+      stream.producers = new Map()
+    }
+
+    // Clean up expired producer states on access
+    this.cleanupExpiredProducers(stream)
+
+    const state = stream.producers.get(producerId)
+    const now = Date.now()
+
+    // New producer - accept if seq is 0
+    if (!state) {
+      if (seq !== 0) {
+        return {
+          status: `sequence_gap`,
+          expectedSeq: 0,
+          receivedSeq: seq,
+        }
+      }
+      stream.producers.set(producerId, {
+        epoch,
+        lastSeq: 0,
+        lastUpdated: now,
+      })
+      return { status: `accepted`, isNew: true }
+    }
+
+    // Epoch validation (client-declared, server-validated)
+    if (epoch < state.epoch) {
+      return { status: `stale_epoch`, currentEpoch: state.epoch }
+    }
+
+    if (epoch > state.epoch) {
+      // New epoch must start at seq=0
+      if (seq !== 0) {
+        return { status: `invalid_epoch_seq` }
+      }
+      // Accept: update to new epoch
+      stream.producers.set(producerId, {
+        epoch,
+        lastSeq: 0,
+        lastUpdated: now,
+      })
+      return { status: `accepted`, isNew: true }
+    }
+
+    // Same epoch: sequence validation
+    if (seq <= state.lastSeq) {
+      return { status: `duplicate` }
+    }
+
+    if (seq === state.lastSeq + 1) {
+      // Accept and update
+      state.lastSeq = seq
+      state.lastUpdated = now
+      return { status: `accepted`, isNew: false }
+    }
+
+    // Sequence gap
+    return {
+      status: `sequence_gap`,
+      expectedSeq: state.lastSeq + 1,
+      receivedSeq: seq,
+    }
+  }
+
+  /**
+   * Clean up expired producer states from a stream.
+   */
+  private cleanupExpiredProducers(stream: Stream): void {
+    if (!stream.producers) return
+
+    const now = Date.now()
+    for (const [id, state] of stream.producers) {
+      if (now - state.lastUpdated > PRODUCER_STATE_TTL_MS) {
+        stream.producers.delete(id)
+      }
+    }
+  }
+
+  /**
+   * Acquire a lock for serialized producer operations.
+   * Returns a release function.
+   */
+  private async acquireProducerLock(
+    path: string,
+    producerId: string
+  ): Promise<() => void> {
+    const lockKey = `${path}:${producerId}`
+
+    // Wait for any existing lock
+    while (this.producerLocks.has(lockKey)) {
+      await this.producerLocks.get(lockKey)
+    }
+
+    // Create our lock
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.producerLocks.set(lockKey, lockPromise)
+
+    return () => {
+      this.producerLocks.delete(lockKey)
+      releaseLock!()
+    }
+  }
+
+  /**
    * Append data to a stream.
    * @throws Error if stream doesn't exist or is expired
    * @throws Error if seq is lower than lastSeq
@@ -215,8 +368,8 @@ export class StreamStore {
   append(
     path: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
-  ): StreamMessage {
+    options: AppendOptions = {}
+  ): StreamMessage | AppendResult {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
@@ -233,7 +386,26 @@ export class StreamStore {
       }
     }
 
-    // Check sequence for writer coordination
+    // Handle producer validation if producer headers are present
+    if (
+      options.producerId !== undefined &&
+      options.producerEpoch !== undefined &&
+      options.producerSeq !== undefined
+    ) {
+      const producerResult = this.validateProducer(
+        stream,
+        options.producerId,
+        options.producerEpoch,
+        options.producerSeq
+      )
+
+      // Return early for non-accepted results
+      if (producerResult.status !== `accepted`) {
+        return { message: null, producerResult }
+      }
+    }
+
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
         throw new Error(
@@ -250,7 +422,59 @@ export class StreamStore {
     // Notify any pending long-polls
     this.notifyLongPolls(path)
 
+    // Return AppendResult if producer headers were used
+    if (options.producerId !== undefined) {
+      return {
+        message,
+        producerResult: { status: `accepted`, isNew: false },
+      }
+    }
+
     return message
+  }
+
+  /**
+   * Append with producer serialization for concurrent request handling.
+   * This ensures that validation+append is atomic per producer.
+   */
+  async appendWithProducer(
+    path: string,
+    data: Uint8Array,
+    options: AppendOptions
+  ): Promise<AppendResult> {
+    if (!options.producerId) {
+      // No producer - just do a normal append
+      const result = this.append(path, data, options)
+      if (`message` in result) {
+        return result
+      }
+      return { message: result }
+    }
+
+    // Acquire lock for this producer
+    const releaseLock = await this.acquireProducerLock(path, options.producerId)
+
+    try {
+      const result = this.append(path, data, options)
+      if (`message` in result) {
+        return result
+      }
+      return { message: result }
+    } finally {
+      releaseLock()
+    }
+  }
+
+  /**
+   * Get the current epoch for a producer on a stream.
+   * Returns undefined if the producer doesn't exist or stream not found.
+   */
+  getProducerEpoch(path: string, producerId: string): number | undefined {
+    const stream = this.getIfNotExpired(path)
+    if (!stream?.producers) {
+      return undefined
+    }
+    return stream.producers.get(producerId)?.epoch
   }
 
   /**

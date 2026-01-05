@@ -66,6 +66,12 @@ export interface Stream {
    * Timestamp when the stream was created.
    */
   createdAt: number
+
+  /**
+   * Producer states for idempotent writes.
+   * Maps producer ID to their epoch and sequence state.
+   */
+  producers?: Map<string, ProducerState>
 }
 
 /**
@@ -156,6 +162,39 @@ export interface TestServerOptions {
    */
   cursorEpoch?: Date
 }
+
+/**
+ * Producer state for idempotent writes.
+ * Tracks epoch and sequence number per producer ID for deduplication.
+ */
+export interface ProducerState {
+  /**
+   * Current epoch for this producer.
+   * Client-declared, server-validated monotonically increasing.
+   */
+  epoch: number
+
+  /**
+   * Last sequence number received in this epoch.
+   */
+  lastSeq: number
+
+  /**
+   * Timestamp when this producer state was last updated.
+   * Used for TTL-based cleanup.
+   */
+  lastUpdated: number
+}
+
+/**
+ * Result of producer validation for append operations.
+ */
+export type ProducerValidationResult =
+  | { status: `accepted`; isNew: boolean }
+  | { status: `duplicate` }
+  | { status: `stale_epoch`; currentEpoch: number }
+  | { status: `invalid_epoch_seq` }
+  | { status: `sequence_gap`; expectedSeq: number; receivedSeq: number }
 
 /**
  * Pending long-poll request.

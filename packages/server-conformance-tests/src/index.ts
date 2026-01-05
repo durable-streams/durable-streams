@@ -4961,4 +4961,546 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
     })
   })
+
+  // ============================================================================
+  // Idempotent Producer Tests
+  // ============================================================================
+
+  describe(`Idempotent Producer Operations`, () => {
+    const PRODUCER_ID_HEADER = `Producer-Id`
+    const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+    const PRODUCER_SEQ_HEADER = `Producer-Seq`
+    const PRODUCER_EXPECTED_SEQ_HEADER = `Producer-Expected-Seq`
+    const PRODUCER_RECEIVED_SEQ_HEADER = `Producer-Received-Seq`
+
+    test(`should accept first append with producer headers (epoch=0, seq=0)`, async () => {
+      const streamPath = `/v1/stream/producer-basic-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // First append with producer headers
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `hello`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeTruthy()
+      expect(response.headers.get(PRODUCER_EPOCH_HEADER)).toBe(`0`)
+    })
+
+    test(`should accept sequential producer sequences`, async () => {
+      const streamPath = `/v1/stream/producer-seq-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Send seq=0
+      const r0 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg0`,
+      })
+      expect(r0.status).toBe(200)
+
+      // Send seq=1
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `msg1`,
+      })
+      expect(r1.status).toBe(200)
+
+      // Send seq=2
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `2`,
+        },
+        body: `msg2`,
+      })
+      expect(r2.status).toBe(200)
+    })
+
+    test(`should return 204 for duplicate sequence (idempotent success)`, async () => {
+      const streamPath = `/v1/stream/producer-dup-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // First append
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `hello`,
+      })
+      expect(r1.status).toBe(200)
+
+      // Duplicate append (same seq) - should return 204
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `hello`,
+      })
+      expect(r2.status).toBe(204)
+    })
+
+    test(`should accept epoch upgrade (new epoch starts at seq=0)`, async () => {
+      const streamPath = `/v1/stream/producer-epoch-upgrade-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Establish epoch=0
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `epoch0-msg0`,
+      })
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `epoch0-msg1`,
+      })
+
+      // Upgrade to epoch=1, seq=0
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `epoch1-msg0`,
+      })
+      expect(r.status).toBe(200)
+      expect(r.headers.get(PRODUCER_EPOCH_HEADER)).toBe(`1`)
+    })
+
+    test(`should reject stale epoch with 403 (zombie fencing)`, async () => {
+      const streamPath = `/v1/stream/producer-stale-epoch-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Establish epoch=1
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+
+      // Try to write with epoch=0 (stale)
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `zombie`,
+      })
+      expect(r.status).toBe(403)
+      expect(r.headers.get(PRODUCER_EPOCH_HEADER)).toBe(`1`)
+    })
+
+    test(`should reject sequence gap with 409`, async () => {
+      const streamPath = `/v1/stream/producer-seq-gap-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Send seq=0
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg0`,
+      })
+
+      // Skip seq=1, try to send seq=2 (gap)
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `2`,
+        },
+        body: `msg2`,
+      })
+      expect(r.status).toBe(409)
+      expect(r.headers.get(PRODUCER_EXPECTED_SEQ_HEADER)).toBe(`1`)
+      expect(r.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)).toBe(`2`)
+    })
+
+    test(`should reject epoch increase with seq != 0`, async () => {
+      const streamPath = `/v1/stream/producer-epoch-bad-seq-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Establish epoch=0
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+
+      // Try epoch=1 with seq=5 (invalid - new epoch must start at seq=0)
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1`,
+          [PRODUCER_SEQ_HEADER]: `5`,
+        },
+        body: `bad`,
+      })
+      expect(r.status).toBe(400)
+    })
+
+    test(`should require all producer headers together`, async () => {
+      const streamPath = `/v1/stream/producer-partial-headers-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Only Producer-Id
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+        },
+        body: `msg`,
+      })
+      expect(r1.status).toBe(400)
+
+      // Only Producer-Epoch
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r2.status).toBe(400)
+
+      // Missing Producer-Seq
+      const r3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+      expect(r3.status).toBe(400)
+    })
+
+    test(`multiple producers should have independent state`, async () => {
+      const streamPath = `/v1/stream/producer-multi-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Producer A: seq=0
+      const rA0 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `producer-A`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `A0`,
+      })
+      expect(rA0.status).toBe(200)
+
+      // Producer B: seq=0 (should be independent)
+      const rB0 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `producer-B`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `B0`,
+      })
+      expect(rB0.status).toBe(200)
+
+      // Producer A: seq=1
+      const rA1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `producer-A`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `A1`,
+      })
+      expect(rA1.status).toBe(200)
+
+      // Producer B: seq=1
+      const rB1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `producer-B`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `B1`,
+      })
+      expect(rB1.status).toBe(200)
+    })
+
+    test(`duplicate of seq=0 should not corrupt state`, async () => {
+      const streamPath = `/v1/stream/producer-dup-seq0-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // First seq=0
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `first`,
+      })
+      expect(r1.status).toBe(200)
+
+      // Retry seq=0 (simulating lost response)
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `first`,
+      })
+      expect(r2.status).toBe(204) // Duplicate
+
+      // seq=1 should succeed (state not corrupted)
+      const r3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `second`,
+      })
+      expect(r3.status).toBe(200)
+    })
+
+    test(`split-brain fencing scenario`, async () => {
+      const streamPath = `/v1/stream/producer-split-brain-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Producer A (original): epoch=0, seq=0
+      const rA0 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `shared-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `A0`,
+      })
+      expect(rA0.status).toBe(200)
+
+      // Producer B (new instance): claims with epoch=1
+      const rB0 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `shared-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `B0`,
+      })
+      expect(rB0.status).toBe(200)
+
+      // Producer A (zombie): tries epoch=0, seq=1 - should be fenced
+      const rA1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `shared-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `A1`,
+      })
+      expect(rA1.status).toBe(403)
+      expect(rA1.headers.get(PRODUCER_EPOCH_HEADER)).toBe(`1`)
+    })
+
+    test(`epoch rollback should be rejected`, async () => {
+      const streamPath = `/v1/stream/producer-epoch-rollback-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Establish epoch=2
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `2`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `msg`,
+      })
+
+      // Try epoch=1 (rollback)
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `1`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+        },
+        body: `rollback`,
+      })
+      expect(r.status).toBe(403)
+    })
+
+    test(`producer headers work with Stream-Seq header`, async () => {
+      const streamPath = `/v1/stream/producer-with-stream-seq-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with both producer and Stream-Seq headers
+      const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+          [STREAM_SEQ_HEADER]: `app-seq-001`,
+        },
+        body: `msg`,
+      })
+      expect(r.status).toBe(200)
+    })
+  })
 }

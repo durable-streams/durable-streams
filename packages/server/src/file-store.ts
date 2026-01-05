@@ -15,8 +15,24 @@ import {
   normalizeContentType,
   processJsonAppend,
 } from "./store"
+import type { AppendOptions, AppendResult } from "./store"
 import type { Database } from "lmdb"
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  PendingLongPoll,
+  ProducerState,
+  ProducerValidationResult,
+  Stream,
+  StreamMessage,
+} from "./types"
+
+/**
+ * Serializable producer state for LMDB storage.
+ */
+interface SerializableProducerState {
+  epoch: number
+  lastSeq: number
+  lastUpdated: number
+}
 
 /**
  * Stream metadata stored in LMDB.
@@ -37,6 +53,11 @@ interface StreamMetadata {
    * This allows safe async deletion and immediate reuse of stream paths.
    */
   directoryName: string
+  /**
+   * Producer states for idempotent writes.
+   * Stored as a plain object for LMDB serialization.
+   */
+  producers?: Record<string, SerializableProducerState>
 }
 
 /**
@@ -168,6 +189,11 @@ export class FileBackedStreamStore {
   private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
+  /**
+   * Per-producer locks for serializing validation+append operations.
+   * Key: "{streamPath}:{producerId}"
+   */
+  private producerLocks = new Map<string, Promise<unknown>>()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -320,6 +346,15 @@ export class FileBackedStreamStore {
    * Convert LMDB metadata to Stream object.
    */
   private streamMetaToStream(meta: StreamMetadata): Stream {
+    // Convert producers from object to Map if present
+    let producers: Map<string, ProducerState> | undefined
+    if (meta.producers) {
+      producers = new Map()
+      for (const [id, state] of Object.entries(meta.producers)) {
+        producers.set(id, { ...state })
+      }
+    }
+
     return {
       path: meta.path,
       contentType: meta.contentType,
@@ -329,7 +364,122 @@ export class FileBackedStreamStore {
       ttlSeconds: meta.ttlSeconds,
       expiresAt: meta.expiresAt,
       createdAt: meta.createdAt,
+      producers,
     }
+  }
+
+  /**
+   * Validate producer state and update if valid.
+   * Updates the metadata in place.
+   */
+  private validateProducer(
+    meta: StreamMetadata,
+    producerId: string,
+    epoch: number,
+    seq: number
+  ): ProducerValidationResult {
+    // Initialize producers map if needed
+    if (!meta.producers) {
+      meta.producers = {}
+    }
+
+    const state = meta.producers[producerId]
+    const now = Date.now()
+
+    // New producer - accept if seq is 0
+    if (!state) {
+      if (seq !== 0) {
+        return {
+          status: `sequence_gap`,
+          expectedSeq: 0,
+          receivedSeq: seq,
+        }
+      }
+      meta.producers[producerId] = {
+        epoch,
+        lastSeq: 0,
+        lastUpdated: now,
+      }
+      return { status: `accepted`, isNew: true }
+    }
+
+    // Epoch validation (client-declared, server-validated)
+    if (epoch < state.epoch) {
+      return { status: `stale_epoch`, currentEpoch: state.epoch }
+    }
+
+    if (epoch > state.epoch) {
+      // New epoch must start at seq=0
+      if (seq !== 0) {
+        return { status: `invalid_epoch_seq` }
+      }
+      // Accept: update to new epoch
+      meta.producers[producerId] = {
+        epoch,
+        lastSeq: 0,
+        lastUpdated: now,
+      }
+      return { status: `accepted`, isNew: true }
+    }
+
+    // Same epoch: sequence validation
+    if (seq <= state.lastSeq) {
+      return { status: `duplicate` }
+    }
+
+    if (seq === state.lastSeq + 1) {
+      // Accept and update
+      state.lastSeq = seq
+      state.lastUpdated = now
+      return { status: `accepted`, isNew: false }
+    }
+
+    // Sequence gap
+    return {
+      status: `sequence_gap`,
+      expectedSeq: state.lastSeq + 1,
+      receivedSeq: seq,
+    }
+  }
+
+  /**
+   * Acquire a lock for serialized producer operations.
+   * Returns a release function.
+   */
+  private async acquireProducerLock(
+    streamPath: string,
+    producerId: string
+  ): Promise<() => void> {
+    const lockKey = `${streamPath}:${producerId}`
+
+    // Wait for any existing lock
+    while (this.producerLocks.has(lockKey)) {
+      await this.producerLocks.get(lockKey)
+    }
+
+    // Create our lock
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.producerLocks.set(lockKey, lockPromise)
+
+    return () => {
+      this.producerLocks.delete(lockKey)
+      releaseLock!()
+    }
+  }
+
+  /**
+   * Get the current epoch for a producer on a stream.
+   * Returns undefined if the producer doesn't exist or stream not found.
+   */
+  getProducerEpoch(streamPath: string, producerId: string): number | undefined {
+    const meta = this.getMetaIfNotExpired(streamPath)
+    if (!meta?.producers) {
+      return undefined
+    }
+    return meta.producers[producerId]?.epoch
   }
 
   /**
@@ -528,12 +678,8 @@ export class FileBackedStreamStore {
   async append(
     streamPath: string,
     data: Uint8Array,
-    options: {
-      seq?: string
-      contentType?: string
-      isInitialCreate?: boolean
-    } = {}
-  ): Promise<StreamMessage | null> {
+    options: AppendOptions & { isInitialCreate?: boolean } = {}
+  ): Promise<StreamMessage | AppendResult | null> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
@@ -551,7 +697,27 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Check sequence for writer coordination
+    // Handle producer validation if producer headers are present
+    let producerResult: ProducerValidationResult | undefined
+    if (
+      options.producerId !== undefined &&
+      options.producerEpoch !== undefined &&
+      options.producerSeq !== undefined
+    ) {
+      producerResult = this.validateProducer(
+        streamMeta,
+        options.producerId,
+        options.producerEpoch,
+        options.producerSeq
+      )
+
+      // Return early for non-accepted results
+      if (producerResult.status !== `accepted`) {
+        return { message: null, producerResult }
+      }
+    }
+
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
     if (options.seq !== undefined) {
       if (
         streamMeta.lastSeq !== undefined &&
@@ -620,12 +786,15 @@ export class FileBackedStreamStore {
     // 3. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
 
-    // 4. Update LMDB metadata (only after flush, so metadata reflects durability)
+    // 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
+    //    This includes both the offset update and producer state update
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
+      // Producer state is already updated in validateProducer (streamMeta.producers was mutated)
+      producers: streamMeta.producers,
     }
     const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
@@ -633,8 +802,50 @@ export class FileBackedStreamStore {
     // 5. Notify long-polls (data is now readable from disk)
     this.notifyLongPolls(streamPath)
 
-    // 6. Return (client knows data is durable)
+    // 6. Return AppendResult if producer headers were used
+    if (options.producerId !== undefined) {
+      return {
+        message,
+        producerResult: { status: `accepted`, isNew: false },
+      }
+    }
+
     return message
+  }
+
+  /**
+   * Append with producer serialization for concurrent request handling.
+   * This ensures that validation+append is atomic per producer.
+   */
+  async appendWithProducer(
+    streamPath: string,
+    data: Uint8Array,
+    options: AppendOptions
+  ): Promise<AppendResult> {
+    if (!options.producerId) {
+      // No producer - just do a normal append
+      const result = await this.append(streamPath, data, options)
+      if (result && `message` in result) {
+        return result
+      }
+      return { message: result }
+    }
+
+    // Acquire lock for this producer
+    const releaseLock = await this.acquireProducerLock(
+      streamPath,
+      options.producerId
+    )
+
+    try {
+      const result = await this.append(streamPath, data, options)
+      if (result && `message` in result) {
+        return result
+      }
+      return { message: result }
+    } finally {
+      releaseLock()
+    }
   }
 
   read(

@@ -47,6 +47,37 @@ export const STREAM_TTL_HEADER = `Stream-TTL`
 export const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
 // ============================================================================
+// Idempotent Producer Headers
+// ============================================================================
+
+/**
+ * Request header for producer ID (client-supplied stable identifier).
+ */
+export const PRODUCER_ID_HEADER = `Producer-Id`
+
+/**
+ * Request/response header for producer epoch.
+ * Client-declared, server-validated monotonically increasing.
+ */
+export const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+
+/**
+ * Request header for producer sequence number.
+ * Monotonically increasing per epoch, per-batch (not per-message).
+ */
+export const PRODUCER_SEQ_HEADER = `Producer-Seq`
+
+/**
+ * Response header indicating expected sequence number on 409 Conflict.
+ */
+export const PRODUCER_EXPECTED_SEQ_HEADER = `Producer-Expected-Seq`
+
+/**
+ * Response header indicating received sequence number on 409 Conflict.
+ */
+export const PRODUCER_RECEIVED_SEQ_HEADER = `Producer-Received-Seq`
+
+// ============================================================================
 // Query Parameters
 // ============================================================================
 

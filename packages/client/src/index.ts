@@ -24,6 +24,17 @@ export { DurableStream, type DurableStreamOptions } from "./stream"
 export { warnIfUsingHttpInBrowser, _resetHttpWarningForTesting } from "./utils"
 
 // ============================================================================
+// Idempotent Producer
+// ============================================================================
+
+// IdempotentProducer for exactly-once writes
+export {
+  IdempotentProducer,
+  StaleEpochError,
+  SequenceGapError,
+} from "./idempotent-producer"
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -53,6 +64,10 @@ export type {
   ReadOptions,
   HeadResult,
   LegacyLiveMode,
+
+  // Idempotent producer types
+  IdempotentProducerOptions,
+  IdempotentAppendResult,
 
   // Error handling
   DurableStreamErrorCode,
@@ -103,4 +118,10 @@ export {
   CURSOR_QUERY_PARAM,
   SSE_COMPATIBLE_CONTENT_TYPES,
   DURABLE_STREAM_PROTOCOL_QUERY_PARAMS,
+  // Idempotent producer headers
+  PRODUCER_ID_HEADER,
+  PRODUCER_EPOCH_HEADER,
+  PRODUCER_SEQ_HEADER,
+  PRODUCER_EXPECTED_SEQ_HEADER,
+  PRODUCER_RECEIVED_SEQ_HEADER,
 } from "./constants"
