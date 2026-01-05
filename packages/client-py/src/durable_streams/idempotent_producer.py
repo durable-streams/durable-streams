@@ -192,10 +192,9 @@ class IdempotentProducer:
         """
         if self._closed:
             raise DurableStreamError(
-                "Producer is closed",
+                f"Producer is closed: {self._url}",
                 code="ALREADY_CLOSED",
                 status=None,
-                url=self._url,
             )
 
         data = body.encode("utf-8") if isinstance(body, str) else body
@@ -399,10 +398,9 @@ class IdempotentProducer:
             # Bad request (e.g., invalid epoch/seq)
             text = response.text
             raise DurableStreamError(
-                text or "Bad request",
+                f"{text or 'Bad request'}: {self._url}",
                 code="BAD_REQUEST",
                 status=400,
-                url=self._url,
             )
 
         # Other errors

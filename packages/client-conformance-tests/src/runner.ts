@@ -590,9 +590,11 @@ async function executeOperation(
         }
 
         // Build result for expectation verification
+        // success: true means we got a valid protocol response (even 403/409)
+        // The status field indicates the actual operation result
         const result: TestResult = {
           type: `append`,
-          success: status === 200 || status === 204,
+          success: true,
           status,
           offset,
           duplicate,

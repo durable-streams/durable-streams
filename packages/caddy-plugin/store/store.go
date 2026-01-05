@@ -22,10 +22,10 @@ var (
 
 // Producer validation errors
 var (
-	ErrStaleEpoch       = errors.New("producer epoch is stale")
-	ErrInvalidEpochSeq  = errors.New("new epoch must start at sequence 0")
-	ErrProducerSeqGap   = errors.New("producer sequence gap detected")
-	ErrPartialProducer  = errors.New("all producer headers must be provided together")
+	ErrStaleEpoch      = errors.New("producer epoch is stale")
+	ErrInvalidEpochSeq = errors.New("new epoch must start at sequence 0")
+	ErrProducerSeqGap  = errors.New("producer sequence gap detected")
+	ErrPartialProducer = errors.New("all producer headers must be provided together")
 )
 
 // ProducerState tracks the epoch and sequence for an idempotent producer
