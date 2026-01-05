@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseWriteArgs } from "../src/index"
+import { parseWriteArgs } from "../src/parseWriteArgs"
 
 describe(`parseWriteArgs`, () => {
   it(`returns default content-type when no flags provided`, () => {
@@ -75,8 +75,9 @@ describe(`parseWriteArgs`, () => {
     expect(result.content).toBe(`hello world foo bar`)
   })
 
-  it(`ignores unknown flags`, () => {
-    const result = parseWriteArgs([`--unknown`, `hello`])
-    expect(result.content).toBe(`hello`)
+  it(`throws on unknown flags`, () => {
+    expect(() => parseWriteArgs([`--unknown`, `hello`])).toThrow(
+      `unknown flag: --unknown`
+    )
   })
 })

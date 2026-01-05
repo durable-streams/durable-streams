@@ -1,46 +1,14 @@
 #!/usr/bin/env node
 
+import { resolve } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
+import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
+import { parseWriteArgs, type ParsedWriteArgs } from "./parseWriteArgs.js"
+
+export { parseWriteArgs, type ParsedWriteArgs }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
-
-export interface ParsedWriteArgs {
-  contentType: string
-  content: string
-}
-
-/**
- * Parse write command arguments, extracting content-type flags and content.
- * @param args - Arguments after the stream_id (starting from index 2)
- * @returns Parsed content type and content string
- * @throws Error if --content-type is missing its value
- */
-export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
-  let contentType = `application/octet-stream`
-  const contentParts: Array<string> = []
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i]!
-    if (arg === `--json`) {
-      contentType = `application/json`
-    } else if (arg === `--content-type`) {
-      const nextArg = args[i + 1]
-      if (!nextArg || nextArg.startsWith(`--`)) {
-        throw new Error(`--content-type requires a value`)
-      }
-      contentType = nextArg
-      i++ // Skip the value
-    } else if (!arg.startsWith(`--`)) {
-      contentParts.push(arg)
-    }
-  }
-
-  return {
-    contentType,
-    content: contentParts.join(` `),
-  }
-}
 
 function printUsage() {
   console.error(`
@@ -244,11 +212,14 @@ async function main() {
 }
 
 // Only run when executed directly, not when imported as a module
-const isMain =
-  import.meta.url === `file://${process.argv[1]}` ||
-  process.argv[1]?.endsWith(`/cli/src/index.ts`)
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false
+  const scriptPath = resolve(process.argv[1])
+  const modulePath = fileURLToPath(import.meta.url)
+  return scriptPath === modulePath
+}
 
-if (isMain) {
+if (isMainModule()) {
   main().catch((error) => {
     stderr.write(`Fatal error: ${error.message}\n`)
     process.exit(1)
