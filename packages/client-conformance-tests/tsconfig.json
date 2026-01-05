@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@durable-streams/client": ["../client/src/index.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"]
+}
