@@ -77,8 +77,6 @@ class _PendingEntry:
     body: bytes
     # For JSON mode, store parsed data for proper array wrapping
     data: Any = None
-    # Optional future: None for async/fire-and-forget, set for blocking Append
-    future: asyncio.Future[IdempotentAppendResult] | None = None
 
 
 class IdempotentProducer:
@@ -102,9 +100,9 @@ class IdempotentProducer:
         ...         auto_claim=True,
         ...     )
         ...
-        ...     # Fire-and-forget writes
-        ...     await producer.append(b"message 1")
-        ...     await producer.append(b"message 2")
+        ...     # Fire-and-forget writes (synchronous, returns immediately)
+        ...     producer.append(b"message 1")
+        ...     producer.append(b"message 2")
         ...
         ...     # Ensure all messages are delivered before shutdown
         ...     await producer.flush()
@@ -138,7 +136,7 @@ class IdempotentProducer:
             linger_ms: Maximum time to wait before sending a batch
             max_in_flight: Maximum concurrent batches
             content_type: Content type for appends
-            on_error: Callback for batch errors (use with append_nowait)
+            on_error: Callback for batch errors
         """
         # Guardrail: auto_claim + max_in_flight > 1 is unsafe
         # Multiple concurrent batches hitting 403 would race to claim epochs
@@ -191,25 +189,25 @@ class IdempotentProducer:
         """Number of batches currently in flight."""
         return len(self._in_flight)
 
-    async def append(self, body: bytes | str) -> IdempotentAppendResult:
+    def append(self, body: bytes | str | Any) -> None:
         """
         Append data to the stream.
 
-        The message is added to the current batch and sent when:
+        This is fire-and-forget: returns immediately after adding to the batch.
+        The message is batched and sent when:
         - max_batch_bytes is reached
         - linger_ms elapses
         - flush() is called
 
-        Args:
-            body: Data to append (bytes or str)
+        Errors are reported via on_error callback if configured. Use flush() to
+        wait for all pending messages to be sent.
 
-        Returns:
-            Result with offset and duplicate flag
+        Args:
+            body: Data to append. For JSON streams, pass native objects (dict, list, etc.)
+                  which will be serialized internally. For byte streams, pass bytes or str.
 
         Raises:
             DurableStreamError: If producer is closed
-            StaleEpochError: If epoch is stale and auto_claim is False
-            SequenceGapError: If sequence gap detected (should never happen)
         """
         if self._closed:
             raise DurableStreamError(
@@ -218,64 +216,29 @@ class IdempotentProducer:
                 status=None,
             )
 
-        data_bytes = body.encode("utf-8") if isinstance(body, str) else body
-
-        # For JSON mode, parse the body to store as data for proper batching
         is_json = _normalize_content_type(self._content_type) == "application/json"
-        parsed_data: Any = data_bytes
+
         if is_json:
-            try:
-                text = body if isinstance(body, str) else body.decode("utf-8")
-                parsed_data = json.loads(text)
-            except json.JSONDecodeError as e:
+            # For JSON mode: accept native objects, serialize internally
+            data_bytes = json.dumps(body).encode("utf-8")
+            parsed_data = body
+        else:
+            # For byte mode: require bytes or str
+            if isinstance(body, str):
+                data_bytes = body.encode("utf-8")
+            elif isinstance(body, bytes):
+                data_bytes = body
+            else:
                 raise DurableStreamError(
-                    f"Invalid JSON in append body: {e}",
+                    "Non-JSON streams require bytes or str",
                     code="BAD_REQUEST",
                     status=400,
-                ) from e
+                )
+            parsed_data = data_bytes
 
-        # Create future for this entry
-        loop = asyncio.get_event_loop()
-        entry = _PendingEntry(body=data_bytes, data=parsed_data, future=loop.create_future())
+        entry = _PendingEntry(body=data_bytes, data=parsed_data)
         self._pending_batch.append(entry)
         self._batch_bytes += len(data_bytes)
-
-        # Check if batch should be sent immediately
-        if self._batch_bytes >= self._max_batch_bytes:
-            self._send_current_batch()
-        elif self._linger_task is None:
-            # Start linger timer
-            self._linger_task = asyncio.create_task(self._linger_timeout())
-
-        assert entry.future is not None  # Future is always set for blocking append
-        return await entry.future
-
-    def append_nowait(self, body: bytes | str) -> None:
-        """
-        Append data to the stream without waiting for acknowledgment.
-
-        This is fire-and-forget: returns immediately after adding to the batch.
-        Errors are reported via on_error callback if configured.
-
-        Args:
-            body: Data to append (bytes or str)
-
-        Raises:
-            DurableStreamError: If producer is closed
-        """
-        if self._closed:
-            raise DurableStreamError(
-                f"Producer is closed: {self._url}",
-                code="ALREADY_CLOSED",
-                status=None,
-            )
-
-        data = body.encode("utf-8") if isinstance(body, str) else body
-
-        # No future for fire-and-forget
-        entry = _PendingEntry(body=data, future=None)
-        self._pending_batch.append(entry)
-        self._batch_bytes += len(data)
 
         # Check if batch should be sent immediately
         if self._batch_bytes >= self._max_batch_bytes:
@@ -326,8 +289,12 @@ class IdempotentProducer:
 
             # Wait for all current in-flight to complete
             if self._in_flight:
-                await asyncio.gather(*self._in_flight.values(), return_exceptions=True)
+                results = await asyncio.gather(*self._in_flight.values(), return_exceptions=True)
                 self._in_flight.clear()
+                # Re-raise the first exception if any failed
+                for result in results:
+                    if isinstance(result, Exception):
+                        raise result
 
     async def close(self) -> None:
         """
@@ -390,21 +357,11 @@ class IdempotentProducer:
     async def _send_batch(self, batch: list[_PendingEntry], seq: int) -> None:
         """Send a batch to the server."""
         try:
-            result = await self._do_send_batch(batch, seq, self._epoch)
-
-            # Resolve all entries in the batch (skip None futures from append_nowait)
-            for entry in batch:
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_result(result)
+            await self._do_send_batch(batch, seq, self._epoch)
         except Exception as e:
             # Call on_error callback if configured
             if self._on_error is not None:
                 self._on_error(e)
-
-            # Reject all entries in the batch (skip None futures from append_nowait)
-            for entry in batch:
-                if entry.future is not None and not entry.future.done():
-                    entry.future.set_exception(e)
             raise
 
     async def _do_send_batch(

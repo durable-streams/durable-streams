@@ -117,8 +117,8 @@ type IdempotentProducerConfig struct {
 	// ContentType is the content type for appends (default "application/octet-stream").
 	ContentType string
 
-	// OnError is called when a batch fails. Use with AppendAsync for fire-and-forget.
-	// If nil, errors are only returned from Append (blocking) or discarded by AppendAsync.
+	// OnError is called when a batch fails.
+	// If nil, errors are silently discarded (fire-and-forget).
 	OnError func(error)
 }
 
@@ -249,100 +249,55 @@ func (p *IdempotentProducer) InFlightCount() int {
 //   - LingerMs elapses
 //   - Flush is called
 //
-// Returns the result when the batch containing this message is acknowledged.
-func (p *IdempotentProducer) Append(ctx context.Context, data []byte) (*IdempotentAppendResult, error) {
-	resultCh := make(chan idempotentResult, 1)
-
-	p.mu.Lock()
-	if p.closed {
-		p.mu.Unlock()
-		return nil, ErrProducerClosed
-	}
-
-	// For JSON mode, validate and store parsed JSON for proper batching
-	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
-	var jsonData json.RawMessage
-	if isJSON {
-		// Validate JSON
-		if !json.Valid(data) {
-			p.mu.Unlock()
-			return nil, newStreamError("append", p.url, 0, fmt.Errorf("invalid JSON"))
-		}
-		jsonData = json.RawMessage(data)
-	}
-
-	// Add to pending batch
-	entry := pendingEntry{
-		data:     data,
-		jsonData: jsonData,
-		result:   resultCh,
-	}
-	p.pendingBatch = append(p.pendingBatch, entry)
-	p.batchBytes += len(data)
-
-	// Check if batch should be sent immediately
-	shouldSend := p.batchBytes >= p.config.MaxBatchBytes
-	shouldStartTimer := !shouldSend && p.lingerTimer == nil
-
-	if shouldSend {
-		p.sendCurrentBatchLocked()
-	} else if shouldStartTimer {
-		p.lingerTimer = time.AfterFunc(time.Duration(p.config.LingerMs)*time.Millisecond, func() {
-			p.mu.Lock()
-			p.lingerTimer = nil
-			if len(p.pendingBatch) > 0 {
-				p.sendCurrentBatchLocked()
-			}
-			p.mu.Unlock()
-		})
-	}
-	p.mu.Unlock()
-
-	// Wait for result
-	select {
-	case res := <-resultCh:
-		if res.err != nil {
-			return nil, res.err
-		}
-		return &res.result, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-p.closedCh:
-		return nil, ErrProducerClosed
-	}
-}
-
-// AppendAsync adds data to the stream without waiting for acknowledgment.
 // This is fire-and-forget: returns immediately after adding to the batch.
-// Errors are reported via OnError callback if configured.
+// Errors are reported via OnError callback if configured. Use Flush to
+// wait for all pending messages to be sent.
+//
+// For JSON streams, pass native Go values (maps, slices, structs, etc.)
+// which will be serialized internally. For byte streams, pass []byte or string.
+//
 // Returns ErrProducerClosed if the producer is closed.
-func (p *IdempotentProducer) AppendAsync(data []byte) error {
+func (p *IdempotentProducer) Append(data any) error {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
 		return ErrProducerClosed
 	}
 
-	// For JSON mode, validate and store parsed JSON for proper batching
 	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+	var dataBytes []byte
 	var jsonData json.RawMessage
+
 	if isJSON {
-		// Validate JSON
-		if !json.Valid(data) {
+		// For JSON mode: accept native objects, serialize internally
+		jsonBytes, err := json.Marshal(data)
+		if err != nil {
 			p.mu.Unlock()
-			return newStreamError("append", p.url, 0, fmt.Errorf("invalid JSON"))
+			return newStreamError("append", p.url, 0, fmt.Errorf("json marshal: %w", err))
 		}
-		jsonData = json.RawMessage(data)
+		dataBytes = jsonBytes
+		jsonData = json.RawMessage(jsonBytes)
+	} else {
+		// For byte mode: require []byte or string
+		switch v := data.(type) {
+		case []byte:
+			dataBytes = v
+		case string:
+			dataBytes = []byte(v)
+		default:
+			p.mu.Unlock()
+			return newStreamError("append", p.url, 0, fmt.Errorf("non-JSON streams require []byte or string, got %T", data))
+		}
 	}
 
 	// Add to pending batch (no result channel needed for async)
 	entry := pendingEntry{
-		data:     data,
+		data:     dataBytes,
 		jsonData: jsonData,
 		result:   nil, // nil signals fire-and-forget
 	}
 	p.pendingBatch = append(p.pendingBatch, entry)
-	p.batchBytes += len(data)
+	p.batchBytes += len(dataBytes)
 
 	// Check if batch should be sent immediately
 	shouldSend := p.batchBytes >= p.config.MaxBatchBytes

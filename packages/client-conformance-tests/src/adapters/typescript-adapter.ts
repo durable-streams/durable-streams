@@ -565,15 +565,15 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         })
 
         try {
-          const result = await producer.append(command.data)
+          // append() is fire-and-forget (synchronous), then flush() sends the batch
+          producer.append(command.data)
+          await producer.flush()
           await producer.close()
 
           return {
             type: `idempotent-append`,
             success: true,
-            status: result.duplicate ? 204 : 200,
-            offset: result.offset,
-            duplicate: result.duplicate,
+            status: 200,
           }
         } catch (err) {
           await producer.close()
@@ -613,19 +613,15 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         })
 
         try {
-          // Queue all items, they will be batched by lingerMs or flush
-          const appendPromises = command.items.map((item) =>
+          // append() is fire-and-forget (synchronous), adds to pending batch
+          for (const item of command.items) {
             producer.append(item)
-          )
+          }
 
-          // Flush to send the batch
+          // flush() sends the batch and waits for completion
           await producer.flush()
-
-          // Wait for all results
-          await Promise.all(appendPromises)
           await producer.close()
 
-          // All succeeded
           return {
             type: `idempotent-append-batch`,
             success: true,

@@ -77,8 +77,6 @@ interface PendingEntry {
   data: unknown
   /** Encoded bytes for byte-stream mode */
   body: Uint8Array
-  resolve: (result: { offset: Offset; duplicate: boolean }) => void
-  reject: (error: Error) => void
 }
 
 /**
@@ -107,9 +105,9 @@ interface BatchTask {
  *   autoClaim: true,
  * });
  *
- * // Fire-and-forget writes
- * await producer.append("message 1");
- * await producer.append("message 2");
+ * // Fire-and-forget writes (synchronous, returns immediately)
+ * producer.append("message 1");
+ * producer.append("message 2");
  *
  * // Ensure all messages are delivered before shutdown
  * await producer.flush();
@@ -211,20 +209,21 @@ export class IdempotentProducer {
   /**
    * Append data to the stream.
    *
-   * The message is added to the current batch and sent when:
+   * This is fire-and-forget: returns immediately after adding to the batch.
+   * The message is batched and sent when:
    * - maxBatchBytes is reached
    * - lingerMs elapses
    * - flush() is called
    *
-   * For JSON streams, you can pass objects directly - they will be serialized automatically.
+   * Errors are reported via onError callback if configured. Use flush() to
+   * wait for all pending messages to be sent.
+   *
+   * For JSON streams, pass native objects (which will be serialized internally).
    * For byte streams, pass string or Uint8Array.
    *
    * @param body - Data to append (object for JSON streams, string or Uint8Array for byte streams)
-   * @returns Promise that resolves when the batch containing this message is acknowledged
    */
-  async append(
-    body: Uint8Array | string | unknown
-  ): Promise<{ offset: Offset; duplicate: boolean }> {
+  append(body: Uint8Array | string | unknown): void {
     if (this.#closed) {
       throw new DurableStreamError(
         `Producer is closed`,
@@ -241,37 +240,10 @@ export class IdempotentProducer {
     let data: unknown
 
     if (isJson) {
-      // For JSON streams, accept objects directly or strings
-      if (typeof body === `string`) {
-        bytes = new TextEncoder().encode(body)
-        try {
-          data = JSON.parse(body)
-        } catch {
-          throw new DurableStreamError(
-            `Invalid JSON in append body`,
-            `BAD_REQUEST`,
-            400,
-            undefined
-          )
-        }
-      } else if (body instanceof Uint8Array) {
-        bytes = body
-        try {
-          data = JSON.parse(new TextDecoder().decode(body))
-        } catch {
-          throw new DurableStreamError(
-            `Invalid JSON in append body`,
-            `BAD_REQUEST`,
-            400,
-            undefined
-          )
-        }
-      } else {
-        // Object - serialize it
-        const json = JSON.stringify(body)
-        bytes = new TextEncoder().encode(json)
-        data = body
-      }
+      // For JSON streams: accept native objects, serialize internally
+      const json = JSON.stringify(body)
+      bytes = new TextEncoder().encode(json)
+      data = body
     } else {
       // For byte streams, require string or Uint8Array
       if (typeof body === `string`) {
@@ -289,23 +261,21 @@ export class IdempotentProducer {
       data = bytes
     }
 
-    return new Promise((resolve, reject) => {
-      this.#pendingBatch.push({ data, body: bytes, resolve, reject })
-      this.#batchBytes += bytes.length
+    this.#pendingBatch.push({ data, body: bytes })
+    this.#batchBytes += bytes.length
 
-      // Check if batch should be sent immediately
-      if (this.#batchBytes >= this.#maxBatchBytes) {
-        this.#enqueuePendingBatch()
-      } else if (!this.#lingerTimeout) {
-        // Start linger timer
-        this.#lingerTimeout = setTimeout(() => {
-          this.#lingerTimeout = null
-          if (this.#pendingBatch.length > 0) {
-            this.#enqueuePendingBatch()
-          }
-        }, this.#lingerMs)
-      }
-    })
+    // Check if batch should be sent immediately
+    if (this.#batchBytes >= this.#maxBatchBytes) {
+      this.#enqueuePendingBatch()
+    } else if (!this.#lingerTimeout) {
+      // Start linger timer
+      this.#lingerTimeout = setTimeout(() => {
+        this.#lingerTimeout = null
+        if (this.#pendingBatch.length > 0) {
+          this.#enqueuePendingBatch()
+        }
+      }, this.#lingerMs)
+    }
   }
 
   /**
@@ -418,26 +388,17 @@ export class IdempotentProducer {
     const epoch = this.#epoch
 
     try {
-      const result = await this.#doSendBatch(batch, seq, epoch)
+      await this.#doSendBatch(batch, seq, epoch)
 
       // Signal success for this sequence (for 409 retry coordination)
       this.#signalSeqComplete(epoch, seq, undefined)
-
-      // Resolve all entries in the batch
-      for (const entry of batch) {
-        entry.resolve(result)
-      }
     } catch (error) {
       // Signal failure so waiting batches can fail too
       this.#signalSeqComplete(epoch, seq, error as Error)
 
-      // Call onError callback if configured (for fire-and-forget error handling)
+      // Call onError callback if configured
       if (this.#onError) {
         this.#onError(error as Error)
-      }
-      // Reject all entries in the batch
-      for (const entry of batch) {
-        entry.reject(error as Error)
       }
       throw error
     }
@@ -627,15 +588,12 @@ export class IdempotentProducer {
   }
 
   /**
-   * Reject all entries in the pending batch.
+   * Clear pending batch and report error.
    */
   #rejectPendingBatch(error: Error): void {
     // Call onError callback if configured
     if (this.#onError && this.#pendingBatch.length > 0) {
       this.#onError(error)
-    }
-    for (const entry of this.#pendingBatch) {
-      entry.reject(error)
     }
     this.#pendingBatch = []
     this.#batchBytes = 0

@@ -53,6 +53,13 @@ stream_content_types: dict[str, str] = {}
 # Shared HTTP client for connection reuse (significant perf improvement)
 shared_client: httpx.Client | None = None
 
+
+def _normalize_content_type(content_type: str | None) -> str:
+    """Normalize content-type by extracting media type (before semicolon)."""
+    if not content_type:
+        return ""
+    return content_type.split(";")[0].strip().lower()
+
 # Dynamic headers/params state
 class DynamicValue:
     """Represents a dynamic value that can be evaluated per-request."""
@@ -795,6 +802,12 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
     auto_claim = cmd.get("autoClaim", False)
     data = cmd["data"]
 
+    # For JSON streams, parse the string data into a native object
+    # (IdempotentProducer now expects native objects for JSON streams)
+    is_json = _normalize_content_type(content_type) == "application/json"
+    if is_json and isinstance(data, str):
+        data = json.loads(data)
+
     async def do_append():
         async with httpx.AsyncClient(timeout=30.0) as client:
             producer = IdempotentProducer(
@@ -808,13 +821,13 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
                 content_type=content_type,
             )
             try:
-                result = await producer.append(data)
+                # append() is fire-and-forget (synchronous), then flush() sends the batch
+                producer.append(data)
+                await producer.flush()
                 return {
                     "type": "idempotent-append",
                     "success": True,
-                    "status": 204 if result.duplicate else 200,
-                    "offset": result.offset,
-                    "duplicate": result.duplicate,
+                    "status": 200,
                 }
             finally:
                 await producer.close()
@@ -836,6 +849,12 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     auto_claim = cmd.get("autoClaim", False)
     items = cmd["items"]
 
+    # For JSON streams, parse the string items into native objects
+    # (IdempotentProducer now expects native objects for JSON streams)
+    is_json = _normalize_content_type(content_type) == "application/json"
+    if is_json:
+        items = [json.loads(item) if isinstance(item, str) else item for item in items]
+
     async def do_append_batch():
         async with httpx.AsyncClient(timeout=30.0) as client:
             producer = IdempotentProducer(
@@ -850,19 +869,12 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
                 content_type=content_type,
             )
             try:
-                # Schedule all appends as tasks
-                # In Python, coroutines don't run until awaited or scheduled as tasks
-                # Note: items is already an array of strings (runner extracts data field)
-                tasks = [asyncio.create_task(producer.append(item)) for item in items]
+                # append() is fire-and-forget (synchronous), adds to pending batch
+                for item in items:
+                    producer.append(item)
 
-                # Yield control so tasks can add items to the pending batch
-                await asyncio.sleep(0)
-
-                # Now flush to send the batch
+                # flush() sends the batch and waits for completion
                 await producer.flush()
-
-                # Wait for all results
-                await asyncio.gather(*tasks)
 
                 return {
                     "type": "idempotent-append-batch",

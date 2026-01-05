@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	durablestreams "github.com/durable-streams/durable-streams/packages/client-go"
@@ -141,6 +142,18 @@ var (
 	client             *durablestreams.Client
 	streamContentTypes = make(map[string]string)
 )
+
+// normalizeContentType extracts the media type before semicolon and lowercases.
+func normalizeContentType(contentType string) string {
+	if contentType == "" {
+		return ""
+	}
+	idx := strings.Index(contentType, ";")
+	if idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.TrimSpace(strings.ToLower(contentType))
+}
 
 // Dynamic header/param state
 type DynamicValue struct {
@@ -673,22 +686,33 @@ func handleIdempotentAppend(cmd Command) Result {
 	}
 	defer producer.Close()
 
-	result, err := producer.Append(ctx, []byte(cmd.Data))
-	if err != nil {
+	// For JSON streams, parse the string data into a native object
+	// (IdempotentProducer now expects native objects for JSON streams)
+	var data any
+	if normalizeContentType(contentType) == "application/json" {
+		if err := json.Unmarshal([]byte(cmd.Data), &data); err != nil {
+			return sendError("idempotent-append", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
+		}
+	} else {
+		data = []byte(cmd.Data)
+	}
+
+	// Append returns immediately (fire-and-forget)
+	if err := producer.Append(data); err != nil {
 		return errorResult("idempotent-append", err)
 	}
 
-	status := 200
-	if result.Duplicate {
-		status = 204
+	// Flush to actually send and wait for result
+	if err := producer.Flush(ctx); err != nil {
+		return errorResult("idempotent-append", err)
 	}
 
+	// Note: With fire-and-forget API we don't get per-message results
+	// Tests verify data via read, not append response
 	return Result{
-		Type:      "idempotent-append",
-		Success:   true,
-		Status:    status,
-		Offset:    string(result.Offset),
-		Duplicate: result.Duplicate,
+		Type:    "idempotent-append",
+		Success: true,
+		Status:  200,
 	}
 }
 
@@ -718,11 +742,24 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	}
 	defer producer.Close()
 
-	// Queue all items using AppendAsync (non-blocking)
-	// Items is already []string - runner extracts the data field
+	// For JSON streams, parse the string items into native objects
+	// (IdempotentProducer now expects native objects for JSON streams)
+	isJSON := normalizeContentType(contentType) == "application/json"
+
+	// Queue all items using Append (non-blocking, no channels)
 	for _, item := range cmd.Items {
-		err := producer.AppendAsync([]byte(item))
-		if err != nil {
+		var data any
+		if isJSON {
+			var parsed any
+			if err := json.Unmarshal([]byte(item), &parsed); err != nil {
+				return sendError("idempotent-append-batch", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
+			}
+			data = parsed
+		} else {
+			data = []byte(item)
+		}
+
+		if err := producer.Append(data); err != nil {
 			return errorResult("idempotent-append-batch", err)
 		}
 	}
@@ -951,7 +988,7 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 	}
 
 	// Use IdempotentProducer for automatic batching and pipelining
-	// AppendAsync is fire-and-forget - no goroutines needed
+	// Append is fire-and-forget - no goroutines needed
 	producer, err := client.IdempotentProducer(url, "bench-producer", durablestreams.IdempotentProducerConfig{
 		LingerMs:    0, // Batch by size, not time
 		ContentType: ct,
@@ -967,9 +1004,9 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 
 	start := time.Now()
 
-	// Fire-and-forget: AppendAsync returns immediately, producer batches in background
+	// Fire-and-forget: Append returns immediately, producer batches in background
 	for i := 0; i < count; i++ {
-		_ = producer.AppendAsync(payload)
+		_ = producer.Append(payload)
 	}
 
 	// Wait for all batches to complete
