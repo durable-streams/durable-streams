@@ -1,5 +1,11 @@
 # @durable-streams/server-conformance-tests
 
+## 0.1.5
+
+### Patch Changes
+
+- Increase timeout for long poll tests and make timeout configurable ([#136](https://github.com/durable-streams/durable-streams/pull/136))
+
 ## 0.1.4
 
 ### Patch Changes
