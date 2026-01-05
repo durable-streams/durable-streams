@@ -843,14 +843,21 @@ func benchmarkCreate(ctx context.Context, path string, contentType string) int64
 }
 
 func benchmarkThroughputAppend(ctx context.Context, path string, count, size, concurrency int) (int64, *BenchmarkMetrics) {
-	stream := client.Stream(path)
-	if ct, ok := streamContentTypes[path]; ok {
-		stream.SetContentType(ct)
+	url := serverURL + path
+	ct := streamContentTypes[path]
+	if ct == "" {
+		ct = "application/octet-stream"
 	}
 
-	// Use BatchedStream for automatic batching - this is what makes Go competitive
-	batched := durablestreams.NewBatchedStream(stream)
-	defer batched.Close()
+	// Use IdempotentProducer for automatic batching and pipelining
+	producer, err := client.IdempotentProducer(url, "bench-producer", durablestreams.IdempotentProducerConfig{
+		LingerMs:    0, // No linger - send batches immediately
+		ContentType: ct,
+	})
+	if err != nil {
+		return 0, nil
+	}
+	defer producer.Close()
 
 	// Pre-generate all data
 	allData := make([][]byte, count)
@@ -868,11 +875,12 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 		wg.Add(1)
 		go func(data []byte) {
 			defer wg.Done()
-			_, _ = batched.Append(ctx, data)
+			_, _ = producer.Append(ctx, data)
 		}(allData[i])
 	}
 
 	wg.Wait()
+	_ = producer.Flush(ctx)
 	elapsed := time.Since(start)
 
 	totalBytes := count * size

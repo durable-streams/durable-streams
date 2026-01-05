@@ -26,6 +26,7 @@ from durable_streams import (
     AsyncDurableStream,
     DurableStreamError,
     FetchError,
+    IdempotentProducer,
     SeqConflictError,
     StreamExistsError,
     StreamNotFoundError,
@@ -619,11 +620,20 @@ async def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
         # Generate payload
         payload = bytes(random.getrandbits(8) for _ in range(size))
 
-        # Submit all appends concurrently
-        ds = AsyncDurableStream(url, content_type=content_type)
-        tasks = [ds.append(payload) for _ in range(count)]
+        # Use IdempotentProducer for automatic batching and pipelining
+        producer = IdempotentProducer(
+            url,
+            "bench-producer",
+            content_type=content_type,
+            linger_ms=0,  # No linger - send batches immediately
+        )
+
+        # Submit all messages at once - don't await individually
+        # IdempotentProducer will batch them automatically
+        tasks = [producer.append(payload) for _ in range(count)]
         await asyncio.gather(*tasks)
-        await ds.aclose()
+        await producer.flush()
+        await producer.close()
 
         metrics["bytesTransferred"] = count * size
         metrics["messagesProcessed"] = count
