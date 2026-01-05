@@ -160,9 +160,7 @@ export class IdempotentProducer {
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
-    // Default to 1 for safety: HTTP request reordering with maxInFlight > 1
-    // can cause 409 sequence gaps when seq=N arrives before seq=N-1
-    const maxInFlight = opts?.maxInFlight ?? 1
+    const maxInFlight = opts?.maxInFlight ?? 5
 
     // Guardrail: autoClaim + maxInFlight > 1 is unsafe
     // Multiple concurrent batches hitting 403 would race to claim epochs
