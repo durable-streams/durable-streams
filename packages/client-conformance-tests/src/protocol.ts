@@ -62,10 +62,16 @@ export interface AppendCommand {
   data: string
   /** Whether data is base64 encoded binary */
   binary?: boolean
-  /** Optional sequence number for ordering */
+  /** Optional sequence number for ordering (Stream-Seq header) */
   seq?: number
   /** Custom headers to include */
   headers?: Record<string, string>
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
 }
 
 /**
@@ -313,6 +319,14 @@ export interface AppendResult {
   headersSent?: Record<string, string>
   /** Params that were sent in the request (for dynamic param testing) */
   paramsSent?: Record<string, string>
+  /** Whether this was a duplicate (204 response) - for idempotent producers */
+  duplicate?: boolean
+  /** Current producer epoch from server (on 200 or 403) */
+  producerEpoch?: number
+  /** Expected producer sequence (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Received producer sequence (on 409 sequence gap) */
+  producerReceivedSeq?: number
 }
 
 /**

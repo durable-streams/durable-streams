@@ -118,10 +118,16 @@ export interface AppendOperation {
   data?: string
   /** Binary data (base64 encoded) */
   binaryData?: string
-  /** Sequence number for ordering */
+  /** Sequence number for ordering (Stream-Seq header) */
   seq?: number
   headers?: Record<string, string>
   expect?: AppendExpectation
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
 }
 
 /**
@@ -223,13 +229,40 @@ export interface AssertOperation {
 
 /**
  * Append to stream via direct server HTTP (bypasses client adapter).
- * Used for concurrent operations when adapter is blocked on a read.
+ * Used for concurrent operations when adapter is blocked on a read,
+ * and for testing protocol-level behavior like idempotent producers.
  */
 export interface ServerAppendOperation {
   action: `server-append`
   path: string
   data: string
   headers?: Record<string, string>
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
+  /** Expected result */
+  expect?: ServerAppendExpectation
+}
+
+/**
+ * Expectation for server-append operation.
+ */
+export interface ServerAppendExpectation {
+  /** Expected HTTP status code */
+  status?: number
+  /** Store the returned offset */
+  storeOffsetAs?: string
+  /** Expected duplicate flag (true for 204 idempotent success) */
+  duplicate?: boolean
+  /** Expected producer epoch in response */
+  producerEpoch?: number
+  /** Expected producer expected seq (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Expected producer received seq (on 409 sequence gap) */
+  producerReceivedSeq?: number
 }
 
 /**
@@ -360,13 +393,21 @@ export interface ConnectExpectation extends BaseExpectation {
 }
 
 export interface AppendExpectation extends BaseExpectation {
-  status?: 200 | 404 | 409 | number
+  status?: 200 | 204 | 400 | 403 | 404 | 409 | number
   /** Store the returned offset */
   storeOffsetAs?: string
   /** Expected headers that were sent (for dynamic header testing) */
   headersSent?: Record<string, string>
   /** Expected params that were sent (for dynamic param testing) */
   paramsSent?: Record<string, string>
+  /** Expected duplicate flag (true for 204 idempotent success) */
+  duplicate?: boolean
+  /** Expected producer epoch in response */
+  producerEpoch?: number
+  /** Expected producer expected seq (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Expected producer received seq (on 409 sequence gap) */
+  producerReceivedSeq?: number
 }
 
 export interface AppendBatchExpectation extends BaseExpectation {

@@ -1,0 +1,436 @@
+id: idempotent-producer
+name: Idempotent Producer Operations
+description: Tests for Kafka-style idempotent producer semantics (Producer-Id, Producer-Epoch, Producer-Seq)
+category: producer
+tags:
+  - idempotent
+  - exactly-once
+
+tests:
+  - id: first-append-accepted
+    name: First append with producer headers is accepted
+    description: Server should accept first append with epoch=0, seq=0
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+          producerEpoch: 0
+
+  - id: sequential-sequences
+    name: Sequential producer sequences accepted
+    description: Server should accept monotonically increasing sequences
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+
+  - id: duplicate-returns-204
+    name: Duplicate sequence returns 204 (idempotent success)
+    description: Retrying the same seq should return 204 without duplicating data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only one message in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "hello"
+          upToDate: true
+
+  - id: epoch-upgrade-accepted
+    name: Epoch upgrade resets sequence to 0
+    description: New epoch must start at seq=0 and should be accepted
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Upgrade to epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch1-msg0"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+          producerEpoch: 1
+
+  - id: stale-epoch-rejected
+    name: Stale epoch returns 403 (zombie fencing)
+    description: Old epoch should be rejected with 403 and current epoch in response
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try to write with stale epoch=0
+      - action: server-append
+        path: ${streamPath}
+        data: "zombie"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 1
+
+  - id: sequence-gap-rejected
+    name: Sequence gap returns 409
+    description: Skipping a sequence number should return 409 with expected/received seq
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Skip seq=1, try seq=2
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 409
+          producerExpectedSeq: 1
+          producerReceivedSeq: 2
+
+  - id: epoch-increase-requires-seq-zero
+    name: Epoch increase with seq != 0 is rejected
+    description: New epoch must start at seq=0
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try epoch=1 with seq=5
+      - action: server-append
+        path: ${streamPath}
+        data: "bad"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 5
+        expect:
+          status: 400
+
+  - id: multiple-producers-independent
+    name: Multiple producers have independent state
+    description: Different producer IDs should have separate epoch/seq tracking
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Producer A: seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer B: seq=0 (independent)
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer A: seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Producer B: seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "B1"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+
+  - id: split-brain-fencing
+    name: Split-brain fencing scenario
+    description: Old producer instance (zombie) should be fenced when new instance claims higher epoch
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Producer A (original): epoch=0
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer B (new instance): claims epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: shared-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer A (zombie): tries epoch=0, seq=1 - should be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 403
+          producerEpoch: 1
+
+  - id: epoch-rollback-rejected
+    name: Epoch rollback is rejected
+    description: Cannot go back to a lower epoch
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=2
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 2
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try epoch=1 (rollback)
+      - action: server-append
+        path: ${streamPath}
+        data: "rollback"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 403
+
+  - id: producer-with-stream-seq
+    name: Producer headers work with Stream-Seq header
+    description: Both producer deduplication and writer coordination should work together
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        headers:
+          Stream-Seq: "app-seq-001"
+        expect:
+          status: 200
+
+  - id: invalid-integer-formats-rejected
+    name: Invalid integer formats in producer headers are rejected
+    description: Server should reject non-integer values like "1abc" or "1e3"
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Trailing junk in Producer-Seq
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "0"
+          Producer-Seq: "1abc"
+        expect:
+          status: 400
+      # Scientific notation
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "1e3"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+      # Negative value
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "-1"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: partial-headers-rejected
+    name: Partial producer headers are rejected
+    description: All three producer headers must be provided together
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Only Producer-Id
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+        expect:
+          status: 400
+      # Missing Producer-Seq
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "0"
+        expect:
+          status: 400
+
+  - id: duplicate-seq-zero-preserves-state
+    name: Duplicate of seq=0 does not corrupt state
+    description: Retrying seq=0 should not affect subsequent sequence tracking
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "first"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "first"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+      # seq=1 should still work
+      - action: server-append
+        path: ${streamPath}
+        data: "second"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200

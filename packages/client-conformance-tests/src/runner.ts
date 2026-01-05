@@ -538,7 +538,8 @@ async function executeOperation(
 
     case `server-append`: {
       // Direct HTTP append to server, bypassing client adapter
-      // Used for concurrent operations when adapter is blocked on a read
+      // Used for concurrent operations when adapter is blocked on a read,
+      // and for testing protocol-level behavior like idempotent producers
       const path = resolveVariables(op.path, variables)
       const data = resolveVariables(op.data, variables)
 
@@ -550,28 +551,68 @@ async function executeOperation(
         const contentType =
           headResponse.headers.get(`content-type`) ?? `application/octet-stream`
 
+        // Build headers, including producer headers if present
+        const headers: Record<string, string> = {
+          "content-type": contentType,
+          ...op.headers,
+        }
+        if (op.producerId !== undefined) {
+          headers[`Producer-Id`] = op.producerId
+        }
+        if (op.producerEpoch !== undefined) {
+          headers[`Producer-Epoch`] = op.producerEpoch.toString()
+        }
+        if (op.producerSeq !== undefined) {
+          headers[`Producer-Seq`] = op.producerSeq.toString()
+        }
+
         const response = await fetch(`${ctx.serverUrl}${path}`, {
           method: `POST`,
           body: data,
-          headers: {
-            "content-type": contentType,
-            ...op.headers,
-          },
+          headers,
         })
+
+        const status = response.status
+        const offset = response.headers.get(`Stream-Next-Offset`) ?? undefined
+        const duplicate = status === 204
+        const producerEpoch = response.headers.get(`Producer-Epoch`)
+        const producerExpectedSeq = response.headers.get(
+          `Producer-Expected-Seq`
+        )
+        const producerReceivedSeq = response.headers.get(
+          `Producer-Received-Seq`
+        )
 
         if (verbose) {
           console.log(
-            `  server-append ${path}: ${response.ok ? `ok` : `failed (${response.status})`}`
+            `  server-append ${path}: status=${status}${duplicate ? ` (duplicate)` : ``}`
           )
         }
 
-        if (!response.ok) {
-          return {
-            error: `Server append failed with status ${response.status}`,
-          }
+        // Build result for expectation verification
+        const result: TestResult = {
+          type: `append`,
+          success: status === 200 || status === 204,
+          status,
+          offset,
+          duplicate,
+          producerEpoch: producerEpoch
+            ? parseInt(producerEpoch, 10)
+            : undefined,
+          producerExpectedSeq: producerExpectedSeq
+            ? parseInt(producerExpectedSeq, 10)
+            : undefined,
+          producerReceivedSeq: producerReceivedSeq
+            ? parseInt(producerReceivedSeq, 10)
+            : undefined,
         }
 
-        return {}
+        // Store offset if requested
+        if (op.expect?.storeOffsetAs && offset) {
+          variables.set(op.expect.storeOffsetAs, offset)
+        }
+
+        return { result }
       } catch (err) {
         return {
           error: `Server append failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -875,6 +916,34 @@ function validateExpectation(
       if (actualValue !== expectedValue) {
         return `Expected paramsSent[${key}]="${expectedValue}", got "${actualValue ?? `undefined`}"`
       }
+    }
+  }
+
+  // Check duplicate (for idempotent producer 204 responses)
+  if (expect.duplicate !== undefined && isAppendResult(result)) {
+    if (result.duplicate !== expect.duplicate) {
+      return `Expected duplicate=${expect.duplicate}, got ${result.duplicate}`
+    }
+  }
+
+  // Check producerEpoch (returned on 200/403)
+  if (expect.producerEpoch !== undefined && isAppendResult(result)) {
+    if (result.producerEpoch !== expect.producerEpoch) {
+      return `Expected producerEpoch=${expect.producerEpoch}, got ${result.producerEpoch}`
+    }
+  }
+
+  // Check producerExpectedSeq (returned on 409 sequence gap)
+  if (expect.producerExpectedSeq !== undefined && isAppendResult(result)) {
+    if (result.producerExpectedSeq !== expect.producerExpectedSeq) {
+      return `Expected producerExpectedSeq=${expect.producerExpectedSeq}, got ${result.producerExpectedSeq}`
+    }
+  }
+
+  // Check producerReceivedSeq (returned on 409 sequence gap)
+  if (expect.producerReceivedSeq !== undefined && isAppendResult(result)) {
+    if (result.producerReceivedSeq !== expect.producerReceivedSeq) {
+      return `Expected producerReceivedSeq=${expect.producerReceivedSeq}, got ${result.producerReceivedSeq}`
     }
   }
 
