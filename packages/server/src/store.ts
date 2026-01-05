@@ -408,18 +408,10 @@ export class StreamStore {
       }
     }
 
-    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
-    // IMPORTANT: Do this BEFORE producer validation to ensure atomicity.
-    // If this check fails, we don't want to have already mutated producer state.
-    if (options.seq !== undefined) {
-      if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
-        )
-      }
-    }
-
-    // Handle producer validation if producer headers are present
+    // Handle producer validation FIRST if producer headers are present
+    // This must happen before Stream-Seq check so that retries with both
+    // producer headers AND Stream-Seq can return 204 (duplicate) instead of
+    // failing the Stream-Seq conflict check.
     // NOTE: validateProducer does NOT mutate state - it returns proposed state
     // that we commit AFTER successful append (for atomicity)
     let producerResult: ProducerValidationResult | undefined
@@ -435,9 +427,20 @@ export class StreamStore {
         options.producerSeq
       )
 
-      // Return early for non-accepted results
+      // Return early for non-accepted results (duplicate, stale epoch, gap)
+      // IMPORTANT: Return 204 for duplicate BEFORE Stream-Seq check
       if (producerResult.status !== `accepted`) {
         return { message: null, producerResult }
+      }
+    }
+
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
+    // This happens AFTER producer validation so retries can be deduplicated
+    if (options.seq !== undefined) {
+      if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
+        throw new Error(
+          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
+        )
       }
     }
 

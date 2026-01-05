@@ -25,6 +25,7 @@ from durable_streams import (
     DurableStream,
     DurableStreamError,
     FetchError,
+    IdempotentProducer,
     SeqConflictError,
     StreamExistsError,
     StreamNotFoundError,
@@ -780,6 +781,95 @@ def handle_clear_dynamic(_cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-append command."""
+    import asyncio
+
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache or use default
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd["producerId"]
+    epoch = cmd.get("epoch", 0)
+    auto_claim = cmd.get("autoClaim", False)
+    data = cmd["data"]
+
+    async def do_append():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            producer = IdempotentProducer(
+                url=url,
+                producer_id=producer_id,
+                client=client,
+                epoch=epoch,
+                auto_claim=auto_claim,
+                max_in_flight=1,  # Required when auto_claim is True
+                linger_ms=0,  # Send immediately for testing
+                content_type=content_type,
+            )
+            try:
+                result = await producer.append(data)
+                return {
+                    "type": "idempotent-append",
+                    "success": True,
+                    "status": 204 if result.duplicate else 200,
+                    "offset": result.offset,
+                    "duplicate": result.duplicate,
+                }
+            finally:
+                await producer.close()
+
+    return asyncio.run(do_append())
+
+
+def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-append-batch command."""
+    import asyncio
+
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache or use default
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd["producerId"]
+    epoch = cmd.get("epoch", 0)
+    auto_claim = cmd.get("autoClaim", False)
+    items = cmd["items"]
+
+    async def do_append_batch():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            producer = IdempotentProducer(
+                url=url,
+                producer_id=producer_id,
+                client=client,
+                epoch=epoch,
+                auto_claim=auto_claim,
+                max_in_flight=1,  # Required when auto_claim is True
+                linger_ms=1000,  # Let items batch together
+                max_batch_bytes=1024 * 1024,  # 1MB - allow all items to batch
+                content_type=content_type,
+            )
+            try:
+                # Queue all items, they will be batched by linger_ms or flush
+                tasks = [producer.append(item) for item in items]
+
+                # Flush to send the batch
+                await producer.flush()
+
+                # Wait for all results
+                await asyncio.gather(*tasks)
+
+                return {
+                    "type": "idempotent-append-batch",
+                    "success": True,
+                    "status": 200,
+                }
+            finally:
+                await producer.close()
+
+    return asyncio.run(do_append_batch())
+
+
 def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
     """Route command to appropriate handler."""
     cmd_type = cmd["type"]
@@ -809,6 +899,10 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_set_dynamic_param(cmd)
         elif cmd_type == "clear-dynamic":
             return handle_clear_dynamic(cmd)
+        elif cmd_type == "idempotent-append":
+            return handle_idempotent_append(cmd)
+        elif cmd_type == "idempotent-append-batch":
+            return handle_idempotent_append_batch(cmd)
         else:
             return {
                 "type": "error",

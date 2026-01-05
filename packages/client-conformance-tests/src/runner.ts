@@ -366,6 +366,70 @@ async function executeOperation(
       }
     }
 
+    case `idempotent-append`: {
+      const path = resolveVariables(op.path, variables)
+      const data = resolveVariables(op.data, variables)
+
+      const result = await client.send(
+        {
+          type: `idempotent-append`,
+          path,
+          data,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          autoClaim: op.autoClaim ?? false,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-append ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      if (
+        result.success &&
+        result.type === `idempotent-append` &&
+        op.expect?.storeOffsetAs
+      ) {
+        variables.set(op.expect.storeOffsetAs, result.offset ?? ``)
+      }
+
+      return { result }
+    }
+
+    case `idempotent-append-batch`: {
+      const path = resolveVariables(op.path, variables)
+
+      // Send items to client which will batch them internally
+      const items = op.items.map((item) =>
+        resolveVariables(item.data, variables)
+      )
+
+      const result = await client.send(
+        {
+          type: `idempotent-append-batch`,
+          path,
+          items,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          autoClaim: op.autoClaim ?? false,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-append-batch ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
     case `read`: {
       const path = resolveVariables(op.path, variables)
       const offset = op.offset

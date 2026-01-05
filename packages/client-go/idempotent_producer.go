@@ -3,14 +3,28 @@ package durablestreams
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
+
+// normalizeContentType extracts media type before semicolon and lowercases.
+func normalizeContentType(contentType string) string {
+	if contentType == "" {
+		return ""
+	}
+	idx := strings.Index(contentType, ";")
+	if idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.TrimSpace(strings.ToLower(contentType))
+}
 
 // Producer header constants
 const (
@@ -73,7 +87,9 @@ type IdempotentAppendResult struct {
 // pendingEntry represents a message waiting to be sent.
 type pendingEntry struct {
 	data   []byte
-	result chan idempotentResult
+	// For JSON mode, store the raw JSON value for proper array wrapping
+	jsonData json.RawMessage
+	result   chan idempotentResult
 }
 
 type idempotentResult struct {
@@ -243,10 +259,23 @@ func (p *IdempotentProducer) Append(ctx context.Context, data []byte) (*Idempote
 		return nil, ErrProducerClosed
 	}
 
+	// For JSON mode, validate and store parsed JSON for proper batching
+	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+	var jsonData json.RawMessage
+	if isJSON {
+		// Validate JSON
+		if !json.Valid(data) {
+			p.mu.Unlock()
+			return nil, newStreamError("append", p.url, 0, fmt.Errorf("invalid JSON"))
+		}
+		jsonData = json.RawMessage(data)
+	}
+
 	// Add to pending batch
 	entry := pendingEntry{
-		data:   data,
-		result: resultCh,
+		data:     data,
+		jsonData: jsonData,
+		result:   resultCh,
 	}
 	p.pendingBatch = append(p.pendingBatch, entry)
 	p.batchBytes += len(data)
@@ -294,10 +323,23 @@ func (p *IdempotentProducer) AppendAsync(data []byte) error {
 		return ErrProducerClosed
 	}
 
+	// For JSON mode, validate and store parsed JSON for proper batching
+	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+	var jsonData json.RawMessage
+	if isJSON {
+		// Validate JSON
+		if !json.Valid(data) {
+			p.mu.Unlock()
+			return newStreamError("append", p.url, 0, fmt.Errorf("invalid JSON"))
+		}
+		jsonData = json.RawMessage(data)
+	}
+
 	// Add to pending batch (no result channel needed for async)
 	entry := pendingEntry{
-		data:   data,
-		result: nil, // nil signals fire-and-forget
+		data:     data,
+		jsonData: jsonData,
+		result:   nil, // nil signals fire-and-forget
 	}
 	p.pendingBatch = append(p.pendingBatch, entry)
 	p.batchBytes += len(data)
@@ -445,18 +487,36 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 
 // doSendBatch sends a batch to the server.
 func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEntry, seq, epoch int) (IdempotentAppendResult, error) {
-	// Concatenate all data
-	var totalSize int
-	for _, e := range batch {
-		totalSize += len(e.data)
-	}
-	concatenated := make([]byte, 0, totalSize)
-	for _, e := range batch {
-		concatenated = append(concatenated, e.data...)
+	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+
+	var batchedBody []byte
+	if isJSON {
+		// For JSON mode: always send as array (server flattens one level)
+		// Single append: [value] → server stores value
+		// Multiple appends: [val1, val2] → server stores val1, val2
+		values := make([]json.RawMessage, len(batch))
+		for i, e := range batch {
+			values[i] = e.jsonData
+		}
+		var err error
+		batchedBody, err = json.Marshal(values)
+		if err != nil {
+			return IdempotentAppendResult{}, fmt.Errorf("json batch encode: %w", err)
+		}
+	} else {
+		// For byte mode: concatenate all chunks
+		var totalSize int
+		for _, e := range batch {
+			totalSize += len(e.data)
+		}
+		batchedBody = make([]byte, 0, totalSize)
+		for _, e := range batch {
+			batchedBody = append(batchedBody, e.data...)
+		}
 	}
 
 	// Build request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(concatenated))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(batchedBody))
 	if err != nil {
 		return IdempotentAppendResult{}, err
 	}

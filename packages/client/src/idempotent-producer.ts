@@ -58,9 +58,21 @@ export class SequenceGapError extends Error {
 }
 
 /**
+ * Normalize content-type by extracting the media type (before any semicolon).
+ */
+function normalizeContentType(contentType: string | undefined): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
+}
+
+/**
  * Internal type for pending batch entries.
+ * Stores original data for proper JSON batching.
  */
 interface PendingEntry {
+  /** Original data - parsed for JSON mode batching */
+  data: unknown
+  /** Encoded bytes for byte-stream mode */
   body: Uint8Array
   resolve: (result: { offset: Offset; duplicate: boolean }) => void
   reject: (error: Error) => void
@@ -132,7 +144,9 @@ export class IdempotentProducer {
     this.#autoClaim = opts?.autoClaim ?? false
     this.#maxBatchBytes = opts?.maxBatchBytes ?? 1024 * 1024 // 1MB
     this.#lingerMs = opts?.lingerMs ?? 5
-    this.#maxInFlight = opts?.maxInFlight ?? 5
+    // Default to 1 for safety: HTTP request reordering with maxInFlight > 1
+    // can cause 409 sequence gaps when seq=N arrives before seq=N-1
+    this.#maxInFlight = opts?.maxInFlight ?? 1
     this.#signal = opts?.signal
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
@@ -191,8 +205,28 @@ export class IdempotentProducer {
     const bytes =
       typeof body === `string` ? new TextEncoder().encode(body) : body
 
+    // For JSON mode, parse the body to store as data for proper batching
+    // For byte mode, data is just the bytes
+    const isJson =
+      normalizeContentType(this.#stream.contentType) === `application/json`
+    let data: unknown = bytes
+    if (isJson) {
+      try {
+        const text =
+          typeof body === `string` ? body : new TextDecoder().decode(body)
+        data = JSON.parse(text)
+      } catch {
+        throw new DurableStreamError(
+          `Invalid JSON in append body`,
+          `BAD_REQUEST`,
+          400,
+          undefined
+        )
+      }
+    }
+
     return new Promise((resolve, reject) => {
-      this.#pendingBatch.push({ body: bytes, resolve, reject })
+      this.#pendingBatch.push({ data, body: bytes, resolve, reject })
       this.#batchBytes += bytes.length
 
       // Check if batch should be sent immediately
@@ -379,13 +413,27 @@ export class IdempotentProducer {
     seq: number,
     epoch: number
   ): Promise<{ offset: Offset; duplicate: boolean }> {
-    // Concatenate all bodies
-    const totalSize = batch.reduce((sum, e) => sum + e.body.length, 0)
-    const concatenated = new Uint8Array(totalSize)
-    let offset = 0
-    for (const entry of batch) {
-      concatenated.set(entry.body, offset)
-      offset += entry.body.length
+    const contentType = this.#stream.contentType ?? `application/octet-stream`
+    const isJson = normalizeContentType(contentType) === `application/json`
+
+    // Build batch body based on content type
+    let batchedBody: BodyInit
+    if (isJson) {
+      // For JSON mode: always send as array (server flattens one level)
+      // Single append: [value] → server stores value
+      // Multiple appends: [val1, val2] → server stores val1, val2
+      const values = batch.map((e) => e.data)
+      batchedBody = JSON.stringify(values)
+    } else {
+      // For byte mode: concatenate all chunks
+      const totalSize = batch.reduce((sum, e) => sum + e.body.length, 0)
+      const concatenated = new Uint8Array(totalSize)
+      let offset = 0
+      for (const entry of batch) {
+        concatenated.set(entry.body, offset)
+        offset += entry.body.length
+      }
+      batchedBody = concatenated
     }
 
     // Build URL
@@ -393,7 +441,7 @@ export class IdempotentProducer {
 
     // Build headers
     const headers: Record<string, string> = {
-      "content-type": this.#stream.contentType ?? `application/octet-stream`,
+      "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: epoch.toString(),
       [PRODUCER_SEQ_HEADER]: seq.toString(),
@@ -403,7 +451,7 @@ export class IdempotentProducer {
     const response = await this.#fetchClient(url, {
       method: `POST`,
       headers,
-      body: concatenated,
+      body: batchedBody,
       signal: this.#signal,
     })
 

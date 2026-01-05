@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -62,11 +63,21 @@ class IdempotentAppendResult:
     duplicate: bool
 
 
+def _normalize_content_type(content_type: str | None) -> str:
+    """Normalize content-type by extracting media type (before semicolon)."""
+    if not content_type:
+        return ""
+    return content_type.split(";")[0].strip().lower()
+
+
 @dataclass
 class _PendingEntry:
     """Internal type for pending batch entries."""
 
     body: bytes
+    # For JSON mode, store parsed data for proper array wrapping
+    data: Any = None
+    # Optional future: None for async/fire-and-forget, set for blocking Append
     future: asyncio.Future[IdempotentAppendResult] | None = None
 
 
@@ -207,13 +218,27 @@ class IdempotentProducer:
                 status=None,
             )
 
-        data = body.encode("utf-8") if isinstance(body, str) else body
+        data_bytes = body.encode("utf-8") if isinstance(body, str) else body
+
+        # For JSON mode, parse the body to store as data for proper batching
+        is_json = _normalize_content_type(self._content_type) == "application/json"
+        parsed_data: Any = data_bytes
+        if is_json:
+            try:
+                text = body if isinstance(body, str) else body.decode("utf-8")
+                parsed_data = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise DurableStreamError(
+                    f"Invalid JSON in append body: {e}",
+                    code="BAD_REQUEST",
+                    status=400,
+                ) from e
 
         # Create future for this entry
         loop = asyncio.get_event_loop()
-        entry = _PendingEntry(body=data, future=loop.create_future())
+        entry = _PendingEntry(body=data_bytes, data=parsed_data, future=loop.create_future())
         self._pending_batch.append(entry)
-        self._batch_bytes += len(data)
+        self._batch_bytes += len(data_bytes)
 
         # Check if batch should be sent immediately
         if self._batch_bytes >= self._max_batch_bytes:
@@ -222,6 +247,7 @@ class IdempotentProducer:
             # Start linger timer
             self._linger_task = asyncio.create_task(self._linger_timeout())
 
+        assert entry.future is not None  # Future is always set for blocking append
         return await entry.future
 
     def append_nowait(self, body: bytes | str) -> None:
@@ -389,8 +415,18 @@ class IdempotentProducer:
         Handles auto-claim retry on 403 (stale epoch) if auto_claim is enabled.
         Does NOT implement general retry/backoff for network errors or 5xx responses.
         """
-        # Concatenate all bodies
-        concatenated = b"".join(entry.body for entry in batch)
+        is_json = _normalize_content_type(self._content_type) == "application/json"
+
+        # Build batch body based on content type
+        if is_json:
+            # For JSON mode: always send as array (server flattens one level)
+            # Single append: [value] → server stores value
+            # Multiple appends: [val1, val2] → server stores val1, val2
+            values = [entry.data for entry in batch]
+            batched_body = json.dumps(values).encode("utf-8")
+        else:
+            # For byte mode: concatenate all chunks
+            batched_body = b"".join(entry.body for entry in batch)
 
         # Build headers
         headers = {
@@ -403,7 +439,7 @@ class IdempotentProducer:
         # Send request
         response = await self._client.post(
             self._url,
-            content=concatenated,
+            content=batched_body,
             headers=headers,
         )
 

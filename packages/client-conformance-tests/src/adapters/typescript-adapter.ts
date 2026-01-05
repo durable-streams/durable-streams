@@ -544,6 +544,95 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       }
     }
 
+    case `idempotent-append`: {
+      try {
+        const url = `${serverUrl}${command.path}`
+
+        // Get content-type from cache or use default
+        const contentType =
+          streamContentTypes.get(command.path) ?? `application/octet-stream`
+
+        const ds = new DurableStream({
+          url,
+          contentType,
+        })
+
+        const producer = new IdempotentProducer(ds, command.producerId, {
+          epoch: command.epoch,
+          autoClaim: command.autoClaim,
+          maxInFlight: 1, // Required when autoClaim is true
+          lingerMs: 0, // Send immediately for testing
+        })
+
+        try {
+          const result = await producer.append(command.data)
+          await producer.close()
+
+          return {
+            type: `idempotent-append`,
+            success: true,
+            status: result.duplicate ? 204 : 200,
+            offset: result.offset,
+            duplicate: result.duplicate,
+          }
+        } catch (err) {
+          await producer.close()
+          throw err
+        }
+      } catch (err) {
+        return errorResult(`idempotent-append`, err)
+      }
+    }
+
+    case `idempotent-append-batch`: {
+      try {
+        const url = `${serverUrl}${command.path}`
+
+        // Get content-type from cache or use default
+        const contentType =
+          streamContentTypes.get(command.path) ?? `application/octet-stream`
+
+        const ds = new DurableStream({
+          url,
+          contentType,
+        })
+
+        const producer = new IdempotentProducer(ds, command.producerId, {
+          epoch: command.epoch,
+          autoClaim: command.autoClaim,
+          maxInFlight: 1, // Required when autoClaim is true
+          lingerMs: 1000, // Let items batch together
+          maxBatchBytes: 1024 * 1024, // 1MB - allow all items to batch
+        })
+
+        try {
+          // Queue all items, they will be batched by lingerMs or flush
+          const appendPromises = command.items.map((item) =>
+            producer.append(item)
+          )
+
+          // Flush to send the batch
+          await producer.flush()
+
+          // Wait for all results
+          await Promise.all(appendPromises)
+          await producer.close()
+
+          // All succeeded
+          return {
+            type: `idempotent-append-batch`,
+            success: true,
+            status: 200,
+          }
+        } catch (err) {
+          await producer.close()
+          throw err
+        }
+      } catch (err) {
+        return errorResult(`idempotent-append-batch`, err)
+      }
+    }
+
     default:
       return {
         type: `error`,

@@ -163,6 +163,11 @@ export class DurableStream {
     this.#options = { ...opts, url: urlStr }
     this.#onError = opts.onError
 
+    // Set contentType from options if provided (for IdempotentProducer and other use cases)
+    if (opts.contentType) {
+      this.contentType = opts.contentType
+    }
+
     // Batching is enabled by default
     this.#batchingEnabled = opts.batching !== false
 

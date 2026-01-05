@@ -75,6 +75,42 @@ export interface AppendCommand {
 }
 
 /**
+ * Append via IdempotentProducer client (tests client-side exactly-once semantics).
+ */
+export interface IdempotentAppendCommand {
+  type: `idempotent-append`
+  path: string
+  /** Data to append (string - will be JSON parsed for JSON streams) */
+  data: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
+ * Batch append via IdempotentProducer client (tests client-side JSON batching).
+ */
+export interface IdempotentAppendBatchCommand {
+  type: `idempotent-append-batch`
+  path: string
+  /** Items to append - will be batched by the client */
+  items: Array<string>
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
  * Read from a stream (GET request).
  */
 export interface ReadCommand {
@@ -241,6 +277,8 @@ export type TestCommand =
   | CreateCommand
   | ConnectCommand
   | AppendCommand
+  | IdempotentAppendCommand
+  | IdempotentAppendBatchCommand
   | ReadCommand
   | HeadCommand
   | DeleteCommand
@@ -327,6 +365,28 @@ export interface AppendResult {
   producerExpectedSeq?: number
   /** Received producer sequence (on 409 sequence gap) */
   producerReceivedSeq?: number
+}
+
+/**
+ * Successful idempotent-append result.
+ */
+export interface IdempotentAppendResult {
+  type: `idempotent-append`
+  success: true
+  status: number
+  /** New offset after append */
+  offset?: string
+  /** Whether this was a duplicate */
+  duplicate?: boolean
+}
+
+/**
+ * Successful idempotent-append-batch result.
+ */
+export interface IdempotentAppendBatchResult {
+  type: `idempotent-append-batch`
+  success: true
+  status: number
 }
 
 /**
@@ -472,6 +532,8 @@ export type TestResult =
   | CreateResult
   | ConnectResult
   | AppendResult
+  | IdempotentAppendResult
+  | IdempotentAppendBatchResult
   | ReadResult
   | HeadResult
   | DeleteResult

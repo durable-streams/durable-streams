@@ -147,6 +147,62 @@ export interface AppendBatchOperation {
 }
 
 /**
+ * Append via IdempotentProducer client (tests client-side exactly-once semantics).
+ */
+export interface IdempotentAppendOperation {
+  action: `idempotent-append`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  /** Data to append (string or JSON for JSON streams) */
+  data: string
+  /** Auto-claim epoch on 403 */
+  autoClaim?: boolean
+  headers?: Record<string, string>
+  expect?: IdempotentAppendExpectation
+}
+
+/**
+ * Batch append via IdempotentProducer client (tests client-side JSON batching).
+ */
+export interface IdempotentAppendBatchOperation {
+  action: `idempotent-append-batch`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  /** Items to append (will be batched by the client) */
+  items: Array<{
+    data: string
+  }>
+  /** Auto-claim epoch on 403 */
+  autoClaim?: boolean
+  headers?: Record<string, string>
+  expect?: IdempotentAppendBatchExpectation
+}
+
+/**
+ * Expectation for idempotent-append operation.
+ */
+export interface IdempotentAppendExpectation extends BaseExpectation {
+  /** Expected duplicate flag */
+  duplicate?: boolean
+  /** Store the returned offset */
+  storeOffsetAs?: string
+}
+
+/**
+ * Expectation for idempotent-append-batch operation.
+ */
+export interface IdempotentAppendBatchExpectation extends BaseExpectation {
+  /** All items should succeed */
+  allSucceed?: boolean
+}
+
+/**
  * Read from a stream.
  */
 export interface ReadOperation {
@@ -353,6 +409,8 @@ export type TestOperation =
   | ConnectOperation
   | AppendOperation
   | AppendBatchOperation
+  | IdempotentAppendOperation
+  | IdempotentAppendBatchOperation
   | ReadOperation
   | HeadOperation
   | DeleteOperation
