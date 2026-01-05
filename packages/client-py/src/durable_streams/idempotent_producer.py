@@ -11,6 +11,7 @@ Implements Kafka-style idempotent producer pattern with:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -230,10 +231,8 @@ class IdempotentProducer:
         # Cancel linger timeout
         if self._linger_task is not None:
             self._linger_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._linger_task
-            except asyncio.CancelledError:
-                pass
             self._linger_task = None
 
         # Loop until both pending and in-flight are drained
@@ -272,10 +271,8 @@ class IdempotentProducer:
 
         self._closed = True
 
-        try:
+        with contextlib.suppress(Exception):
             await self.flush()
-        except Exception:
-            pass  # Ignore errors during close
 
         if self._owns_client:
             await self._client.aclose()
@@ -313,7 +310,7 @@ class IdempotentProducer:
         self._in_flight[seq] = task
 
         # Clean up when done and maybe send pending batch
-        def on_done(t: asyncio.Task[None]) -> None:
+        def on_done(_task: asyncio.Task[None]) -> None:
             self._in_flight.pop(seq, None)
             # Try to send pending batch if any
             if self._pending_batch and len(self._in_flight) < self._max_in_flight:
@@ -415,7 +412,7 @@ class IdempotentProducer:
             url=self._url,
         )
 
-    async def __aenter__(self) -> "IdempotentProducer":
+    async def __aenter__(self) -> IdempotentProducer:
         """Async context manager entry."""
         return self
 
