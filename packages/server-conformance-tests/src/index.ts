@@ -17,6 +17,8 @@ import {
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
   baseUrl: string
+  /** Timeout for long-poll tests in milliseconds (default: 20000) */
+  longPollTimeoutMs?: number
 }
 
 /**
@@ -144,6 +146,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // Access options.baseUrl directly instead of destructuring to support
   // mutable config objects (needed for dynamic port assignment)
   const getBaseUrl = () => options.baseUrl
+  const getLongPollTestTimeoutMs = () =>
+    (options.longPollTimeoutMs ?? 20_000) + 1_000
 
   // ============================================================================
   // Basic Stream Operations
@@ -380,42 +384,47 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // ============================================================================
 
   describe(`Long-Poll Operations`, () => {
-    test(`should wait for new data with long-poll`, async () => {
-      const streamPath = `/v1/stream/longpoll-test-${Date.now()}`
-      const stream = await DurableStream.create({
-        url: `${getBaseUrl()}${streamPath}`,
-        contentType: `text/plain`,
-      })
-
-      const receivedData: Array<string> = []
-
-      // Start reading in long-poll mode
-      const readPromise = (async () => {
-        const res = await stream.stream({ live: `long-poll` })
-        await new Promise<void>((resolve) => {
-          const unsubscribe = res.subscribeBytes(async (chunk) => {
-            if (chunk.data.length > 0) {
-              receivedData.push(new TextDecoder().decode(chunk.data))
-            }
-            if (receivedData.length >= 1) {
-              unsubscribe()
-              res.cancel()
-              resolve()
-            }
-          })
+    test(
+      `should wait for new data with long-poll`,
+      async () => {
+        const streamPath = `/v1/stream/longpoll-test-${Date.now()}`
+        const stream = await DurableStream.create({
+          url: `${getBaseUrl()}${streamPath}`,
+          contentType: `text/plain`,
         })
-      })()
 
-      // Wait a bit for the long-poll to be active
-      await new Promise((resolve) => setTimeout(resolve, 500))
+        const receivedData: Array<string> = []
 
-      // Append data while long-poll is waiting
-      await stream.append(`new data`)
+        // Start reading in long-poll mode
+        const readPromise = (async () => {
+          const res = await stream.stream({ live: `long-poll` })
+          await new Promise<void>((resolve) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
+              if (chunk.data.length > 0) {
+                receivedData.push(new TextDecoder().decode(chunk.data))
+              }
+              if (receivedData.length >= 1) {
+                unsubscribe()
+                res.cancel()
+                resolve()
+              }
+              return Promise.resolve()
+            })
+          })
+        })()
 
-      await readPromise
+        // Wait a bit for the long-poll to be active
+        await new Promise((resolve) => setTimeout(resolve, 500))
 
-      expect(receivedData).toContain(`new data`)
-    }, 10000)
+        // Append data while long-poll is waiting
+        await stream.append(`new data`)
+
+        await readPromise
+
+        expect(receivedData).toContain(`new data`)
+      },
+      getLongPollTestTimeoutMs()
+    )
 
     test(`should return immediately if data already exists`, async () => {
       const streamPath = `/v1/stream/longpoll-immediate-test-${Date.now()}`
@@ -1631,58 +1640,62 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(parseInt(cursor2!, 10)).toBeGreaterThan(parseInt(cursor1!, 10))
     })
 
-    test(`should return Stream-Cursor, Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`, async () => {
-      const streamPath = `/v1/stream/longpoll-204-headers-test-${Date.now()}`
+    test(
+      `should return Stream-Cursor, Stream-Up-To-Date and Stream-Next-Offset on 204 timeout`,
+      async () => {
+        const streamPath = `/v1/stream/longpoll-204-headers-test-${Date.now()}`
 
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-      })
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
 
-      // Get the current tail offset
-      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `HEAD`,
-      })
-      const tailOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
-      expect(tailOffset).toBeDefined()
+        // Get the current tail offset
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        const tailOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+        expect(tailOffset).toBeDefined()
 
-      // Long-poll at tail offset with a short timeout
-      // We use AbortController to limit wait time on our side
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 5000)
+        // Long-poll at tail offset with a short timeout
+        // We use AbortController to limit wait time on our side
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 5000)
 
-      try {
-        const response = await fetch(
-          `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=long-poll`,
-          {
-            method: `GET`,
-            signal: controller.signal,
+        try {
+          const response = await fetch(
+            `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=long-poll`,
+            {
+              method: `GET`,
+              signal: controller.signal,
+            }
+          )
+
+          clearTimeout(timeoutId)
+
+          // If we get a 204, verify headers
+          if (response.status === 204) {
+            expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+            expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+
+            // Server MUST return Stream-Cursor even on 204 timeout
+            const cursor = response.headers.get(`Stream-Cursor`)
+            expect(cursor).toBeDefined()
+            expect(/^\d+$/.test(cursor!)).toBe(true)
           }
-        )
-
-        clearTimeout(timeoutId)
-
-        // If we get a 204, verify headers
-        if (response.status === 204) {
-          expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
-          expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
-
-          // Server MUST return Stream-Cursor even on 204 timeout
-          const cursor = response.headers.get(`Stream-Cursor`)
-          expect(cursor).toBeDefined()
-          expect(/^\d+$/.test(cursor!)).toBe(true)
+          // If we get a 200 (data arrived somehow), that's also valid
+          expect([200, 204]).toContain(response.status)
+        } catch (e) {
+          clearTimeout(timeoutId)
+          // AbortError is expected if server timeout is longer than our 5s
+          if (e instanceof Error && e.name !== `AbortError`) {
+            throw e
+          }
+          // Test passes - server just has a longer timeout than our abort
         }
-        // If we get a 200 (data arrived somehow), that's also valid
-        expect([200, 204]).toContain(response.status)
-      } catch (e) {
-        clearTimeout(timeoutId)
-        // AbortError is expected if server timeout is longer than our 5s
-        if (e instanceof Error && e.name !== `AbortError`) {
-          throw e
-        }
-        // Test passes - server just has a longer timeout than our abort
-      }
-    }, 10000)
+      },
+      getLongPollTestTimeoutMs()
+    )
   })
 
   // ============================================================================
