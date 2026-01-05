@@ -73,7 +73,7 @@ class StreamStore {
         signal: subscription.abortController!.signal,
       })
 
-      response.subscribeText(async (chunk) => {
+      response.subscribeText((chunk) => {
         if (chunk.text !== ``) {
           // Create new array reference so React detects the change
           subscription.messages = [
@@ -83,6 +83,7 @@ class StreamStore {
           // Notify all listeners
           subscription.listeners.forEach((listener) => listener())
         }
+        return Promise.resolve()
       })
     } catch (err: any) {
       // Ignore abort errors - expected when navigating away or during cleanup

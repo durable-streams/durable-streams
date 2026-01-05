@@ -54,7 +54,7 @@ export function getUserColor(userId: string): string {
 // StreamDB Factories with Actions
 // ============================================================================
 
-async function createRegistryDB(url: string) {
+function createRegistryDB(url: string) {
   return createStreamDB({
     streamOptions: {
       url,
@@ -81,7 +81,7 @@ async function createRegistryDB(url: string) {
   })
 }
 
-async function createPresenceDB(url: string) {
+function createPresenceDB(url: string) {
   return createStreamDB({
     streamOptions: {
       url,
