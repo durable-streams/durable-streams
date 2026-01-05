@@ -842,6 +842,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         // Use IdempotentProducer for automatic batching and pipelining
         const producer = new IdempotentProducer(ds, `bench-producer`, {
           lingerMs: 0, // No linger - send batches immediately when ready
+          maxInFlight: 1, // Prevent sequence gaps from HTTP request reordering
           onError: (err) => console.error(`Batch failed:`, err),
         })
 
