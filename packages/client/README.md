@@ -88,10 +88,6 @@ const unsubscribe3 = res.subscribeText(async (chunk) => {
 
 For reliable, high-throughput writes with exactly-once semantics, use `IdempotentProducer`:
 
-#### Fire-and-Forget Pattern (Best for Bulk Writes)
-
-Use `appendNoWait()` with an `onError` callback for maximum throughput:
-
 ```typescript
 import { DurableStream, IdempotentProducer } from "@durable-streams/client"
 
@@ -102,12 +98,12 @@ const stream = await DurableStream.create({
 
 const producer = new IdempotentProducer(stream, "event-processor-1", {
   autoClaim: true,
-  onError: (err) => console.error("Batch failed:", err), // Required for appendNoWait
+  onError: (err) => console.error("Batch failed:", err), // Errors reported here
 })
 
-// Fire-and-forget - no promise creation, maximum throughput
+// Fire-and-forget - don't await, errors go to onError callback
 for (const event of events) {
-  producer.appendNoWait(JSON.stringify(event))
+  producer.append(event) // Objects serialized automatically for JSON streams
 }
 
 // IMPORTANT: Always flush before shutdown to ensure delivery
@@ -115,41 +111,14 @@ await producer.flush()
 await producer.close()
 ```
 
-#### Await Pattern (Best for Event-Driven / Backpressure)
-
-Use `await producer.append()` when you need per-message feedback or backpressure:
+For event-driven scenarios with backpressure, await each append:
 
 ```typescript
-import {
-  DurableStream,
-  IdempotentProducer,
-  StaleEpochError,
-} from "@durable-streams/client"
-
-const stream = await DurableStream.create({
-  url: "https://streams.example.com/events",
-  contentType: "application/json",
-})
-
-const producer = new IdempotentProducer(stream, "event-processor-1", {
-  autoClaim: true,
-})
-
 // Await each append - provides backpressure if writes slow down
-try {
-  for await (const event of eventSource) {
-    await producer.append(JSON.stringify(event))
-  }
-  await producer.flush()
-} catch (error) {
-  if (error instanceof StaleEpochError) {
-    console.log(`Fenced by producer with epoch ${error.currentEpoch}`)
-  } else {
-    throw error
-  }
-} finally {
-  await producer.close()
+for await (const event of eventSource) {
+  await producer.append(event)
 }
+await producer.flush()
 ```
 
 **Why use IdempotentProducer?**
@@ -893,7 +862,7 @@ interface IdempotentProducerOptions {
   maxInFlight?: number // Concurrent batches in flight (default: 5)
   signal?: AbortSignal // Cancellation signal
   fetch?: typeof fetch // Custom fetch implementation
-  onError?: (error: Error) => void // Error callback for appendNoWait()
+  onError?: (error: Error) => void // Error callback for batch failures
 }
 ```
 
@@ -901,28 +870,19 @@ interface IdempotentProducerOptions {
 
 #### `append(body): Promise<{ offset: Offset; duplicate: boolean }>`
 
-Append data to the stream. Returns when the batch containing this message is acknowledged.
+Append data to the stream. For JSON streams, you can pass objects directly.
+Returns when the batch containing this message is acknowledged.
 
 ```typescript
+// For JSON streams - pass objects directly
+await producer.append({ event: "click", x: 100 })
+
+// Or strings/bytes
 await producer.append("message data")
 await producer.append(new Uint8Array([1, 2, 3]))
-```
 
-#### `appendNoWait(body): void`
-
-Fire-and-forget append. Errors are reported via the `onError` callback (required when using this method).
-
-```typescript
-// Requires onError callback in producer options
-const producer = new IdempotentProducer(stream, "my-producer", {
-  onError: (err) => console.error("Batch failed:", err),
-})
-
-producer.appendNoWait("message data")
-producer.appendNoWait(new Uint8Array([1, 2, 3]))
-
-// Always flush before shutdown
-await producer.flush()
+// Fire-and-forget: don't await, errors go to onError callback
+producer.append({ event: "scroll" })
 ```
 
 #### `flush(): Promise<void>`

@@ -68,15 +68,14 @@ function normalizeContentType(contentType: string | undefined): string {
 /**
  * Internal type for pending batch entries.
  * Stores original data for proper JSON batching.
- * resolve/reject are optional to support fire-and-forget (appendNoWait).
  */
 interface PendingEntry {
   /** Original data - parsed for JSON mode batching */
   data: unknown
   /** Encoded bytes for byte-stream mode */
   body: Uint8Array
-  resolve?: (result: { offset: Offset; duplicate: boolean }) => void
-  reject?: (error: Error) => void
+  resolve: (result: { offset: Offset; duplicate: boolean }) => void
+  reject: (error: Error) => void
 }
 
 /**
@@ -190,11 +189,14 @@ export class IdempotentProducer {
    * - lingerMs elapses
    * - flush() is called
    *
-   * @param body - Data to append (string or Uint8Array)
+   * For JSON streams, you can pass objects directly - they will be serialized automatically.
+   * For byte streams, pass string or Uint8Array.
+   *
+   * @param body - Data to append (object for JSON streams, string or Uint8Array for byte streams)
    * @returns Promise that resolves when the batch containing this message is acknowledged
    */
   async append(
-    body: Uint8Array | string
+    body: Uint8Array | string | unknown
   ): Promise<{ offset: Offset; duplicate: boolean }> {
     if (this.#closed) {
       throw new DurableStreamError(
@@ -205,27 +207,59 @@ export class IdempotentProducer {
       )
     }
 
-    const bytes =
-      typeof body === `string` ? new TextEncoder().encode(body) : body
-
-    // For JSON mode, parse the body to store as data for proper batching
-    // For byte mode, data is just the bytes
     const isJson =
       normalizeContentType(this.#stream.contentType) === `application/json`
-    let data: unknown = bytes
+
+    let bytes: Uint8Array
+    let data: unknown
+
     if (isJson) {
-      try {
-        const text =
-          typeof body === `string` ? body : new TextDecoder().decode(body)
-        data = JSON.parse(text)
-      } catch {
+      // For JSON streams, accept objects directly or strings
+      if (typeof body === `string`) {
+        bytes = new TextEncoder().encode(body)
+        try {
+          data = JSON.parse(body)
+        } catch {
+          throw new DurableStreamError(
+            `Invalid JSON in append body`,
+            `BAD_REQUEST`,
+            400,
+            undefined
+          )
+        }
+      } else if (body instanceof Uint8Array) {
+        bytes = body
+        try {
+          data = JSON.parse(new TextDecoder().decode(body))
+        } catch {
+          throw new DurableStreamError(
+            `Invalid JSON in append body`,
+            `BAD_REQUEST`,
+            400,
+            undefined
+          )
+        }
+      } else {
+        // Object - serialize it
+        const json = JSON.stringify(body)
+        bytes = new TextEncoder().encode(json)
+        data = body
+      }
+    } else {
+      // For byte streams, require string or Uint8Array
+      if (typeof body === `string`) {
+        bytes = new TextEncoder().encode(body)
+      } else if (body instanceof Uint8Array) {
+        bytes = body
+      } else {
         throw new DurableStreamError(
-          `Invalid JSON in append body`,
+          `Non-JSON streams require string or Uint8Array`,
           `BAD_REQUEST`,
           400,
           undefined
         )
       }
+      data = bytes
     }
 
     return new Promise((resolve, reject) => {
@@ -245,72 +279,6 @@ export class IdempotentProducer {
         }, this.#lingerMs)
       }
     })
-  }
-
-  /**
-   * Append data without waiting for acknowledgment (fire-and-forget).
-   *
-   * Errors are reported via the onError callback (required when using this method).
-   * Use flush() to wait for all pending messages to be delivered.
-   *
-   * @param body - Data to append (string or Uint8Array)
-   * @throws Error if onError callback is not configured
-   */
-  appendNoWait(body: Uint8Array | string): void {
-    if (this.#closed) {
-      throw new DurableStreamError(
-        `Producer is closed`,
-        `ALREADY_CLOSED`,
-        undefined,
-        undefined
-      )
-    }
-
-    if (!this.#onError) {
-      throw new Error(
-        `appendNoWait() requires an onError callback. ` +
-          `Configure onError in producer options or use append() instead.`
-      )
-    }
-
-    const bytes =
-      typeof body === `string` ? new TextEncoder().encode(body) : body
-
-    // For JSON mode, parse the body to store as data for proper batching
-    const isJson =
-      normalizeContentType(this.#stream.contentType) === `application/json`
-    let data: unknown = bytes
-    if (isJson) {
-      try {
-        const text =
-          typeof body === `string` ? body : new TextDecoder().decode(body)
-        data = JSON.parse(text)
-      } catch {
-        throw new DurableStreamError(
-          `Invalid JSON in append body`,
-          `BAD_REQUEST`,
-          400,
-          undefined
-        )
-      }
-    }
-
-    // Add to batch without resolve/reject - errors go to onError callback
-    this.#pendingBatch.push({ data, body: bytes })
-    this.#batchBytes += bytes.length
-
-    // Check if batch should be sent immediately
-    if (this.#batchBytes >= this.#maxBatchBytes) {
-      this.#sendCurrentBatch()
-    } else if (!this.#lingerTimeout) {
-      // Start linger timer
-      this.#lingerTimeout = setTimeout(() => {
-        this.#lingerTimeout = null
-        if (this.#pendingBatch.length > 0) {
-          this.#sendCurrentBatch()
-        }
-      }, this.#lingerMs)
-    }
   }
 
   /**
@@ -459,21 +427,18 @@ export class IdempotentProducer {
     try {
       const result = await this.#doSendBatch(batch, seq, this.#epoch)
 
-      // Resolve all entries in the batch (if they have resolve callbacks)
+      // Resolve all entries in the batch
       for (const entry of batch) {
-        entry.resolve?.(result)
+        entry.resolve(result)
       }
     } catch (error) {
-      // Reject all entries in the batch (if they have reject callbacks)
-      // For fire-and-forget entries, call onError instead
-      for (const entry of batch) {
-        if (entry.reject) {
-          entry.reject(error as Error)
-        }
-      }
-      // Call onError for fire-and-forget batches
-      if (this.#onError && batch.some((e) => !e.reject)) {
+      // Call onError callback if configured (for fire-and-forget error handling)
+      if (this.#onError) {
         this.#onError(error as Error)
+      }
+      // Reject all entries in the batch
+      for (const entry of batch) {
+        entry.reject(error as Error)
       }
       throw error
     }
@@ -588,17 +553,12 @@ export class IdempotentProducer {
    * Reject all entries in the pending batch.
    */
   #rejectPendingBatch(error: Error): void {
-    let hasFireAndForget = false
-    for (const entry of this.#pendingBatch) {
-      if (entry.reject) {
-        entry.reject(error)
-      } else {
-        hasFireAndForget = true
-      }
-    }
-    // Call onError for fire-and-forget entries
-    if (hasFireAndForget && this.#onError) {
+    // Call onError callback if configured
+    if (this.#onError && this.#pendingBatch.length > 0) {
       this.#onError(error)
+    }
+    for (const entry of this.#pendingBatch) {
+      entry.reject(error)
     }
     this.#pendingBatch = []
     this.#batchBytes = 0

@@ -197,7 +197,7 @@ const producer = new IdempotentProducer(stream, "my-service-1", {
 
 // High-throughput writes - fire-and-forget, automatically batched & pipelined
 for (const event of events) {
-  producer.appendNoWait(JSON.stringify(event))
+  producer.append(event) // Don't await - errors go to onError callback
 }
 
 // Ensure all messages are delivered before shutdown
