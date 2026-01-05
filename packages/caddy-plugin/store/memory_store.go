@@ -14,6 +14,11 @@ type MemoryStore struct {
 	mu       sync.RWMutex
 	streams  map[string]*memoryStream
 	longPoll *longPollManager
+
+	// Per-producer locks for serializing validation+append
+	// Key: "{streamPath}:{producerId}"
+	producerLocks   map[string]*sync.Mutex
+	producerLocksMu sync.Mutex
 }
 
 type memoryStream struct {
@@ -34,7 +39,111 @@ func NewMemoryStore() *MemoryStore {
 		longPoll: &longPollManager{
 			waiters: make(map[string][]chan struct{}),
 		},
+		producerLocks: make(map[string]*sync.Mutex),
 	}
+}
+
+// getProducerLock returns a per-producer mutex for serializing validation+append.
+// This prevents race conditions when HTTP requests arrive out-of-order.
+func (s *MemoryStore) getProducerLock(streamPath, producerId string) *sync.Mutex {
+	key := streamPath + ":" + producerId
+	s.producerLocksMu.Lock()
+	defer s.producerLocksMu.Unlock()
+
+	if mu, ok := s.producerLocks[key]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	s.producerLocks[key] = mu
+	return mu
+}
+
+// validateProducer validates producer headers and returns the result.
+// It also updates the producer state in the metadata if the append is accepted.
+// Returns (result, updatedState, error) where updatedState is nil if no update needed.
+func (s *MemoryStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (AppendResult, *ProducerState, error) {
+	epoch := *opts.ProducerEpoch
+	seq := *opts.ProducerSeq
+
+	// Get current producer state (may not exist)
+	var state *ProducerState
+	if meta.Producers != nil {
+		state = meta.Producers[opts.ProducerId]
+	}
+
+	// No existing state - accept as new producer
+	if state == nil {
+		if seq != 0 {
+			// First message from producer must be seq=0
+			return AppendResult{
+				ProducerResult: ProducerResultAccepted,
+				ExpectedSeq:    0,
+				ReceivedSeq:    seq,
+			}, nil, ErrProducerSeqGap
+		}
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     0,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+		}, newState, nil
+	}
+
+	// Epoch validation (client-declared, server-validated)
+	if epoch < state.Epoch {
+		// Stale epoch - zombie fencing
+		return AppendResult{
+			ProducerResult: ProducerResultNone,
+			CurrentEpoch:   state.Epoch,
+		}, nil, ErrStaleEpoch
+	}
+
+	if epoch > state.Epoch {
+		// New epoch - must start at seq=0
+		if seq != 0 {
+			return AppendResult{
+				ProducerResult: ProducerResultNone,
+			}, nil, ErrInvalidEpochSeq
+		}
+		// Accept new epoch
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     0,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+		}, newState, nil
+	}
+
+	// Same epoch - sequence validation
+	if seq <= state.LastSeq {
+		// Duplicate - idempotent success
+		return AppendResult{
+			ProducerResult: ProducerResultDuplicate,
+		}, nil, nil
+	}
+
+	if seq == state.LastSeq+1 {
+		// Accept - update state
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     seq,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+		}, newState, nil
+	}
+
+	// seq > lastSeq + 1 - gap detected
+	return AppendResult{
+		ProducerResult: ProducerResultNone,
+		ExpectedSeq:    state.LastSeq + 1,
+		ReceivedSeq:    seq,
+	}, nil, ErrProducerSeqGap
 }
 
 func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, bool, error) {
@@ -128,46 +237,87 @@ func (s *MemoryStore) Delete(path string) error {
 	return nil
 }
 
-func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Offset, error) {
+func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (AppendResult, error) {
+	// Validate producer headers - must be all or none
+	if opts.HasProducerHeaders() && !opts.HasAllProducerHeaders() {
+		return AppendResult{}, ErrPartialProducer
+	}
+
+	// If producer headers provided, acquire per-producer lock for serialization
+	if opts.HasAllProducerHeaders() {
+		producerLock := s.getProducerLock(path, opts.ProducerId)
+		producerLock.Lock()
+		defer producerLock.Unlock()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	stream, ok := s.streams[path]
 	if !ok {
-		return Offset{}, ErrStreamNotFound
+		return AppendResult{}, ErrStreamNotFound
 	}
 
 	// Check if stream has expired
 	if stream.metadata.IsExpired() {
-		return Offset{}, ErrStreamNotFound
+		return AppendResult{}, ErrStreamNotFound
 	}
 
 	// Validate content type if provided
 	if opts.ContentType != "" && !ContentTypeMatches(stream.metadata.ContentType, opts.ContentType) {
-		return Offset{}, ErrContentTypeMismatch
+		return AppendResult{}, ErrContentTypeMismatch
 	}
 
-	// Validate sequence number if provided
+	// Validate sequence number if provided (Stream-Seq - application layer)
 	if opts.Seq != "" {
 		if stream.metadata.LastSeq != "" && opts.Seq <= stream.metadata.LastSeq {
-			return Offset{}, ErrSequenceConflict
+			return AppendResult{}, ErrSequenceConflict
 		}
+	}
+
+	// Validate producer (if headers provided)
+	var producerState *ProducerState
+	var producerResult ProducerResult = ProducerResultNone
+	if opts.HasAllProducerHeaders() {
+		result, newState, err := s.validateProducer(&stream.metadata, opts)
+		if err != nil {
+			result.Offset = stream.metadata.CurrentOffset
+			return result, err
+		}
+		if result.ProducerResult == ProducerResultDuplicate {
+			// Duplicate - return current offset, no append needed
+			return AppendResult{
+				Offset:         stream.metadata.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+			}, nil
+		}
+		producerState = newState
+		producerResult = result.ProducerResult
 	}
 
 	newOffset, err := s.appendToStream(stream, data, opts, false) // Don't allow empty arrays on append
 	if err != nil {
-		return Offset{}, err
+		return AppendResult{}, err
 	}
 
 	stream.metadata.CurrentOffset = newOffset
 	if opts.Seq != "" {
 		stream.metadata.LastSeq = opts.Seq
 	}
+	if producerState != nil {
+		if stream.metadata.Producers == nil {
+			stream.metadata.Producers = make(map[string]*ProducerState)
+		}
+		stream.metadata.Producers[opts.ProducerId] = producerState
+	}
 
 	// Notify long-poll waiters
 	s.longPoll.notify(path)
 
-	return newOffset, nil
+	return AppendResult{
+		Offset:         newOffset,
+		ProducerResult: producerResult,
+	}, nil
 }
 
 // appendToStream handles the actual append logic, including JSON mode

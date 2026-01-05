@@ -25,6 +25,13 @@ const (
 	HeaderStreamSeq        = "Stream-Seq"
 	HeaderStreamTTL        = "Stream-TTL"
 	HeaderStreamExpiresAt  = "Stream-Expires-At"
+
+	// Idempotent producer headers
+	HeaderProducerId          = "Producer-Id"
+	HeaderProducerEpoch       = "Producer-Epoch"
+	HeaderProducerSeq         = "Producer-Seq"
+	HeaderProducerExpectedSeq = "Producer-Expected-Seq"
+	HeaderProducerReceivedSeq = "Producer-Received-Seq"
 )
 
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
@@ -36,8 +43,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -579,7 +586,33 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		ContentType: contentType,
 	}
 
-	newOffset, err := h.store.Append(path, body, opts)
+	// Extract producer headers
+	producerId := r.Header.Get(HeaderProducerId)
+	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
+	producerSeqStr := r.Header.Get(HeaderProducerSeq)
+
+	// Parse producer headers if any are present
+	if producerId != "" || producerEpochStr != "" || producerSeqStr != "" {
+		opts.ProducerId = producerId
+
+		if producerEpochStr != "" {
+			epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
+			if err != nil {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+			}
+			opts.ProducerEpoch = &epoch
+		}
+
+		if producerSeqStr != "" {
+			seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
+			if err != nil {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+			}
+			opts.ProducerSeq = &seq
+		}
+	}
+
+	result, err := h.store.Append(path, body, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrSequenceConflict) {
 			return newHTTPError(http.StatusConflict, "sequence number conflict")
@@ -593,11 +626,45 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		if errors.Is(err, store.ErrEmptyJSONArray) {
 			return newHTTPError(http.StatusBadRequest, "empty JSON array not allowed")
 		}
+		if errors.Is(err, store.ErrPartialProducer) {
+			return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
+		}
+		if errors.Is(err, store.ErrStaleEpoch) {
+			// 403 Forbidden - stale epoch (zombie fencing)
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+			w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(result.CurrentEpoch, 10))
+			http.Error(w, "producer epoch is stale", http.StatusForbidden)
+			return nil
+		}
+		if errors.Is(err, store.ErrInvalidEpochSeq) {
+			return newHTTPError(http.StatusBadRequest, "new epoch must start at sequence 0")
+		}
+		if errors.Is(err, store.ErrProducerSeqGap) {
+			// 409 Conflict - sequence gap
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+			w.Header().Set(HeaderProducerExpectedSeq, strconv.FormatInt(result.ExpectedSeq, 10))
+			w.Header().Set(HeaderProducerReceivedSeq, strconv.FormatInt(result.ReceivedSeq, 10))
+			http.Error(w, "producer sequence gap detected", http.StatusConflict)
+			return nil
+		}
 		return err
 	}
 
-	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
-	w.WriteHeader(http.StatusNoContent)
+	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+
+	// Handle duplicate detection (204 No Content)
+	if result.ProducerResult == store.ProducerResultDuplicate {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	// For non-producer appends, return 204 No Content
+	// For producer appends (new writes), return 200 OK to distinguish from duplicates
+	if hasProducerHeaders {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 	return nil
 }
 

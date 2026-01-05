@@ -20,6 +20,39 @@ var (
 	ErrInvalidJSON         = errors.New("invalid JSON")
 )
 
+// Producer validation errors
+var (
+	ErrStaleEpoch       = errors.New("producer epoch is stale")
+	ErrInvalidEpochSeq  = errors.New("new epoch must start at sequence 0")
+	ErrProducerSeqGap   = errors.New("producer sequence gap detected")
+	ErrPartialProducer  = errors.New("all producer headers must be provided together")
+)
+
+// ProducerState tracks the epoch and sequence for an idempotent producer
+type ProducerState struct {
+	Epoch       int64 // Client-declared epoch
+	LastSeq     int64 // Last accepted sequence number
+	LastUpdated int64 // Unix timestamp of last update
+}
+
+// ProducerResult indicates the outcome of producer validation
+type ProducerResult int
+
+const (
+	ProducerResultNone      ProducerResult = iota // No producer headers provided
+	ProducerResultAccepted                        // New data accepted
+	ProducerResultDuplicate                       // Duplicate detected (204)
+)
+
+// AppendResult contains the result of an append operation
+type AppendResult struct {
+	Offset         Offset
+	ProducerResult ProducerResult
+	CurrentEpoch   int64 // Current epoch on stale epoch error
+	ExpectedSeq    int64 // Expected seq on gap error
+	ReceivedSeq    int64 // Received seq on gap error
+}
+
 // Store is the interface for durable stream storage
 type Store interface {
 	// Create creates a new stream. Returns ErrStreamExists if stream exists with
@@ -37,11 +70,15 @@ type Store interface {
 	// Delete removes a stream. Returns ErrStreamNotFound if not found.
 	Delete(path string) error
 
-	// Append adds data to a stream. Returns the new offset after append.
+	// Append adds data to a stream. Returns AppendResult with the new offset.
 	// Returns ErrStreamNotFound if stream doesn't exist.
 	// Returns ErrSequenceConflict if seq is provided and <= last seq.
 	// Returns ErrContentTypeMismatch if content type doesn't match.
-	Append(path string, data []byte, opts AppendOptions) (Offset, error)
+	// Returns ErrStaleEpoch if producer epoch is less than current.
+	// Returns ErrInvalidEpochSeq if new epoch doesn't start at seq 0.
+	// Returns ErrProducerSeqGap if producer seq is greater than lastSeq + 1.
+	// Returns ErrPartialProducer if only some producer headers are provided.
+	Append(path string, data []byte, opts AppendOptions) (AppendResult, error)
 
 	// Read reads messages from a stream starting at the given offset.
 	// Returns messages, whether we're up to date (at tail), and any error.
@@ -73,6 +110,21 @@ type CreateOptions struct {
 type AppendOptions struct {
 	Seq         string // Stream-Seq header value for coordination
 	ContentType string // Content-Type to validate against stream
+
+	// Idempotent producer fields (all must be set together, or none)
+	ProducerId    string // Producer-Id header
+	ProducerEpoch *int64 // Producer-Epoch header
+	ProducerSeq   *int64 // Producer-Seq header
+}
+
+// HasProducerHeaders returns true if any producer headers are set
+func (o AppendOptions) HasProducerHeaders() bool {
+	return o.ProducerId != "" || o.ProducerEpoch != nil || o.ProducerSeq != nil
+}
+
+// HasAllProducerHeaders returns true if all producer headers are set
+func (o AppendOptions) HasAllProducerHeaders() bool {
+	return o.ProducerId != "" && o.ProducerEpoch != nil && o.ProducerSeq != nil
 }
 
 // Message represents a single message in a stream
@@ -90,6 +142,7 @@ type StreamMetadata struct {
 	TTLSeconds    *int64
 	ExpiresAt     *time.Time
 	CreatedAt     time.Time
+	Producers     map[string]*ProducerState // Producer ID -> state
 }
 
 // IsExpired checks if the stream has expired based on TTL or ExpiresAt
