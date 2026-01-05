@@ -43,10 +43,10 @@ type Command struct {
 	Binary bool   `json:"binary,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
 	// IdempotentProducer fields
-	ProducerID string              `json:"producerId,omitempty"`
-	Epoch      int                 `json:"epoch,omitempty"`
-	AutoClaim  bool                `json:"autoClaim,omitempty"`
-	Items      []IdempotentItem    `json:"items,omitempty"`
+	ProducerID string   `json:"producerId,omitempty"`
+	Epoch      int      `json:"epoch,omitempty"`
+	AutoClaim  bool     `json:"autoClaim,omitempty"`
+	Items      []string `json:"items,omitempty"` // Already strings - runner extracts data field
 	// Read fields
 	Offset          string `json:"offset,omitempty"`
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
@@ -61,11 +61,6 @@ type Command struct {
 	Name         string `json:"name,omitempty"`
 	ValueType    string `json:"valueType,omitempty"` // "counter" | "timestamp" | "token"
 	InitialValue string `json:"initialValue,omitempty"`
-}
-
-// IdempotentItem is a single item for batch append
-type IdempotentItem struct {
-	Data string `json:"data"`
 }
 
 // BenchmarkOperation represents a benchmark operation
@@ -724,8 +719,9 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	defer producer.Close()
 
 	// Queue all items using AppendAsync (non-blocking)
+	// Items is already []string - runner extracts the data field
 	for _, item := range cmd.Items {
-		err := producer.AppendAsync([]byte(item.Data))
+		err := producer.AppendAsync([]byte(item))
 		if err != nil {
 			return errorResult("idempotent-append-batch", err)
 		}

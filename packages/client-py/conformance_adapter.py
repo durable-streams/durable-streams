@@ -850,11 +850,15 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
                 content_type=content_type,
             )
             try:
-                # Queue all items, they will be batched by linger_ms or flush
-                # Extract "data" field from each item
-                tasks = [producer.append(item["data"]) for item in items]
+                # Schedule all appends as tasks
+                # In Python, coroutines don't run until awaited or scheduled as tasks
+                # Note: items is already an array of strings (runner extracts data field)
+                tasks = [asyncio.create_task(producer.append(item)) for item in items]
 
-                # Flush to send the batch
+                # Yield control so tasks can add items to the pending batch
+                await asyncio.sleep(0)
+
+                # Now flush to send the batch
                 await producer.flush()
 
                 # Wait for all results
