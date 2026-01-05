@@ -52,7 +52,7 @@ AI products make this painfully visible. Token streaming is the UI for chat and 
 - **Multi-tab** - Works seamlessly across browser tabs without duplicating connections or missing data
 - **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
 
-The protocol provides:
+The protocol is:
 
 - 🌐 **Universal** - Works anywhere HTTP works: web browsers, mobile apps, native clients, IoT devices, edge workers
 - 📦 **Simple** - Built on standard HTTP with no custom protocols
