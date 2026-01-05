@@ -590,40 +590,50 @@ This appendix provides non-normative implementation guidance for common deployme
 
 ### A.1. Authentication and Caching
 
-When streams require authentication and CDN caching, implementers should consider the interaction between authentication and caching to prevent security vulnerabilities.
+When streams require authentication and CDN caching, implementers should consider the interaction between authentication and caching to prevent security vulnerabilities. The key principle is that authorization must happen before cached responses are served.
+
+#### Embedded Authentication
+
+When streaming logic is embedded in your application server, authentication can be handled directly using your application's existing auth mechanisms. The application validates credentials and serves stream data in a single request path:
+
+```
+Client → CDN → Application Server (auth + streaming)
+```
+
+This is the simplest pattern and works well when the application already handles authentication for other endpoints.
 
 #### Proxy Authentication Pattern
 
-The recommended pattern for authenticated streams is to run the stream server behind an authorizing proxy. The proxy:
+For standalone stream servers that don't handle their own authentication, run the server behind an authorizing proxy:
+
+```
+Client → Authorizing Proxy → CDN → Stream Server
+```
+
+The proxy:
 
 1. Receives requests with authentication credentials (e.g., `Authorization: Bearer <token>`)
 2. Validates the credentials against the authentication system
 3. If authorized, forwards the request to the stream server (optionally stripping the auth header)
 4. If unauthorized, returns `401 Unauthorized` or `403 Forbidden`
 
-This pattern keeps authentication logic centralized and allows the stream server to focus on data delivery. Critically, authorization happens **before** requests reach the CDN cache layer, so all cached responses are for authorized requests only.
+This pattern keeps authentication logic centralized and allows the stream server to focus on data delivery.
 
 #### Gatekeeper Authentication Pattern
 
-For more advanced scenarios, the gatekeeper pattern separates token generation from request authorization:
+For scenarios requiring fine-grained access control, the gatekeeper pattern separates token generation from request authorization:
 
 1. Client authenticates with a gatekeeper endpoint, providing credentials and the desired stream/resource
 2. Gatekeeper validates access and returns a signed token (e.g., JWT) containing claims about what the client can access
-3. Client includes the token when making stream requests through an authorizing proxy
-4. Proxy validates the token signature and checks that the token's claims match the requested resource
-5. If valid, proxy forwards to the stream server; otherwise returns `403 Forbidden`
+3. Client includes the token when making stream requests
+4. The application or proxy validates the token signature and checks that the token's claims match the requested resource
+5. If valid, serves or forwards to the stream server; otherwise returns `403 Forbidden`
 
 This pattern is beneficial because authorization logic runs once during token generation rather than on every request, and multiple users authorized for the same resource can share cached responses.
 
-#### Cache Architecture
+#### CDN Caching Considerations
 
-With either pattern, the recommended architecture is:
-
-```
-Client → Authorizing Proxy → CDN → Stream Server
-```
-
-The proxy validates credentials/tokens before requests reach the CDN. This means:
+When using a CDN, ensure that authorization happens before requests reach the cache layer. This means:
 
 - The CDN only sees authorized requests
 - Cache keys are based on the resource (stream URL, offset, cursor), not user identity
@@ -632,9 +642,9 @@ The proxy validates credentials/tokens before requests reach the CDN. This means
 
 #### Browser Cache Isolation
 
-The proxy should add `Vary: Authorization` to responses. This header is used by browser caches to isolate cached data between sessions—if a user logs out and logs in as a different user, the browser will not serve cached data from the previous session.
+Servers should add `Vary: Authorization` to responses. This header is used by browser caches to isolate cached data between sessions—if a user logs out and logs in as a different user, the browser will not serve cached data from the previous session.
 
-Note: Most CDNs ignore `Vary` headers (except `Accept-Encoding`), so do not rely on `Vary` for CDN cache isolation. CDN isolation is handled by the proxy pattern where authorization happens before requests reach the cache layer.
+Note: Most CDNs ignore `Vary` headers (except `Accept-Encoding`), so do not rely on `Vary` for CDN cache isolation.
 
 #### User-Specific Data
 
