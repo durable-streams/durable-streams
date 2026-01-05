@@ -738,12 +738,12 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
-// integerRegex matches valid integer strings (with optional leading minus, no floats)
-var integerRegex = regexp.MustCompile(`^-?[0-9]+$`)
+// nonNegativeIntegerRegex matches valid non-negative integer strings (no floats, no negatives)
+var nonNegativeIntegerRegex = regexp.MustCompile(`^[0-9]+$`)
 
-// isValidIntegerString checks if a string is a valid integer (no floats, no trailing chars)
+// isValidNonNegativeInteger checks if a string is a valid non-negative integer
 func isValidIntegerString(s string) bool {
-	return integerRegex.MatchString(s)
+	return nonNegativeIntegerRegex.MatchString(s)
 }
 
 // parseTTL parses and validates a TTL string according to the protocol
