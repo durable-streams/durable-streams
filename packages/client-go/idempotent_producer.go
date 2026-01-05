@@ -160,8 +160,12 @@ type IdempotentProducer struct {
 	inFlightWg sync.WaitGroup
 }
 
+// ErrAutoClaimConcurrency is returned when autoClaim is enabled with maxInFlight > 1.
+var ErrAutoClaimConcurrency = errors.New("autoClaim requires MaxInFlight=1; concurrent batches would race to claim epochs")
+
 // IdempotentProducer creates a new idempotent producer for a stream.
-func (c *Client) IdempotentProducer(url, producerID string, config IdempotentProducerConfig) *IdempotentProducer {
+// Returns an error if autoClaim is enabled with MaxInFlight > 1 (unsafe configuration).
+func (c *Client) IdempotentProducer(url, producerID string, config IdempotentProducerConfig) (*IdempotentProducer, error) {
 	if config.MaxBatchBytes == 0 {
 		config.MaxBatchBytes = 1024 * 1024
 	}
@@ -175,6 +179,12 @@ func (c *Client) IdempotentProducer(url, producerID string, config IdempotentPro
 		config.ContentType = "application/octet-stream"
 	}
 
+	// Guardrail: autoClaim + MaxInFlight > 1 is unsafe
+	// Multiple concurrent batches hitting 403 would race to claim epochs
+	if config.AutoClaim && config.MaxInFlight > 1 {
+		return nil, ErrAutoClaimConcurrency
+	}
+
 	return &IdempotentProducer{
 		url:        url,
 		producerID: producerID,
@@ -182,7 +192,7 @@ func (c *Client) IdempotentProducer(url, producerID string, config IdempotentPro
 		config:     config,
 		epoch:      config.Epoch,
 		closedCh:   make(chan struct{}),
-	}
+	}, nil
 }
 
 // Epoch returns the current epoch.

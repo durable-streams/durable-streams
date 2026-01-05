@@ -137,18 +137,31 @@ export class IdempotentProducer {
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
-    // Handle signal abort
+    // Guardrail: autoClaim + maxInFlight > 1 is unsafe
+    // Multiple concurrent batches hitting 403 would race to claim epochs
+    if (this.#autoClaim && this.#maxInFlight > 1) {
+      throw new Error(
+        `autoClaim requires maxInFlight=1. With maxInFlight > 1, concurrent ` +
+          `batches hitting 403 would race to claim epochs, causing split-brain.`
+      )
+    }
+
+    // Handle signal abort (use { once: true } to auto-cleanup)
     if (this.#signal) {
-      this.#signal.addEventListener(`abort`, () => {
-        this.#rejectPendingBatch(
-          new DurableStreamError(
-            `Producer aborted`,
-            `ALREADY_CLOSED`,
-            undefined,
-            undefined
+      this.#signal.addEventListener(
+        `abort`,
+        () => {
+          this.#rejectPendingBatch(
+            new DurableStreamError(
+              `Producer aborted`,
+              `ALREADY_CLOSED`,
+              undefined,
+              undefined
+            )
           )
-        )
-      })
+        },
+        { once: true }
+      )
     }
   }
 

@@ -129,6 +129,15 @@ class IdempotentProducer:
             max_in_flight: Maximum concurrent batches
             content_type: Content type for appends
         """
+        # Guardrail: auto_claim + max_in_flight > 1 is unsafe
+        # Multiple concurrent batches hitting 403 would race to claim epochs
+        if auto_claim and max_in_flight > 1:
+            raise ValueError(
+                "auto_claim requires max_in_flight=1. With max_in_flight > 1, "
+                "concurrent batches hitting 403 would race to claim epochs, "
+                "causing split-brain."
+            )
+
         self._url = url
         self._producer_id = producer_id
         self._epoch = epoch

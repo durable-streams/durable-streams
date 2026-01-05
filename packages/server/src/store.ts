@@ -241,8 +241,14 @@ export class StreamStore {
   }
 
   /**
-   * Validate producer state and update if valid.
+   * Validate producer state WITHOUT mutating.
+   * Returns proposed state to commit after successful append.
    * Implements Kafka-style idempotent producer validation.
+   *
+   * IMPORTANT: This function does NOT mutate producer state. The caller must
+   * call commitProducerState() after successful append to apply the mutation.
+   * This ensures atomicity: if append fails (e.g., JSON validation), producer
+   * state is not incorrectly advanced.
    */
   private validateProducer(
     stream: Stream,
@@ -250,7 +256,7 @@ export class StreamStore {
     epoch: number,
     seq: number
   ): ProducerValidationResult {
-    // Initialize producers map if needed
+    // Initialize producers map if needed (safe - just ensures map exists)
     if (!stream.producers) {
       stream.producers = new Map()
     }
@@ -270,12 +276,13 @@ export class StreamStore {
           receivedSeq: seq,
         }
       }
-      stream.producers.set(producerId, {
-        epoch,
-        lastSeq: 0,
-        lastUpdated: now,
-      })
-      return { status: `accepted`, isNew: true }
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+      }
     }
 
     // Epoch validation (client-declared, server-validated)
@@ -288,13 +295,13 @@ export class StreamStore {
       if (seq !== 0) {
         return { status: `invalid_epoch_seq` }
       }
-      // Accept: update to new epoch
-      stream.producers.set(producerId, {
-        epoch,
-        lastSeq: 0,
-        lastUpdated: now,
-      })
-      return { status: `accepted`, isNew: true }
+      // Return proposed state for new epoch, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+      }
     }
 
     // Same epoch: sequence validation
@@ -303,10 +310,13 @@ export class StreamStore {
     }
 
     if (seq === state.lastSeq + 1) {
-      // Accept and update
-      state.lastSeq = seq
-      state.lastUpdated = now
-      return { status: `accepted`, isNew: false }
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: false,
+        producerId,
+        proposedState: { epoch, lastSeq: seq, lastUpdated: now },
+      }
     }
 
     // Sequence gap
@@ -315,6 +325,18 @@ export class StreamStore {
       expectedSeq: state.lastSeq + 1,
       receivedSeq: seq,
     }
+  }
+
+  /**
+   * Commit producer state after successful append.
+   * This is the only place where producer state is mutated.
+   */
+  private commitProducerState(
+    stream: Stream,
+    result: ProducerValidationResult
+  ): void {
+    if (result.status !== `accepted`) return
+    stream.producers!.set(result.producerId, result.proposedState)
   }
 
   /**
@@ -398,12 +420,15 @@ export class StreamStore {
     }
 
     // Handle producer validation if producer headers are present
+    // NOTE: validateProducer does NOT mutate state - it returns proposed state
+    // that we commit AFTER successful append (for atomicity)
+    let producerResult: ProducerValidationResult | undefined
     if (
       options.producerId !== undefined &&
       options.producerEpoch !== undefined &&
       options.producerSeq !== undefined
     ) {
-      const producerResult = this.validateProducer(
+      producerResult = this.validateProducer(
         stream,
         options.producerId,
         options.producerEpoch,
@@ -416,23 +441,30 @@ export class StreamStore {
       }
     }
 
-    // Update Stream-Seq after validation passes (atomicity: only mutate on success path)
+    // appendToStream can throw (e.g., for JSON validation errors)
+    // This is done BEFORE committing any state changes for atomicity
+    const message = this.appendToStream(stream, data)!
+
+    // === STATE MUTATION HAPPENS HERE (only after successful append) ===
+
+    // Commit producer state after successful append
+    if (producerResult) {
+      this.commitProducerState(stream, producerResult)
+    }
+
+    // Update Stream-Seq after append succeeds
     if (options.seq !== undefined) {
       stream.lastSeq = options.seq
     }
-
-    // appendToStream returns null only for empty arrays in create mode,
-    // but public append() never sets isInitialCreate, so empty arrays throw before this
-    const message = this.appendToStream(stream, data)!
 
     // Notify any pending long-polls
     this.notifyLongPolls(path)
 
     // Return AppendResult if producer headers were used
-    if (options.producerId !== undefined) {
+    if (producerResult) {
       return {
         message,
-        producerResult: { status: `accepted`, isNew: false },
+        producerResult: { status: `accepted`, isNew: producerResult.isNew },
       }
     }
 

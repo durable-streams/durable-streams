@@ -369,8 +369,12 @@ export class FileBackedStreamStore {
   }
 
   /**
-   * Validate producer state and update if valid.
-   * Updates the metadata in place.
+   * Validate producer state WITHOUT mutating.
+   * Returns proposed state to commit after successful append.
+   *
+   * IMPORTANT: This function does NOT mutate producer state. The caller must
+   * commit the proposedState after successful append (file write + fsync + LMDB).
+   * This ensures atomicity: if any step fails, producer state is not advanced.
    */
   private validateProducer(
     meta: StreamMetadata,
@@ -378,7 +382,7 @@ export class FileBackedStreamStore {
     epoch: number,
     seq: number
   ): ProducerValidationResult {
-    // Initialize producers map if needed
+    // Initialize producers map if needed (safe - just ensures map exists)
     if (!meta.producers) {
       meta.producers = {}
     }
@@ -395,12 +399,13 @@ export class FileBackedStreamStore {
           receivedSeq: seq,
         }
       }
-      meta.producers[producerId] = {
-        epoch,
-        lastSeq: 0,
-        lastUpdated: now,
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
       }
-      return { status: `accepted`, isNew: true }
     }
 
     // Epoch validation (client-declared, server-validated)
@@ -413,13 +418,13 @@ export class FileBackedStreamStore {
       if (seq !== 0) {
         return { status: `invalid_epoch_seq` }
       }
-      // Accept: update to new epoch
-      meta.producers[producerId] = {
-        epoch,
-        lastSeq: 0,
-        lastUpdated: now,
+      // Return proposed state for new epoch, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
       }
-      return { status: `accepted`, isNew: true }
     }
 
     // Same epoch: sequence validation
@@ -428,10 +433,13 @@ export class FileBackedStreamStore {
     }
 
     if (seq === state.lastSeq + 1) {
-      // Accept and update
-      state.lastSeq = seq
-      state.lastUpdated = now
-      return { status: `accepted`, isNew: false }
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: false,
+        producerId,
+        proposedState: { epoch, lastSeq: seq, lastUpdated: now },
+      }
     }
 
     // Sequence gap
@@ -790,13 +798,17 @@ export class FileBackedStreamStore {
 
     // 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
     //    This includes both the offset update and producer state update
+    //    Producer state is committed HERE (not in validateProducer) for atomicity
+    const updatedProducers = { ...streamMeta.producers }
+    if (producerResult && producerResult.status === `accepted`) {
+      updatedProducers[producerResult.producerId] = producerResult.proposedState
+    }
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
-      // Producer state is already updated in validateProducer (streamMeta.producers was mutated)
-      producers: streamMeta.producers,
+      producers: updatedProducers,
     }
     const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
@@ -805,10 +817,10 @@ export class FileBackedStreamStore {
     this.notifyLongPolls(streamPath)
 
     // 6. Return AppendResult if producer headers were used
-    if (options.producerId !== undefined) {
+    if (producerResult) {
       return {
         message,
-        producerResult: { status: `accepted`, isNew: false },
+        producerResult: { status: `accepted`, isNew: producerResult.isNew },
       }
     }
 

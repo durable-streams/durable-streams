@@ -434,3 +434,49 @@ tests:
         producerSeq: 1
         expect:
           status: 200
+
+  - id: failed-append-does-not-advance-producer-state
+    name: Failed append does not advance producer state (atomicity)
+    description: If append fails after producer validation (e.g., invalid JSON), producer seq should not advance
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # First append succeeds
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 1}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Second append with invalid JSON - should fail
+      - action: server-append
+        path: ${streamPath}
+        data: "not valid json"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 400
+      # Retry seq=1 with valid JSON - should succeed (not be rejected as duplicate or gap)
+      # If producer state was incorrectly advanced, this would fail
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 2}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # seq=2 should also work
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 3}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200

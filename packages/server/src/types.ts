@@ -188,9 +188,16 @@ export interface ProducerState {
 
 /**
  * Result of producer validation for append operations.
+ * For 'accepted' status, includes proposedState to commit after successful append.
  */
 export type ProducerValidationResult =
-  | { status: `accepted`; isNew: boolean }
+  | {
+      status: `accepted`
+      isNew: boolean
+      /** State to commit after successful append (deferred mutation) */
+      proposedState: ProducerState
+      producerId: string
+    }
   | { status: `duplicate` }
   | { status: `stale_epoch`; currentEpoch: number }
   | { status: `invalid_epoch_seq` }
