@@ -628,10 +628,10 @@ async def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
             linger_ms=0,  # No linger - send batches immediately
         )
 
-        # Submit all messages at once - don't await individually
-        # IdempotentProducer will batch them automatically
-        tasks = [producer.append(payload) for _ in range(count)]
-        await asyncio.gather(*tasks)
+        # Fire-and-forget: append_nowait returns immediately
+        # Producer batches in background, errors via on_error callback
+        for _ in range(count):
+            producer.append_nowait(payload)
         await producer.flush()
         await producer.close()
 

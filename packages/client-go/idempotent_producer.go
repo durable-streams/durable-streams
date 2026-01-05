@@ -100,6 +100,10 @@ type IdempotentProducerConfig struct {
 
 	// ContentType is the content type for appends (default "application/octet-stream").
 	ContentType string
+
+	// OnError is called when a batch fails. Use with AppendAsync for fire-and-forget.
+	// If nil, errors are only returned from Append (blocking) or discarded by AppendAsync.
+	OnError func(error)
 }
 
 // DefaultIdempotentProducerConfig returns the default configuration.
@@ -279,6 +283,46 @@ func (p *IdempotentProducer) Append(ctx context.Context, data []byte) (*Idempote
 	}
 }
 
+// AppendAsync adds data to the stream without waiting for acknowledgment.
+// This is fire-and-forget: returns immediately after adding to the batch.
+// Errors are reported via OnError callback if configured.
+// Returns ErrProducerClosed if the producer is closed.
+func (p *IdempotentProducer) AppendAsync(data []byte) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrProducerClosed
+	}
+
+	// Add to pending batch (no result channel needed for async)
+	entry := pendingEntry{
+		data:   data,
+		result: nil, // nil signals fire-and-forget
+	}
+	p.pendingBatch = append(p.pendingBatch, entry)
+	p.batchBytes += len(data)
+
+	// Check if batch should be sent immediately
+	shouldSend := p.batchBytes >= p.config.MaxBatchBytes
+	shouldStartTimer := !shouldSend && p.lingerTimer == nil
+
+	if shouldSend {
+		p.sendCurrentBatchLocked()
+	} else if shouldStartTimer {
+		p.lingerTimer = time.AfterFunc(time.Duration(p.config.LingerMs)*time.Millisecond, func() {
+			p.mu.Lock()
+			p.lingerTimer = nil
+			if len(p.pendingBatch) > 0 {
+				p.sendCurrentBatchLocked()
+			}
+			p.mu.Unlock()
+		})
+	}
+	p.mu.Unlock()
+
+	return nil
+}
+
 // Flush sends any pending batch and waits for all in-flight batches to complete.
 func (p *IdempotentProducer) Flush(ctx context.Context) error {
 	p.mu.Lock()
@@ -378,15 +422,22 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 
 		result, err := p.doSendBatch(context.Background(), batch, seq, p.epoch)
 
-		// Notify all entries
+		// Call OnError callback if configured and error occurred
+		if err != nil && p.config.OnError != nil {
+			p.config.OnError(err)
+		}
+
+		// Notify entries with result channels (skip nil for async appends)
 		res := idempotentResult{err: err}
 		if err == nil {
 			res.result = result
 		}
 		for _, entry := range batch {
-			select {
-			case entry.result <- res:
-			default:
+			if entry.result != nil {
+				select {
+				case entry.result <- res:
+				default:
+				}
 			}
 		}
 	}()

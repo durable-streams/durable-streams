@@ -820,7 +820,7 @@ export class FileBackedStreamStore {
     if (producerResult) {
       return {
         message,
-        producerResult: { status: `accepted`, isNew: producerResult.isNew },
+        producerResult,
       }
     }
 

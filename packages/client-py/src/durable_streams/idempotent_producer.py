@@ -67,9 +67,7 @@ class _PendingEntry:
     """Internal type for pending batch entries."""
 
     body: bytes
-    future: asyncio.Future[IdempotentAppendResult] = field(
-        default_factory=lambda: asyncio.get_event_loop().create_future()
-    )
+    future: asyncio.Future[IdempotentAppendResult] | None = None
 
 
 class IdempotentProducer:
@@ -114,6 +112,7 @@ class IdempotentProducer:
         linger_ms: int = 5,
         max_in_flight: int = 5,
         content_type: str = "application/octet-stream",
+        on_error: Any | None = None,  # Callable[[Exception], None]
     ) -> None:
         """
         Create an idempotent producer for a stream.
@@ -128,6 +127,7 @@ class IdempotentProducer:
             linger_ms: Maximum time to wait before sending a batch
             max_in_flight: Maximum concurrent batches
             content_type: Content type for appends
+            on_error: Callback for batch errors (use with append_nowait)
         """
         # Guardrail: auto_claim + max_in_flight > 1 is unsafe
         # Multiple concurrent batches hitting 403 would race to claim epochs
@@ -147,6 +147,7 @@ class IdempotentProducer:
         self._linger_ms = linger_ms
         self._max_in_flight = max_in_flight
         self._content_type = content_type
+        self._on_error = on_error
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(timeout=30.0)
 
@@ -222,6 +223,40 @@ class IdempotentProducer:
             self._linger_task = asyncio.create_task(self._linger_timeout())
 
         return await entry.future
+
+    def append_nowait(self, body: bytes | str) -> None:
+        """
+        Append data to the stream without waiting for acknowledgment.
+
+        This is fire-and-forget: returns immediately after adding to the batch.
+        Errors are reported via on_error callback if configured.
+
+        Args:
+            body: Data to append (bytes or str)
+
+        Raises:
+            DurableStreamError: If producer is closed
+        """
+        if self._closed:
+            raise DurableStreamError(
+                f"Producer is closed: {self._url}",
+                code="ALREADY_CLOSED",
+                status=None,
+            )
+
+        data = body.encode("utf-8") if isinstance(body, str) else body
+
+        # No future for fire-and-forget
+        entry = _PendingEntry(body=data, future=None)
+        self._pending_batch.append(entry)
+        self._batch_bytes += len(data)
+
+        # Check if batch should be sent immediately
+        if self._batch_bytes >= self._max_batch_bytes:
+            self._send_current_batch()
+        elif self._linger_task is None:
+            # Start linger timer
+            self._linger_task = asyncio.create_task(self._linger_timeout())
 
     async def _linger_timeout(self) -> None:
         """Wait for linger_ms then send pending batch."""
@@ -331,14 +366,18 @@ class IdempotentProducer:
         try:
             result = await self._do_send_batch(batch, seq, self._epoch)
 
-            # Resolve all entries in the batch
+            # Resolve all entries in the batch (skip None futures from append_nowait)
             for entry in batch:
-                if not entry.future.done():
+                if entry.future is not None and not entry.future.done():
                     entry.future.set_result(result)
         except Exception as e:
-            # Reject all entries in the batch
+            # Call on_error callback if configured
+            if self._on_error is not None:
+                self._on_error(e)
+
+            # Reject all entries in the batch (skip None futures from append_nowait)
             for entry in batch:
-                if not entry.future.done():
+                if entry.future is not None and not entry.future.done():
                     entry.future.set_exception(e)
             raise
 

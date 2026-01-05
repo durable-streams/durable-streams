@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	durablestreams "github.com/durable-streams/durable-streams/packages/client-go"
@@ -850,8 +849,9 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 	}
 
 	// Use IdempotentProducer for automatic batching and pipelining
+	// AppendAsync is fire-and-forget - no goroutines needed
 	producer, err := client.IdempotentProducer(url, "bench-producer", durablestreams.IdempotentProducerConfig{
-		LingerMs:    0, // No linger - send batches immediately
+		LingerMs:    0, // Batch by size, not time
 		ContentType: ct,
 	})
 	if err != nil {
@@ -859,27 +859,18 @@ func benchmarkThroughputAppend(ctx context.Context, path string, count, size, co
 	}
 	defer producer.Close()
 
-	// Pre-generate all data
-	allData := make([][]byte, count)
-	for i := range allData {
-		allData[i] = make([]byte, size)
-		rand.Read(allData[i])
-	}
-
-	// Submit all appends concurrently using goroutines
-	var wg sync.WaitGroup
+	// Pre-generate payload (reuse same data for speed)
+	payload := make([]byte, size)
+	rand.Read(payload)
 
 	start := time.Now()
 
+	// Fire-and-forget: AppendAsync returns immediately, producer batches in background
 	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(data []byte) {
-			defer wg.Done()
-			_, _ = producer.Append(ctx, data)
-		}(allData[i])
+		_ = producer.AppendAsync(payload)
 	}
 
-	wg.Wait()
+	// Wait for all batches to complete
 	_ = producer.Flush(ctx)
 	elapsed := time.Since(start)
 
