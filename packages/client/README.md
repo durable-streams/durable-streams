@@ -10,14 +10,17 @@ npm install @durable-streams/client
 
 ## Overview
 
-The Durable Streams client provides two main APIs:
+The Durable Streams client provides three main APIs:
 
 1. **`stream()` function** - A fetch-like read-only API for consuming streams
 2. **`DurableStream` class** - A handle for read/write operations on a stream
+3. **`IdempotentProducer` class** - High-throughput producer with exactly-once write semantics (recommended for writes)
 
 ## Key Features
 
-- **Automatic Batching**: Multiple `append()` calls are automatically batched together when a POST is in-flight, significantly improving throughput for high-frequency writes
+- **Exactly-Once Writes**: `IdempotentProducer` provides Kafka-style exactly-once semantics with automatic deduplication
+- **Automatic Batching**: Multiple writes are automatically batched together for high throughput
+- **Pipelining**: Up to 5 concurrent batches in flight by default for maximum throughput
 - **Streaming Reads**: `stream()` and `DurableStream.stream()` provide rich consumption options (promises, ReadableStreams, subscribers)
 - **Resumable**: Offset-based reads let you resume from any point
 - **Real-time**: Long-poll and SSE modes for live tailing with catch-up from any offset
@@ -81,9 +84,64 @@ const unsubscribe3 = res.subscribeText(async (chunk) => {
 })
 ```
 
+### High-Throughput Writes: Using `IdempotentProducer` (Recommended)
+
+For reliable, high-throughput writes with exactly-once semantics, use `IdempotentProducer`:
+
+```typescript
+import {
+  DurableStream,
+  IdempotentProducer,
+  StaleEpochError,
+} from "@durable-streams/client"
+
+// Create or connect to a stream
+const stream = await DurableStream.create({
+  url: "https://streams.example.com/events",
+  headers: { Authorization: `Bearer ${token}` },
+  contentType: "application/json",
+})
+
+// Create an idempotent producer
+const producer = new IdempotentProducer(stream, "event-processor-1", {
+  autoClaim: true, // Auto-recover from epoch conflicts (recommended)
+  maxBatchBytes: 65536, // Send when batch reaches 64KB
+  lingerMs: 5, // Or after 5ms of inactivity
+  maxInFlight: 5, // Up to 5 concurrent batches
+})
+
+// High-throughput event loop
+try {
+  for await (const event of eventSource) {
+    // Fire-and-forget - batched & pipelined automatically
+    await producer.append(JSON.stringify(event))
+  }
+
+  // IMPORTANT: Always flush before shutdown to ensure delivery
+  await producer.flush()
+} catch (error) {
+  if (error instanceof StaleEpochError) {
+    // Another producer claimed this ID - handle gracefully
+    console.log(`Fenced by producer with epoch ${error.currentEpoch}`)
+  } else {
+    throw error
+  }
+} finally {
+  await producer.close()
+}
+```
+
+**Why use IdempotentProducer?**
+
+- **Exactly-once delivery**: Server deduplicates using `(producerId, epoch, seq)` tuple
+- **Automatic batching**: Multiple `append()` calls batched into single HTTP requests
+- **Pipelining**: Up to 5 batches in flight concurrently (configurable)
+- **Zombie fencing**: Stale producers are rejected, preventing split-brain scenarios
+- **Network resilience**: Safe to retry on network errors (server deduplicates)
+
 ### Read/Write: Using `DurableStream`
 
-For write operations or when you need a persistent handle:
+For simple write operations or when you need a persistent handle:
 
 ```typescript
 import { DurableStream } from "@durable-streams/client"
@@ -98,7 +156,7 @@ const handle = await DurableStream.create({
   ttlSeconds: 3600,
 })
 
-// Append data
+// Append data (simple API without exactly-once guarantees)
 await handle.append(JSON.stringify({ type: "message", text: "Hello" }), {
   seq: "writer-1-000001",
 })
@@ -787,6 +845,105 @@ res.subscribeJson(async (batch) => {
 
 ---
 
+## IdempotentProducer
+
+The `IdempotentProducer` class provides Kafka-style exactly-once write semantics with automatic batching and pipelining.
+
+### Constructor
+
+```typescript
+new IdempotentProducer(stream: DurableStream, producerId: string, opts?: IdempotentProducerOptions)
+```
+
+**Parameters:**
+
+- `stream` - The DurableStream to write to
+- `producerId` - Stable identifier for this producer (e.g., "order-service-1")
+- `opts` - Optional configuration
+
+**Options:**
+
+```typescript
+interface IdempotentProducerOptions {
+  epoch?: number // Starting epoch (default: 0)
+  autoClaim?: boolean // On 403, retry with epoch+1 (default: false)
+  maxBatchBytes?: number // Max bytes before sending batch (default: 1MB)
+  lingerMs?: number // Max time to wait for more messages (default: 5ms)
+  maxInFlight?: number // Concurrent batches in flight (default: 5)
+  signal?: AbortSignal // Cancellation signal
+  fetch?: typeof fetch // Custom fetch implementation
+}
+```
+
+### Methods
+
+#### `append(body): Promise<{ offset: Offset; duplicate: boolean }>`
+
+Append data to the stream. Returns when the batch containing this message is acknowledged.
+
+```typescript
+await producer.append("message data")
+await producer.append(new Uint8Array([1, 2, 3]))
+```
+
+#### `flush(): Promise<void>`
+
+Send any pending batch immediately and wait for all in-flight batches to complete.
+
+```typescript
+// Always call before shutdown
+await producer.flush()
+```
+
+#### `close(): Promise<void>`
+
+Flush pending messages and close the producer. Further `append()` calls will throw.
+
+```typescript
+await producer.close()
+```
+
+#### `restart(): Promise<void>`
+
+Increment epoch and reset sequence. Call this when restarting the producer to establish a new session.
+
+```typescript
+await producer.restart()
+```
+
+### Properties
+
+- `epoch: number` - Current epoch for this producer
+- `nextSeq: number` - Next sequence number to be assigned
+- `pendingCount: number` - Messages in the current pending batch
+- `inFlightCount: number` - Batches currently in flight
+
+### Error Handling
+
+```typescript
+import {
+  IdempotentProducer,
+  StaleEpochError,
+  SequenceGapError,
+} from "@durable-streams/client"
+
+try {
+  await producer.append("data")
+  await producer.flush()
+} catch (error) {
+  if (error instanceof StaleEpochError) {
+    // Another producer has a higher epoch - this producer is "fenced"
+    // error.currentEpoch contains the server's current epoch
+    console.log(`Fenced by epoch ${error.currentEpoch}`)
+  } else if (error instanceof SequenceGapError) {
+    // Sequence numbers are out of order (should never happen with proper usage)
+    console.log(`Expected seq ${error.expectedSeq}, got ${error.receivedSeq}`)
+  }
+}
+```
+
+---
+
 ## Types
 
 Key types exported from the package:
@@ -797,6 +954,9 @@ Key types exported from the package:
 - `JsonBatch<T>` - `{ items: T[], offset: Offset, upToDate: boolean, cursor?: string }`
 - `TextChunk` - `{ text: string, offset: Offset, upToDate: boolean, cursor?: string }`
 - `HeadResult` - Metadata from HEAD requests
+- `IdempotentProducer` - Exactly-once producer class
+- `StaleEpochError` - Thrown when producer epoch is stale (zombie fencing)
+- `SequenceGapError` - Thrown when sequence numbers are out of order
 - `DurableStreamError` - Protocol-level errors with codes
 - `FetchError` - Transport/network errors
 

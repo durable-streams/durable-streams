@@ -178,23 +178,33 @@ The Test UI and CLI share the same `__registry__` system stream, so streams crea
 
 ### Full read/write client
 
-The `@durable-streams/client` package provides full read/write support with automatic batching for high-throughput writes:
+The `@durable-streams/client` package provides full read/write support. For high-throughput writes with exactly-once delivery, use `IdempotentProducer`:
 
 ```typescript
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
 
-// Create a new stream
-const handle = await DurableStream.create({
+// Create a stream
+const stream = await DurableStream.create({
   url: "https://your-server.com/v1/stream/my-stream",
   contentType: "application/json",
 })
 
-// Append data (automatically batched for high throughput)
-await handle.append({ event: "user.created", userId: "123" })
-await handle.append({ event: "user.updated", userId: "123" })
+// Create an idempotent producer for reliable writes
+const producer = new IdempotentProducer(stream, "my-service-1", {
+  autoClaim: true, // Auto-recover from epoch conflicts
+})
+
+// High-throughput writes - automatically batched & pipelined
+for (const event of events) {
+  await producer.append(JSON.stringify(event))
+}
+
+// Ensure all messages are delivered before shutdown
+await producer.flush()
+await producer.close()
 
 // Read with the streaming API
-const res = await handle.stream<{ event: string; userId: string }>({
+const res = await stream.stream<{ event: string; userId: string }>({
   live: false,
 })
 const items = await res.json()
@@ -601,18 +611,42 @@ const state = events.reduce(applyEvent, initialState)
 LLM inference is expensive. When a user's tab gets suspended, their network flaps, or they refresh the page, you don't want to re-run the generation—you want them to pick up exactly where they left off.
 
 ```typescript
+import {
+  DurableStream,
+  IdempotentProducer,
+  StaleEpochError,
+} from "@durable-streams/client"
+
 // Server: stream tokens to a durable stream (continues even if client disconnects)
-const handle = await DurableStream.create({
+const stream = await DurableStream.create({
   url: `https://your-server.com/v1/stream/generation/${generationId}`,
   contentType: "text/plain",
 })
 
-for await (const token of llm.stream(prompt)) {
-  await handle.append(token) // Persisted immediately
+// Use IdempotentProducer for reliable, exactly-once token delivery
+const producer = new IdempotentProducer(stream, `llm-worker-${workerId}`, {
+  autoClaim: true, // Auto-recover if another worker took over
+  maxBatchBytes: 4096, // Batch small tokens together
+  lingerMs: 10, // Send batches every 10ms for low latency
+})
+
+try {
+  for await (const token of llm.stream(prompt)) {
+    await producer.append(token) // Batched & deduplicated automatically
+  }
+  await producer.flush() // Ensure all tokens are delivered
+} catch (error) {
+  if (error instanceof StaleEpochError) {
+    console.log("Another worker took over, stopping gracefully")
+  } else {
+    throw error
+  }
+} finally {
+  await producer.close()
 }
 
 // Client: resume from last seen position (refresh-safe)
-const res = await handle.stream({ offset: lastSeenOffset, live: "auto" })
+const res = await stream.stream({ offset: lastSeenOffset, live: "auto" })
 res.subscribe((chunk) => {
   renderTokens(chunk.data)
   saveOffset(chunk.offset) // Persist for next resume
@@ -625,6 +659,7 @@ res.subscribe((chunk) => {
 - **Page refresh?** Continues from last token, not from the beginning
 - **Share the generation?** Multiple viewers watch the same stream in real-time
 - **Switch devices?** Start on mobile, continue on desktop, same stream
+- **Worker failover?** Another worker can take over with a new epoch—no duplicate tokens
 
 ## Testing Your Implementation
 
