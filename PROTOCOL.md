@@ -594,13 +594,13 @@ When streams require authentication and CDN caching, implementers should conside
 
 #### Embedded Authentication
 
-When streaming logic is embedded in your application server, authentication can be handled directly using your application's existing auth mechanisms. The application validates credentials and serves stream data in a single request path:
+When streaming logic is embedded in your application server, authentication can be handled directly using your application's existing auth mechanisms:
 
 ```
-Client → CDN → Application Server (auth + streaming)
+Client → Application Server (auth + streaming)
 ```
 
-This is the simplest pattern and works well when the application already handles authentication for other endpoints.
+This is the simplest pattern and works well when the application already handles authentication for other endpoints. However, CDN caching is not compatible with this pattern since the CDN cannot validate credentials. Use `Cache-Control: private` to enable browser caching while preventing CDN caching, or use the proxy pattern below if CDN caching is required.
 
 #### Proxy Authentication Pattern
 
