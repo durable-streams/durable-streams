@@ -823,6 +823,13 @@ export interface IdempotentProducerOptions {
    * AbortSignal for the producer lifecycle.
    */
   signal?: AbortSignal
+
+  /**
+   * Callback for batch errors when using appendNoWait().
+   * Required when using appendNoWait() for fire-and-forget writes.
+   * @param error - The error that occurred
+   */
+  onError?: (error: Error) => void
 }
 
 /**

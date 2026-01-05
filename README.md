@@ -192,11 +192,12 @@ const stream = await DurableStream.create({
 // Create an idempotent producer for reliable writes
 const producer = new IdempotentProducer(stream, "my-service-1", {
   autoClaim: true, // Auto-recover from epoch conflicts
+  onError: (err) => console.error("Batch failed:", err),
 })
 
-// High-throughput writes - automatically batched & pipelined
+// High-throughput writes - fire-and-forget, automatically batched & pipelined
 for (const event of events) {
-  await producer.append(JSON.stringify(event))
+  producer.appendNoWait(JSON.stringify(event))
 }
 
 // Ensure all messages are delivered before shutdown

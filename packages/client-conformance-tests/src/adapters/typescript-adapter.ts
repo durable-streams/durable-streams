@@ -840,19 +840,18 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         const payload = new Uint8Array(operation.size).fill(42)
 
         // Use IdempotentProducer for automatic batching and pipelining
+        // Fire-and-forget with appendNoWait() for maximum throughput
         const producer = new IdempotentProducer(ds, `bench-producer`, {
           lingerMs: 0, // No linger - send batches immediately when ready
+          onError: (err) => console.error(`Batch failed:`, err),
         })
 
-        // Submit all messages at once - don't await individually
-        // IdempotentProducer will batch them automatically
-        const promises: Array<Promise<unknown>> = []
+        // Fire-and-forget: appendNoWait returns immediately, producer batches in background
         for (let i = 0; i < operation.count; i++) {
-          promises.push(producer.append(payload))
+          producer.appendNoWait(payload)
         }
 
         // Wait for all messages to be delivered
-        await Promise.all(promises)
         await producer.flush()
 
         metrics.bytesTransferred = operation.count * operation.size
