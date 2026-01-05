@@ -314,12 +314,14 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 200)
 
-- Same as catch-up reads (Section 5.5)
+- Same as catch-up reads (Section 5.5), except:
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Body (on 200)
 
@@ -364,8 +366,8 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Each line prefixed with `data:`
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset` and **MAY** include `streamCursor`
-  - Format: JSON object with offset and optional cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
+  - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
 
 **Example:**
 
