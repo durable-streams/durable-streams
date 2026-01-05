@@ -1,5 +1,14 @@
 # @durable-streams/client-conformance-tests
 
+## 0.1.5
+
+### Patch Changes
+
+- Add conformance tests for Unicode line separator preservation in SSE parsing. Per the HTML Living Standard, SSE parsers must only split on CRLF, LF, or CR. Other Unicode line separators (U+0085 NEL, U+2028 Line Separator, U+2029 Paragraph Separator) must be preserved as data characters. ([#118](https://github.com/durable-streams/durable-streams/pull/118))
+
+- Updated dependencies []:
+  - @durable-streams/server@0.1.3
+
 ## 0.1.4
 
 ### Patch Changes
