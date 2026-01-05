@@ -14,6 +14,7 @@ import {
   DurableStream,
   DurableStreamError,
   FetchError,
+  IdempotentProducer,
   stream,
 } from "@durable-streams/client"
 import {
@@ -749,10 +750,21 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         // Generate payload (using fill for speed - don't want to measure PRNG)
         const payload = new Uint8Array(operation.size).fill(42)
 
-        // Submit all messages at once - client batching will handle the rest
-        await Promise.all(
-          Array.from({ length: operation.count }, () => ds.append(payload))
-        )
+        // Use IdempotentProducer for automatic batching and pipelining
+        const producer = new IdempotentProducer(ds, `bench-producer`, {
+          lingerMs: 0, // No linger - send batches immediately when ready
+        })
+
+        // Submit all messages at once - don't await individually
+        // IdempotentProducer will batch them automatically
+        const promises: Array<Promise<unknown>> = []
+        for (let i = 0; i < operation.count; i++) {
+          promises.push(producer.append(payload))
+        }
+
+        // Wait for all messages to be delivered
+        await Promise.all(promises)
+        await producer.flush()
 
         metrics.bytesTransferred = operation.count * operation.size
         metrics.messagesProcessed = operation.count
