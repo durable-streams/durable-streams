@@ -427,6 +427,8 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
   This eliminates the need for a separate HEAD request or initial catch-up when clients want to start following a stream from the current position. Servers **MUST** recognize `now` as a valid offset value.
 
+**Reserved Values**: The sentinel values `-1` and `now` are reserved by the protocol. Server implementations **MUST NOT** generate these strings as actual stream offsets (in `Stream-Next-Offset` headers or SSE control events). This ensures clients can always distinguish between sentinel requests and real offset values.
+
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
 Clients **MUST** use the `Stream-Next-Offset` value returned in responses for subsequent read requests. They **SHOULD** persist offsets locally (e.g., in browser local storage or a database) to enable resumability after disconnection or restart.
