@@ -88,29 +88,46 @@ What makes this approach distinct from existing solutions:
 
 3. **Bidirectional input as awaitables**: RPC calls, external events, and human input all share a unified "awaitable" model. The workflow creates a pending awaitable; the client sees it in the stream; the response appends to the same stream. Both sides use one transport.
 
+4. **Host anywhere**: Workflow code runs on any platform that can receive HTTP webhooks — Vercel, Cloudflare, AWS Lambda, containers, VMs. Durable Streams handles the event log and triggers; you bring your own compute. No platform lock-in.
+
 ## Proposal
 
 ### Architecture
 
-The workflow engine is a thin protocol layer on top of the State Protocol:
+The system has two main components: **Durable Streams** (event log + webhook triggers) and **workflow functions** (hosted anywhere).
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Application Layer                                      │
-│  Custom RPC methods (approveExpense, selectProduct)     │
-├─────────────────────────────────────────────────────────┤
-│  Core Workflow Primitives                               │
-│  step.run(), sleep(), waitForEvent(), rpc()             │
-├─────────────────────────────────────────────────────────┤
-│  Workflow Protocol                                      │
-│  Event types, replay semantics, determinism rules       │
-├─────────────────────────────────────────────────────────┤
-│  State Protocol + Durable Streams                       │
-│  Event log, real-time sync, multi-client                │
-└─────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------------------+
+|                         DURABLE STREAMS SERVER                              |
+|                                                                             |
+|  +---------------------+      +---------------------------------------+     |
+|  | Stream Storage      |      | Webhook Registry                      |     |
+|  | /workflows/abc123   |      | /workflows/* -> https://my-app.com/wf |     |
+|  | /workflows/def456   |      |                                       |     |
+|  +---------------------+      +---------------------------------------+     |
+|            |                               |                                |
+|            +---------------+---------------+                                |
+|                            | on matching append                             |
++----------------------------|-----------------------+------------------------+
+                             |                       |
+                             v POST                  v subscribe
++----------------------------+----+    +--------------------------------+
+| WORKFLOW FUNCTION               |    | BROWSER CLIENT                 |
+| (Vercel/Lambda/container/etc)   |    |                                |
+|                                 |    | Stream -> TanStack DB -> UI    |
+| +-----------------------------+ |    | Respond -> append to stream    |
+| | Application: approveExpense | |    +--------------------------------+
+| +-----------------------------+ |
+| | Primitives: step.run, rpc   | |
+| +-----------------------------+ |
+| | SDK: replay, determinism    | |
+| +-----------------------------+ |
+|         |                       |
+|         v read/append           |
++---------------------------------+
 ```
 
-A workflow instance is identified by a stream URL. All workflow events — step completions, sleep timers, input requests, responses — are appended to that stream. The workflow executor replays from the stream to rebuild state, then continues execution.
+A workflow instance is identified by a stream URL. All workflow events — step completions, sleep timers, awaitables, responses — are appended to that stream. On external events, Durable Streams triggers the registered webhook; the workflow function replays from the stream, continues execution, and appends new events.
 
 ### Core Primitives
 
