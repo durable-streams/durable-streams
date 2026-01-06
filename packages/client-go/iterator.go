@@ -28,6 +28,10 @@ type Chunk struct {
 
 	// ETag for conditional requests.
 	ETag string
+
+	// StatusCode is the HTTP status code from the response.
+	// 200 for data, 204 for long-poll timeout/no content.
+	StatusCode int
 }
 
 // ChunkIterator iterates over raw byte chunks from the stream.
@@ -179,6 +183,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 			UpToDate:   upToDate,
 			Cursor:     cursor,
 			ETag:       etag,
+			StatusCode: http.StatusOK,
 		}, nil
 
 	case http.StatusNoContent:
@@ -212,6 +217,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 			Data:       nil,
 			UpToDate:   upToDate,
 			Cursor:     cursor,
+			StatusCode: http.StatusNoContent,
 		}, nil
 
 	case http.StatusNotModified:
@@ -229,6 +235,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 			Data:       nil,
 			UpToDate:   it.UpToDate,
 			Cursor:     it.cursor,
+			StatusCode: http.StatusNotModified,
 		}, nil
 
 	case http.StatusNotFound:
@@ -321,6 +328,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 				chunk.NextOffset = Offset(e.StreamNextOffset)
 				chunk.Cursor = e.StreamCursor
 				chunk.UpToDate = e.UpToDate
+				chunk.StatusCode = http.StatusOK // SSE is always over 200
 				it.ssePending = nil
 				it.mu.Unlock()
 				return chunk, nil
@@ -333,6 +341,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 					NextOffset: Offset(e.StreamNextOffset),
 					Cursor:     e.StreamCursor,
 					UpToDate:   true,
+					StatusCode: http.StatusOK, // SSE is always over 200
 				}, nil
 			}
 		}

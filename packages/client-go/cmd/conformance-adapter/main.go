@@ -483,6 +483,7 @@ func handleRead(cmd Command) Result {
 
 	var finalOffset string
 	upToDate := false
+	status := 200 // Default status
 
 	for len(chunks) < maxChunks {
 		chunk, err := it.Next()
@@ -496,9 +497,15 @@ func handleRead(cmd Command) Result {
 				// Timeout - we've caught up (no new data within timeout)
 				upToDate = true
 				finalOffset = string(it.Offset)
+				status = 204 // Timeout returns 204
 				break
 			}
 			return errorResult("read", err)
+		}
+
+		// Track the actual HTTP status from the chunk
+		if chunk.StatusCode != 0 {
+			status = chunk.StatusCode
 		}
 
 		if len(chunk.Data) > 0 {
@@ -534,7 +541,7 @@ func handleRead(cmd Command) Result {
 	res := Result{
 		Type:     "read",
 		Success:  true,
-		Status:   200,
+		Status:   status,
 		Chunks:   chunks,
 		Offset:   finalOffset,
 		UpToDate: upToDate,
