@@ -1,14 +1,33 @@
-# RFC: Workflow Engine for Durable Streams
+# RFC: TanStack Workflow
 
 ## Summary
+
+**TanStack Workflow** brings durable execution to the TanStack ecosystem — workflow functions that survive crashes, can sleep for days, and pause for human input, with first-class client integration through TanStack DB.
 
 Most workflow engines are excellent at durability and mediocre at interactive state. The workflow history is already an event stream — so let the browser be a first-class consumer and participant. This inverts the usual "server owns truth, UI bolts on" pattern.
 
 Existing workflow engines now offer human-in-the-loop primitives: Inngest has Realtime streaming, Cloudflare has `waitForEvent` with 365-day timeouts, Vercel WDK has hooks, Restate has awakeables, Trigger.dev has waitpoint tokens. But these systems still don't unify **durable event history + client-visible state + client response** into one protocol-first stream that clients can materialize directly.
 
-This RFC proposes a workflow engine built on Durable Streams and the State Protocol, where the workflow event log *is* the UI transport. Clients subscribe to the same stream the executor uses — offset-resumable, CDN-cacheable, replayable. The result is a unified system for building interactive workflows without custom plumbing between server and client.
+TanStack Workflow fills this gap:
+
+- **Host anywhere** — workflow functions run on any platform that can receive HTTP (Vercel, Cloudflare, Lambda, containers, VMs)
+- **First-class TanStack Start integration** — if you're using Start, workflows are just server functions with durable execution
+- **Client integration via TanStack DB** — reactive collections that update as the workflow progresses
+- **TanStack AI integration** — agentic AI flows with human-in-the-loop approval, tool confirmation, and multi-step reasoning
+- **Built on Durable Streams** — offset-resumable, CDN-cacheable, protocol-first
 
 ## Background
+
+### TanStack Ecosystem
+
+TanStack Workflow joins an ecosystem of framework-agnostic tools:
+
+- **TanStack Start** — Full-stack React/Solid framework with server functions
+- **TanStack DB** — Reactive collections that sync with backend state
+- **TanStack AI** — Framework-agnostic AI toolkit with agentic flow support
+- **TanStack Query** — Async state management for fetching and caching
+
+Workflow functions integrate directly with TanStack Start's server function model. Client state flows through TanStack DB. AI agents built with TanStack AI can use workflows for durable multi-step reasoning with human oversight.
 
 ### Durable Streams
 
@@ -16,7 +35,7 @@ Durable Streams is an HTTP-based protocol for reliable, resumable data streaming
 
 ### State Protocol
 
-The State Protocol extends Durable Streams with structured change events (insert, update, delete). It enables real-time synchronization of application state across multiple clients. The `@durable-streams/state` package provides `StreamDB`, which materializes these events into reactive collections that integrate with UI frameworks via TanStack DB.
+The State Protocol extends Durable Streams with structured change events (insert, update, delete). It enables real-time synchronization of application state across multiple clients. TanStack DB materializes these events into reactive collections that integrate with UI frameworks.
 
 ### Existing Workflow Engines
 
@@ -128,6 +147,162 @@ The system has two main components: **Durable Streams** (event log + webhook tri
 ```
 
 A workflow instance is identified by a stream URL. All workflow events — step completions, sleep timers, awaitables, responses — are appended to that stream. On external events, Durable Streams triggers the registered webhook; the workflow function replays from the stream, continues execution, and appends new events.
+
+### TanStack Start Integration
+
+For TanStack Start applications, workflows integrate directly as server functions with durable execution. The `createWorkflow` API mirrors `createServerFn`, so the mental model is familiar.
+
+```tsx
+// app/workflows/expense-approval.ts
+import { createWorkflow } from '@tanstack/workflow'
+import { z } from 'zod'
+
+export const expenseApproval = createWorkflow({
+  id: 'expense-approval',
+  input: z.object({
+    amount: z.number(),
+    description: z.string(),
+    submittedBy: z.string(),
+  }),
+})
+  .handler(async ({ input, step, sleep, waitForEvent }) => {
+    // Step 1: Validate expense
+    const validated = await step.run('validate', async () => {
+      return validateExpense(input)
+    })
+
+    // Step 2: If large expense, require manager approval
+    if (input.amount > 1000) {
+      const approval = await waitForEvent('manager-approval', {
+        timeout: '48 hours',
+      })
+
+      if (!approval.approved) {
+        return { status: 'rejected', reason: approval.reason }
+      }
+    }
+
+    // Step 3: Process reimbursement
+    const result = await step.run('process', async () => {
+      return processReimbursement(validated)
+    })
+
+    return { status: 'approved', result }
+  })
+```
+
+**Starting a workflow from a component:**
+
+```tsx
+// app/routes/expenses.tsx
+import { expenseApproval } from '../workflows/expense-approval'
+
+function ExpenseForm() {
+  const startWorkflow = useServerFn(expenseApproval.start)
+
+  const handleSubmit = async (data: ExpenseData) => {
+    const { workflowId, streamUrl } = await startWorkflow({ data })
+    // Navigate to workflow view
+    navigate(`/expenses/${workflowId}`)
+  }
+
+  return <form onSubmit={handleSubmit}>...</form>
+}
+```
+
+**Observing workflow state with TanStack DB:**
+
+```tsx
+// app/routes/expenses.$id.tsx
+import { useWorkflow } from '@tanstack/workflow-client'
+
+function ExpenseStatus() {
+  const { workflowId } = useParams()
+  const workflow = useWorkflow({ id: workflowId })
+
+  // Reactive — updates as workflow progresses
+  if (workflow.status === 'waiting') {
+    return <ApprovalForm onSubmit={workflow.respond} />
+  }
+
+  if (workflow.status === 'completed') {
+    return <ExpenseResult result={workflow.result} />
+  }
+
+  return <WorkflowProgress steps={workflow.steps} />
+}
+```
+
+### TanStack AI Integration
+
+TanStack AI provides framework-agnostic AI tooling with agentic flow support. Agentic AI applications — where an AI reasons through multi-step tasks, uses tools, and interacts with humans — need durable execution:
+
+- **Human-in-the-loop approval**: Agent proposes an action, pauses for user confirmation
+- **Tool confirmation**: Before executing a tool with side effects, wait for user approval
+- **Long-running reasoning**: Multi-step agent tasks that may take hours or days
+- **Graceful recovery**: If the server crashes mid-reasoning, resume from where you left off
+
+```tsx
+// app/workflows/ai-agent.ts
+import { createWorkflow } from '@tanstack/workflow'
+import { createChat } from '@tanstack/ai'
+
+export const aiAgent = createWorkflow({ id: 'ai-agent' })
+  .handler(async ({ input, step, waitForEvent }) => {
+    const chat = createChat({
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-20250514',
+    })
+
+    // Step 1: AI generates a plan
+    const plan = await step.run('generate-plan', async () => {
+      return chat.send({
+        messages: [{ role: 'user', content: input.task }],
+        systemPrompt: 'Generate a step-by-step plan for this task.',
+      })
+    })
+
+    // Step 2: Wait for user to approve the plan
+    const approval = await waitForEvent('plan-approval', {
+      timeout: '24 hours',
+      data: { plan: plan.content },  // Sent to client for display
+    })
+
+    if (!approval.approved) {
+      return { status: 'cancelled', reason: approval.feedback }
+    }
+
+    // Step 3: Execute each step with tool calls
+    for (const planStep of plan.steps) {
+      const toolResult = await step.run(`execute-${planStep.id}`, async () => {
+        return chat.send({
+          messages: [{ role: 'user', content: `Execute: ${planStep.action}` }],
+          tools: agentTools,
+        })
+      })
+
+      // If tool has side effects, wait for confirmation
+      if (toolResult.toolCall?.requiresConfirmation) {
+        const confirm = await waitForEvent(`confirm-${planStep.id}`, {
+          timeout: '1 hour',
+          data: { tool: toolResult.toolCall },
+        })
+
+        if (!confirm.proceed) {
+          continue  // Skip this step
+        }
+      }
+    }
+
+    return { status: 'completed', results: plan.steps }
+  })
+```
+
+This enables building AI applications where:
+- Users can review and approve AI-generated plans before execution
+- Dangerous tool calls require explicit confirmation
+- Long-running AI tasks survive server restarts
+- The UI shows real-time progress through TanStack DB
 
 ### Core Primitives
 
@@ -476,15 +651,14 @@ Webhooks are delivered serially per stream (`per-stream-serial`). This ensures o
 
 Workflow creation appends an initial event to a new stream, which triggers the first webhook invocation. The workflow runs until it suspends (sleep, awaitable, or completion).
 
-### Multi-Language Support
+### Packages
 
-The workflow protocol is language-agnostic. Initial implementation:
+Initial packages:
 
-- **TypeScript SDK**: Full implementation (server + client)
-- **Python SDK**: Thin wrapper for server-side workflow execution
-- **Go SDK**: Thin wrapper for server-side workflow execution
+- **`@tanstack/workflow`** — Server SDK for defining workflow functions
+- **`@tanstack/workflow-client`** — React/Solid hooks for observing and interacting with workflows (built on TanStack DB)
 
-All SDKs read/write the same event types to the stream, enabling cross-language workflows (e.g., Python workflow with React client).
+The underlying protocol is language-agnostic. Future SDKs for Python, Go, and PHP would enable cross-language workflows (e.g., Python workflow with React client), following the same pattern as TanStack AI's multi-language support.
 
 ### Open Questions
 
