@@ -143,7 +143,12 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 			scheme = proto
 		}
-		fullURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.Path)
+		// Get the host from the request, preferring X-Forwarded-Host for proxies
+		host := r.Host
+		if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+			host = fwdHost
+		}
+		fullURL := fmt.Sprintf("%s://%s%s", scheme, host, r.URL.Path)
 		w.Header().Set("Location", fullURL)
 		w.WriteHeader(http.StatusCreated)
 	} else {
