@@ -279,7 +279,7 @@ func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (
 		if seq != 0 {
 			// First message from producer must be seq=0
 			return AppendResult{
-				ProducerResult: ProducerResultAccepted,
+				ProducerResult: ProducerResultNone,
 				ExpectedSeq:    0,
 				ReceivedSeq:    seq,
 			}, nil, ErrProducerSeqGap

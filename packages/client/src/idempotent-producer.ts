@@ -43,8 +43,14 @@ export class StaleEpochError extends Error {
 }
 
 /**
- * Error thrown when a sequence gap is detected.
- * This should never happen with proper client implementation.
+ * Error thrown when an unrecoverable sequence gap is detected.
+ *
+ * With maxInFlight > 1, HTTP requests can arrive out of order at the server,
+ * causing temporary 409 responses. The client automatically handles these
+ * by waiting for earlier sequences to complete, then retrying.
+ *
+ * This error is only thrown when the gap cannot be resolved (e.g., the
+ * expected sequence is >= our sequence, indicating a true protocol violation).
  */
 export class SequenceGapError extends Error {
   readonly expectedSeq: number

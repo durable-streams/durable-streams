@@ -43,7 +43,11 @@ var (
 	// ErrStaleEpoch is returned when the producer's epoch is stale (zombie fencing).
 	ErrStaleEpoch = errors.New("producer epoch is stale")
 
-	// ErrSequenceGap is returned when a sequence gap is detected.
+	// ErrSequenceGap is returned when an unrecoverable sequence gap is detected.
+	// With MaxInFlight > 1, HTTP requests can arrive out of order at the server,
+	// causing temporary 409 responses. The client automatically handles these
+	// by waiting for earlier sequences to complete, then retrying. This error
+	// is only returned when the gap cannot be resolved.
 	ErrSequenceGap = errors.New("sequence gap detected")
 )
 
