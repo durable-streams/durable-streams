@@ -590,6 +590,10 @@ class StreamResponse(Generic[T]):
                     )
                 buffered_data.clear()
 
+                # If we're up to date, stop iterating - don't wait for more events
+                if self._up_to_date:
+                    return
+
         # Handle any remaining data (unlikely but be safe)
         for data in buffered_data:
             yield StreamEvent(
@@ -1306,6 +1310,10 @@ class AsyncStreamResponse(Generic[T]):
                         cursor=self._cursor,
                     )
                 buffered_data.clear()
+
+                # If we're up to date, stop iterating - don't wait for more events
+                if self._up_to_date:
+                    return
 
         # Handle any remaining data (unlikely but be safe)
         for data in buffered_data:
