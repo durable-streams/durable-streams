@@ -587,3 +587,45 @@ tests:
         producerSeq: 0
         expect:
           status: 200
+
+  - id: batch-retry-deduplication
+    name: Retrying entire batch returns 204 for all
+    description: If client retries an entire JSON batch, server should deduplicate
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # Send a batch of 3 items
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":1},{"id":2},{"id":3}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry the exact same batch - should get 204
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":1},{"id":2},{"id":3}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only 3 items in stream (not 6)
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+      # Next seq should still work
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":4}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
