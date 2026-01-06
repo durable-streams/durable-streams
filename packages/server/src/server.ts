@@ -849,7 +849,7 @@ export class DurableStreamTestServer {
       this.store.append(path, body, { seq, contentType })
     )
 
-    res.writeHead(200, {
+    res.writeHead(204, {
       [STREAM_OFFSET_HEADER]: message!.offset,
     })
     res.end()

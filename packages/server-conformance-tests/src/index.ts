@@ -479,7 +479,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `PUT`,
         headers: { "Content-Type": `text/plain` },
       })
-      expect([200, 204]).toContain(secondResponse.status)
+      expect(secondResponse.status).toBe(200)
     })
 
     test(`should return 409 on PUT with different config`, async () => {
@@ -516,7 +516,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `hello world`,
       })
 
-      expect([200, 204]).toContain(response.status)
+      expect(response.status).toBe(204)
       expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
@@ -793,7 +793,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `second`,
       })
 
-      expect([200, 204]).toContain(response.status)
+      expect(response.status).toBe(204)
     })
 
     test(`should reject duplicate seq values`, async () => {
@@ -1139,7 +1139,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test`,
       })
 
-      expect([200, 204]).toContain(response.status)
+      expect(response.status).toBe(204)
     })
 
     test(`should allow idempotent create with different case content-type`, async () => {
@@ -1157,7 +1157,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         method: `PUT`,
         headers: { "Content-Type": `APPLICATION/JSON` },
       })
-      expect([200, 204]).toContain(response2.status)
+      expect(response2.status).toBe(200)
     })
 
     test(`should accept headers with different casing`, async () => {
@@ -1179,7 +1179,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test`,
       })
 
-      expect([200, 204]).toContain(response.status)
+      expect(response.status).toBe(204)
     })
   })
 
@@ -1223,7 +1223,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `{"test": true}`,
       })
 
-      expect([200, 204]).toContain(response.status)
+      expect(response.status).toBe(204)
     })
 
     test(`should return stream content-type on GET`, async () => {
@@ -2040,7 +2040,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           "Stream-TTL": `3600`,
         },
       })
-      expect([200, 204]).toContain(response2.status)
+      expect(response2.status).toBe(200)
     })
 
     test(`should reject idempotent PUT with different TTL`, async () => {
@@ -2217,7 +2217,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           headers: { "Content-Type": `text/plain` },
           body: `appended data`,
         })
-        expect([200, 204]).toContain(postBefore.status)
+        expect(postBefore.status).toBe(204)
 
         // Wait for TTL to expire
         await sleep(1500)
@@ -2321,7 +2321,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           headers: { "Content-Type": `text/plain` },
           body: `appended data`,
         })
-        expect([200, 204]).toContain(postBefore.status)
+        expect(postBefore.status).toBe(204)
 
         // Wait for expiry time to pass
         await sleep(1500)
@@ -3553,7 +3553,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                   headers: { "Content-Type": `application/octet-stream` },
                   body: chunk,
                 })
-                expect([200, 204]).toContain(response.status)
+                expect(response.status).toBe(204)
               }
 
               // Calculate expected result
@@ -3704,7 +3704,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                     headers: { "Content-Type": `application/octet-stream` },
                     body: op.data as BodyInit,
                   })
-                  expect([200, 204]).toContain(response.status)
+                  expect(response.status).toBe(204)
 
                   // Track what we appended
                   appendedData.push(...Array.from(op.data))
@@ -3855,7 +3855,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                   body: data,
                 }
               )
-              expect([200, 204]).toContain(appendResponse.status)
+              expect(appendResponse.status).toBe(204)
 
               // Immediately read back
               const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
@@ -4014,7 +4014,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                   },
                   body: `data-${seq}`,
                 })
-                expect([200, 204]).toContain(response.status)
+                expect(response.status).toBe(204)
               }
 
               return true
@@ -4051,7 +4051,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 },
                 body: `first`,
               })
-              expect([200, 204]).toContain(response1.status)
+              expect(response1.status).toBe(204)
 
               // Second append with smaller seq should be rejected
               const response2 = await fetch(`${getBaseUrl()}${streamPath}`, {
