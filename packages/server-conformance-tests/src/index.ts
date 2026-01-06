@@ -108,7 +108,7 @@ function parseSSEEvents(
   sseText: string
 ): Array<{ type: string; data: string }> {
   const events: Array<{ type: string; data: string }> = []
-  const normalized = sseText.replace(/\r\n/g, `\n`)
+  const normalized = sseText.replace(/\r\n/g, `\n`).replace(/\r/g, `\n`)
 
   // Split by double newlines (event boundaries)
   const eventBlocks = normalized.split(`\n\n`).filter((block) => block.trim())

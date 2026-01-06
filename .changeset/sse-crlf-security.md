@@ -1,6 +1,6 @@
 ---
 "@durable-streams/client": patch
-"@durable-streams/server": patch
+"@durable-streams/server-conformance-tests": patch
 ---
 
 Add CRLF injection security tests for SSE and fix TypeScript client SSE parser to normalize line endings per SSE spec.
