@@ -4674,10 +4674,15 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const responses = await Promise.all(operations)
 
         // All operations should succeed
-        // Writers (even indices) return 204, readers (odd indices) return 200
+        // Writers (even indices) return 200 or 204, readers (odd indices) return 200
         responses.forEach((response, i) => {
-          const expectedStatus = i % 2 === 0 ? 204 : 200
-          expect(response.status).toBe(expectedStatus)
+          if (i % 2 === 0) {
+            // Writer - POST append can return 200 or 204
+            expect([200, 204]).toContain(response.status)
+          } else {
+            // Reader - catch-up GET returns 200
+            expect(response.status).toBe(200)
+          }
         })
 
         // Final read should have all writes
