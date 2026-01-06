@@ -825,8 +825,8 @@ export interface IdempotentProducerOptions {
   signal?: AbortSignal
 
   /**
-   * Callback for batch errors when using appendNoWait().
-   * Required when using appendNoWait() for fire-and-forget writes.
+   * Callback for batch errors in fire-and-forget mode.
+   * Since append() returns immediately, errors are reported via this callback.
    * @param error - The error that occurred
    */
   onError?: (error: Error) => void

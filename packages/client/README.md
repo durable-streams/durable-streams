@@ -111,13 +111,15 @@ await producer.flush()
 await producer.close()
 ```
 
-For event-driven scenarios with backpressure, await each append:
+For high-throughput scenarios, `append()` is fire-and-forget (returns immediately):
 
 ```typescript
-// Await each append - provides backpressure if writes slow down
-for await (const event of eventSource) {
-  await producer.append(event)
+// Fire-and-forget - errors reported via onError callback
+for (const event of events) {
+  producer.append(event) // Returns void, adds to batch
 }
+
+// Always flush before shutdown to ensure delivery
 await producer.flush()
 ```
 
@@ -868,21 +870,21 @@ interface IdempotentProducerOptions {
 
 ### Methods
 
-#### `append(body): Promise<{ offset: Offset; duplicate: boolean }>`
+#### `append(body): void`
 
-Append data to the stream. For JSON streams, you can pass objects directly.
-Returns when the batch containing this message is acknowledged.
+Append data to the stream (fire-and-forget). For JSON streams, you can pass objects directly.
+Returns immediately after adding to the internal batch. Errors are reported via `onError` callback.
 
 ```typescript
 // For JSON streams - pass objects directly
-await producer.append({ event: "click", x: 100 })
+producer.append({ event: "click", x: 100 })
 
 // Or strings/bytes
-await producer.append("message data")
-await producer.append(new Uint8Array([1, 2, 3]))
+producer.append("message data")
+producer.append(new Uint8Array([1, 2, 3]))
 
-// Fire-and-forget: don't await, errors go to onError callback
-producer.append({ event: "scroll" })
+// All appends are fire-and-forget - use flush() to wait for delivery
+await producer.flush()
 ```
 
 #### `flush(): Promise<void>`
