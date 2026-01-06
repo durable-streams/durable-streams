@@ -92,29 +92,238 @@ function compressData(
  * Supports both in-memory and file-backed storage modes.
  */
 /**
- * Configuration for injected faults (for testing retry/resilience).
- * Supports various fault types beyond simple HTTP errors.
+ * Configuration for injected faults used to test client retry and resilience behavior.
+ *
+ * Fault injection allows simulating various server and network failure modes to verify
+ * that clients handle errors correctly. Faults can simulate HTTP errors, network delays,
+ * connection drops, and data corruption.
+ *
+ * ## Fault Types
+ *
+ * Faults can be combined to create complex failure scenarios:
+ *
+ * - **HTTP Errors**: Return specific status codes (500, 503, 429, etc.)
+ * - **Delays**: Add latency before responding (with optional jitter)
+ * - **Connection Drops**: Destroy the socket to simulate network failures
+ * - **Body Corruption**: Flip random bits in the response body
+ * - **Body Truncation**: Return incomplete response bodies
+ *
+ * ## Fault Lifecycle
+ *
+ * 1. Faults are registered via {@link DurableStreamTestServer.injectFault}
+ * 2. Each matching request decrements the fault's `count`
+ * 3. When `count` reaches 0, the fault is automatically removed
+ * 4. Faults with `probability < 1.0` only trigger probabilistically
+ *
+ * ## Method Filtering
+ *
+ * Faults can target specific HTTP methods using the `method` field.
+ * This allows testing method-specific retry behavior (e.g., only fail POST requests).
+ *
+ * @example
+ * ```typescript
+ * // Simple 500 error injection
+ * server.injectFault('/my-stream', { status: 500 })
+ *
+ * // Delay with jitter (simulates variable network latency)
+ * server.injectFault('/my-stream', { delayMs: 100, jitterMs: 50 })
+ *
+ * // Connection drop (simulates network failure)
+ * server.injectFault('/my-stream', { dropConnection: true })
+ *
+ * // Combined: delay then error
+ * server.injectFault('/my-stream', { delayMs: 200, status: 503 })
+ *
+ * // Method-specific fault (only affect POST/append)
+ * server.injectFault('/my-stream', { status: 503, method: 'POST' })
+ *
+ * // Probabilistic fault (50% chance of triggering)
+ * server.injectFault('/my-stream', { status: 500, probability: 0.5, count: 10 })
+ * ```
  */
 interface InjectedFault {
-  /** HTTP status code to return (if set, returns error response) */
+  /**
+   * HTTP status code to return as an error response.
+   *
+   * When set, the server returns this status code with a plain text body
+   * "Injected error for testing" instead of processing the request.
+   *
+   * Common values:
+   * - `400`: Bad Request (client should not retry)
+   * - `404`: Not Found (client should not retry)
+   * - `429`: Too Many Requests (client should retry with backoff)
+   * - `500`: Internal Server Error (client should retry)
+   * - `503`: Service Unavailable (client should retry)
+   *
+   * @example
+   * ```typescript
+   * // Return 503 Service Unavailable
+   * server.injectFault('/my-stream', { status: 503 })
+   * ```
+   */
   status?: number
-  /** Number of times to trigger this fault (decremented on each use) */
+
+  /**
+   * Number of times this fault will trigger before being automatically removed.
+   *
+   * Each matching request decrements this counter. When it reaches 0, the fault
+   * is deleted from the fault map. This allows simulating transient failures
+   * that resolve after N retries.
+   *
+   * @default 1 (when using injectFault method)
+   *
+   * @example
+   * ```typescript
+   * // Fail the first 3 requests, then succeed
+   * server.injectFault('/my-stream', { status: 500, count: 3 })
+   * ```
+   */
   count: number
-  /** Optional Retry-After header value (seconds) */
+
+  /**
+   * Value for the `Retry-After` response header (in seconds).
+   *
+   * Only included when `status` is set. Tells the client how long to wait
+   * before retrying. Commonly used with 429 (Too Many Requests) or 503
+   * (Service Unavailable) status codes.
+   *
+   * @example
+   * ```typescript
+   * // Rate limit with 5 second backoff
+   * server.injectFault('/my-stream', { status: 429, retryAfter: 5 })
+   * ```
+   */
   retryAfter?: number
-  /** Delay in milliseconds before responding */
+
+  /**
+   * Delay in milliseconds before the server responds.
+   *
+   * This simulates network latency or slow server processing. The delay
+   * is applied before any other fault effects (status codes, body modifications).
+   *
+   * Can be combined with `jitterMs` to add randomness to the delay.
+   *
+   * @example
+   * ```typescript
+   * // Add 500ms latency
+   * server.injectFault('/my-stream', { delayMs: 500 })
+   *
+   * // Variable latency: 300-600ms
+   * server.injectFault('/my-stream', { delayMs: 300, jitterMs: 300 })
+   * ```
+   */
   delayMs?: number
-  /** Drop the connection after sending headers (simulates network failure) */
+
+  /**
+   * If true, destroy the socket connection after receiving the request.
+   *
+   * This simulates network failures like connection resets, timeouts, or
+   * infrastructure issues. The client will receive a connection error
+   * rather than an HTTP response.
+   *
+   * Note: When `dropConnection` is true, other fault effects (status, body
+   * modifications) are ignored since no response is sent.
+   *
+   * @example
+   * ```typescript
+   * // Simulate network failure
+   * server.injectFault('/my-stream', { dropConnection: true })
+   *
+   * // Drop after delay (simulates mid-request timeout)
+   * server.injectFault('/my-stream', { delayMs: 1000, dropConnection: true })
+   * ```
+   */
   dropConnection?: boolean
-  /** Truncate response body to this many bytes */
+
+  /**
+   * Truncate the response body to this many bytes.
+   *
+   * This simulates incomplete responses due to connection issues or
+   * server crashes. Useful for testing client handling of partial data.
+   *
+   * Applied after successful request processing but before sending the response.
+   * Only affects responses with bodies (not HEAD or 204 responses).
+   *
+   * @example
+   * ```typescript
+   * // Return only first 100 bytes of response
+   * server.injectFault('/my-stream', { truncateBodyBytes: 100 })
+   * ```
+   */
   truncateBodyBytes?: number
-  /** Probability of triggering fault (0-1, default 1.0 = always) */
+
+  /**
+   * Probability of triggering this fault (0.0 to 1.0).
+   *
+   * - `1.0` (default): Always trigger
+   * - `0.5`: 50% chance of triggering
+   * - `0.0`: Never trigger
+   *
+   * When the fault doesn't trigger due to probability, the request is
+   * processed normally and the fault's `count` is NOT decremented.
+   *
+   * This is useful for chaos testing where you want intermittent failures
+   * over a period of time.
+   *
+   * @default 1.0
+   *
+   * @example
+   * ```typescript
+   * // 20% failure rate for next 100 requests
+   * server.injectFault('/my-stream', { status: 500, probability: 0.2, count: 100 })
+   * ```
+   */
   probability?: number
-  /** Only match specific HTTP method (GET, POST, PUT, DELETE) */
+
+  /**
+   * Only trigger the fault for requests matching this HTTP method.
+   *
+   * If not set, the fault triggers for all methods. Method comparison
+   * is case-insensitive.
+   *
+   * Common values: `'GET'`, `'POST'`, `'PUT'`, `'DELETE'`, `'HEAD'`
+   *
+   * @example
+   * ```typescript
+   * // Only fail append (POST) requests, reads (GET) work normally
+   * server.injectFault('/my-stream', { status: 503, method: 'POST' })
+   * ```
+   */
   method?: string
-  /** Corrupt the response body by flipping random bits */
+
+  /**
+   * If true, corrupt the response body by flipping random bits.
+   *
+   * This simulates data corruption from network issues, faulty hardware,
+   * or man-in-the-middle attacks. Approximately 3% of bytes are modified.
+   *
+   * Useful for testing:
+   * - Checksum validation
+   * - JSON parsing error handling
+   * - Data integrity verification
+   *
+   * @example
+   * ```typescript
+   * // Corrupt response data
+   * server.injectFault('/my-stream', { corruptBody: true })
+   * ```
+   */
   corruptBody?: boolean
-  /** Add jitter to delay (random 0-jitterMs added to delayMs) */
+
+  /**
+   * Random jitter to add to `delayMs` (in milliseconds).
+   *
+   * The actual delay will be `delayMs + random(0, jitterMs)`. This creates
+   * more realistic latency patterns where response times vary.
+   *
+   * Requires `delayMs` to be set (jitter without base delay has no effect).
+   *
+   * @example
+   * ```typescript
+   * // Delay between 100-200ms
+   * server.injectFault('/my-stream', { delayMs: 100, jitterMs: 100 })
+   * ```
+   */
   jitterMs?: number
 }
 
@@ -266,9 +475,24 @@ export class DurableStreamTestServer {
   }
 
   /**
-   * Inject an error to be returned on the next N requests to a path.
-   * Used for testing retry/resilience behavior.
-   * @deprecated Use injectFault for full fault injection capabilities
+   * Inject an HTTP error to be returned on the next N requests to a path.
+   *
+   * @deprecated Use {@link injectFault} for full fault injection capabilities
+   * including delays, connection drops, body corruption, and more.
+   *
+   * @param path - The stream path to inject the error for (e.g., '/my-stream')
+   * @param status - HTTP status code to return (e.g., 500, 503)
+   * @param count - Number of times to return this error (default: 1)
+   * @param retryAfter - Optional Retry-After header value in seconds
+   *
+   * @example
+   * ```typescript
+   * // Return 500 error on next request
+   * server.injectError('/my-stream', 500)
+   *
+   * // Return 429 with Retry-After header
+   * server.injectError('/my-stream', 429, 1, 5)
+   * ```
    */
   injectError(
     path: string,
@@ -280,8 +504,75 @@ export class DurableStreamTestServer {
   }
 
   /**
-   * Inject a fault to be triggered on the next N requests to a path.
-   * Supports various fault types: delays, connection drops, body corruption, etc.
+   * Inject a fault to be triggered on requests to a specific path.
+   *
+   * This is the primary API for testing client resilience. Faults can simulate
+   * various failure modes including HTTP errors, network delays, connection drops,
+   * and data corruption.
+   *
+   * ## Fault Matching
+   *
+   * Faults are matched by exact path. Only one fault can be active per path at
+   * a time - calling `injectFault` again for the same path replaces any existing
+   * fault.
+   *
+   * ## Fault Consumption
+   *
+   * - Each matching request decrements the fault's `count`
+   * - When `count` reaches 0, the fault is automatically removed
+   * - If `probability` is set, the fault only triggers probabilistically
+   * - When probability check fails, `count` is NOT decremented
+   *
+   * ## Fault Ordering
+   *
+   * When a fault is triggered, effects are applied in this order:
+   * 1. Delay (if `delayMs` is set)
+   * 2. Connection drop (if `dropConnection` is true) - returns early
+   * 3. HTTP error response (if `status` is set) - returns early
+   * 4. Body modifications (truncation, corruption) - applied to normal response
+   *
+   * @param path - The stream path to inject the fault for (e.g., '/my-stream')
+   * @param fault - Fault configuration (see {@link InjectedFault} for options)
+   *
+   * @example
+   * ```typescript
+   * // Basic HTTP error
+   * server.injectFault('/my-stream', { status: 503 })
+   *
+   * // Multiple consecutive errors
+   * server.injectFault('/my-stream', { status: 500, count: 3 })
+   *
+   * // Rate limiting with Retry-After
+   * server.injectFault('/my-stream', { status: 429, retryAfter: 5 })
+   *
+   * // Simulate network latency
+   * server.injectFault('/my-stream', { delayMs: 1000 })
+   *
+   * // Variable latency (500-1000ms)
+   * server.injectFault('/my-stream', { delayMs: 500, jitterMs: 500 })
+   *
+   * // Connection drop (network failure)
+   * server.injectFault('/my-stream', { dropConnection: true, count: 2 })
+   *
+   * // Delay then error
+   * server.injectFault('/my-stream', { delayMs: 200, status: 503 })
+   *
+   * // Method-specific fault (only POST requests)
+   * server.injectFault('/my-stream', { status: 503, method: 'POST' })
+   *
+   * // Probabilistic fault (20% chance over next 100 requests)
+   * server.injectFault('/my-stream', {
+   *   status: 500,
+   *   probability: 0.2,
+   *   count: 100
+   * })
+   *
+   * // Corrupt response body
+   * server.injectFault('/my-stream', { corruptBody: true })
+   *
+   * // Truncate response (partial data)
+   * server.injectFault('/my-stream', { truncateBodyBytes: 50 })
+   * ```
    */
   injectFault(
     path: string,
@@ -291,7 +582,26 @@ export class DurableStreamTestServer {
   }
 
   /**
-   * Clear all injected faults.
+   * Remove all injected faults.
+   *
+   * Call this in test cleanup to ensure faults from one test don't affect
+   * subsequent tests. This is especially important when tests share a server
+   * instance.
+   *
+   * @example
+   * ```typescript
+   * // In test teardown
+   * afterEach(() => {
+   *   server.clearInjectedFaults()
+   * })
+   *
+   * // Or after a specific test scenario
+   * test('retry behavior', async () => {
+   *   server.injectFault('/my-stream', { status: 500, count: 2 })
+   *   // ... test code ...
+   *   server.clearInjectedFaults()
+   * })
+   * ```
    */
   clearInjectedFaults(): void {
     this.injectedFaults.clear()
@@ -299,7 +609,22 @@ export class DurableStreamTestServer {
 
   /**
    * Check if there's an injected fault for this path/method and consume it.
-   * Returns the fault config if one should be triggered, null otherwise.
+   *
+   * This method implements the fault matching and consumption logic:
+   * 1. Looks up fault by exact path match
+   * 2. Checks HTTP method filter (if configured)
+   * 3. Applies probability check (if configured)
+   * 4. Decrements count and removes fault when exhausted
+   *
+   * The fault is only "consumed" (count decremented) if it passes all checks.
+   * This ensures probabilistic faults don't get removed before their intended
+   * number of actual triggers.
+   *
+   * @param path - The request path to check for faults
+   * @param method - The HTTP method of the request (GET, POST, etc.)
+   * @returns The fault config if triggered, null if no fault or checks failed
+   *
+   * @internal
    */
   private consumeInjectedFault(
     path: string,
@@ -327,7 +652,16 @@ export class DurableStreamTestServer {
   }
 
   /**
-   * Apply delay from fault config (including jitter).
+   * Apply the delay configured in a fault (including random jitter).
+   *
+   * The actual delay is calculated as: `delayMs + random(0, jitterMs)`
+   *
+   * This is the first effect applied when a fault is triggered, allowing
+   * simulation of slow responses before any error or body modification.
+   *
+   * @param fault - The fault configuration containing delay settings
+   *
+   * @internal
    */
   private async applyFaultDelay(fault: InjectedFault): Promise<void> {
     if (fault.delayMs !== undefined && fault.delayMs > 0) {
@@ -339,8 +673,21 @@ export class DurableStreamTestServer {
   }
 
   /**
-   * Apply body modifications from stored fault (truncation, corruption).
-   * Returns modified body, or original if no modifications needed.
+   * Apply body modifications (truncation and/or corruption) from a stored fault.
+   *
+   * This method checks for a fault stored on the response object (set earlier
+   * in request handling) and applies any body modifications:
+   *
+   * - **Truncation**: Slices the body to `truncateBodyBytes` length
+   * - **Corruption**: Flips random bits in ~3% of bytes
+   *
+   * Truncation is applied before corruption if both are configured.
+   *
+   * @param res - The ServerResponse object (may have `_injectedFault` attached)
+   * @param body - The original response body
+   * @returns The modified body, or original if no modifications configured
+   *
+   * @internal
    */
   private applyFaultBodyModification(
     res: ServerResponse,
