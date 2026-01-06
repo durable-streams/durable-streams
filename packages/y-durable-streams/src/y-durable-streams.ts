@@ -40,6 +40,39 @@ function normalizeUrl(url: string | URL): string {
 }
 
 /**
+ * Checks if an awareness update only contains the local client.
+ * Used to filter out echoed updates from the stream.
+ *
+ * Awareness update format (from y-protocols):
+ * - varuint: number of clients
+ * - For each client: clientID (varuint), clock (varuint), state (varstring)
+ */
+function isAwarenessUpdateFromSelf(
+  update: Uint8Array,
+  localClientID: number
+): boolean {
+  try {
+    const decoder = decoding.createDecoder(update)
+    const numClients = decoding.readVarUint(decoder)
+
+    for (let i = 0; i < numClients; i++) {
+      const clientID = decoding.readVarUint(decoder)
+      if (clientID !== localClientID) {
+        return false
+      }
+      // Skip clock and state - we only care about clientID
+      decoding.readVarUint(decoder) // clock
+      decoding.readVarString(decoder) // state
+    }
+
+    return numClients > 0
+  } catch {
+    // If we can't decode, assume it's not from self and let it be processed
+    return false
+  }
+}
+
+/**
  * Provider for synchronizing Yjs documents over Durable Streams.
  *
  * @example
@@ -353,6 +386,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Subscribe to incoming awareness updates (binary format)
+    const localClientID = this.awarenessStreamConfig.protocol.clientID
     this.unsubscribeAwareness = response.subscribeBytes(async (chunk) => {
       if (this.abortController?.signal.aborted) return
 
@@ -362,6 +396,10 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         while (decoding.hasContent(decoder)) {
           try {
             const update = decoding.readVarUint8Array(decoder)
+            // Skip updates that only contain our own client (echoed back from stream)
+            if (isAwarenessUpdateFromSelf(update, localClientID)) {
+              continue
+            }
             awarenessProtocol.applyAwarenessUpdate(
               this.awarenessStreamConfig!.protocol,
               update,
