@@ -8,6 +8,215 @@ tags:
 
 tests:
   # ============================================================================
+  # Gap Detection and Recovery
+  # ============================================================================
+
+  - id: gap-fill-resume
+    name: Gap can be filled and producer can resume
+    description: |
+      After a 409 gap error, the producer should be able to fill the gap
+      and then continue. Some implementations accidentally "lock out" a
+      sequence once a gap was observed, or mutate state on the 409 path.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # seq=0 succeeds
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # seq=2 creates a gap -> 409
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 409
+      # Fill the gap with seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Now seq=2 should succeed
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Verify correct order in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataExact:
+            - "msg0"
+            - "msg1"
+            - "msg2"
+          upToDate: true
+
+  # ============================================================================
+  # Producer Scope (per-stream, not global)
+  # ============================================================================
+
+  - id: producer-scope-per-stream
+    name: Same producer ID works independently on different streams
+    description: |
+      Producer state must be scoped per (stream, producerId), not globally
+      by producerId alone. A common implementation bug is to key producer
+      state only by producer ID, causing cross-stream interference.
+    setup:
+      - action: create
+        as: streamA
+        contentType: text/plain
+      - action: create
+        as: streamB
+        contentType: text/plain
+    operations:
+      # Same producer, epoch=0, seq=0 on stream A
+      - action: server-append
+        path: ${streamA}
+        data: "streamA-msg"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Same producer, epoch=0, seq=0 on stream B - must be 200, not 204/403
+      - action: server-append
+        path: ${streamB}
+        data: "streamB-msg"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Verify each stream has its own message
+      - action: read
+        path: ${streamA}
+        expect:
+          data: "streamA-msg"
+          upToDate: true
+      - action: read
+        path: ${streamB}
+        expect:
+          data: "streamB-msg"
+          upToDate: true
+
+  - id: producer-epoch-per-stream
+    name: Producer epochs are independent per stream
+    description: |
+      Epoch fencing on one stream must not affect the same producer on
+      another stream. Each (stream, producerId) has independent epoch state.
+    setup:
+      - action: create
+        as: streamA
+        contentType: text/plain
+      - action: create
+        as: streamB
+        contentType: text/plain
+    operations:
+      # Establish epoch=5 on stream A
+      - action: server-append
+        path: ${streamA}
+        data: "A-epoch5"
+        producerId: shared-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # epoch=0 on stream B should still work (different stream)
+      - action: server-append
+        path: ${streamB}
+        data: "B-epoch0"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # epoch=0 on stream A should be fenced
+      - action: server-append
+        path: ${streamA}
+        data: "A-epoch0-zombie"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 403
+          producerEpoch: 5
+
+  # ============================================================================
+  # Stream Lifecycle and Producer State
+  # ============================================================================
+
+  - id: delete-recreate-resets-producer-state
+    name: Deleting and recreating stream resets producer state
+    description: |
+      When a stream is deleted and recreated, producer state must be reset.
+      The new stream is a fresh log, so (epoch=0, seq=0) must be accepted
+      even if the same producer previously wrote to the old stream.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Write to original stream
+      - action: server-append
+        path: ${streamPath}
+        data: "original-msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Advance sequence
+      - action: server-append
+        path: ${streamPath}
+        data: "original-msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Delete the stream
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      # Recreate at same path
+      - action: create
+        path: ${streamPath}
+        contentType: text/plain
+      # Same producer, epoch=0, seq=0 must work (new stream)
+      - action: server-append
+        path: ${streamPath}
+        data: "recreated-msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Verify only the new message exists
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "recreated-msg"
+          upToDate: true
+
+  # ============================================================================
   # Duplicate Detection Edge Cases
   # ============================================================================
 
