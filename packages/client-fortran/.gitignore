@@ -1,0 +1,36 @@
+# Build directories
+build/
+lib/
+mod/
+bin/
+
+# Object files
+*.o
+*.obj
+
+# Module files
+*.mod
+*.smod
+
+# Library files
+*.a
+*.so
+*.dylib
+
+# Executables
+basic_usage
+live_read
+json_example
+test_stream
+
+# Editor files
+*~
+*.swp
+.vscode/
+.idea/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
