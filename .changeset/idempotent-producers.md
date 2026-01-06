@@ -1,7 +1,9 @@
 ---
-"@durable-streams/server": minor
-"@durable-streams/client": minor
-"@durable-streams/server-conformance-tests": minor
+"@durable-streams/server": patch
+"@durable-streams/client": patch
+"@durable-streams/client-py": patch
+"@durable-streams/server-conformance-tests": patch
+"@durable-streams/client-conformance-tests": patch
 ---
 
 Add Kafka-style idempotent producers for exactly-once write semantics.
