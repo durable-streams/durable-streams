@@ -1,6 +1,7 @@
 export interface ParsedWriteArgs {
   contentType: string
   content: string
+  batchJson: boolean
 }
 
 /**
@@ -11,28 +12,42 @@ export interface ParsedWriteArgs {
  */
 export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
   let contentType = `application/octet-stream`
+  let batchJson = false
   const contentParts: Array<string> = []
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
+
     if (arg === `--json`) {
       contentType = `application/json`
-    } else if (arg === `--content-type`) {
+      continue
+    }
+
+    if (arg === `--batch-json`) {
+      batchJson = true
+      continue
+    }
+
+    if (arg === `--content-type`) {
       const nextArg = args[i + 1]
       if (!nextArg || nextArg.startsWith(`--`)) {
         throw new Error(`--content-type requires a value`)
       }
       contentType = nextArg
-      i++ // Skip the value
-    } else if (arg.startsWith(`--`)) {
-      throw new Error(`unknown flag: ${arg}`)
-    } else {
-      contentParts.push(arg)
+      i++
+      continue
     }
+
+    if (arg.startsWith(`--`)) {
+      throw new Error(`unknown flag: ${arg}`)
+    }
+
+    contentParts.push(arg)
   }
 
   return {
     contentType,
     content: contentParts.join(` `),
+    batchJson,
   }
 }

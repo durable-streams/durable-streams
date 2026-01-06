@@ -25,6 +25,7 @@ Usage:
 Write Options:
   --content-type <type>   Content-Type for the message (default: application/octet-stream)
   --json                  Shorthand for --content-type application/json
+  --batch-json            Unwrap top-level JSON arrays into individual messages
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
@@ -66,6 +67,7 @@ async function appendJson(
 async function writeStream(
   streamId: string,
   contentType: string,
+  batchJson: boolean,
   content?: string
 ) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
@@ -84,8 +86,13 @@ async function writeStream(
 
       if (isJson) {
         const parsed = JSON.parse(processedContent)
-        const count = await appendJson(stream, parsed)
-        console.log(`Wrote ${count} message(s) to ${streamId}`)
+        if (batchJson) {
+          const count = await appendJson(stream, parsed)
+          console.log(`Wrote ${count} message(s) to ${streamId}`)
+        } else {
+          await stream.append(parsed)
+          console.log(`Wrote 1 message to ${streamId}`)
+        }
       } else {
         await stream.append(processedContent)
         console.log(`Wrote ${processedContent.length} bytes to ${streamId}`)
@@ -106,10 +113,14 @@ async function writeStream(
       const data = Buffer.concat(chunks)
 
       if (isJson) {
-        const text = data.toString(`utf8`)
-        const parsed = JSON.parse(text)
-        const count = await appendJson(stream, parsed)
-        console.log(`Wrote ${count} message(s) to ${streamId}`)
+        const parsed = JSON.parse(data.toString(`utf8`))
+        if (batchJson) {
+          const count = await appendJson(stream, parsed)
+          console.log(`Wrote ${count} message(s) to ${streamId}`)
+        } else {
+          await stream.append(parsed)
+          console.log(`Wrote 1 message to ${streamId}`)
+        }
       } else {
         await stream.append(data)
         console.log(`Wrote ${data.length} bytes to ${streamId}`)
@@ -204,10 +215,15 @@ async function main() {
       // Check if stdin is being piped
       if (!stdin.isTTY) {
         // Reading from stdin
-        await writeStream(streamId, parsed.contentType)
+        await writeStream(streamId, parsed.contentType, parsed.batchJson)
       } else if (parsed.content) {
         // Content provided as argument
-        await writeStream(streamId, parsed.contentType, parsed.content)
+        await writeStream(
+          streamId,
+          parsed.contentType,
+          parsed.batchJson,
+          parsed.content
+        )
       } else {
         stderr.write(
           `Error: content required (provide as argument or pipe to stdin)\n`

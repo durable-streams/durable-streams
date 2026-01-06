@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest"
 import { parseWriteArgs } from "../src/parseWriteArgs"
 
 describe(`parseWriteArgs`, () => {
-  it(`returns default content-type when no flags provided`, () => {
+  it(`returns default content-type and batchJson=false when no flags provided`, () => {
     const result = parseWriteArgs([`hello`, `world`])
     expect(result.contentType).toBe(`application/octet-stream`)
     expect(result.content).toBe(`hello world`)
+    expect(result.batchJson).toBe(false)
   })
 
   it(`parses --json flag`, () => {
@@ -79,5 +80,24 @@ describe(`parseWriteArgs`, () => {
     expect(() => parseWriteArgs([`--unknown`, `hello`])).toThrow(
       `unknown flag: --unknown`
     )
+  })
+
+  it(`parses --batch-json flag`, () => {
+    const result = parseWriteArgs([`--batch-json`, `--json`, `[1, 2, 3]`])
+    expect(result.batchJson).toBe(true)
+    expect(result.contentType).toBe(`application/json`)
+    expect(result.content).toBe(`[1, 2, 3]`)
+  })
+
+  it(`parses --batch-json flag after content`, () => {
+    const result = parseWriteArgs([`--json`, `[1, 2, 3]`, `--batch-json`])
+    expect(result.batchJson).toBe(true)
+    expect(result.contentType).toBe(`application/json`)
+    expect(result.content).toBe(`[1, 2, 3]`)
+  })
+
+  it(`batchJson defaults to false with --json`, () => {
+    const result = parseWriteArgs([`--json`, `{"key": "value"}`])
+    expect(result.batchJson).toBe(false)
   })
 })
