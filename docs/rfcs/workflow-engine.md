@@ -478,7 +478,19 @@ const d = await step.run('process', () => process(c))          // Step D
 | 1st | `[]` | A executes, B executes, C suspends (waiting) |
 | 2nd (after approval) | `[A✓, B✓, C✓]` | A skipped, B skipped, C skipped, D executes |
 
-The workflow code is identical each time — the context object makes previously-completed steps instant no-ops. This is why determinism matters: the code must reach the same steps in the same order on every replay.
+**How does the workflow know which step to run next?**
+
+There's no external scheduler or state machine — **the code itself determines the next step through normal control flow**:
+
+1. Function starts from the beginning
+2. Hits `step.run('fetch-user', ...)` → checks history → found → returns cached result instantly
+3. Hits `step.run('send-email', ...)` → checks history → found → returns cached result instantly
+4. Hits `waitForEvent('approval')` → checks history → found → returns cached result instantly
+5. Hits `step.run('process', ...)` → checks history → **not found** → this is the next step to execute
+
+The "next step" is simply the first step whose ID isn't in the history. The workflow runs the same code every time; completed steps become instant no-ops, and execution naturally continues from where it left off.
+
+This is why determinism matters: the code must follow the same path on every replay so it reaches the right "next step."
 
 ### Determinism
 
