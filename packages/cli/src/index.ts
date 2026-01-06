@@ -4,11 +4,12 @@ import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
+import { flattenJsonForAppend, isJsonContentType } from "./jsonUtils.js"
 import { parseWriteArgs } from "./parseWriteArgs.js"
 import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 
 export type { ParsedWriteArgs }
-export { parseWriteArgs }
+export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 
@@ -47,12 +48,28 @@ async function createStream(streamId: string) {
   }
 }
 
+/**
+ * Append JSON data to a stream with one-level array flattening.
+ */
+async function appendJson(
+  stream: DurableStream,
+  parsed: unknown
+): Promise<number> {
+  let count = 0
+  for (const item of flattenJsonForAppend(parsed)) {
+    await stream.append(item)
+    count++
+  }
+  return count
+}
+
 async function writeStream(
   streamId: string,
   contentType: string,
   content?: string
 ) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
+  const isJson = isJsonContentType(contentType)
 
   try {
     const stream = new DurableStream({ url, contentType })
@@ -64,8 +81,15 @@ async function writeStream(
         .replace(/\\t/g, `\t`)
         .replace(/\\r/g, `\r`)
         .replace(/\\\\/g, `\\`)
-      await stream.append(processedContent)
-      console.log(`Wrote ${processedContent.length} bytes to ${streamId}`)
+
+      if (isJson) {
+        const parsed = JSON.parse(processedContent)
+        const count = await appendJson(stream, parsed)
+        console.log(`Wrote ${count} message(s) to ${streamId}`)
+      } else {
+        await stream.append(processedContent)
+        console.log(`Wrote ${processedContent.length} bytes to ${streamId}`)
+      }
     } else {
       // Read from stdin
       const chunks: Array<Buffer> = []
@@ -80,8 +104,16 @@ async function writeStream(
       })
 
       const data = Buffer.concat(chunks)
-      await stream.append(data)
-      console.log(`Wrote ${data.length} bytes to ${streamId}`)
+
+      if (isJson) {
+        const text = data.toString(`utf8`)
+        const parsed = JSON.parse(text)
+        const count = await appendJson(stream, parsed)
+        console.log(`Wrote ${count} message(s) to ${streamId}`)
+      } else {
+        await stream.append(data)
+        console.log(`Wrote ${data.length} bytes to ${streamId}`)
+      }
     }
   } catch (error) {
     if (error instanceof Error) {

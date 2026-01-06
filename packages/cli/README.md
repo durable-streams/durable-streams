@@ -100,6 +100,18 @@ durable-stream-dev write <stream_id> '{"key": "value"}' --content-type applicati
 durable-stream-dev write <stream_id> '{"key": "value"}' --json
 ```
 
+##### JSON Mode Array Flattening
+
+In JSON mode (`--json` or `--content-type application/json`), top-level arrays are flattened into individual messages:
+
+| Input        | Messages stored        |
+| ------------ | ---------------------- |
+| `{}`         | 1 message: `{}`        |
+| `[{}, {}]`   | 2 messages: `{}`, `{}` |
+| `[[{}, {}]]` | 1 message: `[{}, {}]`  |
+
+This matches the protocol's batch semantics.
+
 #### Read from a stream
 
 ```bash
