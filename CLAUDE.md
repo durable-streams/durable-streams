@@ -4,6 +4,75 @@
 
 All packages are pre-1.0. Use `patch` for changesets, not `minor`, unless it's a breaking change.
 
+## Repository Overview
+
+Durable Streams is a protocol and set of implementations for persistent, resumable event streams over HTTP. Think "append-only log as a service" with exactly-once semantics via idempotent producers.
+
+### Key Files
+
+- `PROTOCOL.md` - The protocol specification (source of truth)
+- `README.md` - User-facing documentation
+- `packages/` - All implementations live here
+
+### Package Structure
+
+| Package                    | Language   | Description                             |
+| -------------------------- | ---------- | --------------------------------------- |
+| `client`                   | TypeScript | Reference client library                |
+| `client-py`                | Python     | Python client library                   |
+| `client-go`                | Go         | Go client library                       |
+| `caddy-plugin`             | Go         | Production server (Caddy plugin)        |
+| `server`                   | TypeScript | Development server (not for production) |
+| `client-conformance-tests` | TypeScript | Cross-language client test suite        |
+| `server-conformance-tests` | TypeScript | Server protocol compliance tests        |
+| `cli`                      | TypeScript | Command-line tools                      |
+| `benchmarks`               | TypeScript | Performance benchmarks                  |
+
+### Common Commands
+
+```bash
+# Install dependencies
+pnpm install
+
+# Run all conformance tests (starts server automatically)
+pnpm test:run
+
+# Run specific client's conformance tests
+pnpm test:run -- --client typescript
+pnpm test:run -- --client python
+pnpm test:run -- --client go
+
+# Run Go tests directly
+cd packages/caddy-plugin && go test ./...
+
+# Build everything
+pnpm build
+```
+
+### Architecture
+
+```
+Client (TS/Python/Go)
+        │
+        ▼ HTTP
+┌───────────────────┐
+│   Caddy Server    │
+│  (caddy-plugin)   │
+├───────────────────┤
+│   Store Layer     │
+│  ┌─────┬────────┐ │
+│  │Memory│ File  │ │
+│  │Store │ Store │ │
+│  └─────┴────────┘ │
+└───────────────────┘
+```
+
+- **Idempotent Producers**: Clients use `(producerId, epoch, seq)` headers for exactly-once writes
+- **Live Modes**: Long-poll and SSE for real-time updates
+- **JSON Mode**: Native array handling with automatic flattening
+
+---
+
 ## Testing Philosophy
 
 ### Prefer Conformance Tests Over Unit Tests
