@@ -706,9 +706,13 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Handle offset=now sentinel: return empty response with tail offset (Protocol Section 6)
-    // This allows clients to skip historical data and start from the current position
-    if (offset === `now`) {
+    // For offset=now, convert to actual tail offset
+    // This allows long-poll to immediately start waiting for new data
+    const effectiveOffset = offset === `now` ? stream.currentOffset : offset
+
+    // Handle catch-up mode offset=now: return empty response with tail offset
+    // For long-poll mode, we fall through to wait for new data instead
+    if (offset === `now` && live !== `long-poll`) {
       const headers: Record<string, string> = {
         [STREAM_OFFSET_HEADER]: stream.currentOffset,
         [STREAM_UP_TO_DATE_HEADER]: `true`,
@@ -716,14 +720,6 @@ export class DurableStreamTestServer {
 
       if (stream.contentType) {
         headers[`content-type`] = stream.contentType
-      }
-
-      // Generate cursor for long-poll mode (Protocol Section 8.1)
-      if (live === `long-poll`) {
-        headers[STREAM_CURSOR_HEADER] = generateResponseCursor(
-          cursor,
-          this.options.cursorOptions
-        )
       }
 
       // Generate ETag for cache validation
@@ -740,18 +736,20 @@ export class DurableStreamTestServer {
     }
 
     // Read current messages
-    let { messages, upToDate } = this.store.read(path, offset)
+    let { messages, upToDate } = this.store.read(path, effectiveOffset)
 
     // Only wait in long-poll if:
     // 1. long-poll mode is enabled
-    // 2. Client provided an offset (not first request)
+    // 2. Client provided an offset (not first request) OR used offset=now
     // 3. Client's offset matches current offset (already caught up)
     // 4. No new messages
-    const clientIsCaughtUp = offset && offset === stream.currentOffset
+    const clientIsCaughtUp =
+      (effectiveOffset && effectiveOffset === stream.currentOffset) ||
+      offset === `now`
     if (live === `long-poll` && clientIsCaughtUp && messages.length === 0) {
       const result = await this.store.waitForMessages(
         path,
-        offset,
+        effectiveOffset ?? stream.currentOffset,
         this.options.longPollTimeout
       )
 
@@ -763,7 +761,7 @@ export class DurableStreamTestServer {
           this.options.cursorOptions
         )
         res.writeHead(204, {
-          [STREAM_OFFSET_HEADER]: offset,
+          [STREAM_OFFSET_HEADER]: effectiveOffset ?? stream.currentOffset,
           [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: responseCursor,
         })

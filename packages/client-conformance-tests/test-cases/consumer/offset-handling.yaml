@@ -120,9 +120,9 @@ tests:
         expect:
           data: "newdata"
 
-  - id: offset-now-longpoll
-    name: Offset 'now' with long-poll mode
-    description: Using offset=now with long-poll should return immediately with up-to-date
+  - id: offset-now-longpoll-waits
+    name: Offset 'now' with long-poll immediately waits for data
+    description: Using offset=now with long-poll should immediately start waiting for new data (no round trip)
     setup:
       - action: create
         as: streamPath
@@ -130,16 +130,18 @@ tests:
         path: ${streamPath}
         data: "existingdata"
     operations:
+      # Long-poll with offset=now should timeout with 204 since no new data arrives
+      # This proves it immediately started waiting (skipping historical data)
       - action: read
         path: ${streamPath}
         offset: "now"
         live: long-poll
         timeoutMs: 1000
         expect:
-          chunkCount: 0
+          status: 204
           upToDate: true
           storeOffsetAs: pollOffset
-      # Verify we can use the offset to get future data
+      # Verify the offset works for future data
       - action: append
         path: ${streamPath}
         data: "afterpoll"

@@ -403,13 +403,27 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
 - **`-1` (Stream Beginning)**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
 
-- **`now` (Current Tail Position)**: The special offset value `now` allows clients to skip all existing data and begin reading from the current tail position. This is useful for applications that only care about future data (e.g., presence tracking, live monitoring, late joiners to a conversation). When a client requests `offset=now`:
+- **`now` (Current Tail Position)**: The special offset value `now` allows clients to skip all existing data and begin reading from the current tail position. This is useful for applications that only care about future data (e.g., presence tracking, live monitoring, late joiners to a conversation). The behavior varies by read mode:
+
+  **Catch-up mode** (`offset=now` without `live` parameter):
   - Servers **MUST** return `200 OK` with an empty response body
   - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
   - Servers **MUST** include `Stream-Up-To-Date: true` header
   - The response **MUST** contain no data, regardless of stream content
 
-  This eliminates the need for a separate HEAD request when clients want to start following a stream from the current position without downloading historical data. Servers **MUST** recognize `now` as a valid offset value. The `offset=now` value is valid in all read modes: catch-up, long-poll, and SSE.
+  **Long-poll mode** (`offset=now&live=long-poll`):
+  - Servers **MUST** immediately begin waiting for new data (no initial empty response)
+  - This eliminates a round-trip: clients can subscribe to future data in a single request
+  - If new data arrives during the wait, servers return `200 OK` with the new data
+  - If the timeout expires, servers return `204 No Content` with `Stream-Up-To-Date: true`
+  - The `Stream-Next-Offset` header **MUST** be set to the tail position
+
+  **SSE mode** (`offset=now&live=sse`):
+  - Servers **MUST** immediately begin the SSE stream from the tail position
+  - The first control event **MUST** include `upToDate: true` and the tail offset
+  - No historical data is sent; only future data events are streamed
+
+  This eliminates the need for a separate HEAD request or initial catch-up when clients want to start following a stream from the current position. Servers **MUST** recognize `now` as a valid offset value.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 

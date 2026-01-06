@@ -1477,7 +1477,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
-    test(`should support offset=now with long-poll mode`, async () => {
+    test(`should support offset=now with long-poll mode (waits for data)`, async () => {
       const streamPath = `/v1/stream/offset-now-longpoll-test-${Date.now()}`
 
       // Create stream with data
@@ -1487,7 +1487,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `existing data`,
       })
 
-      // offset=now with long-poll should return empty immediately with up-to-date
+      // Get tail offset first
+      const readRes = await fetch(`${getBaseUrl()}${streamPath}`)
+      const tailOffset = readRes.headers.get(STREAM_OFFSET_HEADER)
+
+      // offset=now with long-poll should immediately start waiting for new data
+      // Since we don't append anything, it should timeout with 204
       const response = await fetch(
         `${getBaseUrl()}${streamPath}?offset=now&live=long-poll`,
         {
@@ -1495,12 +1500,45 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         }
       )
 
-      // Should get 200 with empty body and up-to-date (not 204 timeout)
+      // Should get 204 timeout (server waited for data but none arrived)
+      expect(response.status).toBe(204)
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      // Should return the tail offset
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBe(tailOffset)
+    })
+
+    test(`should receive data with offset=now long-poll when appended`, async () => {
+      const streamPath = `/v1/stream/offset-now-longpoll-data-test-${Date.now()}`
+
+      // Create stream with historical data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `historical`,
+      })
+
+      // Start long-poll with offset=now (will wait for new data)
+      const longPollPromise = fetch(
+        `${getBaseUrl()}${streamPath}?offset=now&live=long-poll`,
+        { method: `GET` }
+      )
+
+      // Give the long-poll a moment to start waiting
+      await new Promise((r) => setTimeout(r, 100))
+
+      // Append new data while long-poll is waiting
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `new data`,
+      })
+
+      // Long-poll should return with the new data (not historical)
+      const response = await longPollPromise
       expect(response.status).toBe(200)
       const text = await response.text()
-      expect(text).toBe(``)
+      expect(text).toBe(`new data`)
       expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
-      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
     test(`should support offset=now with SSE mode`, async () => {
