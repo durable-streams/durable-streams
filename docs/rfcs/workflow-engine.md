@@ -380,6 +380,60 @@ This addresses the "visibility boundaries" concern: the workflow can include sen
 
 **Capability-based access**: Following Cloudflare's Workers RPC security model (object-capability based), stream URLs themselves can be capabilities. Possession of the URL = authority to read that view. The workflow can issue scoped, unguessable URLs for specific audiences or one-shot responses.
 
+### Runtime Model: Webhook-Based Execution
+
+A key design goal is **runtime-agnostic** — workflow code should run anywhere. Rather than requiring a specific platform or long-running process, Durable Streams uses webhooks to trigger workflow execution.
+
+**Registration:**
+
+```typescript
+// Register a workflow handler for a stream pattern
+await durableStreams.webhooks.register({
+  pattern: "/workflows/expense-approval/*",
+  url: "https://my-app.com/api/workflows/expense-approval",
+  filter: {
+    // Only trigger on external events, not internal step completions
+    eventTypes: ["awaitable-response", "external-event", "timer-expired"]
+  },
+  concurrency: "per-stream-serial"  // One execution at a time per workflow
+});
+```
+
+**Execution flow:**
+
+```
+1. External event appends to stream (e.g., user responds to awaitable)
+          │
+          ▼
+2. Durable Streams matches stream against registered webhooks
+          │
+          ▼
+3. POST to webhook URL with stream ID and new events
+          │
+          ▼
+4. Workflow function:
+   - Reads stream from offset 0 (or checkpoint)
+   - Replays to rebuild state
+   - Continues execution from where it left off
+   - Appends new events (step results, new awaitables, etc.)
+   - Returns (suspends until next external event)
+```
+
+**Why webhooks:**
+
+- **Host anywhere**: Vercel, Cloudflare, AWS Lambda, containers, VMs, Raspberry Pi
+- **Serverless-friendly**: Function only runs when there's work to do
+- **No polling overhead**: Push-based means immediate wake-up
+- **Protocol-first**: Durable Streams doesn't need to understand specific runtimes
+
+**Concurrency control:**
+
+Webhooks are delivered serially per stream (`per-stream-serial`). This ensures only one execution runs at a time for a given workflow instance, preventing race conditions during replay.
+
+**Initial trigger:**
+
+Workflow creation appends an initial event to a new stream, which triggers the first webhook invocation. The workflow runs until it suspends (sleep, awaitable, or completion).
+
 ### Multi-Language Support
 
 The workflow protocol is language-agnostic. Initial implementation:
@@ -402,18 +456,12 @@ Areas requiring prototyping to resolve:
 
 4. **Workflow versioning**: When workflow code changes while instances are in-flight, how do running workflows handle the transition? Temporal uses explicit versioning APIs; Inngest uses function version hashes. This is critical for production but may be out of scope for initial prototype.
 
-5. **Runtime and wake-up model**: How does a suspended workflow get re-invoked when events arrive? Options include:
-   - Polling-based: Runtime polls for pending events
-   - Push-based: Stream server triggers webhook/queue on append
-   - Hybrid: Long-poll with fallback to scheduled wake-up
-   - This affects latency, cost, and serverless compatibility
-
-6. **Data retention and compaction**: Workflow streams grow unbounded as steps complete. How do we handle:
+5. **Data retention and compaction**: Workflow streams grow unbounded as steps complete. How do we handle:
    - Archiving completed workflows
    - Compacting step history while preserving replay capability
    - Configurable retention policies per workflow type
 
-7. **Awaitable lifecycle**: The unified awaitable primitive needs precise semantics:
+6. **Awaitable lifecycle**: The unified awaitable primitive needs precise semantics:
    - **ID generation**: Must IDs be deterministic, or can the workflow generate them freely?
    - **Timeout behavior**: Throw (Cloudflare) vs return null (Inngest) vs tagged result type?
    - **Late responses**: What happens if a response arrives after timeout? After workflow completion?
