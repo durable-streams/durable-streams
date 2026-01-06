@@ -1009,6 +1009,7 @@ export class DurableStreamTestServer {
     }
 
     // Validate producer headers - all three must be present together or none
+    // Also reject empty producer ID
     const hasProducerHeaders =
       producerId !== undefined ||
       producerEpochStr !== undefined ||
@@ -1023,6 +1024,12 @@ export class DurableStreamTestServer {
       res.end(
         `All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together`
       )
+      return
+    }
+
+    if (hasAllProducerHeaders && producerId === ``) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Invalid Producer-Id: must not be empty`)
       return
     }
 

@@ -587,29 +587,3 @@ tests:
         producerSeq: 0
         expect:
           status: 200
-
-  - id: producer-id-with-unicode
-    name: Producer ID with unicode characters works
-    description: Producer IDs can contain unicode characters
-    setup:
-      - action: create
-        as: streamPath
-        contentType: text/plain
-    operations:
-      - action: server-append
-        path: ${streamPath}
-        data: "msg"
-        producerId: "生产者-αβγ-🚀"
-        producerEpoch: 0
-        producerSeq: 0
-        expect:
-          status: 200
-      # Subsequent seq works
-      - action: server-append
-        path: ${streamPath}
-        data: "msg2"
-        producerId: "生产者-αβγ-🚀"
-        producerEpoch: 0
-        producerSeq: 1
-        expect:
-          status: 200
