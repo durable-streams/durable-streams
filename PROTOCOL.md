@@ -411,6 +411,7 @@ Offsets are opaque tokens that identify positions within a stream. They have the
     - For all other content types: the body **MUST** be 0 bytes (empty)
   - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
   - Servers **MUST** include `Stream-Up-To-Date: true` header
+  - Servers **SHOULD** return `Cache-Control: no-store` to prevent caching of the tail offset
   - The response **MUST** contain no data messages, regardless of stream content
 
   **Long-poll mode** (`offset=now&live=long-poll`):

@@ -262,6 +262,9 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
 		w.Header().Set(HeaderStreamUpToDate, "true")
 
+		// Prevent caching - tail offset changes with each append
+		w.Header().Set("Cache-Control", "no-store")
+
 		// Set ETag for cache validation
 		w.Header().Set("ETag", fmt.Sprintf(`"now:%s"`, meta.CurrentOffset.String()))
 

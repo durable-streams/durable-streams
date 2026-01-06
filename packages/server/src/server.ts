@@ -716,6 +716,8 @@ export class DurableStreamTestServer {
       const headers: Record<string, string> = {
         [STREAM_OFFSET_HEADER]: stream.currentOffset,
         [STREAM_UP_TO_DATE_HEADER]: `true`,
+        // Prevent caching - tail offset changes with each append
+        [`cache-control`]: `no-store`,
       }
 
       if (stream.contentType) {
