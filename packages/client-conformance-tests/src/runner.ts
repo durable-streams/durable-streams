@@ -624,12 +624,14 @@ async function executeOperation(
 
         // Build descriptive log message
         const faultTypes = []
-        if (op.status) faultTypes.push(`status=${op.status}`)
-        if (op.delayMs) faultTypes.push(`delay=${op.delayMs}ms`)
+        if (op.status != null) faultTypes.push(`status=${op.status}`)
+        if (op.delayMs != null) faultTypes.push(`delay=${op.delayMs}ms`)
+        if (op.jitterMs != null) faultTypes.push(`jitter=${op.jitterMs}ms`)
         if (op.dropConnection) faultTypes.push(`dropConnection`)
-        if (op.truncateBodyBytes)
+        if (op.truncateBodyBytes != null)
           faultTypes.push(`truncate=${op.truncateBodyBytes}b`)
         if (op.corruptBody) faultTypes.push(`corrupt`)
+        if (op.probability != null) faultTypes.push(`p=${op.probability}`)
         const faultDesc = faultTypes.join(`,`) || `unknown`
 
         if (verbose) {

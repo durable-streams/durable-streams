@@ -293,7 +293,7 @@ export class DurableStreamTestServer {
   /**
    * Clear all injected faults.
    */
-  clearInjectedErrors(): void {
+  clearInjectedFaults(): void {
     this.injectedFaults.clear()
   }
 
@@ -1054,7 +1054,7 @@ export class DurableStreamTestServer {
         res.end(`Invalid JSON body`)
       }
     } else if (method === `DELETE`) {
-      this.clearInjectedErrors()
+      this.clearInjectedFaults()
       res.writeHead(200, { "content-type": `application/json` })
       res.end(JSON.stringify({ ok: true }))
     } else {

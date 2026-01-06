@@ -1,7 +1,7 @@
 ---
-"@durable-streams/server": minor
-"@durable-streams/server-conformance-tests": minor
-"@durable-streams/client-conformance-tests": minor
+"@durable-streams/server": patch
+"@durable-streams/server-conformance-tests": patch
+"@durable-streams/client-conformance-tests": patch
 ---
 
 Add advanced fault injection and conformance tests
