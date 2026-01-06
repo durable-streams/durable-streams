@@ -32,10 +32,14 @@ const CURSOR_QUERY_PARAM = `cursor`
 /**
  * Encode data for SSE format.
  * Per SSE spec, each line in the payload needs its own "data:" prefix.
- * Newlines in the payload become separate data: lines.
+ * Line terminators in the payload (CR, LF, or CRLF) become separate data: lines.
+ * This prevents CRLF injection attacks where malicious payloads could inject
+ * fake SSE events using CR-only line terminators.
  */
 function encodeSSEData(payload: string): string {
-  const lines = payload.split(`\n`)
+  // Split on all SSE-valid line terminators: CRLF, CR, or LF
+  // Order matters: \r\n must be matched before \r alone
+  const lines = payload.split(/\r\n|\r|\n/)
   return lines.map((line) => `data: ${line}`).join(`\n`) + `\n\n`
 }
 
