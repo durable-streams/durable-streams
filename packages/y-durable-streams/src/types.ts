@@ -62,6 +62,13 @@ export interface DurableStreamsProviderOptions {
    * @default true
    */
   connect?: boolean
+
+  /**
+   * Enable debug logging for troubleshooting.
+   * When true, logs invalid updates and other debug information.
+   * @default false
+   */
+  debug?: boolean
 }
 
 /**

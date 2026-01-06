@@ -128,6 +128,13 @@ export function YjsRoomProvider({
     return { doc: newDoc, awareness: newAwareness }
   })
 
+  // Clean up doc on unmount
+  useEffect(() => {
+    return () => {
+      doc.destroy()
+    }
+  }, [doc])
+
   const [isLoading, setIsLoading] = useState(true)
   const [isSynced, setIsSynced] = useState(false)
   const [error, setError] = useState<Error | null>(null)

@@ -21,9 +21,23 @@ const BINARY_CONTENT_TYPE = `application/octet-stream`
 
 /**
  * Interval in milliseconds between awareness heartbeat broadcasts.
- * Awareness times out after ~30 seconds, so we heartbeat every 15 seconds.
+ *
+ * The y-protocols Awareness implementation uses a 30-second timeout by default
+ * (see outdatedTimeout in y-protocols/awareness). If no update is received for
+ * a client within this window, they are considered offline and removed.
+ *
+ * We heartbeat at half that interval (15 seconds) to ensure clients stay active
+ * even with some network latency or missed messages.
  */
-export const AWARENESS_HEARTBEAT_INTERVAL = 15000 // 15 seconds
+export const AWARENESS_HEARTBEAT_INTERVAL = 15000
+
+/**
+ * Normalizes a URL to a string.
+ * Accepts either a string URL or a URL object.
+ */
+function normalizeUrl(url: string | URL): string {
+  return typeof url === `string` ? url : url.href
+}
 
 /**
  * Provider for synchronizing Yjs documents over Durable Streams.
@@ -57,6 +71,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
   readonly doc: Y.Doc
   private readonly documentStreamConfig: DurableStreamsProviderOptions[`documentStream`]
   private readonly awarenessStreamConfig?: DurableStreamsProviderOptions[`awarenessStream`]
+  private readonly debug: boolean
 
   private documentStream: DurableStream | null = null
   private awarenessStream: DurableStream | null = null
@@ -82,6 +97,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.doc = options.doc
     this.documentStreamConfig = options.documentStream
     this.awarenessStreamConfig = options.awarenessStream
+    this.debug = options.debug ?? false
 
     // Listen for local document updates
     this.doc.on(`update`, this.handleDocumentUpdate)
@@ -236,10 +252,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
   private async connectDocumentStream(): Promise<void> {
     if (this.abortController?.signal.aborted) return
 
-    const url =
-      typeof this.documentStreamConfig.url === `string`
-        ? this.documentStreamConfig.url
-        : this.documentStreamConfig.url.href
+    const url = normalizeUrl(this.documentStreamConfig.url)
 
     // Try to create the stream, or connect if it exists
     try {
@@ -281,10 +294,12 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
             const update = decoding.readVarUint8Array(decoder)
             Y.applyUpdate(this.doc, update, `server`)
           } catch (err) {
-            console.debug(
-              `[y-durable-streams] Invalid update in document stream, skipping:`,
-              err
-            )
+            if (this.debug) {
+              console.debug(
+                `[y-durable-streams] Invalid update in document stream, skipping:`,
+                err
+              )
+            }
             break
           }
         }
@@ -306,10 +321,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (!this.awarenessStreamConfig) return
     if (this.abortController?.signal.aborted) return
 
-    const url =
-      typeof this.awarenessStreamConfig.url === `string`
-        ? this.awarenessStreamConfig.url
-        : this.awarenessStreamConfig.url.href
+    const url = normalizeUrl(this.awarenessStreamConfig.url)
 
     // Try to create the stream, or connect if it exists
     // Awareness uses binary format (same as document stream)
@@ -356,10 +368,12 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
               this
             )
           } catch (err) {
-            console.debug(
-              `[y-durable-streams] Invalid update in awareness stream, skipping:`,
-              err
-            )
+            if (this.debug) {
+              console.debug(
+                `[y-durable-streams] Invalid update in awareness stream, skipping:`,
+                err
+              )
+            }
             break
           }
         }
@@ -382,7 +396,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
       clearInterval(this.awarenessHeartbeatInterval)
     }
 
-    // Awareness times out after 30 seconds, so heartbeat every 15 seconds
     this.awarenessHeartbeatInterval = setInterval(() => {
       if (this.awarenessReady && !this.abortController?.signal.aborted) {
         this.broadcastAwareness()
@@ -447,6 +460,11 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
       // Re-batch the failed update (lastSending is always set when catch is reached)
       this.batchDocumentUpdate(lastSending!)
       this.emit(`error`, [err instanceof Error ? err : new Error(String(err))])
+      // Disconnect and reconnect to recover - this will retry pending changes
+      this.sendingDocumentChanges = false
+      this.disconnect()
+      this.connect()
+      return
     } finally {
       this.sendingDocumentChanges = false
     }

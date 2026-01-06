@@ -317,23 +317,21 @@ function RoomView() {
   const { registryDB } = useRegistryContext()
 
   // Check if room exists in registry
-  const { data: rooms = [] } = useLiveQuery((q) =>
+  const { data: rooms = [], isLoading } = useLiveQuery((q) =>
     q.from({ rooms: registryDB.collections.rooms })
   )
 
   const roomExists = rooms.some((room) => room.roomId === roomId)
 
-  // Redirect to index if room doesn't exist
+  // Redirect to index if room doesn't exist (only after query has loaded)
   useEffect(() => {
-    if (rooms.length >= 0 && !roomExists) {
-      // Only redirect after we've loaded rooms (not during initial load)
-      // We check rooms.length >= 0 to ensure the query has resolved
+    if (!isLoading && !roomExists) {
       const timer = setTimeout(() => {
         navigate({ to: `/` })
       }, 100)
       return () => clearTimeout(timer)
     }
-  }, [roomExists, rooms.length, navigate])
+  }, [isLoading, roomExists, navigate])
 
   if (!roomExists) {
     return (
