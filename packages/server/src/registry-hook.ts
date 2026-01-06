@@ -26,7 +26,7 @@ const streamMetadataSchema = {
       if (typeof value !== `object` || value === null) {
         return { issues: [{ message: `value must be an object` }] }
       }
-      const data = value as any
+      const data = value as Record<string, unknown>
       if (typeof data.path !== `string` || data.path.length === 0) {
         return { issues: [{ message: `path must be a non-empty string` }] }
       }
@@ -41,7 +41,7 @@ const streamMetadataSchema = {
       if (typeof data.createdAt !== `number`) {
         return { issues: [{ message: `createdAt must be a number` }] }
       }
-      return { value: data as StreamMetadata }
+      return { value: data as unknown as StreamMetadata }
     },
   },
 }

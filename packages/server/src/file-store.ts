@@ -83,14 +83,14 @@ class FileHandlePool {
 
     return new Promise<void>((resolve, reject) => {
       // Use fdatasync (faster than fsync, skips metadata)
-      // Cast to any to access fd property (exists at runtime but not in types)
-      const fd = (handle.stream as any).fd
+      // Access fd property that exists at runtime on WriteStream
+      const fd = (handle.stream as unknown as { fd?: number }).fd
 
       // If fd is null, stream hasn't been opened yet - wait for open event
       if (typeof fd !== `number`) {
         const onOpen = (openedFd: number): void => {
           handle.stream.off(`error`, onError)
-          fs.fdatasync(openedFd, (err) => {
+          fs.fdatasync(openedFd, (err: NodeJS.ErrnoException | null) => {
             if (err) reject(err)
             else resolve()
           })
@@ -104,7 +104,7 @@ class FileHandlePool {
         return
       }
 
-      fs.fdatasync(fd, (err) => {
+      fs.fdatasync(fd, (err: NodeJS.ErrnoException | null) => {
         if (err) reject(err)
         else resolve()
       })
@@ -207,14 +207,15 @@ export class FileBackedStreamStore {
     })
 
     // Convert to array to avoid iterator issues
-    const entries = Array.from(range)
+    const entries = Array.from(range) as Array<{
+      key: string
+      value: StreamMetadata
+    }>
 
-    for (const { key, value } of entries) {
+    for (const { key, value: streamMeta } of entries) {
       try {
         // Key should be a string in our schema
         if (typeof key !== `string`) continue
-
-        const streamMeta = value as StreamMetadata
         const streamPath = key.replace(`stream:`, ``)
 
         // Get segment file path
@@ -604,7 +605,7 @@ export class FileBackedStreamStore {
       Buffer.from(`\n`),
     ])
     await new Promise<void>((resolve, reject) => {
-      stream.write(frameBuf, (err) => {
+      stream.write(frameBuf, (err: Error | null | undefined) => {
         if (err) reject(err)
         else resolve()
       })
@@ -822,7 +823,7 @@ export class FileBackedStreamStore {
     })
 
     // Convert to array to avoid iterator issues
-    const entries = Array.from(range)
+    const entries = Array.from(range) as Array<{ key: string; value: unknown }>
 
     for (const { key } of entries) {
       this.db.removeSync(key)
@@ -858,7 +859,7 @@ export class FileBackedStreamStore {
     })
 
     // Convert to array to avoid iterator issues
-    const entries = Array.from(range)
+    const entries = Array.from(range) as Array<{ key: string; value: unknown }>
 
     for (const { key } of entries) {
       // Key should be a string in our schema

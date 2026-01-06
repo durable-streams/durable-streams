@@ -70,7 +70,7 @@ async function writeStream(
       // Read from stdin
       const chunks: Array<Buffer> = []
 
-      stdin.on(`data`, (chunk) => {
+      stdin.on(`data`, (chunk: Buffer) => {
         chunks.push(chunk)
       })
 

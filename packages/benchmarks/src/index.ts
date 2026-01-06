@@ -11,6 +11,7 @@
 import { writeFileSync } from "node:fs"
 import { afterAll, bench, describe } from "vitest"
 import { DurableStream } from "@durable-streams/client"
+import type { ByteChunk } from "@durable-streams/client"
 
 export interface BenchmarkOptions {
   /** Base URL of the server to benchmark */
@@ -40,10 +41,20 @@ function calculateStats(values: Array<number>) {
   return { min, max, mean, p50, p75, p99 }
 }
 
+interface TableRow {
+  Min: string
+  Max: string
+  Mean: string
+  P50: string
+  P75: string
+  P99: string
+  Iterations: number
+}
+
 function printResults() {
   console.log(`\n=== RESULTS SO FAR ===`)
 
-  const tableData: Record<string, any> = {}
+  const tableData: Record<string, TableRow> = {}
 
   for (const [name, data] of results.entries()) {
     if (data.values.length === 0) continue
@@ -71,7 +82,17 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
   afterAll(() => {
     // Calculate statistics and write results
-    const statsOutput: Record<string, any> = {}
+    interface StatsEntry {
+      min: number
+      max: number
+      mean: number
+      p50: number
+      p75: number
+      p99: number
+      unit: string
+      iterations: number
+    }
+    const statsOutput: Record<string, StatsEntry> = {}
 
     for (const [name, data] of results.entries()) {
       const stats = calculateStats(data.values)
@@ -100,7 +121,7 @@ export function runBenchmarks(options: BenchmarkOptions): void {
     console.log(`Base URL: ${output.baseUrl}`)
     console.log(``)
 
-    const finalTableData: Record<string, any> = {}
+    const finalTableData: Record<string, TableRow> = {}
     for (const [name, stats] of Object.entries(statsOutput)) {
       finalTableData[name] = {
         Min: `${stats.min.toFixed(2)} ${stats.unit}`,
@@ -162,7 +183,7 @@ export function runBenchmarks(options: BenchmarkOptions): void {
             live: `long-poll`,
           })
           await new Promise<void>((resolve) => {
-            const unsubscribe = res.subscribeBytes((chunk) => {
+            const unsubscribe = res.subscribeBytes((chunk: ByteChunk) => {
               if (chunk.data.length > 0) {
                 offset = chunk.offset
                 unsubscribe()
@@ -184,7 +205,7 @@ export function runBenchmarks(options: BenchmarkOptions): void {
             live: `long-poll`,
           })
           await new Promise<void>((resolve) => {
-            const unsubscribe = res.subscribeBytes((chunk) => {
+            const unsubscribe = res.subscribeBytes((chunk: ByteChunk) => {
               if (chunk.data.length > 0) {
                 unsubscribe()
                 res.cancel()

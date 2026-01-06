@@ -16,6 +16,7 @@ import {
   FetchError,
   stream,
 } from "@durable-streams/client"
+import type { ByteChunk } from "@durable-streams/client"
 import {
   ErrorCodes,
   decodeBase64,
@@ -362,49 +363,51 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
               resolve()
             }, timeoutMs)
 
-            const unsubscribe = response.subscribeBytes(async (chunk) => {
-              // Check if we should stop
-              if (done || chunkCount >= maxChunks) {
-                return
+            const unsubscribe = response.subscribeBytes(
+              async (chunk: ByteChunk) => {
+                // Check if we should stop
+                if (done || chunkCount >= maxChunks) {
+                  return
+                }
+
+                // Check timeout
+                if (Date.now() - startTime > timeoutMs) {
+                  done = true
+                  resolve()
+                  return
+                }
+
+                const hasData = chunk.data.length > 0
+                if (hasData) {
+                  chunks.push({
+                    data: decoder.decode(chunk.data),
+                    offset: chunk.offset,
+                  })
+                  chunkCount++
+                }
+
+                finalOffset = chunk.offset
+                upToDate = chunk.upToDate
+
+                // For waitForUpToDate, stop when we've reached up-to-date
+                if (command.waitForUpToDate && chunk.upToDate) {
+                  done = true
+                  clearTimeout(subscriptionTimeoutId)
+                  resolve()
+                  return
+                }
+
+                // Stop if we've collected enough chunks
+                if (chunkCount >= maxChunks) {
+                  done = true
+                  clearTimeout(subscriptionTimeoutId)
+                  resolve()
+                }
+
+                // Keep async for backpressure support even though not using await
+                await Promise.resolve()
               }
-
-              // Check timeout
-              if (Date.now() - startTime > timeoutMs) {
-                done = true
-                resolve()
-                return
-              }
-
-              const hasData = chunk.data.length > 0
-              if (hasData) {
-                chunks.push({
-                  data: decoder.decode(chunk.data),
-                  offset: chunk.offset,
-                })
-                chunkCount++
-              }
-
-              finalOffset = chunk.offset
-              upToDate = chunk.upToDate
-
-              // For waitForUpToDate, stop when we've reached up-to-date
-              if (command.waitForUpToDate && chunk.upToDate) {
-                done = true
-                clearTimeout(subscriptionTimeoutId)
-                resolve()
-                return
-              }
-
-              // Stop if we've collected enough chunks
-              if (chunkCount >= maxChunks) {
-                done = true
-                clearTimeout(subscriptionTimeoutId)
-                resolve()
-              }
-
-              // Keep async for backpressure support even though not using await
-              await Promise.resolve()
-            })
+            )
 
             // Clean up subscription when done
             // Also capture final upToDate state for empty streams
@@ -702,7 +705,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
 
           // Wait for data
           return new Promise<Uint8Array>((resolve) => {
-            const unsubscribe = res.subscribeBytes((chunk) => {
+            const unsubscribe = res.subscribeBytes((chunk: ByteChunk) => {
               if (chunk.data.length > 0) {
                 unsubscribe()
                 res.cancel()
