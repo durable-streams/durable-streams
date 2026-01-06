@@ -406,10 +406,12 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 - **`now` (Current Tail Position)**: The special offset value `now` allows clients to skip all existing data and begin reading from the current tail position. This is useful for applications that only care about future data (e.g., presence tracking, live monitoring, late joiners to a conversation). The behavior varies by read mode:
 
   **Catch-up mode** (`offset=now` without `live` parameter):
-  - Servers **MUST** return `200 OK` with an empty response body
+  - Servers **MUST** return `200 OK` with an empty response body appropriate to the stream's content type:
+    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 7.1
+    - For all other content types: the body **MUST** be 0 bytes (empty)
   - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
   - Servers **MUST** include `Stream-Up-To-Date: true` header
-  - The response **MUST** contain no data, regardless of stream content
+  - The response **MUST** contain no data messages, regardless of stream content
 
   **Long-poll mode** (`offset=now&live=long-poll`):
   - Servers **MUST** immediately begin waiting for new data (no initial empty response)
