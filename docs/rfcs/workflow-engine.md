@@ -436,6 +436,31 @@ await durableStreams.webhooks.register({
    - Returns (suspends until next external event)
 ```
 
+**Payload delivery:**
+
+By default, the webhook POST includes the **full stream contents**. This simplifies the workflow function — it receives everything it needs in one request, no additional fetches required. For most workflows (even 1-2MB of events), this is fine.
+
+```typescript
+// Webhook payload
+{
+  stream: "/workflows/expense-approval/abc123",
+  events: [...],  // Full stream contents
+  trigger: { type: "awaitable-response", offset: 42 }
+}
+```
+
+For workflows with large event histories, registration can opt into **incremental delivery**:
+
+```typescript
+await durableStreams.webhooks.register({
+  pattern: "/workflows/data-pipeline/*",
+  url: "https://my-app.com/api/workflows/data-pipeline",
+  delivery: "incremental"  // Only new events; function fetches history if needed
+});
+```
+
+With incremental delivery, the function receives only the triggering event(s) plus a stream URL. The SDK handles fetching and replaying history transparently.
+
 **Why webhooks:**
 
 - **Host anywhere**: Vercel, Cloudflare, AWS Lambda, containers, VMs, Raspberry Pi
