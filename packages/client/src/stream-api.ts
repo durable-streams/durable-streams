@@ -14,12 +14,7 @@ import {
 import { DurableStreamError, FetchBackoffAbortError } from "./error"
 import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
 import { StreamResponseImpl } from "./response"
-import {
-  handleErrorResponse,
-  resolveHeaders,
-  resolveParams,
-  warnIfUsingHttpInBrowser,
-} from "./utils"
+import { handleErrorResponse, resolveHeaders, resolveParams } from "./utils"
 import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
 
 /**
@@ -65,9 +60,6 @@ export async function stream<TJson = unknown>(
       `BAD_REQUEST`
     )
   }
-
-  // Warn about HTTP usage in browsers
-  warnIfUsingHttpInBrowser(options.url, options.warnOnHttp)
 
   // Mutable options that can be updated by onError handler
   let currentHeaders = options.headers
