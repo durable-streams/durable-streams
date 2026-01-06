@@ -432,6 +432,54 @@ for (const item of items) {
 }
 ```
 
+### Replay Mechanism
+
+When a workflow function is invoked, it **runs from the beginning every time**. The SDK provides a context object containing the event history (all previously recorded step results). Each primitive checks this history to decide whether to execute or return a cached result.
+
+**How `step.run()` works internally:**
+
+```typescript
+// Simplified implementation
+async function stepRun(ctx: WorkflowContext, id: string, fn: () => Promise<T>): Promise<T> {
+  // Check if this step already has a result in the event history
+  const existing = ctx.history.find(e => e.type === 'step-completed' && e.stepId === id)
+
+  if (existing) {
+    // Already executed in a previous run — return cached result
+    return existing.result
+  }
+
+  // Not in history — execute the function
+  const result = await fn()
+
+  // Record to stream so future replays will skip this step
+  await ctx.stream.append({
+    type: 'step-completed',
+    stepId: id,
+    result,
+  })
+
+  return result
+}
+```
+
+**Example replay sequence:**
+
+```typescript
+// Workflow code
+const a = await step.run('fetch-user', () => fetchUser())      // Step A
+const b = await step.run('send-email', () => sendEmail(a))     // Step B
+const c = await waitForEvent('approval')                        // Step C (waiting)
+const d = await step.run('process', () => process(c))          // Step D
+```
+
+| Invocation | Event History | What Happens |
+|------------|---------------|--------------|
+| 1st | `[]` | A executes, B executes, C suspends (waiting) |
+| 2nd (after approval) | `[A✓, B✓, C✓]` | A skipped, B skipped, C skipped, D executes |
+
+The workflow code is identical each time — the context object makes previously-completed steps instant no-ops. This is why determinism matters: the code must reach the same steps in the same order on every replay.
+
 ### Determinism
 
 Workflows must be deterministic — replaying with the same event history must produce the same sequence of step calls.
