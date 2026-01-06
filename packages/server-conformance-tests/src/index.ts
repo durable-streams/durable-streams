@@ -1477,6 +1477,55 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
+    test(`should return empty JSON array for offset=now on JSON streams`, async () => {
+      const streamPath = `/v1/stream/offset-now-json-body-test-${Date.now()}`
+
+      // Create JSON stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"event": "historical"}]`,
+      })
+
+      // offset=now on JSON stream should return [] (empty array), not empty string
+      const response = await fetch(`${getBaseUrl()}${streamPath}?offset=now`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`content-type`)).toBe(`application/json`)
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // Body MUST be [] for JSON streams (valid empty JSON array)
+      const body = await response.text()
+      expect(body).toBe(`[]`)
+    })
+
+    test(`should return empty body for offset=now on non-JSON streams`, async () => {
+      const streamPath = `/v1/stream/offset-now-text-body-test-${Date.now()}`
+
+      // Create text stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `historical data`,
+      })
+
+      // offset=now on text stream should return empty body (0 bytes)
+      const response = await fetch(`${getBaseUrl()}${streamPath}?offset=now`, {
+        method: `GET`,
+      })
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // Body MUST be empty (0 bytes) for non-JSON streams
+      const body = await response.text()
+      expect(body).toBe(``)
+    })
+
     test(`should support offset=now with long-poll mode (waits for data)`, async () => {
       const streamPath = `/v1/stream/offset-now-longpoll-test-${Date.now()}`
 
