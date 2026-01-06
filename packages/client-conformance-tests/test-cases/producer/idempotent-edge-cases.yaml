@@ -1,0 +1,751 @@
+id: idempotent-edge-cases
+name: Idempotent Producer Edge Cases
+description: Edge cases from Kafka, Pulsar, and RabbitMQ test suites
+category: producer
+tags:
+  - idempotent
+  - edge-cases
+
+tests:
+  # ============================================================================
+  # Duplicate Detection Edge Cases
+  # ============================================================================
+
+  - id: duplicate-different-payload
+    name: Duplicate with different payload still returns 204
+    description: |
+      Deduplication is purely sequence-based, not content-based.
+      Retrying the same sequence with different data should return 204.
+      This validates that the server doesn't compare payloads.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "original-payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry same sequence with DIFFERENT payload
+      - action: server-append
+        path: ${streamPath}
+        data: "different-payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only original payload is in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "original-payload"
+          upToDate: true
+
+  - id: duplicate-old-sequence
+    name: Duplicate of old (non-tail) sequence returns 204
+    description: |
+      Retrying a sequence far back in history should still return 204.
+      This tests that the server tracks more than just the last sequence.
+      (Kafka distinguishes DuplicateSequenceException vs OutOfOrderSequenceException)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send sequences 0-5
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg3"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 3
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg4"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 4
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg5"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 5
+        expect:
+          status: 200
+      # Retry seq=1 (old, non-tail sequence)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 204
+          duplicate: true
+      # Retry seq=0 (first sequence)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # New sequence should still work
+      - action: server-append
+        path: ${streamPath}
+        data: "msg6"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 6
+        expect:
+          status: 200
+
+  - id: duplicate-json-different-payload
+    name: Duplicate JSON with different payload returns 204
+    description: Same test for JSON content type
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: '{"key": "original"}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry with different JSON payload
+      - action: server-append
+        path: ${streamPath}
+        data: '{"key": "different", "extra": true}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+
+  # ============================================================================
+  # Ordering Verification
+  # ============================================================================
+
+  - id: ordering-preserved-in-stream
+    name: Messages appear in sequence order in stream
+    description: |
+      Verify that messages are stored in the order of their sequence numbers,
+      not the order they arrived at the server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send in order
+      - action: server-append
+        path: ${streamPath}
+        data: "first"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "second"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "third"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Read and verify exact order
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataExact:
+            - "first"
+            - "second"
+            - "third"
+          upToDate: true
+
+  - id: interleaved-producers-ordering
+    name: Interleaved producers maintain per-producer ordering
+    description: |
+      When multiple producers write interleaved, each producer's messages
+      should appear in their sequence order relative to each other.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Interleave writes from two producers
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "B1"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "A2"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Read and verify A0 comes before A1 comes before A2
+      # and B0 comes before B1
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "A0"
+            - "A1"
+            - "A2"
+            - "B0"
+            - "B1"
+          upToDate: true
+
+  # ============================================================================
+  # Large Sequence Numbers
+  # ============================================================================
+
+  - id: large-sequence-numbers
+    name: Large sequence numbers handled correctly
+    description: |
+      Test that the server handles large sequence numbers near integer limits.
+      This prevents overflow issues with long-lived producers.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Start with a large sequence number
+      - action: server-append
+        path: ${streamPath}
+        data: "large-seq"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2147483640
+        expect:
+          status: 200
+      # Continue with next sequences
+      - action: server-append
+        path: ${streamPath}
+        data: "large-seq-plus-1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2147483641
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "large-seq-plus-2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2147483642
+        expect:
+          status: 200
+      # Duplicate should still work
+      - action: server-append
+        path: ${streamPath}
+        data: "large-seq"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2147483640
+        expect:
+          status: 204
+          duplicate: true
+
+  - id: large-epoch-numbers
+    name: Large epoch numbers handled correctly
+    description: Test that large epoch values work correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "large-epoch"
+        producerId: test-producer
+        producerEpoch: 2147483640
+        producerSeq: 0
+        expect:
+          status: 200
+      # Stale epoch should still be rejected
+      - action: server-append
+        path: ${streamPath}
+        data: "stale"
+        producerId: test-producer
+        producerEpoch: 100
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 2147483640
+
+  # ============================================================================
+  # Producer ID Edge Cases
+  # ============================================================================
+
+  - id: producer-id-with-special-characters
+    name: Producer ID with special characters works
+    description: Producer IDs with various special characters should be accepted
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Hyphen and underscore
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: "my-producer_v2"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Dots
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: "com.example.producer.1"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # UUID-style
+      - action: server-append
+        path: ${streamPath}
+        data: "msg3"
+        producerId: "550e8400-e29b-41d4-a716-446655440000"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Colons (namespace-style)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg4"
+        producerId: "namespace:producer:instance"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+
+  - id: producer-id-unicode
+    name: Producer ID with unicode characters works
+    description: Producer IDs may contain unicode characters
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "unicode-producer"
+        producerId: "producer-日本語"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Verify it's tracked correctly
+      - action: server-append
+        path: ${streamPath}
+        data: "unicode-producer-2"
+        producerId: "producer-日本語"
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+
+  - id: producer-id-long
+    name: Long producer ID works
+    description: Very long producer IDs should be accepted (within reasonable limits)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "long-id"
+        producerId: "very-long-producer-id-that-goes-on-for-quite-a-while-to-test-string-handling-in-the-server-implementation-and-make-sure-it-doesnt-truncate"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Duplicate detection works with long ID
+      - action: server-append
+        path: ${streamPath}
+        data: "long-id"
+        producerId: "very-long-producer-id-that-goes-on-for-quite-a-while-to-test-string-handling-in-the-server-implementation-and-make-sure-it-doesnt-truncate"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+
+  # Producer ID Boundary Enforcement (like Pulsar)
+
+  - id: producer-id-empty-rejected
+    name: Empty producer ID rejected
+    description: |
+      An empty Producer-Id header should be rejected with 400.
+      This enforces that producers must have meaningful identifiers.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: ""
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: producer-id-whitespace-only-rejected
+    name: Whitespace-only producer ID rejected
+    description: |
+      A producer ID containing only whitespace should be rejected.
+      Pulsar trims and validates producer names similarly.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: "   "
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: producer-id-too-long-rejected
+    name: Excessively long producer ID rejected
+    description: |
+      Producer IDs should have a maximum length to prevent abuse.
+      This follows Pulsar's approach of enforcing name length limits.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # 1000+ character ID should be rejected
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  # ============================================================================
+  # AutoClaim Edge Cases
+  # ============================================================================
+
+  - id: autoclaim-recovers-from-403
+    name: Client with autoClaim recovers from 403 fencing
+    description: |
+      When a producer with autoClaim=true gets fenced (403), it should
+      automatically claim the next epoch and retry successfully.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=5
+      - action: server-append
+        path: ${streamPath}
+        data: "fencer"
+        producerId: autoclaim-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Now use idempotent-append with autoClaim starting at epoch=0
+      # It should get 403, then retry with epoch=6
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: autoclaim-producer
+        epoch: 0
+        autoClaim: true
+        data: "recovered"
+        expect:
+          success: true
+      # Verify both messages are in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "fencer"
+            - "recovered"
+          upToDate: true
+
+  - id: autoclaim-batch-recovers-from-403
+    name: Batch with autoClaim recovers from 403 fencing
+    description: Same test for batch operations
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=3
+      - action: server-append
+        path: ${streamPath}
+        data: "blocker"
+        producerId: batch-autoclaim
+        producerEpoch: 3
+        producerSeq: 0
+        expect:
+          status: 200
+      # Batch with autoClaim should recover
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: batch-autoclaim
+        autoClaim: true
+        maxInFlight: 1
+        items:
+          - data: "batch-msg-0"
+          - data: "batch-msg-1"
+          - data: "batch-msg-2"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "blocker"
+            - "batch-msg-0"
+            - "batch-msg-1"
+            - "batch-msg-2"
+          upToDate: true
+
+  # ============================================================================
+  # Epoch Boundary Cases
+  # ============================================================================
+
+  - id: epoch-zero-after-higher-epoch
+    name: Epoch 0 rejected after higher epoch established
+    description: |
+      Once a higher epoch is established, epoch=0 should be rejected.
+      This is critical for zombie fencing.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=5
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch5"
+        producerId: test-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Epoch 0 should be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-zombie"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 5
+      # Epoch 4 should also be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch4-zombie"
+        producerId: test-producer
+        producerEpoch: 4
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 5
+
+  - id: epoch-gap-allowed
+    name: Epoch can skip values (gap allowed)
+    description: |
+      Epochs don't need to be sequential. Jumping from epoch=0 to epoch=10
+      should be allowed (unlike sequences which must be sequential).
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Jump to epoch=10 (skipping 1-9)
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch10"
+        producerId: test-producer
+        producerEpoch: 10
+        producerSeq: 0
+        expect:
+          status: 200
+      # Previous epochs now fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch5"
+        producerId: test-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 10
+
+  # ============================================================================
+  # Sequence After Epoch Upgrade
+  # ============================================================================
+
+  - id: sequence-continues-independently-per-epoch
+    name: Each epoch has independent sequence space
+    description: |
+      Sequence numbers reset to 0 with each epoch upgrade.
+      The old epoch's sequences don't affect the new epoch.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Epoch 0: sequences 0, 1, 2
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Epoch 1: starts fresh at seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "e1s0"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e1s1"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 1
+        expect:
+          status: 200
+      # Verify all 5 messages present
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "e0s0"
+            - "e0s1"
+            - "e0s2"
+            - "e1s0"
+            - "e1s1"
+          upToDate: true
