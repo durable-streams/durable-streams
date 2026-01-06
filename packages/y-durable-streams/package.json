@@ -44,14 +44,14 @@
     "src"
   ],
   "dependencies": {
-    "@durable-streams/client": "workspace:*",
-    "lib0": "^0.2.99",
-    "y-protocols": "^1.0.6",
-    "yjs": "^13.6.24"
+    "@durable-streams/client": "workspace:*"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
-    "tsdown": "^0.9.0"
+    "lib0": "^0.2.99",
+    "tsdown": "^0.9.0",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.24"
   },
   "scripts": {
     "build": "tsdown",
@@ -59,6 +59,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
+    "lib0": "^0.2.0",
+    "y-protocols": "^1.0.0",
     "yjs": "^13.0.0"
   },
   "engines": {

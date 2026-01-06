@@ -111,6 +111,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
 
   private _connected = false
   private _synced = false
+  private _connecting = false
   private awarenessReady = false
 
   private sendingDocumentChanges = false
@@ -196,8 +197,9 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
    * Connect to the durable streams and start synchronization.
    */
   async connect(): Promise<void> {
-    if (this.connected) return
+    if (this.connected || this._connecting) return
 
+    this._connecting = true
     this.abortController = new AbortController()
     this.emit(`status`, [`connecting`])
 
@@ -217,6 +219,8 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         ])
         this.disconnect()
       }
+    } finally {
+      this._connecting = false
     }
   }
 
@@ -226,14 +230,35 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
   disconnect(): void {
     if (!this.abortController) return
 
+    this._connecting = false
+
     // Clean up awareness heartbeat
     if (this.awarenessHeartbeatInterval) {
       clearInterval(this.awarenessHeartbeatInterval)
       this.awarenessHeartbeatInterval = null
     }
 
-    // Clean up awareness state
-    if (this.awarenessStreamConfig) {
+    // Broadcast awareness removal to other clients before disconnecting
+    if (
+      this.awarenessStreamConfig &&
+      this.awarenessStream &&
+      this.awarenessReady
+    ) {
+      const awareness = this.awarenessStreamConfig.protocol
+      const clientID = awareness.clientID
+      // Set local state to null (signals removal) and encode for broadcast
+      awareness.setLocalState(null)
+      const encoded = awarenessProtocol.encodeAwarenessUpdate(awareness, [
+        clientID,
+      ])
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint8Array(encoder, encoded)
+      // Fire and forget - we're disconnecting anyway
+      this.awarenessStream.append(encoding.toUint8Array(encoder)).catch(() => {
+        // Ignore errors on disconnect
+      })
+    } else if (this.awarenessStreamConfig) {
+      // Clean up awareness state locally even if we can't broadcast
       awarenessProtocol.removeAwarenessStates(
         this.awarenessStreamConfig.protocol,
         [this.awarenessStreamConfig.protocol.clientID],
