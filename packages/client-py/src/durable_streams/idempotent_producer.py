@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -85,11 +85,9 @@ class _SeqState:
 
     resolved: bool = False
     error: Exception | None = None
-    waiters: list[asyncio.Future[None]] = None  # type: ignore
-
-    def __post_init__(self) -> None:
-        if self.waiters is None:
-            self.waiters = []
+    waiters: list[asyncio.Future[None]] = field(
+        default_factory=lambda: []  # type: ignore[misc]
+    )
 
 
 class IdempotentProducer:
