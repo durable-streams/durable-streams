@@ -70,6 +70,11 @@ durable-stream-dev read my-stream
 
 - `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437`)
 
+### Write Options
+
+- `--content-type <type>` - Content-Type for the message (default: `application/octet-stream`)
+- `--json` - Shorthand for `--content-type application/json`
+
 ### Commands
 
 #### Create a stream
@@ -87,6 +92,12 @@ durable-stream-dev write <stream_id> "Hello, world!"
 # Pipe content from stdin
 echo "Hello from stdin" | durable-stream-dev write <stream_id>
 cat file.txt | durable-stream-dev write <stream_id>
+
+# Specify content type
+durable-stream-dev write <stream_id> '{"key": "value"}' --content-type application/json
+
+# Shorthand for JSON
+durable-stream-dev write <stream_id> '{"key": "value"}' --json
 ```
 
 #### Read from a stream

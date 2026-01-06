@@ -52,7 +52,7 @@ AI products make this painfully visible. Token streaming is the UI for chat and 
 - **Multi-tab** - Works seamlessly across browser tabs without duplicating connections or missing data
 - **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
 
-The protocol provides:
+The protocol is:
 
 - 🌐 **Universal** - Works anywhere HTTP works: web browsers, mobile apps, native clients, IoT devices, edge workers
 - 📦 **Simple** - Built on standard HTTP with no custom protocols
@@ -77,7 +77,7 @@ npm install @durable-streams/cli      # Development & testing CLI
 
 ```bash
 # Go
-go get github.com/durable-streams/durable-streams-go
+go get github.com/durable-streams/durable-streams/packages/client-go
 
 # Python
 pip install durable-streams
@@ -530,6 +530,10 @@ See [@durable-streams/server](./packages/server) for more details.
 **Go**
 
 - [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
+
+**Java**
+
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformace test coverage.
 
 ## CLI Tool
 

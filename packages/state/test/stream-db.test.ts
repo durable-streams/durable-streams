@@ -1682,7 +1682,7 @@ describe(`Stream DB Actions`, () => {
     db.close()
   })
 
-  it(`should provide stream context to actions`, async () => {
+  it(`should provide stream context to actions`, () => {
     const streamState = createStateSchema({
       users: {
         schema: userSchema,

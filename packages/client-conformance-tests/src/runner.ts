@@ -599,7 +599,7 @@ async function executeOperation(
     }
 
     case `inject-error`: {
-      // Inject an error via the test server's control endpoint
+      // Inject a fault via the test server's control endpoint
       const path = resolveVariables(op.path, variables)
 
       try {
@@ -611,23 +611,43 @@ async function executeOperation(
             status: op.status,
             count: op.count ?? 1,
             retryAfter: op.retryAfter,
+            // New fault injection parameters
+            delayMs: op.delayMs,
+            dropConnection: op.dropConnection,
+            truncateBodyBytes: op.truncateBodyBytes,
+            probability: op.probability,
+            method: op.method,
+            corruptBody: op.corruptBody,
+            jitterMs: op.jitterMs,
           }),
         })
 
+        // Build descriptive log message
+        const faultTypes = []
+        if (op.status != null) faultTypes.push(`status=${op.status}`)
+        if (op.delayMs != null) faultTypes.push(`delay=${op.delayMs}ms`)
+        if (op.jitterMs != null) faultTypes.push(`jitter=${op.jitterMs}ms`)
+        if (op.dropConnection) faultTypes.push(`dropConnection`)
+        if (op.truncateBodyBytes != null)
+          faultTypes.push(`truncate=${op.truncateBodyBytes}b`)
+        if (op.corruptBody) faultTypes.push(`corrupt`)
+        if (op.probability != null) faultTypes.push(`p=${op.probability}`)
+        const faultDesc = faultTypes.join(`,`) || `unknown`
+
         if (verbose) {
           console.log(
-            `  inject-error ${path} ${op.status}x${op.count ?? 1}: ${response.ok ? `ok` : `failed`}`
+            `  inject-error ${path} [${faultDesc}]x${op.count ?? 1}: ${response.ok ? `ok` : `failed`}`
           )
         }
 
         if (!response.ok) {
-          return { error: `Failed to inject error: ${response.status}` }
+          return { error: `Failed to inject fault: ${response.status}` }
         }
 
         return {}
       } catch (err) {
         return {
-          error: `Failed to inject error: ${err instanceof Error ? err.message : String(err)}`,
+          error: `Failed to inject fault: ${err instanceof Error ? err.message : String(err)}`,
         }
       }
     }
