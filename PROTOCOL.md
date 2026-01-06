@@ -296,7 +296,9 @@ Servers **MUST** serialize validation + append operations per `(stream, producer
 
 #### Atomicity Requirements
 
-For persistent storage, servers **MUST** commit producer state updates and log appends atomically (e.g., in a single database transaction). Otherwise, a crash between append and state update could reintroduce duplicates.
+For persistent storage, servers **SHOULD** commit producer state updates and log appends atomically (e.g., in a single database transaction). Otherwise, a crash between append and state update could reintroduce duplicates or cause false sequence gaps on recovery.
+
+Database-backed stores (PostgreSQL, SQLite) naturally achieve this via transactions. File-backed stores may provide weaker guarantees—the reference Caddy plugin's file store commits data and metadata in separate phases, providing exactly-once semantics within a process lifetime but not across crashes. See [issue #143](https://github.com/durable-streams/durable-streams/issues/143) for details and options for achieving true crash-atomicity.
 
 #### Producer State Cleanup
 
