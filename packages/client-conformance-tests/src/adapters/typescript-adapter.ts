@@ -439,7 +439,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         return {
           type: `read`,
           success: true,
-          status: 200,
+          status: response.status,
           chunks,
           offset: finalOffset,
           upToDate,
