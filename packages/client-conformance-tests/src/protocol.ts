@@ -363,6 +363,8 @@ export interface AppendResult {
   duplicate?: boolean
   /** Current producer epoch from server (on 200 or 403) */
   producerEpoch?: number
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header on 200/204 */
+  producerSeq?: number
   /** Expected producer sequence (on 409 sequence gap) */
   producerExpectedSeq?: number
   /** Received producer sequence (on 409 sequence gap) */
@@ -380,6 +382,8 @@ export interface IdempotentAppendResult {
   offset?: string
   /** Whether this was a duplicate */
   duplicate?: boolean
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header */
+  producerSeq?: number
 }
 
 /**
@@ -389,6 +393,8 @@ export interface IdempotentAppendBatchResult {
   type: `idempotent-append-batch`
   success: true
   status: number
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header */
+  producerSeq?: number
 }
 
 /**

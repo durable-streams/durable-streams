@@ -317,6 +317,8 @@ export interface ServerAppendExpectation {
   duplicate?: boolean
   /** Expected producer epoch in response */
   producerEpoch?: number
+  /** Expected producer seq in response (highest accepted sequence) */
+  producerSeq?: number
   /** Expected producer expected seq (on 409 sequence gap) */
   producerExpectedSeq?: number
   /** Expected producer received seq (on 409 sequence gap) */
@@ -464,6 +466,8 @@ export interface AppendExpectation extends BaseExpectation {
   duplicate?: boolean
   /** Expected producer epoch in response */
   producerEpoch?: number
+  /** Expected producer seq in response (highest accepted sequence) */
+  producerSeq?: number
   /** Expected producer expected seq (on 409 sequence gap) */
   producerExpectedSeq?: number
   /** Expected producer received seq (on 409 sequence gap) */

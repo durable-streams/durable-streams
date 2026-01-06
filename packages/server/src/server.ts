@@ -409,7 +409,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Producer-Epoch, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -1092,9 +1092,12 @@ export class DurableStreamTestServer {
         const responseHeaders: Record<string, string> = {
           [STREAM_OFFSET_HEADER]: message!.offset,
         }
-        // Echo back the producer epoch
+        // Echo back the producer epoch and seq (highest accepted)
         if (producerEpoch !== undefined) {
           responseHeaders[PRODUCER_EPOCH_HEADER] = producerEpoch.toString()
+        }
+        if (producerSeq !== undefined) {
+          responseHeaders[PRODUCER_SEQ_HEADER] = producerSeq.toString()
         }
         res.writeHead(200, responseHeaders)
         res.end()
@@ -1105,8 +1108,10 @@ export class DurableStreamTestServer {
       switch (producerResult.status) {
         case `duplicate`:
           // 204 No Content for duplicates (idempotent success)
+          // Return Producer-Seq as highest accepted (the duplicate seq)
           res.writeHead(204, {
             [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
+            [PRODUCER_SEQ_HEADER]: producerSeq!.toString(),
           })
           res.end()
           return

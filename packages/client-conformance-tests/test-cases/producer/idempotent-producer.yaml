@@ -9,7 +9,7 @@ tags:
 tests:
   - id: first-append-accepted
     name: First append with producer headers is accepted
-    description: Server should accept first append with epoch=0, seq=0
+    description: Server should accept first append with epoch=0, seq=0 and echo Producer-Seq
     setup:
       - action: create
         as: streamPath
@@ -24,6 +24,7 @@ tests:
         expect:
           status: 200
           producerEpoch: 0
+          producerSeq: 0
 
   - id: sequential-sequences
     name: Sequential producer sequences accepted
@@ -60,7 +61,7 @@ tests:
 
   - id: duplicate-returns-204
     name: Duplicate sequence returns 204 (idempotent success)
-    description: Retrying the same seq should return 204 without duplicating data
+    description: Retrying the same seq should return 204 with Producer-Seq header
     setup:
       - action: create
         as: streamPath
@@ -74,6 +75,7 @@ tests:
         producerSeq: 0
         expect:
           status: 200
+          producerSeq: 0
       - action: server-append
         path: ${streamPath}
         data: "hello"
@@ -83,6 +85,7 @@ tests:
         expect:
           status: 204
           duplicate: true
+          producerSeq: 0
       # Verify only one message in stream
       - action: read
         path: ${streamPath}

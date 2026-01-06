@@ -641,6 +641,7 @@ async function executeOperation(
         const offset = response.headers.get(`Stream-Next-Offset`) ?? undefined
         const duplicate = status === 204
         const producerEpoch = response.headers.get(`Producer-Epoch`)
+        const producerSeq = response.headers.get(`Producer-Seq`)
         const producerExpectedSeq = response.headers.get(
           `Producer-Expected-Seq`
         )
@@ -666,6 +667,7 @@ async function executeOperation(
           producerEpoch: producerEpoch
             ? parseInt(producerEpoch, 10)
             : undefined,
+          producerSeq: producerSeq ? parseInt(producerSeq, 10) : undefined,
           producerExpectedSeq: producerExpectedSeq
             ? parseInt(producerExpectedSeq, 10)
             : undefined,
@@ -997,6 +999,13 @@ function validateExpectation(
   if (expect.producerEpoch !== undefined && isAppendResult(result)) {
     if (result.producerEpoch !== expect.producerEpoch) {
       return `Expected producerEpoch=${expect.producerEpoch}, got ${result.producerEpoch}`
+    }
+  }
+
+  // Check producerSeq (returned on 200/204 - highest accepted sequence)
+  if (expect.producerSeq !== undefined && isAppendResult(result)) {
+    if (result.producerSeq !== expect.producerSeq) {
+      return `Expected producerSeq=${expect.producerSeq}, got ${result.producerSeq}`
     }
   }
 

@@ -226,7 +226,8 @@ All three producer headers **MUST** be provided together or none at all.
 
 #### Response Headers
 
-- `Producer-Epoch: <integer>`: Echoed back on success (200), or current epoch on stale epoch (403)
+- `Producer-Epoch: <integer>`: Echoed back on success (200/204), or current server epoch on stale epoch (403)
+- `Producer-Seq: <integer>`: On success (200/204), the highest accepted sequence number for this `(stream, producerId, epoch)` tuple. Enables clients to confirm pipelined requests and recover state after crashes.
 - `Producer-Expected-Seq: <integer>`: On 409 Conflict (sequence gap), the expected sequence
 - `Producer-Received-Seq: <integer>`: On 409 Conflict (sequence gap), the received sequence
 
