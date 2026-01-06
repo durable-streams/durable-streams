@@ -385,9 +385,6 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         elif is_sse:
             # For SSE mode, use iter_events() which yields StreamEvent objects for each
             # SSE data event, with metadata updated after control events.
-            # Note: iter_events() buffers data events and yields them all after the control
-            # event, so all yielded events will have up_to_date set to the same value.
-            # We should consume all available events before checking wait_for_up_to_date.
             try:
                 chunk_count = 0
                 for event in response.iter_events(mode="text"):
@@ -406,8 +403,9 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     if chunk_count >= max_chunks:
                         break
 
-                    # Don't break on up_to_date inside the loop - SSE yields all buffered
-                    # data at once after control event, so we need to consume them all
+                    # For waitForUpToDate, stop when we've reached up-to-date
+                    if wait_for_up_to_date and up_to_date:
+                        break
             except httpx.TimeoutException:
                 # Timeout is expected
                 pass
@@ -415,9 +413,6 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             # Capture final state from response
             final_offset = response.offset
             up_to_date = response.up_to_date
-
-            # For waitForUpToDate, the test expects us to have reached up_to_date
-            # This should naturally happen when we've consumed all buffered data
         else:
             # For long-poll mode, iterate raw bytes
             try:
