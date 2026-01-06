@@ -94,3 +94,91 @@ tests:
             - '"id":5'
             - '"id":9'
           upToDate: true
+
+  - id: autoclaim-with-pipelining
+    name: autoClaim works with maxInFlight > 1
+    description: |
+      When autoClaim is true, the client should block pipelining until the first batch
+      completes and the epoch is known. After that, full pipelining should be enabled.
+      This test verifies that autoClaim + maxInFlight > 1 works correctly.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send 20 messages with autoClaim=true and maxInFlight=5
+      # The first batch should block until epoch is claimed, then pipelining kicks in
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: autoclaim-producer
+        autoClaim: true
+        maxInFlight: 5
+        items:
+          - data: "ac-00"
+          - data: "ac-01"
+          - data: "ac-02"
+          - data: "ac-03"
+          - data: "ac-04"
+          - data: "ac-05"
+          - data: "ac-06"
+          - data: "ac-07"
+          - data: "ac-08"
+          - data: "ac-09"
+          - data: "ac-10"
+          - data: "ac-11"
+          - data: "ac-12"
+          - data: "ac-13"
+          - data: "ac-14"
+          - data: "ac-15"
+          - data: "ac-16"
+          - data: "ac-17"
+          - data: "ac-18"
+          - data: "ac-19"
+        expect:
+          allSucceed: true
+      # Verify all messages are in the stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "ac-00"
+            - "ac-05"
+            - "ac-10"
+            - "ac-15"
+            - "ac-19"
+          upToDate: true
+
+  - id: autoclaim-with-pipelining-json
+    name: autoClaim with pipelining works for JSON streams
+    description: Same test with JSON content type
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: autoclaim-json-producer
+        autoClaim: true
+        maxInFlight: 5
+        items:
+          - data: '{"msg": 0}'
+          - data: '{"msg": 1}'
+          - data: '{"msg": 2}'
+          - data: '{"msg": 3}'
+          - data: '{"msg": 4}'
+          - data: '{"msg": 5}'
+          - data: '{"msg": 6}'
+          - data: '{"msg": 7}'
+          - data: '{"msg": 8}'
+          - data: '{"msg": 9}'
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - '"msg":0'
+            - '"msg":5'
+            - '"msg":9'
+          upToDate: true

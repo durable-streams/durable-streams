@@ -773,9 +773,8 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     if is_json:
         items = [json.loads(item) if isinstance(item, str) else item for item in items]
 
-    # When autoClaim is true, maxInFlight must be 1 (client enforces this)
-    # Otherwise use provided maxInFlight or default to 1 for compatibility
-    max_in_flight = 1 if auto_claim else cmd.get("maxInFlight", 1)
+    # Use provided maxInFlight or default to 1 for compatibility
+    max_in_flight = cmd.get("maxInFlight", 1)
 
     # When testing concurrency (maxInFlight > 1), use small batches to force
     # multiple concurrent requests. Otherwise batch all items together.

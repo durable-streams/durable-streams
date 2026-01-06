@@ -560,7 +560,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const producer = new IdempotentProducer(ds, command.producerId, {
           epoch: command.epoch,
           autoClaim: command.autoClaim,
-          maxInFlight: 1, // Required when autoClaim is true
+          maxInFlight: 1,
           lingerMs: 0, // Send immediately for testing
         })
 
@@ -606,9 +606,8 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           contentType,
         })
 
-        // When autoClaim is true, maxInFlight must be 1 (client enforces this)
-        // Otherwise use provided maxInFlight or default to 1 for compatibility
-        const maxInFlight = command.autoClaim ? 1 : (command.maxInFlight ?? 1)
+        // Use provided maxInFlight or default to 1 for compatibility
+        const maxInFlight = command.maxInFlight ?? 1
 
         // When testing concurrency (maxInFlight > 1), use small batches to force
         // multiple concurrent requests. Otherwise batch all items together.

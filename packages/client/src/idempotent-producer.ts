@@ -139,7 +139,12 @@ export class IdempotentProducer {
 
   // Pipelining via fastq
   readonly #queue: queueAsPromised<BatchTask>
+  readonly #maxInFlight: number
   #closed = false
+
+  // When autoClaim is true, we must wait for the first batch to complete
+  // before allowing pipelining (to know what epoch was claimed)
+  #epochClaimed: boolean
 
   // Track sequence completions for 409 retry coordination
   // When HTTP requests arrive out of order, we get 409 errors.
@@ -179,19 +184,14 @@ export class IdempotentProducer {
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
-    const maxInFlight = opts?.maxInFlight ?? 5
+    this.#maxInFlight = opts?.maxInFlight ?? 5
 
-    // Guardrail: autoClaim + maxInFlight > 1 is unsafe
-    // Multiple concurrent batches hitting 403 would race to claim epochs
-    if (this.#autoClaim && maxInFlight > 1) {
-      throw new Error(
-        `autoClaim requires maxInFlight=1. With maxInFlight > 1, concurrent ` +
-          `batches hitting 403 would race to claim epochs, causing split-brain.`
-      )
-    }
+    // When autoClaim is true, epoch is not yet known until first batch completes
+    // We block pipelining until then to avoid racing with the claim
+    this.#epochClaimed = !this.#autoClaim
 
     // Initialize fastq with maxInFlight concurrency
-    this.#queue = fastq.promise(this.#batchWorker.bind(this), maxInFlight)
+    this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
 
     // Handle signal abort (use { once: true } to auto-cleanup)
     if (this.#signal) {
@@ -380,10 +380,22 @@ export class IdempotentProducer {
     this.#batchBytes = 0
     this.#nextSeq++
 
-    // Push to fastq - it handles concurrency automatically
-    this.#queue.push({ batch, seq }).catch(() => {
-      // Error handling is done in #batchWorker
-    })
+    // When autoClaim is enabled and epoch hasn't been claimed yet,
+    // we must wait for any in-flight batch to complete before sending more.
+    // This ensures the first batch claims the epoch before pipelining begins.
+    if (this.#autoClaim && !this.#epochClaimed && this.#queue.length() > 0) {
+      // Wait for queue to drain, then push
+      this.#queue.drained().then(() => {
+        this.#queue.push({ batch, seq }).catch(() => {
+          // Error handling is done in #batchWorker
+        })
+      })
+    } else {
+      // Push to fastq - it handles concurrency automatically
+      this.#queue.push({ batch, seq }).catch(() => {
+        // Error handling is done in #batchWorker
+      })
+    }
   }
 
   /**
@@ -395,6 +407,12 @@ export class IdempotentProducer {
 
     try {
       await this.#doSendBatch(batch, seq, epoch)
+
+      // Mark epoch as claimed after first successful batch
+      // This enables full pipelining for subsequent batches
+      if (!this.#epochClaimed) {
+        this.#epochClaimed = true
+      }
 
       // Signal success for this sequence (for 409 retry coordination)
       this.#signalSeqComplete(epoch, seq, undefined)

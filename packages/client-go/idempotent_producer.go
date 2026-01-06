@@ -190,6 +190,10 @@ type IdempotentProducer struct {
 	inFlight   int
 	inFlightWg sync.WaitGroup
 
+	// When autoClaim is true, epoch is not yet known until first batch completes
+	// We block pipelining until then to avoid racing with the claim
+	epochClaimed bool
+
 	// Track sequence completions for 409 retry coordination
 	// When HTTP requests arrive out of order, we get 409 errors.
 	// Maps epoch -> (seq -> *seqState)
@@ -197,11 +201,7 @@ type IdempotentProducer struct {
 	seqState   map[int]map[int]*seqState
 }
 
-// ErrAutoClaimConcurrency is returned when autoClaim is enabled with maxInFlight > 1.
-var ErrAutoClaimConcurrency = errors.New("autoClaim requires MaxInFlight=1; concurrent batches would race to claim epochs")
-
 // IdempotentProducer creates a new idempotent producer for a stream.
-// Returns an error if autoClaim is enabled with MaxInFlight > 1 (unsafe configuration).
 func (c *Client) IdempotentProducer(url, producerID string, config IdempotentProducerConfig) (*IdempotentProducer, error) {
 	if config.MaxBatchBytes == 0 {
 		config.MaxBatchBytes = 1024 * 1024
@@ -216,20 +216,15 @@ func (c *Client) IdempotentProducer(url, producerID string, config IdempotentPro
 		config.ContentType = "application/octet-stream"
 	}
 
-	// Guardrail: autoClaim + MaxInFlight > 1 is unsafe
-	// Multiple concurrent batches hitting 403 would race to claim epochs
-	if config.AutoClaim && config.MaxInFlight > 1 {
-		return nil, ErrAutoClaimConcurrency
-	}
-
 	return &IdempotentProducer{
-		url:        url,
-		producerID: producerID,
-		client:     c,
-		config:     config,
-		epoch:      config.Epoch,
-		closedCh:   make(chan struct{}),
-		seqState:   make(map[int]map[int]*seqState),
+		url:          url,
+		producerID:   producerID,
+		client:       c,
+		config:       config,
+		epoch:        config.Epoch,
+		closedCh:     make(chan struct{}),
+		seqState:     make(map[int]map[int]*seqState),
+		epochClaimed: !config.AutoClaim, // When autoClaim, epoch not known until first batch
 	}, nil
 }
 
@@ -340,32 +335,44 @@ func (p *IdempotentProducer) Append(data any) error {
 
 // Flush sends any pending batch and waits for all in-flight batches to complete.
 func (p *IdempotentProducer) Flush(ctx context.Context) error {
-	p.mu.Lock()
+	for {
+		p.mu.Lock()
 
-	// Cancel linger timer
-	if p.lingerTimer != nil {
-		p.lingerTimer.Stop()
-		p.lingerTimer = nil
-	}
+		// Cancel linger timer
+		if p.lingerTimer != nil {
+			p.lingerTimer.Stop()
+			p.lingerTimer = nil
+		}
 
-	// Send pending batch
-	if len(p.pendingBatch) > 0 {
-		p.sendCurrentBatchLocked()
-	}
-	p.mu.Unlock()
+		// Send any pending batch
+		if len(p.pendingBatch) > 0 {
+			p.sendCurrentBatchLocked()
+		}
 
-	// Wait for all in-flight to complete
-	done := make(chan struct{})
-	go func() {
-		p.inFlightWg.Wait()
-		close(done)
-	}()
+		// Check if we're done (nothing pending and nothing in flight)
+		hasPending := len(p.pendingBatch) > 0
+		hasInFlight := p.inFlight > 0
+		p.mu.Unlock()
 
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+		if !hasPending && !hasInFlight {
+			return nil
+		}
+
+		// Wait for at least one in-flight to complete
+		if hasInFlight {
+			done := make(chan struct{})
+			go func() {
+				p.inFlightWg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				// Continue loop to check for more work
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
 }
 
@@ -468,6 +475,13 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 		return
 	}
 
+	// When autoClaim is enabled and epoch hasn't been claimed yet,
+	// we must wait for any in-flight batch to complete before sending more.
+	// This ensures the first batch claims the epoch before pipelining begins.
+	if p.config.AutoClaim && !p.epochClaimed && p.inFlight > 0 {
+		return
+	}
+
 	// Take the current batch
 	batch := p.pendingBatch
 	seq := p.nextSeq
@@ -486,16 +500,21 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 		defer func() {
 			p.mu.Lock()
 			p.inFlight--
-			p.inFlightWg.Done()
-
-			// Try to send pending batch if any
-			if len(p.pendingBatch) > 0 && p.inFlight < p.config.MaxInFlight {
-				p.sendCurrentBatchLocked()
-			}
 			p.mu.Unlock()
+			p.inFlightWg.Done()
 		}()
 
 		result, err := p.doSendBatch(context.Background(), batch, seq, epoch)
+
+		// Mark epoch as claimed after first successful batch
+		// This enables full pipelining for subsequent batches
+		if err == nil {
+			p.mu.Lock()
+			if !p.epochClaimed {
+				p.epochClaimed = true
+			}
+			p.mu.Unlock()
+		}
 
 		// Signal completion for 409 retry coordination
 		p.signalSeqComplete(epoch, seq, err)

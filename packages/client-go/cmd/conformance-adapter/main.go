@@ -674,7 +674,6 @@ func handleIdempotentAppend(cmd Command) Result {
 		contentType = "application/octet-stream"
 	}
 
-	// Create producer with maxInFlight=1 (required when autoClaim is true)
 	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
 		Epoch:       cmd.Epoch,
 		AutoClaim:   cmd.AutoClaim,
@@ -729,10 +728,9 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 		contentType = "application/octet-stream"
 	}
 
-	// When autoClaim is true, maxInFlight must be 1 (client enforces this)
-	// Otherwise use provided maxInFlight or default to 1 for compatibility
+	// Use provided maxInFlight or default to 1 for compatibility
 	maxInFlight := 1
-	if !cmd.AutoClaim && cmd.MaxInFlight > 0 {
+	if cmd.MaxInFlight > 0 {
 		maxInFlight = cmd.MaxInFlight
 	}
 

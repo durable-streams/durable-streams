@@ -155,15 +155,6 @@ class IdempotentProducer:
             content_type: Content type for appends
             on_error: Callback for batch errors
         """
-        # Guardrail: auto_claim + max_in_flight > 1 is unsafe
-        # Multiple concurrent batches hitting 403 would race to claim epochs
-        if auto_claim and max_in_flight > 1:
-            raise ValueError(
-                "auto_claim requires max_in_flight=1. With max_in_flight > 1, "
-                "concurrent batches hitting 403 would race to claim epochs, "
-                "causing split-brain."
-            )
-
         self._url = url
         self._producer_id = producer_id
         self._epoch = epoch
@@ -185,6 +176,10 @@ class IdempotentProducer:
         # Pipelining state
         self._in_flight: dict[int, asyncio.Task[None]] = {}  # seq -> task
         self._closed = False
+
+        # When auto_claim is true, epoch is not yet known until first batch completes
+        # We block pipelining until then to avoid racing with the claim
+        self._epoch_claimed = not auto_claim
 
         # Track sequence completions for 409 retry coordination
         # When HTTP requests arrive out of order, we get 409 errors.
@@ -311,8 +306,14 @@ class IdempotentProducer:
 
             # Wait for all current in-flight to complete
             if self._in_flight:
-                results = await asyncio.gather(*self._in_flight.values(), return_exceptions=True)
-                self._in_flight.clear()
+                # Capture the tasks we're about to await - callbacks may add more during await
+                tasks_to_wait = list(self._in_flight.items())
+                results = await asyncio.gather(
+                    *[t for _, t in tasks_to_wait], return_exceptions=True
+                )
+                # Only remove the specific tasks we awaited (callbacks may have added more)
+                for seq, _ in tasks_to_wait:
+                    self._in_flight.pop(seq, None)
                 # Re-raise the first exception if any failed
                 for result in results:
                     if isinstance(result, Exception):
@@ -403,6 +404,12 @@ class IdempotentProducer:
         if len(self._in_flight) >= self._max_in_flight:
             return
 
+        # When auto_claim is enabled and epoch hasn't been claimed yet,
+        # we must wait for any in-flight batch to complete before sending more.
+        # This ensures the first batch claims the epoch before pipelining begins.
+        if self._auto_claim and not self._epoch_claimed and len(self._in_flight) > 0:
+            return
+
         # Take the current batch
         batch = self._pending_batch
         seq = self._next_seq
@@ -429,6 +436,12 @@ class IdempotentProducer:
         epoch = self._epoch
         try:
             await self._do_send_batch(batch, seq, epoch)
+
+            # Mark epoch as claimed after first successful batch
+            # This enables full pipelining for subsequent batches
+            if not self._epoch_claimed:
+                self._epoch_claimed = True
+
             # Signal success for this sequence (for 409 retry coordination)
             self._signal_seq_complete(epoch, seq, None)
         except Exception as e:
