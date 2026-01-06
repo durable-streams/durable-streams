@@ -311,6 +311,7 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 				w.Header().Set("Content-Type", meta.ContentType)
 				w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 				w.Header().Set(HeaderStreamUpToDate, "true")
+				w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
 				w.WriteHeader(http.StatusNoContent)
 				return nil
 			}
@@ -322,6 +323,7 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 			w.Header().Set("Content-Type", meta.ContentType)
 			w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 			w.Header().Set(HeaderStreamUpToDate, "true")
+			w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
 			w.WriteHeader(http.StatusNoContent)
 			return nil
 		}
