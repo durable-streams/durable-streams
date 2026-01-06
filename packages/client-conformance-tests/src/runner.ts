@@ -1061,8 +1061,12 @@ export async function runConformanceTests(
   const totalTests = countTests(suites)
   console.log(`\nRunning ${totalTests} client conformance tests...\n`)
 
-  // Start reference server
-  const server = new DurableStreamTestServer({ port: options.serverPort ?? 0 })
+  // Start reference server with short long-poll timeout for testing
+  // Tests use timeoutMs: 1000, so server timeout should be shorter
+  const server = new DurableStreamTestServer({
+    port: options.serverPort ?? 0,
+    longPollTimeout: 500, // 500ms timeout for testing
+  })
   await server.start()
   const serverUrl = server.url
 
