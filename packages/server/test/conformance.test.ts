@@ -20,7 +20,7 @@ describe(`In-Memory Server Implementation`, () => {
   const config = { baseUrl: `` }
 
   beforeAll(async () => {
-    server = new DurableStreamTestServer({ port: 0 })
+    server = new DurableStreamTestServer({ port: 0, longPollTimeout: 500 })
     await server.start()
     config.baseUrl = server.url
   })
@@ -46,7 +46,11 @@ describe(`File-Backed Server Implementation`, () => {
 
   beforeAll(async () => {
     dataDir = fs.mkdtempSync(path.join(tmpdir(), `conformance-test-`))
-    server = new DurableStreamTestServer({ dataDir, port: 0 })
+    server = new DurableStreamTestServer({
+      dataDir,
+      port: 0,
+      longPollTimeout: 500,
+    })
     await server.start()
     config.baseUrl = server.url
   })
