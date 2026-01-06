@@ -158,6 +158,13 @@ func DefaultIdempotentProducerConfig() IdempotentProducerConfig {
 //
 //	// Ensure all messages are delivered
 //	err = producer.Flush(ctx)
+// seqState tracks completion state for a sequence (for 409 retry coordination).
+type seqState struct {
+	resolved bool
+	err      error
+	waiters  []chan error
+}
+
 type IdempotentProducer struct {
 	url        string
 	producerID string
@@ -178,6 +185,12 @@ type IdempotentProducer struct {
 	// Pipelining state
 	inFlight   int
 	inFlightWg sync.WaitGroup
+
+	// Track sequence completions for 409 retry coordination
+	// When HTTP requests arrive out of order, we get 409 errors.
+	// Maps epoch -> (seq -> *seqState)
+	seqStateMu sync.Mutex
+	seqState   map[int]map[int]*seqState
 }
 
 // ErrAutoClaimConcurrency is returned when autoClaim is enabled with maxInFlight > 1.
@@ -212,6 +225,7 @@ func (c *Client) IdempotentProducer(url, producerID string, config IdempotentPro
 		config:     config,
 		epoch:      config.Epoch,
 		closedCh:   make(chan struct{}),
+		seqState:   make(map[int]map[int]*seqState),
 	}, nil
 }
 
@@ -382,6 +396,63 @@ func (p *IdempotentProducer) Restart(ctx context.Context) error {
 	return nil
 }
 
+// signalSeqComplete signals that a sequence has completed (success or failure).
+func (p *IdempotentProducer) signalSeqComplete(epoch, seq int, err error) {
+	p.seqStateMu.Lock()
+	defer p.seqStateMu.Unlock()
+
+	epochMap, ok := p.seqState[epoch]
+	if !ok {
+		epochMap = make(map[int]*seqState)
+		p.seqState[epoch] = epochMap
+	}
+
+	state, ok := epochMap[seq]
+	if ok {
+		// Mark resolved and notify all waiters
+		state.resolved = true
+		state.err = err
+		for _, waiter := range state.waiters {
+			waiter <- err
+			close(waiter)
+		}
+		state.waiters = nil
+	} else {
+		// No waiters yet, just mark as resolved
+		epochMap[seq] = &seqState{resolved: true, err: err}
+	}
+}
+
+// waitForSeq waits for a specific sequence to complete. Returns error if the sequence failed.
+func (p *IdempotentProducer) waitForSeq(epoch, seq int) error {
+	p.seqStateMu.Lock()
+
+	epochMap, ok := p.seqState[epoch]
+	if !ok {
+		epochMap = make(map[int]*seqState)
+		p.seqState[epoch] = epochMap
+	}
+
+	state, ok := epochMap[seq]
+	if ok && state.resolved {
+		// Already completed
+		p.seqStateMu.Unlock()
+		return state.err
+	}
+
+	// Not yet completed, add a waiter
+	waiter := make(chan error, 1)
+	if ok {
+		state.waiters = append(state.waiters, waiter)
+	} else {
+		epochMap[seq] = &seqState{resolved: false, waiters: []chan error{waiter}}
+	}
+	p.seqStateMu.Unlock()
+
+	// Wait for completion
+	return <-waiter
+}
+
 // sendCurrentBatchLocked sends the current batch. Caller must hold p.mu.
 func (p *IdempotentProducer) sendCurrentBatchLocked() {
 	if len(p.pendingBatch) == 0 {
@@ -403,6 +474,9 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 	p.inFlight++
 	p.inFlightWg.Add(1)
 
+	// Capture epoch for this batch
+	epoch := p.epoch
+
 	// Send in background
 	go func() {
 		defer func() {
@@ -417,7 +491,10 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 			p.mu.Unlock()
 		}()
 
-		result, err := p.doSendBatch(context.Background(), batch, seq, p.epoch)
+		result, err := p.doSendBatch(context.Background(), batch, seq, epoch)
+
+		// Signal completion for 409 retry coordination
+		p.signalSeqComplete(epoch, seq, err)
 
 		// Call OnError callback if configured and error occurred
 		if err != nil && p.config.OnError != nil {
@@ -524,16 +601,31 @@ func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEnt
 		return IdempotentAppendResult{}, &StaleEpochError{CurrentEpoch: currentEpoch}
 
 	case http.StatusConflict:
-		// Sequence gap
+		// Sequence gap - our request arrived before an earlier sequence
 		expectedSeqStr := resp.Header.Get(headerProducerExpectedSeq)
-		receivedSeqStr := resp.Header.Get(headerProducerReceivedSeq)
 		expectedSeq := 0
-		receivedSeq := seq
 		if expectedSeqStr != "" {
 			if parsed, err := strconv.Atoi(expectedSeqStr); err == nil {
 				expectedSeq = parsed
 			}
 		}
+
+		// If our seq is ahead of expectedSeq, wait for earlier sequences then retry
+		// This handles HTTP request reordering with maxInFlight > 1
+		if expectedSeq < seq {
+			// Wait for all sequences from expectedSeq to seq-1
+			for s := expectedSeq; s < seq; s++ {
+				if err := p.waitForSeq(epoch, s); err != nil {
+					return IdempotentAppendResult{}, err
+				}
+			}
+			// Retry now that earlier sequences have completed
+			return p.doSendBatch(ctx, batch, seq, epoch)
+		}
+
+		// If expectedSeq >= seq, something is wrong (shouldn't happen) - throw error
+		receivedSeqStr := resp.Header.Get(headerProducerReceivedSeq)
+		receivedSeq := seq
 		if receivedSeqStr != "" {
 			if parsed, err := strconv.Atoi(receivedSeqStr); err == nil {
 				receivedSeq = parsed

@@ -44,10 +44,11 @@ type Command struct {
 	Binary bool   `json:"binary,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
 	// IdempotentProducer fields
-	ProducerID string   `json:"producerId,omitempty"`
-	Epoch      int      `json:"epoch,omitempty"`
-	AutoClaim  bool     `json:"autoClaim,omitempty"`
-	Items      []string `json:"items,omitempty"` // Already strings - runner extracts data field
+	ProducerID  string   `json:"producerId,omitempty"`
+	Epoch       int      `json:"epoch,omitempty"`
+	AutoClaim   bool     `json:"autoClaim,omitempty"`
+	MaxInFlight int      `json:"maxInFlight,omitempty"`
+	Items       []string `json:"items,omitempty"` // Already strings - runner extracts data field
 	// Read fields
 	Offset          string `json:"offset,omitempty"`
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
@@ -728,13 +729,29 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 		contentType = "application/octet-stream"
 	}
 
-	// Create producer with large linger to batch all items together
+	// When autoClaim is true, maxInFlight must be 1 (client enforces this)
+	// Otherwise use provided maxInFlight or default to 1 for compatibility
+	maxInFlight := 1
+	if !cmd.AutoClaim && cmd.MaxInFlight > 0 {
+		maxInFlight = cmd.MaxInFlight
+	}
+
+	// When testing concurrency (maxInFlight > 1), use small batches to force
+	// multiple concurrent requests. Otherwise batch all items together.
+	testingConcurrency := maxInFlight > 1
+	lingerMs := 1000
+	maxBatchBytes := 1024 * 1024
+	if testingConcurrency {
+		lingerMs = 0
+		maxBatchBytes = 1
+	}
+
 	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
 		Epoch:         cmd.Epoch,
 		AutoClaim:     cmd.AutoClaim,
-		MaxInFlight:   1,
-		LingerMs:      1000, // Large linger - we'll flush explicitly
-		MaxBatchBytes: 1024 * 1024,
+		MaxInFlight:   maxInFlight,
+		LingerMs:      lingerMs,
+		MaxBatchBytes: maxBatchBytes,
 		ContentType:   contentType,
 	})
 	if err != nil {

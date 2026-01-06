@@ -79,6 +79,19 @@ class _PendingEntry:
     data: Any = None
 
 
+@dataclass
+class _SeqState:
+    """Track completion state for a sequence (for 409 retry coordination)."""
+
+    resolved: bool = False
+    error: Exception | None = None
+    waiters: list[asyncio.Future[None]] = None  # type: ignore
+
+    def __post_init__(self) -> None:
+        if self.waiters is None:
+            self.waiters = []
+
+
 class IdempotentProducer:
     """
     An idempotent producer for exactly-once writes to a durable stream.
@@ -168,6 +181,11 @@ class IdempotentProducer:
         # Pipelining state
         self._in_flight: dict[int, asyncio.Task[None]] = {}  # seq -> task
         self._closed = False
+
+        # Track sequence completions for 409 retry coordination
+        # When HTTP requests arrive out of order, we get 409 errors.
+        # Maps epoch -> (seq -> _SeqState)
+        self._seq_state: dict[int, dict[int, _SeqState]] = {}
 
     @property
     def epoch(self) -> int:
@@ -324,6 +342,54 @@ class IdempotentProducer:
         self._epoch += 1
         self._next_seq = 0
 
+    def _signal_seq_complete(
+        self, epoch: int, seq: int, error: Exception | None
+    ) -> None:
+        """Signal that a sequence has completed (success or failure)."""
+        if epoch not in self._seq_state:
+            self._seq_state[epoch] = {}
+
+        epoch_map = self._seq_state[epoch]
+        state = epoch_map.get(seq)
+
+        if state:
+            # Mark resolved and notify all waiters
+            state.resolved = True
+            state.error = error
+            for waiter in state.waiters:
+                if not waiter.done():
+                    if error:
+                        waiter.set_exception(error)
+                    else:
+                        waiter.set_result(None)
+            state.waiters = []
+        else:
+            # No waiters yet, just mark as resolved
+            epoch_map[seq] = _SeqState(resolved=True, error=error)
+
+    async def _wait_for_seq(self, epoch: int, seq: int) -> None:
+        """Wait for a specific sequence to complete. Raises if the sequence failed."""
+        if epoch not in self._seq_state:
+            self._seq_state[epoch] = {}
+
+        epoch_map = self._seq_state[epoch]
+        state = epoch_map.get(seq)
+
+        if state and state.resolved:
+            # Already completed
+            if state.error:
+                raise state.error
+            return
+
+        # Not yet completed, add a waiter
+        future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        if state:
+            state.waiters.append(future)
+        else:
+            epoch_map[seq] = _SeqState(resolved=False, waiters=[future])
+
+        await future
+
     def _send_current_batch(self) -> None:
         """Send the current batch and track it in flight."""
         if not self._pending_batch:
@@ -356,9 +422,14 @@ class IdempotentProducer:
 
     async def _send_batch(self, batch: list[_PendingEntry], seq: int) -> None:
         """Send a batch to the server."""
+        epoch = self._epoch
         try:
-            await self._do_send_batch(batch, seq, self._epoch)
+            await self._do_send_batch(batch, seq, epoch)
+            # Signal success for this sequence (for 409 retry coordination)
+            self._signal_seq_complete(epoch, seq, None)
         except Exception as e:
+            # Signal failure so waiting batches can fail too
+            self._signal_seq_complete(epoch, seq, e)
             # Call on_error callback if configured
             if self._on_error is not None:
                 self._on_error(e)
@@ -427,12 +498,22 @@ class IdempotentProducer:
             raise StaleEpochError(current_epoch)
 
         if response.status_code == 409:
-            # Sequence gap
+            # Sequence gap - our request arrived before an earlier sequence
             expected_seq_str = response.headers.get(PRODUCER_EXPECTED_SEQ_HEADER)
-            received_seq_str = response.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)
             expected_seq = int(expected_seq_str) if expected_seq_str else 0
-            received_seq = int(received_seq_str) if received_seq_str else seq
 
+            # If our seq is ahead of expectedSeq, wait for earlier sequences then retry
+            # This handles HTTP request reordering with max_in_flight > 1
+            if expected_seq < seq:
+                # Wait for all sequences from expected_seq to seq-1
+                for s in range(expected_seq, seq):
+                    await self._wait_for_seq(epoch, s)
+                # Retry now that earlier sequences have completed
+                return await self._do_send_batch(batch, seq, epoch)
+
+            # If expectedSeq >= seq, something is wrong (shouldn't happen) - throw error
+            received_seq_str = response.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)
+            received_seq = int(received_seq_str) if received_seq_str else seq
             raise SequenceGapError(expected_seq, received_seq)
 
         if response.status_code == 400:

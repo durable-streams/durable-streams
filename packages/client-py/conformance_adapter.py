@@ -856,6 +856,14 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
         items = [json.loads(item) if isinstance(item, str) else item for item in items]
 
     async def do_append_batch():
+        # When autoClaim is true, maxInFlight must be 1 (client enforces this)
+        # Otherwise use provided maxInFlight or default to 1 for compatibility
+        max_in_flight = 1 if auto_claim else cmd.get("maxInFlight", 1)
+
+        # When testing concurrency (maxInFlight > 1), use small batches to force
+        # multiple concurrent requests. Otherwise batch all items together.
+        testing_concurrency = max_in_flight > 1
+
         async with httpx.AsyncClient(timeout=30.0) as client:
             producer = IdempotentProducer(
                 url=url,
@@ -863,9 +871,9 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
                 client=client,
                 epoch=epoch,
                 auto_claim=auto_claim,
-                max_in_flight=1,  # Required when auto_claim is True
-                linger_ms=1000,  # Let items batch together
-                max_batch_bytes=1024 * 1024,  # 1MB - allow all items to batch
+                max_in_flight=max_in_flight,
+                linger_ms=0 if testing_concurrency else 1000,
+                max_batch_bytes=1 if testing_concurrency else 1024 * 1024,
                 content_type=content_type,
             )
             try:
