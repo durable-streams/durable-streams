@@ -92,15 +92,30 @@ function compressData(
  * Supports both in-memory and file-backed storage modes.
  */
 /**
- * Configuration for injected errors (for testing retry/resilience).
+ * Configuration for injected faults (for testing retry/resilience).
+ * Supports various fault types beyond simple HTTP errors.
  */
-interface InjectedError {
-  /** HTTP status code to return */
-  status: number
-  /** Number of times to return this error (decremented on each use) */
+interface InjectedFault {
+  /** HTTP status code to return (if set, returns error response) */
+  status?: number
+  /** Number of times to trigger this fault (decremented on each use) */
   count: number
   /** Optional Retry-After header value (seconds) */
   retryAfter?: number
+  /** Delay in milliseconds before responding */
+  delayMs?: number
+  /** Drop the connection after sending headers (simulates network failure) */
+  dropConnection?: boolean
+  /** Truncate response body to this many bytes */
+  truncateBodyBytes?: number
+  /** Probability of triggering fault (0-1, default 1.0 = always) */
+  probability?: number
+  /** Only match specific HTTP method (GET, POST, PUT, DELETE) */
+  method?: string
+  /** Corrupt the response body by flipping random bits */
+  corruptBody?: boolean
+  /** Add jitter to delay (random 0-jitterMs added to delayMs) */
+  jitterMs?: number
 }
 
 export class DurableStreamTestServer {
@@ -126,8 +141,8 @@ export class DurableStreamTestServer {
   private _url: string | null = null
   private activeSSEResponses = new Set<ServerResponse>()
   private isShuttingDown = false
-  /** Injected errors for testing retry/resilience */
-  private injectedErrors = new Map<string, InjectedError>()
+  /** Injected faults for testing retry/resilience */
+  private injectedFaults = new Map<string, InjectedFault>()
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -253,6 +268,7 @@ export class DurableStreamTestServer {
   /**
    * Inject an error to be returned on the next N requests to a path.
    * Used for testing retry/resilience behavior.
+   * @deprecated Use injectFault for full fault injection capabilities
    */
   injectError(
     path: string,
@@ -260,30 +276,102 @@ export class DurableStreamTestServer {
     count: number = 1,
     retryAfter?: number
   ): void {
-    this.injectedErrors.set(path, { status, count, retryAfter })
+    this.injectedFaults.set(path, { status, count, retryAfter })
   }
 
   /**
-   * Clear all injected errors.
+   * Inject a fault to be triggered on the next N requests to a path.
+   * Supports various fault types: delays, connection drops, body corruption, etc.
    */
-  clearInjectedErrors(): void {
-    this.injectedErrors.clear()
+  injectFault(
+    path: string,
+    fault: Omit<InjectedFault, `count`> & { count?: number }
+  ): void {
+    this.injectedFaults.set(path, { count: 1, ...fault })
   }
 
   /**
-   * Check if there's an injected error for this path and consume it.
-   * Returns the error config if one should be returned, null otherwise.
+   * Clear all injected faults.
    */
-  private consumeInjectedError(path: string): InjectedError | null {
-    const error = this.injectedErrors.get(path)
-    if (!error) return null
+  clearInjectedFaults(): void {
+    this.injectedFaults.clear()
+  }
 
-    error.count--
-    if (error.count <= 0) {
-      this.injectedErrors.delete(path)
+  /**
+   * Check if there's an injected fault for this path/method and consume it.
+   * Returns the fault config if one should be triggered, null otherwise.
+   */
+  private consumeInjectedFault(
+    path: string,
+    method: string
+  ): InjectedFault | null {
+    const fault = this.injectedFaults.get(path)
+    if (!fault) return null
+
+    // Check method filter
+    if (fault.method && fault.method.toUpperCase() !== method.toUpperCase()) {
+      return null
     }
 
-    return error
+    // Check probability
+    if (fault.probability !== undefined && Math.random() > fault.probability) {
+      return null
+    }
+
+    fault.count--
+    if (fault.count <= 0) {
+      this.injectedFaults.delete(path)
+    }
+
+    return fault
+  }
+
+  /**
+   * Apply delay from fault config (including jitter).
+   */
+  private async applyFaultDelay(fault: InjectedFault): Promise<void> {
+    if (fault.delayMs !== undefined && fault.delayMs > 0) {
+      const jitter = fault.jitterMs ? Math.random() * fault.jitterMs : 0
+      await new Promise((resolve) =>
+        setTimeout(resolve, fault.delayMs! + jitter)
+      )
+    }
+  }
+
+  /**
+   * Apply body modifications from stored fault (truncation, corruption).
+   * Returns modified body, or original if no modifications needed.
+   */
+  private applyFaultBodyModification(
+    res: ServerResponse,
+    body: Uint8Array
+  ): Uint8Array {
+    const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
+      ._injectedFault
+    if (!fault) return body
+
+    let modified = body
+
+    // Truncate body if configured
+    if (
+      fault.truncateBodyBytes !== undefined &&
+      modified.length > fault.truncateBodyBytes
+    ) {
+      modified = modified.slice(0, fault.truncateBodyBytes)
+    }
+
+    // Corrupt body if configured (flip random bits)
+    if (fault.corruptBody && modified.length > 0) {
+      modified = new Uint8Array(modified) // Make a copy to avoid mutating original
+      // Flip 1-5% of bytes
+      const numCorrupt = Math.max(1, Math.floor(modified.length * 0.03))
+      for (let i = 0; i < numCorrupt; i++) {
+        const pos = Math.floor(Math.random() * modified.length)
+        modified[pos] = modified[pos]! ^ (1 << Math.floor(Math.random() * 8))
+      }
+    }
+
+    return modified
   }
 
   // ============================================================================
@@ -313,6 +401,10 @@ export class DurableStreamTestServer {
       `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
     )
 
+    // Browser security headers (Protocol Section 10.7)
+    res.setHeader(`x-content-type-options`, `nosniff`)
+    res.setHeader(`cross-origin-resource-policy`, `cross-origin`)
+
     // Handle CORS preflight
     if (method === `OPTIONS`) {
       res.writeHead(204)
@@ -326,18 +418,37 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Check for injected errors (for testing retry/resilience)
-    const injectedError = this.consumeInjectedError(path)
-    if (injectedError) {
-      const headers: Record<string, string> = {
-        "content-type": `text/plain`,
+    // Check for injected faults (for testing retry/resilience)
+    const fault = this.consumeInjectedFault(path, method ?? `GET`)
+    if (fault) {
+      // Apply delay if configured
+      await this.applyFaultDelay(fault)
+
+      // Drop connection if configured (simulates network failure)
+      if (fault.dropConnection) {
+        res.socket?.destroy()
+        return
       }
-      if (injectedError.retryAfter !== undefined) {
-        headers[`retry-after`] = injectedError.retryAfter.toString()
+
+      // If status is set, return an error response
+      if (fault.status !== undefined) {
+        const headers: Record<string, string> = {
+          "content-type": `text/plain`,
+        }
+        if (fault.retryAfter !== undefined) {
+          headers[`retry-after`] = fault.retryAfter.toString()
+        }
+        res.writeHead(fault.status, headers)
+        res.end(`Injected error for testing`)
+        return
       }
-      res.writeHead(injectedError.status, headers)
-      res.end(`Injected error for testing`)
-      return
+
+      // Store fault for response modification (truncation, corruption)
+      if (fault.truncateBodyBytes !== undefined || fault.corruptBody) {
+        ;(
+          res as ServerResponse & { _injectedFault?: InjectedFault }
+        )._injectedFault = fault
+      }
     }
 
     try {
@@ -511,6 +622,8 @@ export class DurableStreamTestServer {
 
     const headers: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
+      // HEAD responses should not be cached to avoid stale tail offsets (Protocol Section 5.4)
+      "cache-control": `no-store`,
     }
 
     if (stream.contentType) {
@@ -680,6 +793,9 @@ export class DurableStreamTestServer {
       }
     }
 
+    // Apply fault body modifications (truncation, corruption) if configured
+    finalData = this.applyFaultBodyModification(res, finalData)
+
     res.writeHead(200, headers)
     res.end(Buffer.from(finalData))
   }
@@ -697,12 +813,14 @@ export class DurableStreamTestServer {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
-    // Set SSE headers
+    // Set SSE headers (explicitly including security headers for clarity)
     res.writeHead(200, {
       "content-type": `text/event-stream`,
       "cache-control": `no-cache`,
       connection: `keep-alive`,
       "access-control-allow-origin": `*`,
+      "x-content-type-options": `nosniff`,
+      "cross-origin-resource-policy": `cross-origin`,
     })
 
     let currentOffset = initialOffset
@@ -841,7 +959,7 @@ export class DurableStreamTestServer {
       this.store.append(path, body, { seq, contentType })
     )
 
-    res.writeHead(200, {
+    res.writeHead(204, {
       [STREAM_OFFSET_HEADER]: message!.offset,
     })
     res.end()
@@ -889,23 +1007,53 @@ export class DurableStreamTestServer {
       try {
         const config = JSON.parse(new TextDecoder().decode(body)) as {
           path: string
-          status: number
+          // Legacy fields (still supported)
+          status?: number
           count?: number
           retryAfter?: number
+          // New fault injection fields
+          delayMs?: number
+          dropConnection?: boolean
+          truncateBodyBytes?: number
+          probability?: number
+          method?: string
+          corruptBody?: boolean
+          jitterMs?: number
         }
 
-        if (!config.path || !config.status) {
+        if (!config.path) {
           res.writeHead(400, { "content-type": `text/plain` })
-          res.end(`Missing required fields: path, status`)
+          res.end(`Missing required field: path`)
           return
         }
 
-        this.injectError(
-          config.path,
-          config.status,
-          config.count ?? 1,
-          config.retryAfter
-        )
+        // Must have at least one fault type specified
+        const hasFaultType =
+          config.status !== undefined ||
+          config.delayMs !== undefined ||
+          config.dropConnection ||
+          config.truncateBodyBytes !== undefined ||
+          config.corruptBody
+        if (!hasFaultType) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(
+            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, or corruptBody`
+          )
+          return
+        }
+
+        this.injectFault(config.path, {
+          status: config.status,
+          count: config.count ?? 1,
+          retryAfter: config.retryAfter,
+          delayMs: config.delayMs,
+          dropConnection: config.dropConnection,
+          truncateBodyBytes: config.truncateBodyBytes,
+          probability: config.probability,
+          method: config.method,
+          corruptBody: config.corruptBody,
+          jitterMs: config.jitterMs,
+        })
 
         res.writeHead(200, { "content-type": `application/json` })
         res.end(JSON.stringify({ ok: true }))
@@ -914,7 +1062,7 @@ export class DurableStreamTestServer {
         res.end(`Invalid JSON body`)
       }
     } else if (method === `DELETE`) {
-      this.clearInjectedErrors()
+      this.clearInjectedFaults()
       res.writeHead(200, { "content-type": `application/json` })
       res.end(JSON.stringify({ ok: true }))
     } else {

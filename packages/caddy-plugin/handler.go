@@ -35,6 +35,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location")
 
+	// Browser security headers (Protocol Section 10.7)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
+
 	// Handle preflight
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -542,7 +546,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 

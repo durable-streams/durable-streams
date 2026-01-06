@@ -113,7 +113,7 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` (or `204 No Content`) if the existing stream's configuration (content type, TTL/expiry) matches the request, or
+- return `200 OK` if the existing stream's configuration (content type, TTL/expiry) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
@@ -137,7 +137,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 #### Response Codes
 
 - `201 Created`: Stream created successfully
-- `200 OK` or `204 No Content`: Stream already exists with matching configuration (idempotent success)
+- `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
 - `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
 - `429 Too Many Requests`: Rate limit exceeded
@@ -181,7 +181,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 
 #### Response Codes
 
-- `204 No Content` (recommended) or `200 OK`: Append successful
+- `204 No Content`: Append successful
 - `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
@@ -581,6 +581,24 @@ Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many R
 ### 10.6. Sequence Validation
 
 The optional `Stream-Seq` header provides protection against out-of-order writes in multi-writer scenarios. Servers **MUST** reject sequence regressions to maintain stream integrity.
+
+### 10.7. Browser Security Headers
+
+When serving streams to browser clients, servers **SHOULD** include the following headers to prevent MIME-sniffing attacks, cross-origin embedding exploits, and cache-related vulnerabilities:
+
+- `X-Content-Type-Options: nosniff`
+  - Servers **SHOULD** include this header on all responses. This prevents browsers from MIME-sniffing the response content and potentially executing it as a different content type (e.g., interpreting binary data as HTML/JavaScript).
+
+- `Cross-Origin-Resource-Policy: cross-origin` (or `same-origin`/`same-site`)
+  - Servers **SHOULD** include this header to explicitly control cross-origin embedding. Use `cross-origin` to allow cross-origin access via `fetch()`, `same-site` to restrict to the same registrable domain, or `same-origin` for strict same-origin only. This prevents Cross-Origin Read Blocking (CORB) issues and protects against Spectre-like side-channel attacks.
+
+- `Cache-Control: no-store`
+  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 8.
+
+- `Content-Disposition: attachment` (optional)
+  - Servers **MAY** include this header for `application/octet-stream` responses to prevent inline rendering if a user navigates directly to the stream URL.
+
+These headers provide defense-in-depth for scenarios where stream URLs might be accessed outside the intended programmatic fetch context (e.g., direct navigation, malicious cross-origin embedding via `<script>` or `<img>` tags).
 
 ### 10.8. TLS
 
