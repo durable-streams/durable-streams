@@ -747,6 +747,7 @@ export class DurableStream {
       live: options?.live,
       json: options?.json,
       onError: options?.onError ?? this.#onError,
+      warnOnHttp: options?.warnOnHttp ?? this.#options.warnOnHttp,
     })
   }
 

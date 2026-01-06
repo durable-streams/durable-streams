@@ -103,10 +103,72 @@ export async function resolveValue<T>(
   return value
 }
 
+// Module-level Set to track origins we've already warned about (prevents log spam)
+const warnedOrigins = new Set<string>()
+
+/**
+ * Safely read NODE_ENV without triggering "process is not defined" errors.
+ * Works in both browser and Node.js environments.
+ */
+function getNodeEnvSafely(): string | undefined {
+  if (typeof process === `undefined`) return undefined
+  // Use optional chaining for process.env in case it's undefined (e.g., in some bundler environments)
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+  return process.env?.NODE_ENV
+}
+
+/**
+ * Check if we're in a browser environment.
+ */
+function isBrowserEnvironment(): boolean {
+  return typeof globalThis.window !== `undefined`
+}
+
+/**
+ * Get window.location.href safely, returning undefined if not available.
+ */
+function getWindowLocationHref(): string | undefined {
+  if (
+    typeof globalThis.window !== `undefined` &&
+    typeof globalThis.window.location !== `undefined`
+  ) {
+    return globalThis.window.location.href
+  }
+  return undefined
+}
+
+/**
+ * Resolve a URL string, handling relative URLs in browser environments.
+ * Returns undefined if the URL cannot be parsed.
+ */
+function resolveUrlMaybe(urlString: string): URL | undefined {
+  try {
+    // First try parsing as an absolute URL
+    return new URL(urlString)
+  } catch {
+    // If that fails and we're in a browser, try resolving as relative URL
+    const base = getWindowLocationHref()
+    if (base) {
+      try {
+        return new URL(urlString, base)
+      } catch {
+        return undefined
+      }
+    }
+    return undefined
+  }
+}
+
 /**
  * Warn if using HTTP (not HTTPS) URL in a browser environment.
- * HTTP limits browsers to 6 concurrent connections per host (HTTP/1.1),
+ * HTTP typically limits browsers to ~6 concurrent connections per origin under HTTP/1.1,
  * which can cause slow streams and app freezes with multiple active streams.
+ *
+ * Features:
+ * - Warns only once per origin to prevent log spam
+ * - Handles relative URLs by resolving against window.location.href
+ * - Safe to call in Node.js environments (no-op)
+ * - Skips warning during tests (NODE_ENV=test)
  */
 export function warnIfUsingHttpInBrowser(
   url: string | URL,
@@ -116,31 +178,47 @@ export function warnIfUsingHttpInBrowser(
   if (warnOnHttp === false) return
 
   // Skip warning during tests
-  if (typeof process !== `undefined` && process.env.NODE_ENV === `test`) {
+  const nodeEnv = getNodeEnvSafely()
+  if (nodeEnv === `test`) {
     return
   }
 
   // Only warn in browser environments
   if (
-    typeof window === `undefined` ||
+    !isBrowserEnvironment() ||
     typeof console === `undefined` ||
     typeof console.warn !== `function`
   ) {
     return
   }
 
+  // Parse the URL (handles both absolute and relative URLs)
+  const urlStr = url instanceof URL ? url.toString() : url
+  const parsedUrl = resolveUrlMaybe(urlStr)
+
+  if (!parsedUrl) {
+    // Could not parse URL - silently skip
+    return
+  }
+
   // Check if URL uses HTTP protocol
-  try {
-    const urlStr = url instanceof URL ? url.toString() : url
-    const parsedUrl = new URL(urlStr)
-    if (parsedUrl.protocol === `http:`) {
+  if (parsedUrl.protocol === `http:`) {
+    // Only warn once per origin
+    if (!warnedOrigins.has(parsedUrl.origin)) {
+      warnedOrigins.add(parsedUrl.origin)
       console.warn(
-        `[DurableStream] Using HTTP (not HTTPS) limits browsers to 6 concurrent connections (HTTP/1.1). ` +
+        `[DurableStream] Using HTTP (not HTTPS) typically limits browsers to ~6 concurrent connections per origin under HTTP/1.1. ` +
           `This can cause slow streams and app freezes with multiple active streams. ` +
-          `Use HTTPS for HTTP/2 support. See https://bit.ly/streams-http2 for more information.`
+          `Use HTTPS for HTTP/2 support. See https://electric-sql.com/r/electric-http2 for more information.`
       )
     }
-  } catch {
-    // Ignore URL parsing errors
   }
+}
+
+/**
+ * Reset the HTTP warning state. Only exported for testing purposes.
+ * @internal
+ */
+export function _resetHttpWarningForTesting(): void {
+  warnedOrigins.clear()
 }

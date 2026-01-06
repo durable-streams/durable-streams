@@ -21,7 +21,7 @@ export { stream } from "./stream-api"
 export { DurableStream, type DurableStreamOptions } from "./stream"
 
 // HTTP warning utility
-export { warnIfUsingHttpInBrowser } from "./utils"
+export { warnIfUsingHttpInBrowser, _resetHttpWarningForTesting } from "./utils"
 
 // ============================================================================
 // Types
