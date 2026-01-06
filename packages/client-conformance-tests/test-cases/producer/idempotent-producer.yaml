@@ -480,3 +480,136 @@ tests:
         producerSeq: 2
         expect:
           status: 200
+
+  - id: duplicate-ignores-different-data
+    name: Duplicate seq ignores payload differences
+    description: Same (producer, epoch, seq) returns 204 even with different data - dedup is by headers only
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "original payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry with different data - should still be 204 (idempotent)
+      - action: server-append
+        path: ${streamPath}
+        data: "different payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only original data is in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "original payload"
+          upToDate: true
+
+  - id: new-producer-seq-not-zero
+    name: New producer starting with seq > 0 returns 409
+    description: A never-seen producer sending seq > 0 should get 409 (gap), not 400
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Brand new producer tries to start at seq=5
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: brand-new-producer
+        producerEpoch: 0
+        producerSeq: 5
+        expect:
+          status: 409
+          producerExpectedSeq: 0
+          producerReceivedSeq: 5
+
+  - id: empty-producer-id-rejected
+    name: Empty producer ID is rejected
+    description: Producer-Id header with empty string should be rejected
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: ""
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: producer-id-with-special-chars
+    name: Producer ID with special characters works
+    description: Producer IDs can contain colons, slashes, and other special chars
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Colon-separated ID (common pattern)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: "service:instance:123"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Slash-separated ID (path-like)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: "region/zone/host"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # UUID format
+      - action: server-append
+        path: ${streamPath}
+        data: "msg3"
+        producerId: "550e8400-e29b-41d4-a716-446655440000"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+
+  - id: producer-id-with-unicode
+    name: Producer ID with unicode characters works
+    description: Producer IDs can contain unicode characters
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: "生产者-αβγ-🚀"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Subsequent seq works
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: "生产者-αβγ-🚀"
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200

@@ -182,3 +182,40 @@ tests:
             - '"msg":5'
             - '"msg":9'
           upToDate: true
+
+  - id: autoclaim-recovers-from-stale-epoch
+    name: autoClaim recovers when fenced by newer epoch
+    description: |
+      If a producer with autoClaim gets 403 (stale epoch) because another instance
+      claimed a higher epoch, it should automatically bump its epoch and retry.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=5 via raw server-append (simulating another producer instance)
+      - action: server-append
+        path: ${streamPath}
+        data: "from-epoch-5"
+        producerId: recovery-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Client with autoClaim starts at epoch=0, should get 403 then recover with epoch=6
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: recovery-producer
+        epoch: 0
+        autoClaim: true
+        data: "recovered"
+        expect:
+          status: 200
+      # Verify both messages are in the stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "from-epoch-5"
+            - "recovered"
+          upToDate: true
