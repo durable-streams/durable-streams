@@ -1,0 +1,202 @@
+id: consumer-fault-injection
+name: Advanced Fault Injection
+description: Tests for client resilience against various network and server faults
+category: consumer
+tags:
+  - fault-injection
+  - resilience
+  - chaos
+  - advanced
+
+tests:
+  - id: delay-recovery
+    name: Client handles delayed responses
+    description: Client should successfully read data even with server delays
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "delayed-data"
+    operations:
+      # Inject a 500ms delay
+      - action: inject-error
+        path: ${streamPath}
+        delayMs: 500
+        count: 1
+      # Client should wait and succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "delayed-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: delay-with-jitter
+    name: Client handles delayed responses with jitter
+    description: Client should handle variable delays (delay + random jitter)
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "jittery-data"
+    operations:
+      # Inject delay with jitter (300-600ms total)
+      - action: inject-error
+        path: ${streamPath}
+        delayMs: 300
+        jitterMs: 300
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "jittery-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: connection-drop-recovery
+    name: Client recovers from dropped connection
+    description: Client should retry when connection is dropped mid-request
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "persistent-data"
+    operations:
+      # Drop connection once
+      - action: inject-error
+        path: ${streamPath}
+        dropConnection: true
+        count: 1
+      # Client should retry and eventually succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "persistent-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: multiple-connection-drops
+    name: Client recovers from multiple dropped connections
+    description: Client should retry through multiple connection failures
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "resilient-data"
+    operations:
+      # Drop connection twice
+      - action: inject-error
+        path: ${streamPath}
+        dropConnection: true
+        count: 2
+      # Client should retry multiple times and succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "resilient-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: method-specific-fault
+    name: Fault only affects specific HTTP method
+    description: Fault should only trigger for specified method
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Inject fault only for POST (append)
+      - action: inject-error
+        path: ${streamPath}
+        status: 503
+        method: POST
+        count: 1
+      # GET should work fine (no fault)
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: ""
+      # POST (append) should fail first then succeed on retry
+      - action: append
+        path: ${streamPath}
+        data: "method-filtered"
+      # Verify data was appended
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "method-filtered"
+    cleanup:
+      - action: clear-errors
+
+  - id: delay-then-error
+    name: Delay followed by error
+    description: Combined delay and error response
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "combined-fault-data"
+    operations:
+      # Delay 200ms then return 503
+      - action: inject-error
+        path: ${streamPath}
+        delayMs: 200
+        status: 503
+        count: 1
+      # Client should wait, get error, retry, and succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "combined-fault-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: append-with-delay
+    name: Append succeeds with server delay
+    description: Append should complete successfully even with server-side delay
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Add 500ms delay on first append
+      - action: inject-error
+        path: ${streamPath}
+        delayMs: 500
+        count: 1
+      # Append should wait and succeed
+      - action: append
+        path: ${streamPath}
+        data: "delayed-append"
+      # Verify data was appended
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "delayed-append"
+    cleanup:
+      - action: clear-errors
+
+  - id: delay-under-timeout
+    name: Client succeeds with delay under timeout
+    description: Client should succeed when delay is less than client timeout
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "within-timeout"
+    operations:
+      # 1 second delay (should be under most client timeouts)
+      - action: inject-error
+        path: ${streamPath}
+        delayMs: 1000
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "within-timeout"
+    cleanup:
+      - action: clear-errors
