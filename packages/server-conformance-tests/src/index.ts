@@ -4256,9 +4256,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const responses = await Promise.all(operations)
 
         // All operations should succeed
-        for (const response of responses) {
-          expect(response.status).toBe(200)
-        }
+        // Writers (even indices) return 204, readers (odd indices) return 200
+        responses.forEach((response, i) => {
+          const expectedStatus = i % 2 === 0 ? 204 : 200
+          expect(response.status).toBe(expectedStatus)
+        })
 
         // Final read should have all writes
         const finalRead = await fetch(`${getBaseUrl()}${streamPath}`)
