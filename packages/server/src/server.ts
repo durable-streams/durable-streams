@@ -703,7 +703,7 @@ export class DurableStreamTestServer {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
-    // Set SSE headers (including security headers since writeHead bypasses setHeader)
+    // Set SSE headers (explicitly including security headers for clarity)
     res.writeHead(200, {
       "content-type": `text/event-stream`,
       "cache-control": `no-cache`,
