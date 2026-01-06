@@ -1,0 +1,98 @@
+id: idempotent-batching
+name: Idempotent Producer - Batching
+description: |
+  Tests for producer batching behavior and header interactions.
+  Batches are atomic - the entire batch shares a single sequence number.
+category: producer
+tags:
+  - idempotent
+  - batching
+
+tests:
+  - id: batch-retry-deduplication
+    name: Retrying entire batch returns 204 for all
+    description: If client retries an entire JSON batch, server should deduplicate
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # Send a batch of 3 items
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":1},{"id":2},{"id":3}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry the exact same batch - should get 204
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":1},{"id":2},{"id":3}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only 3 items in stream (not 6)
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+      # Next seq should still work
+      - action: server-append
+        path: ${streamPath}
+        data: '[{"id":4}]'
+        producerId: batch-retry-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+
+  - id: producer-with-stream-seq
+    name: Producer headers work with Stream-Seq header
+    description: Both producer deduplication and writer coordination should work together
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        headers:
+          Stream-Seq: "app-seq-001"
+        expect:
+          status: 200
+
+  - id: duplicate-json-different-payload
+    name: Duplicate JSON with different payload returns 204
+    description: Same test for JSON content type - dedup is by headers only
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: '{"key": "original"}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry with different JSON payload
+      - action: server-append
+        path: ${streamPath}
+        data: '{"key": "different", "extra": true}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true

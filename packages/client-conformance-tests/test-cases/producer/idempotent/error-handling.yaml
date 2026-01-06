@@ -1,0 +1,197 @@
+id: idempotent-error-handling
+name: Idempotent Producer - Error Handling
+description: |
+  Tests for producer header validation and error conditions.
+  Includes atomicity guarantees when appends fail.
+category: producer
+tags:
+  - idempotent
+  - validation
+  - errors
+
+tests:
+  - id: partial-headers-rejected
+    name: Partial producer headers are rejected
+    description: All three producer headers must be provided together
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Only Producer-Id
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+        expect:
+          status: 400
+      # Missing Producer-Seq
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "0"
+        expect:
+          status: 400
+
+  - id: invalid-integer-formats-rejected
+    name: Invalid integer formats in producer headers are rejected
+    description: Server should reject non-integer values like "1abc" or "1e3"
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Trailing junk in Producer-Seq
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "0"
+          Producer-Seq: "1abc"
+        expect:
+          status: 400
+      # Scientific notation
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "1e3"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+      # Negative value
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: test-producer
+          Producer-Epoch: "-1"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: empty-producer-id-rejected
+    name: Empty producer ID is rejected
+    description: Producer-Id header with empty string should be rejected
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        headers:
+          Producer-Id: ""
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        expect:
+          status: 400
+
+  - id: failed-append-does-not-advance-producer-state
+    name: Failed append does not advance producer state (atomicity)
+    description: If append fails after producer validation (e.g., invalid JSON), producer seq should not advance
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # First append succeeds
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 1}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Second append with invalid JSON - should fail
+      - action: server-append
+        path: ${streamPath}
+        data: "not valid json"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 400
+      # Retry seq=1 with valid JSON - should succeed (not be rejected as duplicate or gap)
+      # If producer state was incorrectly advanced, this would fail
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 2}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # seq=2 should also work
+      - action: server-append
+        path: ${streamPath}
+        data: '{"msg": 3}'
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+
+  - id: gap-fill-resume
+    name: Gap can be filled and producer can resume
+    description: |
+      After a 409 gap error, the producer should be able to fill the gap
+      and then continue. Some implementations accidentally "lock out" a
+      sequence once a gap was observed, or mutate state on the 409 path.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # seq=0 succeeds
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # seq=2 creates a gap -> 409
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 409
+      # Fill the gap with seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Now seq=2 should succeed
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Verify correct order in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataExact:
+            - "msg0"
+            - "msg1"
+            - "msg2"
+          upToDate: true

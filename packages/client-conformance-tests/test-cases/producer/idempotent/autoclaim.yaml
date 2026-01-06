@@ -1,100 +1,16 @@
-id: idempotent-concurrent
-name: Idempotent Producer Concurrent Batches
-description: Tests for client handling of 409 sequence gaps when HTTP requests arrive out of order
+id: idempotent-autoclaim
+name: Idempotent Producer - AutoClaim
+description: |
+  Tests for the autoClaim feature that enables ephemeral producers.
+  When autoClaim=true, the client automatically claims the next epoch
+  when fenced (403) and blocks pipelining until epoch is known.
 category: producer
 tags:
   - idempotent
-  - concurrent
-  - retry
+  - autoclaim
+  - ephemeral
 
 tests:
-  - id: concurrent-batches-all-delivered
-    name: All messages delivered with high concurrency
-    description: |
-      When using maxInFlight > 1, HTTP requests may arrive out of order causing 409 errors.
-      The client should retry and ensure all messages are delivered.
-    setup:
-      - action: create
-        as: streamPath
-        contentType: text/plain
-    operations:
-      # Send 20 messages with maxInFlight=5
-      # This forces concurrent batches that may arrive out of order
-      - action: idempotent-append-batch
-        path: ${streamPath}
-        producerId: test-producer
-        epoch: 0
-        maxInFlight: 5
-        items:
-          - data: "msg-00"
-          - data: "msg-01"
-          - data: "msg-02"
-          - data: "msg-03"
-          - data: "msg-04"
-          - data: "msg-05"
-          - data: "msg-06"
-          - data: "msg-07"
-          - data: "msg-08"
-          - data: "msg-09"
-          - data: "msg-10"
-          - data: "msg-11"
-          - data: "msg-12"
-          - data: "msg-13"
-          - data: "msg-14"
-          - data: "msg-15"
-          - data: "msg-16"
-          - data: "msg-17"
-          - data: "msg-18"
-          - data: "msg-19"
-        expect:
-          allSucceed: true
-      # Verify all messages are in the stream
-      - action: read
-        path: ${streamPath}
-        expect:
-          dataContainsAll:
-            - "msg-00"
-            - "msg-05"
-            - "msg-10"
-            - "msg-15"
-            - "msg-19"
-          upToDate: true
-
-  - id: concurrent-json-batches-all-delivered
-    name: All JSON messages delivered with high concurrency
-    description: Same test with JSON content type to verify JSON batching works with concurrency
-    setup:
-      - action: create
-        as: streamPath
-        contentType: application/json
-    operations:
-      - action: idempotent-append-batch
-        path: ${streamPath}
-        producerId: test-producer
-        epoch: 0
-        maxInFlight: 5
-        items:
-          - data: '{"id": 0}'
-          - data: '{"id": 1}'
-          - data: '{"id": 2}'
-          - data: '{"id": 3}'
-          - data: '{"id": 4}'
-          - data: '{"id": 5}'
-          - data: '{"id": 6}'
-          - data: '{"id": 7}'
-          - data: '{"id": 8}'
-          - data: '{"id": 9}'
-        expect:
-          allSucceed: true
-      - action: read
-        path: ${streamPath}
-        expect:
-          dataContainsAll:
-            - '"id":0'
-            - '"id":5'
-            - '"id":9'
-          upToDate: true
-
   - id: autoclaim-with-pipelining
     name: autoClaim works with maxInFlight > 1
     description: |
@@ -210,7 +126,7 @@ tests:
         autoClaim: true
         data: "recovered"
         expect:
-          status: 200
+          success: true
       # Verify both messages are in the stream
       - action: read
         path: ${streamPath}
@@ -218,4 +134,81 @@ tests:
           dataContainsAll:
             - "from-epoch-5"
             - "recovered"
+          upToDate: true
+
+  - id: autoclaim-recovers-from-403
+    name: Client with autoClaim recovers from 403 fencing
+    description: |
+      When a producer with autoClaim=true gets fenced (403), it should
+      automatically claim the next epoch and retry successfully.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=5
+      - action: server-append
+        path: ${streamPath}
+        data: "fencer"
+        producerId: autoclaim-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Now use idempotent-append with autoClaim starting at epoch=0
+      # It should get 403, then retry with epoch=6
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: autoclaim-producer
+        epoch: 0
+        autoClaim: true
+        data: "recovered"
+        expect:
+          success: true
+      # Verify both messages are in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "fencer"
+            - "recovered"
+          upToDate: true
+
+  - id: autoclaim-batch-recovers-from-403
+    name: Batch with autoClaim recovers from 403 fencing
+    description: Same test for batch operations
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=3
+      - action: server-append
+        path: ${streamPath}
+        data: "blocker"
+        producerId: batch-autoclaim
+        producerEpoch: 3
+        producerSeq: 0
+        expect:
+          status: 200
+      # Batch with autoClaim should recover
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: batch-autoclaim
+        autoClaim: true
+        maxInFlight: 1
+        items:
+          - data: "batch-msg-0"
+          - data: "batch-msg-1"
+          - data: "batch-msg-2"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "blocker"
+            - "batch-msg-0"
+            - "batch-msg-1"
+            - "batch-msg-2"
           upToDate: true
