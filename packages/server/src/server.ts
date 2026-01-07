@@ -724,10 +724,8 @@ export class DurableStreamTestServer {
         headers[`content-type`] = stream.contentType
       }
 
-      // Generate ETag for cache validation (same format as regular responses)
-      // For offset=now, start and end are both the current offset since response is empty
-      const etag = `"${Buffer.from(path).toString(`base64`)}:${stream.currentOffset}:${stream.currentOffset}"`
-      headers[`etag`] = etag
+      // No ETag for offset=now responses - Cache-Control: no-store makes ETag unnecessary
+      // and some CDNs may behave unexpectedly with both headers
 
       // For JSON mode, return empty array; otherwise empty body
       const isJsonMode = stream.contentType?.includes(`application/json`)

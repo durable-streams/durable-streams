@@ -265,8 +265,8 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		// Prevent caching - tail offset changes with each append
 		w.Header().Set("Cache-Control", "no-store")
 
-		// Set ETag for cache validation (same format as regular responses)
-		w.Header().Set("ETag", fmt.Sprintf(`"%s"`, meta.CurrentOffset.String()))
+		// No ETag for offset=now responses - Cache-Control: no-store makes ETag unnecessary
+		// and some CDNs may behave unexpectedly with both headers
 
 		// For JSON mode, return empty array; otherwise empty body
 		if store.IsJSONContentType(meta.ContentType) {
