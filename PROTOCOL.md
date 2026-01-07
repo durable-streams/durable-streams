@@ -113,7 +113,7 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` (or `204 No Content`) if the existing stream's configuration (content type, TTL/expiry) matches the request, or
+- return `200 OK` if the existing stream's configuration (content type, TTL/expiry) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
@@ -137,7 +137,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 #### Response Codes
 
 - `201 Created`: Stream created successfully
-- `200 OK` or `204 No Content`: Stream already exists with matching configuration (idempotent success)
+- `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
 - `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
 - `429 Too Many Requests`: Rate limit exceeded
@@ -181,7 +181,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 
 #### Response Codes
 
-- `204 No Content` (recommended) or `200 OK`: Append successful
+- `204 No Content`: Append successful
 - `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
@@ -252,7 +252,7 @@ Where `{stream-url}` is the URL of the stream. Returns bytes starting from the s
 #### Query Parameters
 
 - `offset` (optional)
-  - Start offset token. If omitted, defaults to the stream start (offset 0).
+  - Start offset token. If omitted, defaults to the stream start (offset -1).
 
 #### Response Codes
 
@@ -269,7 +269,7 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
-- `Stream-Cursor: <cursor>` (optional)
+- `Stream-Cursor: <cursor>`
   - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
@@ -314,12 +314,14 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 200)
 
-- Same as catch-up reads (Section 5.5)
+- Same as catch-up reads (Section 5.5), except:
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Body (on 200)
 
@@ -364,8 +366,8 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Each line prefixed with `data:`
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset` and **MAY** include `streamCursor`
-  - Format: JSON object with offset and optional cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
+  - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
 
 **Example:**
 

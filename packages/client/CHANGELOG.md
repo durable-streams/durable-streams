@@ -1,5 +1,15 @@
 # @durable-streams/client
 
+## 0.1.3
+
+### Patch Changes
+
+- Add console warning when using HTTP URLs in browser environments. HTTP limits browsers to 6 concurrent connections per host (HTTP/1.1), which can cause slow streams and app freezes. The warning can be disabled with `warnOnHttp: false`. ([#126](https://github.com/durable-streams/durable-streams/pull/126))
+
+- Add CRLF injection security tests for SSE and fix TypeScript client SSE parser to normalize line endings per SSE spec. ([#112](https://github.com/durable-streams/durable-streams/pull/112))
+  - Server conformance tests now verify CRLF injection attacks in SSE payloads are properly escaped
+  - TypeScript SSE parser now normalizes `\r\n` and lone `\r` to `\n` per SSE specification
+
 ## 0.1.2
 
 ### Patch Changes

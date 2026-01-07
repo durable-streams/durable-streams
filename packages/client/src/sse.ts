@@ -50,6 +50,9 @@ export async function* parseSSEStream(
 
       buffer += decoder.decode(value, { stream: true })
 
+      // Normalize line endings: CRLF → LF, lone CR → LF (per SSE spec)
+      buffer = buffer.replace(/\r\n/g, `\n`).replace(/\r/g, `\n`)
+
       // Process complete lines
       const lines = buffer.split(`\n`)
       // Keep the last incomplete line in the buffer

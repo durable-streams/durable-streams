@@ -27,6 +27,10 @@ const (
 	HeaderStreamExpiresAt  = "Stream-Expires-At"
 )
 
+// sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
+// Per SSE spec, these are all valid line terminators that could be used for injection attacks
+var sseLineTerminators = regexp.MustCompile(`\r\n|\r|\n`)
+
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	// Set CORS headers
@@ -147,7 +151,12 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 			scheme = proto
 		}
-		fullURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.Path)
+		// Get the host from the request, preferring X-Forwarded-Host for proxies
+		host := r.Host
+		if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+			host = fwdHost
+		}
+		fullURL := fmt.Sprintf("%s://%s%s", scheme, host, r.URL.Path)
 		w.Header().Set("Location", fullURL)
 		w.WriteHeader(http.StatusCreated)
 	} else {
@@ -435,7 +444,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				// Send data event
 				body, _ := h.formatResponse(path, messages, meta.ContentType)
 				fmt.Fprintf(w, "event: data\n")
-				for _, line := range strings.Split(string(body), "\n") {
+				// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+				for _, line := range sseLineTerminators.Split(string(body), -1) {
 					fmt.Fprintf(w, "data: %s\n", line)
 				}
 				fmt.Fprintf(w, "\n")
@@ -546,7 +556,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 

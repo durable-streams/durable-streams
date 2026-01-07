@@ -243,19 +243,34 @@ export interface AwaitOperation {
 }
 
 /**
- * Inject an error to be returned on the next N requests to a path.
+ * Inject a fault to be triggered on the next N requests to a path.
  * Used for testing retry/resilience behavior.
+ * Supports various fault types: errors, delays, connection drops, body corruption, etc.
  */
 export interface InjectErrorOperation {
   action: `inject-error`
-  /** Stream path to inject error for */
+  /** Stream path to inject fault for */
   path: string
-  /** HTTP status code to return */
-  status: number
-  /** Number of times to return this error (default: 1) */
+  /** HTTP status code to return (if set, returns error response) */
+  status?: number
+  /** Number of times to trigger this fault (default: 1) */
   count?: number
   /** Optional Retry-After header value (seconds) */
   retryAfter?: number
+  /** Delay in milliseconds before responding */
+  delayMs?: number
+  /** Drop the connection after sending headers (simulates network failure) */
+  dropConnection?: boolean
+  /** Truncate response body to this many bytes */
+  truncateBodyBytes?: number
+  /** Probability of triggering fault (0-1, default 1.0 = always) */
+  probability?: number
+  /** Only match specific HTTP method (GET, POST, PUT, DELETE) */
+  method?: string
+  /** Corrupt the response body by flipping random bits */
+  corruptBody?: boolean
+  /** Add jitter to delay (random 0-jitterMs added to delayMs) */
+  jitterMs?: number
 }
 
 /**

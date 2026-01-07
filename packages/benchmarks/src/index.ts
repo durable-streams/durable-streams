@@ -162,13 +162,14 @@ export function runBenchmarks(options: BenchmarkOptions): void {
             live: `long-poll`,
           })
           await new Promise<void>((resolve) => {
-            const unsubscribe = res.subscribeBytes(async (chunk) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
               if (chunk.data.length > 0) {
                 offset = chunk.offset
                 unsubscribe()
                 res.cancel()
                 resolve()
               }
+              return Promise.resolve()
             })
           })
         })()
@@ -183,12 +184,13 @@ export function runBenchmarks(options: BenchmarkOptions): void {
             live: `long-poll`,
           })
           await new Promise<void>((resolve) => {
-            const unsubscribe = res.subscribeBytes(async (chunk) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
               if (chunk.data.length > 0) {
                 unsubscribe()
                 res.cancel()
                 resolve()
               }
+              return Promise.resolve()
             })
           })
         })()
