@@ -1,0 +1,90 @@
+id: producer-errors
+name: Producer Error Handling
+description: Tests for error handling in producer operations
+category: producer
+tags:
+  - core
+  - errors
+
+tests:
+  - id: append-to-nonexistent
+    name: Append to non-existent stream
+    description: Client should handle 404 when appending to non-existent stream
+    operations:
+      - action: append
+        path: /nonexistent-stream-12345
+        data: "test"
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: create-then-delete-then-append
+    name: Append after delete
+    description: Client should handle 404 when stream was deleted
+    operations:
+      - action: create
+        as: streamPath
+        expect:
+          status: 201
+      - action: append
+        path: ${streamPath}
+        data: "before-delete"
+        expect:
+          status: 200
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "after-delete"
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: connect-nonexistent
+    name: Connect to non-existent stream
+    description: Client should handle 404 when connecting to non-existent stream
+    operations:
+      - action: connect
+        path: /nonexistent-connect-stream
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: head-nonexistent
+    name: Head non-existent stream
+    description: Client should handle 404 when getting metadata of non-existent stream
+    operations:
+      - action: head
+        path: /nonexistent-head-stream
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: delete-nonexistent
+    name: Delete non-existent stream
+    description: Client should handle 404 when deleting non-existent stream
+    operations:
+      - action: delete
+        path: /nonexistent-delete-stream
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: delete-idempotent
+    name: Delete is idempotent within session
+    description: Deleting twice should not error (second returns 404)
+    operations:
+      - action: create
+        as: streamPath
+        expect:
+          status: 201
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 404

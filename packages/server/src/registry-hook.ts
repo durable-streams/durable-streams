@@ -3,12 +3,56 @@
  * This stream records all create/delete events for observability.
  */
 
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
+import { createStateSchema } from "@durable-streams/state"
 import type { StreamLifecycleHook } from "./types"
 import type { StreamStore } from "./store"
 import type { FileBackedStreamStore } from "./file-store"
 
 const REGISTRY_PATH = `/v1/stream/__registry__`
+
+// Registry schema for the server
+interface StreamMetadata {
+  path: string
+  contentType: string
+  createdAt: number
+}
+
+const streamMetadataSchema = {
+  "~standard": {
+    version: 1 as const,
+    vendor: `durable-streams`,
+    validate: (value: unknown) => {
+      if (typeof value !== `object` || value === null) {
+        return { issues: [{ message: `value must be an object` }] }
+      }
+      const data = value as any
+      if (typeof data.path !== `string` || data.path.length === 0) {
+        return { issues: [{ message: `path must be a non-empty string` }] }
+      }
+      if (
+        typeof data.contentType !== `string` ||
+        data.contentType.length === 0
+      ) {
+        return {
+          issues: [{ message: `contentType must be a non-empty string` }],
+        }
+      }
+      if (typeof data.createdAt !== `number`) {
+        return { issues: [{ message: `createdAt must be a number` }] }
+      }
+      return { value: data as StreamMetadata }
+    },
+  },
+}
+
+const registryStateSchema = createStateSchema({
+  streams: {
+    schema: streamMetadataSchema,
+    type: `stream`,
+    primaryKey: `path`,
+  },
+})
 
 /**
  * Creates lifecycle hooks that write to a __registry__ stream.
@@ -47,12 +91,16 @@ export function createRegistryHooks(
 
       const streamName = extractStreamName(event.path)
 
-      await registryStream.append({
-        type: event.type,
-        path: streamName,
-        contentType: event.contentType,
-        timestamp: event.timestamp,
+      const changeEvent = registryStateSchema.streams.insert({
+        key: streamName,
+        value: {
+          path: streamName,
+          contentType: event.contentType || `application/octet-stream`,
+          createdAt: event.timestamp,
+        },
       })
+
+      await registryStream.append(changeEvent)
     },
 
     onStreamDeleted: async (event) => {
@@ -60,11 +108,11 @@ export function createRegistryHooks(
 
       const streamName = extractStreamName(event.path)
 
-      await registryStream.append({
-        type: event.type,
-        path: streamName,
-        timestamp: event.timestamp,
+      const changeEvent = registryStateSchema.streams.delete({
+        key: streamName,
       })
+
+      await registryStream.append(changeEvent)
     },
   }
 }

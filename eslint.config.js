@@ -13,8 +13,12 @@ export default [
       `**/coverage/**`,
       `eslint.config.js`,
       `vitest.config.ts`,
+      `**/vite.config.ts`,
       `**/tsdown.config.ts`,
       `**/tsup.config.ts`,
+      `packages/caddy-plugin/**`,
+      `packages/client-py/**`,
+      `scripts/**`,
     ],
   },
   {

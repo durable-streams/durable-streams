@@ -3,8 +3,11 @@
  */
 
 import { createServer } from "node:http"
+import { deflateSync, gzipSync } from "node:zlib"
 import { OffsetMismatchError, StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
+import { generateResponseCursor } from "./cursor"
+import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
 
@@ -16,26 +19,134 @@ const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
+// SSE control event fields (Protocol Section 5.7)
+const SSE_OFFSET_FIELD = `streamNextOffset`
+const SSE_CURSOR_FIELD = `streamCursor`
+const SSE_UP_TO_DATE_FIELD = `upToDate`
+
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
 
 /**
+ * Encode data for SSE format.
+ * Per SSE spec, each line in the payload needs its own "data:" prefix.
+ * Line terminators in the payload (CR, LF, or CRLF) become separate data: lines.
+ * This prevents CRLF injection attacks where malicious payloads could inject
+ * fake SSE events using CR-only line terminators.
+ */
+function encodeSSEData(payload: string): string {
+  // Split on all SSE-valid line terminators: CRLF, CR, or LF
+  // Order matters: \r\n must be matched before \r alone
+  const lines = payload.split(/\r\n|\r|\n/)
+  return lines.map((line) => `data: ${line}`).join(`\n`) + `\n\n`
+}
+
+/**
+ * Minimum response size to consider for compression.
+ * Responses smaller than this won't benefit from compression.
+ */
+const COMPRESSION_THRESHOLD = 1024
+
+/**
+ * Determine the best compression encoding from Accept-Encoding header.
+ * Returns 'gzip', 'deflate', or null if no compression should be used.
+ */
+function getCompressionEncoding(
+  acceptEncoding: string | undefined
+): `gzip` | `deflate` | null {
+  if (!acceptEncoding) return null
+
+  // Parse Accept-Encoding header (e.g., "gzip, deflate, br" or "gzip;q=1.0, deflate;q=0.5")
+  const encodings = acceptEncoding
+    .toLowerCase()
+    .split(`,`)
+    .map((e) => e.trim())
+
+  // Prefer gzip over deflate (better compression, wider support)
+  for (const encoding of encodings) {
+    const name = encoding.split(`;`)[0]?.trim()
+    if (name === `gzip`) return `gzip`
+  }
+  for (const encoding of encodings) {
+    const name = encoding.split(`;`)[0]?.trim()
+    if (name === `deflate`) return `deflate`
+  }
+
+  return null
+}
+
+/**
+ * Compress data using the specified encoding.
+ */
+function compressData(
+  data: Uint8Array,
+  encoding: `gzip` | `deflate`
+): Uint8Array {
+  if (encoding === `gzip`) {
+    return gzipSync(data)
+  } else {
+    return deflateSync(data)
+  }
+}
+
+/**
  * HTTP server for testing durable streams.
  * Supports both in-memory and file-backed storage modes.
  */
+/**
+ * Configuration for injected faults (for testing retry/resilience).
+ * Supports various fault types beyond simple HTTP errors.
+ */
+interface InjectedFault {
+  /** HTTP status code to return (if set, returns error response) */
+  status?: number
+  /** Number of times to trigger this fault (decremented on each use) */
+  count: number
+  /** Optional Retry-After header value (seconds) */
+  retryAfter?: number
+  /** Delay in milliseconds before responding */
+  delayMs?: number
+  /** Drop the connection after sending headers (simulates network failure) */
+  dropConnection?: boolean
+  /** Truncate response body to this many bytes */
+  truncateBodyBytes?: number
+  /** Probability of triggering fault (0-1, default 1.0 = always) */
+  probability?: number
+  /** Only match specific HTTP method (GET, POST, PUT, DELETE) */
+  method?: string
+  /** Corrupt the response body by flipping random bits */
+  corruptBody?: boolean
+  /** Add jitter to delay (random 0-jitterMs added to delayMs) */
+  jitterMs?: number
+}
+
 export class DurableStreamTestServer {
   readonly store: StreamStore | FileBackedStreamStore
   private server: Server | null = null
   private options: Required<
-    Omit<TestServerOptions, `dataDir` | `onStreamCreated` | `onStreamDeleted`>
+    Omit<
+      TestServerOptions,
+      | `dataDir`
+      | `onStreamCreated`
+      | `onStreamDeleted`
+      | `compression`
+      | `cursorIntervalSeconds`
+      | `cursorEpoch`
+    >
   > & {
     dataDir?: string
     onStreamCreated?: (event: StreamLifecycleEvent) => void | Promise<void>
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>
+    compression: boolean
+    cursorOptions: CursorOptions
   }
   private _url: string | null = null
+  private activeSSEResponses = new Set<ServerResponse>()
+  private isShuttingDown = false
+  /** Injected faults for testing retry/resilience */
+  private injectedFaults = new Map<string, InjectedFault>()
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -48,12 +159,17 @@ export class DurableStreamTestServer {
     }
 
     this.options = {
-      port: options.port ?? 0,
+      port: options.port ?? 4437,
       host: options.host ?? `127.0.0.1`,
       longPollTimeout: options.longPollTimeout ?? 30_000,
       dataDir: options.dataDir,
       onStreamCreated: options.onStreamCreated,
       onStreamDeleted: options.onStreamDeleted,
+      compression: options.compression ?? true,
+      cursorOptions: {
+        intervalSeconds: options.cursorIntervalSeconds,
+        epoch: options.cursorEpoch,
+      },
     }
   }
 
@@ -98,6 +214,20 @@ export class DurableStreamTestServer {
       return
     }
 
+    // Mark as shutting down to stop SSE handlers
+    this.isShuttingDown = true
+
+    // Cancel all pending long-polls and SSE waits to unblock connection handlers
+    if (`cancelAllWaits` in this.store) {
+      ;(this.store as { cancelAllWaits: () => void }).cancelAllWaits()
+    }
+
+    // Force-close all active SSE connections
+    for (const res of this.activeSSEResponses) {
+      res.end()
+    }
+    this.activeSSEResponses.clear()
+
     return new Promise((resolve, reject) => {
       this.server!.close(async (err) => {
         if (err) {
@@ -113,6 +243,7 @@ export class DurableStreamTestServer {
 
           this.server = null
           this._url = null
+          this.isShuttingDown = false
           resolve()
         } catch (closeErr) {
           reject(closeErr)
@@ -136,6 +267,115 @@ export class DurableStreamTestServer {
    */
   clear(): void {
     this.store.clear()
+  }
+
+  /**
+   * Inject an error to be returned on the next N requests to a path.
+   * Used for testing retry/resilience behavior.
+   * @deprecated Use injectFault for full fault injection capabilities
+   */
+  injectError(
+    path: string,
+    status: number,
+    count: number = 1,
+    retryAfter?: number
+  ): void {
+    this.injectedFaults.set(path, { status, count, retryAfter })
+  }
+
+  /**
+   * Inject a fault to be triggered on the next N requests to a path.
+   * Supports various fault types: delays, connection drops, body corruption, etc.
+   */
+  injectFault(
+    path: string,
+    fault: Omit<InjectedFault, `count`> & { count?: number }
+  ): void {
+    this.injectedFaults.set(path, { count: 1, ...fault })
+  }
+
+  /**
+   * Clear all injected faults.
+   */
+  clearInjectedFaults(): void {
+    this.injectedFaults.clear()
+  }
+
+  /**
+   * Check if there's an injected fault for this path/method and consume it.
+   * Returns the fault config if one should be triggered, null otherwise.
+   */
+  private consumeInjectedFault(
+    path: string,
+    method: string
+  ): InjectedFault | null {
+    const fault = this.injectedFaults.get(path)
+    if (!fault) return null
+
+    // Check method filter
+    if (fault.method && fault.method.toUpperCase() !== method.toUpperCase()) {
+      return null
+    }
+
+    // Check probability
+    if (fault.probability !== undefined && Math.random() > fault.probability) {
+      return null
+    }
+
+    fault.count--
+    if (fault.count <= 0) {
+      this.injectedFaults.delete(path)
+    }
+
+    return fault
+  }
+
+  /**
+   * Apply delay from fault config (including jitter).
+   */
+  private async applyFaultDelay(fault: InjectedFault): Promise<void> {
+    if (fault.delayMs !== undefined && fault.delayMs > 0) {
+      const jitter = fault.jitterMs ? Math.random() * fault.jitterMs : 0
+      await new Promise((resolve) =>
+        setTimeout(resolve, fault.delayMs! + jitter)
+      )
+    }
+  }
+
+  /**
+   * Apply body modifications from stored fault (truncation, corruption).
+   * Returns modified body, or original if no modifications needed.
+   */
+  private applyFaultBodyModification(
+    res: ServerResponse,
+    body: Uint8Array
+  ): Uint8Array {
+    const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
+      ._injectedFault
+    if (!fault) return body
+
+    let modified = body
+
+    // Truncate body if configured
+    if (
+      fault.truncateBodyBytes !== undefined &&
+      modified.length > fault.truncateBodyBytes
+    ) {
+      modified = modified.slice(0, fault.truncateBodyBytes)
+    }
+
+    // Corrupt body if configured (flip random bits)
+    if (fault.corruptBody && modified.length > 0) {
+      modified = new Uint8Array(modified) // Make a copy to avoid mutating original
+      // Flip 1-5% of bytes
+      const numCorrupt = Math.max(1, Math.floor(modified.length * 0.03))
+      for (let i = 0; i < numCorrupt; i++) {
+        const pos = Math.floor(Math.random() * modified.length)
+        modified[pos] = modified[pos]! ^ (1 << Math.floor(Math.random() * 8))
+      }
+    }
+
+    return modified
   }
 
   // ============================================================================
@@ -162,14 +402,57 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
     )
+
+    // Browser security headers (Protocol Section 10.7)
+    res.setHeader(`x-content-type-options`, `nosniff`)
+    res.setHeader(`cross-origin-resource-policy`, `cross-origin`)
 
     // Handle CORS preflight
     if (method === `OPTIONS`) {
       res.writeHead(204)
       res.end()
       return
+    }
+
+    // Handle test control endpoints (for error injection)
+    if (path === `/_test/inject-error`) {
+      await this.handleTestInjectError(method, req, res)
+      return
+    }
+
+    // Check for injected faults (for testing retry/resilience)
+    const fault = this.consumeInjectedFault(path, method ?? `GET`)
+    if (fault) {
+      // Apply delay if configured
+      await this.applyFaultDelay(fault)
+
+      // Drop connection if configured (simulates network failure)
+      if (fault.dropConnection) {
+        res.socket?.destroy()
+        return
+      }
+
+      // If status is set, return an error response
+      if (fault.status !== undefined) {
+        const headers: Record<string, string> = {
+          "content-type": `text/plain`,
+        }
+        if (fault.retryAfter !== undefined) {
+          headers[`retry-after`] = fault.retryAfter.toString()
+        }
+        res.writeHead(fault.status, headers)
+        res.end(`Injected error for testing`)
+        return
+      }
+
+      // Store fault for response modification (truncation, corruption)
+      if (fault.truncateBodyBytes !== undefined || fault.corruptBody) {
+        ;(
+          res as ServerResponse & { _injectedFault?: InjectedFault }
+        )._injectedFault = fault
+      }
     }
 
     try {
@@ -181,7 +464,7 @@ export class DurableStreamTestServer {
           this.handleHead(path, res)
           break
         case `GET`:
-          await this.handleRead(path, url, res)
+          await this.handleRead(path, url, req, res)
           break
         case `POST`:
           await this.handleAppend(path, req, res)
@@ -207,7 +490,7 @@ export class DurableStreamTestServer {
           res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Sequence conflict`)
         } else if (err.message.includes(`Content-type mismatch`)) {
-          res.writeHead(400, { "content-type": `text/plain` })
+          res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Content-type mismatch`)
         } else if (err.message.includes(`Invalid JSON`)) {
           res.writeHead(400, { "content-type": `text/plain` })
@@ -343,15 +626,17 @@ export class DurableStreamTestServer {
 
     const headers: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
+      // HEAD responses should not be cached to avoid stale tail offsets (Protocol Section 5.4)
+      "cache-control": `no-store`,
     }
 
     if (stream.contentType) {
       headers[`content-type`] = stream.contentType
     }
 
-    // Generate ETag: {path}:{offset}
+    // Generate ETag: {path}:-1:{offset} (consistent with GET format)
     headers[`etag`] =
-      `"${Buffer.from(path).toString(`base64`)}:${stream.currentOffset}"`
+      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}"`
 
     res.writeHead(200, headers)
     res.end()
@@ -363,6 +648,7 @@ export class DurableStreamTestServer {
   private async handleRead(
     path: string,
     url: URL,
+    req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
     const stream = this.store.get(path)
@@ -403,10 +689,18 @@ export class DurableStreamTestServer {
       }
     }
 
-    // Require offset parameter for long-poll per protocol spec
-    if (live === `long-poll` && !offset) {
+    // Require offset parameter for long-poll and SSE per protocol spec
+    if ((live === `long-poll` || live === `sse`) && !offset) {
       res.writeHead(400, { "content-type": `text/plain` })
-      res.end(`Long-poll requires offset parameter`)
+      res.end(
+        `${live === `sse` ? `SSE` : `Long-poll`} requires offset parameter`
+      )
+      return
+    }
+
+    // Handle SSE mode
+    if (live === `sse`) {
+      await this.handleSSE(path, stream, offset!, cursor, res)
       return
     }
 
@@ -427,9 +721,16 @@ export class DurableStreamTestServer {
       )
 
       if (result.timedOut) {
-        // Return 204 No Content on timeout
+        // Return 204 No Content on timeout (per Protocol Section 5.6)
+        // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+        const responseCursor = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
         res.writeHead(204, {
           [STREAM_OFFSET_HEADER]: offset,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+          [STREAM_CURSOR_HEADER]: responseCursor,
         })
         res.end()
         return
@@ -448,11 +749,15 @@ export class DurableStreamTestServer {
 
     // Set offset header to the last message's offset, or current if no messages
     const lastMessage = messages[messages.length - 1]
-    headers[STREAM_OFFSET_HEADER] = lastMessage?.offset ?? stream.currentOffset
+    const responseOffset = lastMessage?.offset ?? stream.currentOffset
+    headers[STREAM_OFFSET_HEADER] = responseOffset
 
-    // Echo cursor if provided
-    if (cursor) {
-      headers[STREAM_CURSOR_HEADER] = cursor
+    // Generate cursor for live mode responses (Protocol Section 8.1)
+    if (live === `long-poll`) {
+      headers[STREAM_CURSOR_HEADER] = generateResponseCursor(
+        cursor,
+        this.options.cursorOptions
+      )
     }
 
     // Set up-to-date header
@@ -460,11 +765,167 @@ export class DurableStreamTestServer {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
 
+    // Generate ETag: based on path, start offset, and end offset
+    const startOffset = offset ?? `-1`
+    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}"`
+    headers[`etag`] = etag
+
+    // Check If-None-Match for conditional GET (Protocol Section 8.1)
+    const ifNoneMatch = req.headers[`if-none-match`]
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      res.writeHead(304, { etag })
+      res.end()
+      return
+    }
+
     // Format response (wraps JSON in array brackets)
     const responseData = this.store.formatResponse(path, messages)
 
+    // Apply compression if enabled and response is large enough
+    let finalData: Uint8Array = responseData
+    if (
+      this.options.compression &&
+      responseData.length >= COMPRESSION_THRESHOLD
+    ) {
+      const acceptEncoding = req.headers[`accept-encoding`]
+      const encoding = getCompressionEncoding(acceptEncoding)
+      if (encoding) {
+        finalData = compressData(responseData, encoding)
+        headers[`content-encoding`] = encoding
+        // Add Vary header to indicate response varies by Accept-Encoding
+        headers[`vary`] = `accept-encoding`
+      }
+    }
+
+    // Apply fault body modifications (truncation, corruption) if configured
+    finalData = this.applyFaultBodyModification(res, finalData)
+
     res.writeHead(200, headers)
-    res.end(Buffer.from(responseData))
+    res.end(Buffer.from(finalData))
+  }
+
+  /**
+   * Handle SSE (Server-Sent Events) mode
+   */
+  private async handleSSE(
+    path: string,
+    stream: ReturnType<StreamStore[`get`]>,
+    initialOffset: string,
+    cursor: string | undefined,
+    res: ServerResponse
+  ): Promise<void> {
+    // Track this SSE connection
+    this.activeSSEResponses.add(res)
+
+    // Set SSE headers (explicitly including security headers for clarity)
+    res.writeHead(200, {
+      "content-type": `text/event-stream`,
+      "cache-control": `no-cache`,
+      connection: `keep-alive`,
+      "access-control-allow-origin": `*`,
+      "x-content-type-options": `nosniff`,
+      "cross-origin-resource-policy": `cross-origin`,
+    })
+
+    let currentOffset = initialOffset
+    let isConnected = true
+    const decoder = new TextDecoder()
+
+    // Handle client disconnect
+    res.on(`close`, () => {
+      isConnected = false
+      this.activeSSEResponses.delete(res)
+    })
+
+    // Get content type for formatting
+    const isJsonStream = stream?.contentType?.includes(`application/json`)
+
+    // Send initial data and then wait for more
+    // Note: isConnected and isShuttingDown can change asynchronously
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (isConnected && !this.isShuttingDown) {
+      // Read current messages from offset
+      const { messages, upToDate } = this.store.read(path, currentOffset)
+
+      // Send data events for each message
+      for (const message of messages) {
+        // Format data based on content type
+        let dataPayload: string
+        if (isJsonStream) {
+          // Use formatResponse to get properly formatted JSON (strips trailing commas)
+          const jsonBytes = this.store.formatResponse(path, [message])
+          dataPayload = decoder.decode(jsonBytes)
+        } else {
+          dataPayload = decoder.decode(message.data)
+        }
+
+        // Send data event - encode multiline payloads per SSE spec
+        // Each line in the payload needs its own "data:" prefix
+        res.write(`event: data\n`)
+        res.write(encodeSSEData(dataPayload))
+
+        currentOffset = message.offset
+      }
+
+      // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset
+      const controlOffset =
+        messages[messages.length - 1]?.offset ?? stream!.currentOffset
+
+      // Send control event with current offset/cursor (Protocol Section 5.7)
+      // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+      const responseCursor = generateResponseCursor(
+        cursor,
+        this.options.cursorOptions
+      )
+      const controlData: Record<string, string | boolean> = {
+        [SSE_OFFSET_FIELD]: controlOffset,
+        [SSE_CURSOR_FIELD]: responseCursor,
+      }
+
+      // Include upToDate flag when client has caught up to head
+      if (upToDate) {
+        controlData[SSE_UP_TO_DATE_FIELD] = true
+      }
+
+      res.write(`event: control\n`)
+      res.write(encodeSSEData(JSON.stringify(controlData)))
+
+      // Update currentOffset for next iteration (use controlOffset for consistency)
+      currentOffset = controlOffset
+
+      // If caught up, wait for new messages
+      if (upToDate) {
+        const result = await this.store.waitForMessages(
+          path,
+          currentOffset,
+          this.options.longPollTimeout
+        )
+
+        // Check if we should exit after wait returns (values can change during await)
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        if (this.isShuttingDown || !isConnected) break
+
+        if (result.timedOut) {
+          // Send keep-alive control event on timeout (Protocol Section 5.7)
+          // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+          const keepAliveCursor = generateResponseCursor(
+            cursor,
+            this.options.cursorOptions
+          )
+          const keepAliveData: Record<string, string | boolean> = {
+            [SSE_OFFSET_FIELD]: currentOffset,
+            [SSE_CURSOR_FIELD]: keepAliveCursor,
+            [SSE_UP_TO_DATE_FIELD]: true, // Still caught up after timeout
+          }
+          res.write(`event: control\n`)
+          res.write(encodeSSEData(JSON.stringify(keepAliveData)))
+        }
+        // Loop will continue and read new messages
+      }
+    }
+
+    this.activeSSEResponses.delete(res)
+    res.end()
   }
 
   /**
@@ -527,13 +988,15 @@ export class DurableStreamTestServer {
 
     try {
       // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+      // Note: append returns null only for empty arrays with isInitialCreate=true,
+      // which doesn't apply to POST requests (those throw on empty arrays)
       // The store performs atomic If-Match check if expectedOffset is provided
       const message = await Promise.resolve(
         this.store.append(path, body, { seq, contentType, expectedOffset })
       )
 
-      res.writeHead(200, {
-        [STREAM_OFFSET_HEADER]: message.offset,
+      res.writeHead(204, {
+        [STREAM_OFFSET_HEADER]: message!.offset,
       })
       res.end()
     } catch (err) {
@@ -588,6 +1051,85 @@ export class DurableStreamTestServer {
 
     res.writeHead(204)
     res.end()
+  }
+
+  /**
+   * Handle test control endpoints for error injection.
+   * POST /_test/inject-error - inject an error
+   * DELETE /_test/inject-error - clear all injected errors
+   */
+  private async handleTestInjectError(
+    method: string | undefined,
+    req: IncomingMessage,
+    res: ServerResponse
+  ): Promise<void> {
+    if (method === `POST`) {
+      const body = await this.readBody(req)
+      try {
+        const config = JSON.parse(new TextDecoder().decode(body)) as {
+          path: string
+          // Legacy fields (still supported)
+          status?: number
+          count?: number
+          retryAfter?: number
+          // New fault injection fields
+          delayMs?: number
+          dropConnection?: boolean
+          truncateBodyBytes?: number
+          probability?: number
+          method?: string
+          corruptBody?: boolean
+          jitterMs?: number
+        }
+
+        if (!config.path) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Missing required field: path`)
+          return
+        }
+
+        // Must have at least one fault type specified
+        const hasFaultType =
+          config.status !== undefined ||
+          config.delayMs !== undefined ||
+          config.dropConnection ||
+          config.truncateBodyBytes !== undefined ||
+          config.corruptBody
+        if (!hasFaultType) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(
+            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, or corruptBody`
+          )
+          return
+        }
+
+        this.injectFault(config.path, {
+          status: config.status,
+          count: config.count ?? 1,
+          retryAfter: config.retryAfter,
+          delayMs: config.delayMs,
+          dropConnection: config.dropConnection,
+          truncateBodyBytes: config.truncateBodyBytes,
+          probability: config.probability,
+          method: config.method,
+          corruptBody: config.corruptBody,
+          jitterMs: config.jitterMs,
+        })
+
+        res.writeHead(200, { "content-type": `application/json` })
+        res.end(JSON.stringify({ ok: true }))
+      } catch {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid JSON body`)
+      }
+    } else if (method === `DELETE`) {
+      this.clearInjectedFaults()
+      res.writeHead(200, { "content-type": `application/json` })
+      res.end(JSON.stringify({ ok: true }))
+    } else {
+      res.writeHead(405, { "content-type": `text/plain` })
+      res.end(`Method not allowed`)
+    }
   }
 
   // ============================================================================

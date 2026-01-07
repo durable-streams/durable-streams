@@ -1,0 +1,209 @@
+id: consumer-offset-handling
+name: Offset Handling
+description: Tests for offset edge cases and boundary conditions
+category: consumer
+tags:
+  - core
+  - offset
+  - edge-cases
+
+tests:
+  - id: offset-minus-one-start
+    name: Offset -1 reads from start
+    description: Using offset -1 should read from the beginning of the stream
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "beginning"
+      - action: append
+        path: ${streamPath}
+        data: "middle"
+      - action: append
+        path: ${streamPath}
+        data: "end"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "-1"
+        expect:
+          data: "beginningmiddleend"
+
+  - id: offset-empty-stream
+    name: Read from empty stream
+    description: Reading from an empty stream should return no data and up-to-date
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: offset-at-end
+    name: Read from end of stream
+    description: Reading from the current end offset should return no new data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+        expect:
+          storeOffsetAs: endOffset
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${endOffset}
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: offset-resume-partial
+    name: Resume read from middle offset
+    description: Reading from a middle offset should only return subsequent data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "part1"
+        expect:
+          storeOffsetAs: afterPart1
+      - action: append
+        path: ${streamPath}
+        data: "part2"
+        expect:
+          storeOffsetAs: afterPart2
+      - action: append
+        path: ${streamPath}
+        data: "part3"
+    operations:
+      # From afterPart1, should get part2 and part3
+      - action: read
+        path: ${streamPath}
+        offset: ${afterPart1}
+        expect:
+          data: "part2part3"
+      # From afterPart2, should only get part3
+      - action: read
+        path: ${streamPath}
+        offset: ${afterPart2}
+        expect:
+          data: "part3"
+
+  - id: offset-stored-correctly
+    name: Stored offset can be used to resume
+    description: Offsets stored from reads should work for resumption
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "chunk1"
+      - action: append
+        path: ${streamPath}
+        data: "chunk2"
+    operations:
+      # First read stores the offset
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "chunk1chunk2"
+          storeOffsetAs: resumeOffset
+      # Append more data
+      - action: append
+        path: ${streamPath}
+        data: "chunk3"
+      # Resume from stored offset should only get new data
+      - action: read
+        path: ${streamPath}
+        offset: ${resumeOffset}
+        expect:
+          data: "chunk3"
+
+  - id: offset-longpoll-resume
+    name: Long-poll respects offset for resumption
+    description: Long-poll should only return data after the specified offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "old"
+        expect:
+          storeOffsetAs: oldOffset
+      - action: append
+        path: ${streamPath}
+        data: "new"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${oldOffset}
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          data: "new"
+          upToDate: true
+
+  - id: offset-sse-resume
+    name: SSE respects offset for resumption
+    description: SSE should only return data after the specified offset
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "old"
+        expect:
+          storeOffsetAs: oldOffset
+      - action: append
+        path: ${streamPath}
+        data: "new"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${oldOffset}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "new"
+
+  - id: offset-multiple-reads-same-offset
+    name: Multiple reads from same offset
+    description: Reading from the same offset multiple times should return the same data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "consistent"
+        expect:
+          storeOffsetAs: startOffset
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      # First read
+      - action: read
+        path: ${streamPath}
+        offset: ${startOffset}
+        expect:
+          data: "data"
+      # Second read from same offset should get same result
+      - action: read
+        path: ${streamPath}
+        offset: ${startOffset}
+        expect:
+          data: "data"
+      # Third read to confirm
+      - action: read
+        path: ${streamPath}
+        offset: ${startOffset}
+        expect:
+          data: "data"

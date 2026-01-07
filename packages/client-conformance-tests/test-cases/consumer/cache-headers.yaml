@@ -1,0 +1,150 @@
+id: consumer-cache-headers
+name: HTTP Cache Headers
+description: Tests for HTTP caching behavior (ETag, conditional requests)
+category: consumer
+tags:
+  - cache
+  - headers
+  - protocol
+
+tests:
+  - id: cache-head-returns-etag
+    name: HEAD returns ETag header
+    description: HEAD request should include an ETag for caching
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "cached-data"
+    operations:
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          hasOffset: true
+
+  - id: cache-read-idempotent
+    name: Repeated reads return same data
+    description: Multiple reads should return identical data (cache-friendly)
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "stable-content"
+    operations:
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "stable-content"
+          storeDataAs: firstRead
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "stable-content"
+      # Verify data is identical
+      - action: assert
+        equals:
+          left: ${firstRead}
+          right: "stable-content"
+        message: "Repeated reads should return identical data"
+
+  - id: cache-offset-deterministic
+    name: Same offset returns same data
+    description: Reading from a specific offset should always return the same data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "chunk-a"
+        expect:
+          storeOffsetAs: offsetA
+      - action: append
+        path: ${streamPath}
+        data: "chunk-b"
+    operations:
+      # Multiple reads from same offset
+      - action: read
+        path: ${streamPath}
+        offset: ${offsetA}
+        expect:
+          data: "chunk-b"
+      - action: read
+        path: ${streamPath}
+        offset: ${offsetA}
+        expect:
+          data: "chunk-b"
+
+  - id: cache-immutable-historical-data
+    name: Historical data is immutable
+    description: Data at a given offset should never change after more appends
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "original"
+    operations:
+      # Read original data
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "original"
+          storeOffsetAs: afterOriginal
+      # Append more data
+      - action: append
+        path: ${streamPath}
+        data: "added"
+      # Read from start should still include original
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "originaladded"
+      # Read from afterOriginal should only get new data
+      - action: read
+        path: ${streamPath}
+        offset: ${afterOriginal}
+        expect:
+          data: "added"
+
+  - id: cache-content-type-preserved
+    name: Content-Type is preserved for caching
+    description: Stream content-type should be consistent across reads
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        data: '{"key":"value"}'
+    operations:
+      - action: head
+        path: ${streamPath}
+        expect:
+          contentType: application/json
+
+  - id: cache-uptodate-stable
+    name: Up-to-date flag is consistent
+    description: Reading to end of stream should consistently report up-to-date
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "final"
+    operations:
+      # Multiple reads should all report up-to-date at end
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true

@@ -9,6 +9,14 @@ export { StreamStore } from "./store"
 export { FileBackedStreamStore } from "./file-store"
 export { encodeStreamPath, decodeStreamPath } from "./path-encoding"
 export { createRegistryHooks } from "./registry-hook"
+export {
+  calculateCursor,
+  handleCursorCollision,
+  generateResponseCursor,
+  DEFAULT_CURSOR_EPOCH,
+  DEFAULT_CURSOR_INTERVAL_SECONDS,
+  type CursorOptions,
+} from "./cursor"
 export type {
   Stream,
   StreamMessage,

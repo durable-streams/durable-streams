@@ -11,7 +11,7 @@ import {
 } from "@durable-streams/server"
 
 const server = new DurableStreamTestServer({
-  port: 8787,
+  port: 4437,
   host: `0.0.0.0`,
 })
 

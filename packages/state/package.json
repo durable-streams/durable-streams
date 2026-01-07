@@ -1,0 +1,62 @@
+{
+  "name": "@durable-streams/state",
+  "description": "State change event protocol for Durable Streams",
+  "version": "0.1.3",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/state"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "state",
+    "protocol",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src",
+    "state-protocol.schema.json",
+    "STATE-PROTOCOL.md"
+  ],
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@standard-schema/spec": "^1.0.0",
+    "@tanstack/db": "latest"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "tsdown": "^0.9.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

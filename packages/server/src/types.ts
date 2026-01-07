@@ -136,6 +136,25 @@ export interface TestServerOptions {
    * Hook called when a stream is deleted.
    */
   onStreamDeleted?: StreamLifecycleHook
+
+  /**
+   * Enable gzip/deflate compression for responses.
+   * Default: true.
+   */
+  compression?: boolean
+
+  /**
+   * Interval in seconds for cursor calculation.
+   * Used for CDN cache collapsing to prevent infinite cache loops.
+   * Default: 20 seconds.
+   */
+  cursorIntervalSeconds?: number
+
+  /**
+   * Epoch timestamp for cursor interval calculation.
+   * Default: October 9, 2024 00:00:00 UTC.
+   */
+  cursorEpoch?: Date
 }
 
 /**

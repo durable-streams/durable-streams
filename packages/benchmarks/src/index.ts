@@ -10,7 +10,7 @@
 
 import { writeFileSync } from "node:fs"
 import { afterAll, bench, describe } from "vitest"
-import { DurableStream } from "@durable-streams/writer"
+import { DurableStream } from "@durable-streams/client"
 
 export interface BenchmarkOptions {
   /** Base URL of the server to benchmark */
@@ -157,15 +157,21 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Warmup: append and receive once (don't measure)
         const warmupPromise = (async () => {
-          for await (const chunk of stream.read({
+          const res = await stream.stream({
             offset,
             live: `long-poll`,
-          })) {
-            if (chunk.data.length > 0) {
-              offset = chunk.offset
-              return
-            }
-          }
+          })
+          await new Promise<void>((resolve) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
+              if (chunk.data.length > 0) {
+                offset = chunk.offset
+                unsubscribe()
+                res.cancel()
+                resolve()
+              }
+              return Promise.resolve()
+            })
+          })
         })()
 
         await stream.append(message)
@@ -173,14 +179,20 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Actual measurement: append and receive second time
         const readPromise = (async () => {
-          for await (const chunk of stream.read({
+          const res = await stream.stream({
             offset,
             live: `long-poll`,
-          })) {
-            if (chunk.data.length > 0) {
-              return
-            }
-          }
+          })
+          await new Promise<void>((resolve) => {
+            const unsubscribe = res.subscribeBytes((chunk) => {
+              if (chunk.data.length > 0) {
+                unsubscribe()
+                res.cancel()
+                resolve()
+              }
+              return Promise.resolve()
+            })
+          })
         })()
 
         const startTime = performance.now()
@@ -322,8 +334,12 @@ export function runBenchmarks(options: BenchmarkOptions): void {
 
         // Read back to verify
         let bytesRead = 0
-        for await (const chunk of stream.read({ live: false })) {
-          bytesRead += chunk.data.length
+        const readRes = await stream.stream({ live: false })
+        const reader = readRes.bodyStream().getReader()
+        let result = await reader.read()
+        while (!result.done) {
+          bytesRead += result.value.length
+          result = await reader.read()
         }
 
         const elapsedSeconds = (endTime - startTime) / 1000

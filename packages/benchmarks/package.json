@@ -1,37 +1,60 @@
 {
   "name": "@durable-streams/benchmarks",
-  "version": "0.0.1",
   "description": "Performance benchmark suite for Durable Streams server implementations",
+  "version": "0.1.4",
   "author": "Durable Stream contributors",
-  "license": "Apache-2.0",
-  "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
-  },
-  "scripts": {
-    "build": "tsdown",
-    "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit"
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
   },
   "dependencies": {
-    "@durable-streams/writer": "workspace:*",
-    "vitest": "^3.2.4"
+    "@durable-streams/client": "workspace:*",
+    "vitest": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",
     "tsdown": "^0.9.0",
     "typescript": "^5.0.0"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "src"
   ],
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "keywords": [
+    "benchmarks",
+    "durable-streams",
+    "performance",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/benchmarks"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "./dist/index.d.ts"
 }

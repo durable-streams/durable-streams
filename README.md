@@ -43,7 +43,16 @@ AI products make this painfully visible. Token streaming is the UI for chat and 
 
 **Durable Streams addresses this gap.** It's a minimal HTTP-based protocol for durable, offset-based streaming designed for client applications across all platforms: web browsers, mobile apps, native clients, IoT devices, and edge workers. Based on 1.5 years of production use at [Electric](https://electric-sql.com/) for real-time Postgres sync, reliably delivering millions of state changes every day.
 
-The protocol provides:
+**What you get:**
+
+- **Refresh-safe** - Users refresh the page, switch tabs, or background the app—they pick up exactly where they left off
+- **Share links** - A stream is a URL. Multiple viewers can watch the same stream together in real-time
+- **Never re-run** - Don't repeat expensive work because a client disconnected mid-stream
+- **Multi-device** - Start on your phone, continue on your laptop, watch from a shared link—all in sync
+- **Multi-tab** - Works seamlessly across browser tabs without duplicating connections or missing data
+- **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
+
+The protocol is:
 
 - 🌐 **Universal** - Works anywhere HTTP works: web browsers, mobile apps, native clients, IoT devices, edge workers
 - 📦 **Simple** - Built on standard HTTP with no custom protocols
@@ -53,16 +62,47 @@ The protocol provides:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
+## Installation
+
+### npm packages
+
+```bash
+npm install @durable-streams/client   # TypeScript client
+npm install @durable-streams/server   # Reference Node.js server
+npm install @durable-streams/state    # State Protocol primitives
+npm install @durable-streams/cli      # Development & testing CLI
+```
+
+### Other languages
+
+```bash
+# Go
+go get github.com/durable-streams/durable-streams/packages/client-go
+
+# Python
+pip install durable-streams
+```
+
+### Server binary
+
+For production use, download the Caddy-based server binary from [GitHub releases](https://github.com/durable-streams/durable-streams/releases). Available for macOS (Intel & ARM), Linux (AMD64 & ARM64), and Windows.
+
+```bash
+# Start the server
+./durable-streams-server dev
+# Server runs on http://localhost:4437
+```
+
 ## Packages
 
 This monorepo contains:
 
-- **[@durable-streams/client](./packages/client)** - TypeScript read-only client (smaller bundle)
-- **[@durable-streams/writer](./packages/writer)** - TypeScript read/write client (includes create/append/delete operations)
+- **[@durable-streams/client](./packages/client)** - TypeScript client with full read/write support and automatic batching
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
-- **[@durable-streams/test-ui](./packages/test-ui)** - Visual web interface for testing and exploring streams
-- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
+- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (124 tests)
+- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (110 tests)
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
@@ -79,11 +119,13 @@ git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
 
+pnpm build
+
 # Terminal 1: Start the local server
 pnpm start:dev
 
 # Terminal 2: Launch the Test UI
-cd packages/test-ui
+cd examples/test-ui
 pnpm dev
 ```
 
@@ -95,7 +137,7 @@ Open `http://localhost:3000` to:
 - View the stream registry to see all active streams
 - Inspect stream metadata and content-type rendering
 
-See the [Test UI README](./packages/test-ui/README.md) for details.
+See the [Test UI README](./examples/test-ui/README.md) for details.
 
 ### Option 2: CLI
 
@@ -105,6 +147,8 @@ git clone https://github.com/durable-streams/durable-streams.git
 cd durable-streams
 pnpm install
 
+pnpm build
+
 # Terminal 1: Start the local server
 pnpm start:dev
 
@@ -112,7 +156,7 @@ pnpm start:dev
 pnpm link:dev
 
 # Set the server URL
-export STREAM_URL=http://localhost:8787
+export STREAM_URL=http://localhost:4437
 
 # Create a stream
 durable-stream-dev create my-stream
@@ -132,52 +176,55 @@ The Test UI and CLI share the same `__registry__` system stream, so streams crea
 
 ## Quick Start
 
-### Read-only client (typical browser/mobile usage)
+### Full read/write client
 
-For applications that only need to read from streams:
+The `@durable-streams/client` package provides full read/write support with automatic batching for high-throughput writes:
 
 ```typescript
 import { DurableStream } from "@durable-streams/client"
 
-const stream = new DurableStream({
-  url: "https://your-server.com/v1/stream/my-stream",
-})
-
-// Read existing data from stream (returns immediately)
-const result = await stream.read({ live: false })
-console.log(new TextDecoder().decode(result.data))
-```
-
-### Read/write client
-
-For applications that need to create and write to streams:
-
-```typescript
-import { DurableStream } from "@durable-streams/writer"
-
 // Create a new stream
-const stream = await DurableStream.create({
+const handle = await DurableStream.create({
   url: "https://your-server.com/v1/stream/my-stream",
   contentType: "application/json",
 })
 
-// Append data
-await stream.append(JSON.stringify({ event: "user.created", userId: "123" }))
-await stream.append(JSON.stringify({ event: "user.updated", userId: "123" }))
+// Append data (automatically batched for high throughput)
+await handle.append({ event: "user.created", userId: "123" })
+await handle.append({ event: "user.updated", userId: "123" })
 
-// Writer also includes all read operations
-const result = await stream.read({ live: false })
+// Read with the streaming API
+const res = await handle.stream<{ event: string; userId: string }>({
+  live: false,
+})
+const items = await res.json()
+console.log(items) // [{ event: "user.created", userId: "123" }, ...]
 ```
 
 ### Resume from an offset
 
 ```typescript
 // Read and save the offset
-const result = await stream.read({ live: false })
-const savedOffset = result.offset // Save this for later
+const res = await handle.stream({ live: false })
+const text = await res.text()
+const savedOffset = res.offset // Save this for later
 
 // Resume from saved offset (catch-up mode returns immediately)
-const resumed = await stream.read({ offset: savedOffset, live: false })
+const resumed = await handle.stream({ offset: savedOffset, live: false })
+```
+
+### Live streaming
+
+```typescript
+// Subscribe to live updates
+const res = await handle.stream({ live: "auto" })
+
+res.subscribeJson(async (batch) => {
+  for (const item of batch.items) {
+    console.log("Received:", item)
+  }
+  saveCheckpoint(batch.offset) // Persist for resumption
+})
 ```
 
 ## Protocol in 60 Seconds
@@ -242,28 +289,31 @@ By default, Durable Streams is a **raw byte stream with no message boundaries**.
 
 ```typescript
 // Append multiple messages
-await stream.append("hello")
-await stream.append("world")
+await handle.append("hello")
+await handle.append("world")
 
 // Read from beginning - returns all data concatenated
-const result = await stream.read({ live: false })
-// result.data = "helloworld" (complete stream from offset to end)
+const res = await handle.stream({ live: false })
+const text = await res.text()
+// text = "helloworld" (complete stream from offset to end)
 
 // If more data arrives and you read again from the returned offset
-await stream.append("!")
-const next = await stream.read({ offset: result.offset })
-// next.data = "!" (complete new data from last offset to new end)
+await handle.append("!")
+const next = await handle.stream({ offset: res.offset, live: false })
+const newText = await next.text()
+// newText = "!" (complete new data from last offset to new end)
 ```
 
 **You must implement your own framing.** For example, newline-delimited JSON (NDJSON):
 
 ```typescript
 // Write with newlines
-await stream.append(JSON.stringify({ event: "user.created" }) + "\n")
-await stream.append(JSON.stringify({ event: "user.updated" }) + "\n")
+await handle.append(JSON.stringify({ event: "user.created" }) + "\n")
+await handle.append(JSON.stringify({ event: "user.updated" }) + "\n")
 
 // Parse line by line
-const text = new TextDecoder().decode(result.data)
+const res = await handle.stream({ live: false })
+const text = await res.text()
 const messages = text.split("\n").filter(Boolean).map(JSON.parse)
 ```
 
@@ -273,17 +323,18 @@ When creating a stream with `contentType: "application/json"`, the server guaran
 
 ```typescript
 // Create a JSON-mode stream
-const stream = await DurableStream.create({
+const handle = await DurableStream.create({
   url: "https://your-server.com/v1/stream/my-stream",
   contentType: "application/json",
 })
 
 // Append individual JSON values
-await stream.append({ event: "user.created", userId: "123" })
-await stream.append({ event: "user.updated", userId: "123" })
+await handle.append({ event: "user.created", userId: "123" })
+await handle.append({ event: "user.updated", userId: "123" })
 
-// Read returns parsed JSON array
-for await (const message of stream.json({ live: false })) {
+// Stream individual JSON messages
+const res = await handle.stream({ live: false })
+for await (const message of res.jsonStream()) {
   console.log(message)
   // { event: "user.created", userId: "123" }
   // { event: "user.updated", userId: "123" }
@@ -306,13 +357,23 @@ Offsets are opaque tokens that identify positions within a stream:
 - **Lexicographically sortable** - You can compare offsets to determine ordering
 - **`"-1"` means start** - Use `offset: "-1"` to read from the beginning
 - **Server-generated** - Always use the `offset` value returned in responses
+- **Unique** - Each offset is unique within a stream
+- **Monotonically increasing** - All offsets are monotonically increasing within a stream
 
 ```typescript
 // Start from beginning (catch-up mode)
-const result = await stream.read({ offset: "-1", live: false })
+const res = await stream({
+  url: "https://your-server.com/v1/stream/my-stream",
+  offset: "-1",
+  live: false,
+})
 
 // Resume from last position (always use returned offset)
-const next = await stream.read({ offset: result.offset, live: false })
+const next = await stream({
+  url: "https://your-server.com/v1/stream/my-stream",
+  offset: res.offset,
+  live: false,
+})
 ```
 
 The only special offset value is `"-1"` for stream start. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
@@ -340,9 +401,9 @@ Durable Streams is built on a simple HTTP-based protocol. See [PROTOCOL.md](./PR
 - Content-type preservation
 - CDN-friendly caching and request collapsing
 
-### CDN Caching
+### CDN Caching and Fan-Out
 
-Historical reads (catch-up from known offsets) are fully cacheable at CDNs and in browsers:
+This is where the economics change. Because reads are offset-based URLs, CDNs can cache and collapse requests—meaning **one origin can serve millions of concurrent viewers** without breaking a sweat.
 
 ```bash
 # Request
@@ -360,10 +421,16 @@ Content-Type: application/json
 
 **How it works:**
 
+- **Shared streams** - Backends write to a stream, multiple clients subscribe to it in real-time
 - **Offset-based URLs** - Same offset = same data, perfect for caching
-- **Cache-Control** - Historical data cached for 60s, stale content served during revalidation
-- **ETag** - Efficient revalidation for unchanged data
-- **Request collapsing** - Multiple clients requesting same offset collapsed to single upstream request
+- **Request collapsing** - 10,000 viewers at the same offset become one upstream request
+- **Edge delivery** - CDN edges serve catch-up reads; origin only handles new writes
+
+**What this enables:**
+
+- **Live dashboards** - Thousands of viewers watch the same metrics stream
+- **Collaborative apps** - Multiple users sync to the same document or workspace
+- **Shared debugging** - Watch a user's session in real-time to troubleshoot together
 
 ## Performance
 
@@ -402,30 +469,25 @@ Your application server consumes from backend streaming systems, applies authori
 - Durable Streams to optimize for HTTP compatibility, CDN leverage, and client resumability
 - Each layer to use protocols suited to its environment
 
-## Why Not SSE or WebSockets?
+## Relationship to SSE and WebSockets
 
-Server-Sent Events (SSE) and WebSockets provide real-time communication, but both share fundamental limitations for durable streaming:
+SSE and WebSockets are good transports for real-time delivery. Durable Streams uses SSE as one of its delivery modes (`live=sse`). The difference isn't the transport, it's what sits behind it.
 
-- **No durability** - Both are ephemeral; disconnect and data is lost
-- **No standardized resumption** - No standard way to resume from a specific position after reconnection
-- **No catch-up protocol** - No defined way to retrieve historical data before switching to live mode
-- **Custom implementation required** - You must build your own storage, replay, and reconnection logic
-- **Poor caching integration** - Neither integrates well with HTTP caching infrastructure
+**SSE/WebSockets give you a connection. Durable Streams gives you a log.**
 
-SSE is also text-only. WebSockets require stateful connection management, sticky sessions for load balancing, and custom message framing.
+SSE can reconnect (via `Last-Event-ID`), but it doesn't standardize what happens on the server side: there's no defined log format, no retention semantics, no catch-up protocol, no multi-reader coordination. Most real-world SSE endpoints don't persist history—if you disconnect, the data is gone.
 
-**Durable Streams addresses all of these:**
+Durable Streams standardizes the durable log underneath:
 
-- **Durable storage** - Data persists across server restarts and client disconnections
-- **Standardized resumption** - Opaque, lexicographically sortable offsets with defined semantics
-- **Unified catch-up and live protocol** - Same offset-based API for historical and real-time data
-- **Simple protocol** - Standard HTTP methods and headers, no custom framing required
-- **Caching-friendly** - Offset-based requests enable efficient CDN and browser caching
-- **Stateless servers** - No connection state to manage; clients track their own offsets
-- **Binary support** - Content-type agnostic byte streams
-- **Conformance tests** - Standardized test suite ensures consistent behavior
+- **Persistent storage** - Data survives disconnections, refreshes, and server restarts
+- **Offset-based resumption** - Resume from any position with well-defined semantics
+- **Unified catch-up and live** - Same API for historical replay and real-time tailing
+- **Multi-reader support** - Multiple clients can subscribe to the same stream
+- **CDN-friendly** - Offset-based URLs enable aggressive caching and request collapsing
+- **Stateless servers** - Clients track their own offsets; no connection state to manage
+- **Standard protocol** - Reusable clients and framework integrations that work with any conforming server
 
-Durable Streams can use SSE as a transport mechanism (via `live=sse` mode) while providing the missing durability layer on top.
+The result: SSE (or long-poll) for the last mile, durable log semantics everywhere else. You get the simplicity of HTTP streaming with the reliability of an append-only log.
 
 ## Building Your Own Implementation
 
@@ -440,33 +502,43 @@ Client implementations need only support standard HTTP requests and offset track
 We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
 })
 ```
 
 ### Node.js Reference Server
 
 ```typescript
-import { createDurableStreamServer } from "@durable-streams/server"
+import { DurableStreamTestServer } from "@durable-streams/server"
 
-const server = createDurableStreamServer({
-  port: 8787,
-  // In-memory storage (for development)
-  // Add file-backed storage for production
+const server = new DurableStreamTestServer({
+  port: 4437,
+  host: "127.0.0.1",
 })
 
 await server.start()
+console.log(`Server running on ${server.baseUrl}`)
 ```
 
 See [@durable-streams/server](./packages/server) for more details.
 
+### Community implementations
+
+**Go**
+
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
+
+**Java**
+
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformance test coverage.
+
 ## CLI Tool
 
 ```bash
-# Set the server URL (defaults to http://localhost:8787)
+# Set the server URL (defaults to http://localhost:4437)
 export STREAM_URL=https://your-server.com
 ```
 
@@ -493,13 +565,20 @@ Stream database changes to web and mobile clients for real-time synchronization:
 ```typescript
 // Server: stream database changes
 for (const change of db.changes()) {
-  await stream.append(JSON.stringify(change))
+  await handle.append(change) // JSON objects batched automatically
 }
 
 // Client: receive and apply changes (works in browsers, React Native, native apps)
-const result = await stream.read({ offset: lastSeenOffset })
-const changes = parseChanges(result.data)
-changes.forEach(applyChange)
+const res = await handle.stream<Change>({
+  offset: lastSeenOffset,
+  live: "auto",
+})
+res.subscribeJson(async (batch) => {
+  for (const change of batch.items) {
+    applyChange(change)
+  }
+  saveOffset(batch.offset)
+})
 ```
 
 ### Event Sourcing
@@ -508,39 +587,70 @@ Build event-sourced systems with durable event logs:
 
 ```typescript
 // Append events
-await stream.append(JSON.stringify({ type: "OrderCreated", orderId: "123" }))
-await stream.append(JSON.stringify({ type: "OrderPaid", orderId: "123" }))
+await handle.append({ type: "OrderCreated", orderId: "123" })
+await handle.append({ type: "OrderPaid", orderId: "123" })
 
 // Replay from beginning (catch-up mode for full replay)
-const result = await stream.read({ offset: "-1", live: false })
-const events = parseEvents(result.data)
+const res = await handle.stream<Event>({ offset: "-1", live: false })
+const events = await res.json()
 const state = events.reduce(applyEvent, initialState)
 ```
 
 ### AI Conversation Streaming
 
-Stream LLM responses with full conversation history accessible across devices:
+LLM inference is expensive. When a user's tab gets suspended, their network flaps, or they refresh the page, you don't want to re-run the generation—you want them to pick up exactly where they left off.
 
 ```typescript
-// Stream AI response chunks
+// Server: stream tokens to a durable stream (continues even if client disconnects)
+const handle = await DurableStream.create({
+  url: `https://your-server.com/v1/stream/generation/${generationId}`,
+  contentType: "text/plain",
+})
+
 for await (const token of llm.stream(prompt)) {
-  await stream.append(token)
+  await handle.append(token) // Persisted immediately
 }
 
-// Client can resume from any point (switch devices, refresh page, reconnect)
-const result = await stream.read({ offset: lastSeenOffset })
-renderTokens(new TextDecoder().decode(result.data))
+// Client: resume from last seen position (refresh-safe)
+const res = await handle.stream({ offset: lastSeenOffset, live: "auto" })
+res.subscribe((chunk) => {
+  renderTokens(chunk.data)
+  saveOffset(chunk.offset) // Persist for next resume
+})
 ```
+
+**What this gives you:**
+
+- **Tab suspended?** User comes back, catches up from saved offset—no re-generation
+- **Page refresh?** Continues from last token, not from the beginning
+- **Share the generation?** Multiple viewers watch the same stream in real-time
+- **Switch devices?** Start on mobile, continue on desktop, same stream
 
 ## Testing Your Implementation
 
 Use the conformance test suite to verify your server implements the protocol correctly:
 
+### Using the CLI
+
+The easiest way to run conformance tests against your server:
+
+```bash
+# Run tests once (for CI)
+npx @durable-streams/server-conformance-tests --run http://localhost:4437
+
+# Watch mode - reruns tests when source files change (for development)
+npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
+```
+
+### Programmatic Usage
+
+You can also run the tests programmatically in your own test suite:
+
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
 })
 ```
 
@@ -552,7 +662,7 @@ Measure your server's performance:
 import { runBenchmarks } from "@durable-streams/benchmarks"
 
 runBenchmarks({
-  baseUrl: "http://localhost:8787",
+  baseUrl: "http://localhost:4437",
   environment: "local",
 })
 ```

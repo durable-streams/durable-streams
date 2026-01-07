@@ -1,0 +1,209 @@
+id: consumer-message-ordering
+name: Message Ordering
+description: Tests that messages are received in strict offset order
+category: consumer
+tags:
+  - core
+  - ordering
+  - live
+
+tests:
+  - id: ordering-sequential-appends
+    name: Sequential appends maintain order
+    description: Messages should be read in the same order they were appended
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "first"
+      - action: append
+        path: ${streamPath}
+        data: "second"
+      - action: append
+        path: ${streamPath}
+        data: "third"
+      - action: append
+        path: ${streamPath}
+        data: "fourth"
+      - action: append
+        path: ${streamPath}
+        data: "fifth"
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "firstsecondthirdfourthfifth"
+
+  - id: ordering-longpoll-preserves-order
+    name: Long-poll preserves message order
+    description: Messages received via long-poll should be in offset order
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "a"
+      - action: append
+        path: ${streamPath}
+        data: "b"
+      - action: append
+        path: ${streamPath}
+        data: "c"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          data: "abc"
+
+  - id: ordering-sse-preserves-order
+    name: SSE preserves message order
+    description: Messages received via SSE should be in offset order
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "x"
+      - action: append
+        path: ${streamPath}
+        data: "y"
+      - action: append
+        path: ${streamPath}
+        data: "z"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "xyz"
+
+  - id: ordering-offset-monotonic
+    name: Offsets are monotonically increasing
+    description: Each message's offset should be greater than the previous
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "1"
+        expect:
+          storeOffsetAs: offset1
+      - action: append
+        path: ${streamPath}
+        data: "2"
+        expect:
+          storeOffsetAs: offset2
+      - action: append
+        path: ${streamPath}
+        data: "3"
+        expect:
+          storeOffsetAs: offset3
+    operations:
+      # Read from offset1 should get "23"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset1}
+        expect:
+          data: "23"
+      # Read from offset2 should get "3"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset2}
+        expect:
+          data: "3"
+      # Read from offset3 should get nothing (at end)
+      - action: read
+        path: ${streamPath}
+        offset: ${offset3}
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: ordering-live-new-data
+    name: Live mode receives new data in order
+    description: New data appended during live read should arrive in order
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "init"
+        expect:
+          storeOffsetAs: initialOffset
+    operations:
+      # Start long-poll in background
+      - action: read
+        path: ${streamPath}
+        offset: ${initialOffset}
+        live: long-poll
+        timeoutMs: 5000
+        maxChunks: 3
+        background: true
+        as: liveRead
+      - action: wait
+        ms: 100
+      # Append data in order
+      - action: server-append
+        path: ${streamPath}
+        data: "A"
+      - action: server-append
+        path: ${streamPath}
+        data: "B"
+      - action: server-append
+        path: ${streamPath}
+        data: "C"
+      # Wait for live read to get the data
+      - action: await
+        ref: liveRead
+        expect:
+          dataContains: "ABC"
+
+  - id: ordering-many-messages
+    name: Order preserved with many messages
+    description: Order should be maintained even with many sequential appends
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "01"
+      - action: append
+        path: ${streamPath}
+        data: "02"
+      - action: append
+        path: ${streamPath}
+        data: "03"
+      - action: append
+        path: ${streamPath}
+        data: "04"
+      - action: append
+        path: ${streamPath}
+        data: "05"
+      - action: append
+        path: ${streamPath}
+        data: "06"
+      - action: append
+        path: ${streamPath}
+        data: "07"
+      - action: append
+        path: ${streamPath}
+        data: "08"
+      - action: append
+        path: ${streamPath}
+        data: "09"
+      - action: append
+        path: ${streamPath}
+        data: "10"
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "01020304050607080910"

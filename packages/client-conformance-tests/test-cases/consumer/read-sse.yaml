@@ -1,0 +1,232 @@
+id: consumer-sse
+name: SSE Reads
+description: Tests for Server-Sent Events live reading from streams
+category: consumer
+tags:
+  - core
+  - read
+  - sse
+  - live
+requires:
+  - sse
+
+tests:
+  - id: sse-receives-existing-data
+    name: SSE receives existing data
+    description: SSE stream should first deliver existing data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "existing1"
+      - action: append
+        path: ${streamPath}
+        data: "existing2"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 2
+        waitForUpToDate: true
+        expect:
+          dataContainsAll:
+            - "existing1"
+            - "existing2"
+          minChunks: 1
+
+  - id: sse-receives-new-data
+    name: SSE receives new data
+    description: SSE stream should receive data appended after connection
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: offset
+    operations:
+      # Start SSE read in background (will be waiting for new data)
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      # Wait for the SSE connection to establish
+      - action: wait
+        ms: 200
+      # Append data via direct server HTTP (adapter is blocked on read)
+      - action: server-append
+        path: ${streamPath}
+        data: "new-data"
+      # Wait for the background read to complete
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: "new-data"
+          minChunks: 1
+
+  - id: sse-resumes-from-offset
+    name: SSE resumes from offset
+    description: SSE should start from specified offset
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "skip-this"
+        expect:
+          storeOffsetAs: skipOffset
+      - action: append
+        path: ${streamPath}
+        data: "include-this"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${skipOffset}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "include-this"
+
+  - id: sse-up-to-date-signal
+    name: SSE signals up-to-date
+    description: SSE should indicate when caught up to head
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+
+  - id: sse-empty-stream
+    name: SSE on empty stream
+    description: SSE should work on empty stream and signal up-to-date
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          chunkCount: 0
+
+  - id: sse-binary-data
+    name: SSE with binary data
+    description: SSE should correctly transmit binary data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "/f7/AA==" # some binary bytes
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-preserves-nel-character
+    name: SSE preserves NEL character (U+0085)
+    description: |
+      SSE parsers must NOT split on U+0085 (Next Line / NEL).
+      Per HTML Living Standard, SSE lines end only with CRLF, LF, or CR.
+      Other Unicode line separators must be preserved as data.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "before\u0085after"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "before\u0085after"
+          minChunks: 1
+
+  - id: sse-preserves-line-separator
+    name: SSE preserves Line Separator (U+2028)
+    description: |
+      SSE parsers must NOT split on U+2028 (Line Separator).
+      This character can appear in JSON payloads and AI token streams.
+      It must be preserved as ordinary data, not treated as a line break.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "hello\u2028world"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "hello\u2028world"
+          minChunks: 1
+
+  - id: sse-preserves-paragraph-separator
+    name: SSE preserves Paragraph Separator (U+2029)
+    description: |
+      SSE parsers must NOT split on U+2029 (Paragraph Separator).
+      This character can appear in JSON payloads and AI token streams.
+      It must be preserved as ordinary data, not treated as a line break.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "para1\u2029para2"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "para1\u2029para2"
+          minChunks: 1
+
+  - id: sse-preserves-all-unicode-separators
+    name: SSE preserves all Unicode line separators together
+    description: |
+      Combined test ensuring NEL (U+0085), LS (U+2028), and PS (U+2029)
+      are all preserved in the same payload without being split.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "a\u0085b\u2028c\u2029d"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "a\u0085b\u2028c\u2029d"
+          minChunks: 1

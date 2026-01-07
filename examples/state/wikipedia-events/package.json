@@ -1,0 +1,26 @@
+{
+  "name": "@durable-streams/example-wikipedia-events",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "@tanstack/db": "latest",
+    "@tanstack/solid-db": "latest",
+    "solid-js": "^1.9.3",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.9.2",
+    "vite": "^6.0.0",
+    "vite-plugin-solid": "^2.10.2"
+  }
+}

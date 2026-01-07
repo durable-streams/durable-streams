@@ -4,9 +4,14 @@
  * Following the Electric Durable Stream Protocol specification.
  */
 
+import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
+import type { BackoffOptions } from "./fetch"
+
 /**
  * Offset string - opaque to the client.
  * Format: "<read-seq>_<byte-offset>"
+ *
+ * **Special value**: `-1` means "start of stream" - use this to read from the beginning.
  *
  * Always use the returned `offset` field from reads/follows as the next `offset` you pass in.
  */
@@ -18,21 +23,21 @@ export type Offset = string
 export type MaybePromise<T> = T | Promise<T>
 
 /**
- * Auth configuration for requests.
- *
- * Supports:
- * - Fixed tokens with optional custom header name
- * - Arbitrary static headers
- * - Async header resolution (e.g., for short-lived tokens)
- */
-export type Auth =
-  | { token: string; headerName?: string } // default "authorization: Bearer <token>"
-  | { headers: Record<string, string> }
-  | { getHeaders: () => Promise<Record<string, string>> }
-
-/**
  * Headers record where values can be static strings or async functions.
  * Following the @electric-sql/client pattern for dynamic headers.
+ *
+ * **Important**: Functions are called **for each request**, not once per session.
+ * In live mode with long-polling, the same function may be called many times
+ * to fetch fresh values (e.g., refreshed auth tokens) for each poll.
+ *
+ * @example
+ * ```typescript
+ * headers: {
+ *   Authorization: `Bearer ${token}`,           // Static - same for all requests
+ *   'X-Tenant-Id': () => getCurrentTenant(),    // Called per-request
+ *   'X-Auth': async () => await refreshToken()  // Called per-request (can refresh)
+ * }
+ * ```
  */
 export type HeadersRecord = {
   [key: string]: string | (() => MaybePromise<string>)
@@ -41,41 +46,247 @@ export type HeadersRecord = {
 /**
  * Params record where values can be static or async functions.
  * Following the @electric-sql/client pattern for dynamic params.
+ *
+ * **Important**: Functions are called **for each request**, not once per session.
+ * In live mode, the same function may be called multiple times to fetch
+ * fresh parameter values for each poll.
  */
 export type ParamsRecord = {
   [key: string]: string | (() => MaybePromise<string>) | undefined
 }
 
+// ============================================================================
+// Live Mode Types
+// ============================================================================
+
 /**
- * Base options for all stream operations.
+ * Live mode for reading from a stream.
+ * - false: Catch-up only, stop at first `upToDate`
+ * - "auto": Behavior driven by consumption method (default)
+ * - "long-poll": Explicit long-poll mode for live updates
+ * - "sse": Explicit server-sent events for live updates
+ */
+export type LiveMode = false | `auto` | `long-poll` | `sse`
+
+// ============================================================================
+// Stream Options (Read API)
+// ============================================================================
+
+/**
+ * Options for the stream() function (read-only API).
  */
 export interface StreamOptions {
   /**
    * The full URL to the durable stream.
    * E.g., "https://streams.example.com/my-account/chat/room-1"
    */
-  url: string
+  url: string | URL
 
   /**
-   * Authentication configuration.
-   * If using auth, you can provide:
-   * - A token (sent as Bearer token in Authorization header by default)
-   * - Custom headers
-   * - An async function to get headers (for refreshing tokens)
-   */
-  auth?: Auth
-
-  /**
-   * Additional headers to include in requests.
+   * HTTP headers to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
-   * Function values are resolved when needed, making this useful
-   * for dynamic headers like authentication tokens.
+   *
+   * **Important**: Functions are evaluated **per-request** (not per-session).
+   * In live mode, functions are called for each poll, allowing fresh values
+   * like refreshed auth tokens.
+   *
+   * @example
+   * ```typescript
+   * headers: {
+   *   Authorization: `Bearer ${token}`,           // Static
+   *   'X-Tenant-Id': () => getCurrentTenant(),    // Evaluated per-request
+   *   'X-Auth': async () => await refreshToken()  // Evaluated per-request
+   * }
+   * ```
    */
   headers?: HeadersRecord
 
   /**
-   * Additional query parameters to include in requests.
+   * Query parameters to include in requests.
    * Values can be strings or functions (sync or async) that return strings.
+   *
+   * **Important**: Functions are evaluated **per-request** (not per-session).
+   */
+  params?: ParamsRecord
+
+  /**
+   * AbortSignal for cancellation.
+   */
+  signal?: AbortSignal
+
+  /**
+   * Custom fetch implementation (for auth layers, proxies, etc.).
+   * Defaults to globalThis.fetch.
+   */
+  fetch?: typeof globalThis.fetch
+
+  /**
+   * Backoff options for retry behavior.
+   * Defaults to exponential backoff with jitter.
+   */
+  backoffOptions?: BackoffOptions
+
+  /**
+   * Starting offset (query param ?offset=...).
+   * If omitted, defaults to "-1" (start of stream).
+   * You can also explicitly pass "-1" to read from the beginning.
+   */
+  offset?: Offset
+
+  /**
+   * Live mode behavior:
+   * - false: Catch-up only, stop at first `upToDate`
+   * - "auto" (default): Behavior driven by consumption method
+   * - "long-poll": Explicit long-poll mode for live updates
+   * - "sse": Explicit server-sent events for live updates
+   */
+  live?: LiveMode
+
+  /**
+   * Hint: treat content as JSON even if Content-Type doesn't say so.
+   */
+  json?: boolean
+
+  /**
+   * Error handler for recoverable errors (following Electric client pattern).
+   */
+  onError?: StreamErrorHandler
+
+  /**
+   * SSE resilience options.
+   * When SSE connections fail repeatedly, the client can automatically
+   * fall back to long-polling mode.
+   */
+  sseResilience?: SSEResilienceOptions
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
+}
+
+/**
+ * Options for SSE connection resilience.
+ */
+export interface SSEResilienceOptions {
+  /**
+   * Minimum expected SSE connection duration in milliseconds.
+   * Connections shorter than this are considered "short" and may indicate
+   * proxy buffering or server misconfiguration.
+   * @default 1000
+   */
+  minConnectionDuration?: number
+
+  /**
+   * Maximum number of consecutive short connections before falling back to long-poll.
+   * @default 3
+   */
+  maxShortConnections?: number
+
+  /**
+   * Base delay for exponential backoff between short connection retries (ms).
+   * @default 100
+   */
+  backoffBaseDelay?: number
+
+  /**
+   * Maximum delay cap for exponential backoff (ms).
+   * @default 5000
+   */
+  backoffMaxDelay?: number
+
+  /**
+   * Whether to log warnings when falling back to long-poll.
+   * @default true
+   */
+  logWarnings?: boolean
+}
+
+// ============================================================================
+// Chunk & Batch Types
+// ============================================================================
+
+/**
+ * Metadata for a JSON batch or chunk.
+ */
+export interface JsonBatchMeta {
+  /**
+   * Last Stream-Next-Offset for this batch.
+   */
+  offset: Offset
+
+  /**
+   * True if this batch ends at the current end of the stream.
+   */
+  upToDate: boolean
+
+  /**
+   * Last Stream-Cursor / streamCursor, if present.
+   */
+  cursor?: string
+}
+
+/**
+ * A batch of parsed JSON items with metadata.
+ */
+export interface JsonBatch<T = unknown> extends JsonBatchMeta {
+  /**
+   * The parsed JSON items in this batch.
+   */
+  items: ReadonlyArray<T>
+}
+
+/**
+ * A chunk of raw bytes with metadata.
+ */
+export interface ByteChunk extends JsonBatchMeta {
+  /**
+   * The raw byte data.
+   */
+  data: Uint8Array
+}
+
+/**
+ * A chunk of text with metadata.
+ */
+export interface TextChunk extends JsonBatchMeta {
+  /**
+   * The text content.
+   */
+  text: string
+}
+
+// ============================================================================
+// StreamHandle Options (Read/Write API)
+// ============================================================================
+
+/**
+ * Base options for StreamHandle operations.
+ */
+export interface StreamHandleOptions {
+  /**
+   * The full URL to the durable stream.
+   * E.g., "https://streams.example.com/my-account/chat/room-1"
+   */
+  url: string | URL
+
+  /**
+   * HTTP headers to include in requests.
+   * Values can be strings or functions (sync or async) that return strings.
+   *
+   * Functions are evaluated **per-request** (not per-session).
+   */
+  headers?: HeadersRecord
+
+  /**
+   * Query parameters to include in requests.
+   * Values can be strings or functions (sync or async) that return strings.
+   *
+   * Functions are evaluated **per-request** (not per-session).
    */
   params?: ParamsRecord
 
@@ -87,21 +298,42 @@ export interface StreamOptions {
 
   /**
    * Default AbortSignal for operations.
-   * Individual operations can override this.
    */
   signal?: AbortSignal
+
+  /**
+   * The content type for the stream.
+   */
+  contentType?: string
+
+  /**
+   * Error handler for recoverable errors.
+   */
+  onError?: StreamErrorHandler
+
+  /**
+   * Enable automatic batching for append() calls.
+   * When true, multiple append() calls made while a POST is in-flight
+   * will be batched together into a single request.
+   *
+   * @default true
+   */
+  batching?: boolean
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
 }
 
 /**
  * Options for creating a new stream.
  */
-export interface CreateOptions extends StreamOptions {
-  /**
-   * The content type for the stream.
-   * This is set once on creation and cannot be changed.
-   */
-  contentType?: string
-
+export interface CreateOptions extends StreamHandleOptions {
   /**
    * Time-to-live in seconds (relative TTL).
    */
@@ -116,6 +348,15 @@ export interface CreateOptions extends StreamOptions {
    * Initial body to append on creation.
    */
   body?: BodyInit | Uint8Array | string
+
+  /**
+   * Enable automatic batching for append() calls.
+   * When true, multiple append() calls made while a POST is in-flight
+   * will be batched together into a single request.
+   *
+   * @default true
+   */
+  batching?: boolean
 }
 
 /**
@@ -143,19 +384,19 @@ export interface AppendOptions {
 }
 
 /**
- * Live mode for reading from a stream.
- * - "long-poll": Use long-polling for live updates
- * - "sse": Use Server-Sent Events for live updates (throws if unsupported)
+ * Legacy live mode type (internal use only).
+ * @internal
  */
-export type LiveMode = `long-poll` | `sse`
+export type LegacyLiveMode = `long-poll` | `sse`
 
 /**
- * Options for reading from a stream.
+ * Options for reading from a stream (internal iterator options).
+ * @internal
  */
 export interface ReadOptions {
   /**
    * Starting offset, passed as ?offset=...
-   * If omitted, reads from the start of the stream.
+   * If omitted, defaults to "-1" (start of stream).
    */
   offset?: Offset
 
@@ -166,7 +407,7 @@ export interface ReadOptions {
    * - "long-poll": Use long-polling for live updates
    * - "sse": Use SSE for live updates (throws if unsupported)
    */
-  live?: boolean | LiveMode
+  live?: boolean | LegacyLiveMode
 
   /**
    * Override cursor for the request.
@@ -212,19 +453,14 @@ export interface HeadResult {
 }
 
 /**
- * Result from a read operation.
+ * Metadata extracted from a stream response.
+ * Contains headers and control information from the stream server.
  */
-export interface ReadResult {
+export interface ResponseMetadata {
   /**
-   * The data read from the stream.
+   * Next offset to read from (stream-offset header).
    */
-  data: Uint8Array
-
-  /**
-   * Next offset to read from.
-   * This is the HTTP stream-offset header value.
-   */
-  offset: Offset
+  offset: string
 
   /**
    * Cursor for CDN collapsing (stream-cursor header).
@@ -233,7 +469,6 @@ export interface ReadResult {
 
   /**
    * True if stream-up-to-date header was present.
-   * Indicates the response ends at the current end of the stream.
    */
   upToDate: boolean
 
@@ -243,16 +478,10 @@ export interface ReadResult {
   etag?: string
 
   /**
-   * Content type of the data.
+   * Content type of the stream.
    */
   contentType?: string
 }
-
-/**
- * A chunk returned from follow() or toReadableStream().
- * Same structure as ReadResult.
- */
-export interface StreamChunk extends ReadResult {}
 
 /**
  * Error codes for DurableStreamError.
@@ -267,6 +496,8 @@ export type DurableStreamErrorCode =
   | `UNAUTHORIZED`
   | `FORBIDDEN`
   | `RATE_LIMITED`
+  | `ALREADY_CONSUMED`
+  | `ALREADY_CLOSED`
   | `UNKNOWN`
 
 /**
@@ -284,10 +515,15 @@ export type RetryOpts = {
  * Called when a recoverable error occurs during streaming.
  *
  * **Return value behavior** (following Electric client pattern):
- * - Return `{}` to retry with the same params/headers
- * - Return `{ params }` to retry with merged params (existing params are preserved)
- * - Return `{ headers }` to retry with merged headers (existing headers are preserved)
- * - Return `void`/`undefined` to stop the stream and propagate the error
+ * - Return `{}` (empty object) → Retry immediately with same params/headers
+ * - Return `{ params }` → Retry with merged params (existing params preserved)
+ * - Return `{ headers }` → Retry with merged headers (existing headers preserved)
+ * - Return `void` or `undefined` → Stop stream and propagate the error
+ * - Return `null` → INVALID (will cause error - use `{}` instead)
+ *
+ * **Important**: To retry, you MUST return an object (can be empty `{}`).
+ * Returning nothing (`void`), explicitly returning `undefined`, or omitting
+ * a return statement all stop the stream. Do NOT return `null`.
  *
  * Note: Automatic retries with exponential backoff are already applied
  * for 5xx server errors, network errors, and 429 rate limits before
@@ -295,19 +531,225 @@ export type RetryOpts = {
  *
  * @example
  * ```typescript
- * // Retry on any error
+ * // Retry on any error (returns empty object)
  * onError: (error) => ({})
  *
- * // Refresh auth token on 401
+ * // Refresh auth token on 401, propagate other errors
  * onError: async (error) => {
  *   if (error instanceof FetchError && error.status === 401) {
  *     const newToken = await refreshAuthToken()
  *     return { headers: { Authorization: `Bearer ${newToken}` } }
  *   }
- *   // Don't retry other errors
+ *   // Implicitly returns undefined - error will propagate
+ * }
+ *
+ * // Conditionally retry with explicit propagation
+ * onError: (error) => {
+ *   if (shouldRetry(error)) {
+ *     return {} // Retry
+ *   }
+ *   return undefined // Explicitly propagate error
  * }
  * ```
  */
 export type StreamErrorHandler = (
   error: Error
 ) => void | RetryOpts | Promise<void | RetryOpts>
+
+// ============================================================================
+// StreamResponse Interface
+// ============================================================================
+
+/**
+ * A streaming session returned by stream() or DurableStream.stream().
+ *
+ * Represents a live session with fixed `url`, `offset`, and `live` parameters.
+ * Supports multiple consumption styles: Promise helpers, ReadableStreams,
+ * and Subscribers.
+ *
+ * @typeParam TJson - The type of JSON items in the stream.
+ */
+export interface StreamResponse<TJson = unknown> {
+  // --- Static session info (known after first response) ---
+
+  /**
+   * The stream URL.
+   */
+  readonly url: string
+
+  /**
+   * The stream's content type (from first response).
+   */
+  readonly contentType?: string
+
+  /**
+   * The live mode for this session.
+   */
+  readonly live: LiveMode
+
+  /**
+   * The starting offset for this session.
+   */
+  readonly startOffset: Offset
+
+  // --- Response metadata (updated on each response) ---
+
+  /**
+   * HTTP response headers from the most recent server response.
+   * Updated on each long-poll/SSE response.
+   */
+  readonly headers: Headers
+
+  /**
+   * HTTP status code from the most recent server response.
+   * Updated on each long-poll/SSE response.
+   */
+  readonly status: number
+
+  /**
+   * HTTP status text from the most recent server response.
+   * Updated on each long-poll/SSE response.
+   */
+  readonly statusText: string
+
+  /**
+   * Whether the most recent response was successful (status 200-299).
+   * Always true for active streams (errors are thrown).
+   */
+  readonly ok: boolean
+
+  /**
+   * Whether the stream is waiting for initial data.
+   *
+   * Note: Always false in current implementation because stream() awaits
+   * the first response before returning. A future async iterator API
+   * could expose this as true during initial connection.
+   */
+  readonly isLoading: boolean
+
+  // --- Evolving state as data arrives ---
+
+  /**
+   * The next offset to read from (Stream-Next-Offset header).
+   *
+   * **Important**: This value advances **after data is delivered to the consumer**,
+   * not just after fetching from the server. The offset represents the position
+   * in the stream that follows the data most recently provided to your consumption
+   * method (body(), json(), bodyStream(), subscriber callback, etc.).
+   *
+   * Use this for resuming reads after a disconnect or saving checkpoints.
+   */
+  offset: Offset
+
+  /**
+   * Stream cursor for CDN collapsing (stream-cursor header).
+   *
+   * Updated after each chunk is delivered to the consumer.
+   */
+  cursor?: string
+
+  /**
+   * Whether we've reached the current end of the stream (stream-up-to-date header).
+   *
+   * Updated after each chunk is delivered to the consumer.
+   */
+  upToDate: boolean
+
+  // =================================
+  // 1) Accumulating helpers (Promise)
+  // =================================
+  // Accumulate until first `upToDate`, then resolve and stop.
+
+  /**
+   * Accumulate raw bytes until first `upToDate` batch, then resolve.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  body: () => Promise<Uint8Array>
+
+  /**
+   * Accumulate JSON *items* across batches into a single array, resolve at `upToDate`.
+   * Only valid in JSON-mode; throws otherwise.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  json: <T = TJson>() => Promise<Array<T>>
+
+  /**
+   * Accumulate text chunks into a single string, resolve at `upToDate`.
+   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   */
+  text: () => Promise<string>
+
+  // =====================
+  // 2) ReadableStreams
+  // =====================
+
+  /**
+   * Raw bytes as a ReadableStream<Uint8Array>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
+   */
+  bodyStream: () => ReadableStreamAsyncIterable<Uint8Array>
+
+  /**
+   * Individual JSON items (flattened) as a ReadableStream<TJson>.
+   * Built on jsonBatches().
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
+   */
+  jsonStream: () => ReadableStreamAsyncIterable<TJson>
+
+  /**
+   * Text chunks as ReadableStream<string>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
+   */
+  textStream: () => ReadableStreamAsyncIterable<string>
+
+  // =====================
+  // 3) Subscriber APIs
+  // =====================
+  // Subscribers return Promise<void> for backpressure control.
+  // Note: Only one consumption method can be used per StreamResponse.
+
+  /**
+   * Subscribe to JSON batches as they arrive.
+   * Returns unsubscribe function.
+   */
+  subscribeJson: <T = TJson>(
+    subscriber: (batch: JsonBatch<T>) => Promise<void>
+  ) => () => void
+
+  /**
+   * Subscribe to raw byte chunks as they arrive.
+   * Returns unsubscribe function.
+   */
+  subscribeBytes: (
+    subscriber: (chunk: ByteChunk) => Promise<void>
+  ) => () => void
+
+  /**
+   * Subscribe to text chunks as they arrive.
+   * Returns unsubscribe function.
+   */
+  subscribeText: (subscriber: (chunk: TextChunk) => Promise<void>) => () => void
+
+  // =====================
+  // 4) Lifecycle
+  // =====================
+
+  /**
+   * Cancel the underlying session (abort HTTP, close SSE, stop long-polls).
+   */
+  cancel: (reason?: unknown) => void
+
+  /**
+   * Resolves when the session has fully closed:
+   * - `live:false` and up-to-date reached,
+   * - manual cancellation,
+   * - terminal error.
+   */
+  readonly closed: Promise<void>
+}

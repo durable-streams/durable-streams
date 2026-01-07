@@ -1,0 +1,221 @@
+name: Client Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  conformance:
+    name: Client Conformance Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: packages/client-go/go.mod
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Build Go client adapter
+        run: |
+          cd packages/client-go
+          go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Run TypeScript client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ts
+
+      - name: Run Go client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+  benchmarks:
+    name: Client Benchmarks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: packages/client-go/go.mod
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Build Go client adapter
+        run: |
+          cd packages/client-go
+          go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Install Python client
+        run: |
+          cd packages/client-py
+          uv sync
+
+      - name: Run TypeScript client benchmarks
+        id: ts_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ts --format json > benchmark-results-ts.json
+          cat benchmark-results-ts.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-ts.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-ts.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-ts.json)
+
+          echo "ts_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "ts_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "ts_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Run Go client benchmarks
+        id: go_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format json > benchmark-results-go.json
+          cat benchmark-results-go.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-go.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-go.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-go.json)
+
+          echo "go_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "go_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "go_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Run Python client benchmarks
+        id: py_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format json > benchmark-results-py.json
+          cat benchmark-results-py.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-py.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-py.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-py.json)
+
+          echo "py_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            packages/client-conformance-tests/benchmark-results-ts.json
+            packages/client-conformance-tests/benchmark-results-go.json
+            packages/client-conformance-tests/benchmark-results-py.json
+
+      - name: Generate benchmark report
+        if: always() && github.event_name == 'pull_request'
+        run: |
+          cd packages/client-conformance-tests
+
+          echo "# Client Benchmark Results" > benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+
+          cat benchmark-report.md
+
+      - name: Comment on PR with benchmark results
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('packages/client-conformance-tests/benchmark-report.md', 'utf8');
+
+            // Find existing comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('Client Benchmark Results')
+            );
+
+            const body = report;
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Check benchmark criteria
+        run: |
+          TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
+          GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
+          PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
+
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED))
+
+          if [ "$TOTAL_FAILED" -gt 0 ]; then
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED)"
+            exit 1
+          fi
+          echo "All benchmarks passed!"

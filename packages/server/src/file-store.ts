@@ -170,12 +170,6 @@ export class FileBackedStreamStore {
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
   /**
-   * In-memory buffer for recent appends per stream.
-   * Ensures read-your-writes consistency and fast long-poll notification.
-   * Messages remain in buffer until fsynced to disk.
-   */
-  private messageBuffers: Map<string, Array<StreamMessage>> = new Map()
-  /**
    * Per-stream locks for serializing append operations.
    * Ensures atomic If-Match check + write.
    */
@@ -345,6 +339,50 @@ export class FileBackedStreamStore {
   }
 
   /**
+   * Check if a stream is expired based on TTL or Expires-At.
+   */
+  private isExpired(meta: StreamMetadata): boolean {
+    const now = Date.now()
+
+    // Check absolute expiry time
+    if (meta.expiresAt) {
+      const expiryTime = new Date(meta.expiresAt).getTime()
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+        return true
+      }
+    }
+
+    // Check TTL (relative to creation time)
+    if (meta.ttlSeconds !== undefined) {
+      const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  /**
+   * Get stream metadata, deleting it if expired.
+   * Returns undefined if stream doesn't exist or is expired.
+   */
+  private getMetaIfNotExpired(streamPath: string): StreamMetadata | undefined {
+    const key = `stream:${streamPath}`
+    const meta = this.db.get(key) as StreamMetadata | undefined
+    if (!meta) {
+      return undefined
+    }
+    if (this.isExpired(meta)) {
+      // Delete expired stream
+      this.delete(streamPath)
+      return undefined
+    }
+    return meta
+  }
+
+  /**
    * Close the store, closing all file handles and database.
    * All data is already fsynced on each append, so no final flush needed.
    */
@@ -366,17 +404,17 @@ export class FileBackedStreamStore {
       initialData?: Uint8Array
     } = {}
   ): Promise<Stream> {
-    const key = `stream:${streamPath}`
-    const existing = this.db.get(key) as StreamMetadata | undefined
+    // Use getMetaIfNotExpired to treat expired streams as non-existent
+    const existing = this.getMetaIfNotExpired(streamPath)
 
     if (existing) {
       // Check if config matches (idempotent create)
       // MIME types are case-insensitive per RFC 2045
-      const normalizeContentType = (ct: string | undefined) =>
+      const normalizeMimeType = (ct: string | undefined) =>
         (ct ?? `application/octet-stream`).toLowerCase()
       const contentTypeMatches =
-        normalizeContentType(options.contentType) ===
-        normalizeContentType(existing.contentType)
+        normalizeMimeType(options.contentType) ===
+        normalizeMimeType(existing.contentType)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
 
@@ -390,6 +428,9 @@ export class FileBackedStreamStore {
         )
       }
     }
+
+    // Define key for LMDB operations
+    const key = `stream:${streamPath}`
 
     // Initialize metadata
     const streamMeta: StreamMetadata = {
@@ -431,6 +472,7 @@ export class FileBackedStreamStore {
     if (options.initialData && options.initialData.length > 0) {
       await this.append(streamPath, options.initialData, {
         contentType: options.contentType,
+        isInitialCreate: true,
       })
       // Re-fetch updated metadata
       const updated = this.db.get(key) as StreamMetadata
@@ -441,14 +483,12 @@ export class FileBackedStreamStore {
   }
 
   get(streamPath: string): Stream | undefined {
-    const key = `stream:${streamPath}`
-    const meta = this.db.get(key) as StreamMetadata | undefined
+    const meta = this.getMetaIfNotExpired(streamPath)
     return meta ? this.streamMetaToStream(meta) : undefined
   }
 
   has(streamPath: string): boolean {
-    const key = `stream:${streamPath}`
-    return this.db.get(key) !== undefined
+    return this.getMetaIfNotExpired(streamPath) !== undefined
   }
 
   delete(streamPath: string): boolean {
@@ -461,9 +501,6 @@ export class FileBackedStreamStore {
 
     // Cancel any pending long-polls for this stream
     this.cancelLongPollsForStream(streamPath)
-
-    // Clear in-memory buffer for this stream
-    this.messageBuffers.delete(streamPath)
 
     // Close any open file handle for this stream's segment file
     // This is important especially on Windows where open handles block deletion
@@ -500,10 +537,11 @@ export class FileBackedStreamStore {
     options: {
       seq?: string
       contentType?: string
+      isInitialCreate?: boolean
       expectedOffset?: string
     } = {}
-  ): Promise<StreamMessage> {
-    // Acquire per-stream lock to serialize appends
+  ): Promise<StreamMessage | null> {
+    // Acquire per-stream lock to serialize appends (needed for atomic OCC check + write)
     const existingLock = this.streamLocks.get(streamPath) ?? Promise.resolve()
     let releaseLock: () => void
     const newLock = new Promise<void>((resolve) => {
@@ -529,11 +567,11 @@ export class FileBackedStreamStore {
     options: {
       seq?: string
       contentType?: string
+      isInitialCreate?: boolean
       expectedOffset?: string
     } = {}
-  ): Promise<StreamMessage> {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+  ): Promise<StreamMessage | null> {
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -572,10 +610,14 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Process JSON mode data (throws on invalid JSON or empty arrays)
+    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      processedData = processJsonAppend(data)
+      processedData = processJsonAppend(data, options.isInitialCreate ?? false)
+      // If empty array in create mode, return null (empty stream created successfully)
+      if (processedData.length === 0) {
+        return null
+      }
     }
 
     // Parse current offset
@@ -599,41 +641,46 @@ export class FileBackedStreamStore {
     const stream = this.fileHandlePool.getWriteStream(segmentPath)
 
     // 1. Write message with framing: [4 bytes length][data][\n]
+    //    Combine into single buffer for single syscall, and wait for write
+    //    to be flushed to kernel before calling fsync
     const lengthBuf = Buffer.allocUnsafe(4)
     lengthBuf.writeUInt32BE(processedData.length, 0)
-    stream.write(lengthBuf)
-    stream.write(processedData)
-    stream.write(`\n`)
+    const frameBuf = Buffer.concat([
+      lengthBuf,
+      processedData,
+      Buffer.from(`\n`),
+    ])
+    await new Promise<void>((resolve, reject) => {
+      stream.write(frameBuf, (err) => {
+        if (err) reject(err)
+        else resolve()
+      })
+    })
 
-    // 2. Create message and add to in-memory buffer for read-your-writes consistency
+    // 2. Create message object for return value
     const message: StreamMessage = {
       data: processedData,
       offset: newOffset,
       timestamp: Date.now(),
     }
-    const buffer = this.messageBuffers.get(streamPath) ?? []
-    buffer.push(message)
-    this.messageBuffers.set(streamPath, buffer)
 
-    // 3. Notify long-polls (minimize their latency - they read from buffer + disk)
-    this.notifyLongPolls(streamPath)
-
-    // 4. Flush to disk (blocks here until durable)
+    // 3. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
 
-    // 5. Update LMDB metadata (safe under lock)
+    // 4. Update LMDB metadata (only after flush, so metadata reflects durability; safe under lock)
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
     }
+    const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
 
-    // 6. Clear from buffer (data is now durable on disk)
-    this.messageBuffers.delete(streamPath)
+    // 5. Notify long-polls (data is now readable from disk)
+    this.notifyLongPolls(streamPath)
 
-    // 7. Return (client knows data is durable)
+    // 6. Return (client knows data is durable)
     return message
   }
 
@@ -641,8 +688,7 @@ export class FileBackedStreamStore {
     streamPath: string,
     offset?: string
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -656,24 +702,13 @@ export class FileBackedStreamStore {
     const currentSeq = currentParts[0] ?? 0
     const currentByte = currentParts[1] ?? 0
 
-    // Check if there are buffered messages first (for read-your-writes during append)
-    const buffer = this.messageBuffers.get(streamPath) ?? []
-    const hasBufferedMessages = buffer.some((msg) => {
-      const msgParts = msg.offset.split(`_`).map(Number)
-      const msgByte = msgParts[1] ?? 0
-      return msgByte > startByte
-    })
-
-    // Early return if no data available (neither on disk nor in buffer)
-    if (
-      streamMeta.currentOffset === `0000000000000000_0000000000000000` &&
-      !hasBufferedMessages
-    ) {
+    // Early return if no data available
+    if (streamMeta.currentOffset === `0000000000000000_0000000000000000`) {
       return { messages: [], upToDate: true }
     }
 
-    // If start offset is at or past current offset AND no buffered messages, return empty
-    if (startByte >= currentByte && !hasBufferedMessages) {
+    // If start offset is at or past current offset, return empty
+    if (startByte >= currentByte) {
       return { messages: [], upToDate: true }
     }
 
@@ -736,20 +771,7 @@ export class FileBackedStreamStore {
       }
     } catch (err) {
       console.error(`[FileBackedStreamStore] Error reading file:`, err)
-      // Return empty messages on error (but still include buffer below)
     }
-
-    // Merge in-memory buffer messages (for read-your-writes consistency)
-    // Note: buffer already retrieved earlier for early-return check
-    const bufferMessages = buffer.filter((msg) => {
-      // Parse message offset to compare with start offset
-      const msgParts = msg.offset.split(`_`).map(Number)
-      const msgByte = msgParts[1] ?? 0
-      return msgByte > startByte
-    })
-
-    // Append buffer messages to disk messages
-    messages.push(...bufferMessages)
 
     return { messages, upToDate: true }
   }
@@ -759,8 +781,7 @@ export class FileBackedStreamStore {
     offset: string,
     timeoutMs: number
   ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
@@ -798,13 +819,16 @@ export class FileBackedStreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
+   * @throws Error if stream doesn't exist or is expired
    */
-  formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const key = `stream:${path}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+  formatResponse(
+    streamPath: string,
+    messages: Array<StreamMessage>
+  ): Uint8Array {
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new Error(`Stream not found: ${streamPath}`)
     }
 
     // Concatenate all message data
@@ -825,20 +849,18 @@ export class FileBackedStreamStore {
   }
 
   getCurrentOffset(streamPath: string): string | undefined {
-    const key = `stream:${streamPath}`
-    const streamMeta = this.db.get(key) as StreamMetadata | undefined
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
     return streamMeta?.currentOffset
   }
 
   clear(): void {
-    // Cancel all pending long-polls
+    // Cancel all pending long-polls and resolve them with empty result
     for (const pending of this.pendingLongPolls) {
       clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
     }
     this.pendingLongPolls = []
-
-    // Clear in-memory message buffers
-    this.messageBuffers.clear()
 
     // Clear all streams from LMDB
     const range = this.db.getRange({
@@ -860,6 +882,18 @@ export class FileBackedStreamStore {
 
     // Note: Files are not deleted in clear() with unique directory names
     // New streams get fresh directories, so old files won't interfere
+  }
+
+  /**
+   * Cancel all pending long-polls (used during shutdown).
+   */
+  cancelAllWaits(): void {
+    for (const pending of this.pendingLongPolls) {
+      clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
+    }
+    this.pendingLongPolls = []
   }
 
   list(): Array<string> {

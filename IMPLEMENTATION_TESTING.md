@@ -4,7 +4,7 @@ This document outlines testing approaches for Durable Streams server implementat
 
 ## Overview
 
-The conformance test suite (`@durable-streams/conformance-tests`) validates:
+The conformance test suite (`@durable-streams/server-conformance-tests`) validates:
 
 - ✅ HTTP protocol compliance
 - ✅ Correct header handling
@@ -559,7 +559,7 @@ test("recovers from corrupted chunk file", async () => {
 - [Electric GitHub Issues](https://github.com/electric-sql/electric/issues?q=is%3Aissue+label%3Abug+) - Real production bugs
 - [Electric Test Suite](https://github.com/electric-sql/electric/tree/main/packages/sync-service/test) - Implementation test patterns
 - [Durable Streams Protocol](./PROTOCOL.md) - Protocol specification
-- [Conformance Tests](./packages/conformance-tests) - Black-box test suite
+- [Conformance Tests](./packages/server-conformance-tests) - Black-box test suite
 
 ## Contributing
 

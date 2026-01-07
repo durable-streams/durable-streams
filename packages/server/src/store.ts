@@ -32,9 +32,13 @@ export function normalizeContentType(contentType: string | undefined): string {
  * - Validates JSON
  * - Extracts array elements if data is an array
  * - Always appends trailing comma for easy concatenation
- * @throws Error if JSON is invalid or array is empty
+ * @param isInitialCreate - If true, empty arrays are allowed (creates empty stream)
+ * @throws Error if JSON is invalid or array is empty (for non-create operations)
  */
-export function processJsonAppend(data: Uint8Array): Uint8Array {
+export function processJsonAppend(
+  data: Uint8Array,
+  isInitialCreate = false
+): Uint8Array {
   const text = new TextDecoder().decode(data)
 
   // Validate JSON
@@ -49,13 +53,18 @@ export function processJsonAppend(data: Uint8Array): Uint8Array {
   let result: string
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
+      // Empty arrays are valid for PUT (creates empty stream)
+      // but invalid for POST (no-op append, likely a bug)
+      if (isInitialCreate) {
+        return new Uint8Array(0) // Return empty data for empty stream
+      }
       throw new Error(`Empty arrays are not allowed`)
     }
     const elements = parsed.map((item) => JSON.stringify(item))
     result = elements.join(`,`) + `,`
   } else {
-    // Single value - add trailing comma
-    result = text.trim() + `,`
+    // Single value - re-serialize to normalize whitespace (single-line JSON)
+    result = JSON.stringify(parsed) + `,`
   }
 
   return new TextEncoder().encode(result)
@@ -89,6 +98,49 @@ export class StreamStore {
   private pendingLongPolls: Array<PendingLongPoll> = []
 
   /**
+   * Check if a stream is expired based on TTL or Expires-At.
+   */
+  private isExpired(stream: Stream): boolean {
+    const now = Date.now()
+
+    // Check absolute expiry time
+    if (stream.expiresAt) {
+      const expiryTime = new Date(stream.expiresAt).getTime()
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+        return true
+      }
+    }
+
+    // Check TTL (relative to creation time)
+    if (stream.ttlSeconds !== undefined) {
+      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  /**
+   * Get a stream, deleting it if expired.
+   * Returns undefined if stream doesn't exist or is expired.
+   */
+  private getIfNotExpired(path: string): Stream | undefined {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      return undefined
+    }
+    if (this.isExpired(stream)) {
+      // Delete expired stream
+      this.delete(path)
+      return undefined
+    }
+    return stream
+  }
+
+  /**
    * Create a new stream.
    * @throws Error if stream already exists with different config
    * @returns existing stream if config matches (idempotent)
@@ -102,7 +154,8 @@ export class StreamStore {
       initialData?: Uint8Array
     } = {}
   ): Stream {
-    const existing = this.streams.get(path)
+    // Use getIfNotExpired to treat expired streams as non-existent
+    const existing = this.getIfNotExpired(path)
     if (existing) {
       // Check if config matches (idempotent create)
       const contentTypeMatches =
@@ -136,7 +189,7 @@ export class StreamStore {
 
     // If initial data is provided, append it
     if (options.initialData && options.initialData.length > 0) {
-      this.appendToStream(stream, options.initialData)
+      this.appendToStream(stream, options.initialData, true) // isInitialCreate = true
     }
 
     this.streams.set(path, stream)
@@ -145,16 +198,17 @@ export class StreamStore {
 
   /**
    * Get a stream by path.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   get(path: string): Stream | undefined {
-    return this.streams.get(path)
+    return this.getIfNotExpired(path)
   }
 
   /**
-   * Check if a stream exists.
+   * Check if a stream exists (and is not expired).
    */
   has(path: string): boolean {
-    return this.streams.has(path)
+    return this.getIfNotExpired(path) !== undefined
   }
 
   /**
@@ -168,7 +222,7 @@ export class StreamStore {
 
   /**
    * Append data to a stream.
-   * @throws Error if stream doesn't exist
+   * @throws Error if stream doesn't exist or is expired
    * @throws Error if seq is lower than lastSeq
    * @throws Error if JSON mode and array is empty
    * @throws OffsetMismatchError if expectedOffset doesn't match current offset (OCC)
@@ -182,7 +236,7 @@ export class StreamStore {
       expectedOffset?: string
     } = {}
   ): StreamMessage {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -218,7 +272,9 @@ export class StreamStore {
       stream.lastSeq = options.seq
     }
 
-    const message = this.appendToStream(stream, data)
+    // appendToStream returns null only for empty arrays in create mode,
+    // but public append() never sets isInitialCreate, so empty arrays throw before this
+    const message = this.appendToStream(stream, data)!
 
     // Notify any pending long-polls
     this.notifyLongPolls(path)
@@ -228,12 +284,13 @@ export class StreamStore {
 
   /**
    * Read messages from a stream starting at the given offset.
+   * @throws Error if stream doesn't exist or is expired
    */
   read(
     path: string,
     offset?: string
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -265,9 +322,10 @@ export class StreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
+   * @throws Error if stream doesn't exist or is expired
    */
   formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -291,13 +349,14 @@ export class StreamStore {
 
   /**
    * Wait for new messages (long-poll).
+   * @throws Error if stream doesn't exist or is expired
    */
   async waitForMessages(
     path: string,
     offset: string,
     timeoutMs: number
   ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -333,21 +392,36 @@ export class StreamStore {
 
   /**
    * Get the current offset for a stream.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   getCurrentOffset(path: string): string | undefined {
-    return this.streams.get(path)?.currentOffset
+    return this.getIfNotExpired(path)?.currentOffset
   }
 
   /**
    * Clear all streams.
    */
   clear(): void {
-    // Cancel all pending long-polls
+    // Cancel all pending long-polls and resolve them with timeout
     for (const pending of this.pendingLongPolls) {
       clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
     }
     this.pendingLongPolls = []
     this.streams.clear()
+  }
+
+  /**
+   * Cancel all pending long-polls (used during shutdown).
+   */
+  cancelAllWaits(): void {
+    for (const pending of this.pendingLongPolls) {
+      clearTimeout(pending.timeoutId)
+      // Resolve with empty result to unblock waiting handlers
+      pending.resolve([])
+    }
+    this.pendingLongPolls = []
   }
 
   /**
@@ -361,11 +435,19 @@ export class StreamStore {
   // Private helpers
   // ============================================================================
 
-  private appendToStream(stream: Stream, data: Uint8Array): StreamMessage {
-    // Process JSON mode data (throws on invalid JSON or empty arrays)
+  private appendToStream(
+    stream: Stream,
+    data: Uint8Array,
+    isInitialCreate = false
+  ): StreamMessage | null {
+    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(stream.contentType) === `application/json`) {
-      processedData = processJsonAppend(data)
+      processedData = processJsonAppend(data, isInitialCreate)
+      // If empty array in create mode, return null (empty stream created successfully)
+      if (processedData.length === 0) {
+        return null
+      }
     }
 
     // Parse current offset

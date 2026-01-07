@@ -1,0 +1,83 @@
+{
+  "name": "@durable-streams/client-conformance-tests",
+  "description": "Conformance test suite for Durable Streams client implementations (producer and consumer)",
+  "version": "0.1.6",
+  "author": "Durable Stream contributors",
+  "bin": {
+    "client-conformance-tests": "./dist/cli.js",
+    "durable-streams-client-conformance": "./dist/cli.js"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/server": "workspace:*",
+    "fast-check": "^4.4.0",
+    "tsx": "^4.19.2",
+    "yaml": "^2.7.1"
+  },
+  "devDependencies": {
+    "tsdown": "^0.9.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./protocol": {
+      "import": {
+        "types": "./dist/protocol.d.ts",
+        "default": "./dist/protocol.js"
+      },
+      "require": {
+        "types": "./dist/protocol.d.cts",
+        "default": "./dist/protocol.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "test-cases"
+  ],
+  "keywords": [
+    "conformance",
+    "durable-streams",
+    "testing",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/client-conformance-tests"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test:run": "tsx src/cli.ts --run ts",
+    "test:run:python": "tsx src/cli.ts --run ../client-py/run-conformance-adapter.sh",
+    "test:run:python-async": "tsx src/cli.ts --run ../client-py/run-conformance-adapter-async.sh",
+    "test:run:python-async:verbose": "tsx src/cli.ts --run ../client-py/run-conformance-adapter-async.sh --verbose",
+    "test:run:python:verbose": "tsx src/cli.ts --run ../client-py/run-conformance-adapter.sh --verbose",
+    "test:run:verbose": "tsx src/cli.ts --run ts --verbose",
+    "typecheck": "tsc --noEmit"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "./dist/index.d.ts"
+}

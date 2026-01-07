@@ -1,0 +1,108 @@
+id: consumer-errors
+name: Consumer Error Handling
+description: Tests for error handling in consumer operations
+category: consumer
+tags:
+  - core
+  - errors
+  - read
+
+tests:
+  - id: read-nonexistent-stream
+    name: Read non-existent stream
+    description: Client should handle 404 when reading non-existent stream
+    operations:
+      - action: read
+        path: /nonexistent-read-stream
+        live: false
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: read-deleted-stream
+    name: Read deleted stream
+    description: Client should handle 404 when stream was deleted
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "before-delete"
+      - action: delete
+        path: ${streamPath}
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: read-invalid-offset
+    name: Read with invalid offset
+    description: Client should handle invalid offset format
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "not-a-valid-offset-format"
+        live: false
+        expect:
+          status: 400
+          errorCode: INVALID_OFFSET
+
+  - id: read-future-offset
+    name: Read with future offset
+    description: Client should handle offset beyond stream end
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "small"
+    operations:
+      - action: read
+        path: ${streamPath}
+        # Use an offset that's definitely beyond the stream
+        offset: "ffffffffffffffff"
+        live: false
+        expect:
+          # Server should either return empty or 400
+          chunkCount: 0
+
+  - id: longpoll-nonexistent
+    name: Long-poll non-existent stream
+    description: Long-poll should fail on non-existent stream
+    tags:
+      - longpoll
+    requires:
+      - long-poll
+    operations:
+      - action: read
+        path: /nonexistent-longpoll-stream
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: sse-nonexistent
+    name: SSE non-existent stream
+    description: SSE should fail on non-existent stream
+    tags:
+      - sse
+    requires:
+      - sse
+    operations:
+      - action: read
+        path: /nonexistent-sse-stream
+        live: sse
+        timeoutMs: 1000
+        expect:
+          status: 404
+          errorCode: NOT_FOUND

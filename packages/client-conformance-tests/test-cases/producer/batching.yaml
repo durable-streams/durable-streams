@@ -1,0 +1,112 @@
+id: producer-batching
+name: Automatic Batching
+description: Tests for automatic batching behavior in producer clients
+category: producer
+tags:
+  - batching
+  - advanced
+requires:
+  - batching
+
+tests:
+  - id: batch-concurrent-appends
+    name: Concurrent appends are batched
+    description: Multiple concurrent append calls should be batched into fewer HTTP requests
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: append-batch
+        path: ${streamPath}
+        items:
+          - data: "item1"
+          - data: "item2"
+          - data: "item3"
+          - data: "item4"
+          - data: "item5"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "item1"
+            - "item2"
+            - "item3"
+            - "item4"
+            - "item5"
+          upToDate: true
+
+  - id: batch-preserves-order
+    name: Batched appends preserve order
+    description: Even when batched, appends should maintain their logical order
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: append-batch
+        path: ${streamPath}
+        items:
+          - data: "1"
+          - data: "2"
+          - data: "3"
+          - data: "4"
+          - data: "5"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "12345"
+          upToDate: true
+
+  - id: batch-with-sequences
+    name: Batched appends with sequence numbers
+    description: Batched appends should respect sequence ordering
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append-batch
+        path: ${streamPath}
+        items:
+          - data: "a"
+            seq: 1
+          - data: "b"
+            seq: 2
+          - data: "c"
+            seq: 3
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "abc"
+
+  - id: batch-partial-failure
+    name: Batched appends with partial failure
+    description: If one item in a batch fails due to sequence conflict, others should still succeed
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # First establish seq 1
+      - action: append
+        path: ${streamPath}
+        data: "existing"
+        seq: 1
+      # Now try a batch where one has a conflicting seq
+      - action: append-batch
+        path: ${streamPath}
+        items:
+          - data: "new1"
+            seq: 2
+          - data: "conflict"
+            seq: 1 # This should fail
+          - data: "new2"
+            seq: 3
+        expect:
+          succeedIndices: [0, 2]
+          failIndices: [1]
