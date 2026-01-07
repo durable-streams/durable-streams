@@ -36,11 +36,11 @@ func (o Offset) Add(bytes uint64) Offset {
 	}
 }
 
-// NowOffset is a sentinel value indicating "current tail position"
-// Used when client requests offset=now to skip historical data
+// NowOffset is a sentinel value indicating "current tail position".
+// Uses max uint64 values which are guaranteed never to be valid stream offsets.
 var NowOffset = Offset{ReadSeq: ^uint64(0), ByteOffset: ^uint64(0)}
 
-// IsNow returns true if this is the "now" sentinel offset
+// IsNow returns true if this is the "now" sentinel offset.
 func (o Offset) IsNow() bool {
 	return o.ReadSeq == ^uint64(0) && o.ByteOffset == ^uint64(0)
 }
