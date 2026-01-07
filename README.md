@@ -533,7 +533,7 @@ See [@durable-streams/server](./packages/server) for more details.
 
 **Java**
 
-- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformace test coverage.
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformance test coverage.
 
 ## CLI Tool
 

@@ -25,6 +25,7 @@ export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
 
     if (arg === `--batch-json`) {
       batchJson = true
+      contentType = `application/json`
       continue
     }
 

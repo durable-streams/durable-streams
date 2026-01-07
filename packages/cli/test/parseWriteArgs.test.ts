@@ -100,4 +100,11 @@ describe(`parseWriteArgs`, () => {
     const result = parseWriteArgs([`--json`, `{"key": "value"}`])
     expect(result.batchJson).toBe(false)
   })
+
+  it(`--batch-json alone sets content-type to application/json`, () => {
+    const result = parseWriteArgs([`--batch-json`, `[1, 2, 3]`])
+    expect(result.batchJson).toBe(true)
+    expect(result.contentType).toBe(`application/json`)
+    expect(result.content).toBe(`[1, 2, 3]`)
+  })
 })

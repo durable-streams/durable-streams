@@ -25,7 +25,7 @@ Usage:
 Write Options:
   --content-type <type>   Content-Type for the message (default: application/octet-stream)
   --json                  Shorthand for --content-type application/json
-  --batch-json            Unwrap top-level JSON arrays into individual messages
+  --batch-json            JSON mode with batch semantics (flattens top-level arrays into individual messages)
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
