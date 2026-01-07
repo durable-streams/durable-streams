@@ -355,6 +355,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     final_offset = offset
     up_to_date = False
+    status = 200  # Default status
 
     with stream(
         url,
@@ -363,6 +364,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         headers=merged_headers,
         timeout=timeout_seconds,
     ) as response:
+        status = response.status
         final_offset = response.offset
         up_to_date = response.up_to_date
 
@@ -385,6 +387,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         elif is_sse:
             # For SSE mode, use iter_events() which yields StreamEvent objects for each
             # SSE data event, with metadata updated after control events.
+            # The iterator yields empty events (data=None) for control-only batches,
+            # allowing us to check upToDate even when no data was received.
             try:
                 chunk_count = 0
                 for event in response.iter_events(mode="text"):
@@ -403,50 +407,81 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     if chunk_count >= max_chunks:
                         break
 
-                    # For waitForUpToDate, stop when we've reached up-to-date
-                    if wait_for_up_to_date and up_to_date:
+                    # For waitForUpToDate: stop when upToDate becomes True AND
+                    # we got an empty event (no data). This handles offset=now case.
+                    # Don't break on data events - the iterator will stop after
+                    # yielding all data when upToDate=True.
+                    if wait_for_up_to_date and up_to_date and event.data is None:
                         break
             except httpx.TimeoutException:
                 # Timeout is expected
                 pass
 
             # Capture final state from response
+            status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
         else:
-            # For long-poll mode, iterate raw bytes
-            try:
-                chunk_count = 0
-                for chunk in response:
-                    if chunk:
+            # For long-poll mode, read the response body directly instead of using
+            # iteration (which continues forever in live modes). Read initial response,
+            # check upToDate, and only continue if not up-to-date and more data is needed.
+            if response.status != 204:
+                try:
+                    # Read the initial response body
+                    data = response._response.read()
+                    if data:
                         chunks.append(
                             {
-                                "data": chunk.decode("utf-8", errors="replace"),
+                                "data": data.decode("utf-8", errors="replace"),
                                 "offset": response.offset,
                             }
                         )
-                        chunk_count += 1
 
                     final_offset = response.offset
                     up_to_date = response.up_to_date
 
-                    if chunk_count >= max_chunks:
-                        break
+                    # Continue polling until we reach maxChunks or timeout
+                    chunk_count = 1 if data else 0
+                    while chunk_count < max_chunks and not (wait_for_up_to_date and up_to_date):
+                        # Do a long-poll fetch for more data
+                        next_response = response._fetch_next(response.offset, response.cursor)
+                        response._update_metadata_from_response(next_response)
 
-                    if wait_for_up_to_date and up_to_date:
-                        break
-            except httpx.TimeoutException:
-                # Timeout is expected for long-poll
-                pass
+                        if next_response.status_code == 204:
+                            # Long-poll timeout, no new data
+                            next_response.close()
+                            up_to_date = response.up_to_date
+                            final_offset = response.offset
+                            break
+
+                        data = next_response.read()
+                        next_response.close()
+
+                        if data:
+                            chunks.append(
+                                {
+                                    "data": data.decode("utf-8", errors="replace"),
+                                    "offset": response.offset,
+                                }
+                            )
+                            chunk_count += 1
+
+                        final_offset = response.offset
+                        up_to_date = response.up_to_date
+
+                except httpx.TimeoutException:
+                    # Timeout is expected for long-poll
+                    pass
 
             # Capture final state from response
+            status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
 
     result: dict[str, Any] = {
         "type": "read",
         "success": True,
-        "status": 200,
+        "status": status,
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,

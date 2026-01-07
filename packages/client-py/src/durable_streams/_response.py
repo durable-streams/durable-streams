@@ -557,6 +557,11 @@ class StreamResponse(Generic[T]):
         until we see the control event, then emit them with the correct
         metadata from the control event. This ensures StreamEvent.next_offset
         and other metadata are accurate for checkpointing.
+
+        The iterator yields all buffered events when a control event arrives.
+        When a control event arrives with no data, it yields an empty event
+        (data=None) to signal the metadata update. This allows consumers to
+        check upToDate even when no actual data was received.
         """
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
@@ -580,19 +585,32 @@ class StreamResponse(Generic[T]):
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
 
-                # Now emit all buffered data with correct metadata
-                for data in buffered_data:
+                # Track if this batch had data
+                batch_had_data = len(buffered_data) > 0
+
+                if batch_had_data:
+                    # Emit all buffered data with correct metadata
+                    for data in buffered_data:
+                        yield StreamEvent(
+                            data=data,
+                            next_offset=self._offset,
+                            up_to_date=self._up_to_date,
+                            cursor=self._cursor,
+                        )
+                    buffered_data.clear()
+
+                    # Stop if upToDate (catch-up complete)
+                    if self._up_to_date:
+                        return
+                else:
+                    # No data in this batch - yield empty event to signal metadata
                     yield StreamEvent(
-                        data=data,
+                        data=None,
                         next_offset=self._offset,
                         up_to_date=self._up_to_date,
                         cursor=self._cursor,
                     )
-                buffered_data.clear()
-
-                # If we're up to date, stop iterating - don't wait for more events
-                if self._up_to_date:
-                    return
+                    # Don't return here - continue waiting for data
 
         # Handle any remaining data (unlikely but be safe)
         for data in buffered_data:
@@ -1278,6 +1296,11 @@ class AsyncStreamResponse(Generic[T]):
         until we see the control event, then emit them with the correct
         metadata from the control event. This ensures StreamEvent.next_offset
         and other metadata are accurate for checkpointing.
+
+        The iterator yields all buffered events when a control event arrives.
+        When a control event arrives with no data, it yields an empty event
+        (data=None) to signal the metadata update. This allows consumers to
+        check upToDate even when no actual data was received.
         """
         from durable_streams._sse import SSEDataEvent, parse_sse_async
 
@@ -1301,19 +1324,32 @@ class AsyncStreamResponse(Generic[T]):
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
 
-                # Now emit all buffered data with correct metadata
-                for data in buffered_data:
+                # Track if this batch had data
+                batch_had_data = len(buffered_data) > 0
+
+                if batch_had_data:
+                    # Emit all buffered data with correct metadata
+                    for data in buffered_data:
+                        yield StreamEvent(
+                            data=data,
+                            next_offset=self._offset,
+                            up_to_date=self._up_to_date,
+                            cursor=self._cursor,
+                        )
+                    buffered_data.clear()
+
+                    # Stop if upToDate (catch-up complete)
+                    if self._up_to_date:
+                        return
+                else:
+                    # No data in this batch - yield empty event to signal metadata
                     yield StreamEvent(
-                        data=data,
+                        data=None,
                         next_offset=self._offset,
                         up_to_date=self._up_to_date,
                         cursor=self._cursor,
                     )
-                buffered_data.clear()
-
-                # If we're up to date, stop iterating - don't wait for more events
-                if self._up_to_date:
-                    return
+                    # Don't return here - continue waiting for data
 
         # Handle any remaining data (unlikely but be safe)
         for data in buffered_data:
