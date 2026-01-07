@@ -4,7 +4,7 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
+import { OffsetMismatchError, StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
 import type { CursorOptions } from "./cursor"
@@ -398,7 +398,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
+      `content-type, authorization, if-match, Stream-Seq, Stream-TTL, Stream-Expires-At`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -940,6 +940,7 @@ export class DurableStreamTestServer {
     const seq = req.headers[STREAM_SEQ_HEADER.toLowerCase()] as
       | string
       | undefined
+    const ifMatch = req.headers[`if-match`]
 
     const body = await this.readBody(req)
 
@@ -956,17 +957,73 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Support both sync (StreamStore) and async (FileBackedStreamStore) append
-    // Note: append returns null only for empty arrays with isInitialCreate=true,
-    // which doesn't apply to POST requests (those throw on empty arrays)
-    const message = await Promise.resolve(
-      this.store.append(path, body, { seq, contentType })
-    )
+    // Handle If-Match header for OCC
+    let expectedOffset: string | undefined
+    if (ifMatch !== undefined) {
+      // Reject multiple If-Match values (comma-separated)
+      if (ifMatch.includes(`,`) && ifMatch !== `*`) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Multiple If-Match values not supported`)
+        return
+      }
 
-    res.writeHead(204, {
-      [STREAM_OFFSET_HEADER]: message!.offset,
-    })
-    res.end()
+      // Handle If-Match: * (wildcard) - match any existing resource
+      if (ifMatch === `*`) {
+        if (!this.store.has(path)) {
+          res.writeHead(412, { "content-type": `text/plain` })
+          res.end(`Stream does not exist`)
+          return
+        }
+        // Stream exists, wildcard matches - continue with append (no offset check)
+      } else {
+        // Check if stream exists when If-Match is provided (return 412, not 404)
+        if (!this.store.has(path)) {
+          res.writeHead(412, { "content-type": `text/plain` })
+          res.end(`Stream does not exist`)
+          return
+        }
+        expectedOffset = this.parseIfMatchValue(ifMatch)
+      }
+    }
+
+    try {
+      // Support both sync (StreamStore) and async (FileBackedStreamStore) append
+      // Note: append returns null only for empty arrays with isInitialCreate=true,
+      // which doesn't apply to POST requests (those throw on empty arrays)
+      // The store performs atomic If-Match check if expectedOffset is provided
+      const message = await Promise.resolve(
+        this.store.append(path, body, { seq, contentType, expectedOffset })
+      )
+
+      res.writeHead(204, {
+        [STREAM_OFFSET_HEADER]: message!.offset,
+      })
+      res.end()
+    } catch (err) {
+      if (err instanceof OffsetMismatchError) {
+        // Return 412 Precondition Failed with current offset
+        res.writeHead(412, {
+          "content-type": `text/plain`,
+          [STREAM_OFFSET_HEADER]: err.currentOffset,
+        })
+        res.end(`Offset mismatch`)
+        return
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Parse If-Match header value, stripping quotes if present.
+   * Per RFC 9110, ETags should be quoted strings, but we accept both
+   * quoted and unquoted values for compatibility.
+   */
+  private parseIfMatchValue(value: string): string {
+    // Strip surrounding quotes if present
+    if (value.startsWith(`"`) && value.endsWith(`"`)) {
+      return value.slice(1, -1)
+    }
+    return value
   }
 
   /**

@@ -11,6 +11,7 @@ import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import {
+  OffsetMismatchError,
   formatJsonResponse,
   normalizeContentType,
   processJsonAppend,
@@ -168,6 +169,11 @@ export class FileBackedStreamStore {
   private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
+  /**
+   * Per-stream locks for serializing append operations.
+   * Ensures atomic If-Match check + write.
+   */
+  private streamLocks: Map<string, Promise<void>> = new Map()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -532,12 +538,53 @@ export class FileBackedStreamStore {
       seq?: string
       contentType?: string
       isInitialCreate?: boolean
+      expectedOffset?: string
+    } = {}
+  ): Promise<StreamMessage | null> {
+    // Acquire per-stream lock to serialize appends (needed for atomic OCC check + write)
+    const existingLock = this.streamLocks.get(streamPath) ?? Promise.resolve()
+    let releaseLock: () => void
+    const newLock = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.streamLocks.set(
+      streamPath,
+      existingLock.then(() => newLock)
+    )
+
+    await existingLock
+
+    try {
+      return await this.appendUnderLock(streamPath, data, options)
+    } finally {
+      releaseLock!()
+    }
+  }
+
+  private async appendUnderLock(
+    streamPath: string,
+    data: Uint8Array,
+    options: {
+      seq?: string
+      contentType?: string
+      isInitialCreate?: boolean
+      expectedOffset?: string
     } = {}
   ): Promise<StreamMessage | null> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
+    }
+
+    // Check If-Match (OCC) - atomic under lock
+    if (options.expectedOffset !== undefined) {
+      if (streamMeta.currentOffset !== options.expectedOffset) {
+        throw new OffsetMismatchError(
+          `Offset mismatch: expected ${options.expectedOffset}, actual ${streamMeta.currentOffset}`,
+          streamMeta.currentOffset
+        )
+      }
     }
 
     // Check content type match using normalization (handles charset parameters)
@@ -620,7 +667,7 @@ export class FileBackedStreamStore {
     // 3. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
 
-    // 4. Update LMDB metadata (only after flush, so metadata reflects durability)
+    // 4. Update LMDB metadata (only after flush, so metadata reflects durability; safe under lock)
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,

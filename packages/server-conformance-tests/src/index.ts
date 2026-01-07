@@ -3307,6 +3307,505 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
+  // Optimistic Concurrency Control (OCC)
+  // ============================================================================
+
+  describe(`Optimistic Concurrency Control`, () => {
+    test(`should succeed with correct If-Match value`, async () => {
+      const streamPath = `/v1/stream/occ-success-test-${Date.now()}`
+
+      // Create stream with initial data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Get the current offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const currentOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(currentOffset).toBeDefined()
+
+      // Append with correct If-Match - should succeed
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": currentOffset!,
+        },
+        body: `appended with OCC`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+    })
+
+    test(`should fail with 412 when If-Match does not match current offset`, async () => {
+      const streamPath = `/v1/stream/occ-mismatch-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Get current offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const initialOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Append some data to change the offset
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `more data`,
+      })
+
+      // Now try to append with the old offset - should fail with 412
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": initialOffset!,
+        },
+        body: `should fail`,
+      })
+
+      expect(response.status).toBe(412)
+    })
+
+    test(`should return Stream-Next-Offset on 412 response`, async () => {
+      const streamPath = `/v1/stream/occ-412-offset-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Get initial offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const initialOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Append data to advance the offset
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `more data`,
+      })
+      const newOffset = appendResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Try to append with old offset
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": initialOffset!,
+        },
+        body: `should fail`,
+      })
+
+      expect(response.status).toBe(412)
+
+      // Should return the actual current offset so client can retry
+      const returnedOffset = response.headers.get(STREAM_OFFSET_HEADER)
+      expect(returnedOffset).toBeDefined()
+      expect(returnedOffset).toBe(newOffset)
+    })
+
+    test(`should detect concurrent writes (lost update prevention)`, async () => {
+      const streamPath = `/v1/stream/occ-concurrent-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Get initial offset (both "clients" read the same state)
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const offsetForClientA = headResponse.headers.get(STREAM_OFFSET_HEADER)
+      const offsetForClientB = offsetForClientA // Same offset - simulating concurrent read
+
+      // Client A appends first - should succeed
+      const responseA = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": offsetForClientA!,
+        },
+        body: `client A data`,
+      })
+      expect([200, 204]).toContain(responseA.status)
+
+      // Client B tries to append with the same offset - should fail
+      // because Client A already modified the stream
+      const responseB = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": offsetForClientB!,
+        },
+        body: `client B data`,
+      })
+      expect(responseB.status).toBe(412)
+    })
+
+    test(`should allow chained OCC appends using returned offset`, async () => {
+      const streamPath = `/v1/stream/occ-chained-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      let currentOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(currentOffset).toBeDefined()
+
+      // Chain multiple appends using If-Match
+      for (let i = 0; i < 5; i++) {
+        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "If-Match": currentOffset!,
+          },
+          body: `chunk${i}`,
+        })
+
+        expect([200, 204]).toContain(response.status)
+        currentOffset = response.headers.get(STREAM_OFFSET_HEADER)
+        expect(currentOffset).toBeDefined()
+      }
+
+      // Verify all data was written
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+      const text = await readResponse.text()
+      expect(text).toBe(`chunk0chunk1chunk2chunk3chunk4`)
+    })
+
+    test(`should work with If-Match on empty stream`, async () => {
+      const streamPath = `/v1/stream/occ-empty-stream-test-${Date.now()}`
+
+      // Create empty stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const initialOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(initialOffset).toBeDefined()
+
+      // Append with If-Match to empty stream
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": initialOffset!,
+        },
+        body: `first data`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should return ETag on successful append (optional)`, async () => {
+      const streamPath = `/v1/stream/occ-etag-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append data
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `test data`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+
+      // ETag is optional per protocol, but if present should match Stream-Next-Offset
+      const etag = response.headers.get(`ETag`)
+      const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+
+      if (etag) {
+        // If server returns ETag, it should be usable as If-Match value
+        // Note: ETag may be quoted per HTTP spec, so we check the offset is contained
+        expect(etag.includes(nextOffset!) || etag === nextOffset).toBe(true)
+      }
+    })
+
+    test(`should reject If-Match with invalid offset format`, async () => {
+      const streamPath = `/v1/stream/occ-invalid-offset-test-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Try to append with malformed If-Match value
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `not-a-valid-offset!@#$`,
+        },
+        body: `test`,
+      })
+
+      // Should fail with either 400 (bad request) or 412 (precondition failed)
+      expect([400, 412]).toContain(response.status)
+    })
+
+    test(`should combine If-Match with Stream-Seq`, async () => {
+      const streamPath = `/v1/stream/occ-with-seq-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const currentOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Append with both If-Match and Stream-Seq
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": currentOffset!,
+          [STREAM_SEQ_HEADER]: `001`,
+        },
+        body: `with both headers`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should fail If-Match before checking Stream-Seq`, async () => {
+      const streamPath = `/v1/stream/occ-vs-seq-priority-test-${Date.now()}`
+
+      // Create stream and append initial data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Get initial offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const initialOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Append to advance the stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_SEQ_HEADER]: `001`,
+        },
+        body: `advance`,
+      })
+
+      // Try to append with old If-Match but valid new seq
+      // Should fail 412 because If-Match fails (regardless of seq validity)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": initialOffset!,
+          [STREAM_SEQ_HEADER]: `002`,
+        },
+        body: `should fail`,
+      })
+
+      expect(response.status).toBe(412)
+    })
+
+    test(`should accept quoted If-Match values`, async () => {
+      const streamPath = `/v1/stream/occ-quoted-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const offset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Append with quoted If-Match (per RFC 9110, ETags should be quoted)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `"${offset}"`, // Quoted
+        },
+        body: `test with quoted if-match`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should accept unquoted If-Match values`, async () => {
+      const streamPath = `/v1/stream/occ-unquoted-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const offset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Append with unquoted If-Match (common in practice)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": offset!, // Unquoted
+        },
+        body: `test with unquoted if-match`,
+      })
+
+      expect([200, 204]).toContain(response.status)
+    })
+
+    test(`should handle concurrent first appends with If-Match (race condition)`, async () => {
+      const streamPath = `/v1/stream/occ-race-test-${Date.now()}`
+
+      // Create empty stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const initialOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(initialOffset).toBeDefined()
+
+      // Simulate two clients racing to append with the same initial offset
+      const [response1, response2] = await Promise.all([
+        fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "If-Match": initialOffset!,
+          },
+          body: `client1`,
+        }),
+        fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "If-Match": initialOffset!,
+          },
+          body: `client2`,
+        }),
+      ])
+
+      // Exactly one should succeed (200/204), one should fail (412)
+      const statuses = [response1.status, response2.status].sort(
+        (a, b) => a - b
+      )
+
+      // First status should be success (200 or 204), second should be 412
+      expect([200, 204]).toContain(statuses[0])
+      expect(statuses[1]).toBe(412)
+
+      // The successful response should return the new offset
+      const successResponse = [200, 204].includes(response1.status)
+        ? response1
+        : response2
+      expect(successResponse.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // The failed response should also return the current offset for retry
+      const failedResponse = response1.status === 412 ? response1 : response2
+      expect(failedResponse.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+    })
+
+    test(`should reject If-Match: * on non-existent stream with 412`, async () => {
+      const streamPath = `/v1/stream/occ-wildcard-nonexistent-${Date.now()}`
+
+      // Try to append with If-Match: * to non-existent stream
+      // Per RFC 9110, If-Match: * means "only if resource exists"
+      // Per protocol, when If-Match is present, use 412 (not 404) for non-existent streams
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `*`,
+        },
+        body: `should fail`,
+      })
+
+      // Should fail with 412 Precondition Failed
+      expect(response.status).toBe(412)
+    })
+
+    test(`should handle If-Match: * on existing stream`, async () => {
+      const streamPath = `/v1/stream/occ-wildcard-existing-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Append with If-Match: * - should succeed since stream exists
+      // (or server may reject wildcard with 400 if not supported)
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `*`,
+        },
+        body: `wildcard append`,
+      })
+
+      // May succeed (200/204) if wildcard supported, or 400 if not
+      expect([200, 204, 400]).toContain(response.status)
+    })
+
+    test(`should reject multiple If-Match values with 400`, async () => {
+      const streamPath = `/v1/stream/occ-multi-value-test-${Date.now()}`
+
+      // Create stream
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      const offset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Try to append with multiple If-Match values
+      // Per protocol, servers SHOULD reject this with 400
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "If-Match": `"${offset}", "some-other-value"`,
+        },
+        body: `should fail`,
+      })
+
+      // Multi-value If-Match should be rejected
+      expect(response.status).toBe(400)
+    })
+  })
+
+  // ============================================================================
   // JSON Mode
   // ============================================================================
 

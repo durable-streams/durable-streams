@@ -142,6 +142,14 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Offs
 		return Offset{}, ErrStreamNotFound
 	}
 
+	// Check If-Match (OCC) - must be checked before Stream-Seq per protocol
+	if opts.ExpectedOffset != "" {
+		currentOffsetStr := stream.metadata.CurrentOffset.String()
+		if opts.ExpectedOffset != currentOffsetStr {
+			return Offset{}, &OffsetMismatchError{CurrentOffset: stream.metadata.CurrentOffset}
+		}
+	}
+
 	// Validate content type if provided
 	if opts.ContentType != "" && !ContentTypeMatches(stream.metadata.ContentType, opts.ContentType) {
 		return Offset{}, ErrContentTypeMismatch

@@ -18,7 +18,21 @@ var (
 	ErrInvalidOffset       = errors.New("invalid offset")
 	ErrEmptyJSONArray      = errors.New("empty JSON array not allowed")
 	ErrInvalidJSON         = errors.New("invalid JSON")
+	ErrOffsetMismatch      = errors.New("offset mismatch")
 )
+
+// OffsetMismatchError provides the current offset when If-Match fails
+type OffsetMismatchError struct {
+	CurrentOffset Offset
+}
+
+func (e *OffsetMismatchError) Error() string {
+	return "offset mismatch: expected offset does not match current offset"
+}
+
+func (e *OffsetMismatchError) Is(target error) bool {
+	return target == ErrOffsetMismatch
+}
 
 // Store is the interface for durable stream storage
 type Store interface {
@@ -71,8 +85,9 @@ type CreateOptions struct {
 
 // AppendOptions contains options for appending to a stream
 type AppendOptions struct {
-	Seq         string // Stream-Seq header value for coordination
-	ContentType string // Content-Type to validate against stream
+	Seq            string // Stream-Seq header value for coordination
+	ContentType    string // Content-Type to validate against stream
+	ExpectedOffset string // If-Match header value for OCC (empty = no check)
 }
 
 // Message represents a single message in a stream
