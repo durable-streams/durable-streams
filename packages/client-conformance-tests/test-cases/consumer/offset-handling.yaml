@@ -84,6 +84,64 @@ tests:
         expect:
           data: "firstdata"
 
+  - id: offset-now-empty-stream-longpoll
+    name: Offset 'now' on empty stream with long-poll
+    description: Using offset=now with long-poll on an empty stream should wait for data
+    requires:
+      - longPoll
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Long-poll with offset=now on empty stream should timeout
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          status: 204
+          upToDate: true
+          storeOffsetAs: pollOffset
+      # Verify the offset is valid and works for future data
+      - action: append
+        path: ${streamPath}
+        data: "firstdata"
+      - action: read
+        path: ${streamPath}
+        offset: ${pollOffset}
+        expect:
+          data: "firstdata"
+
+  - id: offset-now-empty-stream-sse
+    name: Offset 'now' on empty stream with SSE
+    description: Using offset=now with SSE on an empty stream should provide valid offset
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # SSE with offset=now on empty stream
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        live: sse
+        waitForUpToDate: true
+        expect:
+          chunkCount: 0
+          upToDate: true
+          storeOffsetAs: sseOffset
+      # Verify the offset is valid and works for future data
+      - action: append
+        path: ${streamPath}
+        data: "firstdata"
+      - action: read
+        path: ${streamPath}
+        offset: ${sseOffset}
+        expect:
+          data: "firstdata"
+
   - id: offset-now-matches-tail
     name: Offset 'now' returns same offset as tail
     description: The offset from offset=now should match the stream tail offset

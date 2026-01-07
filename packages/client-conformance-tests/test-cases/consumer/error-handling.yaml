@@ -56,6 +56,48 @@ tests:
           status: 400
           errorCode: INVALID_OFFSET
 
+  - id: read-offset-now-nonexistent
+    name: Read with offset=now on non-existent stream
+    description: offset=now should not mask a missing stream - must return 404
+    operations:
+      - action: read
+        path: /nonexistent-offset-now-stream
+        offset: "now"
+        live: false
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: read-offset-now-nonexistent-longpoll
+    name: Long-poll with offset=now on non-existent stream
+    description: offset=now with long-poll should not mask a missing stream - must return 404
+    requires:
+      - longPoll
+    operations:
+      - action: read
+        path: /nonexistent-offset-now-longpoll
+        offset: "now"
+        live: long-poll
+        timeoutMs: 1000
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: read-offset-now-nonexistent-sse
+    name: SSE with offset=now on non-existent stream
+    description: offset=now with SSE should not mask a missing stream - must return 404
+    requires:
+      - sse
+    operations:
+      - action: read
+        path: /nonexistent-offset-now-sse
+        offset: "now"
+        live: sse
+        timeoutMs: 1000
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
   - id: read-future-offset
     name: Read with future offset
     description: Client should handle offset beyond stream end
