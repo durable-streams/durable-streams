@@ -1636,6 +1636,95 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(404)
     })
 
+    test(`should return 404 for offset=now with long-poll on non-existent stream`, async () => {
+      const streamPath = `/v1/stream/offset-now-longpoll-404-test-${Date.now()}`
+
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=now&live=long-poll`,
+        { method: `GET` }
+      )
+
+      expect(response.status).toBe(404)
+    })
+
+    test(`should return 404 for offset=now with SSE on non-existent stream`, async () => {
+      const streamPath = `/v1/stream/offset-now-sse-404-test-${Date.now()}`
+
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=now&live=sse`,
+        { method: `GET` }
+      )
+
+      expect(response.status).toBe(404)
+    })
+
+    test(`should support offset=now with long-poll on empty stream`, async () => {
+      const streamPath = `/v1/stream/offset-now-empty-longpoll-test-${Date.now()}`
+
+      // Create empty stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // offset=now with long-poll on empty stream should timeout with 204
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=now&live=long-poll`,
+        { method: `GET` }
+      )
+
+      expect(response.status).toBe(204)
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      // Should return a valid offset that can be used to resume
+      const offset = response.headers.get(STREAM_OFFSET_HEADER)
+      expect(offset).toBeDefined()
+
+      // Verify the offset works for future data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `first data`,
+      })
+
+      const resumeResponse = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=${offset}`,
+        { method: `GET` }
+      )
+      expect(resumeResponse.status).toBe(200)
+      const resumeText = await resumeResponse.text()
+      expect(resumeText).toBe(`first data`)
+    })
+
+    test(`should support offset=now with SSE on empty stream`, async () => {
+      const streamPath = `/v1/stream/offset-now-empty-sse-test-${Date.now()}`
+
+      // Create empty stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // offset=now with SSE on empty stream should return upToDate:true with valid offset
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=now&live=sse`,
+        { untilContent: `"upToDate"` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Should have control event with upToDate:true and streamNextOffset
+      const controlMatch = received.match(
+        /event: control\s*\n\s*data: ({[^}]+})/
+      )
+      expect(controlMatch).toBeDefined()
+      if (controlMatch && controlMatch[1]) {
+        const controlData = JSON.parse(controlMatch[1])
+        expect(controlData[`upToDate`]).toBe(true)
+        // Should have a valid offset even on empty stream
+        expect(controlData[`streamNextOffset`]).toBeDefined()
+      }
+    })
+
     test(`should reject malformed offset (contains comma)`, async () => {
       const streamPath = `/v1/stream/offset-comma-test-${Date.now()}`
 
