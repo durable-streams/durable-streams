@@ -36,7 +36,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, If-Match")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location")
 
 	// Browser security headers (Protocol Section 10.7)
@@ -502,7 +502,32 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 
 // handleAppend handles POST requests to append to a stream
 func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path string) error {
-	// Check if stream exists
+	// Parse If-Match header for OCC
+	ifMatch := r.Header.Get("If-Match")
+	var expectedOffset string
+
+	if ifMatch != "" {
+		// Reject multiple If-Match values (comma-separated)
+		if strings.Contains(ifMatch, ",") && ifMatch != "*" {
+			return newHTTPError(http.StatusBadRequest, "Multiple If-Match values not supported")
+		}
+
+		// Handle If-Match: * (wildcard) - match any existing resource
+		if ifMatch == "*" {
+			if !h.store.Has(path) {
+				return newHTTPError(http.StatusPreconditionFailed, "Stream does not exist")
+			}
+			// Stream exists, wildcard matches - continue with append (no offset check)
+		} else {
+			// Check if stream exists when If-Match is provided (return 412, not 404)
+			if !h.store.Has(path) {
+				return newHTTPError(http.StatusPreconditionFailed, "Stream does not exist")
+			}
+			expectedOffset = parseIfMatchValue(ifMatch)
+		}
+	}
+
+	// Check if stream exists (only if not already checked via If-Match)
 	meta, err := h.store.Get(path)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
@@ -534,12 +559,19 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	opts := store.AppendOptions{
-		Seq:         r.Header.Get(HeaderStreamSeq),
-		ContentType: contentType,
+		Seq:            r.Header.Get(HeaderStreamSeq),
+		ContentType:    contentType,
+		ExpectedOffset: expectedOffset,
 	}
 
 	newOffset, err := h.store.Append(path, body, opts)
 	if err != nil {
+		// Handle OCC mismatch - return 412 with current offset
+		var offsetErr *store.OffsetMismatchError
+		if errors.As(err, &offsetErr) {
+			w.Header().Set(HeaderStreamNextOffset, offsetErr.CurrentOffset.String())
+			return newHTTPError(http.StatusPreconditionFailed, "Offset mismatch")
+		}
 		if errors.Is(err, store.ErrSequenceConflict) {
 			return newHTTPError(http.StatusConflict, "sequence number conflict")
 		}
@@ -558,6 +590,15 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// parseIfMatchValue strips quotes from If-Match value if present
+// Per RFC 9110, ETags should be quoted strings, but we accept both
+func parseIfMatchValue(value string) string {
+	if strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`) {
+		return value[1 : len(value)-1]
+	}
+	return value
 }
 
 // handleDelete handles DELETE requests to delete a stream

@@ -257,6 +257,14 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Offset
 
 	dirName := s.dirCache[path]
 
+	// Check If-Match (OCC) - must be checked before Stream-Seq per protocol
+	if opts.ExpectedOffset != "" {
+		currentOffsetStr := meta.CurrentOffset.String()
+		if opts.ExpectedOffset != currentOffsetStr {
+			return Offset{}, &OffsetMismatchError{CurrentOffset: meta.CurrentOffset}
+		}
+	}
+
 	// Validate content type
 	if opts.ContentType != "" && !ContentTypeMatches(meta.ContentType, opts.ContentType) {
 		return Offset{}, ErrContentTypeMismatch

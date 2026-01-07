@@ -175,7 +175,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
   - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
 
-- `If-Match: <offset>` (optional)
+- `If-Match: <offset>`
   - Enables optimistic concurrency control (OCC) for the append operation.
   - The value **MUST** be the expected current tail offset of the stream (i.e., the `Stream-Next-Offset` value from a previous response).
   - The value **MAY** be quoted (e.g., `If-Match: "abc123"`) or unquoted (e.g., `If-Match: abc123`). Servers **MUST** accept both formats by stripping surrounding quotes when comparing. Quoted form is recommended per RFC 9110.
@@ -603,7 +603,7 @@ The optional `Stream-Seq` header provides protection against out-of-order writes
 
 ### 10.7. Optimistic Concurrency Control
 
-The optional `If-Match` header on append requests provides optimistic concurrency control, preventing lost updates in multi-writer scenarios. When multiple clients may write to the same stream concurrently, clients **SHOULD** use `If-Match` with the expected tail offset to ensure their append succeeds only if no other writer has modified the stream. On `412 Precondition Failed`, clients can read the latest state and retry or merge changes as appropriate for their application semantics.
+Servers **MUST** support the `If-Match` header on append requests to provide optimistic concurrency control, preventing lost updates in multi-writer scenarios. When multiple clients may write to the same stream concurrently, clients **SHOULD** use `If-Match` with the expected tail offset to ensure their append succeeds only if no other writer has modified the stream. On `412 Precondition Failed`, clients can read the latest state and retry or merge changes as appropriate for their application semantics.
 
 ### 10.8. Browser Security Headers
 
