@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/client-conformance-tests",
   "description": "Conformance test suite for Durable Streams client implementations (producer and consumer)",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "author": "Durable Stream contributors",
   "bin": {
     "client-conformance-tests": "./dist/cli.js",

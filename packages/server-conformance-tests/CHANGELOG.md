@@ -1,5 +1,43 @@
 # @durable-streams/server-conformance-tests
 
+## 0.1.6
+
+### Patch Changes
+
+- Add advanced fault injection and conformance tests ([#119](https://github.com/durable-streams/durable-streams/pull/119))
+
+  Server fault injection improvements:
+  - Extended fault injection with new capabilities: delayMs, dropConnection, truncateBodyBytes, probability, method filtering, corruptBody, and jitterMs
+  - Updated /\_test/inject-error endpoint to accept all new fault parameters
+  - Added body modification support for response truncation and corruption
+
+  New server conformance tests:
+  - Concurrent writer stress tests (seq conflicts, racing writers, mixed readers/writers)
+  - State hash verification tests (replay consistency, deterministic ordering)
+
+  New client conformance tests:
+  - 8 fault injection test cases covering delay recovery, connection drops, method-specific faults, and retry scenarios
+
+- Add browser security headers per Protocol Section 10.7: ([#113](https://github.com/durable-streams/durable-streams/pull/113))
+  - `X-Content-Type-Options: nosniff` on all responses
+  - `Cross-Origin-Resource-Policy: cross-origin` on all responses
+  - `Cache-Control: no-store` on HEAD responses
+
+  Includes conformance tests for security header presence on GET, PUT, POST, HEAD, SSE, long-poll, and error responses.
+
+- Standardize HTTP status codes for protocol operations ([#106](https://github.com/durable-streams/durable-streams/pull/106))
+  - Append (POST): Now mandates `204 No Content` (previously allowed 200 or 204)
+  - Idempotent create (PUT): Now mandates `200 OK` (previously allowed 200 or 204)
+
+  This removes ambiguity from the protocol. Clients should already accept these status codes.
+
+- Add CRLF injection security tests for SSE and fix TypeScript client SSE parser to normalize line endings per SSE spec. ([#112](https://github.com/durable-streams/durable-streams/pull/112))
+  - Server conformance tests now verify CRLF injection attacks in SSE payloads are properly escaped
+  - TypeScript SSE parser now normalizes `\r\n` and lone `\r` to `\n` per SSE specification
+
+- Updated dependencies [[`8d06625`](https://github.com/durable-streams/durable-streams/commit/8d06625eba26d79b7c5d317adf89047f6b44c8ce), [`8f500cf`](https://github.com/durable-streams/durable-streams/commit/8f500cf720e59ada83188ed67f244a40c4b04422)]:
+  - @durable-streams/client@0.1.3
+
 ## 0.1.5
 
 ### Patch Changes
