@@ -32,13 +32,15 @@ class StreamEvent(Generic[T]):
     and stream metadata like offset and up-to-date status.
 
     Attributes:
-        data: The event payload (bytes, str, or parsed JSON depending on mode)
+        data: The event payload (bytes, str, or parsed JSON depending on mode).
+            May be None for control-only events (e.g., when using offset=now
+            with SSE mode and no data has arrived yet).
         next_offset: The offset to use for resuming from after this event
         up_to_date: True if this event represents the current end of stream
         cursor: Optional cursor for CDN collapsing (if provided by server)
     """
 
-    data: T
+    data: T | None
     next_offset: Offset
     up_to_date: bool
     cursor: str | None = None

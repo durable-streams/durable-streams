@@ -21,9 +21,9 @@ describe(`Caddy Durable Streams Implementation`, () => {
 
   beforeAll(async () => {
     const caddyBinary = path.join(__dirname, `..`, `caddy`)
-    const caddyfile = path.join(__dirname, `Caddyfile.test`)
+    const caddyfile = path.join(__dirname, `Caddyfile`)
 
-    // Start Caddy
+    // Start Caddy with test config (short long-poll timeout)
     caddy = spawn(caddyBinary, [`run`, `--config`, caddyfile], {
       stdio: [`ignore`, `pipe`, `pipe`],
     })

@@ -423,10 +423,10 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
   **SSE mode** (`offset=now&live=sse`):
   - Servers **MUST** immediately begin the SSE stream from the tail position
-  - The first control event **MUST** include `upToDate: true` and the tail offset
+  - The first control event **MUST** include the tail offset in `streamNextOffset`
+  - If no data has arrived, the first control event **MUST** include `upToDate: true`
+  - If data arrives before the first control event, `upToDate` reflects the current state
   - No historical data is sent; only future data events are streamed
-
-  This eliminates the need for a separate HEAD request or initial catch-up when clients want to start following a stream from the current position. Servers **MUST** recognize `now` as a valid offset value.
 
 **Reserved Values**: The sentinel values `-1` and `now` are reserved by the protocol. Server implementations **MUST NOT** generate these strings as actual stream offsets (in `Stream-Next-Offset` headers or SSE control events). This ensures clients can always distinguish between sentinel requests and real offset values.
 
