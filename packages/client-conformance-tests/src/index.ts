@@ -32,6 +32,7 @@ export {
   runBenchmarks,
   allScenarios,
   getScenarioById,
+  generateMarkdownReport,
   type BenchmarkRunnerOptions,
   type ScenarioResult,
   type BenchmarkSummary,

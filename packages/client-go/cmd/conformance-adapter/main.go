@@ -20,8 +20,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	durablestreams "github.com/durable-streams/durable-streams/packages/client-go"
@@ -69,6 +71,13 @@ type BenchmarkOperation struct {
 	ContentType string `json:"contentType,omitempty"`
 	Count       int    `json:"count,omitempty"`
 	Concurrency int    `json:"concurrency,omitempty"`
+	// Open-loop fields
+	InnerOp        string `json:"innerOp,omitempty"`
+	TargetRps      int    `json:"targetRps,omitempty"`
+	DurationMs     int    `json:"durationMs,omitempty"`
+	MaxConcurrency int    `json:"maxConcurrency,omitempty"`
+	WarmupMs       int    `json:"warmupMs,omitempty"`
+	DrainTimeoutMs int    `json:"drainTimeoutMs,omitempty"`
 }
 
 // Result types sent back to test runner
@@ -92,6 +101,7 @@ type Result struct {
 	IterationID string            `json:"iterationId,omitempty"`
 	DurationNs  string            `json:"durationNs,omitempty"`
 	Metrics     *BenchmarkMetrics `json:"metrics,omitempty"`
+	OpenLoop    *OpenLoopMetrics  `json:"openLoop,omitempty"`
 	// Dynamic header/param tracking
 	HeadersSent map[string]string `json:"headersSent,omitempty"`
 	ParamsSent  map[string]string `json:"paramsSent,omitempty"`
@@ -103,6 +113,32 @@ type BenchmarkMetrics struct {
 	MessagesProcessed int     `json:"messagesProcessed,omitempty"`
 	OpsPerSecond      float64 `json:"opsPerSecond,omitempty"`
 	BytesPerSecond    float64 `json:"bytesPerSecond,omitempty"`
+}
+
+// OpenLoopMetrics contains open-loop benchmark results
+type OpenLoopMetrics struct {
+	TargetRps      float64            `json:"targetRps"`
+	AchievedRps    float64            `json:"achievedRps"`
+	OfferedCount   int                `json:"offeredCount"`
+	CompletedCount int                `json:"completedCount"`
+	FailedCount    int                `json:"failedCount"`
+	SuccessRate    float64            `json:"successRate"`
+	TotalLatency   *LatencyPercentiles `json:"totalLatency"`
+	QueueLatency   *LatencyPercentiles `json:"queueLatency"`
+	ServiceLatency *LatencyPercentiles `json:"serviceLatency"`
+}
+
+// LatencyPercentiles contains latency percentiles in milliseconds
+type LatencyPercentiles struct {
+	Min    float64 `json:"min"`
+	Max    float64 `json:"max"`
+	Mean   float64 `json:"mean"`
+	Median float64 `json:"median"`
+	P75    float64 `json:"p75"`
+	P90    float64 `json:"p90"`
+	P95    float64 `json:"p95"`
+	P99    float64 `json:"p99"`
+	P999   float64 `json:"p999"`
 }
 
 type Features struct {
@@ -728,6 +764,16 @@ func handleBenchmark(cmd Command) Result {
 	case "throughput_read":
 		durationNs, metrics = benchmarkThroughputRead(ctx, op.Path)
 
+	case "open_loop":
+		openLoop := benchmarkOpenLoop(ctx, op)
+		return Result{
+			Type:        "benchmark",
+			Success:     true,
+			IterationID: cmd.IterationID,
+			DurationNs:  "0",
+			OpenLoop:    openLoop,
+		}
+
 	default:
 		return sendError("benchmark", "NOT_SUPPORTED", fmt.Sprintf("unknown benchmark op: %s", op.Op))
 	}
@@ -921,4 +967,271 @@ func benchmarkThroughputRead(ctx context.Context, path string) (int64, *Benchmar
 		MessagesProcessed: count,
 		BytesPerSecond:    bytesPerSec,
 	}
+}
+
+// openLoopSample records timing for one request
+type openLoopSample struct {
+	scheduledAt time.Time
+	startedAt   time.Time
+	completedAt time.Time
+	failed      bool
+}
+
+func benchmarkOpenLoop(ctx context.Context, op *BenchmarkOperation) *OpenLoopMetrics {
+	targetRps := op.TargetRps
+	durationMs := op.DurationMs
+	maxConcurrency := op.MaxConcurrency
+	warmupMs := op.WarmupMs
+	drainTimeoutMs := op.DrainTimeoutMs
+
+	if maxConcurrency == 0 {
+		maxConcurrency = 1000
+	}
+	if drainTimeoutMs == 0 {
+		drainTimeoutMs = 10000 // 10 second default
+	}
+
+	// Create a cancellable context for all operations
+	// This lets us abort in-flight requests when drain times out
+	opCtx, cancelOps := context.WithCancel(ctx)
+	defer cancelOps()
+
+	periodNs := int64(1_000_000_000 / targetRps)
+	totalDurationNs := int64(durationMs) * 1_000_000
+	warmupNs := int64(warmupMs) * 1_000_000
+
+	// Pre-generate payload for append/roundtrip operations
+	var payload []byte
+	if op.InnerOp == "append" || op.InnerOp == "roundtrip" {
+		payload = make([]byte, op.Size)
+		rand.Read(payload)
+	}
+
+	// Create the stream for append operations
+	stream := client.Stream(op.Path)
+	if ct, ok := streamContentTypes[op.Path]; ok {
+		stream.SetContentType(ct)
+	}
+
+	// Create operation function based on inner op
+	var opFn func(context.Context) error
+	switch op.InnerOp {
+	case "append":
+		opFn = func(ctx context.Context) error {
+			_, err := stream.Append(ctx, payload)
+			return err
+		}
+	case "read":
+		opFn = func(ctx context.Context) error {
+			it := stream.Read(ctx, durablestreams.WithOffset(durablestreams.StartOffset))
+			defer it.Close()
+			_, err := it.Next()
+			return err
+		}
+	case "roundtrip":
+		liveMode := durablestreams.LiveModeLongPoll
+		if op.Live == "sse" {
+			liveMode = durablestreams.LiveModeSSE
+		}
+		var rtCounter int64
+		opFn = func(ctx context.Context) error {
+			// Each roundtrip uses a unique stream to avoid conflicts
+			rtPath := fmt.Sprintf("%s/rt-%d", op.Path, atomic.AddInt64(&rtCounter, 1))
+			rtStream := client.Stream(rtPath)
+			rtStream.SetContentType("application/octet-stream")
+
+			// Create stream
+			if err := rtStream.Create(ctx, durablestreams.WithContentType("application/octet-stream")); err != nil {
+				return err
+			}
+
+			// Start reading before appending
+			readCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+
+			done := make(chan error, 1)
+			go func() {
+				it := rtStream.Read(readCtx, durablestreams.WithLive(liveMode))
+				defer it.Close()
+				_, err := it.Next()
+				done <- err
+			}()
+
+			// Brief delay to ensure reader is ready
+			time.Sleep(time.Millisecond)
+
+			// Append
+			if _, err := rtStream.Append(ctx, payload); err != nil {
+				return err
+			}
+
+			// Wait for read to complete
+			return <-done
+		}
+	default:
+		opFn = func(ctx context.Context) error {
+			return nil
+		}
+	}
+
+	// Collect samples
+	var samples []openLoopSample
+	var samplesMu sync.Mutex
+
+	// Semaphore for concurrency limiting
+	sem := make(chan struct{}, maxConcurrency)
+
+	// Start scheduling requests
+	startTime := time.Now()
+	var seq int64
+	var inFlight sync.WaitGroup
+
+	for {
+		scheduledNs := seq * periodNs
+		scheduledAt := startTime.Add(time.Duration(scheduledNs))
+
+		// Check if we've exceeded duration
+		if scheduledNs >= totalDurationNs+warmupNs {
+			break
+		}
+
+		// Wait until scheduled time
+		now := time.Now()
+		if scheduledAt.After(now) {
+			time.Sleep(scheduledAt.Sub(now))
+		}
+
+		// Acquire semaphore slot
+		sem <- struct{}{}
+
+		inFlight.Add(1)
+		go func(sched time.Time, seqNum int64, isWarmup bool) {
+			defer inFlight.Done()
+			defer func() { <-sem }()
+
+			started := time.Now()
+			err := opFn(opCtx)
+			completed := time.Now()
+
+			// Skip warmup samples
+			if isWarmup {
+				return
+			}
+
+			samplesMu.Lock()
+			samples = append(samples, openLoopSample{
+				scheduledAt: sched,
+				startedAt:   started,
+				completedAt: completed,
+				failed:      err != nil,
+			})
+			samplesMu.Unlock()
+		}(scheduledAt, seq, scheduledNs < warmupNs)
+
+		seq++
+	}
+
+	// Wait for in-flight requests to complete, but with a timeout
+	// This prevents indefinite blocking when the system is saturated
+	done := make(chan struct{})
+	go func() {
+		inFlight.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All requests completed
+	case <-time.After(time.Duration(drainTimeoutMs) * time.Millisecond):
+		// Timeout - cancel all in-flight operations to close their connections
+		cancelOps()
+	}
+
+	// Calculate metrics
+	return calculateOpenLoopMetrics(samples, float64(targetRps), durationMs)
+}
+
+func calculateOpenLoopMetrics(samples []openLoopSample, targetRps float64, durationMs int) *OpenLoopMetrics {
+	if len(samples) == 0 {
+		return &OpenLoopMetrics{
+			TargetRps:      targetRps,
+			TotalLatency:   &LatencyPercentiles{},
+			QueueLatency:   &LatencyPercentiles{},
+			ServiceLatency: &LatencyPercentiles{},
+		}
+	}
+
+	var completedCount, failedCount int
+	var queueLatencies, serviceLatencies, totalLatencies []float64
+
+	for _, s := range samples {
+		if s.failed {
+			failedCount++
+			continue
+		}
+		completedCount++
+
+		queueMs := float64(s.startedAt.Sub(s.scheduledAt).Nanoseconds()) / 1_000_000
+		serviceMs := float64(s.completedAt.Sub(s.startedAt).Nanoseconds()) / 1_000_000
+		totalMs := float64(s.completedAt.Sub(s.scheduledAt).Nanoseconds()) / 1_000_000
+
+		queueLatencies = append(queueLatencies, queueMs)
+		serviceLatencies = append(serviceLatencies, serviceMs)
+		totalLatencies = append(totalLatencies, totalMs)
+	}
+
+	offeredCount := len(samples)
+	successRate := float64(completedCount) / float64(offeredCount)
+	achievedRps := float64(completedCount) / (float64(durationMs) / 1000)
+
+	return &OpenLoopMetrics{
+		TargetRps:      targetRps,
+		AchievedRps:    achievedRps,
+		OfferedCount:   offeredCount,
+		CompletedCount: completedCount,
+		FailedCount:    failedCount,
+		SuccessRate:    successRate,
+		TotalLatency:   calculatePercentiles(totalLatencies),
+		QueueLatency:   calculatePercentiles(queueLatencies),
+		ServiceLatency: calculatePercentiles(serviceLatencies),
+	}
+}
+
+func calculatePercentiles(values []float64) *LatencyPercentiles {
+	if len(values) == 0 {
+		return &LatencyPercentiles{}
+	}
+
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sort.Float64s(sorted)
+
+	n := len(sorted)
+	var sum float64
+	for _, v := range sorted {
+		sum += v
+	}
+
+	return &LatencyPercentiles{
+		Min:    sorted[0],
+		Max:    sorted[n-1],
+		Mean:   sum / float64(n),
+		Median: percentile(sorted, 0.5),
+		P75:    percentile(sorted, 0.75),
+		P90:    percentile(sorted, 0.90),
+		P95:    percentile(sorted, 0.95),
+		P99:    percentile(sorted, 0.99),
+		P999:   percentile(sorted, 0.999),
+	}
+}
+
+func percentile(sorted []float64, p float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	idx := int(float64(len(sorted)-1) * p)
+	if idx >= len(sorted) {
+		idx = len(sorted) - 1
+	}
+	return sorted[idx]
 }

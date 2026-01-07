@@ -178,6 +178,7 @@ export type BenchmarkOperation =
   | BenchmarkCreateOp
   | BenchmarkThroughputAppendOp
   | BenchmarkThroughputReadOp
+  | BenchmarkOpenLoopOp
 
 export interface BenchmarkAppendOp {
   op: `append`
@@ -225,6 +226,40 @@ export interface BenchmarkThroughputReadOp {
   path: string
   /** Expected number of JSON messages to read and parse */
   expectedCount?: number
+}
+
+/**
+ * Open-loop benchmark operation.
+ *
+ * Unlike closed-loop benchmarks, open-loop scheduling fires requests on a
+ * fixed wall-clock schedule regardless of when prior requests complete.
+ * This accurately models real user behavior and captures queue latency.
+ */
+export interface BenchmarkOpenLoopOp {
+  op: `open_loop`
+  /** Inner operation to repeat (append, read, or roundtrip) */
+  innerOp: `append` | `read` | `roundtrip`
+  path: string
+  /** Size in bytes for append/roundtrip operations */
+  size: number
+  /** Target requests per second */
+  targetRps: number
+  /** Duration to run in milliseconds */
+  durationMs: number
+  /** Maximum concurrent requests (default: 1000) */
+  maxConcurrency?: number
+  /** Warmup duration in milliseconds (default: 0) */
+  warmupMs?: number
+  /** Live mode for roundtrip operations */
+  live?: `long-poll` | `sse`
+  /** Content type for the stream */
+  contentType?: string
+  /**
+   * Maximum time to wait for in-flight requests after measurement ends (ms).
+   * If requests don't complete within this time, return with partial results.
+   * Default: 10000 (10 seconds)
+   */
+  drainTimeoutMs?: number
 }
 
 /**
@@ -430,6 +465,47 @@ export interface BenchmarkResult {
     /** Bytes per second (for throughput tests) */
     bytesPerSecond?: number
   }
+  /** Open-loop specific results (only present for open_loop operations) */
+  openLoop?: OpenLoopMetrics
+}
+
+/**
+ * Metrics from open-loop benchmark execution.
+ */
+export interface OpenLoopMetrics {
+  /** Target requests per second */
+  targetRps: number
+  /** Achieved requests per second (successful only) */
+  achievedRps: number
+  /** Total requests scheduled (offered load) */
+  offeredCount: number
+  /** Successfully completed requests */
+  completedCount: number
+  /** Failed requests */
+  failedCount: number
+  /** Success rate (0-1) */
+  successRate: number
+  /** Total latency percentiles (user-perceived: scheduledAt to completedAt) */
+  totalLatency: LatencyPercentiles
+  /** Queue latency percentiles (wait time: scheduledAt to startedAt) */
+  queueLatency: LatencyPercentiles
+  /** Service latency percentiles (execution time: startedAt to completedAt) */
+  serviceLatency: LatencyPercentiles
+}
+
+/**
+ * Latency percentiles in milliseconds.
+ */
+export interface LatencyPercentiles {
+  min: number
+  max: number
+  mean: number
+  median: number
+  p75: number
+  p90: number
+  p95: number
+  p99: number
+  p999: number
 }
 
 /**
@@ -560,10 +636,14 @@ export interface BenchmarkStats {
   median: number
   /** 75th percentile in milliseconds */
   p75: number
+  /** 90th percentile in milliseconds */
+  p90: number
   /** 95th percentile in milliseconds */
   p95: number
   /** 99th percentile in milliseconds */
   p99: number
+  /** 99.9th percentile in milliseconds (tail latency) */
+  p999: number
   /** Standard deviation in milliseconds */
   stdDev: number
   /** Margin of error (95% confidence) in milliseconds */
@@ -583,8 +663,10 @@ export function calculateStats(durationsNs: Array<bigint>): BenchmarkStats {
       mean: 0,
       median: 0,
       p75: 0,
+      p90: 0,
       p95: 0,
       p99: 0,
+      p999: 0,
       stdDev: 0,
       marginOfError: 0,
       sampleCount: 0,
@@ -608,8 +690,10 @@ export function calculateStats(durationsNs: Array<bigint>): BenchmarkStats {
 
   const median = percentile(0.5)
   const p75 = percentile(0.75)
+  const p90 = percentile(0.9)
   const p95 = percentile(0.95)
   const p99 = percentile(0.99)
+  const p999 = percentile(0.999)
 
   // Standard deviation
   const squaredDiffs = samplesMs.map((v) => Math.pow(v - mean, 2))
@@ -625,8 +709,10 @@ export function calculateStats(durationsNs: Array<bigint>): BenchmarkStats {
     mean,
     median,
     p75,
+    p90,
     p95,
     p99,
+    p999,
     stdDev,
     marginOfError,
     sampleCount: n,
@@ -647,8 +733,10 @@ export function formatStats(
     Mean: fmt(stats.mean),
     Median: fmt(stats.median),
     P75: fmt(stats.p75),
+    P90: fmt(stats.p90),
     P95: fmt(stats.p95),
     P99: fmt(stats.p99),
+    P999: fmt(stats.p999),
     StdDev: fmt(stats.stdDev),
     "Margin of Error": fmt(stats.marginOfError),
     Samples: stats.sampleCount.toString(),
