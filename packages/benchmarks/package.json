@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/benchmarks",
   "description": "Performance benchmark suite for Durable Streams server implementations",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "author": "Durable Stream contributors",
   "bugs": {
     "url": "https://github.com/durable-streams/durable-streams/issues"

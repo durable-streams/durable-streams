@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/y-durable-streams",
   "description": "Yjs provider for Durable Streams - sync Yjs documents over append-only streams",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {

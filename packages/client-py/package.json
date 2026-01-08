@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/client-py",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Bridge package for Changesets - actual package is in pyproject.toml"
 }

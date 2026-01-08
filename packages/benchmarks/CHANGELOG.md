@@ -1,5 +1,12 @@
 # @durable-streams/benchmarks
 
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`67b5a4d`](https://github.com/durable-streams/durable-streams/commit/67b5a4dcaae69dbe651dc6ede3cac72d3390567f)]:
+  - @durable-streams/client@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes

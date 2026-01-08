@@ -1,5 +1,18 @@
 # @durable-streams/cli
 
+## 0.1.5
+
+### Patch Changes
+
+- Add JSON support to CLI write command with two modes: ([#144](https://github.com/durable-streams/durable-streams/pull/144))
+  - `--json`: Write JSON input as a single message
+  - `--batch-json`: Write JSON array input as multiple messages (each element stored separately)
+
+  Also improved error handling to reject unknown flags.
+
+- Updated dependencies [[`67b5a4d`](https://github.com/durable-streams/durable-streams/commit/67b5a4dcaae69dbe651dc6ede3cac72d3390567f)]:
+  - @durable-streams/client@0.1.4
+
 ## 0.1.4
 
 ### Patch Changes
