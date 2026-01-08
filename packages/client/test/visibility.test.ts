@@ -177,13 +177,172 @@ describe(`visibility handling`, () => {
       // Resume
       simulateVisibilityChange(false)
 
-      // Wait for resume to process and third fetch to complete
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      // Poll for second item to arrive (more robust than fixed timeout)
+      const pollForSecondItem = async (): Promise<void> => {
+        for (let i = 0; i < 20; i++) {
+          if (received.some((item) => item.id === 2)) return
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+      }
+      await pollForSecondItem()
 
       // Should have received data from both successful requests
-      expect(received.length).toBeGreaterThanOrEqual(1)
+      expect(received).toContainEqual({ id: 1 })
+      expect(received).toContainEqual({ id: 2 })
 
       res.cancel()
+    })
+
+    it(`should only skip live param on first request after resume (single-shot)`, async () => {
+      const capturedUrls: Array<string> = []
+
+      // Track all fetch calls
+      mockFetch.mockImplementation(
+        (url: string | URL | Request, init?: RequestInit) => {
+          const urlString = typeof url === `string` ? url : url.toString()
+          capturedUrls.push(urlString)
+
+          // First request (initial) - return data
+          if (capturedUrls.length === 1) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 1 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `1_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Second request (long-poll) - will be aborted by pause
+          if (capturedUrls.length === 2) {
+            return new Promise<Response>((_, reject) => {
+              init?.signal?.addEventListener(`abort`, () => {
+                reject(new DOMException(`Aborted`, `AbortError`))
+              })
+            })
+          }
+
+          // Third request (resume, no live param) - return data
+          if (capturedUrls.length === 3) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 2 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `2_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Fourth+ request - hang (will be cancelled)
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener(`abort`, () => {
+              reject(new DOMException(`Aborted`, `AbortError`))
+            })
+          })
+        }
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      res.subscribeJson<{ id: number }>(() => Promise.resolve())
+
+      // Wait for first data and second fetch (long-poll) to start
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      // Pause
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Resume
+      simulateVisibilityChange(false)
+
+      // Wait for resume request and subsequent long-poll to start
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      // Verify we have at least 4 requests
+      expect(capturedUrls.length).toBeGreaterThanOrEqual(4)
+
+      // First request (initial) has live=long-poll
+      expect(capturedUrls[0]).toContain(`live=long-poll`)
+
+      // Second request (subsequent long-poll) has live=long-poll
+      expect(capturedUrls[1]).toContain(`live=long-poll`)
+
+      // Third request (resume) should NOT have live param (single-shot skip)
+      expect(capturedUrls[2]).not.toContain(`live=`)
+
+      // Fourth request should have live=long-poll again
+      expect(capturedUrls[3]).toContain(`live=long-poll`)
+
+      res.cancel()
+    })
+  })
+
+  describe(`cancel while paused`, () => {
+    it(`should complete cancel quickly when paused`, async () => {
+      // First response
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      // Second request - will be aborted by pause
+      mockFetch.mockImplementationOnce((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      res.subscribeJson<{ id: number }>(() => Promise.resolve())
+
+      // Wait for first data and second fetch to start
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Pause
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Verify we're in paused state (only 1-2 fetch calls, not continuing)
+      const fetchCountBefore = mockFetch.mock.calls.length
+
+      // Cancel while paused - should complete quickly
+      res.cancel()
+
+      // Wait briefly for cleanup
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Listener should have been removed
+      expect(removeEventListenerSpy).toHaveBeenCalledWith(
+        `visibilitychange`,
+        expect.any(Function)
+      )
+
+      // No new fetches should have been made
+      expect(mockFetch.mock.calls.length).toBe(fetchCountBefore)
     })
   })
 
@@ -432,41 +591,53 @@ describe(`visibility handling`, () => {
       // Set document as hidden BEFORE creating stream
       mockHidden = true
 
-      mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify([{ id: 1 }]), {
-          status: 200,
-          headers: {
-            "content-type": `application/json`,
-            [STREAM_OFFSET_HEADER]: `1_10`,
-            [STREAM_UP_TO_DATE_HEADER]: `true`,
-          },
-        })
-      )
+      let fetchCount = 0
 
-      // Second request - will be called after resume
-      mockFetch.mockResolvedValueOnce(
-        new Response(JSON.stringify([{ id: 2 }]), {
-          status: 200,
-          headers: {
-            "content-type": `application/json`,
-            [STREAM_OFFSET_HEADER]: `2_10`,
-            [STREAM_UP_TO_DATE_HEADER]: `true`,
-          },
-        })
-      )
+      // Create a fresh mock function for this test to avoid any state leakage
+      const freshMockFetch = vi.fn(
+        (_url: string | URL | Request, init?: RequestInit) => {
+          fetchCount++
 
-      // Third request - keep stream alive so we can check fetch count
-      mockFetch.mockImplementation((_url, init?: RequestInit) => {
-        return new Promise<Response>((_, reject) => {
-          init?.signal?.addEventListener(`abort`, () => {
-            reject(new DOMException(`Aborted`, `AbortError`))
+          // First request - initial fetch
+          if (fetchCount === 1) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 1 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `1_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Second request - after resume
+          if (fetchCount === 2) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 2 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `2_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Third+ request - hang (will be cancelled)
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener(`abort`, () => {
+              reject(new DOMException(`Aborted`, `AbortError`))
+            })
           })
-        })
-      })
+        }
+      )
 
       const res = await stream({
         url: `https://example.com/stream`,
-        fetch: mockFetch,
+        fetch: freshMockFetch,
         live: `long-poll`,
       })
 
@@ -477,7 +648,7 @@ describe(`visibility handling`, () => {
 
       // Only one fetch should have been made (the initial one before visibility check)
       // The stream should be paused waiting for resume
-      expect(mockFetch.mock.calls.length).toBe(1)
+      expect(fetchCount).toBe(1)
 
       // Now show the page - should resume
       simulateVisibilityChange(false)
@@ -485,14 +656,14 @@ describe(`visibility handling`, () => {
       // Poll for the second fetch to complete (more robust than fixed timeout)
       const pollForSecondFetch = async (): Promise<void> => {
         for (let i = 0; i < 20; i++) {
-          if (mockFetch.mock.calls.length >= 2) return
+          if (fetchCount >= 2) return
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
       }
       await pollForSecondFetch()
 
       // Now second fetch should have been made
-      expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(fetchCount).toBeGreaterThanOrEqual(2)
 
       res.cancel()
     })

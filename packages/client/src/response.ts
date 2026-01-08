@@ -117,6 +117,7 @@ export class StreamResponseImpl<
   #unsubscribeFromVisibilityChanges?: () => void
   #pausePromise?: Promise<void>
   #pauseResolve?: () => void
+  #justResumedFromPause = false
 
   // --- SSE Resilience State ---
   #sseResilience: Required<SSEResilienceOptions>
@@ -170,13 +171,16 @@ export class StreamResponseImpl<
     this.#responseStream = this.#createResponseStream(config.firstResponse)
 
     // Install single abort listener that propagates to current request controller
-    // (avoids accumulating one listener per request)
+    // and unblocks any paused pull() (avoids accumulating one listener per request)
     this.#abortController.signal.addEventListener(
       `abort`,
-      () =>
-        this.#requestAbortController?.abort(
-          this.#abortController.signal.reason
-        ),
+      () => {
+        this.#requestAbortController?.abort(this.#abortController.signal.reason)
+        // Unblock pull() if paused, so it can see the abort and close
+        this.#pauseResolve?.()
+        this.#pausePromise = undefined
+        this.#pauseResolve = undefined
+      },
       { once: true }
     )
 
@@ -251,6 +255,7 @@ export class StreamResponseImpl<
 
       // Transition to active and resolve the pause promise
       this.#state = `active`
+      this.#justResumedFromPause = true // Flag for single-shot skip of live param
       this.#pauseResolve?.()
       this.#pausePromise = undefined
       this.#pauseResolve = undefined
@@ -764,9 +769,9 @@ export class StreamResponseImpl<
               return
             }
 
-            // Track if we're resuming from a paused state (state was just set to active by resume)
-            const resumingFromPause =
-              this.#state === `active` && this.#pausePromise === undefined
+            // Consume the single-shot resume flag (only first fetch after resume skips live param)
+            const resumingFromPause = this.#justResumedFromPause
+            this.#justResumedFromPause = false
 
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
@@ -789,16 +794,17 @@ export class StreamResponseImpl<
           controller.close()
         } catch (err) {
           // Check if this was a pause-triggered abort
-          // Only transition to paused if we're still in pause-requested state
+          // Treat PAUSE_STREAM aborts as benign regardless of current state
           // (handles race where resume() was called before abort completed)
           if (
             this.#requestAbortController?.signal.aborted &&
-            this.#requestAbortController.signal.reason === PAUSE_STREAM &&
-            this.#state === `pause-requested`
+            this.#requestAbortController.signal.reason === PAUSE_STREAM
           ) {
-            // Transition to paused and await the pause promise
-            this.#state = `paused`
-            // Return - the next pull() will await the pause promise
+            // Only transition to paused if we're still in pause-requested state
+            if (this.#state === `pause-requested`) {
+              this.#state = `paused`
+            }
+            // Return - either we're paused, or already resumed and next pull will proceed
             return
           }
 
