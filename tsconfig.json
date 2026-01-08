@@ -31,6 +31,7 @@
     "**/*.config.ts",
     "**/test/**",
     "**/*.test.ts",
-    "packages/caddy-plugin/**"
+    "packages/caddy-plugin/**",
+    "examples/yjs-demo/**"
   ]
 }

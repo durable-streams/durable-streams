@@ -186,3 +186,7 @@ htmlcov/
 # Claude local settings
 .claude/settings.local.json
 .beads
+examples/yjs-demo/.tanstack
+
+# Local Netlify folder
+.netlify
