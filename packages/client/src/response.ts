@@ -207,8 +207,11 @@ export class StreamResponseImpl<
       document.addEventListener(`visibilitychange`, visibilityHandler)
 
       // Store cleanup function to remove the event listener
+      // Check document still exists (may be undefined in tests after cleanup)
       this.#unsubscribeFromVisibilityChanges = () => {
-        document.removeEventListener(`visibilitychange`, visibilityHandler)
+        if (typeof document === `object`) {
+          document.removeEventListener(`visibilitychange`, visibilityHandler)
+        }
       }
 
       // Check initial state - page might already be hidden when stream starts
