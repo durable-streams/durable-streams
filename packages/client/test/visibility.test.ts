@@ -288,8 +288,98 @@ describe(`visibility handling`, () => {
     })
   })
 
+  describe(`pause-abort race condition`, () => {
+    it(`should handle resume before abort completes gracefully`, async () => {
+      // This tests the race condition where:
+      // 1. Pause is requested, abort signal fires
+      // 2. Resume is called BEFORE the abort error propagates
+      // 3. The abort error should be silently ignored, not close the stream
+
+      let triggerAbortError: () => void = () => {}
+
+      // First response
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      // Second request - will be aborted by pause, but we control when the rejection happens
+      mockFetch.mockImplementationOnce((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            // Don't reject immediately - let the test control timing
+            triggerAbortError = () =>
+              reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
+
+      // Third request - after the race, should succeed
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      // Fourth request - keep stream alive
+      mockFetch.mockImplementationOnce((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      const received: Array<{ id: number }> = []
+      res.subscribeJson<{ id: number }>((batch) => {
+        received.push(...batch.items)
+        return Promise.resolve()
+      })
+
+      // Wait for first data and second fetch to start
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Pause - this triggers abort signal but we delay the rejection
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 10))
+
+      // Resume BEFORE abort error propagates - this is the race condition
+      simulateVisibilityChange(false)
+
+      // NOW let the abort error propagate
+      // The code should handle this gracefully since we already resumed
+      triggerAbortError()
+
+      // Wait for the third fetch to complete
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      // Should have received both items - stream should NOT have closed
+      expect(received).toContainEqual({ id: 1 })
+      expect(received).toContainEqual({ id: 2 })
+
+      res.cancel()
+    })
+  })
+
   describe(`cancel while paused`, () => {
-    it(`should complete cancel quickly when paused`, async () => {
+    it(`should complete cancel within 100ms when paused`, async () => {
       // First response
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: 1 }]), {
@@ -329,11 +419,14 @@ describe(`visibility handling`, () => {
       // Verify we're in paused state (only 1-2 fetch calls, not continuing)
       const fetchCountBefore = mockFetch.mock.calls.length
 
-      // Cancel while paused - should complete quickly
+      // Cancel while paused - should complete quickly (invariant: user abort works while paused)
+      const startTime = Date.now()
       res.cancel()
+      await res.closed
+      const elapsed = Date.now() - startTime
 
-      // Wait briefly for cleanup
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      // Should complete within 100ms - if pausePromise isn't unblocked, this would hang
+      expect(elapsed).toBeLessThan(100)
 
       // Listener should have been removed
       expect(removeEventListenerSpy).toHaveBeenCalledWith(
