@@ -625,25 +625,24 @@ const stream = await DurableStream.create({
 })
 
 // Use IdempotentProducer for reliable, exactly-once token delivery
+let fenced = false
 const producer = new IdempotentProducer(stream, `llm-worker-${workerId}`, {
   autoClaim: true, // Auto-recover if another worker took over
   lingerMs: 10, // Send batches every 10ms for low latency
+  onError: (error) => {
+    if (error instanceof StaleEpochError) {
+      fenced = true
+      console.log("Another worker took over, stopping gracefully")
+    }
+  },
 })
 
-try {
-  for await (const token of llm.stream(prompt)) {
-    producer.append(token) // Batched & deduplicated automatically
-  }
-  await producer.flush() // Ensure all tokens are delivered
-} catch (error) {
-  if (error instanceof StaleEpochError) {
-    console.log("Another worker took over, stopping gracefully")
-  } else {
-    throw error
-  }
-} finally {
-  await producer.close()
+for await (const token of llm.stream(prompt)) {
+  if (fenced) break
+  producer.append(token) // Batched & deduplicated automatically
 }
+await producer.flush() // Ensure all tokens are delivered
+await producer.close()
 
 // Client: resume from last seen position (refresh-safe)
 const res = await stream.stream({ offset: lastSeenOffset, live: "auto" })
