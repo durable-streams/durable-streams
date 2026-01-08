@@ -118,10 +118,16 @@ export interface AppendOperation {
   data?: string
   /** Binary data (base64 encoded) */
   binaryData?: string
-  /** Sequence number for ordering */
+  /** Sequence number for ordering (Stream-Seq header) */
   seq?: number
   headers?: Record<string, string>
   expect?: AppendExpectation
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
 }
 
 /**
@@ -138,6 +144,64 @@ export interface AppendBatchOperation {
   }>
   headers?: Record<string, string>
   expect?: AppendBatchExpectation
+}
+
+/**
+ * Append via IdempotentProducer client (tests client-side exactly-once semantics).
+ */
+export interface IdempotentAppendOperation {
+  action: `idempotent-append`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  /** Data to append (string or JSON for JSON streams) */
+  data: string
+  /** Auto-claim epoch on 403 */
+  autoClaim?: boolean
+  headers?: Record<string, string>
+  expect?: IdempotentAppendExpectation
+}
+
+/**
+ * Batch append via IdempotentProducer client (tests client-side JSON batching).
+ */
+export interface IdempotentAppendBatchOperation {
+  action: `idempotent-append-batch`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  /** Items to append (will be batched by the client) */
+  items: Array<{
+    data: string
+  }>
+  /** Auto-claim epoch on 403 */
+  autoClaim?: boolean
+  /** Max concurrent batches in flight (default 1, set higher to test 409 retry) */
+  maxInFlight?: number
+  headers?: Record<string, string>
+  expect?: IdempotentAppendBatchExpectation
+}
+
+/**
+ * Expectation for idempotent-append operation.
+ */
+export interface IdempotentAppendExpectation extends BaseExpectation {
+  /** Expected duplicate flag */
+  duplicate?: boolean
+  /** Store the returned offset */
+  storeOffsetAs?: string
+}
+
+/**
+ * Expectation for idempotent-append-batch operation.
+ */
+export interface IdempotentAppendBatchExpectation extends BaseExpectation {
+  /** All items should succeed */
+  allSucceed?: boolean
 }
 
 /**
@@ -223,13 +287,42 @@ export interface AssertOperation {
 
 /**
  * Append to stream via direct server HTTP (bypasses client adapter).
- * Used for concurrent operations when adapter is blocked on a read.
+ * Used for concurrent operations when adapter is blocked on a read,
+ * and for testing protocol-level behavior like idempotent producers.
  */
 export interface ServerAppendOperation {
   action: `server-append`
   path: string
   data: string
   headers?: Record<string, string>
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
+  /** Expected result */
+  expect?: ServerAppendExpectation
+}
+
+/**
+ * Expectation for server-append operation.
+ */
+export interface ServerAppendExpectation {
+  /** Expected HTTP status code */
+  status?: number
+  /** Store the returned offset */
+  storeOffsetAs?: string
+  /** Expected duplicate flag (true for 204 idempotent success) */
+  duplicate?: boolean
+  /** Expected producer epoch in response */
+  producerEpoch?: number
+  /** Expected producer seq in response (highest accepted sequence) */
+  producerSeq?: number
+  /** Expected producer expected seq (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Expected producer received seq (on 409 sequence gap) */
+  producerReceivedSeq?: number
 }
 
 /**
@@ -320,6 +413,8 @@ export type TestOperation =
   | ConnectOperation
   | AppendOperation
   | AppendBatchOperation
+  | IdempotentAppendOperation
+  | IdempotentAppendBatchOperation
   | ReadOperation
   | HeadOperation
   | DeleteOperation
@@ -360,13 +455,23 @@ export interface ConnectExpectation extends BaseExpectation {
 }
 
 export interface AppendExpectation extends BaseExpectation {
-  status?: 200 | 404 | 409 | number
+  status?: 200 | 204 | 400 | 403 | 404 | 409 | number
   /** Store the returned offset */
   storeOffsetAs?: string
   /** Expected headers that were sent (for dynamic header testing) */
   headersSent?: Record<string, string>
   /** Expected params that were sent (for dynamic param testing) */
   paramsSent?: Record<string, string>
+  /** Expected duplicate flag (true for 204 idempotent success) */
+  duplicate?: boolean
+  /** Expected producer epoch in response */
+  producerEpoch?: number
+  /** Expected producer seq in response (highest accepted sequence) */
+  producerSeq?: number
+  /** Expected producer expected seq (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Expected producer received seq (on 409 sequence gap) */
+  producerReceivedSeq?: number
 }
 
 export interface AppendBatchExpectation extends BaseExpectation {
@@ -386,6 +491,8 @@ export interface ReadExpectation extends BaseExpectation {
   dataContains?: string
   /** Expected data to contain all of these substrings */
   dataContainsAll?: Array<string>
+  /** Expected exact messages in order (for JSON streams, verifies each chunk) */
+  dataExact?: Array<string>
   /** Expected number of chunks */
   chunkCount?: number
   /** Minimum number of chunks */

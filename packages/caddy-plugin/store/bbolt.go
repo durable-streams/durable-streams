@@ -29,6 +29,15 @@ type bboltMetadata struct {
 	ExpiresAt     *int64 `json:"expires_at,omitempty"` // Unix timestamp
 	CreatedAt     int64  `json:"created_at"`           // Unix timestamp
 	DirectoryName string `json:"directory_name"`
+	// Idempotent producer state (added in protocol v1.1)
+	Producers map[string]*bboltProducerState `json:"producers,omitempty"`
+}
+
+// bboltProducerState is the serialized form of ProducerState
+type bboltProducerState struct {
+	Epoch       int64 `json:"epoch"`
+	LastSeq     int64 `json:"last_seq"`
+	LastUpdated int64 `json:"last_updated"`
 }
 
 var metadataBucket = []byte("metadata")
@@ -89,6 +98,18 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 		bm.ExpiresAt = &ts
 	}
 
+	// Convert producers map
+	if meta.Producers != nil && len(meta.Producers) > 0 {
+		bm.Producers = make(map[string]*bboltProducerState, len(meta.Producers))
+		for id, state := range meta.Producers {
+			bm.Producers[id] = &bboltProducerState{
+				Epoch:       state.Epoch,
+				LastSeq:     state.LastSeq,
+				LastUpdated: state.LastUpdated,
+			}
+		}
+	}
+
 	data, err := json.Marshal(bm)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -147,6 +168,18 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 		}
 		meta.CreatedAt = timeFromUnix(bm.CreatedAt)
 		directoryName = bm.DirectoryName
+
+		// Deserialize producers
+		if bm.Producers != nil && len(bm.Producers) > 0 {
+			meta.Producers = make(map[string]*ProducerState, len(bm.Producers))
+			for id, state := range bm.Producers {
+				meta.Producers[id] = &ProducerState{
+					Epoch:       state.Epoch,
+					LastSeq:     state.LastSeq,
+					LastUpdated: state.LastUpdated,
+				}
+			}
+		}
 
 		return nil
 	})
@@ -236,6 +269,61 @@ func (s *BboltMetadataStore) UpdateOffset(path string, offset Offset, lastSeq st
 	})
 }
 
+// UpdateAppendState updates offset, lastSeq, and producer state atomically
+func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastSeq string, producerId string, producerState *ProducerState) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		// Read existing
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		// Make a copy
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		// Update offset and seq
+		bm.CurrentOffset = offset.String()
+		if lastSeq != "" {
+			bm.LastSeq = lastSeq
+		}
+
+		// Update producer state
+		if producerId != "" && producerState != nil {
+			if bm.Producers == nil {
+				bm.Producers = make(map[string]*bboltProducerState)
+			}
+			bm.Producers[producerId] = &bboltProducerState{
+				Epoch:       producerState.Epoch,
+				LastSeq:     producerState.LastSeq,
+				LastUpdated: producerState.LastUpdated,
+			}
+		}
+
+		// Write back
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+}
+
 // List returns all stream paths
 func (s *BboltMetadataStore) List() ([]string, error) {
 	s.mu.RLock()
@@ -298,6 +386,18 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 				meta.ExpiresAt = &t
 			}
 			meta.CreatedAt = timeFromUnix(bm.CreatedAt)
+
+			// Deserialize producers
+			if bm.Producers != nil && len(bm.Producers) > 0 {
+				meta.Producers = make(map[string]*ProducerState, len(bm.Producers))
+				for id, state := range bm.Producers {
+					meta.Producers[id] = &ProducerState{
+						Epoch:       state.Epoch,
+						LastSeq:     state.LastSeq,
+						LastUpdated: state.LastUpdated,
+					}
+				}
+			}
 
 			return fn(meta, bm.DirectoryName)
 		})

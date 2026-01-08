@@ -34,6 +34,9 @@ var (
 
 	// ErrAlreadyClosed indicates the iterator has already been closed.
 	ErrAlreadyClosed = errors.New("durablestreams: iterator already closed")
+
+	// ErrBadRequest indicates a malformed request (400).
+	ErrBadRequest = errors.New("durablestreams: bad request")
 )
 
 // StreamError wraps errors with additional context about the failed operation.
@@ -77,6 +80,8 @@ func newStreamError(op, url string, statusCode int, err error) *StreamError {
 // errorFromStatus maps HTTP status codes to appropriate sentinel errors.
 func errorFromStatus(statusCode int) error {
 	switch statusCode {
+	case 400:
+		return ErrBadRequest
 	case 404:
 		return ErrStreamNotFound
 	case 409:

@@ -1,0 +1,339 @@
+id: idempotent-sequence-validation
+name: Idempotent Producer - Sequence Validation
+description: |
+  Tests for producer sequence number validation.
+  Sequences must start at 0 and increment monotonically within an epoch.
+category: producer
+tags:
+  - idempotent
+  - sequence
+
+tests:
+  - id: first-append-accepted
+    name: First append with producer headers is accepted
+    description: Server should accept first append with epoch=0, seq=0
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+          producerEpoch: 0
+
+  - id: sequential-sequences
+    name: Sequential producer sequences accepted
+    description: Server should accept monotonically increasing sequences
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+
+  - id: sequence-gap-rejected
+    name: Sequence gap returns 409
+    description: Skipping a sequence number should return 409 with expected/received seq
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Skip seq=1, try seq=2
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 409
+          producerExpectedSeq: 1
+          producerReceivedSeq: 2
+
+  - id: new-producer-seq-not-zero
+    name: New producer starting with seq > 0 returns 409
+    description: A never-seen producer sending seq > 0 should get 409 (gap), not 400
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: brand-new-producer
+        producerEpoch: 0
+        producerSeq: 5
+        expect:
+          status: 409
+          producerExpectedSeq: 0
+          producerReceivedSeq: 5
+
+  - id: duplicate-returns-204
+    name: Duplicate sequence returns 204 (idempotent success)
+    description: Retrying the same seq should return 204 without duplicating data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "hello"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only one message in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "hello"
+          upToDate: true
+
+  - id: duplicate-seq-zero-preserves-state
+    name: Duplicate of seq=0 does not corrupt state
+    description: Retrying seq=0 should not affect subsequent sequence tracking
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "first"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "first"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+      # seq=1 should still work
+      - action: server-append
+        path: ${streamPath}
+        data: "second"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+
+  - id: duplicate-ignores-different-data
+    name: Duplicate seq ignores payload differences
+    description: Same (producer, epoch, seq) returns 204 even with different data - dedup is by headers only
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "original payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Retry with different data - should still be 204 (idempotent)
+      - action: server-append
+        path: ${streamPath}
+        data: "different payload"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # Verify only original data is in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "original payload"
+          upToDate: true
+
+  - id: ordering-preserved-in-stream
+    name: Message ordering preserved in stream
+    description: Messages from idempotent producer maintain sequence order
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: '{"seq": 0}'
+        producerId: order-test
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: '{"seq": 1}'
+        producerId: order-test
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: '{"seq": 2}'
+        producerId: order-test
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - '"seq":0'
+            - '"seq":1'
+            - '"seq":2'
+          upToDate: true
+
+  - id: duplicate-old-sequence
+    name: Duplicate of old (non-tail) sequence returns 204
+    description: |
+      Retrying a sequence far back in history should still return 204.
+      This tests that the server tracks more than just the last sequence.
+      (Kafka distinguishes DuplicateSequenceException vs OutOfOrderSequenceException)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send sequences 0-5
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg3"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 3
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg4"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 4
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "msg5"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 5
+        expect:
+          status: 200
+      # Retry seq=1 (old, non-tail sequence)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 204
+          duplicate: true
+      # Retry seq=0 (first sequence)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+          duplicate: true
+      # New sequence should still work
+      - action: server-append
+        path: ${streamPath}
+        data: "msg6"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 6
+        expect:
+          status: 200

@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"sync"
+	"strings"
 	"time"
 
 	durablestreams "github.com/durable-streams/durable-streams/packages/client-go"
@@ -43,6 +43,12 @@ type Command struct {
 	Data   string `json:"data,omitempty"`
 	Binary bool   `json:"binary,omitempty"`
 	Seq    int    `json:"seq,omitempty"`
+	// IdempotentProducer fields
+	ProducerID  string   `json:"producerId,omitempty"`
+	Epoch       int      `json:"epoch,omitempty"`
+	AutoClaim   bool     `json:"autoClaim,omitempty"`
+	MaxInFlight int      `json:"maxInFlight,omitempty"`
+	Items       []string `json:"items,omitempty"` // Already strings - runner extracts data field
 	// Read fields
 	Offset          string `json:"offset,omitempty"`
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
@@ -88,6 +94,8 @@ type Result struct {
 	CommandType   string            `json:"commandType,omitempty"`
 	ErrorCode     string            `json:"errorCode,omitempty"`
 	Message       string            `json:"message,omitempty"`
+	// IdempotentProducer fields
+	Duplicate bool `json:"duplicate,omitempty"`
 	// Benchmark fields
 	IterationID string            `json:"iterationId,omitempty"`
 	DurationNs  string            `json:"durationNs,omitempty"`
@@ -135,6 +143,18 @@ var (
 	client             *durablestreams.Client
 	streamContentTypes = make(map[string]string)
 )
+
+// normalizeContentType extracts the media type before semicolon and lowercases.
+func normalizeContentType(contentType string) string {
+	if contentType == "" {
+		return ""
+	}
+	idx := strings.Index(contentType, ";")
+	if idx >= 0 {
+		contentType = contentType[:idx]
+	}
+	return strings.TrimSpace(strings.ToLower(contentType))
+}
 
 // Dynamic header/param state
 type DynamicValue struct {
@@ -236,6 +256,10 @@ func handleCommand(cmd Command) Result {
 		return handleSetDynamicParam(cmd)
 	case "clear-dynamic":
 		return handleClearDynamic(cmd)
+	case "idempotent-append":
+		return handleIdempotentAppend(cmd)
+	case "idempotent-append-batch":
+		return handleIdempotentAppendBatch(cmd)
 	case "shutdown":
 		return Result{Type: "shutdown", Success: true}
 	default:
@@ -638,6 +662,135 @@ func handleClearDynamic(cmd Command) Result {
 	}
 }
 
+func handleIdempotentAppend(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := serverURL + cmd.Path
+
+	// Get content-type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+		Epoch:       cmd.Epoch,
+		AutoClaim:   cmd.AutoClaim,
+		MaxInFlight: 1,
+		LingerMs:    0, // Send immediately for testing
+		ContentType: contentType,
+	})
+	if err != nil {
+		return errorResult("idempotent-append", err)
+	}
+	defer producer.Close()
+
+	// For JSON streams, parse the string data into a native object
+	// (IdempotentProducer now expects native objects for JSON streams)
+	var data any
+	if normalizeContentType(contentType) == "application/json" {
+		if err := json.Unmarshal([]byte(cmd.Data), &data); err != nil {
+			return sendError("idempotent-append", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
+		}
+	} else {
+		data = []byte(cmd.Data)
+	}
+
+	// Append returns immediately (fire-and-forget)
+	if err := producer.Append(data); err != nil {
+		return errorResult("idempotent-append", err)
+	}
+
+	// Flush to actually send and wait for result
+	if err := producer.Flush(ctx); err != nil {
+		return errorResult("idempotent-append", err)
+	}
+
+	// Note: With fire-and-forget API we don't get per-message results
+	// Tests verify data via read, not append response
+	return Result{
+		Type:    "idempotent-append",
+		Success: true,
+		Status:  200,
+	}
+}
+
+func handleIdempotentAppendBatch(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	url := serverURL + cmd.Path
+
+	// Get content-type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	// Use provided maxInFlight or default to 1 for compatibility
+	maxInFlight := 1
+	if cmd.MaxInFlight > 0 {
+		maxInFlight = cmd.MaxInFlight
+	}
+
+	// When testing concurrency (maxInFlight > 1), use small batches to force
+	// multiple concurrent requests. Otherwise batch all items together.
+	testingConcurrency := maxInFlight > 1
+	lingerMs := 1000
+	maxBatchBytes := 1024 * 1024
+	if testingConcurrency {
+		lingerMs = 0
+		maxBatchBytes = 1
+	}
+
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+		Epoch:         cmd.Epoch,
+		AutoClaim:     cmd.AutoClaim,
+		MaxInFlight:   maxInFlight,
+		LingerMs:      lingerMs,
+		MaxBatchBytes: maxBatchBytes,
+		ContentType:   contentType,
+	})
+	if err != nil {
+		return errorResult("idempotent-append-batch", err)
+	}
+	defer producer.Close()
+
+	// For JSON streams, parse the string items into native objects
+	// (IdempotentProducer now expects native objects for JSON streams)
+	isJSON := normalizeContentType(contentType) == "application/json"
+
+	// Queue all items using Append (non-blocking, no channels)
+	for _, item := range cmd.Items {
+		var data any
+		if isJSON {
+			var parsed any
+			if err := json.Unmarshal([]byte(item), &parsed); err != nil {
+				return sendError("idempotent-append-batch", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
+			}
+			data = parsed
+		} else {
+			data = []byte(item)
+		}
+
+		if err := producer.Append(data); err != nil {
+			return errorResult("idempotent-append-batch", err)
+		}
+	}
+
+	// Flush to send the batch
+	if err := producer.Flush(ctx); err != nil {
+		return errorResult("idempotent-append-batch", err)
+	}
+
+	return Result{
+		Type:    "idempotent-append-batch",
+		Success: true,
+		Status:  200,
+	}
+}
+
 func errorResult(cmdType string, err error) Result {
 	var streamErr *durablestreams.StreamError
 	if errors.As(err, &streamErr) {
@@ -843,36 +996,36 @@ func benchmarkCreate(ctx context.Context, path string, contentType string) int64
 }
 
 func benchmarkThroughputAppend(ctx context.Context, path string, count, size, concurrency int) (int64, *BenchmarkMetrics) {
-	stream := client.Stream(path)
-	if ct, ok := streamContentTypes[path]; ok {
-		stream.SetContentType(ct)
+	url := serverURL + path
+	ct := streamContentTypes[path]
+	if ct == "" {
+		ct = "application/octet-stream"
 	}
 
-	// Use BatchedStream for automatic batching - this is what makes Go competitive
-	batched := durablestreams.NewBatchedStream(stream)
-	defer batched.Close()
-
-	// Pre-generate all data
-	allData := make([][]byte, count)
-	for i := range allData {
-		allData[i] = make([]byte, size)
-		rand.Read(allData[i])
+	// Use IdempotentProducer for automatic batching and pipelining
+	// Append is fire-and-forget - no goroutines needed
+	producer, err := client.IdempotentProducer(url, "bench-producer", durablestreams.IdempotentProducerConfig{
+		LingerMs:    0, // Batch by size, not time
+		ContentType: ct,
+	})
+	if err != nil {
+		return 0, nil
 	}
+	defer producer.Close()
 
-	// Submit all appends concurrently using goroutines
-	var wg sync.WaitGroup
+	// Pre-generate payload (reuse same data for speed)
+	payload := make([]byte, size)
+	rand.Read(payload)
 
 	start := time.Now()
 
+	// Fire-and-forget: Append returns immediately, producer batches in background
 	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(data []byte) {
-			defer wg.Done()
-			_, _ = batched.Append(ctx, data)
-		}(allData[i])
+		_ = producer.Append(payload)
 	}
 
-	wg.Wait()
+	// Wait for all batches to complete
+	_ = producer.Flush(ctx)
 	elapsed := time.Since(start)
 
 	totalBytes := count * size

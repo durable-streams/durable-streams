@@ -25,6 +25,7 @@ from durable_streams import (
     DurableStream,
     DurableStreamError,
     FetchError,
+    IdempotentProducer,
     SeqConflictError,
     StreamExistsError,
     StreamNotFoundError,
@@ -51,6 +52,13 @@ server_url = ""
 stream_content_types: dict[str, str] = {}
 # Shared HTTP client for connection reuse (significant perf improvement)
 shared_client: httpx.Client | None = None
+
+
+def _normalize_content_type(content_type: str | None) -> str:
+    """Normalize content-type by extracting media type (before semicolon)."""
+    if not content_type:
+        return ""
+    return content_type.split(";")[0].strip().lower()
 
 # Dynamic headers/params state
 class DynamicValue:
@@ -780,6 +788,112 @@ def handle_clear_dynamic(_cmd: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-append command."""
+    import asyncio
+
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache or use default
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd["producerId"]
+    epoch = cmd.get("epoch", 0)
+    auto_claim = cmd.get("autoClaim", False)
+    data = cmd["data"]
+
+    # For JSON streams, parse the string data into a native object
+    # (IdempotentProducer now expects native objects for JSON streams)
+    is_json = _normalize_content_type(content_type) == "application/json"
+    if is_json and isinstance(data, str):
+        data = json.loads(data)
+
+    async def do_append():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            producer = IdempotentProducer(
+                url=url,
+                producer_id=producer_id,
+                client=client,
+                epoch=epoch,
+                auto_claim=auto_claim,
+                max_in_flight=1,  # Required when auto_claim is True
+                linger_ms=0,  # Send immediately for testing
+                content_type=content_type,
+            )
+            try:
+                # append() is fire-and-forget (synchronous), then flush() sends the batch
+                producer.append(data)
+                await producer.flush()
+                return {
+                    "type": "idempotent-append",
+                    "success": True,
+                    "status": 200,
+                }
+            finally:
+                await producer.close()
+
+    return asyncio.run(do_append())
+
+
+def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-append-batch command."""
+    import asyncio
+
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache or use default
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd["producerId"]
+    epoch = cmd.get("epoch", 0)
+    auto_claim = cmd.get("autoClaim", False)
+    items = cmd["items"]
+
+    # For JSON streams, parse the string items into native objects
+    # (IdempotentProducer now expects native objects for JSON streams)
+    is_json = _normalize_content_type(content_type) == "application/json"
+    if is_json:
+        items = [json.loads(item) if isinstance(item, str) else item for item in items]
+
+    async def do_append_batch():
+        # Use provided maxInFlight or default to 1 for compatibility
+        max_in_flight = cmd.get("maxInFlight", 1)
+
+        # When testing concurrency (maxInFlight > 1), use small batches to force
+        # multiple concurrent requests. Otherwise batch all items together.
+        testing_concurrency = max_in_flight > 1
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            producer = IdempotentProducer(
+                url=url,
+                producer_id=producer_id,
+                client=client,
+                epoch=epoch,
+                auto_claim=auto_claim,
+                max_in_flight=max_in_flight,
+                linger_ms=0 if testing_concurrency else 1000,
+                max_batch_bytes=1 if testing_concurrency else 1024 * 1024,
+                content_type=content_type,
+            )
+            try:
+                # append() is fire-and-forget (synchronous), adds to pending batch
+                for item in items:
+                    producer.append(item)
+
+                # flush() sends the batch and waits for completion
+                await producer.flush()
+
+                return {
+                    "type": "idempotent-append-batch",
+                    "success": True,
+                    "status": 200,
+                }
+            finally:
+                await producer.close()
+
+    return asyncio.run(do_append_batch())
+
+
 def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
     """Route command to appropriate handler."""
     cmd_type = cmd["type"]
@@ -809,6 +923,10 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_set_dynamic_param(cmd)
         elif cmd_type == "clear-dynamic":
             return handle_clear_dynamic(cmd)
+        elif cmd_type == "idempotent-append":
+            return handle_idempotent_append(cmd)
+        elif cmd_type == "idempotent-append-batch":
+            return handle_idempotent_append_batch(cmd)
         else:
             return {
                 "type": "error",

@@ -14,6 +14,7 @@ import {
   DurableStream,
   DurableStreamError,
   FetchError,
+  IdempotentProducer,
   stream,
 } from "@durable-streams/client"
 import {
@@ -543,6 +544,117 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       }
     }
 
+    case `idempotent-append`: {
+      try {
+        const url = `${serverUrl}${command.path}`
+
+        // Get content-type from cache or use default
+        const contentType =
+          streamContentTypes.get(command.path) ?? `application/octet-stream`
+
+        const ds = new DurableStream({
+          url,
+          contentType,
+        })
+
+        const producer = new IdempotentProducer(ds, command.producerId, {
+          epoch: command.epoch,
+          autoClaim: command.autoClaim,
+          maxInFlight: 1,
+          lingerMs: 0, // Send immediately for testing
+        })
+
+        // For JSON streams, parse the string data into a native object
+        // (IdempotentProducer expects native objects for JSON streams)
+        const normalizedContentType = contentType
+          .split(`;`)[0]
+          ?.trim()
+          .toLowerCase()
+        const isJson = normalizedContentType === `application/json`
+        const data = isJson ? JSON.parse(command.data) : command.data
+
+        try {
+          // append() is fire-and-forget (synchronous), then flush() sends the batch
+          producer.append(data)
+          await producer.flush()
+          await producer.close()
+
+          return {
+            type: `idempotent-append`,
+            success: true,
+            status: 200,
+          }
+        } catch (err) {
+          await producer.close()
+          throw err
+        }
+      } catch (err) {
+        return errorResult(`idempotent-append`, err)
+      }
+    }
+
+    case `idempotent-append-batch`: {
+      try {
+        const url = `${serverUrl}${command.path}`
+
+        // Get content-type from cache or use default
+        const contentType =
+          streamContentTypes.get(command.path) ?? `application/octet-stream`
+
+        const ds = new DurableStream({
+          url,
+          contentType,
+        })
+
+        // Use provided maxInFlight or default to 1 for compatibility
+        const maxInFlight = command.maxInFlight ?? 1
+
+        // When testing concurrency (maxInFlight > 1), use small batches to force
+        // multiple concurrent requests. Otherwise batch all items together.
+        const testingConcurrency = maxInFlight > 1
+        const producer = new IdempotentProducer(ds, command.producerId, {
+          epoch: command.epoch,
+          autoClaim: command.autoClaim,
+          maxInFlight,
+          lingerMs: testingConcurrency ? 0 : 1000,
+          maxBatchBytes: testingConcurrency ? 1 : 1024 * 1024,
+        })
+
+        // For JSON streams, parse string items into native objects
+        // (IdempotentProducer expects native objects for JSON streams)
+        const normalizedContentType = contentType
+          .split(`;`)[0]
+          ?.trim()
+          .toLowerCase()
+        const isJson = normalizedContentType === `application/json`
+        const items = isJson
+          ? command.items.map((item: string) => JSON.parse(item))
+          : command.items
+
+        try {
+          // append() is fire-and-forget (synchronous), adds to pending batch
+          for (const item of items) {
+            producer.append(item)
+          }
+
+          // flush() sends the batch and waits for completion
+          await producer.flush()
+          await producer.close()
+
+          return {
+            type: `idempotent-append-batch`,
+            success: true,
+            status: 200,
+          }
+        } catch (err) {
+          await producer.close()
+          throw err
+        }
+      } catch (err) {
+        return errorResult(`idempotent-append-batch`, err)
+      }
+    }
+
     default:
       return {
         type: `error`,
@@ -702,7 +814,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
 
           // Wait for data
           return new Promise<Uint8Array>((resolve) => {
-            const unsubscribe = res.subscribeBytes((chunk) => {
+            const unsubscribe = res.subscribeBytes(async (chunk) => {
               if (chunk.data.length > 0) {
                 unsubscribe()
                 res.cancel()
@@ -749,10 +861,19 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         // Generate payload (using fill for speed - don't want to measure PRNG)
         const payload = new Uint8Array(operation.size).fill(42)
 
-        // Submit all messages at once - client batching will handle the rest
-        await Promise.all(
-          Array.from({ length: operation.count }, () => ds.append(payload))
-        )
+        // Use IdempotentProducer for automatic batching and pipelining
+        const producer = new IdempotentProducer(ds, `bench-producer`, {
+          lingerMs: 0, // No linger - send batches immediately when ready
+          onError: (err) => console.error(`Batch failed:`, err),
+        })
+
+        // Fire-and-forget: don't await individual appends, producer batches in background
+        for (let i = 0; i < operation.count; i++) {
+          producer.append(payload)
+        }
+
+        // Wait for all messages to be delivered
+        await producer.flush()
 
         metrics.bytesTransferred = operation.count * operation.size
         metrics.messagesProcessed = operation.count

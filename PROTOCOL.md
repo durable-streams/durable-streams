@@ -193,6 +193,130 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
 
+### 5.2.1. Idempotent Producers
+
+Durable Streams supports Kafka-style idempotent producers for exactly-once write semantics. This enables fire-and-forget writes with server-side deduplication, eliminating duplicates from client retries.
+
+#### Design
+
+- **Client-provided producer IDs**: Zero RTT overhead, no handshake required
+- **Client-declared epochs, server-validated fencing**: Client increments epoch on restart; server validates monotonicity and fences stale epochs
+- **Per-batch sequence numbers**: Separate from `Stream-Seq`, used for retry safety
+- **Two-layer sequence design**:
+  - Transport layer: `Producer-Id` + `Producer-Epoch` + `Producer-Seq` (retry safety)
+  - Application layer: `Stream-Seq` (cross-restart ordering, lexicographic)
+
+#### Request Headers
+
+All three producer headers **MUST** be provided together or none at all. If only some headers are provided, servers **MUST** return `400 Bad Request`.
+
+- `Producer-Id: <string>`
+  - Client-supplied stable identifier (e.g., "order-service-1", UUID)
+  - **MUST** be a non-empty string; empty values result in `400 Bad Request`
+  - Identifies the logical producer across restarts
+
+- `Producer-Epoch: <integer>`
+  - Client-declared epoch, starting at 0
+  - Increment on producer restart to establish a new session
+  - Server validates that epoch is monotonically non-decreasing
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+
+- `Producer-Seq: <integer>`
+  - Monotonically increasing sequence number per epoch
+  - Starts at 0 for each new epoch
+  - Applies per-batch (per HTTP request), not per-message
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+
+#### Response Headers
+
+- `Producer-Epoch: <integer>`: Echoed back on success (200/204), or current server epoch on stale epoch (403)
+- `Producer-Seq: <integer>`: On success (200/204), the highest accepted sequence number for this `(stream, producerId, epoch)` tuple. Enables clients to confirm pipelined requests and recover state after crashes.
+- `Producer-Expected-Seq: <integer>`: On 409 Conflict (sequence gap), the expected sequence
+- `Producer-Received-Seq: <integer>`: On 409 Conflict (sequence gap), the received sequence
+
+#### Validation Logic
+
+```
+# Epoch validation (client-declared, server-validated)
+if epoch < state.epoch:
+  → 403 Forbidden
+  → Headers: Producer-Epoch: <current epoch>
+
+if epoch > state.epoch:
+  if seq != 0:
+    → 400 Bad Request (new epoch must start at seq=0)
+  → Accept: update state.epoch = epoch, state.lastSeq = 0
+  → 200 OK (new epoch established)
+
+# Same epoch: sequence validation
+if seq <= state.lastSeq:
+  → 204 No Content (duplicate, idempotent success)
+
+if seq == state.lastSeq + 1:
+  → Accept, update state.lastSeq = seq
+  → 200 OK
+
+if seq > state.lastSeq + 1:
+  → 409 Conflict
+  → Headers: Producer-Expected-Seq: <lastSeq + 1>, Producer-Received-Seq: <seq>
+```
+
+#### Response Codes (with Producer Headers)
+
+- `200 OK`: Append successful (new data)
+- `204 No Content`: Duplicate append (idempotent success, data already exists)
+- `400 Bad Request`: Invalid producer headers (e.g., non-integer values, epoch increase with seq != 0)
+- `403 Forbidden`: Stale producer epoch (zombie fencing). Response includes `Producer-Epoch` header with current server epoch.
+- `409 Conflict`: Sequence gap detected. Response includes `Producer-Expected-Seq` and `Producer-Received-Seq` headers.
+
+#### Bootstrap and Restart Flow
+
+1. **Initial start (epoch=0)**:
+   - Producer sends `(epoch=0, seq=0)`
+   - Server accepts, establishes producer state
+
+2. **Producer restart**:
+   - Producer increments local epoch (0 → 1), resets seq to 0
+   - Sends `(epoch=1, seq=0)`
+   - Server sees epoch > state.epoch, accepts, updates state
+
+3. **Zombie fencing**:
+   - Old producer (zombie) still sending `(epoch=0, seq=N)` gets 403 Forbidden
+   - Response includes `Producer-Epoch: 1` header
+
+#### Auto-claim Flow (for ephemeral producers)
+
+For serverless or ephemeral producers without persisted epoch:
+
+1. Producer starts fresh with `(epoch=0, seq=0)`
+2. If server has `state.epoch=5`, returns 403 with `Producer-Epoch: 5`
+3. Client can retry with `(epoch=6, seq=0)` to claim the producer ID
+
+This is opt-in client behavior and should be used with caution.
+
+#### Concurrency Requirements
+
+Servers **MUST** serialize validation + append operations per `(stream, producerId)` pair. HTTP requests can arrive out-of-order; without serialization, seq=1 arriving before seq=0 would cause false sequence gaps.
+
+#### Atomicity Requirements
+
+For persistent storage, servers **SHOULD** commit producer state updates and log appends atomically (e.g., in a single database transaction). Non-atomic implementations have a crash window where:
+
+1. Data is appended to the log
+2. Crash occurs before producer state is updated
+3. On recovery, a retry may be re-accepted, causing duplicate data
+
+**Recovery for non-atomic stores**: Clients can bump their epoch after a crash to establish a clean session. This trades "exactly once within epoch" for "at least once across crashes" which is acceptable for many use cases. Stores **SHOULD** document their atomicity guarantees clearly.
+
+#### Producer State Cleanup
+
+Servers **MAY** implement TTL-based cleanup for producer state:
+
+- **In-memory stores**: 7 days TTL recommended, clean up on stream access
+- **Persistent stores**: Retain as long as stream data exists (stronger guarantee)
+
+After state expiry, the producer is treated as new. A zombie alive past TTL expiry can write again, which is acceptable for testing but persistent stores should use longer retention.
+
 ### 5.3. Delete Stream
 
 #### Request

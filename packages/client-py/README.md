@@ -60,7 +60,7 @@ async with astream("https://streams.example.com/my-stream") as res:
         print(item)
 ```
 
-### Writing to a Stream
+### Writing to a Stream (Simple)
 
 ```python
 from durable_streams import DurableStream
@@ -81,6 +81,52 @@ with handle.stream() as res:
     for item in res.iter_json():
         print(item)
 ```
+
+### High-Throughput Writes with IdempotentProducer (Recommended)
+
+For reliable, high-throughput writes with exactly-once semantics, use `IdempotentProducer`:
+
+```python
+import asyncio
+import json
+from durable_streams import AsyncDurableStream, IdempotentProducer
+
+async def main():
+    # Create or connect to a stream
+    stream = await AsyncDurableStream.create(
+        "https://streams.example.com/events",
+        content_type="application/json",
+    )
+
+    # Create an idempotent producer
+    producer = IdempotentProducer(
+        stream,
+        producer_id="event-processor-1",
+        auto_claim=True,      # Auto-recover from epoch conflicts
+        linger_ms=5,          # Batch messages for 5ms
+        max_batch_bytes=65536,  # Send when batch reaches 64KB
+        on_error=lambda err: print(f"Batch failed: {err}"),
+    )
+
+    # Fire-and-forget writes - batched & pipelined automatically
+    events = [{"type": "click", "x": 100}, {"type": "scroll", "y": 200}]
+    for event in events:
+        producer.append_nowait(json.dumps(event))
+
+    # IMPORTANT: Always flush before shutdown to ensure delivery
+    await producer.flush()
+    await producer.close()
+
+asyncio.run(main())
+```
+
+**Why use IdempotentProducer?**
+
+- **Exactly-once delivery**: Server deduplicates using `(producerId, epoch, seq)` tuple
+- **Automatic batching**: Multiple `append_nowait()` calls batched into single HTTP requests
+- **Pipelining**: Multiple batches in flight concurrently for high throughput
+- **Zombie fencing**: Stale producers are rejected, preventing split-brain scenarios
+- **Network resilience**: Safe to retry on network errors (server deduplicates)
 
 ## API Reference
 

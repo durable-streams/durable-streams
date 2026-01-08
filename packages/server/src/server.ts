@@ -19,6 +19,13 @@ const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
+// Idempotent producer headers
+const PRODUCER_ID_HEADER = `Producer-Id`
+const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+const PRODUCER_SEQ_HEADER = `Producer-Seq`
+const PRODUCER_EXPECTED_SEQ_HEADER = `Producer-Expected-Seq`
+const PRODUCER_RECEIVED_SEQ_HEADER = `Producer-Received-Seq`
+
 // SSE control event fields (Protocol Section 5.7)
 const SSE_OFFSET_FIELD = `streamNextOffset`
 const SSE_CURSOR_FIELD = `streamCursor`
@@ -398,11 +405,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Producer-Id, Producer-Epoch, Producer-Seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -975,6 +982,17 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
+    // Extract producer headers
+    const producerId = req.headers[PRODUCER_ID_HEADER.toLowerCase()] as
+      | string
+      | undefined
+    const producerEpochStr = req.headers[
+      PRODUCER_EPOCH_HEADER.toLowerCase()
+    ] as string | undefined
+    const producerSeqStr = req.headers[PRODUCER_SEQ_HEADER.toLowerCase()] as
+      | string
+      | undefined
+
     const body = await this.readBody(req)
 
     if (body.length === 0) {
@@ -990,15 +1008,148 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Support both sync (StreamStore) and async (FileBackedStreamStore) append
-    // Note: append returns null only for empty arrays with isInitialCreate=true,
-    // which doesn't apply to POST requests (those throw on empty arrays)
-    const message = await Promise.resolve(
-      this.store.append(path, body, { seq, contentType })
-    )
+    // Validate producer headers - all three must be present together or none
+    // Also reject empty producer ID
+    const hasProducerHeaders =
+      producerId !== undefined ||
+      producerEpochStr !== undefined ||
+      producerSeqStr !== undefined
+    const hasAllProducerHeaders =
+      producerId !== undefined &&
+      producerEpochStr !== undefined &&
+      producerSeqStr !== undefined
 
+    if (hasProducerHeaders && !hasAllProducerHeaders) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(
+        `All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together`
+      )
+      return
+    }
+
+    if (hasAllProducerHeaders && producerId === ``) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Invalid Producer-Id: must not be empty`)
+      return
+    }
+
+    // Parse and validate producer epoch and seq as integers
+    // Use strict digit-only validation to reject values like "1abc" or "1e3"
+    const STRICT_INTEGER_REGEX = /^\d+$/
+    let producerEpoch: number | undefined
+    let producerSeq: number | undefined
+    if (hasAllProducerHeaders) {
+      if (!STRICT_INTEGER_REGEX.test(producerEpochStr)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Epoch: must be a non-negative integer`)
+        return
+      }
+      producerEpoch = Number(producerEpochStr)
+      if (!Number.isSafeInteger(producerEpoch)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Epoch: must be a non-negative integer`)
+        return
+      }
+
+      if (!STRICT_INTEGER_REGEX.test(producerSeqStr)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Seq: must be a non-negative integer`)
+        return
+      }
+      producerSeq = Number(producerSeqStr)
+      if (!Number.isSafeInteger(producerSeq)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Producer-Seq: must be a non-negative integer`)
+        return
+      }
+    }
+
+    // Build append options
+    const appendOptions = {
+      seq,
+      contentType,
+      producerId,
+      producerEpoch,
+      producerSeq,
+    }
+
+    // Use appendWithProducer for serialized producer operations
+    let result
+    if (producerId !== undefined) {
+      result = await this.store.appendWithProducer(path, body, appendOptions)
+    } else {
+      result = await Promise.resolve(
+        this.store.append(path, body, appendOptions)
+      )
+    }
+
+    // Handle AppendResult with producer validation
+    if (result && typeof result === `object` && `producerResult` in result) {
+      const { message, producerResult } = result
+
+      if (!producerResult || producerResult.status === `accepted`) {
+        // Success - return offset
+        const responseHeaders: Record<string, string> = {
+          [STREAM_OFFSET_HEADER]: message!.offset,
+        }
+        // Echo back the producer epoch and seq (highest accepted)
+        if (producerEpoch !== undefined) {
+          responseHeaders[PRODUCER_EPOCH_HEADER] = producerEpoch.toString()
+        }
+        if (producerSeq !== undefined) {
+          responseHeaders[PRODUCER_SEQ_HEADER] = producerSeq.toString()
+        }
+        res.writeHead(200, responseHeaders)
+        res.end()
+        return
+      }
+
+      // Handle producer validation failures
+      switch (producerResult.status) {
+        case `duplicate`:
+          // 204 No Content for duplicates (idempotent success)
+          // Return Producer-Seq as highest accepted (per PROTOCOL.md)
+          res.writeHead(204, {
+            [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
+            [PRODUCER_SEQ_HEADER]: producerResult.lastSeq.toString(),
+          })
+          res.end()
+          return
+
+        case `stale_epoch`: {
+          // 403 Forbidden for stale epochs (zombie fencing)
+          res.writeHead(403, {
+            "content-type": `text/plain`,
+            [PRODUCER_EPOCH_HEADER]: producerResult.currentEpoch.toString(),
+          })
+          res.end(`Stale producer epoch`)
+          return
+        }
+
+        case `invalid_epoch_seq`:
+          // 400 Bad Request for epoch increase with seq != 0
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`New epoch must start with sequence 0`)
+          return
+
+        case `sequence_gap`:
+          // 409 Conflict for sequence gaps
+          res.writeHead(409, {
+            "content-type": `text/plain`,
+            [PRODUCER_EXPECTED_SEQ_HEADER]:
+              producerResult.expectedSeq.toString(),
+            [PRODUCER_RECEIVED_SEQ_HEADER]:
+              producerResult.receivedSeq.toString(),
+          })
+          res.end(`Producer sequence gap`)
+          return
+      }
+    }
+
+    // Standard append (no producer) - result is StreamMessage
+    const message = result as { offset: string }
     res.writeHead(204, {
-      [STREAM_OFFSET_HEADER]: message!.offset,
+      [STREAM_OFFSET_HEADER]: message.offset,
     })
     res.end()
   }

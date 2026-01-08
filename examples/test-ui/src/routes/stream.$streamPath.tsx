@@ -7,7 +7,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react"
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
 import { and, eq, gt, useLiveQuery } from "@tanstack/react-db"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import ReactJson from "react-json-view"
@@ -49,6 +49,21 @@ function StreamViewer() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const parentRef = useRef<HTMLDivElement>(null)
   const [now, setNow] = useState(Date.now())
+
+  // Create IdempotentProducer for exactly-once write semantics
+  const producerRef = useRef<IdempotentProducer | null>(null)
+  useEffect(() => {
+    // Generate a unique producer ID per browser session
+    const producerId = `test-ui-${crypto.randomUUID().slice(0, 8)}`
+    producerRef.current = new IdempotentProducer(stream, producerId, {
+      autoClaim: true,
+      lingerMs: 0, // Send immediately for interactive UI
+    })
+
+    return () => {
+      producerRef.current?.close()
+    }
+  }, [stream])
 
   // Subscribe to stream messages via external store
   const subscribe = useCallback(
@@ -141,11 +156,11 @@ function StreamViewer() {
   }, [messages, isJsonStream, flatItems.length, virtualizer])
 
   const writeToStream = async () => {
-    if (!writeInput.trim()) return
+    if (!writeInput.trim() || !producerRef.current) return
 
     try {
       setError(null)
-      await stream.append(writeInput + `\n`)
+      await producerRef.current.append(writeInput + `\n`)
       setWriteInput(``)
     } catch (err: any) {
       setError(`Failed to write to stream: ${err.message}`)

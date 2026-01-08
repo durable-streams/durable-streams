@@ -62,8 +62,52 @@ export interface AppendCommand {
   data: string
   /** Whether data is base64 encoded binary */
   binary?: boolean
-  /** Optional sequence number for ordering */
+  /** Optional sequence number for ordering (Stream-Seq header) */
   seq?: number
+  /** Custom headers to include */
+  headers?: Record<string, string>
+  /** Producer ID for idempotent producers */
+  producerId?: string
+  /** Producer epoch for idempotent producers */
+  producerEpoch?: number
+  /** Producer sequence for idempotent producers */
+  producerSeq?: number
+}
+
+/**
+ * Append via IdempotentProducer client (tests client-side exactly-once semantics).
+ */
+export interface IdempotentAppendCommand {
+  type: `idempotent-append`
+  path: string
+  /** Data to append (string - will be JSON parsed for JSON streams) */
+  data: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
+ * Batch append via IdempotentProducer client (tests client-side JSON batching).
+ */
+export interface IdempotentAppendBatchCommand {
+  type: `idempotent-append-batch`
+  path: string
+  /** Items to append - will be batched by the client */
+  items: Array<string>
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Max concurrent batches in flight (default 1, set higher to test 409 retry) */
+  maxInFlight?: number
   /** Custom headers to include */
   headers?: Record<string, string>
 }
@@ -235,6 +279,8 @@ export type TestCommand =
   | CreateCommand
   | ConnectCommand
   | AppendCommand
+  | IdempotentAppendCommand
+  | IdempotentAppendBatchCommand
   | ReadCommand
   | HeadCommand
   | DeleteCommand
@@ -313,6 +359,42 @@ export interface AppendResult {
   headersSent?: Record<string, string>
   /** Params that were sent in the request (for dynamic param testing) */
   paramsSent?: Record<string, string>
+  /** Whether this was a duplicate (204 response) - for idempotent producers */
+  duplicate?: boolean
+  /** Current producer epoch from server (on 200 or 403) */
+  producerEpoch?: number
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header on 200/204 */
+  producerSeq?: number
+  /** Expected producer sequence (on 409 sequence gap) */
+  producerExpectedSeq?: number
+  /** Received producer sequence (on 409 sequence gap) */
+  producerReceivedSeq?: number
+}
+
+/**
+ * Successful idempotent-append result.
+ */
+export interface IdempotentAppendResult {
+  type: `idempotent-append`
+  success: true
+  status: number
+  /** New offset after append */
+  offset?: string
+  /** Whether this was a duplicate */
+  duplicate?: boolean
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header */
+  producerSeq?: number
+}
+
+/**
+ * Successful idempotent-append-batch result.
+ */
+export interface IdempotentAppendBatchResult {
+  type: `idempotent-append-batch`
+  success: true
+  status: number
+  /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header */
+  producerSeq?: number
 }
 
 /**
@@ -458,6 +540,8 @@ export type TestResult =
   | CreateResult
   | ConnectResult
   | AppendResult
+  | IdempotentAppendResult
+  | IdempotentAppendBatchResult
   | ReadResult
   | HeadResult
   | DeleteResult

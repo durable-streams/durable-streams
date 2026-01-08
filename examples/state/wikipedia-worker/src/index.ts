@@ -1,9 +1,10 @@
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
 import { WikipediaStreamClient } from "./wikipedia-client.js"
 import { transformWikipediaEvent } from "./event-transformer.js"
 
 const SERVER_URL = process.env.DURABLE_STREAMS_URL || `http://localhost:4437`
 const STREAM_PATH = process.env.STREAM_PATH || `/wikipedia-events`
+const PRODUCER_ID = process.env.PRODUCER_ID || `wikipedia-worker-1`
 
 let eventCount = 0
 let errorCount = 0
@@ -19,6 +20,7 @@ async function main() {
   console.log(`=`.repeat(60))
   console.log(`Server URL: ${SERVER_URL}`)
   console.log(`Stream Path: ${STREAM_PATH}`)
+  console.log(`Producer ID: ${PRODUCER_ID}`)
   console.log(`=`.repeat(60))
 
   const streamUrl = `${SERVER_URL}/v1/stream${STREAM_PATH}`
@@ -26,13 +28,12 @@ async function main() {
   // Create or get the durable stream
   console.log(`\n[Worker] Initializing stream at ${streamUrl}...`)
 
-  let stream: DurableStream
+  const stream = new DurableStream({
+    url: streamUrl,
+  })
 
   try {
     // Try to connect to existing stream
-    stream = new DurableStream({
-      url: streamUrl,
-    })
     await stream.head()
     console.log(`[Worker] Connected to existing stream`)
   } catch {
@@ -42,11 +43,14 @@ async function main() {
       url: streamUrl,
       contentType: `application/json`,
     })
-    stream = new DurableStream({
-      url: streamUrl,
-    })
     console.log(`[Worker] Stream created successfully`)
   }
+
+  // Create idempotent producer for exactly-once writes with automatic batching
+  const producer = new IdempotentProducer(stream, PRODUCER_ID, {
+    autoClaim: true, // Auto-claim producer ID on restart
+    lingerMs: 10, // Batch events for 10ms for better throughput
+  })
 
   // Start Wikipedia client
   const client = new WikipediaStreamClient({
@@ -60,13 +64,8 @@ async function main() {
         // Transform to state protocol format
         const stateEvent = transformWikipediaEvent(rawEvent)
 
-        // Append to durable stream with timeout to detect hangs
-        const appendPromise = stream.append(stateEvent)
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error(`Append timeout after 5s`)), 5000)
-        )
-
-        await Promise.race([appendPromise, timeoutPromise])
+        // Fire-and-forget append - producer handles batching and retries
+        producer.append(stateEvent)
 
         eventCount++
 
@@ -120,9 +119,11 @@ async function main() {
   }, 60000)
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     console.log(`\n[Worker] Shutting down...`)
     client.disconnect()
+    await producer.flush() // Ensure all pending events are sent
+    await producer.close()
     const elapsed = (Date.now() - startTime) / 1000
     const rate = (eventCount / elapsed).toFixed(2)
     console.log(

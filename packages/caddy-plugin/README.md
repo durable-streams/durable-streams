@@ -185,6 +185,16 @@ This will:
 3. Generate checksums
 4. Auto-generate changelog
 
+## Known Limitations
+
+### File Store Crash-Atomicity
+
+The file-backed store does not atomically commit producer state with data appends. Data is written to segment files first, then producer state is updated in bbolt separately. If a crash occurs between these steps, producer state may be stale on recovery.
+
+**Practical impact:** Low. The likely failure mode is a false 409 (sequence gap) on restart, not duplicate data. Clients can recover by incrementing their epoch.
+
+See [issue #143](https://github.com/durable-streams/durable-streams/issues/143) for details and fix options.
+
 ## Architecture
 
 - **Handler**: HTTP request routing and protocol implementation

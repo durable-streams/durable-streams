@@ -381,6 +381,26 @@ export interface AppendOptions {
    * AbortSignal for this operation.
    */
   signal?: AbortSignal
+
+  /**
+   * Producer ID for idempotent writes.
+   * Client-supplied stable identifier (e.g., "order-service-1").
+   * Must be provided together with producerEpoch and producerSeq.
+   */
+  producerId?: string
+
+  /**
+   * Producer epoch for idempotent writes.
+   * Client-declared, server-validated monotonically increasing.
+   * Increment on producer restart.
+   */
+  producerEpoch?: number
+
+  /**
+   * Producer sequence for idempotent writes.
+   * Monotonically increasing per epoch, per-batch.
+   */
+  producerSeq?: number
 }
 
 /**
@@ -752,4 +772,77 @@ export interface StreamResponse<TJson = unknown> {
    * - terminal error.
    */
   readonly closed: Promise<void>
+}
+
+// ============================================================================
+// Idempotent Producer Types
+// ============================================================================
+
+/**
+ * Options for creating an IdempotentProducer.
+ */
+export interface IdempotentProducerOptions {
+  /**
+   * Starting epoch (default: 0).
+   * Increment this on producer restart.
+   */
+  epoch?: number
+
+  /**
+   * On 403 Forbidden (stale epoch), automatically retry with epoch+1.
+   * Useful for serverless/ephemeral producers.
+   * @default false
+   */
+  autoClaim?: boolean
+
+  /**
+   * Maximum bytes before sending a batch.
+   * @default 1048576 (1MB)
+   */
+  maxBatchBytes?: number
+
+  /**
+   * Maximum time to wait for more messages before sending batch (ms).
+   * @default 5
+   */
+  lingerMs?: number
+
+  /**
+   * Maximum number of concurrent batches in flight.
+   * Higher values improve throughput at the cost of more memory.
+   * @default 5
+   */
+  maxInFlight?: number
+
+  /**
+   * Custom fetch implementation.
+   */
+  fetch?: typeof globalThis.fetch
+
+  /**
+   * AbortSignal for the producer lifecycle.
+   */
+  signal?: AbortSignal
+
+  /**
+   * Callback for batch errors in fire-and-forget mode.
+   * Since append() returns immediately, errors are reported via this callback.
+   * @param error - The error that occurred
+   */
+  onError?: (error: Error) => void
+}
+
+/**
+ * Result of an append operation from IdempotentProducer.
+ */
+export interface IdempotentAppendResult {
+  /**
+   * The offset after this message was appended.
+   */
+  offset: Offset
+
+  /**
+   * Whether this was a duplicate (idempotent success).
+   */
+  duplicate: boolean
 }

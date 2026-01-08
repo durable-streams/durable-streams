@@ -46,6 +46,12 @@ from durable_streams._types import (
 from durable_streams.adurable_stream import AsyncDurableStream
 from durable_streams.astream import astream
 from durable_streams.durable_stream import DurableStream
+from durable_streams.idempotent_producer import (
+    IdempotentAppendResult,
+    IdempotentProducer,
+    SequenceGapError,
+    StaleEpochError,
+)
 from durable_streams.stream import stream
 
 __all__ = [
@@ -57,6 +63,7 @@ __all__ = [
     "AppendResult",
     "HeadersLike",
     "ParamsLike",
+    "IdempotentAppendResult",
     # Errors
     "DurableStreamError",
     "FetchError",
@@ -68,12 +75,15 @@ __all__ = [
     "SSENotSupportedError",
     "SSEBytesIterationError",
     "SSEReadAllError",
+    "StaleEpochError",
+    "SequenceGapError",
     # Top-level functions
     "stream",
     "astream",
     # Handle classes
     "DurableStream",
     "AsyncDurableStream",
+    "IdempotentProducer",
 ]
 
 # Use importlib.metadata for version (works with installed package)

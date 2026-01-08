@@ -366,6 +366,71 @@ async function executeOperation(
       }
     }
 
+    case `idempotent-append`: {
+      const path = resolveVariables(op.path, variables)
+      const data = resolveVariables(op.data, variables)
+
+      const result = await client.send(
+        {
+          type: `idempotent-append`,
+          path,
+          data,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          autoClaim: op.autoClaim ?? false,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-append ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      if (
+        result.success &&
+        result.type === `idempotent-append` &&
+        op.expect?.storeOffsetAs
+      ) {
+        variables.set(op.expect.storeOffsetAs, result.offset ?? ``)
+      }
+
+      return { result }
+    }
+
+    case `idempotent-append-batch`: {
+      const path = resolveVariables(op.path, variables)
+
+      // Send items to client which will batch them internally
+      const items = op.items.map((item) =>
+        resolveVariables(item.data, variables)
+      )
+
+      const result = await client.send(
+        {
+          type: `idempotent-append-batch`,
+          path,
+          items,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          autoClaim: op.autoClaim ?? false,
+          maxInFlight: op.maxInFlight,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-append-batch ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
     case `read`: {
       const path = resolveVariables(op.path, variables)
       const offset = op.offset
@@ -538,7 +603,8 @@ async function executeOperation(
 
     case `server-append`: {
       // Direct HTTP append to server, bypassing client adapter
-      // Used for concurrent operations when adapter is blocked on a read
+      // Used for concurrent operations when adapter is blocked on a read,
+      // and for testing protocol-level behavior like idempotent producers
       const path = resolveVariables(op.path, variables)
       const data = resolveVariables(op.data, variables)
 
@@ -550,28 +616,72 @@ async function executeOperation(
         const contentType =
           headResponse.headers.get(`content-type`) ?? `application/octet-stream`
 
+        // Build headers, including producer headers if present
+        const headers: Record<string, string> = {
+          "content-type": contentType,
+          ...op.headers,
+        }
+        if (op.producerId !== undefined) {
+          headers[`Producer-Id`] = op.producerId
+        }
+        if (op.producerEpoch !== undefined) {
+          headers[`Producer-Epoch`] = op.producerEpoch.toString()
+        }
+        if (op.producerSeq !== undefined) {
+          headers[`Producer-Seq`] = op.producerSeq.toString()
+        }
+
         const response = await fetch(`${ctx.serverUrl}${path}`, {
           method: `POST`,
           body: data,
-          headers: {
-            "content-type": contentType,
-            ...op.headers,
-          },
+          headers,
         })
+
+        const status = response.status
+        const offset = response.headers.get(`Stream-Next-Offset`) ?? undefined
+        const duplicate = status === 204
+        const producerEpoch = response.headers.get(`Producer-Epoch`)
+        const producerSeq = response.headers.get(`Producer-Seq`)
+        const producerExpectedSeq = response.headers.get(
+          `Producer-Expected-Seq`
+        )
+        const producerReceivedSeq = response.headers.get(
+          `Producer-Received-Seq`
+        )
 
         if (verbose) {
           console.log(
-            `  server-append ${path}: ${response.ok ? `ok` : `failed (${response.status})`}`
+            `  server-append ${path}: status=${status}${duplicate ? ` (duplicate)` : ``}`
           )
         }
 
-        if (!response.ok) {
-          return {
-            error: `Server append failed with status ${response.status}`,
-          }
+        // Build result for expectation verification
+        // success: true means we got a valid protocol response (even 403/409)
+        // The status field indicates the actual operation result
+        const result: TestResult = {
+          type: `append`,
+          success: true,
+          status,
+          offset,
+          duplicate,
+          producerEpoch: producerEpoch
+            ? parseInt(producerEpoch, 10)
+            : undefined,
+          producerSeq: producerSeq ? parseInt(producerSeq, 10) : undefined,
+          producerExpectedSeq: producerExpectedSeq
+            ? parseInt(producerExpectedSeq, 10)
+            : undefined,
+          producerReceivedSeq: producerReceivedSeq
+            ? parseInt(producerReceivedSeq, 10)
+            : undefined,
         }
 
-        return {}
+        // Store offset if requested
+        if (op.expect?.storeOffsetAs && offset) {
+          variables.set(op.expect.storeOffsetAs, offset)
+        }
+
+        return { result }
       } catch (err) {
         return {
           error: `Server append failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -796,6 +906,22 @@ function validateExpectation(
     }
   }
 
+  // Check dataExact - verifies exact messages in order
+  if (expect.dataExact !== undefined && isReadResult(result)) {
+    const expectedMessages = expect.dataExact as Array<string>
+    const actualMessages = result.chunks.map((c) => c.data)
+
+    if (actualMessages.length !== expectedMessages.length) {
+      return `Expected ${expectedMessages.length} messages, got ${actualMessages.length}. Expected: [${expectedMessages.join(`, `)}], got: [${actualMessages.join(`, `)}]`
+    }
+
+    for (let i = 0; i < expectedMessages.length; i++) {
+      if (actualMessages[i] !== expectedMessages[i]) {
+        return `Message ${i} mismatch: expected "${expectedMessages[i]}", got "${actualMessages[i]}"`
+      }
+    }
+  }
+
   // Check upToDate
   if (expect.upToDate !== undefined && isReadResult(result)) {
     if (result.upToDate !== expect.upToDate) {
@@ -875,6 +1001,41 @@ function validateExpectation(
       if (actualValue !== expectedValue) {
         return `Expected paramsSent[${key}]="${expectedValue}", got "${actualValue ?? `undefined`}"`
       }
+    }
+  }
+
+  // Check duplicate (for idempotent producer 204 responses)
+  if (expect.duplicate !== undefined && isAppendResult(result)) {
+    if (result.duplicate !== expect.duplicate) {
+      return `Expected duplicate=${expect.duplicate}, got ${result.duplicate}`
+    }
+  }
+
+  // Check producerEpoch (returned on 200/403)
+  if (expect.producerEpoch !== undefined && isAppendResult(result)) {
+    if (result.producerEpoch !== expect.producerEpoch) {
+      return `Expected producerEpoch=${expect.producerEpoch}, got ${result.producerEpoch}`
+    }
+  }
+
+  // Check producerSeq (returned on 200/204 - highest accepted sequence)
+  if (expect.producerSeq !== undefined && isAppendResult(result)) {
+    if (result.producerSeq !== expect.producerSeq) {
+      return `Expected producerSeq=${expect.producerSeq}, got ${result.producerSeq}`
+    }
+  }
+
+  // Check producerExpectedSeq (returned on 409 sequence gap)
+  if (expect.producerExpectedSeq !== undefined && isAppendResult(result)) {
+    if (result.producerExpectedSeq !== expect.producerExpectedSeq) {
+      return `Expected producerExpectedSeq=${expect.producerExpectedSeq}, got ${result.producerExpectedSeq}`
+    }
+  }
+
+  // Check producerReceivedSeq (returned on 409 sequence gap)
+  if (expect.producerReceivedSeq !== undefined && isAppendResult(result)) {
+    if (result.producerReceivedSeq !== expect.producerReceivedSeq) {
+      return `Expected producerReceivedSeq=${expect.producerReceivedSeq}, got ${result.producerReceivedSeq}`
     }
   }
 
