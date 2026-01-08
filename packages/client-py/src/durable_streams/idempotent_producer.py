@@ -396,7 +396,7 @@ class IdempotentProducer:
             return
 
         # Not yet completed, add a waiter
-        future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         if state:
             state.waiters.append(future)
         else:

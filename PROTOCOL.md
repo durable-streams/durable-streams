@@ -208,21 +208,24 @@ Durable Streams supports Kafka-style idempotent producers for exactly-once write
 
 #### Request Headers
 
-All three producer headers **MUST** be provided together or none at all.
+All three producer headers **MUST** be provided together or none at all. If only some headers are provided, servers **MUST** return `400 Bad Request`.
 
 - `Producer-Id: <string>`
   - Client-supplied stable identifier (e.g., "order-service-1", UUID)
+  - **MUST** be a non-empty string; empty values result in `400 Bad Request`
   - Identifies the logical producer across restarts
 
 - `Producer-Epoch: <integer>`
   - Client-declared epoch, starting at 0
   - Increment on producer restart to establish a new session
   - Server validates that epoch is monotonically non-decreasing
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
 
 - `Producer-Seq: <integer>`
   - Monotonically increasing sequence number per epoch
   - Starts at 0 for each new epoch
   - Applies per-batch (per HTTP request), not per-message
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
 
 #### Response Headers
 
@@ -297,7 +300,13 @@ Servers **MUST** serialize validation + append operations per `(stream, producer
 
 #### Atomicity Requirements
 
-For persistent storage, servers **MUST** commit producer state updates and log appends atomically (e.g., in a single database transaction). Otherwise, a crash between append and state update could reintroduce duplicates.
+For persistent storage, servers **SHOULD** commit producer state updates and log appends atomically (e.g., in a single database transaction). Non-atomic implementations have a crash window where:
+
+1. Data is appended to the log
+2. Crash occurs before producer state is updated
+3. On recovery, a retry may be re-accepted, causing duplicate data
+
+**Recovery for non-atomic stores**: Clients can bump their epoch after a crash to establish a clean session. This trades "exactly once within epoch" for "at least once across crashes" which is acceptable for many use cases. Stores **SHOULD** document their atomicity guarantees clearly.
 
 #### Producer State Cleanup
 

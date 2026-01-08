@@ -491,6 +491,8 @@ export interface ReadExpectation extends BaseExpectation {
   dataContains?: string
   /** Expected data to contain all of these substrings */
   dataContainsAll?: Array<string>
+  /** Expected exact messages in order (for JSON streams, verifies each chunk) */
+  dataExact?: Array<string>
   /** Expected number of chunks */
   chunkCount?: number
   /** Minimum number of chunks */

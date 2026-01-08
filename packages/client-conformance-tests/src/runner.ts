@@ -906,6 +906,22 @@ function validateExpectation(
     }
   }
 
+  // Check dataExact - verifies exact messages in order
+  if (expect.dataExact !== undefined && isReadResult(result)) {
+    const expectedMessages = expect.dataExact as Array<string>
+    const actualMessages = result.chunks.map((c) => c.data)
+
+    if (actualMessages.length !== expectedMessages.length) {
+      return `Expected ${expectedMessages.length} messages, got ${actualMessages.length}. Expected: [${expectedMessages.join(`, `)}], got: [${actualMessages.join(`, `)}]`
+    }
+
+    for (let i = 0; i < expectedMessages.length; i++) {
+      if (actualMessages[i] !== expectedMessages[i]) {
+        return `Message ${i} mismatch: expected "${expectedMessages[i]}", got "${actualMessages[i]}"`
+      }
+    }
+  }
+
   // Check upToDate
   if (expect.upToDate !== undefined && isReadResult(result)) {
     if (result.upToDate !== expect.upToDate) {
