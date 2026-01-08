@@ -514,7 +514,7 @@ This enables CDN/proxy caching while allowing stale content to be served during 
 
 **ETag Usage:**
 
-Servers **MUST** generate `ETag` headers for GET responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
+Servers **MUST** generate `ETag` headers for GET responses, except for `offset=now` responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
 
 **Query Parameter Ordering:**
 
