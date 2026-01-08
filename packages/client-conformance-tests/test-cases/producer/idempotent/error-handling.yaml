@@ -186,12 +186,9 @@ tests:
         producerSeq: 2
         expect:
           status: 200
-      # Verify correct order in stream
+      # Verify correct order in stream (text/plain concatenates all data)
       - action: read
         path: ${streamPath}
         expect:
-          dataExact:
-            - "msg0"
-            - "msg1"
-            - "msg2"
+          data: "msg0msg1msg2"
           upToDate: true
