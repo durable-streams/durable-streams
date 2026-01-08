@@ -65,7 +65,7 @@ async function main() {
         const stateEvent = transformWikipediaEvent(rawEvent)
 
         // Fire-and-forget append - producer handles batching and retries
-        await producer.append(JSON.stringify(stateEvent))
+        producer.append(stateEvent)
 
         eventCount++
 

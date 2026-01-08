@@ -928,17 +928,27 @@ import {
   SequenceGapError,
 } from "@durable-streams/client"
 
+// Option 1: Handle errors via callback
+const producer = new IdempotentProducer(stream, "my-producer", {
+  onError: (error) => {
+    if (error instanceof StaleEpochError) {
+      console.log(`Fenced by epoch ${error.currentEpoch}`)
+    } else if (error instanceof SequenceGapError) {
+      console.log(`Expected seq ${error.expectedSeq}, got ${error.receivedSeq}`)
+    }
+  },
+})
+
+producer.append("data") // Fire-and-forget, errors go to onError
+
+// Option 2: Handle errors at flush time
 try {
-  await producer.append("data")
-  await producer.flush()
+  producer.append("data")
+  await producer.flush() // Throws if any batch failed
 } catch (error) {
   if (error instanceof StaleEpochError) {
     // Another producer has a higher epoch - this producer is "fenced"
-    // error.currentEpoch contains the server's current epoch
     console.log(`Fenced by epoch ${error.currentEpoch}`)
-  } else if (error instanceof SequenceGapError) {
-    // Sequence numbers are out of order (should never happen with proper usage)
-    console.log(`Expected seq ${error.expectedSeq}, got ${error.receivedSeq}`)
   }
 }
 ```

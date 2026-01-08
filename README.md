@@ -632,7 +632,7 @@ const producer = new IdempotentProducer(stream, `llm-worker-${workerId}`, {
 
 try {
   for await (const token of llm.stream(prompt)) {
-    await producer.append(token) // Batched & deduplicated automatically
+    producer.append(token) // Batched & deduplicated automatically
   }
   await producer.flush() // Ensure all tokens are delivered
 } catch (error) {
