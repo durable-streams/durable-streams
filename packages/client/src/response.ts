@@ -26,6 +26,16 @@ import type {
 } from "./types"
 
 /**
+ * Constant used as abort reason when pausing the stream due to visibility change.
+ */
+const PAUSE_STREAM = `PAUSE_STREAM`
+
+/**
+ * State machine for visibility-based pause/resume.
+ */
+type StreamState = `active` | `pause-requested` | `paused`
+
+/**
  * Internal configuration for creating a StreamResponse.
  */
 export interface StreamResponseConfig {
@@ -53,7 +63,8 @@ export interface StreamResponseConfig {
   fetchNext: (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    resumingFromPause?: boolean
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -99,6 +110,14 @@ export class StreamResponseImpl<
   #closed: Promise<void>
   #stopAfterUpToDate = false
   #consumptionMethod: string | null = null
+
+  // --- Visibility/Pause State ---
+  #state: StreamState = `active`
+  #requestAbortController?: AbortController
+  #unsubscribeFromVisibilityChanges?: () => void
+  #pausePromise?: Promise<void>
+  #pauseResolve?: () => void
+  #justResumedFromPause = false
 
   // --- SSE Resilience State ---
   #sseResilience: Required<SSEResilienceOptions>
@@ -150,6 +169,97 @@ export class StreamResponseImpl<
 
     // Create the core response stream
     this.#responseStream = this.#createResponseStream(config.firstResponse)
+
+    // Install single abort listener that propagates to current request controller
+    // and unblocks any paused pull() (avoids accumulating one listener per request)
+    this.#abortController.signal.addEventListener(
+      `abort`,
+      () => {
+        this.#requestAbortController?.abort(this.#abortController.signal.reason)
+        // Unblock pull() if paused, so it can see the abort and close
+        this.#pauseResolve?.()
+        this.#pausePromise = undefined
+        this.#pauseResolve = undefined
+      },
+      { once: true }
+    )
+
+    // Subscribe to visibility changes for pause/resume (browser only)
+    this.#subscribeToVisibilityChanges()
+  }
+
+  /**
+   * Subscribe to document visibility changes to pause/resume syncing.
+   * When the page is hidden, we pause to save battery and bandwidth.
+   * When visible again, we resume syncing.
+   */
+  #subscribeToVisibilityChanges(): void {
+    // Only subscribe in browser environments
+    if (
+      typeof document === `object` &&
+      typeof document.hidden === `boolean` &&
+      typeof document.addEventListener === `function`
+    ) {
+      const visibilityHandler = (): void => {
+        if (document.hidden) {
+          this.#pause()
+        } else {
+          this.#resume()
+        }
+      }
+
+      document.addEventListener(`visibilitychange`, visibilityHandler)
+
+      // Store cleanup function to remove the event listener
+      // Check document still exists (may be undefined in tests after cleanup)
+      this.#unsubscribeFromVisibilityChanges = () => {
+        if (typeof document === `object`) {
+          document.removeEventListener(`visibilitychange`, visibilityHandler)
+        }
+      }
+
+      // Check initial state - page might already be hidden when stream starts
+      if (document.hidden) {
+        this.#pause()
+      }
+    }
+  }
+
+  /**
+   * Pause the stream when page becomes hidden.
+   * Aborts any in-flight request to free resources.
+   * Creates a promise that pull() will await while paused.
+   */
+  #pause(): void {
+    if (this.#state === `active`) {
+      this.#state = `pause-requested`
+      // Create promise that pull() will await
+      this.#pausePromise = new Promise((resolve) => {
+        this.#pauseResolve = resolve
+      })
+      // Abort current request if any
+      this.#requestAbortController?.abort(PAUSE_STREAM)
+    }
+  }
+
+  /**
+   * Resume the stream when page becomes visible.
+   * Resolves the pause promise to unblock pull().
+   */
+  #resume(): void {
+    if (this.#state === `paused` || this.#state === `pause-requested`) {
+      // Don't resume if the user's signal is already aborted
+      if (this.#abortController.signal.aborted) {
+        return
+      }
+
+      // Transition to active and resolve the pause promise
+      this.#state = `active`
+      this.#justResumedFromPause = true // Flag for single-shot skip of live param
+      this.#pauseResolve?.()
+      this.#pausePromise = undefined
+      this.#pauseResolve = undefined
+    }
   }
 
   // --- Response metadata getters ---
@@ -189,10 +299,12 @@ export class StreamResponseImpl<
   }
 
   #markClosed(): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedResolve()
   }
 
   #markError(err: Error): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedReject(err)
   }
 
@@ -388,13 +500,19 @@ export class StreamResponseImpl<
     // Track new connection start
     this.#markSSEConnectionStart()
 
+    // Create new per-request abort controller for this SSE connection
+    this.#requestAbortController = new AbortController()
+
     const newSSEResponse = await this.#startSSE(
       this.offset,
       this.cursor,
-      this.#abortController.signal
+      this.#requestAbortController.signal
     )
     if (newSSEResponse.body) {
-      return parseSSEStream(newSSEResponse.body, this.#abortController.signal)
+      return parseSSEStream(
+        newSSEResponse.body,
+        this.#requestAbortController.signal
+      )
     }
     return null
   }
@@ -548,10 +666,12 @@ export class StreamResponseImpl<
             if (isSSE && firstResponse.body) {
               // Track SSE connection start for resilience monitoring
               this.#markSSEConnectionStart()
+              // Create per-request abort controller for SSE connection
+              this.#requestAbortController = new AbortController()
               // Start parsing SSE events
               sseEventIterator = parseSSEStream(
                 firstResponse.body,
-                this.#abortController.signal
+                this.#requestAbortController.signal
               )
               // Fall through to SSE processing below
             } else {
@@ -570,6 +690,30 @@ export class StreamResponseImpl<
 
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
+            // Check for pause state before processing SSE events
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+              // Reconnect SSE after resume
+              const newIterator = await this.#trySSEReconnect()
+              if (newIterator) {
+                sseEventIterator = newIterator
+              } else {
+                // Could not reconnect - close the stream
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             // Keep reading events until we get data or stream ends
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             while (true) {
@@ -604,16 +748,39 @@ export class StreamResponseImpl<
 
           // Long-poll mode: continue with live updates if needed
           if (this.#shouldContinueLive()) {
+            // If paused or pause-requested, await the pause promise
+            // This blocks pull() until resume() is called, avoiding deadlock
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             if (this.#abortController.signal.aborted) {
               this.#markClosed()
               controller.close()
               return
             }
 
+            // Consume the single-shot resume flag (only first fetch after resume skips live param)
+            const resumingFromPause = this.#justResumedFromPause
+            this.#justResumedFromPause = false
+
+            // Create a new AbortController for this request (so we can abort on pause)
+            this.#requestAbortController = new AbortController()
+
             const response = await this.#fetchNext(
               this.offset,
               this.cursor,
-              this.#abortController.signal
+              this.#requestAbortController.signal,
+              resumingFromPause
             )
 
             this.#updateStateFromResponse(response)
@@ -626,6 +793,21 @@ export class StreamResponseImpl<
           this.#markClosed()
           controller.close()
         } catch (err) {
+          // Check if this was a pause-triggered abort
+          // Treat PAUSE_STREAM aborts as benign regardless of current state
+          // (handles race where resume() was called before abort completed)
+          if (
+            this.#requestAbortController?.signal.aborted &&
+            this.#requestAbortController.signal.reason === PAUSE_STREAM
+          ) {
+            // Only transition to paused if we're still in pause-requested state
+            if (this.#state === `pause-requested`) {
+              this.#state = `paused`
+            }
+            // Return - either we're paused, or already resumed and next pull will proceed
+            return
+          }
+
           if (this.#abortController.signal.aborted) {
             this.#markClosed()
             controller.close()
@@ -638,6 +820,7 @@ export class StreamResponseImpl<
 
       cancel: () => {
         this.#abortController.abort()
+        this.#unsubscribeFromVisibilityChanges?.()
         this.#markClosed()
       },
     })
@@ -1044,6 +1227,7 @@ export class StreamResponseImpl<
 
   cancel(reason?: unknown): void {
     this.#abortController.abort(reason)
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#markClosed()
   }
 
