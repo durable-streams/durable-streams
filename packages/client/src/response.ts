@@ -115,6 +115,8 @@ export class StreamResponseImpl<
   #state: StreamState = `active`
   #requestAbortController?: AbortController
   #unsubscribeFromVisibilityChanges?: () => void
+  #pausePromise?: Promise<void>
+  #pauseResolve?: () => void
 
   // --- SSE Resilience State ---
   #sseResilience: Required<SSEResilienceOptions>
@@ -167,6 +169,17 @@ export class StreamResponseImpl<
     // Create the core response stream
     this.#responseStream = this.#createResponseStream(config.firstResponse)
 
+    // Install single abort listener that propagates to current request controller
+    // (avoids accumulating one listener per request)
+    this.#abortController.signal.addEventListener(
+      `abort`,
+      () =>
+        this.#requestAbortController?.abort(
+          this.#abortController.signal.reason
+        ),
+      { once: true }
+    )
+
     // Subscribe to visibility changes for pause/resume (browser only)
     this.#subscribeToVisibilityChanges()
   }
@@ -197,16 +210,26 @@ export class StreamResponseImpl<
       this.#unsubscribeFromVisibilityChanges = () => {
         document.removeEventListener(`visibilitychange`, visibilityHandler)
       }
+
+      // Check initial state - page might already be hidden when stream starts
+      if (document.hidden) {
+        this.#pause()
+      }
     }
   }
 
   /**
    * Pause the stream when page becomes hidden.
    * Aborts any in-flight request to free resources.
+   * Creates a promise that pull() will await while paused.
    */
   #pause(): void {
     if (this.#state === `active`) {
       this.#state = `pause-requested`
+      // Create promise that pull() will await
+      this.#pausePromise = new Promise((resolve) => {
+        this.#pauseResolve = resolve
+      })
       // Abort current request if any
       this.#requestAbortController?.abort(PAUSE_STREAM)
     }
@@ -214,7 +237,7 @@ export class StreamResponseImpl<
 
   /**
    * Resume the stream when page becomes visible.
-   * Restarts fetching from the last known offset.
+   * Resolves the pause promise to unblock pull().
    */
   #resume(): void {
     if (this.#state === `paused` || this.#state === `pause-requested`) {
@@ -223,12 +246,11 @@ export class StreamResponseImpl<
         return
       }
 
-      // If we're resuming from pause-requested state, set back to active
-      // to prevent the pause from completing
-      if (this.#state === `pause-requested`) {
-        this.#state = `active`
-      }
-      // The paused state triggers a re-fetch in the response stream
+      // Transition to active and resolve the pause promise
+      this.#state = `active`
+      this.#pauseResolve?.()
+      this.#pausePromise = undefined
+      this.#pauseResolve = undefined
     }
   }
 
@@ -269,10 +291,12 @@ export class StreamResponseImpl<
   }
 
   #markClosed(): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedResolve()
   }
 
   #markError(err: Error): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedReject(err)
   }
 
@@ -684,12 +708,19 @@ export class StreamResponseImpl<
 
           // Long-poll mode: continue with live updates if needed
           if (this.#shouldContinueLive()) {
-            // Check if we're in pause-requested state - transition to paused
-            if (this.#state === `pause-requested`) {
+            // If paused or pause-requested, await the pause promise
+            // This blocks pull() until resume() is called, avoiding deadlock
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
               this.#state = `paused`
-              // Wait for resume - the pull will be called again when stream needs more data
-              // We return without closing to keep the stream alive
-              return
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
             }
 
             if (this.#abortController.signal.aborted) {
@@ -698,24 +729,12 @@ export class StreamResponseImpl<
               return
             }
 
-            // Track if we're resuming from a paused state
-            const resumingFromPause = this.#state === `paused`
-            if (resumingFromPause) {
-              this.#state = `active`
-            }
+            // Track if we're resuming from a paused state (state was just set to active by resume)
+            const resumingFromPause =
+              this.#state === `active` && this.#pausePromise === undefined
 
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
-
-            // Link to the main abort controller so user cancellation propagates
-            this.#abortController.signal.addEventListener(
-              `abort`,
-              () =>
-                this.#requestAbortController?.abort(
-                  this.#abortController.signal.reason
-                ),
-              { once: true }
-            )
 
             const response = await this.#fetchNext(
               this.offset,
@@ -735,13 +754,16 @@ export class StreamResponseImpl<
           controller.close()
         } catch (err) {
           // Check if this was a pause-triggered abort
+          // Only transition to paused if we're still in pause-requested state
+          // (handles race where resume() was called before abort completed)
           if (
             this.#requestAbortController?.signal.aborted &&
-            this.#requestAbortController.signal.reason === PAUSE_STREAM
+            this.#requestAbortController.signal.reason === PAUSE_STREAM &&
+            this.#state === `pause-requested`
           ) {
-            // Pause was requested - transition state and return without error
+            // Transition to paused and await the pause promise
             this.#state = `paused`
-            // Return without closing - stream stays alive for resume
+            // Return - the next pull() will await the pause promise
             return
           }
 
