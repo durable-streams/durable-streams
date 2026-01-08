@@ -377,7 +377,7 @@ class IdempotentProducer:
         # potential late 409 retries from pipelining.
         cleanup_threshold = seq - self._max_in_flight * 3
         if cleanup_threshold > 0:
-            old_seqs = [s for s in epoch_map.keys() if s < cleanup_threshold]
+            old_seqs = [s for s in epoch_map if s < cleanup_threshold]
             for old_seq in old_seqs:
                 del epoch_map[old_seq]
 
