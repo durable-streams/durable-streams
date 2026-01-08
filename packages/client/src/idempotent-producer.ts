@@ -455,6 +455,18 @@ export class IdempotentProducer {
       // No waiters yet, just mark as resolved
       epochMap.set(seq, { resolved: true, error, waiters: [] })
     }
+
+    // Clean up old entries to prevent unbounded memory growth.
+    // We keep entries for the last maxInFlight * 3 sequences to handle
+    // potential late 409 retries from pipelining.
+    const cleanupThreshold = seq - this.#maxInFlight * 3
+    if (cleanupThreshold > 0) {
+      for (const oldSeq of epochMap.keys()) {
+        if (oldSeq < cleanupThreshold) {
+          epochMap.delete(oldSeq)
+        }
+      }
+    }
   }
 
   /**

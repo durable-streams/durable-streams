@@ -432,6 +432,18 @@ func (p *IdempotentProducer) signalSeqComplete(epoch, seq int, err error) {
 		// No waiters yet, just mark as resolved
 		epochMap[seq] = &seqState{resolved: true, err: err}
 	}
+
+	// Clean up old entries to prevent unbounded memory growth.
+	// We keep entries for the last maxInFlight * 3 sequences to handle
+	// potential late 409 retries from pipelining.
+	cleanupThreshold := seq - p.config.MaxInFlight*3
+	if cleanupThreshold > 0 {
+		for oldSeq := range epochMap {
+			if oldSeq < cleanupThreshold {
+				delete(epochMap, oldSeq)
+			}
+		}
+	}
 }
 
 // waitForSeq waits for a specific sequence to complete. Returns error if the sequence failed.

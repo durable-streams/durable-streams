@@ -372,6 +372,15 @@ class IdempotentProducer:
             # No waiters yet, just mark as resolved
             epoch_map[seq] = _SeqState(resolved=True, error=error)
 
+        # Clean up old entries to prevent unbounded memory growth.
+        # We keep entries for the last max_in_flight * 3 sequences to handle
+        # potential late 409 retries from pipelining.
+        cleanup_threshold = seq - self._max_in_flight * 3
+        if cleanup_threshold > 0:
+            old_seqs = [s for s in epoch_map.keys() if s < cleanup_threshold]
+            for old_seq in old_seqs:
+                del epoch_map[old_seq]
+
     async def _wait_for_seq(self, epoch: int, seq: int) -> None:
         """Wait for a specific sequence to complete. Raises if the sequence failed."""
         if epoch not in self._seq_state:
