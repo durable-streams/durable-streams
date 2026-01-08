@@ -675,7 +675,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 
 	// For non-producer appends, return 204 No Content
 	// For producer appends (new writes), return 200 OK to distinguish from duplicates
-	if hasProducerHeaders {
+	if opts.ProducerId != "" {
 		w.WriteHeader(http.StatusOK)
 	} else {
 		w.WriteHeader(http.StatusNoContent)
