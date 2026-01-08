@@ -369,10 +369,18 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
 
     if (this.abortController?.signal.aborted) return
 
-    // Start streaming from the beginning
+    // Broadcast our presence immediately before starting to listen.
+    // This ensures other clients see us right away, even before we receive their updates.
+    this.awarenessReady = true
+    this.broadcastAwareness()
+    this.startAwarenessHeartbeat()
+
+    // Start streaming from current position - we don't need historical presence data.
+    // Use live: "auto" so the first request (catch-up) returns immediately,
+    // then subsequent requests use long-poll.
     const response = await this.awarenessStream.stream({
-      offset: `-1`,
-      live: `long-poll`,
+      offset: `now`,
+      live: `auto`,
     })
 
     if (this.abortController?.signal.aborted) return
@@ -402,15 +410,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
             break
           }
         }
-      }
-
-      // Handle up-to-date signal - awareness stream is ready
-      if (chunk.upToDate && !this.awarenessReady) {
-        this.awarenessReady = true
-        // Broadcast our initial awareness state
-        this.broadcastAwareness()
-        // Start heartbeat to keep awareness alive
-        this.startAwarenessHeartbeat()
       }
     })
   }
