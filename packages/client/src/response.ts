@@ -495,13 +495,19 @@ export class StreamResponseImpl<
     // Track new connection start
     this.#markSSEConnectionStart()
 
+    // Create new per-request abort controller for this SSE connection
+    this.#requestAbortController = new AbortController()
+
     const newSSEResponse = await this.#startSSE(
       this.offset,
       this.cursor,
-      this.#abortController.signal
+      this.#requestAbortController.signal
     )
     if (newSSEResponse.body) {
-      return parseSSEStream(newSSEResponse.body, this.#abortController.signal)
+      return parseSSEStream(
+        newSSEResponse.body,
+        this.#requestAbortController.signal
+      )
     }
     return null
   }
@@ -655,10 +661,12 @@ export class StreamResponseImpl<
             if (isSSE && firstResponse.body) {
               // Track SSE connection start for resilience monitoring
               this.#markSSEConnectionStart()
+              // Create per-request abort controller for SSE connection
+              this.#requestAbortController = new AbortController()
               // Start parsing SSE events
               sseEventIterator = parseSSEStream(
                 firstResponse.body,
-                this.#abortController.signal
+                this.#requestAbortController.signal
               )
               // Fall through to SSE processing below
             } else {
@@ -677,6 +685,30 @@ export class StreamResponseImpl<
 
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
+            // Check for pause state before processing SSE events
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+              // Reconnect SSE after resume
+              const newIterator = await this.#trySSEReconnect()
+              if (newIterator) {
+                sseEventIterator = newIterator
+              } else {
+                // Could not reconnect - close the stream
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             // Keep reading events until we get data or stream ends
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             while (true) {

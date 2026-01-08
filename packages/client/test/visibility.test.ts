@@ -280,6 +280,153 @@ describe(`visibility handling`, () => {
     })
   })
 
+  describe(`SSE mode visibility handling`, () => {
+    /**
+     * Helper to create a mock SSE response that completes after emitting events.
+     * This simulates SSE streams that naturally end (e.g., server closes connection).
+     */
+    function createSSEResponse(
+      events: Array<{ type: `data` | `control`; content: string }>
+    ): Response {
+      const encoder = new TextEncoder()
+      let eventIndex = 0
+
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (eventIndex < events.length) {
+            const event = events[eventIndex]!
+            eventIndex++
+            if (event.type === `data`) {
+              controller.enqueue(
+                encoder.encode(`event: data\ndata: ${event.content}\n\n`)
+              )
+            } else {
+              controller.enqueue(
+                encoder.encode(`event: control\ndata: ${event.content}\n\n`)
+              )
+            }
+          } else {
+            // SSE stream completes - triggers reconnection logic
+            controller.close()
+          }
+        },
+      })
+
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          "content-type": `text/event-stream`,
+          [STREAM_OFFSET_HEADER]: `1_10`,
+        },
+      })
+    }
+
+    it(`should add visibility listener for SSE mode`, async () => {
+      // SSE response with data
+      mockFetch.mockResolvedValueOnce(
+        createSSEResponse([
+          { type: `data`, content: JSON.stringify([{ id: 1 }]) },
+          {
+            type: `control`,
+            content: JSON.stringify({
+              streamNextOffset: `1_10`,
+              upToDate: true,
+            }),
+          },
+        ])
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+      })
+
+      // Visibility listener should have been added
+      expect(addEventListenerSpy).toHaveBeenCalledWith(
+        `visibilitychange`,
+        expect.any(Function)
+      )
+      expect(visibilityHandler).not.toBeNull()
+
+      res.cancel()
+    })
+
+    it(`should remove visibility listener when SSE stream is cancelled`, async () => {
+      // SSE response with data
+      mockFetch.mockResolvedValueOnce(
+        createSSEResponse([
+          { type: `data`, content: JSON.stringify([{ id: 1 }]) },
+          {
+            type: `control`,
+            content: JSON.stringify({
+              streamNextOffset: `1_10`,
+              upToDate: true,
+            }),
+          },
+        ])
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+      })
+
+      expect(visibilityHandler).not.toBeNull()
+
+      // Cancel the stream
+      res.cancel()
+
+      // Wait for cleanup
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Listener should have been removed
+      expect(removeEventListenerSpy).toHaveBeenCalledWith(
+        `visibilitychange`,
+        expect.any(Function)
+      )
+    })
+
+    it(`should receive data from SSE stream`, async () => {
+      // SSE response with data
+      mockFetch.mockResolvedValueOnce(
+        createSSEResponse([
+          { type: `data`, content: JSON.stringify([{ id: 1 }]) },
+          {
+            type: `control`,
+            content: JSON.stringify({
+              streamNextOffset: `1_10`,
+              upToDate: true,
+            }),
+          },
+        ])
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+      })
+
+      const received: Array<{ id: number }> = []
+      res.subscribeJson<{ id: number }>((batch) => {
+        received.push(...batch.items)
+        return Promise.resolve()
+      })
+
+      // Wait for data to be received
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      expect(received).toEqual([{ id: 1 }])
+
+      res.cancel()
+    })
+  })
+
   describe(`initial hidden state`, () => {
     it(`should pause immediately if page is hidden when stream starts`, async () => {
       // Set document as hidden BEFORE creating stream
@@ -296,7 +443,7 @@ describe(`visibility handling`, () => {
         })
       )
 
-      // Second request - should not be called while paused
+      // Second request - will be called after resume
       mockFetch.mockResolvedValueOnce(
         new Response(JSON.stringify([{ id: 2 }]), {
           status: 200,
@@ -307,6 +454,15 @@ describe(`visibility handling`, () => {
           },
         })
       )
+
+      // Third request - keep stream alive so we can check fetch count
+      mockFetch.mockImplementation((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
 
       const res = await stream({
         url: `https://example.com/stream`,
@@ -326,8 +482,14 @@ describe(`visibility handling`, () => {
       // Now show the page - should resume
       simulateVisibilityChange(false)
 
-      // Wait for resume to process
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      // Poll for the second fetch to complete (more robust than fixed timeout)
+      const pollForSecondFetch = async (): Promise<void> => {
+        for (let i = 0; i < 20; i++) {
+          if (mockFetch.mock.calls.length >= 2) return
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+      }
+      await pollForSecondFetch()
 
       // Now second fetch should have been made
       expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
