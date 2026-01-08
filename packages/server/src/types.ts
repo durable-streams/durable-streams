@@ -198,7 +198,7 @@ export type ProducerValidationResult =
       proposedState: ProducerState
       producerId: string
     }
-  | { status: `duplicate` }
+  | { status: `duplicate`; lastSeq: number }
   | { status: `stale_epoch`; currentEpoch: number }
   | { status: `invalid_epoch_seq` }
   | { status: `sequence_gap`; expectedSeq: number; receivedSeq: number }

@@ -291,6 +291,7 @@ func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
 		}, newState, nil
 	}
 
@@ -318,6 +319,7 @@ func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
 		}, newState, nil
 	}
 
@@ -326,6 +328,7 @@ func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (
 		// Duplicate - idempotent success
 		return AppendResult{
 			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        state.LastSeq,
 		}, nil, nil
 	}
 
@@ -338,6 +341,7 @@ func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        seq,
 		}, newState, nil
 	}
 
@@ -393,6 +397,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 	// Validate producer (if headers provided)
 	var producerState *ProducerState
 	var producerResult ProducerResult = ProducerResultNone
+	var producerLastSeq int64
 	if opts.HasAllProducerHeaders() {
 		result, newState, err := s.validateProducer(meta, opts)
 		if err != nil {
@@ -404,10 +409,12 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 			return AppendResult{
 				Offset:         meta.CurrentOffset,
 				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        result.LastSeq,
 			}, nil
 		}
 		producerState = newState
 		producerResult = result.ProducerResult
+		producerLastSeq = result.LastSeq
 	}
 
 	// Append to segment
@@ -447,6 +454,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 	return AppendResult{
 		Offset:         newOffset,
 		ProducerResult: producerResult,
+		LastSeq:        producerLastSeq,
 	}, nil
 }
 

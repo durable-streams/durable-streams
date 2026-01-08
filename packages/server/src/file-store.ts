@@ -429,7 +429,7 @@ export class FileBackedStreamStore {
 
     // Same epoch: sequence validation
     if (seq <= state.lastSeq) {
-      return { status: `duplicate` }
+      return { status: `duplicate`, lastSeq: state.lastSeq }
     }
 
     if (seq === state.lastSeq + 1) {

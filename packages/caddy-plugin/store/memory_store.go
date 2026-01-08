@@ -88,6 +88,7 @@ func (s *MemoryStore) validateProducer(meta *StreamMetadata, opts AppendOptions)
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
 		}, newState, nil
 	}
 
@@ -115,6 +116,7 @@ func (s *MemoryStore) validateProducer(meta *StreamMetadata, opts AppendOptions)
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
 		}, newState, nil
 	}
 
@@ -123,6 +125,7 @@ func (s *MemoryStore) validateProducer(meta *StreamMetadata, opts AppendOptions)
 		// Duplicate - idempotent success
 		return AppendResult{
 			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        state.LastSeq,
 		}, nil, nil
 	}
 
@@ -135,6 +138,7 @@ func (s *MemoryStore) validateProducer(meta *StreamMetadata, opts AppendOptions)
 		}
 		return AppendResult{
 			ProducerResult: ProducerResultAccepted,
+			LastSeq:        seq,
 		}, newState, nil
 	}
 
@@ -278,6 +282,7 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 	// Validate producer (if headers provided)
 	var producerState *ProducerState
 	var producerResult ProducerResult = ProducerResultNone
+	var producerLastSeq int64
 	if opts.HasAllProducerHeaders() {
 		result, newState, err := s.validateProducer(&stream.metadata, opts)
 		if err != nil {
@@ -289,10 +294,12 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 			return AppendResult{
 				Offset:         stream.metadata.CurrentOffset,
 				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        result.LastSeq,
 			}, nil
 		}
 		producerState = newState
 		producerResult = result.ProducerResult
+		producerLastSeq = result.LastSeq
 	}
 
 	newOffset, err := s.appendToStream(stream, data, opts, false) // Don't allow empty arrays on append
@@ -317,6 +324,7 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 	return AppendResult{
 		Offset:         newOffset,
 		ProducerResult: producerResult,
+		LastSeq:        producerLastSeq,
 	}, nil
 }
 

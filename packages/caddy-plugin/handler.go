@@ -44,7 +44,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Expected-Seq, Producer-Received-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -660,9 +660,11 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 
 	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
 
-	// Echo Producer-Epoch on success when producer headers were provided
+	// Echo Producer-Epoch and Producer-Seq on success when producer headers were provided
 	if opts.ProducerEpoch != nil {
 		w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(*opts.ProducerEpoch, 10))
+		// Return highest accepted seq (per PROTOCOL.md)
+		w.Header().Set(HeaderProducerSeq, strconv.FormatInt(result.LastSeq, 10))
 	}
 
 	// Handle duplicate detection (204 No Content)

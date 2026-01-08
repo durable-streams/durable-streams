@@ -1108,10 +1108,10 @@ export class DurableStreamTestServer {
       switch (producerResult.status) {
         case `duplicate`:
           // 204 No Content for duplicates (idempotent success)
-          // Return Producer-Seq as highest accepted (the duplicate seq)
+          // Return Producer-Seq as highest accepted (per PROTOCOL.md)
           res.writeHead(204, {
             [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
-            [PRODUCER_SEQ_HEADER]: producerSeq!.toString(),
+            [PRODUCER_SEQ_HEADER]: producerResult.lastSeq.toString(),
           })
           res.end()
           return

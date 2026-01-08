@@ -5469,6 +5469,49 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(r3.status).toBe(200)
     })
 
+    test(`duplicate response should return highest accepted seq, not request seq`, async () => {
+      const streamPath = `/v1/stream/producer-dup-highest-seq-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Send seq=0, 1, 2 successfully
+      for (let i = 0; i < 3; i++) {
+        const r = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `${i}`,
+          },
+          body: `msg-${i}`,
+        })
+        expect(r.status).toBe(200)
+        expect(r.headers.get(PRODUCER_SEQ_HEADER)).toBe(`${i}`)
+      }
+
+      // Now retry seq=1 (an older duplicate)
+      // Per PROTOCOL.md: "the highest accepted sequence number for this (stream, producerId, epoch) tuple"
+      // Should return 2 (highest accepted), not 1 (the request seq)
+      const dupResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `1`,
+        },
+        body: `msg-1`,
+      })
+      expect(dupResponse.status).toBe(204)
+      // The key assertion: should return highest (2), not request seq (1)
+      expect(dupResponse.headers.get(PRODUCER_SEQ_HEADER)).toBe(`2`)
+    })
+
     test(`split-brain fencing scenario`, async () => {
       const streamPath = `/v1/stream/producer-split-brain-${Date.now()}`
 

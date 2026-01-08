@@ -51,6 +51,7 @@ type AppendResult struct {
 	CurrentEpoch   int64 // Current epoch on stale epoch error
 	ExpectedSeq    int64 // Expected seq on gap error
 	ReceivedSeq    int64 // Received seq on gap error
+	LastSeq        int64 // Highest accepted seq (for duplicates and success)
 }
 
 // Store is the interface for durable stream storage
