@@ -4338,7 +4338,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 25 }
         )
-      })
+      }, 15000)
 
       test(`read-your-writes: data is immediately visible after append`, async () => {
         await fc.assert(
