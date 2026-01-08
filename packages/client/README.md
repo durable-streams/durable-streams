@@ -921,6 +921,8 @@ await producer.restart()
 
 ### Error Handling
 
+Errors are delivered via the `onError` callback since `append()` is fire-and-forget:
+
 ```typescript
 import {
   IdempotentProducer,
@@ -928,29 +930,20 @@ import {
   SequenceGapError,
 } from "@durable-streams/client"
 
-// Option 1: Handle errors via callback
 const producer = new IdempotentProducer(stream, "my-producer", {
   onError: (error) => {
     if (error instanceof StaleEpochError) {
+      // Another producer has a higher epoch - this producer is "fenced"
       console.log(`Fenced by epoch ${error.currentEpoch}`)
     } else if (error instanceof SequenceGapError) {
+      // Sequence gap detected (should not happen with proper usage)
       console.log(`Expected seq ${error.expectedSeq}, got ${error.receivedSeq}`)
     }
   },
 })
 
 producer.append("data") // Fire-and-forget, errors go to onError
-
-// Option 2: Handle errors at flush time
-try {
-  producer.append("data")
-  await producer.flush() // Throws if any batch failed
-} catch (error) {
-  if (error instanceof StaleEpochError) {
-    // Another producer has a higher epoch - this producer is "fenced"
-    console.log(`Fenced by epoch ${error.currentEpoch}`)
-  }
-}
+await producer.flush() // Wait for all batches to complete
 ```
 
 ---
