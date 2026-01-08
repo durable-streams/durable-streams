@@ -5621,6 +5621,49 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(r.status).toBe(200)
     })
 
+    test(`producer duplicate should return 204 even with Stream-Seq header`, async () => {
+      // This tests that producer dedupe is checked BEFORE Stream-Seq validation.
+      // A retry with the same producer headers should be deduplicated at the
+      // transport layer, returning 204, even if Stream-Seq would otherwise conflict.
+      const streamPath = `/v1/stream/producer-dedupe-before-stream-seq-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // First append with both producer and Stream-Seq headers
+      const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+          [STREAM_SEQ_HEADER]: `app-seq-001`,
+        },
+        body: `msg`,
+      })
+      expect(r1.status).toBe(200)
+
+      // Retry the SAME append (same producer headers AND same Stream-Seq)
+      // This should return 204 (duplicate) NOT 409 (Stream-Seq conflict)
+      // because producer dedupe must be checked before Stream-Seq validation.
+      const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `test-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+          [STREAM_SEQ_HEADER]: `app-seq-001`,
+        },
+        body: `msg`,
+      })
+      expect(r2.status).toBe(204)
+    })
+
     // ========================================================================
     // Data Integrity Tests - Read Back Verification
     // ========================================================================

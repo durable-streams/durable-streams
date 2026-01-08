@@ -387,14 +387,9 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		return AppendResult{}, ErrContentTypeMismatch
 	}
 
-	// Validate sequence number (Stream-Seq - application layer)
-	if opts.Seq != "" {
-		if meta.LastSeq != "" && opts.Seq <= meta.LastSeq {
-			return AppendResult{}, ErrSequenceConflict
-		}
-	}
-
-	// Validate producer (if headers provided)
+	// Validate producer FIRST (if headers provided)
+	// This must happen before Stream-Seq validation so that retries
+	// are deduplicated at the transport layer even if Stream-Seq would conflict.
 	var producerState *ProducerState
 	var producerResult ProducerResult = ProducerResultNone
 	var producerLastSeq int64
@@ -415,6 +410,14 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		producerState = newState
 		producerResult = result.ProducerResult
 		producerLastSeq = result.LastSeq
+	}
+
+	// Validate sequence number (Stream-Seq - application layer)
+	// Only checked for non-duplicate appends.
+	if opts.Seq != "" {
+		if meta.LastSeq != "" && opts.Seq <= meta.LastSeq {
+			return AppendResult{}, ErrSequenceConflict
+		}
 	}
 
 	// Append to segment
