@@ -9,7 +9,7 @@ This document proposes a PHP client design for the Durable Streams protocol, bas
 2. **PSR-compliant** - PSR-18 HTTP Client, PSR-7 Messages, PSR-3 Logging
 3. **Fluent builders** - Chainable configuration (Kafka, NATS, Pulsar patterns)
 4. **Generator-based iteration** - Memory-efficient streaming (universal PHP pattern)
-5. **Local batching with explicit flush** - `append()` queues locally, `flush()` does I/O
+5. **Local batching with explicit flush** - `enqueue()` queues locally, `flush()` does I/O
 
 ---
 
@@ -53,6 +53,24 @@ This document proposes a PHP client design for the Durable Streams protocol, bas
 | **HTTP/2 Streams** | ❌ Poor | Most PHP HTTP clients don't expose HTTP/2 multiplexing |
 
 **Recommendation:** Default to long-poll; SSE as opt-in for long-running CLI consumers.
+
+### PSR-18 Limitations
+
+PSR-18 is intentionally minimal and does not standardize:
+- Streaming response bodies (buffering is implementation-dependent)
+- Request cancellation mid-flight
+- Fine-grained timeout control (connect vs read vs total)
+- SSE event framing
+
+**Implications for this client:**
+- **Cancellation is "soft"**: `StreamResponse::cancel()` prevents the *next* HTTP request,
+  but cannot abort an in-flight request. The current poll completes before cancellation.
+- **SSE requires a streaming-capable client**: Symfony HttpClient or a custom cURL wrapper.
+  Not all PSR-18 implementations will work for SSE.
+- **Long-poll is the safest default**: Works with any PSR-18 implementation.
+
+Future versions may introduce a `StreamingTransport` interface for clients that need
+true SSE support with hard cancellation.
 
 ---
 
@@ -105,8 +123,8 @@ DurableStream (handle)
     └── close(): void
 
 IdempotentProducer
-    ├── append(mixed $data): void  (queues locally, no I/O)
-    ├── flush(): void              (sends batches, blocks until complete)
+    ├── enqueue(mixed $data): void  (queues locally, no I/O)
+    ├── flush(): void               (sends batches, blocks until complete)
     ├── restart(): void
     └── close(): void
 
@@ -114,10 +132,11 @@ StreamResponse (read session)
     ├── getIterator(): Generator<JsonBatch>
     ├── jsonStream(): Generator<mixed>
     ├── bodyStream(): Generator<string>
-    ├── json(): array
-    ├── body(): string
-    ├── cancel(): void
-    └── getOffset(): string
+    ├── json(): array               (throws on live streams)
+    ├── body(): string              (throws on live streams)
+    ├── cancel(): void              (soft-cancel with PSR-18)
+    ├── getOffset(): string
+    └── isLive(): bool
 
 Options Classes (builders)
     ├── ClientOptions
@@ -187,8 +206,15 @@ final class DurableStream
     public function append(mixed $data, ?AppendOptions $options = null): AppendResult;
 
     /**
-     * Stream append from iterable source (chunked transfer)
-     * @param iterable<string|array> $source
+     * Stream append from iterable source using chunked transfer encoding.
+     *
+     * Each item from the source is sent immediately as it's yielded - this
+     * is NOT batched like IdempotentProducer. Use this for large data where
+     * you don't want to buffer everything in memory before sending.
+     *
+     * For batching semantics, use IdempotentProducer instead.
+     *
+     * @param iterable<string|array> $source Items to append (arrays are JSON-encoded)
      */
     public function appendStream(iterable $source): void;
 
@@ -252,18 +278,28 @@ final class StreamResponse implements \IteratorAggregate
     public function bodyStream(): \Generator;
 
     /**
-     * Collect all JSON items (stops at up-to-date for catch-up)
+     * Collect all JSON items into an array.
+     * Only valid for catch-up mode (live: false).
+     *
      * @return array<mixed>
+     * @throws \LogicException if called on a live stream (would block forever)
      */
     public function json(): array;
 
     /**
-     * Collect full body as string
+     * Collect full body as string.
+     * Only valid for catch-up mode (live: false).
+     *
+     * @throws \LogicException if called on a live stream (would block forever)
      */
     public function body(): string;
 
     /**
-     * Cancel the read session
+     * Cancel the read session.
+     *
+     * Note: With PSR-18, this is a "soft cancel" - it prevents the next
+     * request but cannot abort an in-flight HTTP request. The current
+     * poll will complete before cancellation takes effect.
      */
     public function cancel(): void;
 
@@ -276,6 +312,11 @@ final class StreamResponse implements \IteratorAggregate
      * Check if stream is up-to-date
      */
     public function isUpToDate(): bool;
+
+    /**
+     * Check if this is a live (infinite) stream
+     */
+    public function isLive(): bool;
 }
 ```
 
@@ -306,9 +347,13 @@ function stream(array $options): StreamResponse;
 
 Batching producer with exactly-once semantics. Uses local queuing for efficiency.
 
-**Key insight:** PHP has no background threads, so `append()` cannot do async I/O.
-Instead, `append()` queues data locally (instant return, no network), and `flush()`
+**Key insight:** PHP has no background threads, so `enqueue()` cannot do async I/O.
+Instead, `enqueue()` queues data locally (instant return, no network), and `flush()`
 performs all HTTP requests synchronously (blocks until complete).
+
+**Why `enqueue()` not `append()`?** The `DurableStream::append()` method is synchronous
+(immediate HTTP request). Using the same name for the batching version would be confusing.
+`enqueue()` makes the "queue now, send later" semantics explicit.
 
 ```php
 <?php
@@ -327,8 +372,10 @@ final class IdempotentProducer
      * Queue data locally for batched sending.
      * Returns immediately - no network I/O performed.
      * Auto-flushes if batch size limit reached.
+     *
+     * @throws MessageTooLargeException if single item exceeds maxBatchBytes
      */
-    public function append(mixed $data): void;
+    public function enqueue(mixed $data): void;
 
     /**
      * Send all queued batches to server.
@@ -489,7 +536,8 @@ DurableStreamException (base)
 │   └── ServiceUnavailableException    (503)
 └── ProducerException
     ├── StaleEpochException
-    └── SequenceGapException
+    ├── SequenceGapException
+    └── MessageTooLargeException
 ```
 
 ### Exception Interface
@@ -565,6 +613,11 @@ enum ErrorCode: string
 
 ### Long-Poll Implementation (Default)
 
+**Important:** Termination behavior depends on `live` mode:
+- `live: false` (catch-up): Stop when `upToDate` is true
+- `live: 'long-poll'`: Keep polling forever (until cancelled or error)
+- `live: 'sse'`: Keep reading until disconnect
+
 ```php
 <?php
 
@@ -578,15 +631,16 @@ final class LongPollHandler
     ) {}
 
     /**
+     * @param bool $live If true, keep polling even after catching up
      * @return \Generator<ResponseChunk>
      */
-    public function consume(string $url, string $offset, ?string $cursor): \Generator
+    public function consume(string $url, string $offset, ?string $cursor, bool $live): \Generator
     {
         while (true) {
             $response = $this->transport->get($url, [
                 'query' => [
                     'offset' => $offset,
-                    'live' => 'long-poll',
+                    'live' => $live ? 'long-poll' : null,
                     'cursor' => $cursor,
                 ],
             ]);
@@ -600,7 +654,7 @@ final class LongPollHandler
                     cursor: $cursor,
                     upToDate: true,
                 );
-                continue;
+                continue; // Keep polling (live mode only reaches here)
             }
 
             $newOffset = $response->getHeaderLine('Stream-Next-Offset');
@@ -617,8 +671,9 @@ final class LongPollHandler
             $offset = $newOffset;
             $cursor = $newCursor;
 
-            if ($upToDate) {
-                return; // Catch-up complete
+            // Only stop if catch-up mode (not live) and we're caught up
+            if ($upToDate && !$live) {
+                return;
             }
         }
     }
@@ -708,10 +763,17 @@ final class IdempotentProducer
         $this->epoch = $options->getEpoch();
     }
 
-    public function append(mixed $data): void
+    public function enqueue(mixed $data): void
     {
         $encoded = json_encode($data);
         $size = strlen($encoded);
+
+        // Reject single items that exceed max batch size
+        if ($size > $this->options->getMaxBatchBytes()) {
+            throw new MessageTooLargeException(
+                "Item size ({$size} bytes) exceeds maxBatchBytes ({$this->options->getMaxBatchBytes()})"
+            );
+        }
 
         // Auto-flush if batch would exceed max size
         if ($this->currentBatchSize + $size > $this->options->getMaxBatchBytes()) {
@@ -761,35 +823,43 @@ final class IdempotentProducer
 
     private function sendBatch(PendingBatch $batch): void
     {
-        try {
-            // Synchronous HTTP request - blocks here
-            $this->stream->appendWithHeaders(
-                $batch->getData(),
-                [
-                    'Producer-Id' => $this->producerId,
-                    'Producer-Epoch' => (string) $batch->getEpoch(),
-                    'Producer-Seq' => (string) $batch->getSeq(),
-                ]
-            );
+        $maxAttempts = 3;
 
-        } catch (ForbiddenException $e) {
-            // Stale epoch - handle auto-claim or throw
-            $currentEpoch = (int) ($e->getHeaders()['Producer-Epoch'] ?? 0);
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                // Synchronous HTTP request - blocks here
+                $this->stream->appendWithHeaders(
+                    $batch->getData(),
+                    [
+                        'Producer-Id' => $this->producerId,
+                        'Producer-Epoch' => (string) $batch->getEpoch(),
+                        'Producer-Seq' => (string) $batch->getSeq(),
+                    ]
+                );
+                return; // Success
 
-            if ($this->options->isAutoClaim()) {
-                $this->epoch = $currentEpoch + 1;
-                $batch->updateEpoch($this->epoch);
-                $batch->updateSeq(0);
-                $this->nextSeq = 1;
-                $this->sendBatch($batch); // Retry with new epoch
-            } else {
-                throw new StaleEpochException($currentEpoch, $e);
+            } catch (ForbiddenException $e) {
+                // Stale epoch - handle auto-claim or throw
+                $currentEpoch = (int) ($e->getHeaders()['Producer-Epoch'] ?? 0);
+
+                if ($this->options->isAutoClaim()) {
+                    $this->epoch = $currentEpoch + 1;
+                    $batch->updateEpoch($this->epoch);
+                    $batch->updateSeq(0);
+                    $this->nextSeq = 1;
+                    // Loop will retry with new epoch
+                } else {
+                    throw new StaleEpochException($currentEpoch, $e);
+                }
+
+            } catch (SequenceConflictException $e) {
+                // Duplicate detection - batch already delivered, safe to continue
+                // (This can happen if previous request succeeded but response was lost)
+                return;
             }
-
-        } catch (SequenceConflictException $e) {
-            // Duplicate detection - batch already delivered, safe to continue
-            // (This can happen if previous request succeeded but response was lost)
         }
+
+        throw new ProducerException("Failed to send batch after {$maxAttempts} attempts");
     }
 
     public function restart(): void
@@ -1041,7 +1111,7 @@ $producer = new IdempotentProducer(
 
 // Queue locally - no network I/O yet
 foreach ($orders as $order) {
-    $producer->append(['type' => 'order.created', 'order' => $order]);
+    $producer->enqueue(['type' => 'order.created', 'order' => $order]);
     // Note: may auto-flush if batch size limit reached
 }
 
