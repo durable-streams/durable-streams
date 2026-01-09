@@ -106,10 +106,9 @@ public final class Stream {
         Map<String, String> headers = client.resolveHeaders();
         headers.forEach(builder::header);
 
+        // Use cached content type or default to application/octet-stream
         String contentType = client.getCachedContentType(url);
-        if (contentType != null) {
-            builder.header("Content-Type", contentType);
-        }
+        builder.header("Content-Type", contentType != null ? contentType : "application/octet-stream");
         if (seq != null) {
             builder.header("Stream-Seq", String.valueOf(seq));
         }

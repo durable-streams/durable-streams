@@ -86,10 +86,27 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
         if (closed) return null;
         if (liveMode == LiveMode.OFF && upToDate) return null;
 
-        Chunk chunk = stream.readOnce(currentOffset, liveMode, timeout, cursor);
+        Chunk chunk;
+        try {
+            chunk = stream.readOnce(currentOffset, liveMode, timeout, cursor);
+        } catch (DurableStreamException e) {
+            // Check if this is a timeout exception
+            Throwable cause = e.getCause();
+            if (cause != null && cause.getClass().getName().contains("Timeout")) {
+                // Treat timeout as 204 - no new data
+                upToDate = true;
+                return null;
+            }
+            throw e;
+        }
 
         // 204 No Content means timeout with no new data
         if (chunk.getStatusCode() == 204) {
+            // Update offset from 204 response if available
+            if (chunk.getNextOffset() != null) {
+                currentOffset = chunk.getNextOffset();
+            }
+            upToDate = true;
             return null;
         }
 
@@ -119,6 +136,11 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
 
         // Empty body with 200 in catch-up mode means we're at the end
         if (liveMode == LiveMode.OFF && chunk.getData().length == 0 && chunk.isUpToDate()) {
+            // Update offset from response even though we're returning null
+            // This is important for offset="now" which returns empty data but valid offset
+            if (chunk.getNextOffset() != null) {
+                currentOffset = chunk.getNextOffset();
+            }
             upToDate = true;
             return null;
         }

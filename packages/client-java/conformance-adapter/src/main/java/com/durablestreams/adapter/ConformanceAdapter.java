@@ -194,37 +194,64 @@ public class ConformanceAdapter {
                     return errorResult("append", "NOT_FOUND", "Stream not found", 404);
                 }
             }
-            Stream stream = client.stream(serverUrl + path);
-            stream.append(bytes, seq);
 
-            // Capture what dynamic headers/params were sent with this request
-            // Do this BEFORE head() because head() makes another request which increments counters
+            // Evaluate dynamic headers/params ONCE for this command
+            // Capture the values and create fixed suppliers (matching TypeScript behavior)
             Map<String, String> headersSent = new LinkedHashMap<>();
             Map<String, String> paramsSent = new LinkedHashMap<>();
             for (Map.Entry<String, DynamicValue> entry : dynamicHeaders.entrySet()) {
-                headersSent.put(entry.getKey(), entry.getValue().getLastValue());
+                String value = entry.getValue().getValue();  // Increment counter once
+                headersSent.put(entry.getKey(), value);
+                // Replace with fixed supplier for all requests in this command
+                final String capturedValue = value;
+                client.setDynamicHeader(entry.getKey(), () -> capturedValue);
             }
             for (Map.Entry<String, DynamicValue> entry : dynamicParams.entrySet()) {
-                paramsSent.put(entry.getKey(), entry.getValue().getLastValue());
+                String value = entry.getValue().getValue();  // Increment counter once
+                paramsSent.put(entry.getKey(), value);
+                final String capturedValue = value;
+                client.setDynamicParam(entry.getKey(), () -> capturedValue);
             }
 
-            // Get current offset from head (like TypeScript adapter)
-            Metadata meta = stream.head();
+            try {
+                Stream stream = client.stream(serverUrl + path);
+                AppendResult appendResult = stream.append(bytes, seq);
 
-            Map<String, Object> result = new LinkedHashMap<>();
-            result.put("type", "append");
-            result.put("success", true);
-            result.put("status", 200);  // Always 200 for successful append
-            if (meta.getNextOffset() != null) {
-                result.put("offset", meta.getNextOffset().getValue());
+                // Get offset - prefer from AppendResult, fallback to head()
+                String offset = null;
+                if (appendResult.getNextOffset() != null) {
+                    offset = appendResult.getNextOffset().getValue();
+                } else {
+                    // Fallback to head() if append didn't return offset
+                    Metadata meta = stream.head();
+                    if (meta.getNextOffset() != null) {
+                        offset = meta.getNextOffset().getValue();
+                    }
+                }
+
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("type", "append");
+                result.put("success", true);
+                result.put("status", 200);  // Always 200 for successful append
+                if (offset != null) {
+                    result.put("offset", offset);
+                }
+                if (!headersSent.isEmpty()) {
+                    result.put("headersSent", headersSent);
+                }
+                if (!paramsSent.isEmpty()) {
+                    result.put("paramsSent", paramsSent);
+                }
+                return result;
+            } finally {
+                // Restore original dynamic suppliers for next command
+                for (Map.Entry<String, DynamicValue> entry : dynamicHeaders.entrySet()) {
+                    client.setDynamicHeader(entry.getKey(), entry.getValue()::getValue);
+                }
+                for (Map.Entry<String, DynamicValue> entry : dynamicParams.entrySet()) {
+                    client.setDynamicParam(entry.getKey(), entry.getValue()::getValue);
+                }
             }
-            if (!headersSent.isEmpty()) {
-                result.put("headersSent", headersSent);
-            }
-            if (!paramsSent.isEmpty()) {
-                result.put("paramsSent", paramsSent);
-            }
-            return result;
         } catch (StreamNotFoundException e) {
             return errorResult("append", "NOT_FOUND", "Stream not found", 404);
         } catch (SequenceConflictException e) {
@@ -279,7 +306,9 @@ public class ConformanceAdapter {
                         chunk = iterator.poll(timeout);
                         if (chunk == null) {
                             // Timeout with no new data means we're up-to-date
+                            // For long-poll, this is a 204 response
                             upToDate = true;
+                            status = 204;
                             emptyCount++;
                             if (emptyCount >= 2) {
                                 break;
@@ -323,18 +352,16 @@ public class ConformanceAdapter {
                         break;
                     }
                 }
-            }
 
-            // If no chunks were read, get offset from head
-            if (chunks.isEmpty() && "-1".equals(finalOffset)) {
-                try {
-                    Metadata meta = stream.head();
-                    if (meta.getNextOffset() != null) {
-                        finalOffset = meta.getNextOffset().getValue();
+                // Get the final offset from the iterator (handles offset="now" case)
+                // The iterator tracks the actual offset from server responses
+                if (iterator.getCurrentOffset() != null) {
+                    String iterOffset = iterator.getCurrentOffset().getValue();
+                    // Only use iterator offset if we haven't got a better one from chunks
+                    // and it's not a special value like "-1"
+                    if (!"-1".equals(iterOffset) && (chunks.isEmpty() || "now".equals(finalOffset) || "-1".equals(finalOffset))) {
+                        finalOffset = iterOffset;
                     }
-                    upToDate = true;  // Empty stream is up-to-date
-                } catch (StreamNotFoundException ignored) {
-                    // Stream may have been deleted
                 }
             }
 
@@ -368,7 +395,8 @@ public class ConformanceAdapter {
         } catch (DurableStreamException e) {
             int statusCode = e.getStatusCode().orElse(500);
             String errorCode = errorCodeFromException(e);
-            if (statusCode == 410) {
+            // Map both 400 and 410 to INVALID_OFFSET for offset-related errors
+            if (statusCode == 410 || statusCode == 400) {
                 errorCode = "INVALID_OFFSET";
             }
             return errorResult("read", errorCode, e.getMessage(), statusCode);
@@ -377,7 +405,8 @@ public class ConformanceAdapter {
                 DurableStreamException de = (DurableStreamException) e.getCause();
                 int statusCode = de.getStatusCode().orElse(500);
                 String errorCode = errorCodeFromException(de);
-                if (statusCode == 410) {
+                // Map both 400 and 410 to INVALID_OFFSET for offset-related errors
+                if (statusCode == 410 || statusCode == 400) {
                     errorCode = "INVALID_OFFSET";
                 }
                 return errorResult("read", errorCode, de.getMessage(), statusCode);
