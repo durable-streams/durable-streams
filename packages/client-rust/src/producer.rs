@@ -217,23 +217,21 @@ impl IdempotentProducer {
 
     /// Flush all pending data and wait for acknowledgment.
     pub async fn flush(&self) -> Result<(), ProducerError> {
-        loop {
-            {
-                let mut state = self.state.lock();
-
-                // Send any pending batch
-                if !state.pending_batch.is_empty() {
-                    self.send_batch_locked(&mut state);
-                }
+        // Send any pending batch first
+        {
+            let mut state = self.state.lock();
+            if !state.pending_batch.is_empty() {
+                self.send_batch_locked(&mut state);
             }
+        }
 
-            // Wait for in-flight to complete (atomic read)
+        // Spin-wait with yields for in-flight to complete
+        // This is much faster than sleeping 10ms
+        loop {
             if self.in_flight.load(Ordering::Acquire) == 0 {
                 break;
             }
-
-            // Small delay before checking again
-            sleep(Duration::from_millis(10)).await;
+            tokio::task::yield_now().await;
         }
 
         Ok(())
