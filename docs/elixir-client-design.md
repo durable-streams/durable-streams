@@ -29,7 +29,7 @@ durable_streams/
 │   │   ├── client.ex                   # HTTP client with pooling
 │   │   ├── consumer.ex                 # GenServer for consuming streams
 │   │   ├── producer.ex                 # GenStage producer for Broadway
-│   │   ├── idempotent_producer.ex      # Exactly-once producer
+│   │   ├── writer.ex      # Exactly-once producer
 │   │   ├── sse.ex                      # SSE parser and connection
 │   │   ├── response.ex                 # Response parsing utilities
 │   │   ├── errors.ex                   # Error types
@@ -62,21 +62,21 @@ defmodule DurableStreams.Types do
   @type stream_url :: String.t() | URI.t()
 
   @type batch_meta :: %{
-    offset: offset(),
+    next_offset: offset(),
     cursor: cursor(),
     up_to_date: boolean()
   }
 
   @type json_batch(t) :: %{
     items: [t],
-    offset: offset(),
+    next_offset: offset(),
     cursor: cursor(),
     up_to_date: boolean()
   }
 
   @type byte_chunk :: %{
     data: binary(),
-    offset: offset(),
+    next_offset: offset(),
     cursor: cursor(),
     up_to_date: boolean()
   }
@@ -185,22 +185,36 @@ defmodule DurableStreams.Stream do
 
   ## Examples
 
-      # Catch-up read (returns when up-to-date)
-      {:ok, items} = DurableStreams.Stream.read_json(stream, live: false)
+      # Catch-up read (returns batch with metadata for resumability)
+      {:ok, batch} = DurableStreams.Stream.read_json(stream, live: false)
+      # batch.items - the JSON items
+      # batch.next_offset - offset for next request (resumption point)
+      # batch.cursor - cursor for CDN collapsing
+      # batch.up_to_date - true when caught up with stream tail
 
       # Live streaming with callback
       DurableStreams.Stream.subscribe_json(stream, fn batch ->
         IO.inspect(batch.items)
         :ok
       end)
+
+  ## Return Values
+
+  All read functions return `{:ok, batch}` where batch includes:
+  - `items` / `data` / `text` - the actual content
+  - `next_offset` - the offset to use for subsequent requests
+  - `cursor` - cursor for CDN collapsing in live mode
+  - `up_to_date` - boolean indicating if stream tail was reached
+
+  This ensures resumability metadata is always available, even for simple scripts.
   """
-  @spec read_json(t(), keyword()) :: {:ok, [term()]} | {:error, term()}
+  @spec read_json(t(), keyword()) :: {:ok, json_batch(term())} | {:error, term()}
   def read_json(stream, opts \\ [])
 
-  @spec read_bytes(t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  @spec read_bytes(t(), keyword()) :: {:ok, byte_chunk()} | {:error, term()}
   def read_bytes(stream, opts \\ [])
 
-  @spec read_text(t(), keyword()) :: {:ok, String.t()} | {:error, term()}
+  @spec read_text(t(), keyword()) :: {:ok, text_chunk()} | {:error, term()}
   def read_text(stream, opts \\ [])
 end
 ```
@@ -216,6 +230,34 @@ defmodule DurableStreams.Consumer do
 
   Manages connection lifecycle, automatic reconnection with backoff,
   and delivers messages to a callback module.
+
+  ## Delivery Semantics
+
+  The Consumer provides **at-least-once** delivery with the following guarantees:
+
+  - **Offset advancement**: The internal offset is only advanced AFTER
+    `handle_batch/2` returns `{:ok, new_state}`. If the callback crashes
+    or returns `{:stop, ...}`, the offset is NOT advanced.
+
+  - **Crash recovery**: If the Consumer process crashes mid-batch, on restart
+    it will re-fetch from the last committed offset, potentially re-delivering
+    the same batch. Design your handlers to be idempotent.
+
+  - **Ordered delivery**: Batches are delivered in offset order, one at a time.
+    A new batch is not fetched until the previous one is fully processed.
+
+  - **No overlap**: Each message is delivered exactly once per successful
+    `handle_batch/2` call. However, restarts may cause re-delivery.
+
+  ## Checkpointing
+
+  The Consumer tracks two offsets:
+
+  - `committed_offset/1` - Last successfully processed offset (safe for external persistence)
+  - `inflight_offset/1` - Offset being currently processed (may not be committed yet)
+
+  For durable checkpointing, persist `committed_offset/1` to your database and
+  pass it as the `:offset` option when restarting the Consumer.
 
   ## Callback Module
 
@@ -266,7 +308,8 @@ defmodule DurableStreams.Consumer do
     :callback_module,
     :callback_state,
     :live_mode,
-    :offset,
+    :committed_offset,    # Last successfully processed offset
+    :inflight_offset,     # Offset currently being processed
     :cursor,
     :backoff,
     :request_ref
@@ -282,10 +325,28 @@ defmodule DurableStreams.Consumer do
     GenServer.stop(consumer, reason)
   end
 
-  @doc "Get current offset (for checkpointing)"
-  def offset(consumer) do
-    GenServer.call(consumer, :get_offset)
+  @doc """
+  Get the last committed offset (safe for checkpointing).
+
+  This offset represents the last batch that was successfully processed.
+  Use this value when persisting offsets for resumption.
+  """
+  def committed_offset(consumer) do
+    GenServer.call(consumer, :get_committed_offset)
   end
+
+  @doc """
+  Get the in-flight offset (currently being processed).
+
+  This may be ahead of committed_offset if a batch is currently being processed.
+  """
+  def inflight_offset(consumer) do
+    GenServer.call(consumer, :get_inflight_offset)
+  end
+
+  @doc "Deprecated: use committed_offset/1 instead"
+  @deprecated "Use committed_offset/1 instead"
+  def offset(consumer), do: committed_offset(consumer)
 
   # GenServer callbacks
 
@@ -304,7 +365,8 @@ defmodule DurableStreams.Consumer do
           callback_module: callback_module,
           callback_state: callback_state,
           live_mode: live_mode,
-          offset: offset,
+          committed_offset: offset,
+          inflight_offset: nil,
           cursor: nil,
           backoff: :backoff.init(1_000, 30_000)
         }
@@ -475,6 +537,22 @@ defmodule DurableStreams.Broadway.Producer do
 
   Implements `Broadway.Producer` behaviour for seamless integration
   with Broadway pipelines.
+
+  ## Delivery Semantics
+
+  By default, this producer provides **at-least-once** delivery:
+  - Offset is only advanced when Broadway successfully acks a batch
+  - On crash/restart, unacked messages will be re-delivered
+  - Duplicate processing is possible; design handlers to be idempotent
+
+  Use `commit: :on_receive` for **at-most-once** delivery if duplicates
+  are worse than data loss for your use case.
+
+  ## Options
+
+  - `:commit` - When to advance offset (default: `:on_ack`)
+    - `:on_ack` - Advance after Broadway acks (at-least-once)
+    - `:on_receive` - Advance immediately on receive (at-most-once)
   """
   use GenStage
   @behaviour Broadway.Producer
@@ -484,14 +562,17 @@ defmodule DurableStreams.Broadway.Producer do
   defstruct [
     :stream,
     :live_mode,
-    :offset,
+    :commit_mode,           # :on_ack or :on_receive
+    :committed_offset,      # Last offset confirmed durable (for resumption)
+    :pending_offset,        # Offset of in-flight batch (not yet acked)
     :cursor,
     :ack_ref,
     :pending_demand,
     :buffer,
     :request_ref,
     :backoff,
-    :receive_interval
+    :receive_interval,
+    :in_flight_batches      # %{batch_id => %{next_offset: ..., count: ...}}
   ]
 
   @impl true
@@ -499,19 +580,23 @@ defmodule DurableStreams.Broadway.Producer do
     stream = Keyword.fetch!(opts, :stream)
     live_mode = Keyword.get(opts, :live, :long_poll)
     offset = Keyword.get(opts, :offset, :start)
+    commit_mode = Keyword.get(opts, :commit, :on_ack)
     receive_interval = Keyword.get(opts, :receive_interval, 5_000)
 
     state = %__MODULE__{
       stream: stream,
       live_mode: live_mode,
-      offset: offset,
+      commit_mode: commit_mode,
+      committed_offset: offset,
+      pending_offset: nil,
       cursor: nil,
       ack_ref: make_ref(),
       pending_demand: 0,
       buffer: [],
       request_ref: nil,
       backoff: :backoff.init(1_000, 30_000),
-      receive_interval: receive_interval
+      receive_interval: receive_interval,
+      in_flight_batches: %{}
     }
 
     {:producer, state}
@@ -531,24 +616,48 @@ defmodule DurableStreams.Broadway.Producer do
 
   @impl true
   def handle_info({:finch_response, _ref, {:ok, batch}}, state) do
+    batch_id = make_ref()
+
     messages = Enum.map(batch.items, fn item ->
       %Message{
         data: item,
         metadata: %{
-          offset: batch.offset,
+          batch_id: batch_id,
+          next_offset: batch.next_offset,
           cursor: batch.cursor,
           up_to_date: batch.up_to_date
         },
-        acknowledger: {__MODULE__, state.ack_ref, :ok}
+        acknowledger: {__MODULE__, state.ack_ref, %{batch_id: batch_id}}
       }
     end)
 
-    new_state = %{state |
-      offset: batch.offset,
-      cursor: batch.cursor,
-      pending_demand: max(0, state.pending_demand - length(messages)),
-      backoff: :backoff.succeed(state.backoff)
-    }
+    # Track in-flight batch for ack-based offset advancement
+    in_flight = Map.put(state.in_flight_batches, batch_id, %{
+      next_offset: batch.next_offset,
+      count: length(messages)
+    })
+
+    new_state = case state.commit_mode do
+      :on_receive ->
+        # At-most-once: advance offset immediately
+        %{state |
+          committed_offset: batch.next_offset,
+          cursor: batch.cursor,
+          pending_demand: max(0, state.pending_demand - length(messages)),
+          backoff: :backoff.succeed(state.backoff),
+          in_flight_batches: in_flight
+        }
+
+      :on_ack ->
+        # At-least-once: keep committed_offset unchanged until ack
+        %{state |
+          pending_offset: batch.next_offset,
+          cursor: batch.cursor,
+          pending_demand: max(0, state.pending_demand - length(messages)),
+          backoff: :backoff.succeed(state.backoff),
+          in_flight_batches: in_flight
+        }
+    end
 
     {:noreply, messages, new_state}
   end
@@ -571,13 +680,66 @@ defmodule DurableStreams.Broadway.Producer do
     {:noreply, [], state}
   end
 
-  # No-op acknowledger (Durable Streams tracks offset, not ack)
+  @doc """
+  Acknowledger callback - advances offset on successful ack.
+
+  For at-least-once delivery, offset is only advanced when all messages
+  in a batch are successfully processed.
+  """
   @doc false
-  def ack(_ack_ref, _successful, _failed), do: :ok
+  def ack(ack_ref, successful, failed) do
+    # Notify producer of successful/failed batches
+    # Group by batch_id and send to producer process
+    successful_batch_ids =
+      successful
+      |> Enum.map(fn %{acknowledger: {_, _, %{batch_id: id}}} -> id end)
+      |> Enum.uniq()
+
+    failed_batch_ids =
+      failed
+      |> Enum.map(fn {%{acknowledger: {_, _, %{batch_id: id}}}, _reason} -> id end)
+      |> Enum.uniq()
+
+    # Send ack info back to producer (ack_ref contains producer pid)
+    send(ack_ref, {:batch_ack, successful_batch_ids, failed_batch_ids})
+    :ok
+  end
+
+  @impl true
+  def handle_info({:batch_ack, successful_ids, _failed_ids}, state) do
+    # Only advance offset for successfully acked batches
+    new_state =
+      Enum.reduce(successful_ids, state, fn batch_id, acc ->
+        case Map.pop(acc.in_flight_batches, batch_id) do
+          {nil, _} ->
+            acc
+
+          {%{next_offset: next_offset}, remaining} ->
+            # Advance committed offset for successfully acked batch
+            %{acc |
+              committed_offset: next_offset,
+              in_flight_batches: remaining
+            }
+        end
+      end)
+
+    {:noreply, [], new_state}
+  end
+
+  @doc "Get the current committed offset (safe for checkpointing)"
+  def committed_offset(producer) do
+    GenStage.call(producer, :get_committed_offset)
+  end
+
+  @impl true
+  def handle_call(:get_committed_offset, _from, state) do
+    {:reply, state.committed_offset, [], state}
+  end
 
   defp maybe_fetch(%{pending_demand: 0} = state), do: {:noreply, [], state}
   defp maybe_fetch(%{request_ref: ref} = state) when ref != nil, do: {:noreply, [], state}
   defp maybe_fetch(state) do
+    # Use committed_offset for fetching (resumption point)
     # Initiate async HTTP request
     # Store request_ref in state
     # ...
@@ -589,7 +751,7 @@ end
 ### 5. Idempotent Producer
 
 ```elixir
-defmodule DurableStreams.IdempotentProducer do
+defmodule DurableStreams.Writer do
   @moduledoc """
   Fire-and-forget producer with exactly-once write semantics.
 
@@ -601,7 +763,7 @@ defmodule DurableStreams.IdempotentProducer do
 
   ## Example
 
-      {:ok, producer} = DurableStreams.IdempotentProducer.start_link(
+      {:ok, producer} = DurableStreams.Writer.start_link(
         stream: my_stream,
         producer_id: "order-service-1",
         epoch: 0,
@@ -609,14 +771,14 @@ defmodule DurableStreams.IdempotentProducer do
       )
 
       # Fire-and-forget (returns immediately)
-      :ok = DurableStreams.IdempotentProducer.append(producer, %{event: "created"})
-      :ok = DurableStreams.IdempotentProducer.append(producer, %{event: "updated"})
+      :ok = DurableStreams.Writer.append(producer, %{event: "created"})
+      :ok = DurableStreams.Writer.append(producer, %{event: "updated"})
 
       # Wait for all pending writes
-      :ok = DurableStreams.IdempotentProducer.flush(producer)
+      :ok = DurableStreams.Writer.flush(producer)
 
       # Graceful shutdown
-      :ok = DurableStreams.IdempotentProducer.close(producer)
+      :ok = DurableStreams.Writer.close(producer)
 
   ## Options
 
@@ -827,16 +989,22 @@ defmodule DurableStreams.Client do
 
   @doc """
   Make an HTTP request with automatic retry.
+
+  ## Status Code Handling
+
+  - **Success**: 200, 201, 204, 206 - return `{:ok, response}`
+  - **Retryable**: 429, 500, 502, 503, 504 - retry with backoff
+  - **Fatal**: 400, 401, 403, 404, 409, 410 - return typed error immediately
+
+  For 429 responses, respects `Retry-After` header if present.
   """
   @spec request(Finch.Request.t(), atom(), keyword()) ::
     {:ok, Finch.Response.t()} | {:error, term()}
   def request(req, finch_name \\ DurableStreams.Finch, opts \\ []) do
-    backoff_opts = Keyword.get(opts, :backoff, [])
-    max_retries = Keyword.get(backoff_opts, :max_retries, 5)
-    base_delay = Keyword.get(backoff_opts, :base_delay, 100)
-    max_delay = Keyword.get(backoff_opts, :max_delay, 10_000)
+    backoff = Keyword.get(opts, :backoff, :backoff.init(100, 10_000))
+    max_retries = Keyword.get(opts, :max_retries, 5)
 
-    do_request_with_retry(req, finch_name, 0, max_retries, base_delay, max_delay)
+    do_request_with_retry(req, finch_name, backoff, 0, max_retries)
   end
 
   @doc """
@@ -858,7 +1026,12 @@ defmodule DurableStreams.Client do
     end)
   end
 
-  defp do_request_with_retry(req, finch_name, attempt, max_retries, base_delay, max_delay) do
+  # Status code classification
+  defp success_status?(status), do: status in [200, 201, 204, 206]
+  defp retryable_status?(status), do: status in [429, 500, 502, 503, 504]
+  defp fatal_status?(status), do: status in [400, 401, 403, 404, 409, 410]
+
+  defp do_request_with_retry(req, finch_name, backoff, attempt, max_retries) do
     start_time = System.monotonic_time()
 
     :telemetry.execute(
@@ -868,41 +1041,102 @@ defmodule DurableStreams.Client do
     )
 
     case Finch.request(req, finch_name) do
-      {:ok, %{status: status} = resp} when status < 500 ->
-        duration = System.monotonic_time() - start_time
-        :telemetry.execute(
-          [:durable_streams, :request, :stop],
-          %{duration: duration},
-          %{method: req.method, url: req.path, status: status}
-        )
+      {:ok, %{status: status} = resp} when success_status?(status) ->
+        emit_stop(start_time, req, status)
         {:ok, resp}
 
-      {:ok, %{status: status} = resp} when attempt < max_retries ->
-        # 5xx - retry with backoff
-        delay = calculate_delay(attempt, base_delay, max_delay)
+      {:ok, %{status: 429} = resp} when attempt < max_retries ->
+        # Rate limited - respect Retry-After header
+        emit_stop(start_time, req, 429)
+        delay = get_retry_after(resp) || calculate_backoff_delay(backoff)
         Process.sleep(delay)
-        do_request_with_retry(req, finch_name, attempt + 1, max_retries, base_delay, max_delay)
+        {_, new_backoff} = :backoff.fail(backoff)
+        do_request_with_retry(req, finch_name, new_backoff, attempt + 1, max_retries)
 
-      {:ok, resp} ->
-        {:error, {:server_error, resp.status, resp.body}}
+      {:ok, %{status: 429} = resp} ->
+        # Rate limited - max retries exceeded
+        emit_stop(start_time, req, 429)
+        retry_after = get_retry_after(resp)
+        {:error, %DurableStreams.Error.RateLimited{url: req.path, retry_after: retry_after}}
+
+      {:ok, %{status: 410} = resp} ->
+        # Gone - data compacted/expired
+        emit_stop(start_time, req, 410)
+        earliest = get_header(resp, "stream-earliest-offset")
+        {:error, %DurableStreams.Error.Gone{
+          url: req.path,
+          requested_offset: nil, # caller should fill this in
+          earliest_offset: earliest
+        }}
+
+      {:ok, %{status: status} = resp} when retryable_status?(status) and attempt < max_retries ->
+        # 5xx - retry with backoff
+        emit_stop(start_time, req, status)
+        {delay, new_backoff} = :backoff.fail(backoff)
+        Process.sleep(delay)
+        do_request_with_retry(req, finch_name, new_backoff, attempt + 1, max_retries)
+
+      {:ok, %{status: status} = resp} when fatal_status?(status) ->
+        # Fatal error - don't retry
+        emit_stop(start_time, req, status)
+        {:error, classify_error(status, req.path, resp)}
+
+      {:ok, %{status: status} = resp} ->
+        # Unexpected status or max retries exceeded
+        emit_stop(start_time, req, status)
+        {:error, %DurableStreams.Error.ServerError{url: req.path, status: status, body: resp.body}}
 
       {:error, reason} when attempt < max_retries ->
         # Network error - retry with backoff
-        delay = calculate_delay(attempt, base_delay, max_delay)
+        {delay, new_backoff} = :backoff.fail(backoff)
         Process.sleep(delay)
-        do_request_with_retry(req, finch_name, attempt + 1, max_retries, base_delay, max_delay)
+        do_request_with_retry(req, finch_name, new_backoff, attempt + 1, max_retries)
 
       {:error, reason} ->
         {:error, reason}
     end
   end
 
-  defp calculate_delay(attempt, base_delay, max_delay) do
-    # Exponential backoff with jitter
-    delay = base_delay * :math.pow(2, attempt) |> round()
-    jitter = :rand.uniform(div(delay, 4))
-    min(delay + jitter, max_delay)
+  defp emit_stop(start_time, req, status) do
+    duration = System.monotonic_time() - start_time
+    :telemetry.execute(
+      [:durable_streams, :request, :stop],
+      %{duration: duration},
+      %{method: req.method, url: req.path, status: status}
+    )
   end
+
+  defp get_retry_after(resp) do
+    case get_header(resp, "retry-after") do
+      nil -> nil
+      value -> parse_retry_after(value)
+    end
+  end
+
+  defp parse_retry_after(value) do
+    case Integer.parse(value) do
+      {seconds, ""} -> seconds * 1000  # Convert to ms
+      _ -> nil  # Could be HTTP-date, fall back to backoff
+    end
+  end
+
+  defp get_header(%{headers: headers}, name) do
+    Enum.find_value(headers, fn {k, v} ->
+      if String.downcase(k) == name, do: v
+    end)
+  end
+
+  defp calculate_backoff_delay(backoff) do
+    {delay, _} = :backoff.fail(backoff)
+    delay
+  end
+
+  defp classify_error(400, url, resp), do: %DurableStreams.Error.BadRequest{url: url, details: resp.body}
+  defp classify_error(401, url, _resp), do: %DurableStreams.Error.Unauthorized{url: url}
+  defp classify_error(403, url, _resp), do: %DurableStreams.Error.Forbidden{url: url}
+  defp classify_error(404, url, _resp), do: %DurableStreams.Error.NotFound{url: url}
+  defp classify_error(409, url, resp), do: %DurableStreams.Error.Conflict{url: url, reason: resp.body}
+  defp classify_error(status, url, resp), do: %DurableStreams.Error.ServerError{url: url, status: status, body: resp.body}
 end
 ```
 
@@ -918,6 +1152,16 @@ defmodule DurableStreams.SSE do
   Parses the SSE format with support for:
   - `data` events containing JSON payloads
   - `control` events with offset and cursor metadata
+
+  ## Error Handling
+
+  JSON parse errors are returned as `{:error, {:bad_json, raw_data}}`
+  rather than crashing, allowing callers to decide how to handle malformed data.
+
+  ## Line Ending Support
+
+  Handles both LF (`\\n`) and CRLF (`\\r\\n`) line endings for compatibility
+  with various server implementations.
   """
 
   defstruct [:buffer, :current_event, :current_data]
@@ -930,7 +1174,8 @@ defmodule DurableStreams.SSE do
 
   @type event ::
     {:data, term()} |
-    {:control, %{stream_next_offset: String.t(), stream_cursor: String.t()}}
+    {:control, %{stream_next_offset: String.t(), stream_cursor: String.t()}} |
+    {:error, {:bad_json, String.t()}}
 
   @doc "Create a new SSE parser state"
   @spec new() :: t()
@@ -944,6 +1189,9 @@ defmodule DurableStreams.SSE do
 
   @doc """
   Parse SSE data chunk, returns events and updated state.
+
+  Returns `{events, new_state}` where events may include error tuples
+  for malformed JSON data.
   """
   @spec parse(t(), binary()) :: {[event()], t()}
   def parse(state, chunk) do
@@ -952,8 +1200,12 @@ defmodule DurableStreams.SSE do
   end
 
   defp parse_lines(buffer, event, data, events) do
+    # Split on LF, handling CRLF by trimming CR from line ends
     case String.split(buffer, "\n", parts: 2) do
       [line, rest] ->
+        # Trim trailing CR for CRLF compatibility
+        line = String.trim_trailing(line, "\r")
+
         case parse_line(line) do
           {:event, event_type} ->
             parse_lines(rest, event_type, [], events)
@@ -985,6 +1237,7 @@ defmodule DurableStreams.SSE do
   end
 
   defp parse_line("event: " <> event_type), do: {:event, String.trim(event_type)}
+  defp parse_line("event:" <> event_type), do: {:event, String.trim(event_type)}
   defp parse_line("data: " <> data), do: {:data, data}
   defp parse_line("data:" <> data), do: {:data, data}
   defp parse_line(""), do: :empty
@@ -993,17 +1246,32 @@ defmodule DurableStreams.SSE do
 
   defp finalize_event("data", data_lines) do
     json = Enum.join(data_lines, "\n")
-    {:data, Jason.decode!(json)}
+
+    case Jason.decode(json) do
+      {:ok, decoded} ->
+        {:data, decoded}
+
+      {:error, _reason} ->
+        # Return error tuple instead of crashing - let caller decide
+        {:error, {:bad_json, json}}
+    end
   end
 
   defp finalize_event("control", data_lines) do
     json = Enum.join(data_lines, "\n")
-    control = Jason.decode!(json)
-    {:control, %{
-      stream_next_offset: control["streamNextOffset"],
-      stream_cursor: control["streamCursor"],
-      up_to_date: control["upToDate"] || false
-    }}
+
+    case Jason.decode(json) do
+      {:ok, control} ->
+        {:control, %{
+          stream_next_offset: control["streamNextOffset"],
+          stream_cursor: control["streamCursor"],
+          up_to_date: control["upToDate"] || false
+        }}
+
+      {:error, _reason} ->
+        # Control events are critical - return error
+        {:error, {:bad_control_json, json}}
+    end
   end
 end
 ```
@@ -1016,9 +1284,18 @@ end
 defmodule DurableStreams.Error do
   @moduledoc """
   Error types for Durable Streams operations.
+
+  ## Error Classification
+
+  Errors are classified by recoverability:
+
+  - **Retryable**: Network errors, 429, 500, 503 - retry with backoff
+  - **Fatal**: 400, 401, 403, 404, 409, 410 - do not retry automatically
+  - **Recoverable**: 410 Gone - can recover by jumping to earliest offset
   """
 
   defmodule NotFound do
+    @moduledoc "Stream does not exist (404)"
     defexception [:url, :message]
 
     @impl true
@@ -1027,7 +1304,29 @@ defmodule DurableStreams.Error do
     end
   end
 
+  defmodule Gone do
+    @moduledoc """
+    Requested offset is before earliest retained position (410).
+
+    This occurs when:
+    - Data has been compacted/expired due to retention policy
+    - Offset refers to data that no longer exists
+
+    The `earliest_offset` field indicates where valid data begins.
+    Clients can either:
+    - Fail hard (data loss is unacceptable)
+    - Jump to earliest_offset and continue (acceptable for ephemeral streams)
+    """
+    defexception [:url, :requested_offset, :earliest_offset, :message]
+
+    @impl true
+    def message(%{url: url, requested_offset: req, earliest_offset: earliest}) do
+      "Offset #{req} is gone on #{url}. Earliest available: #{earliest}"
+    end
+  end
+
   defmodule Conflict do
+    @moduledoc "Conflict with existing state (409)"
     defexception [:url, :reason, :message]
 
     @impl true
@@ -1037,6 +1336,7 @@ defmodule DurableStreams.Error do
   end
 
   defmodule StaleEpoch do
+    @moduledoc "Producer epoch is stale - fenced by newer producer (403)"
     defexception [:current_epoch, :message]
 
     @impl true
@@ -1046,6 +1346,7 @@ defmodule DurableStreams.Error do
   end
 
   defmodule SequenceGap do
+    @moduledoc "Sequence number gap detected (409)"
     defexception [:expected_seq, :received_seq, :message]
 
     @impl true
@@ -1055,15 +1356,38 @@ defmodule DurableStreams.Error do
   end
 
   defmodule BadRequest do
+    @moduledoc "Malformed request (400)"
     defexception [:url, :details, :message]
   end
 
   defmodule RateLimited do
+    @moduledoc """
+    Rate limit exceeded (429).
+
+    The `retry_after` field contains the server-suggested wait time in seconds.
+    Clients should wait at least this long before retrying.
+    """
     defexception [:url, :retry_after, :message]
+
+    @impl true
+    def message(%{url: url, retry_after: retry_after}) do
+      "Rate limited on #{url}. Retry after: #{retry_after}s"
+    end
   end
 
   defmodule ServerError do
+    @moduledoc "Server error (5xx) - typically retryable"
     defexception [:url, :status, :body, :message]
+  end
+
+  defmodule Unauthorized do
+    @moduledoc "Authentication required or invalid (401)"
+    defexception [:url, :message]
+  end
+
+  defmodule Forbidden do
+    @moduledoc "Access denied (403)"
+    defexception [:url, :message]
   end
 end
 ```
@@ -1208,8 +1532,9 @@ defmodule MyEventConsumer do
       process_event(item)
     end
 
-    # Checkpoint offset for resumability
-    save_offset(batch.offset)
+    # Checkpoint next_offset for resumability
+    # Note: Only save AFTER handle_batch returns {:ok, ...}
+    save_offset(batch.next_offset)
 
     {:ok, %{state | processed: state.processed + length(batch.items)}}
   end
@@ -1304,7 +1629,7 @@ end
 
 ```elixir
 # Start producer with auto-claim for serverless
-{:ok, producer} = DurableStreams.IdempotentProducer.start_link(
+{:ok, producer} = DurableStreams.Writer.start_link(
   stream: stream,
   producer_id: "order-processor-#{node()}",
   epoch: 0,
@@ -1318,13 +1643,13 @@ end
 )
 
 # Fire-and-forget writes (returns immediately)
-:ok = DurableStreams.IdempotentProducer.append(producer, %{order_id: 1, status: "created"})
-:ok = DurableStreams.IdempotentProducer.append(producer, %{order_id: 1, status: "paid"})
-:ok = DurableStreams.IdempotentProducer.append(producer, %{order_id: 1, status: "shipped"})
+:ok = DurableStreams.Writer.append(producer, %{order_id: 1, status: "created"})
+:ok = DurableStreams.Writer.append(producer, %{order_id: 1, status: "paid"})
+:ok = DurableStreams.Writer.append(producer, %{order_id: 1, status: "shipped"})
 
 # Ensure delivery before shutdown
-:ok = DurableStreams.IdempotentProducer.flush(producer)
-:ok = DurableStreams.IdempotentProducer.close(producer)
+:ok = DurableStreams.Writer.flush(producer)
+:ok = DurableStreams.Writer.close(producer)
 ```
 
 ### Streaming with Enumerable
@@ -1361,8 +1686,8 @@ Application
 │   ├── Consumer (stream B)
 │   └── ...
 ├── ProducerSupervisor (DynamicSupervisor)
-│   ├── IdempotentProducer (stream X)
-│   ├── IdempotentProducer (stream Y)
+│   ├── Writer (stream X)
+│   ├── Writer (stream Y)
 │   └── ...
 └── Broadway pipelines (if using Broadway)
     ├── MyBroadway.Broadway
@@ -1437,12 +1762,13 @@ end
 - **Concurrency**: Configurable processor/batcher concurrency
 - **Acknowledgements**: Broadway handles message lifecycle
 
-### Why Separate Idempotent Producer?
+### Why Separate Writer Module?
 
 - **Fire-and-forget**: Different use case from request/response
 - **Batching complexity**: Requires internal buffering and pipelining
 - **Sequence coordination**: 409 retry handling needs dedicated state
-- **Epoch management**: Restart/claim logic is producer-specific
+- **Epoch management**: Restart/claim logic is writer-specific
+- **Naming clarity**: "Producer" in Elixir/OTP means GenStage read-side; "Writer" clearly indicates write-side
 
 ---
 
