@@ -217,20 +217,24 @@ impl IdempotentProducer {
 
     /// Flush all pending data and wait for acknowledgment.
     pub async fn flush(&self) -> Result<(), ProducerError> {
-        // Send any pending batch first
-        {
-            let mut state = self.state.lock();
-            if !state.pending_batch.is_empty() {
-                self.send_batch_locked(&mut state);
-            }
-        }
-
-        // Spin-wait with yields for in-flight to complete
-        // This is much faster than sleeping 10ms
+        // Keep sending batches until everything is flushed
         loop {
-            if self.in_flight.load(Ordering::Acquire) == 0 {
+            let has_pending = {
+                let mut state = self.state.lock();
+                if !state.pending_batch.is_empty() {
+                    self.send_batch_locked(&mut state);
+                }
+                !state.pending_batch.is_empty()
+            };
+
+            let in_flight = self.in_flight.load(Ordering::Acquire);
+
+            // Done when no pending data and nothing in flight
+            if !has_pending && in_flight == 0 {
                 break;
             }
+
+            // Yield to let in-flight requests complete
             tokio::task::yield_now().await;
         }
 
