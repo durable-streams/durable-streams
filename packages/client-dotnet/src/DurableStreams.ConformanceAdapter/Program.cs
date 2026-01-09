@@ -743,26 +743,33 @@ async Task BenchmarkRoundtrip(JsonElement op)
     {
         "long-poll" => LiveMode.LongPoll,
         "sse" => LiveMode.Sse,
-        _ => LiveMode.Off
+        _ => LiveMode.LongPoll
     };
 
     var stream = client!.GetStream(path);
     stream.ContentType = contentType;
 
-    // Start read first
-    await using var response = await stream.StreamAsync(new StreamOptions
-    {
-        Offset = Offset.Now,
-        Live = live
-    });
+    // Append first
+    var result = await stream.AppendAsync(data);
 
-    // Then append
-    await stream.AppendAsync(data);
-
-    // Wait for data
-    await foreach (var chunk in response.ReadBytesAsync())
+    // Calculate offset before our append
+    var nextOffsetStr = result.NextOffset?.ToString() ?? "0";
+    if (int.TryParse(nextOffsetStr, out var nextOffsetInt))
     {
-        if (chunk.Data.Length > 0) break;
+        var prevOffset = (nextOffsetInt - size).ToString();
+
+        // Read from that offset
+        await using var response = await stream.StreamAsync(new StreamOptions
+        {
+            Offset = new Offset(prevOffset),
+            Live = live
+        });
+
+        // Wait for data
+        await foreach (var chunk in response.ReadBytesAsync())
+        {
+            if (chunk.Data.Length > 0) break;
+        }
     }
 }
 
