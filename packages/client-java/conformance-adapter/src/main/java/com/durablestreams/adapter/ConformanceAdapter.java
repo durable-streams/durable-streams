@@ -595,62 +595,130 @@ public class ConformanceAdapter {
         return result;
     }
 
+    @SuppressWarnings("unchecked")
     private static Map<String, Object> handleBenchmark(Map<String, Object> cmd) {
-        String path = (String) cmd.get("path");
-        String operation = (String) cmd.get("operation");
-        Number iterationsNum = (Number) cmd.get("iterations");
-        int iterations = iterationsNum != null ? iterationsNum.intValue() : 1000;
-        Number warmupNum = (Number) cmd.get("warmup");
-        int warmup = warmupNum != null ? warmupNum.intValue() : 100;
+        String iterationId = (String) cmd.get("iterationId");
+        Map<String, Object> operation = (Map<String, Object>) cmd.get("operation");
+        String op = (String) operation.get("op");
+        String path = (String) operation.get("path");
 
         try {
-            Stream stream = client.stream(serverUrl + path);
-
-            // Warmup
-            for (int i = 0; i < warmup; i++) {
-                runBenchmarkOp(stream, operation, i);
-            }
-
-            // Benchmark
             long startTime = System.nanoTime();
-            for (int i = 0; i < iterations; i++) {
-                runBenchmarkOp(stream, operation, i);
-            }
-            long endTime = System.nanoTime();
+            Map<String, Object> metrics = new LinkedHashMap<>();
 
-            double durationMs = (endTime - startTime) / 1_000_000.0;
-            double opsPerSec = iterations / (durationMs / 1000.0);
+            switch (op) {
+                case "append": {
+                    Number sizeNum = (Number) operation.get("size");
+                    int size = sizeNum != null ? sizeNum.intValue() : 100;
+                    Stream stream = client.stream(serverUrl + path);
+                    byte[] payload = new byte[size];
+                    java.util.Arrays.fill(payload, (byte) 42);
+                    stream.append(payload);
+                    metrics.put("bytesTransferred", size);
+                    break;
+                }
+                case "read": {
+                    String offset = (String) operation.get("offset");
+                    Stream stream = client.stream(serverUrl + path);
+                    int totalBytes = 0;
+                    try (ChunkIterator it = stream.read(offset != null ? Offset.of(offset) : Offset.BEGINNING)) {
+                        while (it.hasNext()) {
+                            Chunk chunk = it.next();
+                            totalBytes += chunk.getData().length;
+                        }
+                    }
+                    metrics.put("bytesTransferred", totalBytes);
+                    break;
+                }
+                case "roundtrip": {
+                    Number sizeNum = (Number) operation.get("size");
+                    int size = sizeNum != null ? sizeNum.intValue() : 100;
+                    String contentType = (String) operation.get("contentType");
+                    String liveMode = (String) operation.get("live");
+
+                    Stream stream = client.stream(serverUrl + path);
+                    try {
+                        stream.create(contentType != null ? contentType : "application/octet-stream");
+                    } catch (StreamExistsException ignored) {}
+
+                    byte[] payload = new byte[size];
+                    java.util.Arrays.fill(payload, (byte) 42);
+                    stream.append(payload);
+
+                    // Read back via long-poll
+                    LiveMode mode = "sse".equals(liveMode) ? LiveMode.SSE : LiveMode.LONG_POLL;
+                    int readBytes = 0;
+                    try (ChunkIterator it = stream.read(Offset.BEGINNING, mode, Duration.ofSeconds(5), null)) {
+                        Chunk chunk = it.poll(Duration.ofSeconds(5));
+                        if (chunk != null) {
+                            readBytes = chunk.getData().length;
+                        }
+                    }
+                    metrics.put("bytesTransferred", size + readBytes);
+                    break;
+                }
+                case "create": {
+                    String contentType = (String) operation.get("contentType");
+                    Stream stream = client.stream(serverUrl + path);
+                    try {
+                        stream.create(contentType != null ? contentType : "application/octet-stream");
+                    } catch (StreamExistsException ignored) {}
+                    break;
+                }
+                case "throughput_append": {
+                    Number sizeNum = (Number) operation.get("size");
+                    Number countNum = (Number) operation.get("count");
+                    int size = sizeNum != null ? sizeNum.intValue() : 100;
+                    int count = countNum != null ? countNum.intValue() : 1000;
+
+                    Stream stream = client.stream(serverUrl + path);
+                    try {
+                        stream.create("application/octet-stream");
+                    } catch (StreamExistsException ignored) {}
+
+                    byte[] payload = new byte[size];
+                    java.util.Arrays.fill(payload, (byte) 42);
+
+                    for (int i = 0; i < count; i++) {
+                        stream.append(payload);
+                    }
+
+                    metrics.put("bytesTransferred", count * size);
+                    metrics.put("messagesProcessed", count);
+                    break;
+                }
+                case "throughput_read": {
+                    Stream stream = client.stream(serverUrl + path);
+                    int totalBytes = 0;
+                    int msgCount = 0;
+                    try (ChunkIterator it = stream.read(Offset.BEGINNING)) {
+                        while (it.hasNext()) {
+                            Chunk chunk = it.next();
+                            totalBytes += chunk.getData().length;
+                            msgCount++;
+                        }
+                    }
+                    metrics.put("bytesTransferred", totalBytes);
+                    metrics.put("messagesProcessed", msgCount);
+                    break;
+                }
+                default:
+                    return errorResult("benchmark", "NOT_SUPPORTED", "Unknown benchmark operation: " + op, 400);
+            }
+
+            long endTime = System.nanoTime();
+            long durationNs = endTime - startTime;
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "benchmark");
             result.put("success", true);
-            result.put("iterations", iterations);
-            result.put("durationMs", durationMs);
-            result.put("opsPerSec", opsPerSec);
+            result.put("iterationId", iterationId);
+            result.put("durationNs", String.valueOf(durationNs));
+            result.put("metrics", metrics);
             return result;
         } catch (DurableStreamException e) {
             return errorResult("benchmark", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
-        }
-    }
-
-    private static void runBenchmarkOp(Stream stream, String operation, int i) throws DurableStreamException {
-        switch (operation) {
-            case "append":
-                stream.append(("{\"i\":" + i + "}").getBytes());
-                break;
-            case "head":
-                stream.head();
-                break;
-            case "read":
-                try (ChunkIterator it = stream.read(Offset.BEGINNING)) {
-                    while (it.hasNext()) {
-                        it.next();
-                    }
-                }
-                break;
-            default:
-                throw new DurableStreamException("Unknown benchmark operation: " + operation);
         }
     }
 
