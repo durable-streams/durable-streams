@@ -25,6 +25,11 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
       - name: Install dependencies
         run: pnpm install
 
@@ -36,6 +41,11 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Build Java client adapter
+        run: |
+          cd packages/client-java
+          gradle build
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -45,6 +55,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run Java client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-java/run-conformance-adapter.sh
 
   benchmarks:
     name: Client Benchmarks
@@ -67,6 +82,11 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 11
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
@@ -83,6 +103,11 @@ jobs:
         run: |
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Build Java client adapter
+        run: |
+          cd packages/client-java
+          gradle build
 
       - name: Install Python client
         run: |

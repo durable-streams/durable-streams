@@ -1,0 +1,3 @@
+rootProject.name = 'durable-streams-java'
+
+include 'conformance-adapter'
