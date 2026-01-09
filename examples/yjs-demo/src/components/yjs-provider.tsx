@@ -169,6 +169,7 @@ export function YjsRoomProvider({
         url: presenceStreamUrl,
         protocol: awareness,
       },
+      liveMode: `long-poll`,
       connect: false, // We'll connect manually after setting up listeners
     })
 
