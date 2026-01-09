@@ -183,30 +183,32 @@ module DurableStreams
   class Stream
     attr_reader :url, :content_type
 
-    # @param url [String] Stream URL
+    # @param url [String] Stream URL (keyword for public API consistency)
     # @param headers [Hash, Proc] Request headers
     # @param params [Hash, Proc] Query parameters
     # @param content_type [String] Content type for the stream
     # @param client [Client, nil] Parent client (optional)
     # @param batching [Boolean] Enable write batching (default: true)
     # @param on_error [Proc] Error handler callback
-    def initialize(url, headers: {}, params: {}, content_type: nil,
+    def initialize(url:, headers: {}, params: {}, content_type: nil,
                    client: nil, batching: true, on_error: nil)
     end
 
     # --- Factory Methods (Class-level) ---
 
     # Create and verify stream exists
-    def self.connect(url, **options)
-      new(url, **options).tap(&:head)
+    # @param url [String] Stream URL (keyword argument for consistency)
+    def self.connect(url:, **options)
+      new(url: url, **options).tap(&:head)
     end
 
     # Create new stream on server
-    def self.create(url, content_type:, ttl_seconds: nil,
+    # @param url [String] Stream URL (keyword argument for consistency)
+    def self.create(url:, content_type:, ttl_seconds: nil,
                     expires_at: nil, body: nil, **options)
-      new(url, content_type: content_type, **options).tap do |s|
-        s.create_stream(content_type: content_type, ttl_seconds: ttl_seconds,
-                        expires_at: expires_at, body: body)
+      new(url: url, content_type: content_type, **options).tap do |s|
+        s.create(content_type: content_type, ttl_seconds: ttl_seconds,
+                 expires_at: expires_at, body: body)
       end
     end
 
@@ -218,8 +220,9 @@ module DurableStreams
     end
 
     # Create stream on server (PUT)
-    def create_stream(content_type: nil, ttl_seconds: nil,
-                      expires_at: nil, body: nil)
+    # Note: Named `create` to match Client#create and Stream.create factory
+    def create(content_type: nil, ttl_seconds: nil,
+               expires_at: nil, body: nil)
     end
 
     # Delete stream (DELETE)
@@ -278,50 +281,63 @@ module DurableStreams
 end
 ```
 
-### 4. StreamReader Class (Enumerable Iterator)
+### 4. StreamReader Classes (JSON vs Bytes)
 
-The key Ruby-idiomatic feature - an `Enumerable` reader:
+The protocol has distinct JSON mode (preserved message boundaries) and byte mode.
+We expose this explicitly with separate reader classes to avoid type confusion:
 
 ```ruby
 module DurableStreams
-  class StreamReader
-    include Enumerable
+  # Base reader with shared functionality
+  class BaseReader
+    attr_reader :next_offset, :cursor, :up_to_date
 
-    attr_reader :offset, :cursor, :up_to_date
-
-    # @param stream [Stream] Parent stream handle
-    # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode
     def initialize(stream, offset: "-1", live: :auto)
+      @stream = stream
+      @offset = offset
+      @live = live
+      @next_offset = offset
+      @up_to_date = false
+      @closed = false
     end
 
-    # --- Enumerable Interface ---
+    # Cancel/close the reader
+    def close
+      @closed = true
+    end
 
-    # Iterate over messages/batches
-    # For JSON streams: yields individual parsed objects
-    # For byte streams: yields ByteChunk objects
-    # @yield [Object] Each message
+    def closed?
+      @closed
+    end
+  end
+
+  # Reader for JSON streams - yields parsed Ruby objects
+  class JsonReader < BaseReader
+    include Enumerable
+
+    # Iterate over individual JSON messages
+    # @yield [Object] Each parsed JSON message
     def each(&block)
       return enum_for(:each) unless block_given?
 
-      loop do
-        batch = fetch_next_batch
-        break if batch.nil?
-
+      each_batch do |batch|
         batch.items.each(&block)
-
-        break if @live == false && @up_to_date
       end
     end
 
     # Iterate over batches with metadata
-    # @yield [Batch] Each batch with offset, cursor, up_to_date
+    # @yield [JsonBatch] Each batch with items, next_offset, cursor, up_to_date
     def each_batch(&block)
       return enum_for(:each_batch) unless block_given?
 
       loop do
-        batch = fetch_next_batch
+        break if @closed
+        batch = fetch_next_json_batch
         break if batch.nil?
+
+        @next_offset = batch.next_offset
+        @cursor = batch.cursor
+        @up_to_date = batch.up_to_date
 
         yield batch
 
@@ -329,9 +345,7 @@ module DurableStreams
       end
     end
 
-    # --- Accumulating Methods ---
-
-    # Collect all messages until up_to_date (for catch-up)
+    # Collect all messages until up_to_date
     # @return [Array]
     def to_a
       result = []
@@ -340,11 +354,42 @@ module DurableStreams
     end
     alias_method :messages, :to_a
 
-    # Get raw bytes (for byte streams)
+    private
+
+    def fetch_next_json_batch
+      # HTTP fetch, parse JSON array, return JsonBatch
+    end
+  end
+
+  # Reader for byte streams - yields raw chunks
+  class ByteReader < BaseReader
+    include Enumerable
+
+    # Iterate over byte chunks
+    # @yield [ByteChunk] Each chunk with data, next_offset, cursor, up_to_date
+    def each(&block)
+      return enum_for(:each) unless block_given?
+
+      loop do
+        break if @closed
+        chunk = fetch_next_chunk
+        break if chunk.nil?
+
+        @next_offset = chunk.next_offset
+        @cursor = chunk.cursor
+        @up_to_date = chunk.up_to_date
+
+        yield chunk
+
+        break if @live == false && @up_to_date
+      end
+    end
+
+    # Accumulate all bytes until up_to_date
     # @return [String]
     def body
       chunks = []
-      each_batch { |batch| chunks << batch.data }
+      each { |chunk| chunks << chunk.data }
       chunks.join
     end
 
@@ -354,20 +399,54 @@ module DurableStreams
       body.encode('UTF-8')
     end
 
-    # --- Lifecycle ---
-
-    # Cancel/close the reader
-    def close
-    end
-
-    # Check if reader is closed
-    def closed?
-    end
-
     private
 
-    def fetch_next_batch
-      # HTTP fetch with appropriate mode (catch-up, long-poll, SSE)
+    def fetch_next_chunk
+      # HTTP fetch, return ByteChunk
+    end
+  end
+end
+```
+
+The `Stream` class provides convenience methods that return the appropriate reader:
+
+```ruby
+class Stream
+  # Read JSON messages (for application/json streams)
+  # @return [JsonReader]
+  def read_json(offset: "-1", live: :auto, &block)
+    reader = JsonReader.new(self, offset: offset, live: live)
+    block_with_cleanup(reader, &block)
+  end
+
+  # Read raw bytes (for non-JSON streams)
+  # @return [ByteReader]
+  def read_bytes(offset: "-1", live: :auto, &block)
+    reader = ByteReader.new(self, offset: offset, live: live)
+    block_with_cleanup(reader, &block)
+  end
+
+  # Auto-select reader based on content_type (convenience method)
+  # @return [JsonReader, ByteReader]
+  def read(offset: "-1", live: :auto, &block)
+    if content_type&.include?('application/json')
+      read_json(offset: offset, live: live, &block)
+    else
+      read_bytes(offset: offset, live: live, &block)
+    end
+  end
+
+  private
+
+  def block_with_cleanup(reader, &block)
+    if block_given?
+      begin
+        yield reader
+      ensure
+        reader.close
+      end
+    else
+      reader
     end
   end
 end
@@ -399,9 +478,9 @@ enum.each { |m| puts m }
 reader.close
 
 # Pattern 5: Batch iteration for bulk processing
-stream.read(live: false).each_batch do |batch|
+stream.read_json(live: false).each_batch do |batch|
   bulk_insert(batch.items)
-  save_checkpoint(batch.offset)
+  save_checkpoint(batch.next_offset)  # Use next_offset for checkpointing
 end
 
 # Pattern 6: Block form with automatic cleanup
@@ -488,23 +567,31 @@ producer.close
 
 ### 6. Data Types
 
+Field naming follows the protocol header `Stream-Next-Offset` and Go client convention:
+
 ```ruby
 module DurableStreams
   # Result from HEAD request
-  HeadResult = Data.define(:exists, :content_type, :offset, :etag, :cache_control)
+  # next_offset: The tail offset (position after last byte, where next append goes)
+  HeadResult = Data.define(:exists, :content_type, :next_offset, :etag, :cache_control)
 
   # Result from append
-  AppendResult = Data.define(:offset, :duplicate) do
+  # next_offset: The new tail offset after this append (for checkpointing)
+  AppendResult = Data.define(:next_offset, :duplicate) do
     def duplicate? = duplicate
   end
 
-  # A batch of messages with metadata
-  Batch = Data.define(:items, :offset, :cursor, :up_to_date) do
+  # A batch of JSON messages with metadata
+  # next_offset: Position to resume from (pass to next read)
+  JsonBatch = Data.define(:items, :next_offset, :cursor, :up_to_date) do
     def up_to_date? = up_to_date
   end
 
   # A byte chunk (for non-JSON streams)
-  ByteChunk = Data.define(:data, :offset, :cursor, :up_to_date)
+  # next_offset: Position to resume from (pass to next read)
+  ByteChunk = Data.define(:data, :next_offset, :cursor, :up_to_date) do
+    def up_to_date? = up_to_date
+  end
 
   # Retry policy configuration
   RetryPolicy = Data.define(
@@ -640,36 +727,90 @@ gem 'httpx'
 
 ### SSE Implementation
 
+**Production Requirements:** A production SSE parser must handle:
+- Both `\n\n` and `\r\n\r\n` event delimiters (and mixed newlines)
+- Comment lines starting with `:`
+- Empty `data:` lines
+- Large event payloads without O(n²) buffer growth
+- Connection drop + automatic reconnect with exponential backoff
+- Cursor/offset resumption on reconnect (critical for Durable Streams)
+
+The sketch below is **simplified for illustration**. For production, consider:
+- Using `ld-eventsource` gem (LaunchDarkly's mature SSE client)
+- Or implementing full [W3C SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html)
+
 ```ruby
 module DurableStreams
   class SSEReader
-    def initialize(url, headers:, params:)
+    def initialize(url, headers:, params:, retry_policy: RetryPolicy.default)
       @url = url
       @headers = headers
       @params = params
+      @retry_policy = retry_policy
       @buffer = ""
+      @last_offset = nil  # For reconnection
+      @last_cursor = nil
     end
 
     def each_event
       return enum_for(:each_event) unless block_given?
 
-      open_connection do |response|
-        response.body.each do |chunk|
-          @buffer << chunk
-          parse_events.each { |event| yield event }
+      with_reconnection do
+        open_connection do |response|
+          response.body.each do |chunk|
+            @buffer << chunk
+            parse_events.each do |event|
+              # Track offset/cursor from control events for reconnection
+              if event[:type] == 'control'
+                control = JSON.parse(event[:data])
+                @last_offset = control['streamNextOffset']
+                @last_cursor = control['streamCursor']
+              end
+              yield event
+            end
+          end
         end
       end
     end
 
     private
 
+    def with_reconnection
+      attempts = 0
+      begin
+        yield
+      rescue IOError, Errno::ECONNRESET, Net::ReadTimeout => e
+        attempts += 1
+        raise if attempts > @retry_policy.max_retries
+
+        delay = [@retry_policy.initial_delay * (@retry_policy.multiplier ** attempts),
+                 @retry_policy.max_delay].min
+        sleep(delay)
+        @buffer = ""  # Clear buffer on reconnect
+        retry
+      end
+    end
+
+    def build_reconnect_url
+      # On reconnect, use last known offset and cursor
+      uri = URI.parse(@url)
+      params = URI.decode_www_form(uri.query || "").to_h
+      params['offset'] = @last_offset if @last_offset
+      params['cursor'] = @last_cursor if @last_cursor
+      uri.query = URI.encode_www_form(params)
+      uri.to_s
+    end
+
     def parse_events
       events = []
-      while (idx = @buffer.index("\n\n"))
-        raw = @buffer.slice!(0, idx + 2)
-        events << parse_sse_event(raw)
+      # Handle both \n\n and \r\n\r\n delimiters
+      while (idx = @buffer.index(/\r?\n\r?\n/))
+        match = @buffer.match(/\r?\n\r?\n/)
+        raw = @buffer.slice!(0, idx + match[0].length)
+        event = parse_sse_event(raw)
+        events << event if event
       end
-      events.compact
+      events
     end
 
     def parse_sse_event(raw)
@@ -677,15 +818,22 @@ module DurableStreams
       data_lines = []
 
       raw.each_line do |line|
+        line = line.chomp
+        next if line.start_with?(':')  # Comment line
+        next if line.empty?
+
         case line
-        when /^event:\s*(.+)/
-          event_type = $1.strip
-        when /^data:\s*(.+)/
+        when /^event:\s*(.*)$/
+          event_type = $1
+        when /^data:\s?(.*)$/
           data_lines << $1
+        when /^data$/
+          data_lines << ""  # Empty data line
         end
       end
 
-      { type: event_type, data: data_lines.join("\n") } unless data_lines.empty?
+      return nil if data_lines.empty?
+      { type: event_type, data: data_lines.join("\n") }
     end
   end
 end
@@ -797,7 +945,7 @@ Gem::Specification.new do |spec|
   spec.version       = DurableStreams::VERSION
   spec.summary       = "Ruby client for Durable Streams protocol"
 
-  spec.required_ruby_version = ">= 3.1.0"
+  spec.required_ruby_version = ">= 3.2.0"  # Required for Data.define
 
   # No required dependencies (uses net/http by default)
 
@@ -858,10 +1006,10 @@ Thread.new do
 end
 
 # Batch processing with checkpoints
-stream.read(offset: load_checkpoint, live: :long_poll).each_batch do |batch|
+stream.read_json(offset: load_checkpoint, live: :long_poll).each_batch do |batch|
   ActiveRecord::Base.transaction do
     batch.items.each { |item| Order.process(item) }
-    Checkpoint.update(stream.url, batch.offset)
+    Checkpoint.update(stream.url, batch.next_offset)  # next_offset for resumption
   end
 end
 
