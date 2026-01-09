@@ -29,6 +29,14 @@ import java.util.function.Supplier;
  */
 public final class DurableStreamClient implements AutoCloseable {
 
+    // Configure JDK HttpClient for high throughput before any client is created
+    static {
+        // Increase connection pool size for high concurrency
+        System.setProperty("jdk.httpclient.connectionPoolSize", "256");
+        // Enable HTTP/2 by default
+        System.setProperty("jdk.httpclient.allowRestrictedHeaders", "connection");
+    }
+
     private final HttpClient httpClient;
     private final RetryPolicy retryPolicy;
     private final Map<String, String> defaultHeaders;
@@ -117,8 +125,10 @@ public final class DurableStreamClient implements AutoCloseable {
         dynamicParams.clear();
     }
 
-    // Package-private methods for Stream class
-    HttpClient getHttpClient() {
+    /**
+     * Get the underlying HttpClient for advanced use cases.
+     */
+    public HttpClient getHttpClient() {
         return httpClient;
     }
 

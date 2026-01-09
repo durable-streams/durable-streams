@@ -43,7 +43,9 @@ public final class IdempotentProducer implements AutoCloseable {
     private ScheduledFuture<?> lingerTimer;
 
     private final ScheduledExecutorService scheduler;
-    private final ExecutorService executor;
+
+    // Track in-flight futures for true fire-and-forget with flush
+    private final ConcurrentLinkedQueue<CompletableFuture<Void>> inFlightFutures;
 
     private final Map<Long, Map<Long, SeqState>> seqStates;
     private final BlockingQueue<DurableStreamException> errors;
@@ -68,8 +70,9 @@ public final class IdempotentProducer implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
-        // Use virtual threads for lightweight concurrency (like goroutines)
-        this.executor = Executors.newVirtualThreadPerTaskExecutor();
+
+        // Track futures for true fire-and-forget
+        this.inFlightFutures = new ConcurrentLinkedQueue<>();
 
         this.seqStates = new ConcurrentHashMap<>();
         this.errors = new LinkedBlockingQueue<>();
@@ -165,14 +168,13 @@ public final class IdempotentProducer implements AutoCloseable {
 
         inFlight.incrementAndGet();
 
-        executor.submit(() -> {
-            try {
-                sendBatchAsync(batch, currentEpoch, seq);
-            } finally {
-                inFlight.decrementAndGet();
-                synchronized (batchLock) {
-                    batchLock.notifyAll();
-                }
+        CompletableFuture<Void> future = sendBatchFireAndForget(batch, currentEpoch, seq);
+        inFlightFutures.add(future);
+        future.whenComplete((v, ex) -> {
+            inFlight.decrementAndGet();
+            inFlightFutures.remove(future);
+            synchronized (batchLock) {
+                batchLock.notifyAll();
             }
         });
     }
@@ -190,10 +192,8 @@ public final class IdempotentProducer implements AutoCloseable {
             flush();
         } finally {
             scheduler.shutdown();
-            executor.shutdown();
             try {
                 scheduler.awaitTermination(5, TimeUnit.SECONDS);
-                executor.awaitTermination(5, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
@@ -259,17 +259,16 @@ public final class IdempotentProducer implements AutoCloseable {
 
         inFlight.incrementAndGet();
 
-        // Submit batch to executor
-        executor.submit(() -> {
-            try {
-                sendBatchAsync(batch, currentEpoch, seq);
-            } finally {
-                inFlight.decrementAndGet();
-            }
+        // True fire-and-forget: send async and track the future
+        CompletableFuture<Void> future = sendBatchFireAndForget(batch, currentEpoch, seq);
+        inFlightFutures.add(future);
+        future.whenComplete((v, ex) -> {
+            inFlight.decrementAndGet();
+            inFlightFutures.remove(future);
         });
     }
 
-    private void sendBatchAsync(List<PendingEntry> batch, long batchEpoch, long seq) {
+    private CompletableFuture<Void> sendBatchFireAndForget(List<PendingEntry> batch, long batchEpoch, long seq) {
         // Serialize batch data
         byte[] data = serializeBatch(batch);
 
@@ -290,54 +289,43 @@ public final class IdempotentProducer implements AutoCloseable {
         Map<String, String> headers = client.resolveHeaders();
         headers.forEach(builder::header);
 
-        try {
-            // Use async send for better pipelining/parallelism
-            HttpResponse<byte[]> response = client.getHttpClient()
-                    .sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
-                    .join();
+        // True async - no blocking .join()
+        return client.getHttpClient()
+                .sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
+                .thenAccept(response -> {
+                    int status = response.statusCode();
 
-            int status = response.statusCode();
+                    if (status == 200 || status == 201 || status == 204) {
+                        // Success or duplicate (idempotent)
+                        return;
+                    } else if (status == 403) {
+                        // Stale epoch
+                        if (config.autoClaim) {
+                            epoch.incrementAndGet();
+                            nextSeq.set(0);
+                        }
+                        long currentEpoch = parseEpochFromResponse(response);
+                        errors.offer(new StaleEpochException(currentEpoch));
+                    } else if (status == 409) {
+                        // Sequence conflict
+                        handleSequenceConflict(batch, batchEpoch, seq, response);
+                    } else {
+                        errors.offer(new DurableStreamException("Batch failed with status: " + status, status));
+                    }
 
-            if (status == 200 || status == 201) {
-                // Success
-                return;
-            } else if (status == 204) {
-                // Duplicate (idempotent) - OK
-                return;
-            } else if (status == 403) {
-                // Stale epoch
-                if (config.autoClaim) {
-                    // Try to claim with incremented epoch
-                    epoch.incrementAndGet();
-                    nextSeq.set(0);
-                    // Re-enqueue the batch (simplified: just report error for now)
-                }
-                long currentEpoch = parseEpochFromResponse(response);
-                errors.offer(new StaleEpochException(currentEpoch));
-            } else if (status == 409) {
-                // Sequence conflict - need to wait and retry
-                handleSequenceConflict(batch, batchEpoch, seq, response);
-            } else {
-                errors.offer(new DurableStreamException("Batch failed with status: " + status, status));
-            }
-
-            if (config.onError != null) {
-                config.onError.accept(new DurableStreamException("Batch failed with status: " + status, status));
-            }
-        } catch (java.util.concurrent.CompletionException e) {
-            Throwable cause = e.getCause();
-            DurableStreamException ex = new DurableStreamException("Batch send failed: " + cause.getMessage(), cause);
-            errors.offer(ex);
-            if (config.onError != null) {
-                config.onError.accept(ex);
-            }
-        } catch (Exception e) {
-            DurableStreamException ex = new DurableStreamException("Batch send failed: " + e.getMessage(), e);
-            errors.offer(ex);
-            if (config.onError != null) {
-                config.onError.accept(ex);
-            }
-        }
+                    if (config.onError != null) {
+                        config.onError.accept(new DurableStreamException("Batch failed with status: " + status, status));
+                    }
+                })
+                .exceptionally(ex -> {
+                    Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+                    DurableStreamException err = new DurableStreamException("Batch send failed: " + cause.getMessage(), cause);
+                    errors.offer(err);
+                    if (config.onError != null) {
+                        config.onError.accept(err);
+                    }
+                    return null;
+                });
     }
 
     private void handleSequenceConflict(List<PendingEntry> batch, long batchEpoch, long seq,

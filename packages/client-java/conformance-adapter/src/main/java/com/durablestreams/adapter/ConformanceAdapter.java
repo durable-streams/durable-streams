@@ -683,8 +683,7 @@ public class ConformanceAdapter {
 
                     // Use IdempotentProducer for batching and pipelining (like Go)
                     IdempotentProducer.Config producerConfig = IdempotentProducer.Config.builder()
-                            .lingerMs(0)  // Send immediately
-                            .maxInFlight(concurrency)
+                            .lingerMs(0)  // Will normalize to 5ms like Go
                             .build();
                     IdempotentProducer producer = client.idempotentProducer(
                             serverUrl + path, "bench-producer", producerConfig);
