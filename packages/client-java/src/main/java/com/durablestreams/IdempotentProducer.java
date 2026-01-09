@@ -38,7 +38,7 @@ public final class IdempotentProducer implements AutoCloseable {
     private final AtomicBoolean closed;
 
     private final Object batchLock = new Object();
-    private List<PendingEntry> pendingBatch;
+    private List<byte[]> pendingBatch;  // Store byte[] directly to avoid wrapper allocation
     private int batchBytes;
     private ScheduledFuture<?> lingerTimer;
 
@@ -62,7 +62,7 @@ public final class IdempotentProducer implements AutoCloseable {
         this.inFlight = new AtomicInteger(0);
         this.closed = new AtomicBoolean(false);
 
-        this.pendingBatch = new ArrayList<>();
+        this.pendingBatch = new ArrayList<>(1024);  // Pre-size for typical batch
         this.batchBytes = 0;
 
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -90,7 +90,7 @@ public final class IdempotentProducer implements AutoCloseable {
         byte[] bytes = serialize(data);
 
         synchronized (batchLock) {
-            pendingBatch.add(new PendingEntry(bytes));
+            pendingBatch.add(bytes);
             batchBytes += bytes.length;
 
             // Check if we should send immediately
@@ -157,8 +157,8 @@ public final class IdempotentProducer implements AutoCloseable {
         // Like sendBatch but always sends (used by flush)
         if (pendingBatch.isEmpty()) return;
 
-        List<PendingEntry> batch = pendingBatch;
-        pendingBatch = new ArrayList<>();
+        List<byte[]> batch = pendingBatch;
+        pendingBatch = new ArrayList<>(1024);
         batchBytes = 0;
 
         long seq = nextSeq.getAndIncrement();
@@ -244,8 +244,8 @@ public final class IdempotentProducer implements AutoCloseable {
         }
 
         // Take the current batch
-        List<PendingEntry> batch = pendingBatch;
-        pendingBatch = new ArrayList<>();
+        List<byte[]> batch = pendingBatch;
+        pendingBatch = new ArrayList<>(1024);
         batchBytes = 0;
 
         // Get sequence number for this batch
@@ -263,7 +263,7 @@ public final class IdempotentProducer implements AutoCloseable {
         });
     }
 
-    private CompletableFuture<Void> sendBatchFireAndForget(List<PendingEntry> batch, long batchEpoch, long seq) {
+    private CompletableFuture<Void> sendBatchFireAndForget(List<byte[]> batch, long batchEpoch, long seq) {
         // Serialize batch data
         byte[] data = serializeBatch(batch);
 
@@ -323,7 +323,7 @@ public final class IdempotentProducer implements AutoCloseable {
                 });
     }
 
-    private void handleSequenceConflict(List<PendingEntry> batch, long batchEpoch, long seq,
+    private void handleSequenceConflict(List<byte[]> batch, long batchEpoch, long seq,
                                          HttpResponse<byte[]> response) {
         // Get expected sequence from response
         String expectedSeqStr = response.headers().firstValue("Stream-Seq").orElse(null);
@@ -370,9 +370,9 @@ public final class IdempotentProducer implements AutoCloseable {
         }
     }
 
-    private byte[] serializeBatch(List<PendingEntry> batch) {
+    private byte[] serializeBatch(List<byte[]> batch) {
         if (batch.size() == 1) {
-            return batch.get(0).data;
+            return batch.get(0);
         }
 
         // Check if this is a JSON stream
@@ -384,18 +384,22 @@ public final class IdempotentProducer implements AutoCloseable {
             StringBuilder sb = new StringBuilder("[");
             for (int i = 0; i < batch.size(); i++) {
                 if (i > 0) sb.append(",");
-                sb.append(new String(batch.get(i).data, StandardCharsets.UTF_8));
+                sb.append(new String(batch.get(i), StandardCharsets.UTF_8));
             }
             sb.append("]");
             return sb.toString().getBytes(StandardCharsets.UTF_8);
         } else {
-            // Concatenate binary data
-            int totalLen = batch.stream().mapToInt(e -> e.data.length).sum();
+            // Concatenate binary data - avoid stream for efficiency
+            int totalLen = 0;
+            for (int i = 0; i < batch.size(); i++) {
+                totalLen += batch.get(i).length;
+            }
             byte[] result = new byte[totalLen];
             int pos = 0;
-            for (PendingEntry entry : batch) {
-                System.arraycopy(entry.data, 0, result, pos, entry.data.length);
-                pos += entry.data.length;
+            for (int i = 0; i < batch.size(); i++) {
+                byte[] data = batch.get(i);
+                System.arraycopy(data, 0, result, pos, data.length);
+                pos += data.length;
             }
             return result;
         }
