@@ -209,9 +209,12 @@ let state = AdapterState()
 
 // MARK: - Main Loop
 
-// Helper to flush stdout safely in async context
-nonisolated func flushOutput() {
-    fflush(stdout)
+// Helper to write output and flush using FileHandle (Swift 6 safe)
+func writeOutput(_ string: String) {
+    let handle = FileHandle.standardOutput
+    if let data = (string + "\n").data(using: .utf8) {
+        handle.write(data)
+    }
 }
 
 func main() async {
@@ -227,8 +230,7 @@ func main() async {
 
             let jsonData = try encoder.encode(result)
             if let jsonString = String(data: jsonData, encoding: .utf8) {
-                print(jsonString)
-                flushOutput()
+                writeOutput(jsonString)
             }
 
             if command.type == "shutdown" {
@@ -244,8 +246,7 @@ func main() async {
             )
             if let jsonData = try? encoder.encode(errorResult),
                let jsonString = String(data: jsonData, encoding: .utf8) {
-                print(jsonString)
-                flushOutput()
+                writeOutput(jsonString)
             }
         }
     }
