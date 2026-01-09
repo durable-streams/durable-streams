@@ -6,6 +6,9 @@
 
 import DurableStreams
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 // MARK: - Command Types
 

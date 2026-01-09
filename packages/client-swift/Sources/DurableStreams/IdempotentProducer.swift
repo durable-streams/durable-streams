@@ -2,6 +2,9 @@
 // DurableStreams Swift Client - Idempotent Producer
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Fire-and-forget producer with exactly-once semantics.
 ///

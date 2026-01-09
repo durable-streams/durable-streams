@@ -2,6 +2,9 @@
 // DurableStreams Swift Client - Main Stream Handle
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// A handle to a Durable Stream with read/write capabilities.
 public actor DurableStream {

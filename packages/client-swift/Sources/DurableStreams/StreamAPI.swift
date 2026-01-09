@@ -2,6 +2,9 @@
 // DurableStreams Swift Client - Stream API (Read-Only)
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Options for the stream() function.
 public struct StreamOptions: Sendable {

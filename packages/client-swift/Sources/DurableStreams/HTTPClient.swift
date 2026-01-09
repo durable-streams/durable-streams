@@ -2,6 +2,9 @@
 // DurableStreams Swift Client - HTTP Client
 
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 /// Response metadata extracted from HTTP response headers.
 public struct ResponseMetadata: Sendable {
