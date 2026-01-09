@@ -5,11 +5,11 @@
 This document proposes a PHP client design for the Durable Streams protocol, based on research of PHP SDKs for Kafka, Redis Streams, NATS JetStream, Apache Pulsar, AWS Kinesis, Google Cloud Pub/Sub, Azure Event Hubs, and RabbitMQ Streams.
 
 **Key Design Principles:**
-1. **Synchronous-first** - PHP's natural execution model; async via optional Swoole/Fibers
+1. **Synchronous I/O** - All network I/O blocks; no background threads or async runtime required
 2. **PSR-compliant** - PSR-18 HTTP Client, PSR-7 Messages, PSR-3 Logging
 3. **Fluent builders** - Chainable configuration (Kafka, NATS, Pulsar patterns)
 4. **Generator-based iteration** - Memory-efficient streaming (universal PHP pattern)
-5. **Explicit lifecycle** - `flush()`, `close()` for fire-and-forget safety
+5. **Local batching with explicit flush** - `append()` queues locally, `flush()` does I/O
 
 ---
 
@@ -98,16 +98,15 @@ DurableStreamClient (factory)
 
 DurableStream (handle)
     ├── head(): HeadResult
-    ├── append(mixed $data): AppendResult
+    ├── append(mixed $data): AppendResult  (synchronous HTTP request)
     ├── appendStream(iterable $source): void
     ├── stream(?StreamOptions $options): StreamResponse
     ├── delete(): void
-    ├── flush(): void
     └── close(): void
 
 IdempotentProducer
-    ├── append(mixed $data): void  (fire-and-forget)
-    ├── flush(): void
+    ├── append(mixed $data): void  (queues locally, no I/O)
+    ├── flush(): void              (sends batches, blocks until complete)
     ├── restart(): void
     └── close(): void
 
@@ -177,12 +176,12 @@ namespace DurableStreams;
 final class DurableStream
 {
     /**
-     * Get stream metadata
+     * Get stream metadata (HEAD request)
      */
     public function head(): HeadResult;
 
     /**
-     * Append data to stream
+     * Append data to stream (POST request - blocks until complete)
      * For JSON streams, arrays are flattened per protocol spec
      */
     public function append(mixed $data, ?AppendOptions $options = null): AppendResult;
@@ -202,11 +201,6 @@ final class DurableStream
      * Delete the stream
      */
     public function delete(): void;
-
-    /**
-     * Flush any pending batched appends
-     */
-    public function flush(): void;
 
     /**
      * Close and release resources
@@ -310,7 +304,11 @@ function stream(array $options): StreamResponse;
 
 ### 5. IdempotentProducer
 
-Fire-and-forget producer with exactly-once semantics:
+Batching producer with exactly-once semantics. Uses local queuing for efficiency.
+
+**Key insight:** PHP has no background threads, so `append()` cannot do async I/O.
+Instead, `append()` queues data locally (instant return, no network), and `flush()`
+performs all HTTP requests synchronously (blocks until complete).
 
 ```php
 <?php
@@ -326,14 +324,16 @@ final class IdempotentProducer
     );
 
     /**
-     * Fire-and-forget append (batched internally)
-     * Returns immediately; errors reported via onError callback
+     * Queue data locally for batched sending.
+     * Returns immediately - no network I/O performed.
+     * Auto-flushes if batch size limit reached.
      */
     public function append(mixed $data): void;
 
     /**
-     * Wait for all pending batches to complete
-     * @throws ProducerException on any pending errors
+     * Send all queued batches to server.
+     * Blocks until all HTTP requests complete.
+     * @throws ProducerException on network or protocol errors
      */
     public function flush(): void;
 
@@ -439,17 +439,14 @@ final class ProducerOptions
 
     public function withEpoch(int $epoch): self;
     public function withAutoClaim(bool $enabled): self;
-    public function withLingerMs(int $ms): self;
     public function withMaxBatchBytes(int $bytes): self;
-    public function withMaxInFlight(int $max): self;
-
-    /**
-     * Fire-and-forget error callback
-     * @param callable(ProducerException): void $handler
-     */
-    public function withOnError(callable $handler): self;
+    public function withMaxBatchItems(int $count): self;
 }
 ```
+
+**Note:** Unlike async clients, there's no `lingerMs` or `maxInFlight` options.
+PHP's synchronous model means batches are sent immediately on `flush()`, not
+scheduled for background delivery.
 
 ### CreateOptions
 
@@ -685,6 +682,11 @@ final class SseHandler
 
 ### Implementation Design
 
+The producer uses **local batching with synchronous flush**:
+- `append()` adds items to an in-memory queue (no I/O)
+- When batch size limit is reached, or `flush()` is called, HTTP requests are made
+- All I/O in `flush()` is blocking/synchronous
+
 ```php
 <?php
 
@@ -694,10 +696,9 @@ final class IdempotentProducer
 {
     private int $epoch;
     private int $nextSeq = 0;
-    private array $pendingBatches = [];
-    private array $currentBatch = [];
+    private array $pendingBatches = [];  // Batches ready to send
+    private array $currentBatch = [];     // Items accumulating
     private int $currentBatchSize = 0;
-    private ?float $lingerDeadline = null;
 
     public function __construct(
         private DurableStream $stream,
@@ -712,29 +713,22 @@ final class IdempotentProducer
         $encoded = json_encode($data);
         $size = strlen($encoded);
 
-        // Check if batch would exceed max size
+        // Auto-flush if batch would exceed max size
         if ($this->currentBatchSize + $size > $this->options->getMaxBatchBytes()) {
-            $this->flushCurrentBatch();
+            $this->flush(); // Synchronous - blocks until sent
         }
 
         $this->currentBatch[] = $data;
         $this->currentBatchSize += $size;
-
-        // Start linger timer on first item
-        if ($this->lingerDeadline === null) {
-            $this->lingerDeadline = microtime(true) + ($this->options->getLingerMs() / 1000);
-        }
-
-        // Check if linger timeout reached
-        if (microtime(true) >= $this->lingerDeadline) {
-            $this->flushCurrentBatch();
-        }
     }
 
+    /**
+     * Send all queued data. Blocks until complete.
+     */
     public function flush(): void
     {
         $this->flushCurrentBatch();
-        $this->waitForPending();
+        $this->sendAllBatches(); // Synchronous HTTP requests
     }
 
     private function flushCurrentBatch(): void
@@ -743,42 +737,33 @@ final class IdempotentProducer
             return;
         }
 
-        $batch = new PendingBatch(
+        $this->pendingBatches[] = new PendingBatch(
             data: $this->currentBatch,
             seq: $this->nextSeq++,
             epoch: $this->epoch,
         );
 
-        $this->pendingBatches[] = $batch;
         $this->currentBatch = [];
         $this->currentBatchSize = 0;
-        $this->lingerDeadline = null;
-
-        // Send if under max in-flight
-        $this->trySendPending();
     }
 
-    private function trySendPending(): void
+    /**
+     * Send all pending batches synchronously.
+     * Each HTTP request blocks until complete.
+     */
+    private function sendAllBatches(): void
     {
-        $inFlight = count(array_filter($this->pendingBatches, fn($b) => $b->isSending()));
-
-        foreach ($this->pendingBatches as $batch) {
-            if ($inFlight >= $this->options->getMaxInFlight()) {
-                break;
-            }
-            if (!$batch->isSending() && !$batch->isComplete()) {
-                $this->sendBatch($batch);
-                $inFlight++;
-            }
+        foreach ($this->pendingBatches as $key => $batch) {
+            $this->sendBatch($batch);
+            unset($this->pendingBatches[$key]);
         }
     }
 
     private function sendBatch(PendingBatch $batch): void
     {
-        $batch->markSending();
-
         try {
-            $response = $this->stream->appendWithHeaders(
+            // Synchronous HTTP request - blocks here
+            $this->stream->appendWithHeaders(
                 $batch->getData(),
                 [
                     'Producer-Id' => $this->producerId,
@@ -787,11 +772,9 @@ final class IdempotentProducer
                 ]
             );
 
-            $batch->markComplete();
-
         } catch (ForbiddenException $e) {
             // Stale epoch - handle auto-claim or throw
-            $currentEpoch = (int) $e->getHeaders()['Producer-Epoch'] ?? 0;
+            $currentEpoch = (int) ($e->getHeaders()['Producer-Epoch'] ?? 0);
 
             if ($this->options->isAutoClaim()) {
                 $this->epoch = $currentEpoch + 1;
@@ -804,10 +787,8 @@ final class IdempotentProducer
             }
 
         } catch (SequenceConflictException $e) {
-            // Sequence gap - wait for earlier batches
-            $expectedSeq = $e->getExpectedSeq();
-            $this->waitForSeq($batch->getEpoch(), $expectedSeq);
-            $this->sendBatch($batch); // Retry
+            // Duplicate detection - batch already delivered, safe to continue
+            // (This can happen if previous request succeeded but response was lost)
         }
     }
 
@@ -982,12 +963,9 @@ $stream = $client->create(
         ->build()
 );
 
-// Append events (auto-batched by default)
-$stream->append(['type' => 'user.created', 'userId' => 123]);
-$stream->append(['type' => 'user.updated', 'userId' => 123]);
-
-// Ensure delivery
-$stream->flush();
+// Simple append - each call makes an HTTP request (blocking)
+$result = $stream->append(['type' => 'user.created', 'userId' => 123]);
+echo "Appended at offset: " . $result->getOffset();
 ```
 
 ### Basic Consumer
@@ -1057,20 +1035,17 @@ $producer = new IdempotentProducer(
     ProducerOptions::create()
         ->withEpoch(0)
         ->withAutoClaim(true)
-        ->withLingerMs(10)
-        ->withMaxInFlight(5)
-        ->withOnError(function ($error) {
-            logger()->error('Producer error', ['error' => $error->getMessage()]);
-        })
+        ->withMaxBatchBytes(64 * 1024)  // 64KB batches
         ->build()
 );
 
-// Fire-and-forget - returns immediately
+// Queue locally - no network I/O yet
 foreach ($orders as $order) {
     $producer->append(['type' => 'order.created', 'order' => $order]);
+    // Note: may auto-flush if batch size limit reached
 }
 
-// Ensure all delivered before shutdown
+// Send all remaining queued data (blocks until complete)
 $producer->close();
 ```
 
@@ -1205,10 +1180,10 @@ durable-streams-php/
 
 | Feature | TypeScript | Python | Go | PHP (Proposed) |
 |---------|-----------|--------|-----|---------------|
-| **Async Model** | Native async/await | sync + async | Goroutines | Sync (+ optional Swoole) |
+| **Async Model** | Native async/await | sync + async | Goroutines | Sync-only |
 | **Streaming** | ReadableStream | Generator | Iterator | Generator |
 | **HTTP Client** | fetch API | httpx | net/http | PSR-18 |
-| **Batching** | fastq | deque + thread | channels | array + timer |
+| **Batching** | Async queue | Thread + deque | Channels | Local queue + explicit flush |
 | **SSE Support** | ✅ Full | ✅ Full | ✅ Full | ⚠️ Opt-in |
 | **Long-Poll** | ✅ | ✅ | ✅ | ✅ Default |
 | **Builder Pattern** | Options objects | Dataclasses | Functional options | Fluent builders |
@@ -1221,16 +1196,9 @@ durable-streams-php/
 
 2. **Async Support**: Should we include Swoole/ReactPHP adapters in v1, or defer to a future release?
 
-3. **Batching in Sync PHP**: Without background threads, batching requires either:
-   - Explicit `tick()` calls from user
-   - Linger timeout checked on each `append()`
-   - No automatic batching (explicit `flush()` only)
+3. **Minimum PHP Version**: PHP 8.1 (for enums, readonly properties, fibers) or PHP 8.2 (for readonly classes)?
 
-   Which approach is preferred?
-
-4. **Minimum PHP Version**: PHP 8.1 (for enums, readonly properties, fibers) or PHP 8.2 (for readonly classes)?
-
-5. **Default HTTP Client**: Should we bundle a simple cURL-based client, or require users to provide a PSR-18 implementation?
+4. **Default HTTP Client**: Should we bundle a simple cURL-based client, or require users to provide a PSR-18 implementation?
 
 ---
 
