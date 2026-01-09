@@ -1,0 +1,1160 @@
+# Durable Streams C#/.NET Client Design
+
+## Executive Summary
+
+This document outlines the design for a C#/.NET client library for Durable Streams. The design synthesizes best practices from major streaming platforms (Kafka, Redis Streams, NATS JetStream, Apache Pulsar, AWS Kinesis, Google Pub/Sub, Azure Event Hubs, RabbitMQ Streams) while maintaining consistency with existing Durable Streams clients (TypeScript, Python, Go).
+
+## Research Summary
+
+### Patterns Across Streaming SDKs
+
+| Platform | Producer Pattern | Consumer Pattern | Key .NET Features |
+|----------|-----------------|------------------|-------------------|
+| **Confluent Kafka** | `IProducer<TKey,TValue>` | `IConsumer<TKey,TValue>` | Interfaces for mocking, DI support, `enable.idempotence` |
+| **Redis Streams** | `StreamAdd` | `StreamRead/StreamReadGroup` | No blocking reads in StackExchange.Redis |
+| **NATS JetStream** | `IJetStream.PublishAsync` | `Consume/Fetch/Next` | New v2 API simplifies semantics |
+| **Apache Pulsar** | `IProducer<T>` | `IConsumer<T>` | Builder pattern, state monitoring |
+| **AWS Kinesis** | `PutRecordAsync` | `GetRecordsAsync` | Shard iterators, fully async |
+| **Google Pub/Sub** | `PublisherClient` | `SubscriberClient` | Singleton pattern, `IAsyncDisposable` |
+| **Azure Event Hubs** | `EventHubProducerClient` | `EventHubConsumerClient` | Buffered producer option, AMQP/WebSocket |
+| **RabbitMQ Streams** | `Producer/RawProducer` | `Consumer/RawConsumer` | Auto-reconnect, flow control |
+
+### Key Design Principles Identified
+
+1. **Interfaces for testability** (Kafka, Pulsar): All clients expose interfaces (`IProducer`, `IConsumer`) for mocking
+2. **Builder pattern for configuration** (Pulsar, Entity Framework): Fluent APIs for complex configuration
+3. **Singleton lifecycle** (Pub/Sub, Event Hubs): Expensive-to-create clients designed for reuse
+4. **`IAsyncDisposable`** (Pub/Sub, Event Hubs): Proper async cleanup
+5. **`IAsyncEnumerable<T>`** (modern .NET): Streaming consumption with backpressure
+6. **`CancellationToken` everywhere** (all platforms): Cooperative cancellation
+7. **Fire-and-forget with callbacks** (Kafka, our TypeScript): Batching producers with error callbacks
+
+---
+
+## API Design
+
+### Package Structure
+
+```
+DurableStreams/
+├── DurableStreams.csproj
+├── IDurableStreamClient.cs      # Main client interface
+├── DurableStreamClient.cs       # Client implementation
+├── DurableStreamClientBuilder.cs
+├── IDurableStream.cs            # Stream handle interface
+├── DurableStream.cs             # Stream handle implementation
+├── IIdempotentProducer.cs       # Producer interface
+├── IdempotentProducer.cs        # Producer implementation
+├── IdempotentProducerBuilder.cs
+├── StreamResponse.cs            # Read session
+├── Types/
+│   ├── Offset.cs
+│   ├── LiveMode.cs
+│   ├── JsonBatch.cs
+│   ├── ByteChunk.cs
+│   └── TextChunk.cs
+├── Exceptions/
+│   ├── DurableStreamException.cs
+│   ├── StaleEpochException.cs
+│   ├── SequenceGapException.cs
+│   └── StreamNotFoundException.cs
+└── Options/
+    ├── DurableStreamOptions.cs
+    ├── StreamOptions.cs
+    ├── IdempotentProducerOptions.cs
+    └── BackoffOptions.cs
+```
+
+### Target Framework
+
+- **.NET 8.0+** (primary target)
+- **.NET Standard 2.1** (for broader compatibility)
+
+### NuGet Package Name
+
+```
+DurableStreams
+```
+
+---
+
+## Core Interfaces
+
+### 1. IDurableStreamClient
+
+The main entry point, analogous to `AmazonKinesisClient` or `EventHubProducerClient`.
+
+```csharp
+/// <summary>
+/// Factory for creating stream handles. Thread-safe, designed for singleton use.
+/// </summary>
+public interface IDurableStreamClient : IAsyncDisposable
+{
+    /// <summary>
+    /// Create a cold handle to a stream (no network I/O).
+    /// </summary>
+    IDurableStream GetStream(string url);
+
+    /// <summary>
+    /// Create a cold handle to a stream with custom options.
+    /// </summary>
+    IDurableStream GetStream(string url, StreamHandleOptions options);
+
+    /// <summary>
+    /// Create a new stream and return a handle.
+    /// </summary>
+    Task<IDurableStream> CreateStreamAsync(
+        string url,
+        CreateStreamOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Validate that a stream exists via HEAD and return a handle.
+    /// </summary>
+    Task<IDurableStream> ConnectAsync(
+        string url,
+        StreamHandleOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Delete a stream.
+    /// </summary>
+    Task DeleteStreamAsync(
+        string url,
+        CancellationToken cancellationToken = default);
+}
+```
+
+### 2. IDurableStream
+
+A lightweight, reusable handle to a specific stream. Matches the TypeScript `DurableStream` class.
+
+```csharp
+/// <summary>
+/// A handle to a durable stream for read/write operations.
+/// Lightweight and reusable - not a persistent connection.
+/// </summary>
+public interface IDurableStream
+{
+    /// <summary>
+    /// The stream URL.
+    /// </summary>
+    string Url { get; }
+
+    /// <summary>
+    /// The content type (populated after HEAD/read).
+    /// </summary>
+    string? ContentType { get; }
+
+    // === Write Operations ===
+
+    /// <summary>
+    /// Append data to the stream.
+    /// </summary>
+    Task AppendAsync(
+        ReadOnlyMemory<byte> data,
+        AppendOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Append a JSON-serializable object to the stream.
+    /// </summary>
+    Task AppendAsync<T>(
+        T data,
+        AppendOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Append string data to the stream.
+    /// </summary>
+    Task AppendAsync(
+        string data,
+        AppendOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Append from an async stream source.
+    /// </summary>
+    Task AppendStreamAsync(
+        IAsyncEnumerable<ReadOnlyMemory<byte>> source,
+        AppendOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    // === Read Operations ===
+
+    /// <summary>
+    /// Start a streaming read session.
+    /// </summary>
+    Task<IStreamResponse<TJson>> StreamAsync<TJson>(
+        StreamOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Start a streaming read session (untyped JSON).
+    /// </summary>
+    Task<IStreamResponse<JsonElement>> StreamAsync(
+        StreamOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    // === Metadata Operations ===
+
+    /// <summary>
+    /// Get stream metadata via HEAD request.
+    /// </summary>
+    Task<StreamMetadata> HeadAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Create this stream if it doesn't exist.
+    /// </summary>
+    Task CreateAsync(
+        CreateStreamOptions? options = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Delete this stream.
+    /// </summary>
+    Task DeleteAsync(CancellationToken cancellationToken = default);
+
+    // === Idempotent Producer Factory ===
+
+    /// <summary>
+    /// Create an idempotent producer for exactly-once writes.
+    /// </summary>
+    IIdempotentProducer CreateProducer(
+        string producerId,
+        IdempotentProducerOptions? options = null);
+}
+```
+
+### 3. IStreamResponse
+
+The streaming read session, with multiple consumption patterns.
+
+```csharp
+/// <summary>
+/// A streaming read session with multiple consumption patterns.
+/// Implements IAsyncDisposable for proper cleanup.
+/// </summary>
+public interface IStreamResponse<TJson> : IAsyncDisposable
+{
+    // === Session Info ===
+
+    string Url { get; }
+    string? ContentType { get; }
+    LiveMode Live { get; }
+    string StartOffset { get; }
+
+    // === Evolving State ===
+
+    /// <summary>
+    /// Current offset (advances as data is consumed).
+    /// </summary>
+    string Offset { get; }
+
+    /// <summary>
+    /// Cursor for CDN collapsing.
+    /// </summary>
+    string? Cursor { get; }
+
+    /// <summary>
+    /// Whether we've reached the current end of stream.
+    /// </summary>
+    bool UpToDate { get; }
+
+    // === Accumulating Helpers (catch-up only) ===
+
+    /// <summary>
+    /// Accumulate all bytes until upToDate, then return.
+    /// </summary>
+    Task<ReadOnlyMemory<byte>> ReadAllBytesAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Accumulate all JSON items until upToDate, then return.
+    /// </summary>
+    Task<IReadOnlyList<TJson>> ReadAllJsonAsync(
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Accumulate all text until upToDate, then return.
+    /// </summary>
+    Task<string> ReadAllTextAsync(
+        CancellationToken cancellationToken = default);
+
+    // === IAsyncEnumerable Streams ===
+
+    /// <summary>
+    /// Stream raw byte chunks as they arrive.
+    /// </summary>
+    IAsyncEnumerable<ByteChunk> ReadBytesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stream individual JSON items as they arrive.
+    /// </summary>
+    IAsyncEnumerable<TJson> ReadJsonAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stream JSON batches with metadata as they arrive.
+    /// </summary>
+    IAsyncEnumerable<JsonBatch<TJson>> ReadJsonBatchesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Stream text chunks as they arrive.
+    /// </summary>
+    IAsyncEnumerable<TextChunk> ReadTextAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default);
+
+    // === Lifecycle ===
+
+    /// <summary>
+    /// Cancel the session.
+    /// </summary>
+    void Cancel();
+
+    /// <summary>
+    /// Task that completes when the session closes.
+    /// </summary>
+    Task Closed { get; }
+}
+```
+
+### 4. IIdempotentProducer
+
+Fire-and-forget producer with exactly-once semantics. Matches the TypeScript implementation.
+
+```csharp
+/// <summary>
+/// Fire-and-forget producer with exactly-once write semantics.
+/// Thread-safe for concurrent Append calls.
+/// </summary>
+public interface IIdempotentProducer : IAsyncDisposable
+{
+    /// <summary>
+    /// Current epoch.
+    /// </summary>
+    int Epoch { get; }
+
+    /// <summary>
+    /// Next sequence number to be assigned.
+    /// </summary>
+    int NextSeq { get; }
+
+    /// <summary>
+    /// Number of messages in the current pending batch.
+    /// </summary>
+    int PendingCount { get; }
+
+    /// <summary>
+    /// Number of batches currently in flight.
+    /// </summary>
+    int InFlightCount { get; }
+
+    /// <summary>
+    /// Append data (fire-and-forget). Returns immediately.
+    /// Errors reported via OnError callback.
+    /// </summary>
+    void Append(ReadOnlyMemory<byte> data);
+
+    /// <summary>
+    /// Append JSON-serializable data (fire-and-forget).
+    /// </summary>
+    void Append<T>(T data);
+
+    /// <summary>
+    /// Append string data (fire-and-forget).
+    /// </summary>
+    void Append(string data);
+
+    /// <summary>
+    /// Flush pending batches and wait for all in-flight batches.
+    /// </summary>
+    Task FlushAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Increment epoch and reset sequence (for restart scenarios).
+    /// </summary>
+    Task RestartAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Event raised when a batch error occurs.
+    /// </summary>
+    event EventHandler<ProducerErrorEventArgs>? OnError;
+}
+```
+
+---
+
+## Configuration Options
+
+### DurableStreamClientOptions
+
+```csharp
+public class DurableStreamClientOptions
+{
+    /// <summary>
+    /// Base URL for streams (optional, URLs can be absolute).
+    /// </summary>
+    public string? BaseUrl { get; set; }
+
+    /// <summary>
+    /// Default headers for all requests.
+    /// Supports static values or async factories for token refresh.
+    /// </summary>
+    public IDictionary<string, HeaderValue>? DefaultHeaders { get; set; }
+
+    /// <summary>
+    /// Custom HttpClient factory.
+    /// </summary>
+    public Func<HttpClient>? HttpClientFactory { get; set; }
+
+    /// <summary>
+    /// Backoff options for retries.
+    /// </summary>
+    public BackoffOptions Backoff { get; set; } = BackoffOptions.Default;
+
+    /// <summary>
+    /// JSON serializer options.
+    /// </summary>
+    public JsonSerializerOptions? JsonOptions { get; set; }
+}
+
+/// <summary>
+/// Header value that can be static or dynamically generated.
+/// Matches TypeScript pattern for per-request token refresh.
+/// </summary>
+public readonly struct HeaderValue
+{
+    public string? StaticValue { get; }
+    public Func<CancellationToken, ValueTask<string>>? Factory { get; }
+
+    public static implicit operator HeaderValue(string value) => new(value);
+    public static implicit operator HeaderValue(Func<string> factory) => new(factory);
+    public static implicit operator HeaderValue(Func<CancellationToken, ValueTask<string>> factory) => new(factory);
+}
+```
+
+### IdempotentProducerOptions
+
+```csharp
+public class IdempotentProducerOptions
+{
+    /// <summary>
+    /// Starting epoch. Increment on producer restart.
+    /// </summary>
+    public int Epoch { get; set; } = 0;
+
+    /// <summary>
+    /// Auto-claim on 403 (stale epoch).
+    /// Useful for serverless/ephemeral producers.
+    /// </summary>
+    public bool AutoClaim { get; set; } = false;
+
+    /// <summary>
+    /// Maximum bytes before sending a batch.
+    /// </summary>
+    public int MaxBatchBytes { get; set; } = 1024 * 1024; // 1MB
+
+    /// <summary>
+    /// Maximum time to wait for more messages before sending (ms).
+    /// </summary>
+    public int LingerMs { get; set; } = 5;
+
+    /// <summary>
+    /// Maximum concurrent batches in flight.
+    /// </summary>
+    public int MaxInFlight { get; set; } = 5;
+}
+```
+
+### StreamOptions
+
+```csharp
+public class StreamOptions
+{
+    /// <summary>
+    /// Starting offset. Use "-1" for beginning, "now" for tail.
+    /// </summary>
+    public string? Offset { get; set; }
+
+    /// <summary>
+    /// Live mode: false (catch-up only), Auto, LongPoll, or SSE.
+    /// </summary>
+    public LiveMode Live { get; set; } = LiveMode.Auto;
+
+    /// <summary>
+    /// Request-specific headers (merged with client defaults).
+    /// </summary>
+    public IDictionary<string, HeaderValue>? Headers { get; set; }
+
+    /// <summary>
+    /// Request-specific query parameters.
+    /// </summary>
+    public IDictionary<string, string>? Params { get; set; }
+
+    /// <summary>
+    /// Treat content as JSON even if Content-Type doesn't indicate it.
+    /// </summary>
+    public bool ForceJson { get; set; } = false;
+}
+
+public enum LiveMode
+{
+    /// <summary>
+    /// Catch-up only, stop at first upToDate.
+    /// </summary>
+    Off = 0,
+
+    /// <summary>
+    /// Behavior driven by consumption method.
+    /// </summary>
+    Auto = 1,
+
+    /// <summary>
+    /// Explicit long-poll mode.
+    /// </summary>
+    LongPoll = 2,
+
+    /// <summary>
+    /// Explicit SSE mode.
+    /// </summary>
+    Sse = 3
+}
+```
+
+---
+
+## Builder Pattern
+
+Following Pulsar and Entity Framework patterns:
+
+```csharp
+public class DurableStreamClientBuilder
+{
+    private readonly DurableStreamClientOptions _options = new();
+
+    public DurableStreamClientBuilder WithBaseUrl(string baseUrl)
+    {
+        _options.BaseUrl = baseUrl;
+        return this;
+    }
+
+    public DurableStreamClientBuilder WithHeader(string name, string value)
+    {
+        _options.DefaultHeaders ??= new Dictionary<string, HeaderValue>();
+        _options.DefaultHeaders[name] = value;
+        return this;
+    }
+
+    public DurableStreamClientBuilder WithHeader(
+        string name,
+        Func<CancellationToken, ValueTask<string>> factory)
+    {
+        _options.DefaultHeaders ??= new Dictionary<string, HeaderValue>();
+        _options.DefaultHeaders[name] = factory;
+        return this;
+    }
+
+    public DurableStreamClientBuilder WithBackoff(Action<BackoffOptions> configure)
+    {
+        configure(_options.Backoff);
+        return this;
+    }
+
+    public DurableStreamClientBuilder WithHttpClient(Func<HttpClient> factory)
+    {
+        _options.HttpClientFactory = factory;
+        return this;
+    }
+
+    public DurableStreamClientBuilder WithJsonOptions(JsonSerializerOptions options)
+    {
+        _options.JsonOptions = options;
+        return this;
+    }
+
+    public IDurableStreamClient Build()
+    {
+        return new DurableStreamClient(_options);
+    }
+}
+
+// Usage examples
+var client = new DurableStreamClientBuilder()
+    .WithBaseUrl("https://streams.example.com")
+    .WithHeader("Authorization", async ct => await GetTokenAsync(ct))
+    .WithBackoff(b => b.MaxRetries = 5)
+    .Build();
+```
+
+### IdempotentProducerBuilder
+
+```csharp
+public class IdempotentProducerBuilder
+{
+    private readonly IDurableStream _stream;
+    private readonly string _producerId;
+    private readonly IdempotentProducerOptions _options = new();
+
+    public IdempotentProducerBuilder(IDurableStream stream, string producerId)
+    {
+        _stream = stream;
+        _producerId = producerId;
+    }
+
+    public IdempotentProducerBuilder WithEpoch(int epoch)
+    {
+        _options.Epoch = epoch;
+        return this;
+    }
+
+    public IdempotentProducerBuilder WithAutoClaim(bool autoClaim = true)
+    {
+        _options.AutoClaim = autoClaim;
+        return this;
+    }
+
+    public IdempotentProducerBuilder WithBatching(
+        int maxBatchBytes = 1024 * 1024,
+        int lingerMs = 5,
+        int maxInFlight = 5)
+    {
+        _options.MaxBatchBytes = maxBatchBytes;
+        _options.LingerMs = lingerMs;
+        _options.MaxInFlight = maxInFlight;
+        return this;
+    }
+
+    public IIdempotentProducer Build()
+    {
+        return new IdempotentProducer(_stream, _producerId, _options);
+    }
+}
+
+// Usage
+var producer = stream.CreateProducerBuilder("order-service-1")
+    .WithAutoClaim()
+    .WithBatching(maxBatchBytes: 512 * 1024, lingerMs: 10)
+    .Build();
+```
+
+---
+
+## Dependency Injection Integration
+
+Following patterns from Confluent.Kafka.DependencyInjection and Azure SDK:
+
+```csharp
+public static class ServiceCollectionExtensions
+{
+    /// <summary>
+    /// Register DurableStreamClient as a singleton.
+    /// </summary>
+    public static IServiceCollection AddDurableStreams(
+        this IServiceCollection services,
+        Action<DurableStreamClientOptions>? configure = null)
+    {
+        services.AddSingleton<IDurableStreamClient>(sp =>
+        {
+            var options = new DurableStreamClientOptions();
+            configure?.Invoke(options);
+            return new DurableStreamClient(options);
+        });
+
+        return services;
+    }
+
+    /// <summary>
+    /// Register with configuration binding.
+    /// </summary>
+    public static IServiceCollection AddDurableStreams(
+        this IServiceCollection services,
+        IConfiguration configuration)
+    {
+        services.Configure<DurableStreamClientOptions>(
+            configuration.GetSection("DurableStreams"));
+
+        services.AddSingleton<IDurableStreamClient>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<DurableStreamClientOptions>>().Value;
+            return new DurableStreamClient(options);
+        });
+
+        return services;
+    }
+}
+
+// Usage in Program.cs
+builder.Services.AddDurableStreams(options =>
+{
+    options.BaseUrl = "https://streams.example.com";
+    options.DefaultHeaders = new Dictionary<string, HeaderValue>
+    {
+        ["Authorization"] = async ct => await GetTokenAsync(ct)
+    };
+});
+
+// Or from configuration
+builder.Services.AddDurableStreams(builder.Configuration);
+```
+
+---
+
+## Data Types
+
+### Offset
+
+```csharp
+/// <summary>
+/// Opaque stream offset. Use as-is; do not parse or construct.
+/// </summary>
+public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
+{
+    public static readonly Offset Beginning = new("-1");
+    public static readonly Offset Now = new("now");
+
+    private readonly string _value;
+
+    public Offset(string value) => _value = value ?? throw new ArgumentNullException(nameof(value));
+
+    public override string ToString() => _value;
+
+    public static implicit operator string(Offset offset) => offset._value;
+    public static implicit operator Offset(string value) => new(value);
+
+    // Lexicographic comparison
+    public int CompareTo(Offset other) =>
+        string.Compare(_value, other._value, StringComparison.Ordinal);
+
+    public bool Equals(Offset other) => _value == other._value;
+    public override bool Equals(object? obj) => obj is Offset o && Equals(o);
+    public override int GetHashCode() => _value.GetHashCode();
+
+    public static bool operator ==(Offset left, Offset right) => left.Equals(right);
+    public static bool operator !=(Offset left, Offset right) => !left.Equals(right);
+    public static bool operator <(Offset left, Offset right) => left.CompareTo(right) < 0;
+    public static bool operator >(Offset left, Offset right) => left.CompareTo(right) > 0;
+}
+```
+
+### Batch Types
+
+```csharp
+/// <summary>
+/// A batch of JSON items with metadata.
+/// </summary>
+public readonly record struct JsonBatch<T>(
+    IReadOnlyList<T> Items,
+    Offset Offset,
+    bool UpToDate,
+    string? Cursor = null);
+
+/// <summary>
+/// A chunk of raw bytes with metadata.
+/// </summary>
+public readonly record struct ByteChunk(
+    ReadOnlyMemory<byte> Data,
+    Offset Offset,
+    bool UpToDate,
+    string? Cursor = null);
+
+/// <summary>
+/// A chunk of text with metadata.
+/// </summary>
+public readonly record struct TextChunk(
+    string Text,
+    Offset Offset,
+    bool UpToDate,
+    string? Cursor = null);
+
+/// <summary>
+/// Stream metadata from HEAD request.
+/// </summary>
+public readonly record struct StreamMetadata(
+    bool Exists,
+    string? ContentType,
+    Offset? Offset,
+    string? ETag,
+    string? CacheControl);
+```
+
+---
+
+## Exception Hierarchy
+
+```csharp
+/// <summary>
+/// Base exception for all Durable Streams errors.
+/// </summary>
+public class DurableStreamException : Exception
+{
+    public DurableStreamErrorCode Code { get; }
+    public int? StatusCode { get; }
+    public string? StreamUrl { get; }
+
+    public DurableStreamException(
+        string message,
+        DurableStreamErrorCode code,
+        int? statusCode = null,
+        string? streamUrl = null,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Code = code;
+        StatusCode = statusCode;
+        StreamUrl = streamUrl;
+    }
+}
+
+public enum DurableStreamErrorCode
+{
+    Unknown,
+    NotFound,
+    ConflictSeq,
+    ConflictExists,
+    BadRequest,
+    Unauthorized,
+    Forbidden,
+    RateLimited,
+    SseNotSupported,
+    AlreadyClosed
+}
+
+/// <summary>
+/// Thrown when a producer's epoch is stale (zombie fencing).
+/// </summary>
+public class StaleEpochException : DurableStreamException
+{
+    public int CurrentEpoch { get; }
+
+    public StaleEpochException(int currentEpoch)
+        : base(
+            $"Producer epoch is stale. Current server epoch: {currentEpoch}. " +
+            "Call RestartAsync() or create a new producer with a higher epoch.",
+            DurableStreamErrorCode.Forbidden,
+            403)
+    {
+        CurrentEpoch = currentEpoch;
+    }
+}
+
+/// <summary>
+/// Thrown when an unrecoverable sequence gap is detected.
+/// </summary>
+public class SequenceGapException : DurableStreamException
+{
+    public int ExpectedSeq { get; }
+    public int ReceivedSeq { get; }
+
+    public SequenceGapException(int expectedSeq, int receivedSeq)
+        : base(
+            $"Producer sequence gap: expected {expectedSeq}, received {receivedSeq}",
+            DurableStreamErrorCode.ConflictSeq,
+            409)
+    {
+        ExpectedSeq = expectedSeq;
+        ReceivedSeq = receivedSeq;
+    }
+}
+
+/// <summary>
+/// Thrown when a stream is not found.
+/// </summary>
+public class StreamNotFoundException : DurableStreamException
+{
+    public StreamNotFoundException(string url)
+        : base($"Stream not found: {url}", DurableStreamErrorCode.NotFound, 404, url)
+    {
+    }
+}
+```
+
+---
+
+## Usage Examples
+
+### Basic Read/Write
+
+```csharp
+// Create client (singleton, inject via DI in real apps)
+await using var client = new DurableStreamClientBuilder()
+    .WithBaseUrl("https://streams.example.com")
+    .WithHeader("Authorization", "Bearer my-token")
+    .Build();
+
+// Create a stream
+var stream = await client.CreateStreamAsync(
+    "/my-account/chat/room-1",
+    new CreateStreamOptions { ContentType = "application/json" });
+
+// Append data
+await stream.AppendAsync(new { message = "Hello, world!" });
+
+// Read with accumulator (catch-up only)
+await using var response = await stream.StreamAsync<ChatMessage>();
+var messages = await response.ReadAllJsonAsync();
+
+// Read with IAsyncEnumerable (live streaming)
+await using var liveResponse = await stream.StreamAsync<ChatMessage>(
+    new StreamOptions { Live = LiveMode.LongPoll });
+
+await foreach (var message in liveResponse.ReadJsonAsync())
+{
+    Console.WriteLine(message.Text);
+}
+```
+
+### Idempotent Producer
+
+```csharp
+// Create producer
+var stream = client.GetStream("/orders/events");
+await using var producer = stream.CreateProducerBuilder("order-service-1")
+    .WithAutoClaim()
+    .WithBatching(maxBatchBytes: 1024 * 1024, lingerMs: 5, maxInFlight: 5)
+    .Build();
+
+// Handle errors
+producer.OnError += (sender, e) =>
+{
+    logger.LogError(e.Exception, "Producer error for batch");
+};
+
+// Fire-and-forget writes
+producer.Append(new OrderCreatedEvent { OrderId = "123" });
+producer.Append(new OrderCreatedEvent { OrderId = "456" });
+
+// Ensure delivery before shutdown
+await producer.FlushAsync();
+```
+
+### Live Consumption with IAsyncEnumerable
+
+```csharp
+await using var client = new DurableStreamClientBuilder()
+    .WithBaseUrl("https://streams.example.com")
+    .Build();
+
+var stream = client.GetStream("/sensors/temperature");
+
+// Use CancellationToken for graceful shutdown
+using var cts = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cts.Cancel();
+};
+
+await using var response = await stream.StreamAsync<TemperatureReading>(
+    new StreamOptions { Live = LiveMode.Sse });
+
+try
+{
+    await foreach (var batch in response.ReadJsonBatchesAsync(cts.Token))
+    {
+        foreach (var reading in batch.Items)
+        {
+            Console.WriteLine($"Temp: {reading.Value}C at {reading.Timestamp}");
+        }
+
+        // Save checkpoint
+        await SaveCheckpointAsync(batch.Offset);
+    }
+}
+catch (OperationCanceledException)
+{
+    Console.WriteLine("Shutting down gracefully...");
+}
+```
+
+### ASP.NET Core Controller with Streaming Response
+
+```csharp
+[ApiController]
+[Route("api/[controller]")]
+public class StreamController : ControllerBase
+{
+    private readonly IDurableStreamClient _client;
+
+    public StreamController(IDurableStreamClient client)
+    {
+        _client = client;
+    }
+
+    [HttpGet("{streamId}")]
+    public async IAsyncEnumerable<ChatMessage> GetMessages(
+        string streamId,
+        [FromQuery] string? offset,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var stream = _client.GetStream($"/chats/{streamId}");
+
+        await using var response = await stream.StreamAsync<ChatMessage>(
+            new StreamOptions
+            {
+                Offset = offset ?? Offset.Beginning,
+                Live = LiveMode.LongPoll
+            },
+            cancellationToken);
+
+        await foreach (var message in response.ReadJsonAsync(cancellationToken))
+        {
+            yield return message;
+        }
+    }
+}
+```
+
+### Dynamic Auth Token Refresh
+
+```csharp
+// Following the TypeScript pattern: functions called per-request
+var client = new DurableStreamClientBuilder()
+    .WithHeader("Authorization", async ct =>
+    {
+        // Called for EACH request (including long-poll retries)
+        // Allows token refresh during long-lived sessions
+        var token = await tokenProvider.GetTokenAsync(ct);
+        return $"Bearer {token}";
+    })
+    .Build();
+```
+
+---
+
+## Implementation Details
+
+### HTTP Transport
+
+- Use `HttpClient` with `IHttpClientFactory` for connection pooling
+- Support HTTP/2 for multiplexing
+- Configurable timeouts per operation type
+- Automatic retry with exponential backoff for 5xx and network errors
+
+### SSE Implementation
+
+- Parse SSE events following the W3C spec
+- Handle `data` events (content) and `control` events (offset/cursor)
+- Implement reconnection with offset-based resumption
+- Fall back to long-poll after repeated short connections (proxy buffering detection)
+
+### Batching (IdempotentProducer)
+
+- Use `Channel<T>` for lock-free message queuing
+- Implement linger timer with `PeriodicTimer`
+- Support parallel in-flight batches with sequence gap handling
+- Thread-safe for concurrent `Append()` calls
+
+### Cancellation
+
+- All async operations accept `CancellationToken`
+- Proper cleanup on cancellation (dispose HTTP responses, close connections)
+- Support `[EnumeratorCancellation]` for `IAsyncEnumerable` methods
+
+### Serialization
+
+- Use `System.Text.Json` by default
+- Support custom `JsonSerializerOptions`
+- Efficient streaming deserialization with `Utf8JsonReader`
+- Consider source generators for AOT scenarios
+
+---
+
+## Testing Strategy
+
+### Unit Tests
+
+- Mock `HttpMessageHandler` for HTTP behavior testing
+- Test batching logic in isolation
+- Test sequence gap handling
+- Test SSE parsing
+
+### Integration Tests
+
+- Use the conformance test framework (Docker-based)
+- Run against the development server
+- Cover all protocol scenarios
+
+### Mocking Support
+
+All public types are interfaces or have virtual methods:
+
+```csharp
+// Easy to mock for testing
+var mockClient = new Mock<IDurableStreamClient>();
+var mockStream = new Mock<IDurableStream>();
+var mockResponse = new Mock<IStreamResponse<MyMessage>>();
+
+mockClient.Setup(c => c.GetStream(It.IsAny<string>()))
+    .Returns(mockStream.Object);
+
+mockStream.Setup(s => s.StreamAsync<MyMessage>(It.IsAny<StreamOptions>(), It.IsAny<CancellationToken>()))
+    .ReturnsAsync(mockResponse.Object);
+```
+
+---
+
+## Comparison with Existing Clients
+
+| Feature | TypeScript | Python | Go | C# (proposed) |
+|---------|------------|--------|-----|---------------|
+| Stream Handle | `DurableStream` class | `DurableStream` class | `Stream` struct | `IDurableStream` interface |
+| Read API | `stream()` → `StreamResponse` | `stream()` → `StreamResponse` | `Stream()` → `Response` | `StreamAsync()` → `IStreamResponse` |
+| Streaming | `ReadableStream`, subscribers | async generators | channels | `IAsyncEnumerable<T>` |
+| Batching | `fastq` | `threading.Lock` | channels | `Channel<T>` |
+| Producer | `IdempotentProducer` class | `IdempotentProducer` class | `IdempotentProducer` struct | `IIdempotentProducer` interface |
+| Error Handling | `onError` callback | `on_error` callback | error returns | `OnError` event + exceptions |
+| Lifecycle | N/A | context manager | N/A | `IAsyncDisposable` |
+| DI | N/A | N/A | N/A | `IServiceCollection` extensions |
+
+---
+
+## Future Considerations
+
+1. **Source Generators**: For AOT-friendly JSON serialization
+2. **Native AOT Support**: .NET 8+ Native AOT compatibility
+3. **Metrics**: Integration with `System.Diagnostics.Metrics`
+4. **Tracing**: OpenTelemetry `Activity` support
+5. **gRPC**: Potential gRPC transport option
+6. **Reactive Extensions**: `IObservable<T>` adapters
+
+---
+
+## Appendix: Research Sources
+
+### Confluent Kafka .NET
+- [Official Documentation](https://docs.confluent.io/kafka-clients/dotnet/current/overview.html)
+- [API Design Blog](https://www.confluent.io/blog/designing-the-net-api-for-apache-kafka/)
+- [GitHub](https://github.com/confluentinc/confluent-kafka-dotnet)
+
+### Redis Streams
+- [Redis .NET Tutorial](https://redis.io/learn/develop/dotnet/streams/stream-basics)
+- [StackExchange.Redis Streams](https://stackexchange.github.io/StackExchange.Redis/Streams.html)
+
+### NATS JetStream
+- [NATS .NET Client](https://github.com/nats-io/nats.net)
+- [JetStream Migration Guide](https://natsbyexample.com/examples/jetstream/api-migration/dotnet)
+
+### Apache Pulsar
+- [DotPulsar GitHub](https://github.com/apache/pulsar-dotpulsar)
+- [Pulsar C# Docs](https://pulsar.apache.org/docs/client-libraries-dotnet/)
+
+### AWS Kinesis
+- [AWS SDK for .NET Kinesis](https://docs.aws.amazon.com/sdk-for-net/v3/developer-guide/csharp_kinesis_code_examples.html)
+
+### Google Cloud Pub/Sub
+- [.NET Client Library](https://cloud.google.com/dotnet/docs/reference/Google.Cloud.PubSub.V1/latest)
+
+### Azure Event Hubs
+- [Event Hubs Client Library](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/messaging.eventhubs-readme)
+- [GitHub Samples](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/eventhub/Azure.Messaging.EventHubs)
+
+### RabbitMQ Streams
+- [Stream .NET Client](https://rabbitmq.github.io/rabbitmq-stream-dotnet-client/stable/htmlsingle/index.html)
+- [GitHub](https://github.com/rabbitmq/rabbitmq-stream-dotnet-client)
+
+### .NET Best Practices
+- [IAsyncEnumerable Guide](https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/tutorials/generate-consume-asynchronous-stream)
+- [Cancellation Tokens Best Practices](https://code-maze.com/csharp-cancellation-tokens-with-iasyncenumerable/)
