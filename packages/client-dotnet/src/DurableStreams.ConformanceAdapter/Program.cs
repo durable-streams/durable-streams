@@ -809,7 +809,7 @@ async Task<object> BenchmarkThroughputAppend(JsonElement op)
     stream.ContentType = ct;
     await using var producer = stream.CreateProducer("bench-producer", new IdempotentProducerOptions
     {
-        LingerMs = 0, // Batch by size, not time
+        LingerMs = 1, // Small linger to ensure batches get sent
         ContentType = ct,
         MaxInFlight = concurrency
     });
@@ -826,8 +826,9 @@ async Task<object> BenchmarkThroughputAppend(JsonElement op)
         producer.Append(payload);
     }
 
-    // Wait for all batches to complete
-    await producer.FlushAsync();
+    // Wait for all batches to complete with timeout
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(55));
+    await producer.FlushAsync(cts.Token);
 
     var elapsed = Stopwatch.GetElapsedTime(start);
     var totalBytes = count * size;
@@ -855,12 +856,13 @@ async Task<object> BenchmarkThroughputRead(JsonElement op)
     var totalBytes = 0;
     var count = 0;
 
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(55));
     await using var response = await stream.StreamAsync(new StreamOptions
     {
         Offset = Offset.Beginning
-    });
+    }, cts.Token);
 
-    await foreach (var batch in response.ReadJsonBatchesAsync<Dictionary<string, object>>())
+    await foreach (var batch in response.ReadJsonBatchesAsync<Dictionary<string, object>>(cts.Token))
     {
         foreach (var item in batch.Items)
         {
