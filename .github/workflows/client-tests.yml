@@ -27,7 +27,7 @@ jobs:
 
       - uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "5.9"
+          swift-version: "6.0"
 
       - name: Install dependencies
         run: pnpm install
@@ -83,7 +83,7 @@ jobs:
 
       - uses: swift-actions/setup-swift@v2
         with:
-          swift-version: "5.9"
+          swift-version: "6.0"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4

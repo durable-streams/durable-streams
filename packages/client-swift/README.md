@@ -4,7 +4,7 @@ A Swift client for the [Durable Streams](https://github.com/durable-streams/dura
 
 ## Requirements
 
-- Swift 5.9+
+- Swift 6.0+
 - macOS 13+ / iOS 16+ / tvOS 16+ / watchOS 9+
 
 ## Installation
