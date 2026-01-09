@@ -936,8 +936,20 @@ async fn benchmark_throughput_read(app_state: &AppState, op: &BenchmarkOperation
         loop {
             match iter.next_chunk().await {
                 Ok(Some(chunk)) => {
-                    total_bytes += chunk.data.len();
-                    count += 1;
+                    // Parse JSON like Go does - count individual items and re-serialize
+                    if let Ok(items) = serde_json::from_slice::<Vec<serde_json::Value>>(&chunk.data) {
+                        for item in items {
+                            count += 1;
+                            // Re-serialize to count bytes (like Go)
+                            if let Ok(bytes) = serde_json::to_vec(&item) {
+                                total_bytes += bytes.len();
+                            }
+                        }
+                    } else {
+                        // Fallback for non-array JSON
+                        total_bytes += chunk.data.len();
+                        count += 1;
+                    }
 
                     if chunk.up_to_date {
                         break;

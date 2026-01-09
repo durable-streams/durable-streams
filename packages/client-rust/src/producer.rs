@@ -189,6 +189,39 @@ impl IdempotentProducer {
         Ok(())
     }
 
+    /// Append multiple items at once (more efficient for bulk operations).
+    ///
+    /// Takes a single lock for all items, reducing contention.
+    pub async fn append_many<I, D>(&self, items: I) -> Result<(), ProducerError>
+    where
+        I: IntoIterator<Item = D>,
+        D: Into<Bytes>,
+    {
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(ProducerError::Closed);
+        }
+
+        for item in items {
+            let data = item.into();
+            let entry = PendingEntry {
+                data: data.clone(),
+                #[cfg(feature = "json")]
+                json_data: None,
+            };
+
+            state.pending_batch.push(entry);
+            state.batch_bytes += data.len();
+        }
+
+        // Check if batch should be sent
+        if state.batch_bytes >= self.config.max_batch_bytes {
+            self.send_batch_locked(&mut state).await?;
+        }
+
+        Ok(())
+    }
+
     /// Append JSON data (fire-and-forget).
     #[cfg(feature = "json")]
     pub async fn append_json<T: serde::Serialize>(
