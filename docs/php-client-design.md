@@ -5,6 +5,7 @@
 This document proposes a PHP client design for the Durable Streams protocol, based on research of PHP SDKs for Kafka, Redis Streams, NATS JetStream, Apache Pulsar, AWS Kinesis, Google Cloud Pub/Sub, Azure Event Hubs, and RabbitMQ Streams.
 
 **Key Design Principles:**
+
 1. **Synchronous I/O** - All network I/O blocks; no background threads or async runtime required
 2. **PSR-compliant** - PSR-18 HTTP Client, PSR-7 Messages, PSR-3 Logging
 3. **Fluent builders** - Chainable configuration (Kafka, NATS, Pulsar patterns)
@@ -33,37 +34,39 @@ This document proposes a PHP client design for the Durable Streams protocol, bas
 
 ### Patterns Observed Across PHP Streaming SDKs
 
-| Pattern | Used By | Recommendation |
-|---------|---------|----------------|
-| **Fluent Builder** | Kafka (php-kafka-lib), NATS, Pulsar | ✅ Adopt for Options classes |
-| **Immutable Message Objects** | Kafka, RabbitMQ | ✅ Adopt for `Payload` class |
-| **Generator/Yield Iteration** | All (universal PHP pattern) | ✅ Primary consumption API |
-| **Blocking Poll with Timeout** | Kafka, Redis, NATS | ✅ For long-poll mode |
-| **Callback-based Subscription** | RabbitMQ, NATS | ⚠️ Optional, secondary API |
-| **Explicit flush()** | Kafka (critical), Pulsar | ✅ Required for producers |
-| **PSR-18 HTTP Client** | AWS SDK, Guzzle-based SDKs | ✅ For HTTP transport |
-| **Exception Hierarchy** | All mature SDKs | ✅ Structured error types |
+| Pattern                         | Used By                             | Recommendation               |
+| ------------------------------- | ----------------------------------- | ---------------------------- |
+| **Fluent Builder**              | Kafka (php-kafka-lib), NATS, Pulsar | ✅ Adopt for Options classes |
+| **Immutable Message Objects**   | Kafka, RabbitMQ                     | ✅ Adopt for `Payload` class |
+| **Generator/Yield Iteration**   | All (universal PHP pattern)         | ✅ Primary consumption API   |
+| **Blocking Poll with Timeout**  | Kafka, Redis, NATS                  | ✅ For long-poll mode        |
+| **Callback-based Subscription** | RabbitMQ, NATS                      | ⚠️ Optional, secondary API   |
+| **Explicit flush()**            | Kafka (critical), Pulsar            | ✅ Required for producers    |
+| **PSR-18 HTTP Client**          | AWS SDK, Guzzle-based SDKs          | ✅ For HTTP transport        |
+| **Exception Hierarchy**         | All mature SDKs                     | ✅ Structured error types    |
 
 ### PHP HTTP Streaming Capabilities
 
-| Method | PHP Support | Notes |
-|--------|-------------|-------|
-| **Long-Poll** | ✅ Excellent | Native blocking request; best fit for PHP |
-| **SSE** | ⚠️ Limited | Requires streaming response body; Symfony HttpClient works |
-| **HTTP/2 Streams** | ❌ Poor | Most PHP HTTP clients don't expose HTTP/2 multiplexing |
+| Method             | PHP Support  | Notes                                                      |
+| ------------------ | ------------ | ---------------------------------------------------------- |
+| **Long-Poll**      | ✅ Excellent | Native blocking request; best fit for PHP                  |
+| **SSE**            | ⚠️ Limited   | Requires streaming response body; Symfony HttpClient works |
+| **HTTP/2 Streams** | ❌ Poor      | Most PHP HTTP clients don't expose HTTP/2 multiplexing     |
 
 **Recommendation:** Default to long-poll; SSE as opt-in for long-running CLI consumers.
 
 ### PSR-18 Limitations
 
 PSR-18 is intentionally minimal and does not standardize:
+
 - Streaming response bodies (buffering is implementation-dependent)
 - Request cancellation mid-flight
 - Fine-grained timeout control (connect vs read vs total)
 - SSE event framing
 
 **Implications for this client:**
-- **Cancellation is "soft"**: `StreamResponse::cancel()` prevents the *next* HTTP request,
+
+- **Cancellation is "soft"**: `StreamResponse::cancel()` prevents the _next_ HTTP request,
   but cannot abort an in-flight request. The current poll completes before cancellation.
 - **SSE requires a streaming-capable client**: Symfony HttpClient or a custom cURL wrapper.
   Not all PSR-18 implementations will work for SSE.
@@ -614,6 +617,7 @@ enum ErrorCode: string
 ### Long-Poll Implementation (Default)
 
 **Important:** Termination behavior depends on `live` mode:
+
 - `live: false` (catch-up): Stop when `upToDate` is true
 - `live: 'long-poll'`: Keep polling forever (until cancelled or error)
 - `live: 'sse'`: Keep reading until disconnect
@@ -738,6 +742,7 @@ final class SseHandler
 ### Implementation Design
 
 The producer uses **local batching with synchronous flush**:
+
 - `append()` adds items to an in-memory queue (no I/O)
 - When batch size limit is reached, or `flush()` is called, HTTP requests are made
 - All I/O in `flush()` is blocking/synchronous
@@ -1214,33 +1219,33 @@ durable-streams-php/
 
 ```json
 {
-    "name": "durable-streams/client",
-    "description": "PHP client for Durable Streams protocol",
-    "type": "library",
-    "license": "MIT",
-    "require": {
-        "php": ">=8.1",
-        "psr/http-client": "^1.0",
-        "psr/http-factory": "^1.0",
-        "psr/http-message": "^1.0|^2.0",
-        "psr/log": "^2.0|^3.0"
+  "name": "durable-streams/client",
+  "description": "PHP client for Durable Streams protocol",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": ">=8.1",
+    "psr/http-client": "^1.0",
+    "psr/http-factory": "^1.0",
+    "psr/http-message": "^1.0|^2.0",
+    "psr/log": "^2.0|^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^10.0",
+    "guzzlehttp/guzzle": "^7.0",
+    "symfony/http-client": "^6.0|^7.0"
+  },
+  "suggest": {
+    "guzzlehttp/guzzle": "HTTP client implementation",
+    "symfony/http-client": "Alternative HTTP client with streaming support",
+    "ext-swoole": "For async/coroutine support"
+  },
+  "autoload": {
+    "psr-4": {
+      "DurableStreams\\": "src/"
     },
-    "require-dev": {
-        "phpunit/phpunit": "^10.0",
-        "guzzlehttp/guzzle": "^7.0",
-        "symfony/http-client": "^6.0|^7.0"
-    },
-    "suggest": {
-        "guzzlehttp/guzzle": "HTTP client implementation",
-        "symfony/http-client": "Alternative HTTP client with streaming support",
-        "ext-swoole": "For async/coroutine support"
-    },
-    "autoload": {
-        "psr-4": {
-            "DurableStreams\\": "src/"
-        },
-        "files": ["src/functions.php"]
-    }
+    "files": ["src/functions.php"]
+  }
 }
 ```
 
@@ -1248,15 +1253,15 @@ durable-streams-php/
 
 ## Comparison with Other Clients
 
-| Feature | TypeScript | Python | Go | PHP (Proposed) |
-|---------|-----------|--------|-----|---------------|
-| **Async Model** | Native async/await | sync + async | Goroutines | Sync-only |
-| **Streaming** | ReadableStream | Generator | Iterator | Generator |
-| **HTTP Client** | fetch API | httpx | net/http | PSR-18 |
-| **Batching** | Async queue | Thread + deque | Channels | Local queue + explicit flush |
-| **SSE Support** | ✅ Full | ✅ Full | ✅ Full | ⚠️ Opt-in |
-| **Long-Poll** | ✅ | ✅ | ✅ | ✅ Default |
-| **Builder Pattern** | Options objects | Dataclasses | Functional options | Fluent builders |
+| Feature             | TypeScript         | Python         | Go                 | PHP (Proposed)               |
+| ------------------- | ------------------ | -------------- | ------------------ | ---------------------------- |
+| **Async Model**     | Native async/await | sync + async   | Goroutines         | Sync-only                    |
+| **Streaming**       | ReadableStream     | Generator      | Iterator           | Generator                    |
+| **HTTP Client**     | fetch API          | httpx          | net/http           | PSR-18                       |
+| **Batching**        | Async queue        | Thread + deque | Channels           | Local queue + explicit flush |
+| **SSE Support**     | ✅ Full            | ✅ Full        | ✅ Full            | ⚠️ Opt-in                    |
+| **Long-Poll**       | ✅                 | ✅             | ✅                 | ✅ Default                   |
+| **Builder Pattern** | Options objects    | Dataclasses    | Functional options | Fluent builders              |
 
 ---
 
