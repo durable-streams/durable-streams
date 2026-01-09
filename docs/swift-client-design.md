@@ -147,13 +147,16 @@ public enum LiveMode: Sendable {
     /// HTTP long-polling for updates (CDN-friendly)
     case longPoll
 
-    /// Server-Sent Events for persistent connection
+    /// Server-Sent Events for persistent connection (explicit opt-in)
     case sse
 
     /// Auto-select based on consumption method:
-    /// - .json()/.text() → catchUp
-    /// - .jsonStream()/.bodyStream() → longPoll
-    /// - .subscribe*() → sse
+    /// - Accumulators (.json()/.text()/.bytes()) → catchUp (stop at upToDate)
+    /// - Streams/Subscribers → longPoll (continues with live updates)
+    ///
+    /// Note: SSE is never auto-selected. Use `.sse` explicitly when needed.
+    /// Long-poll is preferred for auto because it works reliably behind
+    /// CDNs/proxies and provides natural backpressure.
     case auto
 }
 ```
@@ -234,22 +237,28 @@ The stream function provides a simple, fetch-like interface for reading streams.
 ```swift
 import DurableStreams
 
-// Read all JSON messages
-let messages = try await DurableStream.stream(url: streamURL)
-    .json(as: [MyMessage].self)
+// Read all JSON messages (returns batch with offset for resumption)
+let result = try await DurableStream.stream(url: streamURL)
+    .json(as: MyMessage.self)
 
-// Stream from a specific offset
-let response = try await DurableStream.stream(
+for message in result.items {
+    process(message)
+}
+saveCheckpoint(result.offset)  // Always have the resumption offset
+
+// Resume from a saved offset
+let resumed = try await DurableStream.stream(
     url: streamURL,
-    offset: lastKnownOffset,
+    offset: savedOffset,
     live: .longPoll
 )
 
 // Iterate over messages as they arrive
-for try await batch in response.jsonStream(as: MyMessage.self) {
+for try await batch in resumed.jsonStream(as: MyMessage.self) {
     for message in batch.items {
         await process(message)
     }
+    saveCheckpoint(batch.offset)  // Checkpoint after each batch
 }
 ```
 
@@ -261,27 +270,34 @@ The response object supports multiple consumption patterns:
 /// Response from a stream request, supporting multiple consumption methods.
 public struct StreamResponse<T: Sendable>: Sendable {
 
-    // MARK: - Accumulators (collect all data)
+    // MARK: - Accumulators (collect all data, return with metadata)
+    //
+    // All accumulators return result types that include the next offset.
+    // This ensures callers always have the resumption point available.
 
-    /// Accumulate all JSON messages into an array.
+    /// Accumulate all JSON messages into a batch with offset.
     /// Uses `.catchUp` live mode behavior.
-    public func json<U: Decodable>(as type: U.Type) async throws -> [U]
+    /// Returns JsonBatch containing items array and the resumption offset.
+    public func json<U: Decodable>(as type: U.Type) async throws -> JsonBatch<U>
 
-    /// Accumulate all text content.
-    public func text() async throws -> String
+    /// Accumulate all text content with metadata.
+    /// Returns TextResult containing text and the resumption offset.
+    public func text() async throws -> TextResult
 
-    /// Accumulate all bytes.
-    public func bytes() async throws -> Data
+    /// Accumulate all bytes with metadata.
+    /// Returns ByteResult containing data and the resumption offset.
+    public func bytes() async throws -> ByteResult
 
     // MARK: - Streams (AsyncSequence)
 
     /// Stream JSON batches as they arrive.
-    /// Uses `.longPoll` live mode by default.
+    /// Uses `.longPoll` live mode for live updates.
     public func jsonStream<U: Decodable>(
         as type: U.Type
     ) -> AsyncThrowingStream<JsonBatch<U>, Error>
 
     /// Stream individual JSON items (flattens batches).
+    /// Note: Use jsonStream() if you need per-batch offset tracking.
     public func jsonItems<U: Decodable>(
         as type: U.Type
     ) -> AsyncThrowingStream<U, Error>
@@ -295,7 +311,7 @@ public struct StreamResponse<T: Sendable>: Sendable {
     // MARK: - Subscribers (with backpressure)
 
     /// Subscribe to JSON messages with explicit backpressure control.
-    /// Uses `.sse` live mode for real-time delivery.
+    /// Uses `.longPoll` for reliable delivery with natural backpressure.
     public func subscribe<U: Decodable>(
         as type: U.Type,
         onMessage: @escaping @Sendable (JsonBatch<U>) async -> SubscriberAction
@@ -311,6 +327,30 @@ public struct StreamResponse<T: Sendable>: Sendable {
 
     /// The offset used for this request
     public let requestOffset: Offset
+}
+
+/// Result of accumulating text content.
+public struct TextResult: Sendable {
+    /// The accumulated text
+    public let text: String
+
+    /// Offset after the last chunk (use for resumption)
+    public let offset: Offset
+
+    /// True if caught up to the current tail
+    public let upToDate: Bool
+}
+
+/// Result of accumulating byte content.
+public struct ByteResult: Sendable {
+    /// The accumulated bytes
+    public let data: Data
+
+    /// Offset after the last chunk (use for resumption)
+    public let offset: Offset
+
+    /// True if caught up to the current tail
+    public let upToDate: Bool
 }
 
 /// Control flow for subscribers
@@ -417,41 +457,73 @@ for try await message in handle.messages(as: ChatMessage.self) {
 
 ### Writing to a Handle
 
+The write API has two modes depending on whether idempotent producer is enabled:
+
+#### Without Idempotent Producer (Simple Mode)
+
+Each append awaits acknowledgment and returns the assigned offset:
+
 ```swift
 extension DurableStreamHandle {
 
-    /// Append a single JSON value.
-    /// With idempotent producer enabled, this is fire-and-forget.
-    @discardableResult
-    public func append<T: Encodable>(_ value: T) async throws -> AppendResult
+    /// Append a single JSON value. Awaits server acknowledgment.
+    public func appendSync<T: Encodable>(_ value: T) async throws -> AppendResult
 
-    /// Append multiple JSON values (sent as a single batch).
-    @discardableResult
-    public func append<T: Encodable>(batch values: [T]) async throws -> AppendResult
+    /// Append multiple JSON values as a batch. Awaits server acknowledgment.
+    public func appendSync<T: Encodable>(batch values: [T]) async throws -> AppendResult
 
-    /// Append raw bytes.
-    @discardableResult
-    public func appendBytes(_ data: Data) async throws -> AppendResult
+    /// Append raw bytes. Awaits server acknowledgment.
+    public func appendBytesSync(_ data: Data) async throws -> AppendResult
+}
 
-    /// Stream bytes to the handle.
-    public func appendStream(_ stream: AsyncStream<Data>) async throws -> AppendResult
+/// Result of a synchronous append operation.
+public struct AppendResult: Sendable {
+    /// The offset assigned to the appended data
+    public let offset: Offset
+}
+```
 
-    /// Flush pending batches (when using batching).
-    public func flush() async throws
+#### With Idempotent Producer (Fire-and-Forget Mode)
+
+Appends are enqueued immediately and batched for efficiency. The offset is only
+known after flush() or when the producer reports via callback:
+
+```swift
+extension DurableStreamHandle {
+
+    /// Enqueue a JSON value for sending (returns immediately).
+    /// The value will be batched and sent automatically.
+    /// Errors are reported via the `onError` callback in configuration.
+    public func append<T: Encodable>(_ value: T)
+
+    /// Enqueue multiple JSON values (returns immediately).
+    public func append<T: Encodable>(batch values: [T])
+
+    /// Enqueue raw bytes (returns immediately).
+    public func appendBytes(_ data: Data)
+
+    /// Wait for all enqueued items to be acknowledged.
+    /// Returns the offset after all pending data.
+    public func flush() async throws -> FlushResult
 
     /// Close the handle, flushing any pending writes.
     public func close() async throws
 }
 
-/// Result of an append operation.
-public struct AppendResult: Sendable {
-    /// The offset assigned to the appended data
+/// Result of a flush operation.
+public struct FlushResult: Sendable {
+    /// The offset after all flushed data
     public let offset: Offset
 
-    /// True if this was a duplicate (idempotent producer detected)
-    public let isDuplicate: Bool
+    /// Number of batches that were duplicates (already on server)
+    public let duplicateCount: Int
 }
 ```
+
+This design follows the TypeScript client where:
+- `append()` is fire-and-forget (enqueues only)
+- Errors go to `onError` callback
+- Offset is known only after `flush()` or via delivery reports
 
 ---
 
@@ -476,11 +548,23 @@ public struct IdempotentProducerConfiguration: Sendable {
     /// Maximum concurrent in-flight batches
     public var maxInFlight: Int
 
+    /// Maximum bytes before sending a batch
+    public var maxBatchBytes: Int
+
+    /// Time to wait for more items before sending (linger time)
+    public var lingerTime: Duration
+
+    /// Error callback for batch failures (since append() is fire-and-forget)
+    public var onError: (@Sendable (Error) -> Void)?
+
     public static func enabled(
         producerId: String,
         initialEpoch: Int = 0,
         autoClaimOnStaleEpoch: Bool = true,
-        maxInFlight: Int = 5
+        maxInFlight: Int = 5,
+        maxBatchBytes: Int = 1_048_576,
+        lingerTime: Duration = .milliseconds(5),
+        onError: (@Sendable (Error) -> Void)? = nil
     ) -> IdempotentProducerConfiguration
 
     public static let disabled: IdempotentProducerConfiguration? = nil
@@ -521,17 +605,24 @@ internal actor IdempotentProducer {
 let handle = try await DurableStreamHandle.create(
     url: streamURL,
     configuration: .init(
-        idempotentProducer: .enabled(producerId: "order-processor-\(instanceId)")
+        idempotentProducer: .enabled(
+            producerId: "order-processor-\(instanceId)",
+            onError: { error in
+                logger.error("Batch failed: \(error)")
+            }
+        )
     )
 )
 
 // Fire-and-forget appends (internally batched and sequenced)
-try await handle.append(OrderCreated(orderId: "123"))
-try await handle.append(OrderUpdated(orderId: "123", status: .processing))
-try await handle.append(OrderCompleted(orderId: "123"))
+// These return immediately - no need to await
+handle.append(OrderCreated(orderId: "123"))
+handle.append(OrderUpdated(orderId: "123", status: .processing))
+handle.append(OrderCompleted(orderId: "123"))
 
 // Ensure all are persisted before proceeding
-try await handle.flush()
+let result = try await handle.flush()
+print("All data written up to offset: \(result.offset)")
 ```
 
 ---
@@ -592,7 +683,12 @@ internal struct SSEEvent: Sendable {
 
 ### Long-Poll Loop
 
-Internal long-poll implementation with cursor handling:
+Internal long-poll implementation with cursor handling.
+
+**Important**: The protocol uses query parameters for offset and live mode, not headers.
+- `?offset=<offset>` - Position to read from
+- `&live=long-poll` - Enable long-polling mode
+- `&cursor=<cursor>` - Echo server's cursor for CDN collapsing
 
 ```swift
 internal func longPollLoop<T: Decodable>(
@@ -606,11 +702,21 @@ internal func longPollLoop<T: Decodable>(
 
     while !Task.isCancelled {
         do {
-            var request = URLRequest(url: url)
-            request.setValue(currentOffset.rawValue, forHTTPHeaderField: "Last-Event-ID")
+            // Build URL with query parameters (per protocol spec)
+            var components = URLComponents(url: url, resolvingAgainstBaseURL: true)!
+            var queryItems = components.queryItems ?? []
+
+            // Required: offset and live mode as query params
+            queryItems.append(URLQueryItem(name: "offset", value: currentOffset.rawValue))
+            queryItems.append(URLQueryItem(name: "live", value: "long-poll"))
+
+            // Optional: cursor for CDN collapsing
             if let cursor = cursor {
-                request.url?.append(queryItems: [URLQueryItem(name: "cursor", value: cursor)])
+                queryItems.append(URLQueryItem(name: "cursor", value: cursor))
             }
+
+            components.queryItems = queryItems
+            var request = URLRequest(url: components.url!)
 
             let (data, response) = try await urlSession.data(for: request)
 
@@ -720,7 +826,80 @@ extension DurableStreamError: LocalizedError {
 }
 ```
 
+### Retry Policies
+
+**Important**: Reads and writes have different retry safety characteristics:
+- **Reads (GET/HEAD)** are always safe to retry
+- **Writes (POST)** are only safe to retry when idempotent producer is enabled
+
+```swift
+/// Retry policy configuration.
+public struct RetryPolicy: Sendable {
+    /// Maximum retry attempts
+    public var maxAttempts: Int
+
+    /// Base delay for exponential backoff
+    public var baseDelay: Duration
+
+    /// Maximum delay cap
+    public var maxDelay: Duration
+
+    /// Jitter factor (0.0 to 1.0)
+    public var jitterFactor: Double
+
+    /// Whether to retry on this error
+    public var shouldRetry: @Sendable (DurableStreamError) -> Bool
+
+    /// Default policy for reads: retry transient errors
+    public static let readDefault = RetryPolicy(
+        maxAttempts: 3,
+        baseDelay: .milliseconds(100),
+        maxDelay: .seconds(5),
+        jitterFactor: 0.2,
+        shouldRetry: { error in
+            switch error {
+            case .serverBusy, .rateLimited, .connectionFailed, .timeout:
+                return true
+            default:
+                return false
+            }
+        }
+    )
+
+    /// Default policy for writes WITHOUT idempotent producer: NO retries
+    /// Retrying non-idempotent writes can cause duplicates!
+    public static let writeDefault = RetryPolicy(
+        maxAttempts: 1,  // No retries
+        baseDelay: .zero,
+        maxDelay: .zero,
+        jitterFactor: 0,
+        shouldRetry: { _ in false }
+    )
+
+    /// Policy for writes WITH idempotent producer: safe to retry
+    public static let idempotentWriteDefault = RetryPolicy(
+        maxAttempts: 3,
+        baseDelay: .milliseconds(100),
+        maxDelay: .seconds(5),
+        jitterFactor: 0.2,
+        shouldRetry: { error in
+            switch error {
+            case .serverBusy, .rateLimited, .connectionFailed, .timeout:
+                return true
+            case .sequenceGap:
+                // Sequence gaps need special handling, not simple retry
+                return false
+            default:
+                return false
+            }
+        }
+    )
+}
+```
+
 ### Custom Error Handler
+
+For application-level error handling (e.g., token refresh on 401):
 
 ```swift
 /// Custom error handling for stream operations.
@@ -735,27 +914,20 @@ public struct StreamErrorHandler: Sendable {
 
     /// Default handler: propagate all errors
     public static let `default` = StreamErrorHandler { _ in .propagate }
-
-    /// Retry transient errors with exponential backoff
-    public static let retryTransient = StreamErrorHandler { error in
-        switch error {
-        case .serverBusy, .rateLimited, .connectionFailed, .timeout:
-            return .retry
-        default:
-            return .propagate
-        }
-    }
 }
 
 public enum ErrorAction: Sendable {
     /// Re-throw the error to the caller
     case propagate
 
-    /// Retry the operation
+    /// Retry the operation (respects retry policy limits)
     case retry
 
     /// Retry after a specific delay
     case retryAfter(Duration)
+
+    /// Retry with updated headers (e.g., refreshed auth token)
+    case retryWithHeaders([String: String])
 
     /// Ignore and continue (for subscribers)
     case `continue`
@@ -825,11 +997,13 @@ public struct HTTPConfiguration: Sendable {
     /// Long-poll timeout (server-side)
     public var longPollTimeout: Duration
 
-    /// Maximum retry attempts
-    public var maxRetries: Int
+    /// Retry policy for read operations (GET/HEAD)
+    public var readRetryPolicy: RetryPolicy
 
-    /// Base delay for exponential backoff
-    public var retryBaseDelay: Duration
+    /// Retry policy for write operations (POST)
+    /// Note: This is ignored when idempotent producer is enabled;
+    /// idempotent writes use idempotentWriteDefault instead.
+    public var writeRetryPolicy: RetryPolicy
 
     /// Custom URLSession (nil uses shared)
     public var urlSession: URLSession?
@@ -837,8 +1011,8 @@ public struct HTTPConfiguration: Sendable {
     public static let `default` = HTTPConfiguration(
         timeout: .seconds(30),
         longPollTimeout: .seconds(55),
-        maxRetries: 3,
-        retryBaseDelay: .milliseconds(100)
+        readRetryPolicy: .readDefault,
+        writeRetryPolicy: .writeDefault
     )
 }
 ```
@@ -1038,13 +1212,16 @@ DurableStreams/
 | Operation | Method | Returns |
 |-----------|--------|---------|
 | Read stream (simple) | `DurableStream.stream(url:)` | `StreamResponse` |
-| Read JSON array | `.json(as:)` | `[T]` |
+| Read JSON (accumulated) | `.json(as:)` | `JsonBatch<T>` (includes offset) |
+| Read text (accumulated) | `.text()` | `TextResult` (includes offset) |
+| Read bytes (accumulated) | `.bytes()` | `ByteResult` (includes offset) |
 | Stream JSON batches | `.jsonStream(as:)` | `AsyncThrowingStream<JsonBatch<T>>` |
 | Stream items | `.jsonItems(as:)` | `AsyncThrowingStream<T>` |
 | Create stream | `DurableStreamHandle.create(url:)` | `DurableStreamHandle` |
 | Connect to stream | `DurableStreamHandle.connect(url:)` | `DurableStreamHandle` |
-| Append JSON | `handle.append(_:)` | `AppendResult` |
-| Append batch | `handle.append(batch:)` | `AppendResult` |
+| Append JSON (sync) | `handle.appendSync(_:)` | `AppendResult` |
+| Append JSON (fire-and-forget) | `handle.append(_:)` | `Void` |
+| Flush pending writes | `handle.flush()` | `FlushResult` |
 | Get metadata | `DurableStreamHandle.head(url:)` | `StreamInfo` |
 | Delete stream | `DurableStreamHandle.delete(url:)` | `Void` |
 
