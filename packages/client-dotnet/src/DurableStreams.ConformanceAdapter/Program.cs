@@ -780,27 +780,29 @@ async Task BenchmarkRoundtrip(JsonElement op)
     var stream = client!.GetStream(path);
     stream.ContentType = contentType;
 
-    // Append first
+    // Append first (this creates the stream if it doesn't exist)
     var result = await stream.AppendAsync(data);
 
-    // Calculate offset before our append
+    // Calculate offset before our append - default to beginning if parse fails
+    var prevOffset = "-1";
     var nextOffsetStr = result.NextOffset?.ToString() ?? "0";
     if (int.TryParse(nextOffsetStr, out var nextOffsetInt))
     {
-        var prevOffset = (nextOffsetInt - data.Length).ToString();
+        prevOffset = (nextOffsetInt - data.Length).ToString();
+    }
 
-        // Read from that offset
-        await using var response = await stream.StreamAsync(new StreamOptions
-        {
-            Offset = new Offset(prevOffset),
-            Live = live
-        });
+    // Read from that offset with a timeout
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    await using var response = await stream.StreamAsync(new StreamOptions
+    {
+        Offset = new Offset(prevOffset),
+        Live = live
+    }, cts.Token);
 
-        // Wait for data
-        await foreach (var chunk in response.ReadBytesAsync())
-        {
-            if (chunk.Data.Length > 0) break;
-        }
+    // Wait for data
+    await foreach (var chunk in response.ReadBytesAsync(cts.Token))
+    {
+        if (chunk.Data.Length > 0) break;
     }
 }
 
