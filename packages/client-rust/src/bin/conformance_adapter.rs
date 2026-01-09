@@ -883,13 +883,12 @@ async fn benchmark_throughput_append(app_state: &AppState, op: &BenchmarkOperati
         .content_type(&content_type)
         .build();
 
-    let payload_vec: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
-    let payload = Bytes::from(payload_vec);  // Convert once, Bytes clone is cheap (ref-counted)
+    let payload: Bytes = (0..size).map(|i| (i % 256) as u8).collect::<Vec<u8>>().into();
 
     let start = Instant::now();
 
     for _ in 0..count {
-        producer.append(payload.clone());  // Fire-and-forget, clone just bumps refcount
+        producer.append(payload.clone());  // Fire-and-forget, clone is cheap (refcount)
     }
 
     let _ = producer.flush().await;

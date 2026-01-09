@@ -28,6 +28,9 @@ futures = "0.3"
 # Bytes handling
 bytes = "1"
 
+# Fast mutex
+parking_lot = "0.12"
+
 # Error handling
 thiserror = "2"
 

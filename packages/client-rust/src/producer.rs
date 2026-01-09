@@ -7,9 +7,10 @@ use crate::stream::{
 };
 use crate::types::Offset;
 use bytes::Bytes;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::sleep;
@@ -100,7 +101,7 @@ impl ProducerBuilder {
             state: Arc::new(Mutex::new(ProducerState {
                 epoch: self.epoch,
                 next_seq: 0,
-                pending_batch: Vec::new(),
+                pending_batch: Vec::with_capacity(1024),
                 batch_bytes: 0,
                 closed: false,
                 epoch_claimed: !self.auto_claim,
@@ -171,7 +172,7 @@ impl IdempotentProducer {
         let data = data.into();
         let data_len = data.len();
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if state.closed {
             return; // Silently ignore if closed
         }
@@ -197,7 +198,7 @@ impl IdempotentProducer {
             Err(_) => return, // Silently ignore serialization errors
         };
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if state.closed {
             return;
         }
@@ -218,7 +219,7 @@ impl IdempotentProducer {
     pub async fn flush(&self) -> Result<(), ProducerError> {
         loop {
             {
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock();
 
                 // Send any pending batch
                 if !state.pending_batch.is_empty() {
@@ -242,7 +243,7 @@ impl IdempotentProducer {
     pub async fn close(&self) -> Result<(), ProducerError> {
         self.flush().await?;
 
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.closed = true;
 
         Ok(())
@@ -250,12 +251,12 @@ impl IdempotentProducer {
 
     /// Get the current epoch.
     pub fn epoch(&self) -> u64 {
-        self.state.lock().unwrap().epoch
+        self.state.lock().epoch
     }
 
     /// Get the next sequence number.
     pub fn next_seq(&self) -> u64 {
-        self.state.lock().unwrap().next_seq
+        self.state.lock().next_seq
     }
 
     fn send_batch_locked(&self, state: &mut ProducerState) {
@@ -300,7 +301,7 @@ impl IdempotentProducer {
 
             // Update epoch if claimed
             if result.is_ok() {
-                let mut state = state_arc.lock().unwrap();
+                let mut state = state_arc.lock();
                 if !state.epoch_claimed {
                     state.epoch_claimed = true;
                 }
@@ -435,7 +436,7 @@ async fn do_send_batch_with_retry(
                 // Auto-claim: retry with epoch+1
                 let new_epoch = server_epoch + 1;
                 {
-                    let mut s = state.lock().unwrap();
+                    let mut s = state.lock();
                     s.epoch = new_epoch;
                     s.next_seq = 1; // This batch uses seq 0
                 }
