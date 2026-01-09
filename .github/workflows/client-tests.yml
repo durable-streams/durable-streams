@@ -25,6 +25,10 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
       - name: Install dependencies
         run: pnpm install
 
@@ -36,6 +40,11 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Build Swift client adapter
+        run: |
+          cd packages/client-swift
+          swift build -c release
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -45,6 +54,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run Swift client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-swift/run-conformance-adapter.sh
 
   benchmarks:
     name: Client Benchmarks
@@ -67,6 +81,10 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
@@ -88,6 +106,11 @@ jobs:
         run: |
           cd packages/client-py
           uv sync
+
+      - name: Build Swift client adapter
+        run: |
+          cd packages/client-swift
+          swift build -c release
 
       - name: Run TypeScript client benchmarks
         id: ts_benchmarks
@@ -140,6 +163,23 @@ jobs:
           echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Swift client benchmarks
+        id: swift_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format json > benchmark-results-swift.json
+          cat benchmark-results-swift.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-swift.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-swift.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-swift.json)
+
+          echo "swift_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "swift_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "swift_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,6 +189,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-ts.json
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
+            packages/client-conformance-tests/benchmark-results-swift.json
 
       - name: Generate benchmark report
         if: always() && github.event_name == 'pull_request'
@@ -165,6 +206,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
 
           cat benchmark-report.md
 
@@ -211,11 +255,12 @@ jobs:
           TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
+          SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
