@@ -67,8 +67,12 @@ DurableStreams/
 
 ### Target Framework
 
-- **.NET 8.0+** (primary target)
-- **.NET Standard 2.1** (for broader compatibility)
+- **.NET 8.0+** (required)
+
+> **Note**: We target .NET 8+ only (no .NET Standard 2.1) because the implementation
+> relies on modern APIs like `PeriodicTimer`, `Channel<T>` optimizations, and HTTP/2
+> multiplexing that are not available or performant on older runtimes. For 2026-era
+> .NET development, this is the pragmatic choice.
 
 ### NuGet Package Name
 
@@ -230,10 +234,20 @@ public interface IDurableStream
 
 The streaming read session, with multiple consumption patterns.
 
+> **Consumer Semantics**: `IStreamResponse` is a **single-consumer** abstraction.
+> Only ONE of the `Read*Async()` or `ReadAll*Async()` methods should be called
+> per response instance. Calling multiple methods on the same response will result
+> in partial/interleaved data or `InvalidOperationException`. If you need multiple
+> consumption modes, create separate `StreamAsync()` sessions.
+
 ```csharp
 /// <summary>
 /// A streaming read session with multiple consumption patterns.
 /// Implements IAsyncDisposable for proper cleanup.
+///
+/// IMPORTANT: This is a single-consumer abstraction. Only call ONE Read* method
+/// per response instance. The response owns a network connection and must be
+/// disposed via 'await using'.
 /// </summary>
 public interface IStreamResponse<TJson> : IAsyncDisposable
 {
@@ -242,19 +256,19 @@ public interface IStreamResponse<TJson> : IAsyncDisposable
     string Url { get; }
     string? ContentType { get; }
     LiveMode Live { get; }
-    string StartOffset { get; }
+    Offset StartOffset { get; }
 
     // === Evolving State ===
 
     /// <summary>
     /// Current offset (advances as data is consumed).
     /// </summary>
-    string Offset { get; }
+    Offset Offset { get; }
 
     /// <summary>
-    /// Cursor for CDN collapsing.
+    /// Current checkpoint (offset + cursor for resumption).
     /// </summary>
-    string? Cursor { get; }
+    StreamCheckpoint Checkpoint { get; }
 
     /// <summary>
     /// Whether we've reached the current end of stream.
@@ -380,9 +394,51 @@ public interface IIdempotentProducer : IAsyncDisposable
 
     /// <summary>
     /// Event raised when a batch error occurs.
+    /// May fire from background threads; handlers should be thread-safe.
     /// </summary>
     event EventHandler<ProducerErrorEventArgs>? OnError;
+
+    /// <summary>
+    /// Attempt to append data without blocking. Returns false if buffer is full.
+    /// Use this for backpressure-aware producers.
+    /// </summary>
+    bool TryAppend(ReadOnlyMemory<byte> data);
+
+    /// <summary>
+    /// Attempt to append JSON data without blocking. Returns false if buffer is full.
+    /// </summary>
+    bool TryAppend<T>(T data);
 }
+
+/// <summary>
+/// Event arguments for producer errors.
+/// </summary>
+public class ProducerErrorEventArgs : EventArgs
+{
+    /// <summary>
+    /// The exception that occurred.
+    /// </summary>
+    public required Exception Exception { get; init; }
+
+    /// <summary>
+    /// Whether the error is retryable (e.g., transient network error).
+    /// </summary>
+    public required bool IsRetryable { get; init; }
+
+    /// <summary>
+    /// The epoch when the error occurred.
+    /// </summary>
+    public required int Epoch { get; init; }
+
+    /// <summary>
+    /// The sequence range of the failed batch [StartSeq, EndSeq].
+    /// </summary>
+    public required (int StartSeq, int EndSeq) SequenceRange { get; init; }
+
+    /// <summary>
+    /// Number of messages in the failed batch.
+    /// </summary>
+    public required int MessageCount { get; init; }
 ```
 
 ---
@@ -466,6 +522,19 @@ public class IdempotentProducerOptions
     /// Maximum concurrent batches in flight.
     /// </summary>
     public int MaxInFlight { get; set; } = 5;
+
+    /// <summary>
+    /// Maximum number of messages that can be buffered before backpressure
+    /// is applied. When reached, Append() blocks and TryAppend() returns false.
+    /// Default: 10000. Set to 0 for unbounded (not recommended).
+    /// </summary>
+    public int MaxBufferedMessages { get; set; } = 10_000;
+
+    /// <summary>
+    /// Maximum total bytes that can be buffered before backpressure is applied.
+    /// Default: 64MB. Set to 0 for unbounded (not recommended).
+    /// </summary>
+    public long MaxBufferedBytes { get; set; } = 64 * 1024 * 1024;
 }
 ```
 
@@ -708,7 +777,14 @@ builder.Services.AddDurableStreams(builder.Configuration);
 
 ```csharp
 /// <summary>
-/// Opaque stream offset. Use as-is; do not parse or construct.
+/// Opaque stream offset token.
+///
+/// Per protocol specification (Section 6):
+/// - Offsets are OPAQUE: do not parse or construct arbitrary offset values
+/// - Offsets are LEXICOGRAPHICALLY SORTABLE: comparison operators are valid
+///   and reflect stream position ordering
+/// - Only use offsets received from the server (Stream-Next-Offset header,
+///   control events) or the sentinel values (Beginning, Now)
 /// </summary>
 public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
 {
@@ -739,6 +815,25 @@ public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
 }
 ```
 
+### StreamCheckpoint
+
+```csharp
+/// <summary>
+/// A checkpoint for resuming stream consumption.
+/// Combines offset (position) with cursor (CDN collapsing optimization).
+/// Persist this to enable resumption after disconnection or restart.
+/// </summary>
+public readonly record struct StreamCheckpoint(
+    Offset Offset,
+    string? Cursor = null)
+{
+    /// <summary>
+    /// Create a checkpoint from just an offset (no cursor).
+    /// </summary>
+    public static implicit operator StreamCheckpoint(Offset offset) => new(offset);
+}
+```
+
 ### Batch Types
 
 ```csharp
@@ -747,27 +842,24 @@ public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
 /// </summary>
 public readonly record struct JsonBatch<T>(
     IReadOnlyList<T> Items,
-    Offset Offset,
-    bool UpToDate,
-    string? Cursor = null);
+    StreamCheckpoint Checkpoint,
+    bool UpToDate);
 
 /// <summary>
 /// A chunk of raw bytes with metadata.
 /// </summary>
 public readonly record struct ByteChunk(
     ReadOnlyMemory<byte> Data,
-    Offset Offset,
-    bool UpToDate,
-    string? Cursor = null);
+    StreamCheckpoint Checkpoint,
+    bool UpToDate);
 
 /// <summary>
 /// A chunk of text with metadata.
 /// </summary>
 public readonly record struct TextChunk(
     string Text,
-    Offset Offset,
-    bool UpToDate,
-    string? Cursor = null);
+    StreamCheckpoint Checkpoint,
+    bool UpToDate);
 
 /// <summary>
 /// Stream metadata from HEAD request.
@@ -959,8 +1051,8 @@ try
             Console.WriteLine($"Temp: {reading.Value}C at {reading.Timestamp}");
         }
 
-        // Save checkpoint
-        await SaveCheckpointAsync(batch.Offset);
+        // Save checkpoint (includes offset + cursor for optimal resumption)
+        await SaveCheckpointAsync(batch.Checkpoint);
     }
 }
 catch (OperationCanceledException)
@@ -1024,6 +1116,32 @@ var client = new DurableStreamClientBuilder()
 
 ---
 
+## Delivery Semantics
+
+Understanding the delivery guarantees is critical for correct usage:
+
+| API | Delivery Semantics | When to Use |
+|-----|-------------------|-------------|
+| `IDurableStream.AppendAsync()` | **At-most-once** | Simple cases where duplicates are unacceptable and you handle retries yourself |
+| `IIdempotentProducer.Append()` | **Exactly-once** (within epoch) | Production workloads requiring fire-and-forget with guaranteed delivery |
+| `IStreamResponse.Read*Async()` | **At-least-once** | Always safe; offset-based resumption handles duplicates |
+
+**Plain Append (`AppendAsync`)**:
+- No automatic retry (to avoid duplicates)
+- If the network fails mid-request, you don't know if data was written
+- For critical data, use `IIdempotentProducer` instead
+
+**Idempotent Producer**:
+- Server-side deduplication via `(producerId, epoch, seq)` headers
+- Safe to retry on any transient error
+- Exactly-once within an epoch; at-least-once across producer restarts unless epoch is persisted
+
+**Reads**:
+- Always resumable from any checkpoint
+- Protocol guarantees byte-exact resumption without skips or duplicates
+
+---
+
 ## Implementation Details
 
 ### HTTP Transport
@@ -1031,7 +1149,29 @@ var client = new DurableStreamClientBuilder()
 - Use `HttpClient` with `IHttpClientFactory` for connection pooling
 - Support HTTP/2 for multiplexing
 - Configurable timeouts per operation type
-- Automatic retry with exponential backoff for 5xx and network errors
+
+### Retry Policy
+
+**Critical**: Retry behavior differs by operation to avoid data corruption.
+
+| Operation | Retry Behavior |
+|-----------|---------------|
+| **HEAD** (metadata) | Retry on 5xx, network errors |
+| **GET** (reads) | Retry on 5xx, network errors (idempotent) |
+| **PUT** (create) | Retry on 5xx, network errors (idempotent due to protocol) |
+| **DELETE** | Retry on 5xx, network errors (idempotent) |
+| **POST** (plain append) | **NO RETRY** - may cause duplicates |
+| **POST** (idempotent producer) | Retry on 5xx, network errors (safe due to epoch/seq) |
+
+For `IDurableStream.AppendAsync()` (plain append without idempotent producer):
+- Errors are propagated immediately to the caller
+- Callers who need retry should use `IIdempotentProducer` instead
+- This provides **at-most-once** semantics for plain appends
+
+For `IIdempotentProducer`:
+- Automatic retry with exponential backoff (5xx, network errors)
+- Server-side deduplication via epoch/seq ensures exactly-once
+- 409 (sequence gap) triggers wait-and-retry for out-of-order pipelining
 
 ### SSE Implementation
 
