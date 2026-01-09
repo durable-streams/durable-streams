@@ -226,8 +226,8 @@ public final class DurableStream implements AutoCloseable {
     // Instance methods when using builder
     public StreamHandle stream(String url);
     public StreamHandle stream(URI url);
-    public IdempotentProducer newProducer(String url);
-    public StreamConsumer newConsumer(String url);
+    public ProducerBuilder newProducer(String url);   // Returns builder, not producer
+    public ConsumerBuilder newConsumer(String url);   // Returns builder, not consumer
 
     @Override
     public void close();
@@ -239,8 +239,8 @@ public final class DurableStream implements AutoCloseable {
 ```java
 public final class DurableStreamBuilder {
 
-    // HTTP configuration
-    public DurableStreamBuilder httpClient(HttpClient client);
+    // HTTP configuration (uses SPI - core module has no HttpClient dependency)
+    public DurableStreamBuilder httpClientProvider(HttpClientProvider provider);
     public DurableStreamBuilder connectTimeout(Duration timeout);
     public DurableStreamBuilder readTimeout(Duration timeout);
 
@@ -343,8 +343,23 @@ public enum LiveMode {
 
 ### 4.5 Iterators (Inspired by Kafka's ConsumerRecords)
 
+**Design Decision**: Iterators implement both `Iterator` and `Iterable` to support natural for-each loops
+while remaining `AutoCloseable` for resource management.
+
 ```java
-public interface ChunkIterator extends Iterator<Chunk>, AutoCloseable {
+/**
+ * Iterable + Iterator + AutoCloseable allows natural for-each usage:
+ *   try (var chunks = handle.read()) {
+ *       for (var chunk : chunks) { ... }
+ *   }
+ */
+public interface ChunkIterator extends Iterator<Chunk>, Iterable<Chunk>, AutoCloseable {
+
+    // Iterable implementation (returns self)
+    @Override
+    default Iterator<Chunk> iterator() {
+        return this;
+    }
 
     // Current position
     Offset currentOffset();
@@ -363,7 +378,12 @@ public interface ChunkIterator extends Iterator<Chunk>, AutoCloseable {
     void close();
 }
 
-public interface JsonIterator<T> extends Iterator<JsonBatch<T>>, AutoCloseable {
+public interface JsonIterator<T> extends Iterator<JsonBatch<T>>, Iterable<JsonBatch<T>>, AutoCloseable {
+
+    @Override
+    default Iterator<JsonBatch<T>> iterator() {
+        return this;
+    }
 
     // Flatten to individual items
     Iterator<T> items();
@@ -383,16 +403,40 @@ public interface JsonIterator<T> extends Iterator<JsonBatch<T>>, AutoCloseable {
 
 ### 4.6 Model Classes
 
+**Chunk vs Message Clarification**:
+- A **Chunk** represents one HTTP response body from the server. For binary streams, this is
+  raw bytes. For JSON streams, a chunk may contain multiple JSON messages (as a JSON array).
+- A **JsonBatch** is the parsed form of a JSON chunk, containing a `List<T>` of individual messages.
+- The term "Message" is avoided at the API level because the protocol operates on chunks/batches,
+  not individual messages. Use `JsonBatch.items()` to access individual JSON messages.
+
 ```java
+/**
+ * Opaque offset token identifying a position within a stream.
+ *
+ * <p><b>Comparison scope</b>: Offsets are only comparable within the SAME stream.
+ * Comparing offsets from different streams is undefined behavior and will produce
+ * meaningless results. The protocol guarantees lexicographic ordering only within
+ * a single stream's offset space.
+ *
+ * <p><b>Sentinel values</b>: {@link #BEGINNING} (-1) and {@link #NOW} are protocol-defined
+ * special values. All other offsets are opaque server-issued tokens.
+ */
 public record Offset(String value) implements Comparable<Offset> {
+    /** Start of stream. Equivalent to omitting offset parameter. */
     public static final Offset BEGINNING = new Offset("-1");
+    /** Current tail position. Skips existing data, reads only future appends. */
     public static final Offset NOW = new Offset("now");
 
     public static Offset of(String value);
 
+    /**
+     * Lexicographic comparison. Valid ONLY for offsets from the same stream.
+     * @throws IllegalArgumentException if comparing sentinel values with real offsets
+     */
     @Override
     public int compareTo(Offset other) {
-        return this.value.compareTo(other.value);  // Lexicographic
+        return this.value.compareTo(other.value);
     }
 }
 
@@ -551,6 +595,20 @@ public record ErrorContext(
 
 ## 7. Streaming Modes
 
+**The `upToDate` Contract**:
+
+The `upToDate` flag in `Chunk` and `JsonBatch` indicates whether the client has caught up to
+the stream's tail at the time the server generated the response. Its behavior varies by mode:
+
+| Mode | `upToDate` Behavior |
+|------|---------------------|
+| **Catch-up** | `true` on the final chunk; iterator terminates automatically |
+| **Long-poll** | `true` when poll returns data that reaches the tail; next poll will block |
+| **SSE** | `true` on every chunk that reaches the current tail; new data may arrive immediately |
+
+**Important**: `upToDate=true` does NOT mean "no more data will ever arrive." It means "no more
+data available *right now*." In live modes, more data may arrive immediately after.
+
 ### 7.1 Catch-Up Mode (Default)
 
 ```java
@@ -558,7 +616,7 @@ public record ErrorContext(
 var handle = DurableStream.connect(url);
 for (var chunk : handle.read()) {
     process(chunk);
-    // Automatically stops when chunk.upToDate() == true
+    // Iterator stops after delivering chunk where upToDate() == true
 }
 ```
 
@@ -588,8 +646,8 @@ var options = ReadOptions.builder()
     .sse()
     .build();
 
-try (var iterator = handle.read(options)) {
-    for (var chunk : (Iterable<Chunk>) () -> iterator) {
+try (var chunks = handle.read(options)) {
+    for (var chunk : chunks) {  // Natural for-each - no cast needed
         process(chunk);
     }
 }
@@ -597,7 +655,7 @@ try (var iterator = handle.read(options)) {
 
 ### 7.4 Consumer Pattern (Like Pub/Sub's MessageReceiver)
 
-For callback-based consumption:
+For callback-based consumption with backpressure support:
 
 ```java
 public interface StreamConsumer extends AutoCloseable {
@@ -607,15 +665,41 @@ public interface StreamConsumer extends AutoCloseable {
     boolean isRunning();
 }
 
-// Usage
+/**
+ * Handler interfaces - sync and async variants for backpressure control.
+ */
+@FunctionalInterface
+public interface ChunkHandler {
+    /** Synchronous handler. Return true to continue, false to stop. */
+    boolean handle(Chunk chunk);
+}
+
+@FunctionalInterface
+public interface AsyncChunkHandler {
+    /** Async handler for non-blocking processing. Completes with true to continue, false to stop. */
+    CompletableFuture<Boolean> handle(Chunk chunk);
+}
+
+// Sync usage (simple cases)
 var consumer = client.newConsumer(url)
     .offset(Offset.BEGINNING)
     .live(LiveMode.SSE)
     .handler(chunk -> {
         process(chunk);
-        // Return true to continue, false to stop
         return true;
     })
+    .errorHandler((error, ctx) -> ErrorAction.Retry.unchanged())
+    .build();
+
+// Async usage (for IO-bound handlers, avoids blocking reader thread)
+var consumer = client.newConsumer(url)
+    .offset(Offset.BEGINNING)
+    .live(LiveMode.SSE)
+    .asyncHandler(chunk -> {
+        return saveToDatabase(chunk)  // Returns CompletableFuture
+            .thenApply(saved -> true);
+    })
+    .maxBufferedChunks(100)  // Backpressure: pause reading when buffer full
     .errorHandler((error, ctx) -> ErrorAction.Retry.unchanged())
     .build();
 
@@ -674,6 +758,9 @@ public final class ProducerBuilder {
     public ProducerBuilder epoch(long epoch);
     public ProducerBuilder startingSeq(long seq);
 
+    // Epoch recovery (for serverless/ephemeral environments)
+    public ProducerBuilder autoClaimOnStaleEpoch(boolean autoClaim);  // Retry with current+1 on 403
+
     // Batching
     public ProducerBuilder batchConfig(BatchConfig config);
     public ProducerBuilder maxBatchBytes(int bytes);
@@ -727,8 +814,8 @@ var producer = client.newProducer(url)
 // With explicit type
 record Event(String type, Map<String, Object> data) {}
 
-try (var iterator = handle.readJson(Event.class)) {
-    for (var batch : (Iterable<JsonBatch<Event>>) () -> iterator) {
+try (var batches = handle.readJson(Event.class)) {
+    for (var batch : batches) {  // Natural for-each
         for (Event event : batch) {
             process(event);
         }
@@ -793,8 +880,8 @@ var client = DurableStream.builder()
 ```java
 // Try-with-resources (recommended)
 try (var client = DurableStream.builder().build();
-     var iterator = client.stream(url).read()) {
-    for (var chunk : (Iterable<Chunk>) () -> iterator) {
+     var chunks = client.stream(url).read()) {
+    for (var chunk : chunks) {  // Natural for-each
         process(chunk);
     }
 }
@@ -1262,11 +1349,14 @@ lifecycleScope.launch {
 
 ### 14.3 Java Version Support
 
-| Java Version | Support Level |
-|--------------|---------------|
-| Java 11 | Full support (minimum requirement) |
-| Java 17 | Full support (LTS recommended) |
-| Java 21 | Full support + Virtual Threads |
+| Module | Minimum Java | Notes |
+|--------|--------------|-------|
+| `durable-streams-core` | Java 8 | Core API + SPI only, no HTTP impl |
+| `durable-streams-jdk` | Java 11 | Uses `java.net.http.HttpClient` |
+| `durable-streams-okhttp` | Java 8 / Android API 21+ | Uses OkHttp |
+| `durable-streams-ktor` | Java 8 / Kotlin 1.6+ | Uses Ktor Client |
+
+**Recommended**: Java 17 LTS for server applications, Java 21 for Virtual Threads support.
 
 ---
 
