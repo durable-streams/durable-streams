@@ -87,12 +87,6 @@ public final class IdempotentProducer implements AutoCloseable {
             throw new DurableStreamException("Producer is closed");
         }
 
-        // Check for pending errors
-        DurableStreamException error = errors.poll();
-        if (error != null) {
-            throw error;
-        }
-
         byte[] bytes = serialize(data);
 
         synchronized (batchLock) {
@@ -115,6 +109,9 @@ public final class IdempotentProducer implements AutoCloseable {
     public void flush() throws DurableStreamException {
         // Keep sending until all batches are dispatched and completed
         while (true) {
+            boolean hasPending;
+            boolean hasInFlight;
+
             synchronized (batchLock) {
                 // Cancel any pending linger timer
                 if (lingerTimer != null) {
@@ -122,30 +119,31 @@ public final class IdempotentProducer implements AutoCloseable {
                     lingerTimer = null;
                 }
 
-                // Keep trying to send pending batch
+                // Send any pending batch
                 if (!pendingBatch.isEmpty()) {
-                    // Force send even if at capacity by waiting
-                    while (inFlight.get() >= config.maxInFlight && !pendingBatch.isEmpty()) {
-                        try {
-                            batchLock.wait(1);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                            throw new DurableStreamException("Flush interrupted", e);
-                        }
-                    }
-                    if (!pendingBatch.isEmpty()) {
-                        sendBatchForFlush();
-                    }
+                    sendBatchForFlush();
                 }
 
-                // Check if done
-                if (pendingBatch.isEmpty() && inFlight.get() == 0) {
-                    break;
-                }
+                hasPending = !pendingBatch.isEmpty();
+                hasInFlight = inFlight.get() > 0;
+            }
+            // Lock released - allow new appends to proceed
+
+            if (!hasPending && !hasInFlight) {
+                break;
             }
 
-            // Brief yield to let in-flight complete
-            Thread.yield();
+            // Wait for at least one in-flight to complete
+            if (hasInFlight) {
+                CompletableFuture<Void> anyFuture = inFlightFutures.peek();
+                if (anyFuture != null) {
+                    try {
+                        anyFuture.get(100, TimeUnit.MILLISECONDS);
+                    } catch (Exception ignored) {
+                        // Timeout or completion - either way, loop again
+                    }
+                }
+            }
         }
 
         // Check for errors
@@ -173,9 +171,6 @@ public final class IdempotentProducer implements AutoCloseable {
         future.whenComplete((v, ex) -> {
             inFlight.decrementAndGet();
             inFlightFutures.remove(future);
-            synchronized (batchLock) {
-                batchLock.notifyAll();
-            }
         });
     }
 
