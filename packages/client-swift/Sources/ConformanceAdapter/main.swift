@@ -209,6 +209,11 @@ let state = AdapterState()
 
 // MARK: - Main Loop
 
+// Helper to flush stdout safely in async context
+nonisolated func flushOutput() {
+    fflush(stdout)
+}
+
 func main() async {
     let encoder = JSONEncoder()
     encoder.outputFormatting = []
@@ -223,7 +228,7 @@ func main() async {
             let jsonData = try encoder.encode(result)
             if let jsonString = String(data: jsonData, encoding: .utf8) {
                 print(jsonString)
-                fflush(stdout)
+                flushOutput()
             }
 
             if command.type == "shutdown" {
@@ -240,7 +245,7 @@ func main() async {
             if let jsonData = try? encoder.encode(errorResult),
                let jsonString = String(data: jsonData, encoding: .utf8) {
                 print(jsonString)
-                fflush(stdout)
+                flushOutput()
             }
         }
     }
@@ -522,9 +527,6 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    // Get content type
-    let contentType = await state.getContentType(path: path) ?? "application/octet-stream"
-
     do {
         let stream = try await DurableStream.connect(url: url)
 
@@ -541,15 +543,15 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
         await producer.appendString(data)
 
         // Flush to ensure it's sent
-        let result = try await producer.flush()
+        let flushResult = try await producer.flush()
         try await producer.close()
 
         return Result(
             type: "idempotent-append",
             success: true,
             status: 200,
-            offset: result.offset.rawValue,
-            duplicate: result.duplicateCount > 0
+            offset: flushResult.offset.rawValue,
+            duplicate: flushResult.duplicateCount > 0
         )
     } catch let error as DurableStreamError {
         return errorResult(cmd.type, error.code.rawValue, error.message, status: error.status)
@@ -589,7 +591,7 @@ func handleIdempotentAppendBatch(_ cmd: Command) async -> Result {
         }
 
         // Flush to ensure all are sent
-        let result = try await producer.flush()
+        _ = try await producer.flush()
         try await producer.close()
 
         return Result(
