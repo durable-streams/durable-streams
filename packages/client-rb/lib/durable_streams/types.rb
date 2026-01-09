@@ -1,0 +1,85 @@
+# frozen_string_literal: true
+
+module DurableStreams
+  # HTTP header names
+  STREAM_NEXT_OFFSET_HEADER = "stream-next-offset"
+  STREAM_UP_TO_DATE_HEADER = "stream-up-to-date"
+  STREAM_CURSOR_HEADER = "stream-cursor"
+  STREAM_TTL_HEADER = "stream-ttl"
+  STREAM_EXPIRES_AT_HEADER = "stream-expires-at"
+  STREAM_SEQ_HEADER = "stream-seq"
+  PRODUCER_ID_HEADER = "producer-id"
+  PRODUCER_EPOCH_HEADER = "producer-epoch"
+  PRODUCER_SEQ_HEADER = "producer-seq"
+  PRODUCER_EXPECTED_SEQ_HEADER = "producer-expected-seq"
+  PRODUCER_RECEIVED_SEQ_HEADER = "producer-received-seq"
+
+  # Result from HEAD request
+  # next_offset: The tail offset (position after last byte, where next append goes)
+  HeadResult = Struct.new(:exists, :content_type, :next_offset, :etag, :cache_control, keyword_init: true) do
+    def exists?
+      exists
+    end
+  end
+
+  # Result from append
+  # next_offset: The new tail offset after this append (for checkpointing)
+  AppendResult = Struct.new(:next_offset, :duplicate, keyword_init: true) do
+    def duplicate?
+      duplicate || false
+    end
+  end
+
+  # A batch of JSON messages with metadata
+  # next_offset: Position to resume from (pass to next read)
+  JsonBatch = Struct.new(:items, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def up_to_date?
+      up_to_date || false
+    end
+  end
+
+  # A byte chunk (for non-JSON streams)
+  # next_offset: Position to resume from (pass to next read)
+  ByteChunk = Struct.new(:data, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def up_to_date?
+      up_to_date || false
+    end
+  end
+
+  # Retry policy configuration
+  RetryPolicy = Struct.new(:max_retries, :initial_delay, :max_delay, :multiplier, :retryable_statuses,
+                           keyword_init: true) do
+    def self.default
+      new(
+        max_retries: 5,
+        initial_delay: 0.1,
+        max_delay: 30.0,
+        multiplier: 2.0,
+        retryable_statuses: [429, 500, 502, 503, 504]
+      )
+    end
+  end
+
+  # Idempotent append result
+  IdempotentAppendResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
+    def duplicate?
+      duplicate || false
+    end
+  end
+
+  # Check if content type is JSON
+  def self.json_content_type?(content_type)
+    return false if content_type.nil?
+
+    normalized = content_type.split(";").first&.strip&.downcase
+    normalized == "application/json"
+  end
+
+  # Check if content type supports SSE
+  def self.sse_compatible?(content_type)
+    return false if content_type.nil?
+
+    normalized = content_type.split(";").first&.strip&.downcase
+    normalized == "application/json" || normalized&.start_with?("text/")
+  end
+end
