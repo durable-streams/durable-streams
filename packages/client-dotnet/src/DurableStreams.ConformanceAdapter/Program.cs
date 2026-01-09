@@ -21,7 +21,7 @@ var dynamicCounters = new Dictionary<string, int>();
 
 // Main loop - read JSON commands from stdin, write results to stdout
 using var reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8);
-using var writer = new StreamWriter(Console.OpenStandardOutput(), Encoding.UTF8) { AutoFlush = true };
+using var writer = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
 
 string? line;
 while ((line = await reader.ReadLineAsync()) != null)
