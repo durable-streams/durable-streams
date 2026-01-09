@@ -290,33 +290,22 @@ async Task<object> HandleRead(JsonElement root)
         {
             await foreach (var chunk in response.ReadBytesAsync(cts.Token))
             {
-                string chunkData;
-                bool isBinary = false;
-
-                // Check if content is binary
-                var contentType = stream.ContentType ?? "";
-                if (contentType.StartsWith("text/") || contentType == "application/json")
-                {
-                    chunkData = Encoding.UTF8.GetString(chunk.Data.Span);
-                }
-                else
-                {
-                    chunkData = Convert.ToBase64String(chunk.Data.Span);
-                    isBinary = true;
-                }
-
-                chunks.Add(new
-                {
-                    data = chunkData,
-                    binary = isBinary ? true : (bool?)null,
-                    offset = chunk.Checkpoint.Offset.ToString()
-                });
-
                 finalOffset = chunk.Checkpoint.Offset.ToString();
                 upToDate = chunk.UpToDate;
                 cursor = chunk.Checkpoint.Cursor;
 
-                chunkCount++;
+                // Only add chunks with data (matches Go behavior)
+                if (chunk.Data.Length > 0)
+                {
+                    var chunkData = Encoding.UTF8.GetString(chunk.Data.Span);
+                    chunks.Add(new
+                    {
+                        data = chunkData,
+                        offset = chunk.Checkpoint.Offset.ToString()
+                    });
+                    chunkCount++;
+                }
+
                 if (chunkCount >= maxChunks) break;
                 if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
                 if (upToDate && waitForUpToDate) break;
