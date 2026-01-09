@@ -8,16 +8,16 @@ This document outlines the design for a C#/.NET client library for Durable Strea
 
 ### Patterns Across Streaming SDKs
 
-| Platform | Producer Pattern | Consumer Pattern | Key .NET Features |
-|----------|-----------------|------------------|-------------------|
-| **Confluent Kafka** | `IProducer<TKey,TValue>` | `IConsumer<TKey,TValue>` | Interfaces for mocking, DI support, `enable.idempotence` |
-| **Redis Streams** | `StreamAdd` | `StreamRead/StreamReadGroup` | No blocking reads in StackExchange.Redis |
-| **NATS JetStream** | `IJetStream.PublishAsync` | `Consume/Fetch/Next` | New v2 API simplifies semantics |
-| **Apache Pulsar** | `IProducer<T>` | `IConsumer<T>` | Builder pattern, state monitoring |
-| **AWS Kinesis** | `PutRecordAsync` | `GetRecordsAsync` | Shard iterators, fully async |
-| **Google Pub/Sub** | `PublisherClient` | `SubscriberClient` | Singleton pattern, `IAsyncDisposable` |
-| **Azure Event Hubs** | `EventHubProducerClient` | `EventHubConsumerClient` | Buffered producer option, AMQP/WebSocket |
-| **RabbitMQ Streams** | `Producer/RawProducer` | `Consumer/RawConsumer` | Auto-reconnect, flow control |
+| Platform             | Producer Pattern          | Consumer Pattern             | Key .NET Features                                        |
+| -------------------- | ------------------------- | ---------------------------- | -------------------------------------------------------- |
+| **Confluent Kafka**  | `IProducer<TKey,TValue>`  | `IConsumer<TKey,TValue>`     | Interfaces for mocking, DI support, `enable.idempotence` |
+| **Redis Streams**    | `StreamAdd`               | `StreamRead/StreamReadGroup` | No blocking reads in StackExchange.Redis                 |
+| **NATS JetStream**   | `IJetStream.PublishAsync` | `Consume/Fetch/Next`         | New v2 API simplifies semantics                          |
+| **Apache Pulsar**    | `IProducer<T>`            | `IConsumer<T>`               | Builder pattern, state monitoring                        |
+| **AWS Kinesis**      | `PutRecordAsync`          | `GetRecordsAsync`            | Shard iterators, fully async                             |
+| **Google Pub/Sub**   | `PublisherClient`         | `SubscriberClient`           | Singleton pattern, `IAsyncDisposable`                    |
+| **Azure Event Hubs** | `EventHubProducerClient`  | `EventHubConsumerClient`     | Buffered producer option, AMQP/WebSocket                 |
+| **RabbitMQ Streams** | `Producer/RawProducer`    | `Consumer/RawConsumer`       | Auto-reconnect, flow control                             |
 
 ### Key Design Principles Identified
 
@@ -1120,23 +1120,26 @@ var client = new DurableStreamClientBuilder()
 
 Understanding the delivery guarantees is critical for correct usage:
 
-| API | Delivery Semantics | When to Use |
-|-----|-------------------|-------------|
-| `IDurableStream.AppendAsync()` | **At-most-once** | Simple cases where duplicates are unacceptable and you handle retries yourself |
-| `IIdempotentProducer.Append()` | **Exactly-once** (within epoch) | Production workloads requiring fire-and-forget with guaranteed delivery |
-| `IStreamResponse.Read*Async()` | **At-least-once** | Always safe; offset-based resumption handles duplicates |
+| API                            | Delivery Semantics              | When to Use                                                                    |
+| ------------------------------ | ------------------------------- | ------------------------------------------------------------------------------ |
+| `IDurableStream.AppendAsync()` | **At-most-once**                | Simple cases where duplicates are unacceptable and you handle retries yourself |
+| `IIdempotentProducer.Append()` | **Exactly-once** (within epoch) | Production workloads requiring fire-and-forget with guaranteed delivery        |
+| `IStreamResponse.Read*Async()` | **At-least-once**               | Always safe; offset-based resumption handles duplicates                        |
 
 **Plain Append (`AppendAsync`)**:
+
 - No automatic retry (to avoid duplicates)
 - If the network fails mid-request, you don't know if data was written
 - For critical data, use `IIdempotentProducer` instead
 
 **Idempotent Producer**:
+
 - Server-side deduplication via `(producerId, epoch, seq)` headers
 - Safe to retry on any transient error
 - Exactly-once within an epoch; at-least-once across producer restarts unless epoch is persisted
 
 **Reads**:
+
 - Always resumable from any checkpoint
 - Protocol guarantees byte-exact resumption without skips or duplicates
 
@@ -1154,21 +1157,23 @@ Understanding the delivery guarantees is critical for correct usage:
 
 **Critical**: Retry behavior differs by operation to avoid data corruption.
 
-| Operation | Retry Behavior |
-|-----------|---------------|
-| **HEAD** (metadata) | Retry on 5xx, network errors |
-| **GET** (reads) | Retry on 5xx, network errors (idempotent) |
-| **PUT** (create) | Retry on 5xx, network errors (idempotent due to protocol) |
-| **DELETE** | Retry on 5xx, network errors (idempotent) |
-| **POST** (plain append) | **NO RETRY** - may cause duplicates |
-| **POST** (idempotent producer) | Retry on 5xx, network errors (safe due to epoch/seq) |
+| Operation                      | Retry Behavior                                            |
+| ------------------------------ | --------------------------------------------------------- |
+| **HEAD** (metadata)            | Retry on 5xx, network errors                              |
+| **GET** (reads)                | Retry on 5xx, network errors (idempotent)                 |
+| **PUT** (create)               | Retry on 5xx, network errors (idempotent due to protocol) |
+| **DELETE**                     | Retry on 5xx, network errors (idempotent)                 |
+| **POST** (plain append)        | **NO RETRY** - may cause duplicates                       |
+| **POST** (idempotent producer) | Retry on 5xx, network errors (safe due to epoch/seq)      |
 
 For `IDurableStream.AppendAsync()` (plain append without idempotent producer):
+
 - Errors are propagated immediately to the caller
 - Callers who need retry should use `IIdempotentProducer` instead
 - This provides **at-most-once** semantics for plain appends
 
 For `IIdempotentProducer`:
+
 - Automatic retry with exponential backoff (5xx, network errors)
 - Server-side deduplication via epoch/seq ensures exactly-once
 - 409 (sequence gap) triggers wait-and-retry for out-of-order pipelining
@@ -1238,16 +1243,16 @@ mockStream.Setup(s => s.StreamAsync<MyMessage>(It.IsAny<StreamOptions>(), It.IsA
 
 ## Comparison with Existing Clients
 
-| Feature | TypeScript | Python | Go | C# (proposed) |
-|---------|------------|--------|-----|---------------|
-| Stream Handle | `DurableStream` class | `DurableStream` class | `Stream` struct | `IDurableStream` interface |
-| Read API | `stream()` → `StreamResponse` | `stream()` → `StreamResponse` | `Stream()` → `Response` | `StreamAsync()` → `IStreamResponse` |
-| Streaming | `ReadableStream`, subscribers | async generators | channels | `IAsyncEnumerable<T>` |
-| Batching | `fastq` | `threading.Lock` | channels | `Channel<T>` |
-| Producer | `IdempotentProducer` class | `IdempotentProducer` class | `IdempotentProducer` struct | `IIdempotentProducer` interface |
-| Error Handling | `onError` callback | `on_error` callback | error returns | `OnError` event + exceptions |
-| Lifecycle | N/A | context manager | N/A | `IAsyncDisposable` |
-| DI | N/A | N/A | N/A | `IServiceCollection` extensions |
+| Feature        | TypeScript                    | Python                        | Go                          | C# (proposed)                       |
+| -------------- | ----------------------------- | ----------------------------- | --------------------------- | ----------------------------------- |
+| Stream Handle  | `DurableStream` class         | `DurableStream` class         | `Stream` struct             | `IDurableStream` interface          |
+| Read API       | `stream()` → `StreamResponse` | `stream()` → `StreamResponse` | `Stream()` → `Response`     | `StreamAsync()` → `IStreamResponse` |
+| Streaming      | `ReadableStream`, subscribers | async generators              | channels                    | `IAsyncEnumerable<T>`               |
+| Batching       | `fastq`                       | `threading.Lock`              | channels                    | `Channel<T>`                        |
+| Producer       | `IdempotentProducer` class    | `IdempotentProducer` class    | `IdempotentProducer` struct | `IIdempotentProducer` interface     |
+| Error Handling | `onError` callback            | `on_error` callback           | error returns               | `OnError` event + exceptions        |
+| Lifecycle      | N/A                           | context manager               | N/A                         | `IAsyncDisposable`                  |
+| DI             | N/A                           | N/A                           | N/A                         | `IServiceCollection` extensions     |
 
 ---
 
@@ -1265,36 +1270,45 @@ mockStream.Setup(s => s.StreamAsync<MyMessage>(It.IsAny<StreamOptions>(), It.IsA
 ## Appendix: Research Sources
 
 ### Confluent Kafka .NET
+
 - [Official Documentation](https://docs.confluent.io/kafka-clients/dotnet/current/overview.html)
 - [API Design Blog](https://www.confluent.io/blog/designing-the-net-api-for-apache-kafka/)
 - [GitHub](https://github.com/confluentinc/confluent-kafka-dotnet)
 
 ### Redis Streams
+
 - [Redis .NET Tutorial](https://redis.io/learn/develop/dotnet/streams/stream-basics)
 - [StackExchange.Redis Streams](https://stackexchange.github.io/StackExchange.Redis/Streams.html)
 
 ### NATS JetStream
+
 - [NATS .NET Client](https://github.com/nats-io/nats.net)
 - [JetStream Migration Guide](https://natsbyexample.com/examples/jetstream/api-migration/dotnet)
 
 ### Apache Pulsar
+
 - [DotPulsar GitHub](https://github.com/apache/pulsar-dotpulsar)
 - [Pulsar C# Docs](https://pulsar.apache.org/docs/client-libraries-dotnet/)
 
 ### AWS Kinesis
+
 - [AWS SDK for .NET Kinesis](https://docs.aws.amazon.com/sdk-for-net/v3/developer-guide/csharp_kinesis_code_examples.html)
 
 ### Google Cloud Pub/Sub
+
 - [.NET Client Library](https://cloud.google.com/dotnet/docs/reference/Google.Cloud.PubSub.V1/latest)
 
 ### Azure Event Hubs
+
 - [Event Hubs Client Library](https://learn.microsoft.com/en-us/dotnet/api/overview/azure/messaging.eventhubs-readme)
 - [GitHub Samples](https://github.com/Azure/azure-sdk-for-net/tree/main/sdk/eventhub/Azure.Messaging.EventHubs)
 
 ### RabbitMQ Streams
+
 - [Stream .NET Client](https://rabbitmq.github.io/rabbitmq-stream-dotnet-client/stable/htmlsingle/index.html)
 - [GitHub](https://github.com/rabbitmq/rabbitmq-stream-dotnet-client)
 
 ### .NET Best Practices
+
 - [IAsyncEnumerable Guide](https://learn.microsoft.com/en-us/dotnet/csharp/whats-new/tutorials/generate-consume-asynchronous-stream)
 - [Cancellation Tokens Best Practices](https://code-maze.com/csharp-cancellation-tokens-with-iasyncenumerable/)
