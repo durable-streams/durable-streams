@@ -1,0 +1,515 @@
+//! Idempotent producer with exactly-once semantics.
+
+use crate::error::{ProducerError, StreamError};
+use crate::stream::{
+    Stream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH, HEADER_PRODUCER_EXPECTED_SEQ,
+    HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_OFFSET,
+};
+use crate::types::Offset;
+use bytes::Bytes;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::{oneshot, Mutex};
+use tokio::time::sleep;
+
+/// Receipt from an acknowledged append operation.
+#[derive(Debug, Clone)]
+pub struct AppendReceipt {
+    /// The offset after this message was appended.
+    pub next_offset: Offset,
+    /// Whether this was a duplicate (idempotent success, data already existed).
+    pub duplicate: bool,
+}
+
+/// Builder for configuring an idempotent producer.
+pub struct ProducerBuilder {
+    stream: Stream,
+    producer_id: String,
+    epoch: u64,
+    auto_claim: bool,
+    max_batch_bytes: usize,
+    linger: Duration,
+    max_in_flight: usize,
+    content_type: Option<String>,
+}
+
+impl ProducerBuilder {
+    pub(crate) fn new(stream: Stream, producer_id: String) -> Self {
+        Self {
+            stream,
+            producer_id,
+            epoch: 0,
+            auto_claim: false,
+            max_batch_bytes: 1024 * 1024,
+            linger: Duration::from_millis(5),
+            max_in_flight: 5,
+            content_type: None,
+        }
+    }
+
+    /// Set the starting epoch.
+    pub fn epoch(mut self, epoch: u64) -> Self {
+        self.epoch = epoch;
+        self
+    }
+
+    /// Enable auto-claim on stale epoch.
+    pub fn auto_claim(mut self, enabled: bool) -> Self {
+        self.auto_claim = enabled;
+        self
+    }
+
+    /// Set maximum batch size in bytes.
+    pub fn max_batch_bytes(mut self, bytes: usize) -> Self {
+        self.max_batch_bytes = bytes;
+        self
+    }
+
+    /// Set linger time before sending a batch.
+    pub fn linger(mut self, duration: Duration) -> Self {
+        self.linger = duration;
+        self
+    }
+
+    /// Set maximum in-flight batches.
+    pub fn max_in_flight(mut self, count: usize) -> Self {
+        self.max_in_flight = count;
+        self
+    }
+
+    /// Set content type for appends.
+    pub fn content_type(mut self, ct: impl Into<String>) -> Self {
+        self.content_type = Some(ct.into());
+        self
+    }
+
+    /// Build the producer.
+    pub fn build(self) -> IdempotentProducer {
+        let content_type = self.content_type.unwrap_or_else(|| {
+            self.stream
+                .content_type
+                .clone()
+                .unwrap_or_else(|| "application/octet-stream".to_string())
+        });
+
+        IdempotentProducer {
+            stream: self.stream,
+            producer_id: self.producer_id,
+            state: Arc::new(Mutex::new(ProducerState {
+                epoch: self.epoch,
+                next_seq: 0,
+                pending_batch: Vec::new(),
+                batch_bytes: 0,
+                closed: false,
+                epoch_claimed: !self.auto_claim,
+            })),
+            config: ProducerConfig {
+                auto_claim: self.auto_claim,
+                max_batch_bytes: self.max_batch_bytes,
+                linger: self.linger,
+                max_in_flight: self.max_in_flight,
+                content_type,
+            },
+            in_flight: Arc::new(Mutex::new(0)),
+            seq_state: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+struct ProducerConfig {
+    auto_claim: bool,
+    max_batch_bytes: usize,
+    linger: Duration,
+    max_in_flight: usize,
+    content_type: String,
+}
+
+struct ProducerState {
+    epoch: u64,
+    next_seq: u64,
+    pending_batch: Vec<PendingEntry>,
+    batch_bytes: usize,
+    closed: bool,
+    epoch_claimed: bool,
+}
+
+struct PendingEntry {
+    data: Bytes,
+    #[cfg(feature = "json")]
+    json_data: Option<serde_json::Value>,
+}
+
+/// Idempotent producer with exactly-once semantics.
+///
+/// Uses Kafka-style producer IDs, epochs, and sequence numbers for deduplication.
+pub struct IdempotentProducer {
+    stream: Stream,
+    producer_id: String,
+    state: Arc<Mutex<ProducerState>>,
+    config: ProducerConfig,
+    in_flight: Arc<Mutex<usize>>,
+    seq_state: Arc<Mutex<HashMap<u64, SeqState>>>,
+}
+
+#[derive(Default)]
+struct SeqState {
+    resolved: bool,
+    error: Option<String>,
+    waiters: Vec<oneshot::Sender<Result<(), String>>>,
+}
+
+impl IdempotentProducer {
+    /// Append data (fire-and-forget, batched internally).
+    ///
+    /// Returns immediately - data is queued for sending.
+    /// Use `flush()` to wait for all data to be written.
+    pub async fn append(&self, data: impl Into<Bytes>) -> Result<(), ProducerError> {
+        let data = data.into();
+
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(ProducerError::Closed);
+        }
+
+        let entry = PendingEntry {
+            data: data.clone(),
+            #[cfg(feature = "json")]
+            json_data: None,
+        };
+
+        state.pending_batch.push(entry);
+        state.batch_bytes += data.len();
+
+        // Check if batch should be sent
+        if state.batch_bytes >= self.config.max_batch_bytes {
+            self.send_batch_locked(&mut state).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Append JSON data (fire-and-forget).
+    #[cfg(feature = "json")]
+    pub async fn append_json<T: serde::Serialize>(
+        &self,
+        data: &T,
+    ) -> Result<(), ProducerError> {
+        let json_bytes = serde_json::to_vec(data).map_err(|e| {
+            ProducerError::Stream(StreamError::Json(e.to_string()))
+        })?;
+
+        let mut state = self.state.lock().await;
+        if state.closed {
+            return Err(ProducerError::Closed);
+        }
+
+        let entry = PendingEntry {
+            data: Bytes::from(json_bytes.clone()),
+            json_data: Some(serde_json::from_slice(&json_bytes).unwrap()),
+        };
+
+        state.pending_batch.push(entry);
+        state.batch_bytes += json_bytes.len();
+
+        // Check if batch should be sent
+        if state.batch_bytes >= self.config.max_batch_bytes {
+            self.send_batch_locked(&mut state).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Flush all pending data and wait for acknowledgment.
+    pub async fn flush(&self) -> Result<(), ProducerError> {
+        loop {
+            {
+                let mut state = self.state.lock().await;
+
+                // Send any pending batch
+                if !state.pending_batch.is_empty() {
+                    self.send_batch_locked(&mut state).await?;
+                }
+            }
+
+            // Wait for in-flight to complete
+            let in_flight = *self.in_flight.lock().await;
+            if in_flight == 0 {
+                break;
+            }
+
+            // Small delay before checking again
+            sleep(Duration::from_millis(10)).await;
+        }
+
+        Ok(())
+    }
+
+    /// Close the producer gracefully.
+    pub async fn close(&self) -> Result<(), ProducerError> {
+        self.flush().await?;
+
+        let mut state = self.state.lock().await;
+        state.closed = true;
+
+        Ok(())
+    }
+
+    /// Get the current epoch.
+    pub async fn epoch(&self) -> u64 {
+        self.state.lock().await.epoch
+    }
+
+    /// Get the next sequence number.
+    pub async fn next_seq(&self) -> u64 {
+        self.state.lock().await.next_seq
+    }
+
+    async fn send_batch_locked(
+        &self,
+        state: &mut ProducerState,
+    ) -> Result<(), ProducerError> {
+        if state.pending_batch.is_empty() {
+            return Ok(());
+        }
+
+        // Check in-flight limit
+        let in_flight = *self.in_flight.lock().await;
+        if in_flight >= self.config.max_in_flight {
+            return Ok(());
+        }
+
+        // Check epoch claim
+        if self.config.auto_claim && !state.epoch_claimed && in_flight > 0 {
+            return Ok(());
+        }
+
+        // Take the batch
+        let batch: Vec<_> = state.pending_batch.drain(..).collect();
+        let seq = state.next_seq;
+        let epoch = state.epoch;
+
+        state.next_seq += 1;
+        state.batch_bytes = 0;
+
+        // Increment in-flight
+        *self.in_flight.lock().await += 1;
+
+        // Send in background
+        let stream = self.stream.clone();
+        let producer_id = self.producer_id.clone();
+        let content_type = self.config.content_type.clone();
+        let auto_claim = self.config.auto_claim;
+        let in_flight_counter = self.in_flight.clone();
+        let state_arc = self.state.clone();
+        let seq_state = self.seq_state.clone();
+
+        tokio::spawn(async move {
+            let result =
+                do_send_batch(&stream, &producer_id, &content_type, batch, seq, epoch, auto_claim, &state_arc)
+                    .await;
+
+            // Update epoch if claimed
+            if let Ok(_) = &result {
+                let mut state = state_arc.lock().await;
+                if !state.epoch_claimed {
+                    state.epoch_claimed = true;
+                }
+            }
+
+            // Signal completion
+            {
+                let mut seq_map = seq_state.lock().await;
+                let entry = seq_map.entry(seq).or_default();
+                entry.resolved = true;
+                if let Err(e) = &result {
+                    entry.error = Some(e.to_string());
+                }
+                for waiter in entry.waiters.drain(..) {
+                    let _ = waiter.send(result.as_ref().map(|_| ()).map_err(|e| e.to_string()));
+                }
+            }
+
+            // Decrement in-flight
+            *in_flight_counter.lock().await -= 1;
+        });
+
+        Ok(())
+    }
+}
+
+async fn do_send_batch(
+    stream: &Stream,
+    producer_id: &str,
+    content_type: &str,
+    batch: Vec<PendingEntry>,
+    seq: u64,
+    epoch: u64,
+    auto_claim: bool,
+    state: &Arc<Mutex<ProducerState>>,
+) -> Result<AppendReceipt, ProducerError> {
+    do_send_batch_with_retry(stream, producer_id, content_type, batch, seq, epoch, auto_claim, state, 0).await
+}
+
+async fn do_send_batch_with_retry(
+    stream: &Stream,
+    producer_id: &str,
+    content_type: &str,
+    batch: Vec<PendingEntry>,
+    seq: u64,
+    epoch: u64,
+    auto_claim: bool,
+    state: &Arc<Mutex<ProducerState>>,
+    retry_count: u32,
+) -> Result<AppendReceipt, ProducerError> {
+    const MAX_409_RETRIES: u32 = 10;
+
+    let is_json = content_type.to_lowercase().contains("application/json");
+
+    // Build body
+    let body = if is_json {
+        #[cfg(feature = "json")]
+        {
+            // Wrap in array for JSON batching
+            let values: Vec<serde_json::Value> = batch
+                .iter()
+                .filter_map(|e| e.json_data.clone())
+                .collect();
+
+            if values.is_empty() {
+                // Fall back to raw bytes
+                batch
+                    .iter()
+                    .flat_map(|e| e.data.iter().copied())
+                    .collect::<Vec<u8>>()
+            } else {
+                serde_json::to_vec(&values).unwrap_or_default()
+            }
+        }
+        #[cfg(not(feature = "json"))]
+        {
+            batch
+                .iter()
+                .flat_map(|e| e.data.iter().copied())
+                .collect::<Vec<u8>>()
+        }
+    } else {
+        batch
+            .iter()
+            .flat_map(|e| e.data.iter().copied())
+            .collect::<Vec<u8>>()
+    };
+
+    let resp = stream
+        .client
+        .inner
+        .post(&stream.url)
+        .header(HEADER_CONTENT_TYPE, content_type)
+        .header(HEADER_PRODUCER_ID, producer_id)
+        .header(HEADER_PRODUCER_EPOCH, epoch.to_string())
+        .header(HEADER_PRODUCER_SEQ, seq.to_string())
+        .body(body)
+        .send()
+        .await?;
+
+    let status = resp.status().as_u16();
+
+    match status {
+        200 => {
+            let offset = resp
+                .headers()
+                .get(HEADER_STREAM_OFFSET)
+                .and_then(|v| v.to_str().ok())
+                .map(Offset::parse)
+                .unwrap_or(Offset::Beginning);
+
+            Ok(AppendReceipt {
+                next_offset: offset,
+                duplicate: false,
+            })
+        }
+        204 => {
+            // Duplicate - idempotent success
+            Ok(AppendReceipt {
+                next_offset: Offset::Beginning,
+                duplicate: true,
+            })
+        }
+        403 => {
+            // Stale epoch
+            let server_epoch = resp
+                .headers()
+                .get(HEADER_PRODUCER_EPOCH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(epoch);
+
+            if auto_claim {
+                // Auto-claim: retry with epoch+1
+                let new_epoch = server_epoch + 1;
+                {
+                    let mut s = state.lock().await;
+                    s.epoch = new_epoch;
+                    s.next_seq = 1; // This batch uses seq 0
+                }
+                // Retry with new epoch
+                return Box::pin(do_send_batch_with_retry(
+                    stream,
+                    producer_id,
+                    content_type,
+                    batch,
+                    0,
+                    new_epoch,
+                    auto_claim,
+                    state,
+                    0, // Reset retry count for new epoch
+                ))
+                .await;
+            }
+
+            Err(ProducerError::StaleEpoch {
+                server_epoch,
+                our_epoch: epoch,
+            })
+        }
+        409 => {
+            // Sequence gap - this can happen when requests arrive out of order
+            // Retry with exponential backoff to let earlier sequences complete
+            if retry_count < MAX_409_RETRIES {
+                // Wait before retrying - use exponential backoff
+                let delay_ms = 10 * (1 << retry_count.min(6)); // 10ms, 20ms, 40ms, ... up to 640ms
+                sleep(Duration::from_millis(delay_ms)).await;
+
+                return Box::pin(do_send_batch_with_retry(
+                    stream,
+                    producer_id,
+                    content_type,
+                    batch,
+                    seq,
+                    epoch,
+                    auto_claim,
+                    state,
+                    retry_count + 1,
+                ))
+                .await;
+            }
+
+            // Give up after max retries
+            let expected = resp
+                .headers()
+                .get(HEADER_PRODUCER_EXPECTED_SEQ)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            Err(ProducerError::SequenceGap {
+                expected,
+                received: seq,
+            })
+        }
+        _ => Err(ProducerError::Stream(StreamError::from_status(
+            status,
+            &stream.url,
+        ))),
+    }
+}
