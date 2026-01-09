@@ -83,7 +83,7 @@ public sealed class DurableStream
             request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
         }
 
-        var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode != HttpStatusCode.Created && response.StatusCode != HttpStatusCode.OK)
         {
@@ -108,7 +108,7 @@ public sealed class DurableStream
         using var request = new HttpRequestMessage(HttpMethod.Head, _url);
         _client.ApplyDefaultHeaders(request);
 
-        var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -168,7 +168,7 @@ public sealed class DurableStream
         request.Content = new ByteArrayContent(data.ToArray());
         request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
 
-        var response = await SendWithRetryAsync(request, cancellationToken, retryAppend: false).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(request, cancellationToken, retryAppend: false).ConfigureAwait(false);
 
         if (!response.IsSuccessStatusCode)
         {
@@ -233,7 +233,7 @@ public sealed class DurableStream
         using var request = new HttpRequestMessage(HttpMethod.Delete, _url);
         _client.ApplyDefaultHeaders(request);
 
-        var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
+        using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (response.StatusCode == HttpStatusCode.NotFound)
         {
