@@ -965,15 +965,15 @@ struct SseEvent {
 
 ## Comparison with Existing Clients
 
-| Feature | TypeScript | Python | Go | Rust (Proposed) |
-|---------|-----------|--------|-----|-----------------|
-| API Style | Functional + Class | Functional + Class | Functional + Methods | Trait + Builder |
-| Async | Promise | async/await + sync | context.Context | async/await (tokio) |
-| Streaming | ReadableStream | Iterator | Iterator | futures::Stream |
-| Error Handling | Typed codes | Typed exceptions | Wrapped sentinels | thiserror enum |
-| Consumption | Multiple modes | One-shot | Iterator | Stream trait |
-| Type Safety | TypeScript | Runtime | Compile-time | Compile-time |
-| Zero-copy | No | No | Yes | Yes (Bytes) |
+| Feature        | TypeScript         | Python             | Go                   | Rust (Proposed)     |
+| -------------- | ------------------ | ------------------ | -------------------- | ------------------- |
+| API Style      | Functional + Class | Functional + Class | Functional + Methods | Trait + Builder     |
+| Async          | Promise            | async/await + sync | context.Context      | async/await (tokio) |
+| Streaming      | ReadableStream     | Iterator           | Iterator             | futures::Stream     |
+| Error Handling | Typed codes        | Typed exceptions   | Wrapped sentinels    | thiserror enum      |
+| Consumption    | Multiple modes     | One-shot           | Iterator             | Stream trait        |
+| Type Safety    | TypeScript         | Runtime            | Compile-time         | Compile-time        |
+| Zero-copy      | No                 | No                 | Yes                  | Yes (Bytes)         |
 
 ---
 
@@ -1042,6 +1042,7 @@ The following decisions were made based on external review feedback:
 if the server commits but the client doesn't receive the response.
 
 **Decision**: The HTTP layer distinguishes between:
+
 - `read()` - GET/HEAD with automatic retries (safe)
 - `write()` - POST without retries (prevents duplicates)
 - `idempotent_write()` - POST with Producer headers, safe to retry
@@ -1100,26 +1101,31 @@ with offset and duplicate flag.
 ## Implementation Phases
 
 ### Phase 1: Core Reading
+
 - [ ] `Client` and `ClientConfig`
 - [ ] `DurableStream` handle
 - [ ] `ChunkIterator` with catch-up reads
 - [ ] Basic error types
 
 ### Phase 2: Live Modes
+
 - [ ] Long-poll support
 - [ ] SSE parser and support
 - [ ] `LiveMode::Auto` with fallback logic
 
 ### Phase 3: Writing
+
 - [ ] `create()`, `append()`, `delete()`, `head()`
 - [ ] Content-type handling
 
 ### Phase 4: Idempotent Producer
+
 - [ ] `IdempotentProducer` with batching
 - [ ] Epoch/sequence management
 - [ ] Auto-claim support
 
 ### Phase 5: Polish
+
 - [ ] Conformance test integration
 - [ ] Documentation
 - [ ] Examples
