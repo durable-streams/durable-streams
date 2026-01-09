@@ -21,12 +21,15 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "DurableStreams"),
+            name: "DurableStreams",
+            path: "Sources/DurableStreams"),
         .executableTarget(
             name: "ConformanceAdapter",
-            dependencies: ["DurableStreams"]),
+            dependencies: ["DurableStreams"],
+            path: "Sources/ConformanceAdapter"),
         .testTarget(
             name: "DurableStreamsTests",
-            dependencies: ["DurableStreams"]),
+            dependencies: ["DurableStreams"],
+            path: "Tests/DurableStreamsTests"),
     ]
 )
