@@ -654,6 +654,8 @@ async Task<object> HandleBenchmark(JsonElement root)
 
     try
     {
+        object? metrics = null;
+
         switch (op)
         {
             case "append":
@@ -668,11 +670,29 @@ async Task<object> HandleBenchmark(JsonElement root)
             case "roundtrip":
                 await BenchmarkRoundtrip(operation);
                 break;
+            case "throughput_append":
+                metrics = await BenchmarkThroughputAppend(operation);
+                break;
+            case "throughput_read":
+                metrics = await BenchmarkThroughputRead(operation);
+                break;
             default:
                 return CreateError("benchmark", "NOT_SUPPORTED", $"Unknown benchmark op: {op}");
         }
 
         stopwatch.Stop();
+
+        if (metrics != null)
+        {
+            return new
+            {
+                type = "benchmark",
+                success = true,
+                iterationId,
+                durationNs = (stopwatch.ElapsedTicks * 1_000_000_000L / Stopwatch.Frequency).ToString(),
+                metrics
+            };
+        }
 
         return new
         {
@@ -771,6 +791,94 @@ async Task BenchmarkRoundtrip(JsonElement op)
             if (chunk.Data.Length > 0) break;
         }
     }
+}
+
+async Task<object> BenchmarkThroughputAppend(JsonElement op)
+{
+    var path = op.GetProperty("path").GetString()!;
+    var count = op.GetProperty("count").GetInt32();
+    var size = op.GetProperty("size").GetInt32();
+    var concurrency = GetOptionalInt(op, "concurrency") ?? 10;
+
+    var ct = streamContentTypes.GetValueOrDefault(path, "application/octet-stream");
+
+    // Use IdempotentProducer for automatic batching and pipelining
+    var stream = client!.GetStream(path);
+    stream.ContentType = ct;
+    await using var producer = stream.CreateProducer("bench-producer", new IdempotentProducerOptions
+    {
+        LingerMs = 0, // Batch by size, not time
+        ContentType = ct,
+        MaxInFlight = concurrency
+    });
+
+    // Pre-generate payload (reuse same data for speed)
+    var payload = new byte[size];
+    Random.Shared.NextBytes(payload);
+
+    var start = Stopwatch.GetTimestamp();
+
+    // Fire-and-forget: Append returns immediately, producer batches in background
+    for (var i = 0; i < count; i++)
+    {
+        producer.Append(payload);
+    }
+
+    // Wait for all batches to complete
+    await producer.FlushAsync();
+
+    var elapsed = Stopwatch.GetElapsedTime(start);
+    var totalBytes = count * size;
+    var opsPerSec = count / elapsed.TotalSeconds;
+    var bytesPerSec = totalBytes / elapsed.TotalSeconds;
+
+    return new
+    {
+        bytesTransferred = totalBytes,
+        messagesProcessed = count,
+        opsPerSecond = opsPerSec,
+        bytesPerSecond = bytesPerSec
+    };
+}
+
+async Task<object> BenchmarkThroughputRead(JsonElement op)
+{
+    var path = op.GetProperty("path").GetString()!;
+
+    var stream = client!.GetStream(path);
+    stream.ContentType = "application/json";
+
+    var start = Stopwatch.GetTimestamp();
+
+    var totalBytes = 0;
+    var count = 0;
+
+    await using var response = await stream.StreamAsync(new StreamOptions
+    {
+        Offset = Offset.Beginning
+    });
+
+    await foreach (var batch in response.ReadJsonBatchesAsync<Dictionary<string, object>>())
+    {
+        foreach (var item in batch.Items)
+        {
+            count++;
+            // Rough byte estimate
+            var json = System.Text.Json.JsonSerializer.Serialize(item);
+            totalBytes += json.Length;
+        }
+        if (batch.UpToDate) break;
+    }
+
+    var elapsed = Stopwatch.GetElapsedTime(start);
+    var bytesPerSec = totalBytes / elapsed.TotalSeconds;
+
+    return new
+    {
+        bytesTransferred = totalBytes,
+        messagesProcessed = count,
+        bytesPerSecond = bytesPerSec
+    };
 }
 
 object HandleShutdown()
