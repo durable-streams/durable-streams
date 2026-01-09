@@ -69,6 +69,7 @@ API shapes mirror TypeScript, Python, and Go clients for cross-language familiar
 ### 4. Compile-Time Safety
 
 Leverage Swift's type system to prevent runtime errors:
+
 - Typed offsets prevent mixing up string parameters
 - Enums for live modes eliminate invalid states
 - Result builders for configuration
@@ -521,6 +522,7 @@ public struct FlushResult: Sendable {
 ```
 
 This design follows the TypeScript client where:
+
 - `append()` is fire-and-forget (enqueues only)
 - Errors go to `onError` callback
 - Offset is known only after `flush()` or via delivery reports
@@ -686,6 +688,7 @@ internal struct SSEEvent: Sendable {
 Internal long-poll implementation with cursor handling.
 
 **Important**: The protocol uses query parameters for offset and live mode, not headers.
+
 - `?offset=<offset>` - Position to read from
 - `&live=long-poll` - Enable long-polling mode
 - `&cursor=<cursor>` - Echo server's cursor for CDN collapsing
@@ -829,6 +832,7 @@ extension DurableStreamError: LocalizedError {
 ### Retry Policies
 
 **Important**: Reads and writes have different retry safety characteristics:
+
 - **Reads (GET/HEAD)** are always safe to retry
 - **Writes (POST)** are only safe to retry when idempotent producer is enabled
 
@@ -1209,21 +1213,21 @@ DurableStreams/
 
 ### Quick Reference
 
-| Operation | Method | Returns |
-|-----------|--------|---------|
-| Read stream (simple) | `DurableStream.stream(url:)` | `StreamResponse` |
-| Read JSON (accumulated) | `.json(as:)` | `JsonBatch<T>` (includes offset) |
-| Read text (accumulated) | `.text()` | `TextResult` (includes offset) |
-| Read bytes (accumulated) | `.bytes()` | `ByteResult` (includes offset) |
-| Stream JSON batches | `.jsonStream(as:)` | `AsyncThrowingStream<JsonBatch<T>>` |
-| Stream items | `.jsonItems(as:)` | `AsyncThrowingStream<T>` |
-| Create stream | `DurableStreamHandle.create(url:)` | `DurableStreamHandle` |
-| Connect to stream | `DurableStreamHandle.connect(url:)` | `DurableStreamHandle` |
-| Append JSON (sync) | `handle.appendSync(_:)` | `AppendResult` |
-| Append JSON (fire-and-forget) | `handle.append(_:)` | `Void` |
-| Flush pending writes | `handle.flush()` | `FlushResult` |
-| Get metadata | `DurableStreamHandle.head(url:)` | `StreamInfo` |
-| Delete stream | `DurableStreamHandle.delete(url:)` | `Void` |
+| Operation                     | Method                              | Returns                             |
+| ----------------------------- | ----------------------------------- | ----------------------------------- |
+| Read stream (simple)          | `DurableStream.stream(url:)`        | `StreamResponse`                    |
+| Read JSON (accumulated)       | `.json(as:)`                        | `JsonBatch<T>` (includes offset)    |
+| Read text (accumulated)       | `.text()`                           | `TextResult` (includes offset)      |
+| Read bytes (accumulated)      | `.bytes()`                          | `ByteResult` (includes offset)      |
+| Stream JSON batches           | `.jsonStream(as:)`                  | `AsyncThrowingStream<JsonBatch<T>>` |
+| Stream items                  | `.jsonItems(as:)`                   | `AsyncThrowingStream<T>`            |
+| Create stream                 | `DurableStreamHandle.create(url:)`  | `DurableStreamHandle`               |
+| Connect to stream             | `DurableStreamHandle.connect(url:)` | `DurableStreamHandle`               |
+| Append JSON (sync)            | `handle.appendSync(_:)`             | `AppendResult`                      |
+| Append JSON (fire-and-forget) | `handle.append(_:)`                 | `Void`                              |
+| Flush pending writes          | `handle.flush()`                    | `FlushResult`                       |
+| Get metadata                  | `DurableStreamHandle.head(url:)`    | `StreamInfo`                        |
+| Delete stream                 | `DurableStreamHandle.delete(url:)`  | `Void`                              |
 
 ---
 
@@ -1280,15 +1284,15 @@ DurableStreams/
 
 ## Appendix: Comparison with Other Clients
 
-| Feature | TypeScript | Python | Go | Swift (Proposed) |
-|---------|------------|--------|----|------------------|
-| Async model | Promise/async-await | asyncio | goroutines | async/await |
-| Streaming | AsyncIterator | AsyncIterator | channels | AsyncSequence |
-| HTTP client | fetch | aiohttp | net/http | URLSession |
-| SSE support | EventSource | aiohttp-sse | custom | custom |
-| Batching | auto | auto | auto | auto |
-| Idempotent producer | yes | yes | yes | yes |
-| Type safety | TypeScript | runtime | compile-time | compile-time |
+| Feature             | TypeScript          | Python        | Go           | Swift (Proposed) |
+| ------------------- | ------------------- | ------------- | ------------ | ---------------- |
+| Async model         | Promise/async-await | asyncio       | goroutines   | async/await      |
+| Streaming           | AsyncIterator       | AsyncIterator | channels     | AsyncSequence    |
+| HTTP client         | fetch               | aiohttp       | net/http     | URLSession       |
+| SSE support         | EventSource         | aiohttp-sse   | custom       | custom           |
+| Batching            | auto                | auto          | auto         | auto             |
+| Idempotent producer | yes                 | yes           | yes          | yes              |
+| Type safety         | TypeScript          | runtime       | compile-time | compile-time     |
 
 ---
 
@@ -1306,4 +1310,4 @@ DurableStreams/
 
 ---
 
-*This design document is open for review. Please provide feedback on API ergonomics, naming conventions, and any missing features.*
+_This design document is open for review. Please provide feedback on API ergonomics, naming conventions, and any missing features._
