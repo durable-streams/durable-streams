@@ -756,8 +756,19 @@ async Task BenchmarkRoundtrip(JsonElement op)
     var liveStr = GetOptionalString(op, "live");
     var contentType = GetOptionalString(op, "contentType") ?? "application/octet-stream";
 
-    var data = new byte[size];
-    Random.Shared.NextBytes(data);
+    // Generate appropriate data based on content type
+    byte[] data;
+    if (contentType.Contains("json", StringComparison.OrdinalIgnoreCase))
+    {
+        // For JSON content type, generate valid JSON
+        var payload = new { message = new string('x', Math.Max(0, size - 20)) };
+        data = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload);
+    }
+    else
+    {
+        data = new byte[size];
+        Random.Shared.NextBytes(data);
+    }
 
     var live = liveStr switch
     {
@@ -776,7 +787,7 @@ async Task BenchmarkRoundtrip(JsonElement op)
     var nextOffsetStr = result.NextOffset?.ToString() ?? "0";
     if (int.TryParse(nextOffsetStr, out var nextOffsetInt))
     {
-        var prevOffset = (nextOffsetInt - size).ToString();
+        var prevOffset = (nextOffsetInt - data.Length).ToString();
 
         // Read from that offset
         await using var response = await stream.StreamAsync(new StreamOptions
