@@ -52,7 +52,8 @@ public final class IdempotentProducer implements AutoCloseable {
         this.client = client;
         this.url = url;
         this.producerId = producerId;
-        this.config = config;
+        // Normalize config like Go: lingerMs=0 means use default (5ms)
+        this.config = config.lingerMs == 0 ? config.withLingerMs(5) : config;
 
         this.epoch = new AtomicLong(config.epoch);
         this.nextSeq = new AtomicLong(config.startingSeq);
@@ -67,11 +68,8 @@ public final class IdempotentProducer implements AutoCloseable {
             t.setDaemon(true);
             return t;
         });
-        this.executor = Executors.newFixedThreadPool(config.maxInFlight, r -> {
-            Thread t = new Thread(r, "durable-streams-producer-worker");
-            t.setDaemon(true);
-            return t;
-        });
+        // Use virtual threads for lightweight concurrency (like goroutines)
+        this.executor = Executors.newVirtualThreadPerTaskExecutor();
 
         this.seqStates = new ConcurrentHashMap<>();
         this.errors = new LinkedBlockingQueue<>();
@@ -112,21 +110,39 @@ public final class IdempotentProducer implements AutoCloseable {
      * Wait for all pending batches to complete.
      */
     public void flush() throws DurableStreamException {
-        // Send any pending batch
-        synchronized (batchLock) {
-            if (!pendingBatch.isEmpty()) {
-                sendBatch();
-            }
-        }
+        // Keep sending until all batches are dispatched and completed
+        while (true) {
+            synchronized (batchLock) {
+                // Cancel any pending linger timer
+                if (lingerTimer != null) {
+                    lingerTimer.cancel(false);
+                    lingerTimer = null;
+                }
 
-        // Wait for in-flight batches
-        while (inFlight.get() > 0) {
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new DurableStreamException("Flush interrupted", e);
+                // Keep trying to send pending batch
+                if (!pendingBatch.isEmpty()) {
+                    // Force send even if at capacity by waiting
+                    while (inFlight.get() >= config.maxInFlight && !pendingBatch.isEmpty()) {
+                        try {
+                            batchLock.wait(1);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new DurableStreamException("Flush interrupted", e);
+                        }
+                    }
+                    if (!pendingBatch.isEmpty()) {
+                        sendBatchForFlush();
+                    }
+                }
+
+                // Check if done
+                if (pendingBatch.isEmpty() && inFlight.get() == 0) {
+                    break;
+                }
             }
+
+            // Brief yield to let in-flight complete
+            Thread.yield();
         }
 
         // Check for errors
@@ -134,6 +150,31 @@ public final class IdempotentProducer implements AutoCloseable {
         if (error != null) {
             throw error;
         }
+    }
+
+    private void sendBatchForFlush() {
+        // Like sendBatch but always sends (used by flush)
+        if (pendingBatch.isEmpty()) return;
+
+        List<PendingEntry> batch = pendingBatch;
+        pendingBatch = new ArrayList<>();
+        batchBytes = 0;
+
+        long seq = nextSeq.getAndIncrement();
+        long currentEpoch = epoch.get();
+
+        inFlight.incrementAndGet();
+
+        executor.submit(() -> {
+            try {
+                sendBatchAsync(batch, currentEpoch, seq);
+            } finally {
+                inFlight.decrementAndGet();
+                synchronized (batchLock) {
+                    batchLock.notifyAll();
+                }
+            }
+        });
     }
 
     /**
@@ -198,14 +239,13 @@ public final class IdempotentProducer implements AutoCloseable {
             lingerTimer = null;
         }
 
-        // Wait if we have too many in-flight
-        while (inFlight.get() >= config.maxInFlight) {
-            try {
-                batchLock.wait(10);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
+        // Like Go: don't block if at capacity - let linger timer retry later
+        if (inFlight.get() >= config.maxInFlight) {
+            // Reschedule linger timer to retry soon
+            if (lingerTimer == null) {
+                lingerTimer = scheduler.schedule(this::onLingerTimeout, 1, TimeUnit.MILLISECONDS);
             }
+            return;
         }
 
         // Take the current batch
@@ -225,9 +265,6 @@ public final class IdempotentProducer implements AutoCloseable {
                 sendBatchAsync(batch, currentEpoch, seq);
             } finally {
                 inFlight.decrementAndGet();
-                synchronized (batchLock) {
-                    batchLock.notifyAll();
-                }
             }
         });
     }
@@ -431,6 +468,10 @@ public final class IdempotentProducer implements AutoCloseable {
             return new Builder();
         }
 
+        Config withLingerMs(int newLingerMs) {
+            return new Config(Builder.from(this).lingerMs(newLingerMs));
+        }
+
         public static final class Builder {
             private long epoch = 0;
             private long startingSeq = 0;
@@ -440,6 +481,19 @@ public final class IdempotentProducer implements AutoCloseable {
             private int maxInFlight = 5;
             private String contentType;
             private Consumer<DurableStreamException> onError;
+
+            static Builder from(Config config) {
+                Builder b = new Builder();
+                b.epoch = config.epoch;
+                b.startingSeq = config.startingSeq;
+                b.autoClaim = config.autoClaim;
+                b.maxBatchBytes = config.maxBatchBytes;
+                b.lingerMs = config.lingerMs;
+                b.maxInFlight = config.maxInFlight;
+                b.contentType = config.contentType;
+                b.onError = config.onError;
+                return b;
+            }
 
             public Builder epoch(long epoch) {
                 this.epoch = epoch;
