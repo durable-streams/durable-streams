@@ -17,6 +17,9 @@ describe(`visibility handling`, () => {
     mockHidden = false
     visibilityHandler = null
 
+    // Use mockImplementation() instead of vi.fn(impl) to ensure proper
+    // registration in vitest's internal state (see vitest#3260). This prevents
+    // flaky behavior when tests run in parallel across projects.
     addEventListenerSpy = vi.fn()
     addEventListenerSpy.mockImplementation(
       (event: string, handler: () => void) => {
