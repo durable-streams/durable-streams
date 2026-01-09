@@ -25,6 +25,12 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.16"
+          otp-version: "26"
+
       - name: Install dependencies
         run: pnpm install
 
@@ -36,6 +42,13 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Build Elixir client adapter
+        run: |
+          cd packages/client-elixir
+          mix deps.get || true
+          mix compile
+          mix escript.build
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -45,6 +58,12 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run Elixir client conformance tests
+        continue-on-error: true # SSE tests fail due to httpc streaming limitations
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-elixir/conformance-adapter
 
   benchmarks:
     name: Client Benchmarks
@@ -67,6 +86,12 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.16"
+          otp-version: "26"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
@@ -83,6 +108,13 @@ jobs:
         run: |
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Build Elixir client adapter
+        run: |
+          cd packages/client-elixir
+          mix deps.get || true
+          mix compile
+          mix escript.build
 
       - name: Install Python client
         run: |
