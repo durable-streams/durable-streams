@@ -123,10 +123,11 @@ public sealed class DurableStream
         var contentType = HttpHelpers.GetHeader(response, Headers.ContentType);
         _contentType = contentType;
 
+        var nextOffsetHeader = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
         return new StreamMetadata(
             Exists: true,
             ContentType: contentType,
-            Offset: HttpHelpers.GetHeader(response, Headers.StreamNextOffset) is { } offset ? new Offset(offset) : null,
+            Offset: nextOffsetHeader != null ? new Offset(nextOffsetHeader) : null,
             ETag: HttpHelpers.GetHeader(response, Headers.ETag),
             CacheControl: HttpHelpers.GetHeader(response, Headers.CacheControl),
             TtlSeconds: HttpHelpers.GetIntHeader(response, Headers.StreamTtl),
@@ -183,7 +184,7 @@ public sealed class DurableStream
 
         var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
         return new AppendResult(
-            NextOffset: nextOffset != null ? new Offset(nextOffset) : null,
+            NextOffset: nextOffset is { } offsetStr ? new Offset(offsetStr) : null,
             Duplicate: false
         );
     }

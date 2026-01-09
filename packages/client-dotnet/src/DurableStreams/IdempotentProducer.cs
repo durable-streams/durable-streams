@@ -281,9 +281,10 @@ public sealed class IdempotentProducer : IAsyncDisposable
             for (var i = 0; i < batch.Count; i++)
             {
                 if (i > 0) sb.Append(',');
-                if (batch[i].JsonData.HasValue)
+                var jsonData = batch[i].JsonData;
+                if (jsonData.HasValue)
                 {
-                    sb.Append(batch[i].JsonData.Value.GetRawText());
+                    sb.Append(jsonData.Value.GetRawText());
                 }
                 else
                 {
