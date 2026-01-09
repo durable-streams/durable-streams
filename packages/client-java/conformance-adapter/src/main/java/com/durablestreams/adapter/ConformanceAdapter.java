@@ -668,8 +668,10 @@ public class ConformanceAdapter {
                 case "throughput_append": {
                     Number sizeNum = (Number) operation.get("size");
                     Number countNum = (Number) operation.get("count");
+                    Number concurrencyNum = (Number) operation.get("concurrency");
                     int size = sizeNum != null ? sizeNum.intValue() : 100;
                     int count = countNum != null ? countNum.intValue() : 1000;
+                    int concurrency = concurrencyNum != null ? concurrencyNum.intValue() : 10;
 
                     Stream stream = client.stream(serverUrl + path);
                     try {
@@ -679,8 +681,21 @@ public class ConformanceAdapter {
                     byte[] payload = new byte[size];
                     java.util.Arrays.fill(payload, (byte) 42);
 
-                    for (int i = 0; i < count; i++) {
-                        stream.append(payload);
+                    // Use IdempotentProducer for batching and pipelining (like Go)
+                    IdempotentProducer.Config producerConfig = IdempotentProducer.Config.builder()
+                            .lingerMs(0)  // Send immediately
+                            .maxInFlight(concurrency)
+                            .build();
+                    IdempotentProducer producer = client.idempotentProducer(
+                            serverUrl + path, "bench-producer", producerConfig);
+
+                    try {
+                        for (int i = 0; i < count; i++) {
+                            producer.append(payload);
+                        }
+                        producer.flush();
+                    } finally {
+                        producer.close();
                     }
 
                     metrics.put("bytesTransferred", count * size);

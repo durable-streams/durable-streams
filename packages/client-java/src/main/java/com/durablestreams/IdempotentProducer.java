@@ -254,8 +254,10 @@ public final class IdempotentProducer implements AutoCloseable {
         headers.forEach(builder::header);
 
         try {
+            // Use async send for better pipelining/parallelism
             HttpResponse<byte[]> response = client.getHttpClient()
-                    .send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+                    .sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
+                    .join();
 
             int status = response.statusCode();
 
@@ -285,7 +287,14 @@ public final class IdempotentProducer implements AutoCloseable {
             if (config.onError != null) {
                 config.onError.accept(new DurableStreamException("Batch failed with status: " + status, status));
             }
-        } catch (IOException | InterruptedException e) {
+        } catch (java.util.concurrent.CompletionException e) {
+            Throwable cause = e.getCause();
+            DurableStreamException ex = new DurableStreamException("Batch send failed: " + cause.getMessage(), cause);
+            errors.offer(ex);
+            if (config.onError != null) {
+                config.onError.accept(ex);
+            }
+        } catch (Exception e) {
             DurableStreamException ex = new DurableStreamException("Batch send failed: " + e.getMessage(), e);
             errors.offer(ex);
             if (config.onError != null) {

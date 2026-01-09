@@ -66,6 +66,12 @@ public final class DurableStreamClient implements AutoCloseable {
                 .version(HttpClient.Version.HTTP_2)
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
+                // Use a cached thread pool for parallel requests
+                .executor(java.util.concurrent.Executors.newCachedThreadPool(r -> {
+                    Thread t = new Thread(r, "durable-streams-http");
+                    t.setDaemon(true);
+                    return t;
+                }))
                 .build();
     }
 
