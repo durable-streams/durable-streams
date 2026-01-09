@@ -82,12 +82,36 @@ impl ClientConfig {
 }
 
 /// Retry/backoff configuration (pattern from AWS SDK)
+///
+/// **Important**: Retries are only safe for idempotent operations:
+/// - GET/HEAD requests: Always safe to retry
+/// - POST append with IdempotentProducer: Safe (has Producer-Id/Epoch/Seq)
+/// - Plain POST append: NOT safe to retry (can cause duplicates)
+///
+/// The client enforces this by using different retry policies for different
+/// operation types. See `RetryPolicy` for the operation-aware configuration.
 #[derive(Clone, Debug)]
 pub struct RetryConfig {
     pub initial_backoff: Duration,
     pub max_backoff: Duration,
     pub multiplier: f64,
-    pub max_retries: Option<u32>, // None = infinite
+    pub max_retries: u32,
+    /// Jitter mode for backoff delays (prevents thundering herd)
+    pub jitter: JitterMode,
+}
+
+/// Jitter mode for retry backoff (following AWS SDK patterns)
+#[derive(Clone, Debug, Default)]
+pub enum JitterMode {
+    /// No jitter - use exact backoff delay
+    None,
+    /// Full jitter: random delay between 0 and calculated backoff
+    #[default]
+    Full,
+    /// Equal jitter: half fixed + half random
+    Equal,
+    /// Decorrelated jitter (AWS recommended)
+    Decorrelated,
 }
 
 impl Default for RetryConfig {
@@ -96,9 +120,24 @@ impl Default for RetryConfig {
             initial_backoff: Duration::from_millis(100),
             max_backoff: Duration::from_secs(60),
             multiplier: 1.3,
-            max_retries: None,
+            max_retries: 10,
+            jitter: JitterMode::Full,
         }
     }
+}
+
+/// Operation-aware retry policy
+///
+/// This enum ensures retries are only applied to idempotent operations,
+/// preventing data duplication from retrying non-idempotent writes.
+#[derive(Clone, Debug)]
+pub enum RetryPolicy {
+    /// Retry on 5xx, 429, network errors (safe for GET/HEAD)
+    ReadPolicy(RetryConfig),
+    /// No automatic retries (for plain POST append)
+    NoRetry,
+    /// Retry with idempotent producer semantics (Producer-Id/Epoch/Seq present)
+    IdempotentWritePolicy(RetryConfig),
 }
 ```
 
@@ -189,16 +228,36 @@ impl PartialOrd for Offset {
 
 ```rust
 /// Live tailing mode for stream consumption
+///
+/// ## `LiveMode::Auto` Fallback Behavior
+///
+/// When `Auto` is selected, the client attempts live modes in this order:
+///
+/// 1. **SSE first**: If the stream content type is `text/*` or `application/json`,
+///    attempt SSE connection
+///
+/// 2. **Fallback to long-poll**: SSE falls back to long-poll when:
+///    - Content type doesn't support SSE (e.g., `application/octet-stream`)
+///    - Server returns 400 Bad Request for SSE (unsupported)
+///    - SSE connections fail repeatedly with short durations (< 1s), indicating
+///      proxy buffering or server misconfiguration
+///
+/// 3. **Retry tracking**: After 3 consecutive short SSE connections, the client
+///    switches to long-poll for the remainder of the session
+///
+/// The fallback is transparent to the user - iteration continues seamlessly.
 #[derive(Clone, Debug, Default)]
 pub enum LiveMode {
-    /// No live tailing - stop when caught up
+    /// No live tailing - stop after catching up (first `up_to_date`)
     #[default]
     Off,
-    /// Automatic selection (SSE preferred, falls back to long-poll)
+    /// Automatic selection: SSE preferred, falls back to long-poll on failure.
+    /// See "LiveMode::Auto Fallback Behavior" above.
     Auto,
-    /// Explicit long-polling
+    /// Explicit long-polling for live updates
     LongPoll,
-    /// Explicit Server-Sent Events
+    /// Explicit Server-Sent Events for live updates.
+    /// Returns `StreamError::SseNotSupported` if content type is incompatible.
     Sse,
 }
 ```
@@ -270,23 +329,62 @@ impl ChunkIterator {
     /// Current cursor for CDN collapsing
     pub fn cursor(&self) -> Option<&str> { ... }
 
-    /// Fetch next chunk (async)
-    pub async fn next(&mut self) -> Result<Option<Chunk>, StreamError> { ... }
-
     /// Cancel and clean up
     pub async fn close(self) -> Result<(), StreamError> { ... }
 }
 
-/// A chunk of data from the stream
+// NOTE: ChunkIterator implements `futures::Stream` but does NOT have an
+// inherent `next()` method. This avoids method resolution confusion where
+// an inherent method would shadow `StreamExt::next()`.
+//
+// Users should use `StreamExt::next()` from the futures crate:
+//   use futures::StreamExt;
+//   while let Some(chunk) = iterator.next().await { ... }
+
+/// A chunk of data from the stream.
+///
+/// ## Chunk Semantics
+///
+/// A `Chunk` represents **one unit of data delivery** from the stream, but its
+/// exact meaning depends on the read mode:
+///
+/// | Mode | What `Chunk.data` contains |
+/// |------|----------------------------|
+/// | **Catch-up (no live)** | One HTTP response body (may be partial if server chunks) |
+/// | **Long-poll** | One HTTP response body (data that arrived during the poll) |
+/// | **SSE** | One SSE `data` event payload (server batches events ~60s) |
+///
+/// For `application/json` streams, `data` contains:
+/// - **Catch-up/Long-poll**: Raw JSON array bytes, e.g., `[{"a":1},{"a":2}]`
+/// - **SSE**: Raw JSON array bytes from the SSE data event
+///
+/// Use `ReaderBuilder::json::<T>()` to get a stream of individual deserialized
+/// items rather than raw `Chunk` bytes.
+///
+/// ## `up_to_date` Semantics
+///
+/// The `up_to_date` flag indicates we've reached the stream's tail:
+///
+/// | Mode | `up_to_date == true` means |
+/// |------|---------------------------|
+/// | **Catch-up** | Response included all available data; no more to fetch |
+/// | **Long-poll** | Server timed out with no new data (204 response) |
+/// | **SSE** | Control event included `upToDate: true` |
+///
+/// When `live == LiveMode::Off`, iteration stops after the first `up_to_date`.
+/// When live tailing, iteration continues waiting for new data.
 #[derive(Debug)]
 pub struct Chunk {
-    /// The data bytes
+    /// The raw data bytes for this chunk.
+    /// For JSON streams, this is the JSON array (e.g., `[{...}, {...}]`).
+    /// Use `json::<T>()` on the reader for parsed items.
     pub data: Bytes,
-    /// Next offset to read from
+    /// Next offset to read from (for resumption/checkpointing)
     pub next_offset: Offset,
-    /// Whether this response indicates we're caught up
+    /// Whether this chunk represents the current tail of the stream.
+    /// See "up_to_date Semantics" above.
     pub up_to_date: bool,
-    /// Cursor for subsequent requests
+    /// Cursor for CDN request collapsing (echo in subsequent requests)
     pub cursor: Option<String>,
 }
 ```
@@ -363,18 +461,60 @@ pub struct IdempotentProducer {
 }
 
 impl IdempotentProducer {
+    // =========================================================================
+    // Fire-and-Forget API (High Throughput)
+    // =========================================================================
+    //
+    // Use these for maximum throughput when you don't need per-message acks.
+    // Errors are reported via the `on_error` callback in ProducerBuilder.
+
     /// Append data (fire-and-forget, batched internally)
-    /// Returns immediately - data queued for sending
+    /// Returns immediately - data queued for sending.
+    ///
+    /// Errors during send are reported via `on_error` callback.
+    /// Returns `Err` only for local failures (closed, queue full).
     pub fn append(&self, data: impl Into<Bytes>) -> Result<(), ProducerError> { ... }
 
-    /// Append JSON data
+    /// Append JSON data (fire-and-forget)
     pub fn append_json<T: Serialize>(&self, data: &T) -> Result<(), ProducerError> { ... }
+
+    // =========================================================================
+    // Acknowledged API (Correctness-Critical)
+    // =========================================================================
+    //
+    // Use these when you need confirmation that data was durably written.
+    // Lower throughput than fire-and-forget, but provides per-message receipts.
+
+    /// Append data and wait for server acknowledgment.
+    ///
+    /// Returns a receipt with the offset after the data was written.
+    /// Use this for correctness-critical writes where you need confirmation.
+    ///
+    /// Note: Still benefits from batching - if multiple `append_acked` calls
+    /// are pending, they may be batched together, but each gets its own receipt.
+    pub async fn append_acked(&self, data: impl Into<Bytes>) -> Result<AppendReceipt, ProducerError> { ... }
+
+    /// Append JSON data and wait for server acknowledgment.
+    pub async fn append_json_acked<T: Serialize>(&self, data: &T) -> Result<AppendReceipt, ProducerError> { ... }
+
+    // =========================================================================
+    // Lifecycle
+    // =========================================================================
 
     /// Flush all pending data and wait for acknowledgment
     pub async fn flush(&self) -> Result<(), ProducerError> { ... }
 
     /// Close the producer gracefully
     pub async fn close(self) -> Result<(), ProducerError> { ... }
+}
+
+/// Receipt from an acknowledged append operation
+#[derive(Debug, Clone)]
+pub struct AppendReceipt {
+    /// The offset after this message was appended
+    pub next_offset: Offset,
+    /// Whether this was a duplicate (idempotent success, data already existed)
+    pub duplicate: bool,
 }
 ```
 
@@ -708,48 +848,90 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### HTTP Layer
 
 ```rust
-/// Internal HTTP client wrapper with retry logic
+/// Internal HTTP client wrapper with operation-aware retry logic
 struct HttpClient {
     inner: reqwest::Client,
-    retry_config: RetryConfig,
+    read_retry_config: RetryConfig,  // For GET/HEAD
     header_provider: Option<Box<dyn Fn() -> HeaderMap + Send + Sync>>,
 }
 
 impl HttpClient {
-    async fn request(&self, req: Request) -> Result<Response, StreamError> {
+    /// Execute a read request (GET/HEAD) with automatic retries
+    async fn read(&self, req: Request) -> Result<Response, StreamError> {
+        self.execute_with_retry(req, &self.read_retry_config).await
+    }
+
+    /// Execute a write request (POST) WITHOUT automatic retries.
+    ///
+    /// Plain appends are NOT safe to retry - if the server commits the write
+    /// but we don't receive the response (network error), retrying would
+    /// duplicate data. Use IdempotentProducer for safe retries on writes.
+    async fn write(&self, req: Request) -> Result<Response, StreamError> {
+        self.execute_once(req).await
+    }
+
+    /// Execute a write request with idempotent producer headers.
+    /// Safe to retry because Producer-Id/Epoch/Seq enable deduplication.
+    async fn idempotent_write(&self, req: Request, config: &RetryConfig) -> Result<Response, StreamError> {
+        self.execute_with_retry(req, config).await
+    }
+
+    async fn execute_with_retry(&self, req: Request, config: &RetryConfig) -> Result<Response, StreamError> {
         let mut attempts = 0;
-        let mut delay = self.retry_config.initial_backoff;
+        let mut delay = config.initial_backoff;
 
         loop {
-            // Add dynamic headers
-            let mut req = req.try_clone().ok_or(StreamError::Network(...))?;
-            if let Some(provider) = &self.header_provider {
-                for (k, v) in provider().iter() {
-                    req.headers_mut().insert(k.clone(), v.clone());
-                }
-            }
+            let req = self.prepare_request(req.try_clone().ok_or(...)?)?;
 
             match self.inner.execute(req).await {
                 Ok(resp) if resp.status().is_success() => return Ok(resp),
                 Ok(resp) => {
                     let err = StreamError::from_response(resp).await;
-                    if !err.is_retryable() || self.should_stop(attempts) {
+                    if !err.is_retryable() || attempts >= config.max_retries {
                         return Err(err);
                     }
                 }
                 Err(e) => {
-                    if self.should_stop(attempts) {
+                    if attempts >= config.max_retries {
                         return Err(StreamError::Network(e));
                     }
                 }
             }
 
-            tokio::time::sleep(delay).await;
+            // Apply jitter to prevent thundering herd
+            let jittered_delay = apply_jitter(delay, &config.jitter);
+            tokio::time::sleep(jittered_delay).await;
+
             delay = std::cmp::min(
-                Duration::from_secs_f64(delay.as_secs_f64() * self.retry_config.multiplier),
-                self.retry_config.max_backoff,
+                Duration::from_secs_f64(delay.as_secs_f64() * config.multiplier),
+                config.max_backoff,
             );
             attempts += 1;
+        }
+    }
+}
+
+/// Apply jitter to a backoff delay
+fn apply_jitter(delay: Duration, mode: &JitterMode) -> Duration {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    match mode {
+        JitterMode::None => delay,
+        JitterMode::Full => {
+            // Random between 0 and delay
+            Duration::from_secs_f64(rng.gen::<f64>() * delay.as_secs_f64())
+        }
+        JitterMode::Equal => {
+            // Half fixed + half random
+            let half = delay.as_secs_f64() / 2.0;
+            Duration::from_secs_f64(half + rng.gen::<f64>() * half)
+        }
+        JitterMode::Decorrelated => {
+            // AWS-style: min(max_delay, random_between(base, delay * 3))
+            let base = delay.as_secs_f64() / 3.0;
+            let upper = delay.as_secs_f64() * 3.0;
+            Duration::from_secs_f64(base + rng.gen::<f64>() * (upper - base))
         }
     }
 }
@@ -815,11 +997,14 @@ bytes = "1"
 # Error handling
 thiserror = "2"
 
+# Random (for jitter)
+rand = "0.8"
+
 # JSON (optional)
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 
-# Datetime
+# Datetime (consider using std::time::SystemTime to reduce deps)
 chrono = { version = "0.4", features = ["serde"] }
 
 # HTTP types
@@ -844,6 +1029,55 @@ Following the project's philosophy of preferring conformance tests:
 name: rust
 command: cargo run --release --manifest-path ../client-rust/Cargo.toml -- adapter
 ```
+
+---
+
+## Design Decisions (from Review)
+
+The following decisions were made based on external review feedback:
+
+### 1. Operation-Aware Retry Policy (Safety Critical)
+
+**Problem**: Automatic retries on non-idempotent POST appends can cause data duplication
+if the server commits but the client doesn't receive the response.
+
+**Decision**: The HTTP layer distinguishes between:
+- `read()` - GET/HEAD with automatic retries (safe)
+- `write()` - POST without retries (prevents duplicates)
+- `idempotent_write()` - POST with Producer headers, safe to retry
+
+### 2. No Inherent `next()` Method on ChunkIterator
+
+**Problem**: Defining both inherent `async fn next()` and implementing `futures::Stream`
+causes method resolution confusion (inherent wins, shadows `StreamExt::next`).
+
+**Decision**: Only implement `Stream` trait. Users use `StreamExt::next()` from futures crate.
+
+### 3. Jitter in Backoff Configuration
+
+**Problem**: Without jitter, synchronized reconnects create thundering herd effects.
+
+**Decision**: Added `JitterMode` enum with Full (default), Equal, Decorrelated, and None options.
+
+### 4. Acknowledged Append API
+
+**Problem**: Fire-and-forget only doesn't serve correctness-critical use cases that need
+per-message confirmation.
+
+**Decision**: Added `append_acked()` and `append_json_acked()` that return `AppendReceipt`
+with offset and duplicate flag.
+
+### 5. Documented Chunk and up_to_date Semantics
+
+**Problem**: The meaning of `Chunk` and `up_to_date` varies by read mode but wasn't documented.
+
+**Decision**: Added detailed doc comments explaining semantics in each mode (catch-up, long-poll, SSE).
+
+### 6. Documented LiveMode::Auto Fallback Behavior
+
+**Problem**: How Auto mode handles SSE failures wasn't specified.
+
+**Decision**: Documented the fallback sequence: SSE first → long-poll on failure/unsupported.
 
 ---
 
