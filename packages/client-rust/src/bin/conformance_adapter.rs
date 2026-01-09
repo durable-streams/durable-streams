@@ -659,21 +659,14 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
     let is_json = content_type.to_lowercase().contains("application/json");
 
     if is_json {
-        // Parse and re-serialize to ensure valid JSON
         match serde_json::from_str::<Value>(&data) {
-            Ok(v) => {
-                if let Err(e) = producer.append_json(&v) {
-                    return producer_error_result("idempotent-append", e);
-                }
-            }
+            Ok(v) => producer.append_json(&v),
             Err(e) => {
                 return error_result("idempotent-append", "PARSE_ERROR", &format!("invalid JSON: {}", e));
             }
         }
     } else {
-        if let Err(e) = producer.append(Bytes::from(data)) {
-            return producer_error_result("idempotent-append", e);
-        }
+        producer.append(Bytes::from(data));
     }
 
     if let Err(e) = producer.flush().await {
@@ -732,19 +725,13 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
     for item in items {
         if is_json {
             match serde_json::from_str::<Value>(&item) {
-                Ok(v) => {
-                    if let Err(e) = producer.append_json(&v) {
-                        return producer_error_result("idempotent-append-batch", e);
-                    }
-                }
+                Ok(v) => producer.append_json(&v),
                 Err(e) => {
                     return error_result("idempotent-append-batch", "PARSE_ERROR", &format!("invalid JSON: {}", e));
                 }
             }
         } else {
-            if let Err(e) = producer.append(Bytes::from(item)) {
-                return producer_error_result("idempotent-append-batch", e);
-            }
+            producer.append(Bytes::from(item));
         }
     }
 
@@ -902,7 +889,7 @@ async fn benchmark_throughput_append(app_state: &AppState, op: &BenchmarkOperati
     let start = Instant::now();
 
     for _ in 0..count {
-        let _ = producer.append(payload.clone());  // Clone just bumps refcount (sync, fire-and-forget)
+        producer.append(payload.clone());  // Fire-and-forget, clone just bumps refcount
     }
 
     let _ = producer.flush().await;

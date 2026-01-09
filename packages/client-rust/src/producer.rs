@@ -165,63 +165,53 @@ impl IdempotentProducer {
     ///
     /// Returns immediately - data is queued for sending.
     /// Use `flush()` to wait for all data to be written.
-    ///
-    /// This is a synchronous method for maximum throughput.
-    pub fn append(&self, data: impl Into<Bytes>) -> Result<(), ProducerError> {
+    /// Errors are handled centrally, not per-append.
+    #[inline]
+    pub fn append(&self, data: impl Into<Bytes>) {
         let data = data.into();
         let data_len = data.len();
 
-        let entry = PendingEntry {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return; // Silently ignore if closed
+        }
+
+        state.pending_batch.push(PendingEntry {
             data,
             #[cfg(feature = "json")]
             json_data: None,
-        };
-
-        let mut state = self.state.lock().unwrap();
-        if state.closed {
-            return Err(ProducerError::Closed);
-        }
-
-        state.pending_batch.push(entry);
+        });
         state.batch_bytes += data_len;
 
-        // Check if batch should be sent
         if state.batch_bytes >= self.config.max_batch_bytes {
             self.send_batch_locked(&mut state);
         }
-
-        Ok(())
     }
 
     /// Append JSON data (fire-and-forget).
     #[cfg(feature = "json")]
-    pub fn append_json<T: serde::Serialize>(
-        &self,
-        data: &T,
-    ) -> Result<(), ProducerError> {
-        let json_bytes = serde_json::to_vec(data).map_err(|e| {
-            ProducerError::Stream(StreamError::Json(e.to_string()))
-        })?;
+    #[inline]
+    pub fn append_json<T: serde::Serialize>(&self, data: &T) {
+        let json_bytes = match serde_json::to_vec(data) {
+            Ok(b) => b,
+            Err(_) => return, // Silently ignore serialization errors
+        };
 
         let mut state = self.state.lock().unwrap();
         if state.closed {
-            return Err(ProducerError::Closed);
+            return;
         }
 
-        let entry = PendingEntry {
+        let len = json_bytes.len();
+        state.pending_batch.push(PendingEntry {
             data: Bytes::from(json_bytes.clone()),
             json_data: Some(serde_json::from_slice(&json_bytes).unwrap()),
-        };
+        });
+        state.batch_bytes += len;
 
-        state.pending_batch.push(entry);
-        state.batch_bytes += json_bytes.len();
-
-        // Check if batch should be sent
         if state.batch_bytes >= self.config.max_batch_bytes {
             self.send_batch_locked(&mut state);
         }
-
-        Ok(())
     }
 
     /// Flush all pending data and wait for acknowledgment.
