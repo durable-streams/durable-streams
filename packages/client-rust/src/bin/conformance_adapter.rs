@@ -662,7 +662,7 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
         // Parse and re-serialize to ensure valid JSON
         match serde_json::from_str::<Value>(&data) {
             Ok(v) => {
-                if let Err(e) = producer.append_json(&v).await {
+                if let Err(e) = producer.append_json(&v) {
                     return producer_error_result("idempotent-append", e);
                 }
             }
@@ -671,7 +671,7 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
             }
         }
     } else {
-        if let Err(e) = producer.append(Bytes::from(data)).await {
+        if let Err(e) = producer.append(Bytes::from(data)) {
             return producer_error_result("idempotent-append", e);
         }
     }
@@ -733,7 +733,7 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
         if is_json {
             match serde_json::from_str::<Value>(&item) {
                 Ok(v) => {
-                    if let Err(e) = producer.append_json(&v).await {
+                    if let Err(e) = producer.append_json(&v) {
                         return producer_error_result("idempotent-append-batch", e);
                     }
                 }
@@ -742,7 +742,7 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
                 }
             }
         } else {
-            if let Err(e) = producer.append(Bytes::from(item)).await {
+            if let Err(e) = producer.append(Bytes::from(item)) {
                 return producer_error_result("idempotent-append-batch", e);
             }
         }
@@ -896,12 +896,13 @@ async fn benchmark_throughput_append(app_state: &AppState, op: &BenchmarkOperati
         .content_type(&content_type)
         .build();
 
-    let payload: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+    let payload_vec: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+    let payload = Bytes::from(payload_vec);  // Convert once, Bytes clone is cheap (ref-counted)
 
     let start = Instant::now();
 
     for _ in 0..count {
-        let _ = producer.append(Bytes::from(payload.clone())).await;
+        let _ = producer.append(payload.clone());  // Clone just bumps refcount (sync, fire-and-forget)
     }
 
     let _ = producer.flush().await;

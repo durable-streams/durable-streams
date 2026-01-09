@@ -8,9 +8,10 @@ use crate::stream::{
 use crate::types::Offset;
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tokio::time::sleep;
 
 /// Receipt from an acknowledged append operation.
@@ -104,15 +105,15 @@ impl ProducerBuilder {
                 closed: false,
                 epoch_claimed: !self.auto_claim,
             })),
-            config: ProducerConfig {
+            config: Arc::new(ProducerConfig {
                 auto_claim: self.auto_claim,
                 max_batch_bytes: self.max_batch_bytes,
                 linger: self.linger,
                 max_in_flight: self.max_in_flight,
                 content_type,
-            },
-            in_flight: Arc::new(Mutex::new(0)),
-            seq_state: Arc::new(Mutex::new(HashMap::new())),
+            }),
+            in_flight: Arc::new(AtomicUsize::new(0)),
+            seq_state: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 }
@@ -147,9 +148,9 @@ pub struct IdempotentProducer {
     stream: Stream,
     producer_id: String,
     state: Arc<Mutex<ProducerState>>,
-    config: ProducerConfig,
-    in_flight: Arc<Mutex<usize>>,
-    seq_state: Arc<Mutex<HashMap<u64, SeqState>>>,
+    config: Arc<ProducerConfig>,
+    in_flight: Arc<AtomicUsize>,
+    seq_state: Arc<tokio::sync::Mutex<HashMap<u64, SeqState>>>,
 }
 
 #[derive(Default)]
@@ -164,59 +165,29 @@ impl IdempotentProducer {
     ///
     /// Returns immediately - data is queued for sending.
     /// Use `flush()` to wait for all data to be written.
-    pub async fn append(&self, data: impl Into<Bytes>) -> Result<(), ProducerError> {
+    ///
+    /// This is a synchronous method for maximum throughput.
+    pub fn append(&self, data: impl Into<Bytes>) -> Result<(), ProducerError> {
         let data = data.into();
-
-        let mut state = self.state.lock().await;
-        if state.closed {
-            return Err(ProducerError::Closed);
-        }
+        let data_len = data.len();
 
         let entry = PendingEntry {
-            data: data.clone(),
+            data,
             #[cfg(feature = "json")]
             json_data: None,
         };
 
-        state.pending_batch.push(entry);
-        state.batch_bytes += data.len();
-
-        // Check if batch should be sent
-        if state.batch_bytes >= self.config.max_batch_bytes {
-            self.send_batch_locked(&mut state).await?;
-        }
-
-        Ok(())
-    }
-
-    /// Append multiple items at once (more efficient for bulk operations).
-    ///
-    /// Takes a single lock for all items, reducing contention.
-    pub async fn append_many<I, D>(&self, items: I) -> Result<(), ProducerError>
-    where
-        I: IntoIterator<Item = D>,
-        D: Into<Bytes>,
-    {
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(ProducerError::Closed);
         }
 
-        for item in items {
-            let data = item.into();
-            let entry = PendingEntry {
-                data: data.clone(),
-                #[cfg(feature = "json")]
-                json_data: None,
-            };
-
-            state.pending_batch.push(entry);
-            state.batch_bytes += data.len();
-        }
+        state.pending_batch.push(entry);
+        state.batch_bytes += data_len;
 
         // Check if batch should be sent
         if state.batch_bytes >= self.config.max_batch_bytes {
-            self.send_batch_locked(&mut state).await?;
+            self.send_batch_locked(&mut state);
         }
 
         Ok(())
@@ -224,7 +195,7 @@ impl IdempotentProducer {
 
     /// Append JSON data (fire-and-forget).
     #[cfg(feature = "json")]
-    pub async fn append_json<T: serde::Serialize>(
+    pub fn append_json<T: serde::Serialize>(
         &self,
         data: &T,
     ) -> Result<(), ProducerError> {
@@ -232,7 +203,7 @@ impl IdempotentProducer {
             ProducerError::Stream(StreamError::Json(e.to_string()))
         })?;
 
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(ProducerError::Closed);
         }
@@ -247,7 +218,7 @@ impl IdempotentProducer {
 
         // Check if batch should be sent
         if state.batch_bytes >= self.config.max_batch_bytes {
-            self.send_batch_locked(&mut state).await?;
+            self.send_batch_locked(&mut state);
         }
 
         Ok(())
@@ -257,17 +228,16 @@ impl IdempotentProducer {
     pub async fn flush(&self) -> Result<(), ProducerError> {
         loop {
             {
-                let mut state = self.state.lock().await;
+                let mut state = self.state.lock().unwrap();
 
                 // Send any pending batch
                 if !state.pending_batch.is_empty() {
-                    self.send_batch_locked(&mut state).await?;
+                    self.send_batch_locked(&mut state);
                 }
             }
 
-            // Wait for in-flight to complete
-            let in_flight = *self.in_flight.lock().await;
-            if in_flight == 0 {
+            // Wait for in-flight to complete (atomic read)
+            if self.in_flight.load(Ordering::Acquire) == 0 {
                 break;
             }
 
@@ -282,39 +252,36 @@ impl IdempotentProducer {
     pub async fn close(&self) -> Result<(), ProducerError> {
         self.flush().await?;
 
-        let mut state = self.state.lock().await;
+        let mut state = self.state.lock().unwrap();
         state.closed = true;
 
         Ok(())
     }
 
     /// Get the current epoch.
-    pub async fn epoch(&self) -> u64 {
-        self.state.lock().await.epoch
+    pub fn epoch(&self) -> u64 {
+        self.state.lock().unwrap().epoch
     }
 
     /// Get the next sequence number.
-    pub async fn next_seq(&self) -> u64 {
-        self.state.lock().await.next_seq
+    pub fn next_seq(&self) -> u64 {
+        self.state.lock().unwrap().next_seq
     }
 
-    async fn send_batch_locked(
-        &self,
-        state: &mut ProducerState,
-    ) -> Result<(), ProducerError> {
+    fn send_batch_locked(&self, state: &mut ProducerState) {
         if state.pending_batch.is_empty() {
-            return Ok(());
+            return;
         }
 
-        // Check in-flight limit
-        let in_flight = *self.in_flight.lock().await;
+        // Check in-flight limit (atomic read - no lock needed)
+        let in_flight = self.in_flight.load(Ordering::Acquire);
         if in_flight >= self.config.max_in_flight {
-            return Ok(());
+            return;
         }
 
         // Check epoch claim
         if self.config.auto_claim && !state.epoch_claimed && in_flight > 0 {
-            return Ok(());
+            return;
         }
 
         // Take the batch
@@ -325,26 +292,25 @@ impl IdempotentProducer {
         state.next_seq += 1;
         state.batch_bytes = 0;
 
-        // Increment in-flight
-        *self.in_flight.lock().await += 1;
+        // Increment in-flight (atomic - no lock needed)
+        self.in_flight.fetch_add(1, Ordering::AcqRel);
 
         // Send in background
         let stream = self.stream.clone();
         let producer_id = self.producer_id.clone();
-        let content_type = self.config.content_type.clone();
-        let auto_claim = self.config.auto_claim;
+        let config = self.config.clone();
         let in_flight_counter = self.in_flight.clone();
         let state_arc = self.state.clone();
         let seq_state = self.seq_state.clone();
 
         tokio::spawn(async move {
             let result =
-                do_send_batch(&stream, &producer_id, &content_type, batch, seq, epoch, auto_claim, &state_arc)
+                do_send_batch(&stream, &producer_id, &config.content_type, batch, seq, epoch, config.auto_claim, &state_arc)
                     .await;
 
             // Update epoch if claimed
-            if let Ok(_) = &result {
-                let mut state = state_arc.lock().await;
+            if result.is_ok() {
+                let mut state = state_arc.lock().unwrap();
                 if !state.epoch_claimed {
                     state.epoch_claimed = true;
                 }
@@ -363,11 +329,9 @@ impl IdempotentProducer {
                 }
             }
 
-            // Decrement in-flight
-            *in_flight_counter.lock().await -= 1;
+            // Decrement in-flight (atomic - no lock needed)
+            in_flight_counter.fetch_sub(1, Ordering::AcqRel);
         });
-
-        Ok(())
     }
 }
 
@@ -481,7 +445,7 @@ async fn do_send_batch_with_retry(
                 // Auto-claim: retry with epoch+1
                 let new_epoch = server_epoch + 1;
                 {
-                    let mut s = state.lock().await;
+                    let mut s = state.lock().unwrap();
                     s.epoch = new_epoch;
                     s.next_seq = 1; // This batch uses seq 0
                 }
