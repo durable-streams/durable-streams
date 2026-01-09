@@ -31,13 +31,17 @@ module DurableStreams
       @content_type = content_type || "application/json"
       @headers = headers
 
-      @seq = 0
+      @seq = -1  # Start at -1 so first message has seq=0 after increment
       @pending = []
       @mutex = Mutex.new
+      @send_mutex = Mutex.new  # Ensure batches are sent in order
       @in_flight = 0
+      @in_flight_cv = ConditionVariable.new
       @transport = HTTP::Transport.new
       @closed = false
       @linger_timer = nil
+      @batch_queue = Queue.new
+      @sender_thread = nil
     end
 
     # Append a message (fire-and-forget, batched)
@@ -45,6 +49,7 @@ module DurableStreams
     def append(data)
       raise AlreadyConsumedError if @closed
 
+      batch_to_send = nil
       @mutex.synchronize do
         @seq += 1
         @pending << { data: data, seq: @seq }
@@ -53,8 +58,15 @@ module DurableStreams
         start_linger_timer if @pending.size == 1 && @linger_ms > 0
 
         # Flush if batch is full
-        flush_pending if batch_size_bytes >= @max_batch_bytes
+        if batch_size_bytes >= @max_batch_bytes
+          batch_to_send = @pending.dup
+          @pending.clear
+          cancel_linger_timer
+        end
       end
+
+      # Send outside the mutex to avoid blocking other appends
+      queue_batch(batch_to_send) if batch_to_send
     end
 
     # Append and wait for acknowledgment
@@ -82,7 +94,11 @@ module DurableStreams
         @pending.clear
       end
 
-      send_batch(batch) if batch && !batch.empty?
+      # Send synchronously for flush
+      send_batch_sync(batch) if batch && !batch.empty?
+
+      # Wait for all in-flight batches to complete
+      wait_for_inflight
     end
 
     # Close the producer, flushing pending data
@@ -122,54 +138,92 @@ module DurableStreams
       @linger_timer = nil
     end
 
-    def flush_pending
-      return if @pending.empty?
+    def queue_batch(batch)
+      return if batch.nil? || batch.empty?
 
-      batch = @pending.dup
-      @pending.clear
-      cancel_linger_timer
-
-      # Send asynchronously to allow more batching
-      Thread.new { send_batch(batch) }
+      # If max_in_flight is 1 or linger_ms is 0, send synchronously for ordering
+      if @max_in_flight <= 1 || @linger_ms == 0
+        send_batch_sync(batch)
+      else
+        # For batched mode with concurrency, use the queue
+        start_sender_thread
+        @batch_queue << batch
+      end
     end
 
-    def send_batch(batch, retry_count: 0)
+    def start_sender_thread
+      return if @sender_thread&.alive?
+
+      @sender_thread = Thread.new do
+        loop do
+          batch = @batch_queue.pop
+          break if batch == :shutdown
+
+          send_batch_sync(batch)
+        end
+      end
+    end
+
+    def wait_for_inflight
+      @mutex.synchronize do
+        while @in_flight > 0
+          @in_flight_cv.wait(@mutex, 0.1)
+        end
+      end
+    end
+
+    def send_batch_sync(batch, retry_count: 0)
       return if batch.empty?
 
-      # Wait for in-flight slot
-      loop do
-        can_send = @mutex.synchronize do
-          if @in_flight < @max_in_flight
-            @in_flight += 1
-            true
+      # Serialize batch sending to ensure sequence order
+      @send_mutex.synchronize do
+        # Wait for in-flight slot
+        @mutex.synchronize do
+          while @in_flight >= @max_in_flight
+            @in_flight_cv.wait(@mutex, 0.1)
+          end
+          @in_flight += 1
+        end
+
+        begin
+          send_batch_request(batch)
+        rescue StaleEpochError => e
+          if @auto_claim && retry_count < 3
+            new_epoch = nil
+            @mutex.synchronize do
+              # Use the server's current epoch + 1, or at minimum our epoch + 1
+              server_epoch = e.current_epoch || @epoch
+              new_epoch = [server_epoch + 1, @epoch + 1].max
+              @epoch = new_epoch
+              # Reset seq for new epoch since we're starting fresh
+              @seq = -1
+            end
+            # Rebuild the batch with seq starting from 0 for the new epoch
+            new_batch = batch.each_with_index.map do |msg, idx|
+              { data: msg[:data], seq: idx }
+            end
+            send_batch_request_with_epoch(new_batch, new_epoch)
           else
-            false
+            raise
+          end
+        ensure
+          @mutex.synchronize do
+            @in_flight -= 1
+            @in_flight_cv.broadcast
           end
         end
-        break if can_send
-
-        sleep(0.001)
-      end
-
-      begin
-        send_batch_request(batch)
-      rescue StaleEpochError => e
-        if @auto_claim && retry_count < 3
-          @mutex.synchronize { @epoch += 1 }
-          send_batch(batch, retry_count: retry_count + 1)
-        else
-          raise
-        end
-      ensure
-        @mutex.synchronize { @in_flight -= 1 }
       end
     end
 
     def send_batch_request(batch)
+      send_batch_request_with_epoch(batch, @epoch)
+    end
+
+    def send_batch_request_with_epoch(batch, epoch)
       headers = HTTP.resolve_headers(@headers)
       headers["content-type"] = @content_type
       headers[PRODUCER_ID_HEADER] = @producer_id
-      headers[PRODUCER_EPOCH_HEADER] = @epoch.to_s
+      headers[PRODUCER_EPOCH_HEADER] = epoch.to_s
 
       # Use the first message's seq as the starting seq
       first_seq = batch.first[:seq]
@@ -186,10 +240,8 @@ module DurableStreams
 
       case response.status
       when 200, 201, 204
-        # Success - check for duplicate
-        if response[STREAM_NEXT_OFFSET_HEADER]
-          # Normal success
-        end
+        # Success
+        nil
       when 403
         # Stale epoch
         current_epoch = response[PRODUCER_EPOCH_HEADER]&.to_i
