@@ -17,13 +17,20 @@ describe(`visibility handling`, () => {
     mockHidden = false
     visibilityHandler = null
 
-    addEventListenerSpy = vi.fn((event: string, handler: () => void) => {
-      if (event === `visibilitychange`) {
-        visibilityHandler = handler
+    // Use mockImplementation() instead of vi.fn(impl) to ensure proper
+    // registration in vitest's internal state (see vitest#3260). This prevents
+    // flaky behavior when tests run in parallel across projects.
+    addEventListenerSpy = vi.fn()
+    addEventListenerSpy.mockImplementation(
+      (event: string, handler: () => void) => {
+        if (event === `visibilitychange`) {
+          visibilityHandler = handler
+        }
       }
-    })
+    )
 
-    removeEventListenerSpy = vi.fn((event: string) => {
+    removeEventListenerSpy = vi.fn()
+    removeEventListenerSpy.mockImplementation((event: string) => {
       if (event === `visibilitychange`) {
         visibilityHandler = null
       }
@@ -684,79 +691,74 @@ describe(`visibility handling`, () => {
       // Set document as hidden BEFORE creating stream
       mockHidden = true
 
-      let fetchCount = 0
-
-      // Create a fresh mock function for this test to avoid any state leakage
-      const freshMockFetch = vi.fn(
-        (_url: string | URL | Request, init?: RequestInit) => {
-          fetchCount++
-
-          // First request - initial fetch
-          if (fetchCount === 1) {
-            return Promise.resolve(
-              new Response(JSON.stringify([{ id: 1 }]), {
-                status: 200,
-                headers: {
-                  "content-type": `application/json`,
-                  [STREAM_OFFSET_HEADER]: `1_10`,
-                  [STREAM_UP_TO_DATE_HEADER]: `true`,
-                },
-              })
-            )
-          }
-
-          // Second request - after resume
-          if (fetchCount === 2) {
-            return Promise.resolve(
-              new Response(JSON.stringify([{ id: 2 }]), {
-                status: 200,
-                headers: {
-                  "content-type": `application/json`,
-                  [STREAM_OFFSET_HEADER]: `2_10`,
-                  [STREAM_UP_TO_DATE_HEADER]: `true`,
-                },
-              })
-            )
-          }
-
-          // Third+ request - hang (will be cancelled)
-          return new Promise<Response>((_, reject) => {
-            init?.signal?.addEventListener(`abort`, () => {
-              reject(new DOMException(`Aborted`, `AbortError`))
-            })
-          })
-        }
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
       )
+
+      // Second request - will be called after resume
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      // Third request - keep stream alive so we can check fetch count
+      mockFetch.mockImplementation((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
 
       const res = await stream({
         url: `https://example.com/stream`,
-        fetch: freshMockFetch,
+        fetch: mockFetch,
         live: `long-poll`,
       })
 
       res.subscribeJson<{ id: number }>(() => Promise.resolve())
 
-      // Wait a bit - second fetch should NOT start because we're paused
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      // Wait for the stream to enter pause state (async operation)
+      // Poll until we're actually paused with exactly 1 fetch
+      const pollForPause = async (): Promise<void> => {
+        for (let i = 0; i < 20; i++) {
+          if (mockFetch.mock.calls.length === 1) return
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+      }
+      await pollForPause()
 
       // Only one fetch should have been made (the initial one before visibility check)
       // The stream should be paused waiting for resume
-      expect(fetchCount).toBe(1)
+      expect(mockFetch.mock.calls.length).toBe(1)
 
       // Now show the page - should resume
       simulateVisibilityChange(false)
 
       // Poll for the second fetch to complete (more robust than fixed timeout)
       const pollForSecondFetch = async (): Promise<void> => {
-        for (let i = 0; i < 20; i++) {
-          if (fetchCount >= 2) return
+        for (let i = 0; i < 40; i++) {
+          if (mockFetch.mock.calls.length >= 2) return
           await new Promise((resolve) => setTimeout(resolve, 50))
         }
       }
       await pollForSecondFetch()
 
       // Now second fetch should have been made
-      expect(fetchCount).toBeGreaterThanOrEqual(2)
+      expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
 
       res.cancel()
     })
