@@ -72,7 +72,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
   private readonly documentStreamConfig: DurableStreamsProviderOptions[`documentStream`]
   private readonly awarenessStreamConfig?: DurableStreamsProviderOptions[`awarenessStream`]
   private readonly debug: boolean
-  private readonly liveMode: `long-poll` | `sse`
 
   private documentStream: DurableStream | null = null
   private awarenessStream: DurableStream | null = null
@@ -100,7 +99,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.documentStreamConfig = options.documentStream
     this.awarenessStreamConfig = options.awarenessStream
     this.debug = options.debug ?? false
-    this.liveMode = options.liveMode ?? `long-poll`
 
     // Listen for local document updates
     this.doc.on(`update`, this.handleDocumentUpdate)
@@ -309,7 +307,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     // Start streaming from the beginning
     const response = await this.documentStream.stream({
       offset: `-1`,
-      live: this.liveMode,
+      live: `long-poll`,
     })
 
     if (this.abortController?.signal.aborted) return
@@ -388,9 +386,11 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.startAwarenessHeartbeat()
 
     // Start streaming from current position - we don't need historical presence data.
+    // Use live: "auto" so the first request (catch-up) returns immediately,
+    // then subsequent requests use long-poll.
     const response = await this.awarenessStream.stream({
       offset: `now`,
-      live: this.liveMode,
+      live: `auto`,
     })
 
     if (this.abortController?.signal.aborted) return
