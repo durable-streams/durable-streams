@@ -66,7 +66,7 @@ final class HttpClient
     }
 
     /**
-     * Execute an HTTP request.
+     * Execute an HTTP request with automatic retry for transient errors.
      *
      * @param string $method HTTP method
      * @param string $url Full URL
@@ -81,6 +81,71 @@ final class HttpClient
         array $headers = [],
         ?string $body = null,
         ?float $timeout = null,
+    ): HttpResponse {
+        $maxRetries = 3;
+        $lastException = null;
+        $lastResponse = null;
+
+        for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
+            // Exponential backoff (0ms, 100ms, 200ms, 400ms)
+            if ($attempt > 0) {
+                usleep((int)(100000 * pow(2, $attempt - 1)));
+            }
+
+            try {
+                $response = $this->doRequest($method, $url, $headers, $body, $timeout);
+                $status = $response->status;
+
+                // Check if this is a retryable status
+                if ($this->isRetryableStatus($status) && $attempt < $maxRetries) {
+                    $lastResponse = $response;
+                    continue;
+                }
+
+                // Handle error status codes (throws for non-retryable errors)
+                $this->handleErrorStatus($status, $url, $response->headers, $response->body);
+
+                return $response;
+            } catch (DurableStreamException $e) {
+                // Network errors and timeouts are retryable
+                if ($e->getErrorCode() === 'NETWORK_ERROR' && $attempt < $maxRetries) {
+                    $lastException = $e;
+                    continue;
+                }
+                throw $e;
+            }
+        }
+
+        // All retries exhausted - throw last error
+        if ($lastException !== null) {
+            throw $lastException;
+        }
+
+        // Should have a response if we got here
+        if ($lastResponse !== null) {
+            $this->handleErrorStatus($lastResponse->status, $url, $lastResponse->headers, $lastResponse->body);
+        }
+
+        throw new DurableStreamException('Request failed after retries', 'NETWORK_ERROR');
+    }
+
+    /**
+     * Check if an HTTP status code is retryable.
+     */
+    private function isRetryableStatus(int $status): bool
+    {
+        return in_array($status, [429, 500, 502, 503, 504], true);
+    }
+
+    /**
+     * Execute a single HTTP request (no retry logic).
+     */
+    private function doRequest(
+        string $method,
+        string $url,
+        array $headers,
+        ?string $body,
+        ?float $timeout,
     ): HttpResponse {
         $handle = $this->getHandle();
 
@@ -128,9 +193,7 @@ final class HttpClient
 
         $responseHeaders = $this->parseHeaders($headerStr);
 
-        // Handle error status codes
-        $this->handleErrorStatus($statusCode, $url, $responseHeaders, $bodyStr);
-
+        // Return response - error handling is done by the caller
         return new HttpResponse($statusCode, $responseHeaders, $bodyStr);
     }
 

@@ -301,12 +301,16 @@ function handleRead(array $cmd): array {
     $upToDate = false;
     $status = 200;
 
+    // For long-poll, add buffer to HTTP timeout to ensure we receive server's response
+    // The server waits for timeoutMs, so our HTTP timeout needs to be longer
+    $httpTimeout = $live ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
+
     $response = stream([
         'url' => $url,
         'offset' => $offset,
         'live' => $live,
         'headers' => $mergedHeaders,
-        'timeout' => $timeoutMs / 1000.0,
+        'timeout' => $httpTimeout,
         'client' => $sharedClient,
     ]);
 
@@ -342,17 +346,12 @@ function handleRead(array $cmd): array {
                 $response->cancel();
                 break;
             }
-
-            // For long-poll with data AND upToDate, all data received
-            if ($live === 'long-poll' && $chunkCount > 0 && $response->isUpToDate()) {
-                $response->cancel();
-                break;
-            }
         }
     } catch (DurableStreamException $e) {
         if ($e->getErrorCode() !== 'TIMEOUT') {
             throw $e;
         }
+        // TIMEOUT means the HTTP request timed out - stop trying
     }
 
     // Capture final state after iteration (handles empty responses correctly)
@@ -606,6 +605,58 @@ function handleBenchmark(array $cmd): array {
 
                 $metrics['bytesTransferred'] = $totalBytes;
                 $metrics['messagesProcessed'] = $count;
+                break;
+
+            case 'roundtrip':
+                // Roundtrip: create stream, append data, read back via long-poll
+                // In synchronous PHP, we append first then read (data is immediately available)
+                $url = $serverUrl . $operation['path'];
+                $contentType = $operation['contentType'] ?? 'application/octet-stream';
+                $liveMode = $operation['live'] ?? 'long-poll';
+
+                // Skip SSE - not supported in synchronous PHP
+                if ($liveMode === 'sse') {
+                    return [
+                        'type' => 'error',
+                        'success' => false,
+                        'commandType' => 'benchmark',
+                        'errorCode' => ERROR_NOT_SUPPORTED,
+                        'message' => 'SSE not supported in synchronous PHP',
+                    ];
+                }
+
+                // Create stream
+                DurableStream::create($url, $contentType, [], null, null, $sharedClient);
+
+                // Generate and append payload
+                $payload = str_repeat('*', $operation['size']);
+                $ds = new DurableStream($url, $contentType, [], $sharedClient);
+                $ds->append($payload);
+
+                // Read back via long-poll (data is already there, returns immediately)
+                $response = stream([
+                    'url' => $url,
+                    'offset' => '-1',
+                    'live' => $liveMode,
+                    'timeout' => 5.0,
+                    'client' => $sharedClient,
+                ]);
+
+                $readData = '';
+                foreach ($response as $chunk) {
+                    if ($chunk !== '') {
+                        $readData = $chunk;
+                        $response->cancel();
+                        break;
+                    }
+                    // If we got data or are up-to-date, stop
+                    if ($response->isUpToDate()) {
+                        $response->cancel();
+                        break;
+                    }
+                }
+
+                $metrics['bytesTransferred'] = $operation['size'] + strlen($readData);
                 break;
 
             default:

@@ -93,6 +93,11 @@ final class StreamResponse implements IteratorAggregate
      */
     private function fetch(): HttpResponse
     {
+        // SSE is not supported in synchronous PHP
+        if ($this->liveMode === 'sse') {
+            throw new LogicException('SSE mode is not supported. Use long-poll instead.');
+        }
+
         $url = $this->url;
         $query = [];
 
