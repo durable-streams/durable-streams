@@ -386,11 +386,9 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.startAwarenessHeartbeat()
 
     // Start streaming from current position - we don't need historical presence data.
-    // Use live: "auto" so the first request (catch-up) returns immediately,
-    // then subsequent requests use long-poll.
     const response = await this.awarenessStream.stream({
       offset: `now`,
-      live: `auto`,
+      live: `long-poll`,
     })
 
     if (this.abortController?.signal.aborted) return
