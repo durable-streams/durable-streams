@@ -5,7 +5,7 @@
  * awareness (presence) support.
  */
 
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, DurableStreamError } from "@durable-streams/client"
 import * as Y from "yjs"
 import * as awarenessProtocol from "y-protocols/awareness"
 import { ObservableV2 } from "lib0/observable"
@@ -281,7 +281,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
 
     const url = normalizeUrl(this.documentStreamConfig.url)
 
-    // Try to create the stream, or connect if it exists
+    // Try to create the stream, or connect if it already exists
     try {
       this.documentStream = await DurableStream.create({
         url,
@@ -289,14 +289,19 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         headers: this.documentStreamConfig.headers,
         signal: this.abortController!.signal,
       })
-    } catch {
+    } catch (err) {
       if (this.abortController?.signal.aborted) return
-      this.documentStream = new DurableStream({
-        url,
-        contentType: BINARY_CONTENT_TYPE,
-        headers: this.documentStreamConfig.headers,
-        signal: this.abortController!.signal,
-      })
+      // Stream already exists - just create a handle
+      if (err instanceof DurableStreamError && err.code === `CONFLICT_EXISTS`) {
+        this.documentStream = new DurableStream({
+          url,
+          contentType: BINARY_CONTENT_TYPE,
+          headers: this.documentStreamConfig.headers,
+          signal: this.abortController!.signal,
+        })
+      } else {
+        throw err
+      }
     }
 
     if (this.abortController?.signal.aborted) return
@@ -350,7 +355,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
 
     const url = normalizeUrl(this.awarenessStreamConfig.url)
 
-    // Try to create the stream, or connect if it exists
+    // Try to create the stream, or connect if it already exists
     // Awareness uses binary format (same as document stream)
     try {
       this.awarenessStream = await DurableStream.create({
@@ -359,14 +364,19 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
         headers: this.awarenessStreamConfig.headers,
         signal: this.abortController!.signal,
       })
-    } catch {
+    } catch (err) {
       if (this.abortController?.signal.aborted) return
-      this.awarenessStream = new DurableStream({
-        url,
-        contentType: BINARY_CONTENT_TYPE,
-        headers: this.awarenessStreamConfig.headers,
-        signal: this.abortController!.signal,
-      })
+      // Stream already exists - just create a handle
+      if (err instanceof DurableStreamError && err.code === `CONFLICT_EXISTS`) {
+        this.awarenessStream = new DurableStream({
+          url,
+          contentType: BINARY_CONTENT_TYPE,
+          headers: this.awarenessStreamConfig.headers,
+          signal: this.abortController!.signal,
+        })
+      } else {
+        throw err
+      }
     }
 
     if (this.abortController?.signal.aborted) return
