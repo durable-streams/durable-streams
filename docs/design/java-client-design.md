@@ -31,7 +31,8 @@ The design prioritizes:
 10. [Threading Model](#10-threading-model)
 11. [Resource Management](#11-resource-management)
 12. [Examples](#12-examples)
-13. [Future Considerations](#13-future-considerations)
+13. [Android Support](#13-android-support)
+14. [Future Considerations](#14-future-considerations)
 
 ---
 
@@ -969,9 +970,281 @@ events.subscribe(this::process);
 
 ---
 
-## 13. Future Considerations
+## 13. Android Support
 
-### 13.1 Potential Enhancements
+### 13.1 The Problem
+
+The JDK's `java.net.http.HttpClient` (Java 11+) is **not available on Android**. Android uses a different runtime and HTTP stack. To support Android, we need a pluggable HTTP client architecture.
+
+### 13.2 Solution: HTTP Client SPI
+
+The core library defines an SPI (Service Provider Interface) that abstracts HTTP operations:
+
+```java
+// com.durablestreams.spi package
+
+/**
+ * SPI for pluggable HTTP client implementations.
+ * Implementations for JDK HttpClient, OkHttp, and others provided as separate modules.
+ */
+public interface HttpClientProvider {
+
+    /**
+     * Execute a request and return the response.
+     */
+    HttpResponse execute(HttpRequest request) throws IOException;
+
+    /**
+     * Execute a request asynchronously.
+     */
+    CompletableFuture<HttpResponse> executeAsync(HttpRequest request);
+
+    /**
+     * Execute a streaming request (for SSE).
+     * Returns a stream of lines/events.
+     */
+    StreamingResponse executeStreaming(HttpRequest request) throws IOException;
+
+    /**
+     * Shutdown and release resources.
+     */
+    void close();
+}
+
+public record HttpRequest(
+    String method,
+    URI uri,
+    Map<String, String> headers,
+    byte[] body,
+    Duration timeout
+) {}
+
+public record HttpResponse(
+    int statusCode,
+    Map<String, String> headers,
+    byte[] body
+) {}
+
+public interface StreamingResponse extends AutoCloseable {
+    Iterator<String> lines();
+    Map<String, String> headers();
+    int statusCode();
+}
+```
+
+### 13.3 Module Architecture
+
+```
+com.durablestreams:durable-streams-core     # Core API, no HTTP implementation
+com.durablestreams:durable-streams-jdk      # JDK HttpClient (Java 11+, server/desktop)
+com.durablestreams:durable-streams-okhttp   # OkHttp (Android, also works on JVM)
+com.durablestreams:durable-streams-ktor     # Ktor (Kotlin Multiplatform)
+```
+
+**Dependency tree:**
+
+```
+┌─────────────────────────┐
+│  durable-streams-core   │  ← Core API + SPI interfaces
+└───────────┬─────────────┘
+            │
+    ┌───────┴───────┬─────────────────┐
+    ▼               ▼                 ▼
+┌─────────┐   ┌───────────┐   ┌─────────────┐
+│   jdk   │   │  okhttp   │   │    ktor     │
+│ module  │   │  module   │   │   module    │
+└─────────┘   └───────────┘   └─────────────┘
+  Java 11+      Android +        Kotlin
+               JVM/Server      Multiplatform
+```
+
+### 13.4 OkHttp Implementation (Android)
+
+```java
+// com.durablestreams:durable-streams-okhttp module
+
+public final class OkHttpClientProvider implements HttpClientProvider {
+
+    private final OkHttpClient client;
+
+    public OkHttpClientProvider() {
+        this(new OkHttpClient.Builder()
+            .connectTimeout(Duration.ofSeconds(10))
+            .readTimeout(Duration.ofSeconds(30))
+            .build());
+    }
+
+    public OkHttpClientProvider(OkHttpClient client) {
+        this.client = client;
+    }
+
+    @Override
+    public HttpResponse execute(HttpRequest request) throws IOException {
+        Request okRequest = toOkHttpRequest(request);
+        try (Response response = client.newCall(okRequest).execute()) {
+            return toHttpResponse(response);
+        }
+    }
+
+    @Override
+    public StreamingResponse executeStreaming(HttpRequest request) throws IOException {
+        Request okRequest = toOkHttpRequest(request);
+        Response response = client.newCall(okRequest).execute();
+        return new OkHttpStreamingResponse(response);
+    }
+
+    // ... implementation details
+}
+```
+
+### 13.5 Android Usage
+
+```kotlin
+// build.gradle.kts (Android)
+dependencies {
+    implementation("com.durablestreams:durable-streams-core:1.0.0")
+    implementation("com.durablestreams:durable-streams-okhttp:1.0.0")
+}
+
+// Kotlin code
+val client = DurableStream.builder()
+    .httpClientProvider(OkHttpClientProvider(okHttpClient))
+    .bearerToken { authManager.getToken() }  // Dynamic token
+    .build()
+
+// Or use auto-detection (ServiceLoader)
+val client = DurableStream.builder()
+    .build()  // Automatically finds OkHttpClientProvider on classpath
+```
+
+### 13.6 SSE on Android with okhttp-eventsource
+
+For SSE streaming, the OkHttp module integrates with LaunchDarkly's [okhttp-eventsource](https://github.com/launchdarkly/okhttp-eventsource):
+
+```java
+// Internal implementation in durable-streams-okhttp
+public class OkHttpSseStreamingResponse implements StreamingResponse {
+
+    private final EventSource eventSource;
+    private final BlockingQueue<String> eventQueue;
+
+    public OkHttpSseStreamingResponse(OkHttpClient client, Request request) {
+        this.eventQueue = new LinkedBlockingQueue<>();
+
+        EventHandler handler = new EventHandler() {
+            @Override
+            public void onMessage(String event, MessageEvent messageEvent) {
+                eventQueue.offer(formatSseEvent(event, messageEvent));
+            }
+            // ... other handlers
+        };
+
+        this.eventSource = new EventSource.Builder(handler, request.url().uri())
+            .client(client)
+            .build();
+        eventSource.start();
+    }
+
+    @Override
+    public Iterator<String> lines() {
+        return new Iterator<>() {
+            @Override
+            public boolean hasNext() {
+                return !closed;
+            }
+            @Override
+            public String next() {
+                return eventQueue.take();  // Blocks until event available
+            }
+        };
+    }
+}
+```
+
+### 13.7 Android-Specific Considerations
+
+| Concern | Solution |
+|---------|----------|
+| **Main thread blocking** | All network ops return `CompletableFuture`; sync methods throw on main thread |
+| **Lifecycle awareness** | `StreamConsumer` integrates with `LifecycleObserver` |
+| **Battery optimization** | Respect `JobScheduler` / `WorkManager` for background sync |
+| **ProGuard/R8** | Provide consumer rules in AAR |
+| **Min SDK** | Target API 21+ (Android 5.0), recommend API 26+ |
+
+### 13.8 Android Lifecycle Integration
+
+```kotlin
+// Optional Android extensions module: durable-streams-android
+
+class DurableStreamLifecycleObserver(
+    private val consumer: StreamConsumer
+) : DefaultLifecycleObserver {
+
+    override fun onStart(owner: LifecycleOwner) {
+        consumer.resume()
+    }
+
+    override fun onStop(owner: LifecycleOwner) {
+        consumer.pause()
+    }
+
+    override fun onDestroy(owner: LifecycleOwner) {
+        consumer.close()
+    }
+}
+
+// Usage in Activity/Fragment
+class ChatActivity : AppCompatActivity() {
+
+    private lateinit var consumer: StreamConsumer
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        consumer = client.newConsumer(CHAT_URL)
+            .offset(savedOffset)
+            .live(LiveMode.SSE)
+            .handler { chunk ->
+                runOnUiThread { updateUI(chunk) }
+                true
+            }
+            .build()
+
+        lifecycle.addObserver(DurableStreamLifecycleObserver(consumer))
+        consumer.start()
+    }
+}
+```
+
+### 13.9 Kotlin Coroutines Extension
+
+```kotlin
+// durable-streams-okhttp module includes Kotlin extensions
+
+suspend fun StreamHandle.readSuspend(options: ReadOptions = ReadOptions.defaults()): Flow<Chunk> = flow {
+    read(options).use { iterator ->
+        while (iterator.hasNext()) {
+            emit(iterator.next())
+        }
+    }
+}.flowOn(Dispatchers.IO)
+
+// Usage
+lifecycleScope.launch {
+    client.stream(url)
+        .readSuspend(ReadOptions.builder().sse().build())
+        .collect { chunk ->
+            // Already on main thread if using lifecycleScope
+            adapter.addMessage(chunk.toMessage())
+        }
+}
+```
+
+---
+
+## 14. Future Considerations
+
+### 14.1 Potential Enhancements
 
 1. **Virtual Threads (Java 21+)**: Leverage Project Loom for simplified async
 2. **GraalVM Native Image**: AOT compilation support
@@ -981,13 +1254,13 @@ events.subscribe(this::process);
 6. **Kotlin Extensions**: Coroutine-friendly API
 7. **Spring Boot Starter**: Auto-configuration module
 
-### 13.2 Protocol Extensions
+### 14.2 Protocol Extensions
 
 1. **Compression**: gzip/zstd support for large payloads
 2. **Partitioning**: Multiple streams as logical partition
 3. **Transactions**: Atomic multi-stream operations
 
-### 13.3 Java Version Support
+### 14.3 Java Version Support
 
 | Java Version | Support Level |
 |--------------|---------------|
@@ -1009,22 +1282,55 @@ events.subscribe(this::process);
 | Idempotent producer | ✓ | ✓ | ✓ | ✓ |
 | Error handlers | ✓ | ✓ | - | ✓ |
 | SSE resilience | ✓ | - | - | ✓ |
+| **Android support** | - | - | - | ✓ (OkHttp module) |
+| **Kotlin Coroutines** | - | - | - | ✓ (extensions) |
 
-## Appendix B: Dependencies
+## Appendix B: Dependencies & Module Structure
 
-### Required
-- Java 11+
-- `java.net.http.HttpClient` (JDK built-in)
+### Core Module
+```
+com.durablestreams:durable-streams-core
+```
+- **Required**: Java 8+ (core API only, no HTTP implementation)
+- **Optional**: Jackson (`com.fasterxml.jackson`) for JSON support, SLF4J for logging
 
-### Optional
-- Jackson (`com.fasterxml.jackson`) - JSON support
-- SLF4J - Logging facade
+### HTTP Provider Modules (choose one)
 
-### Modules (separate artifacts)
-- `durable-streams-reactor` - Reactor integration
-- `durable-streams-rxjava` - RxJava integration
-- `durable-streams-spring` - Spring Boot starter
-- `durable-streams-micrometer` - Metrics
+| Module | Platform | Dependencies |
+|--------|----------|--------------|
+| `durable-streams-jdk` | Java 11+ (Server/Desktop) | JDK `java.net.http.HttpClient` |
+| `durable-streams-okhttp` | Android + JVM | OkHttp 4.x, okhttp-eventsource 4.x |
+| `durable-streams-ktor` | Kotlin Multiplatform | Ktor Client 2.x |
+
+### Platform Extension Modules
+
+| Module | Description |
+|--------|-------------|
+| `durable-streams-android` | Android Lifecycle integration, Kotlin extensions |
+| `durable-streams-reactor` | Project Reactor (Flux/Mono) integration |
+| `durable-streams-rxjava` | RxJava 3 integration |
+| `durable-streams-spring` | Spring Boot auto-configuration |
+| `durable-streams-micrometer` | Micrometer metrics |
+
+### Example: Android App Dependencies
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.durablestreams:durable-streams-core:1.0.0")
+    implementation("com.durablestreams:durable-streams-okhttp:1.0.0")
+    implementation("com.durablestreams:durable-streams-android:1.0.0")  // Optional
+}
+```
+
+### Example: Spring Boot Server Dependencies
+
+```kotlin
+// build.gradle.kts
+dependencies {
+    implementation("com.durablestreams:durable-streams-spring:1.0.0")  // Includes core + jdk
+}
+```
 
 ---
 
