@@ -67,7 +67,8 @@ struct BenchmarkOperation {
     live: Option<String>,
     content_type: Option<String>,
     count: Option<usize>,
-    concurrency: Option<usize>,
+    #[serde(rename = "concurrency")]
+    _concurrency: Option<usize>,
 }
 
 // Result types sent back to test runner
