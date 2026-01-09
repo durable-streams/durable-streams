@@ -4,7 +4,7 @@
 
 import type { Doc } from "yjs"
 import type { Awareness } from "y-protocols/awareness"
-import type { HeadersRecord, LiveMode } from "@durable-streams/client"
+import type { HeadersRecord } from "@durable-streams/client"
 
 /**
  * Connection status of the provider.
@@ -69,14 +69,6 @@ export interface DurableStreamsProviderOptions {
    * @default false
    */
   debug?: boolean
-
-  /**
-   * The live mode to use for streaming updates.
-   * - "long-poll": Use long-polling for live updates
-   * - "sse": Use Server-Sent Events for live updates
-   * @default "long-poll"
-   */
-  liveMode?: Extract<LiveMode, `long-poll` | `sse`>
 }
 
 /**
