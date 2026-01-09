@@ -114,7 +114,7 @@ public actor DurableStream {
             headers: headers
         )
 
-        let (_, metadata) = try await httpClient.performChecked(request, expectedStatus: [201])
+        _ = try await httpClient.performChecked(request, expectedStatus: [201])
 
         return DurableStream(url: url, contentType: contentType, config: config)
     }
@@ -304,7 +304,7 @@ public actor DurableStream {
     ) async throws -> AppendResult {
         let ct = contentType ?? self.contentType ?? "application/octet-stream"
 
-        var headers: [String: String] = [
+        let headers: [String: String] = [
             Headers.producerId: producerId,
             Headers.producerEpoch: String(epoch),
             Headers.producerSeq: String(seq)

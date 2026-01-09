@@ -128,7 +128,7 @@ public struct DurableStreamError: Error, Sendable {
     }
 
     public static func fromHTTPStatus(_ status: Int, body: String? = nil) -> DurableStreamError {
-        let message = body ?? HTTPURLResponse.localizedString(forStatusCode: status)
+        let message = body ?? httpStatusMessage(status)
         switch status {
         case 400:
             return .badRequest(message: message)
@@ -148,6 +148,24 @@ public struct DurableStreamError: Error, Sendable {
             return .serverBusy()
         default:
             return DurableStreamError(code: .unknown, message: message, status: status)
+        }
+    }
+
+    private static func httpStatusMessage(_ status: Int) -> String {
+        switch status {
+        case 200: return "OK"
+        case 201: return "Created"
+        case 204: return "No Content"
+        case 400: return "Bad Request"
+        case 401: return "Unauthorized"
+        case 403: return "Forbidden"
+        case 404: return "Not Found"
+        case 409: return "Conflict"
+        case 410: return "Gone"
+        case 429: return "Too Many Requests"
+        case 500: return "Internal Server Error"
+        case 503: return "Service Unavailable"
+        default: return "HTTP \(status)"
         }
     }
 }
