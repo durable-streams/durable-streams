@@ -9,6 +9,7 @@
 This document presents a unified design for a Java client library for the Durable Streams protocol, synthesizing best practices from 10 major streaming platform SDKs: Apache Kafka, Redis Streams, NATS JetStream, Apache Pulsar, AWS Kinesis, Google Cloud Pub/Sub, Azure Event Hubs, RabbitMQ Streams, Apache Flink, and Redpanda.
 
 The design prioritizes:
+
 - **Familiarity**: Patterns Java developers recognize from existing streaming SDKs
 - **Type Safety**: Leveraging Java generics for compile-time safety
 - **Flexibility**: Sync, async, and reactive variants
@@ -40,60 +41,68 @@ The design prioritizes:
 
 ### 1.1 Cross-Platform Pattern Analysis
 
-| Pattern | Kafka | Pulsar | Kinesis | Pub/Sub | Event Hubs | NATS | RabbitMQ | Redis |
-|---------|-------|--------|---------|---------|------------|------|----------|-------|
-| Builder Pattern | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Sync + Async APIs | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Consumer Groups | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | - | ✓ |
-| Auto Batching | ✓ | ✓ | - | ✓ | ✓ | - | ✓ | - |
-| Offset Tracking | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Backoff/Retry | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Future/Callback | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Pattern           | Kafka | Pulsar | Kinesis | Pub/Sub | Event Hubs | NATS | RabbitMQ | Redis |
+| ----------------- | ----- | ------ | ------- | ------- | ---------- | ---- | -------- | ----- |
+| Builder Pattern   | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | ✓        | ✓     |
+| Sync + Async APIs | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | ✓        | ✓     |
+| Consumer Groups   | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | -        | ✓     |
+| Auto Batching     | ✓     | ✓      | -       | ✓       | ✓          | -    | ✓        | -     |
+| Offset Tracking   | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | ✓        | ✓     |
+| Backoff/Retry     | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | ✓        | ✓     |
+| Future/Callback   | ✓     | ✓      | ✓       | ✓       | ✓          | ✓    | ✓        | ✓     |
 
 ### 1.2 Key Insights by Platform
 
 **Apache Kafka**
+
 - Poll-based consumer loop driven by `poll()` method
 - Async producer with `send()` returning `Future<RecordMetadata>`
 - Idempotent producer pattern: `(producerId, epoch, seq)` headers
 - Properties-based configuration
 
 **Apache Pulsar**
+
 - Fluent builder pattern: `client.newProducer().topic(t).create()`
 - Multiple subscription types (Exclusive, Shared, Failover, Key_Shared)
 - Built-in schema registry with type-safe generics
 - TableView for compacted topic state
 
 **AWS Kinesis**
+
 - SDK 2.x builder pattern with immutable request objects
 - KCL (Kinesis Client Library) for managed consumption
 - Shard-based parallelism model
 
 **Google Cloud Pub/Sub**
+
 - Publisher/Subscriber as long-lived reusable objects
 - MessageReceiver callback interface
 - Built-in batching with configurable thresholds
 - Automatic message acknowledgment management
 
 **Azure Event Hubs**
+
 - EventHubClientBuilder for all client types
 - Partition-based consumption with EventPosition
 - Consumer group isolation
 - Checkpoint store abstraction
 
 **NATS JetStream**
+
 - JetStream context as entry point
 - Pull consumers as primary consumption model
 - Durable vs ephemeral consumer distinction
 - Fetch/Consume/Next consumption patterns
 
 **RabbitMQ Streams**
+
 - Environment as central entry point
 - Producer/Consumer builders from environment
 - Automatic connection recovery
 - Super streams for partitioning
 
 **Redis Streams (Lettuce)**
+
 - Sync, async, and reactive APIs from same connection
 - Consumer groups with XREADGROUP
 - StatefulRedisConnection pattern
@@ -404,6 +413,7 @@ public interface JsonIterator<T> extends Iterator<JsonBatch<T>>, Iterable<JsonBa
 ### 4.6 Model Classes
 
 **Chunk vs Message Clarification**:
+
 - A **Chunk** represents one HTTP response body from the server. For binary streams, this is
   raw bytes. For JSON streams, a chunk may contain multiple JSON messages (as a JSON array).
 - A **JsonBatch** is the parsed form of a JSON chunk, containing a `List<T>` of individual messages.
@@ -600,14 +610,14 @@ public record ErrorContext(
 The `upToDate` flag in `Chunk` and `JsonBatch` indicates whether the client has caught up to
 the stream's tail at the time the server generated the response. Its behavior varies by mode:
 
-| Mode | `upToDate` Behavior |
-|------|---------------------|
-| **Catch-up** | `true` on the final chunk; iterator terminates automatically |
-| **Long-poll** | `true` when poll returns data that reaches the tail; next poll will block |
-| **SSE** | `true` on every chunk that reaches the current tail; new data may arrive immediately |
+| Mode          | `upToDate` Behavior                                                                  |
+| ------------- | ------------------------------------------------------------------------------------ |
+| **Catch-up**  | `true` on the final chunk; iterator terminates automatically                         |
+| **Long-poll** | `true` when poll returns data that reaches the tail; next poll will block            |
+| **SSE**       | `true` on every chunk that reaches the current tail; new data may arrive immediately |
 
 **Important**: `upToDate=true` does NOT mean "no more data will ever arrive." It means "no more
-data available *right now*." In live modes, more data may arrive immediately after.
+data available _right now_." In live modes, more data may arrive immediately after.
 
 ### 7.1 Catch-Up Mode (Default)
 
@@ -850,14 +860,14 @@ producer.appendAll(List.of(event1, event2, event3));
 
 ### 10.1 Thread Safety Guarantees
 
-| Component | Thread Safety | Notes |
-|-----------|--------------|-------|
-| `DurableStream` | Thread-safe | Shared client instance |
-| `StreamHandle` | Thread-safe | Can be shared, each op is independent |
-| `ChunkIterator` | NOT thread-safe | Single consumer per iterator |
-| `JsonIterator` | NOT thread-safe | Single consumer per iterator |
-| `IdempotentProducer` | Thread-safe | Concurrent `append()` supported |
-| `StreamConsumer` | Thread-safe | Lifecycle methods safe from any thread |
+| Component            | Thread Safety   | Notes                                  |
+| -------------------- | --------------- | -------------------------------------- |
+| `DurableStream`      | Thread-safe     | Shared client instance                 |
+| `StreamHandle`       | Thread-safe     | Can be shared, each op is independent  |
+| `ChunkIterator`      | NOT thread-safe | Single consumer per iterator           |
+| `JsonIterator`       | NOT thread-safe | Single consumer per iterator           |
+| `IdempotentProducer` | Thread-safe     | Concurrent `append()` supported        |
+| `StreamConsumer`     | Thread-safe     | Lifecycle methods safe from any thread |
 
 ### 10.2 Executor Configuration
 
@@ -1250,13 +1260,13 @@ public class OkHttpSseStreamingResponse implements StreamingResponse {
 
 ### 13.7 Android-Specific Considerations
 
-| Concern | Solution |
-|---------|----------|
+| Concern                  | Solution                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------- |
 | **Main thread blocking** | All network ops return `CompletableFuture`; sync methods throw on main thread |
-| **Lifecycle awareness** | `StreamConsumer` integrates with `LifecycleObserver` |
-| **Battery optimization** | Respect `JobScheduler` / `WorkManager` for background sync |
-| **ProGuard/R8** | Provide consumer rules in AAR |
-| **Min SDK** | Target API 21+ (Android 5.0), recommend API 26+ |
+| **Lifecycle awareness**  | `StreamConsumer` integrates with `LifecycleObserver`                          |
+| **Battery optimization** | Respect `JobScheduler` / `WorkManager` for background sync                    |
+| **ProGuard/R8**          | Provide consumer rules in AAR                                                 |
+| **Min SDK**              | Target API 21+ (Android 5.0), recommend API 26+                               |
 
 ### 13.8 Android Lifecycle Integration
 
@@ -1349,12 +1359,12 @@ lifecycleScope.launch {
 
 ### 14.3 Java Version Support
 
-| Module | Minimum Java | Notes |
-|--------|--------------|-------|
-| `durable-streams-core` | Java 8 | Core API + SPI only, no HTTP impl |
-| `durable-streams-jdk` | Java 11 | Uses `java.net.http.HttpClient` |
-| `durable-streams-okhttp` | Java 8 / Android API 21+ | Uses OkHttp |
-| `durable-streams-ktor` | Java 8 / Kotlin 1.6+ | Uses Ktor Client |
+| Module                   | Minimum Java             | Notes                             |
+| ------------------------ | ------------------------ | --------------------------------- |
+| `durable-streams-core`   | Java 8                   | Core API + SPI only, no HTTP impl |
+| `durable-streams-jdk`    | Java 11                  | Uses `java.net.http.HttpClient`   |
+| `durable-streams-okhttp` | Java 8 / Android API 21+ | Uses OkHttp                       |
+| `durable-streams-ktor`   | Java 8 / Kotlin 1.6+     | Uses Ktor Client                  |
 
 **Recommended**: Java 17 LTS for server applications, Java 21 for Virtual Threads support.
 
@@ -1362,45 +1372,47 @@ lifecycleScope.launch {
 
 ## Appendix A: Comparison with Other Clients
 
-| Feature | TypeScript | Python | Go | Java (Proposed) |
-|---------|-----------|--------|-----|-----------------|
-| Sync API | - | ✓ | ✓ | ✓ |
-| Async API | ✓ | ✓ | ✓ | ✓ |
-| Reactive API | - | - | - | ✓ (module) |
-| Type-safe JSON | ✓ | ✓ | ✓ | ✓ |
-| Builder pattern | - | - | ✓ | ✓ |
-| Idempotent producer | ✓ | ✓ | ✓ | ✓ |
-| Error handlers | ✓ | ✓ | - | ✓ |
-| SSE resilience | ✓ | - | - | ✓ |
-| **Android support** | - | - | - | ✓ (OkHttp module) |
-| **Kotlin Coroutines** | - | - | - | ✓ (extensions) |
+| Feature               | TypeScript | Python | Go  | Java (Proposed)   |
+| --------------------- | ---------- | ------ | --- | ----------------- |
+| Sync API              | -          | ✓      | ✓   | ✓                 |
+| Async API             | ✓          | ✓      | ✓   | ✓                 |
+| Reactive API          | -          | -      | -   | ✓ (module)        |
+| Type-safe JSON        | ✓          | ✓      | ✓   | ✓                 |
+| Builder pattern       | -          | -      | ✓   | ✓                 |
+| Idempotent producer   | ✓          | ✓      | ✓   | ✓                 |
+| Error handlers        | ✓          | ✓      | -   | ✓                 |
+| SSE resilience        | ✓          | -      | -   | ✓                 |
+| **Android support**   | -          | -      | -   | ✓ (OkHttp module) |
+| **Kotlin Coroutines** | -          | -      | -   | ✓ (extensions)    |
 
 ## Appendix B: Dependencies & Module Structure
 
 ### Core Module
+
 ```
 com.durablestreams:durable-streams-core
 ```
+
 - **Required**: Java 8+ (core API only, no HTTP implementation)
 - **Optional**: Jackson (`com.fasterxml.jackson`) for JSON support, SLF4J for logging
 
 ### HTTP Provider Modules (choose one)
 
-| Module | Platform | Dependencies |
-|--------|----------|--------------|
-| `durable-streams-jdk` | Java 11+ (Server/Desktop) | JDK `java.net.http.HttpClient` |
-| `durable-streams-okhttp` | Android + JVM | OkHttp 4.x, okhttp-eventsource 4.x |
-| `durable-streams-ktor` | Kotlin Multiplatform | Ktor Client 2.x |
+| Module                   | Platform                  | Dependencies                       |
+| ------------------------ | ------------------------- | ---------------------------------- |
+| `durable-streams-jdk`    | Java 11+ (Server/Desktop) | JDK `java.net.http.HttpClient`     |
+| `durable-streams-okhttp` | Android + JVM             | OkHttp 4.x, okhttp-eventsource 4.x |
+| `durable-streams-ktor`   | Kotlin Multiplatform      | Ktor Client 2.x                    |
 
 ### Platform Extension Modules
 
-| Module | Description |
-|--------|-------------|
-| `durable-streams-android` | Android Lifecycle integration, Kotlin extensions |
-| `durable-streams-reactor` | Project Reactor (Flux/Mono) integration |
-| `durable-streams-rxjava` | RxJava 3 integration |
-| `durable-streams-spring` | Spring Boot auto-configuration |
-| `durable-streams-micrometer` | Micrometer metrics |
+| Module                       | Description                                      |
+| ---------------------------- | ------------------------------------------------ |
+| `durable-streams-android`    | Android Lifecycle integration, Kotlin extensions |
+| `durable-streams-reactor`    | Project Reactor (Flux/Mono) integration          |
+| `durable-streams-rxjava`     | RxJava 3 integration                             |
+| `durable-streams-spring`     | Spring Boot auto-configuration                   |
+| `durable-streams-micrometer` | Micrometer metrics                               |
 
 ### Example: Android App Dependencies
 
@@ -1427,9 +1439,11 @@ dependencies {
 ## References
 
 ### Protocol
+
 - [Durable Streams Protocol Specification](../../PROTOCOL.md)
 
 ### Research Sources
+
 - [Apache Kafka Java Client](https://docs.confluent.io/kafka-clients/java/current/overview.html)
 - [Apache Pulsar Java Client](https://pulsar.apache.org/docs/next/client-libraries-java/)
 - [AWS Kinesis SDK for Java](https://docs.aws.amazon.com/sdk-for-java/latest/developer-guide/examples-kinesis.html)
