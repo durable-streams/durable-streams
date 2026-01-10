@@ -28,8 +28,9 @@ defmodule DurableStreams.ConformanceAdapter do
       dynamic_params: %{}
     }
 
-    # Set binary mode for stdin/stdout
-    :io.setopts(:standard_io, encoding: :latin1)
+    # Set UTF-8 encoding for stdin/stdout
+    # Binary data is base64 encoded before output, so UTF-8 works for all cases
+    :io.setopts(:standard_io, encoding: :unicode)
 
     loop(state)
   end
@@ -399,46 +400,94 @@ defmodule DurableStreams.ConformanceAdapter do
       |> Client.stream(path)
       |> Stream.set_content_type(content_type)
 
-    do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, state)
+    # Check if this is a JSON stream (need to normalize JSON data)
+    is_json = String.starts_with?(String.downcase(content_type), "application/json")
+
+    do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state)
   end
 
-  defp do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, state) do
-    # Send items sequentially with incrementing seq
-    result =
-      items
-      |> Enum.with_index()
-      |> Enum.reduce_while(:ok, fn {item, idx}, _acc ->
-        opts = [
-          producer_id: producer_id,
-          producer_epoch: epoch,
-          producer_seq: idx
-        ]
+  defp do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state) do
+    if is_json do
+      # For JSON streams: batch all items as a single array
+      # The server flattens one level, so [[a],[b]] becomes two entries [a] and [b]
+      parsed_items =
+        Enum.map(items, fn item ->
+          data = if is_map(item), do: item["data"] || item, else: item
+          case JSON.decode(data) do
+            {:ok, parsed} -> parsed
+            {:error, _} -> data
+          end
+        end)
 
-        case Stream.append(stream, item, opts) do
-          {:ok, _} -> {:cont, :ok}
+      # Wrap all items in an array and send as a single batch
+      batch_data = JSON.encode!(parsed_items)
+
+      opts = [
+        producer_id: producer_id,
+        producer_epoch: epoch,
+        producer_seq: 0
+      ]
+
+      result =
+        case Stream.append(stream, batch_data, opts) do
+          {:ok, _} -> :ok
           {:error, {:stale_epoch, server_epoch}} when auto_claim ->
-            # Return the server epoch so we can retry the whole batch
-            {:halt, {:auto_claim, server_epoch}}
-          {:error, reason} -> {:halt, {:error, reason}}
+            {:auto_claim, server_epoch}
+          {:error, reason} -> {:error, reason}
         end
-      end)
 
-    case result do
-      :ok ->
-        result = %{
-          "type" => "idempotent-append-batch",
-          "success" => true,
-          "status" => 200
-        }
-        {result, state}
+      case result do
+        :ok ->
+          {%{
+            "type" => "idempotent-append-batch",
+            "success" => true,
+            "status" => 200
+          }, state}
 
-      {:auto_claim, server_epoch} ->
-        # Retry the whole batch with new epoch
-        new_epoch = parse_epoch(server_epoch) + 1
-        do_idempotent_batch(stream, items, producer_id, new_epoch, false, state)
+        {:auto_claim, server_epoch} ->
+          new_epoch = parse_epoch(server_epoch) + 1
+          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
 
-      {:error, reason} ->
-        {map_error("idempotent-append-batch", reason), state}
+        {:error, reason} ->
+          {map_error("idempotent-append-batch", reason), state}
+      end
+    else
+      # For non-JSON streams: send items sequentially with incrementing seq
+      result =
+        items
+        |> Enum.with_index()
+        |> Enum.reduce_while(:ok, fn {item, idx}, _acc ->
+          data = if is_map(item), do: item["data"] || item, else: item
+
+          opts = [
+            producer_id: producer_id,
+            producer_epoch: epoch,
+            producer_seq: idx
+          ]
+
+          case Stream.append(stream, data, opts) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, {:stale_epoch, server_epoch}} when auto_claim ->
+              {:halt, {:auto_claim, server_epoch}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      case result do
+        :ok ->
+          {%{
+            "type" => "idempotent-append-batch",
+            "success" => true,
+            "status" => 200
+          }, state}
+
+        {:auto_claim, server_epoch} ->
+          new_epoch = parse_epoch(server_epoch) + 1
+          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
+
+        {:error, reason} ->
+          {map_error("idempotent-append-batch", reason), state}
+      end
     end
   end
 
@@ -541,13 +590,24 @@ defmodule DurableStreams.ConformanceAdapter do
       {:ok, chunk} ->
         new_chunk =
           if byte_size(chunk.data) > 0 do
-            [%{"data" => chunk.data, "offset" => chunk.next_offset}]
+            # Check if data is binary (not valid UTF-8 or contains replacement characters)
+            # U+FFFD (0xEF 0xBF 0xBD) is inserted by text decoders for invalid bytes
+            is_binary = not String.valid?(chunk.data) or
+                        :binary.match(chunk.data, <<0xEF, 0xBF, 0xBD>>) != :nomatch
+
+            if is_binary do
+              [%{"data" => Base.encode64(chunk.data), "offset" => chunk.next_offset, "binary" => true}]
+            else
+              [%{"data" => chunk.data, "offset" => chunk.next_offset}]
+            end
           else
             []
           end
 
         new_chunks = new_chunk ++ chunks
         chunk_status = Map.get(chunk, :status, 200)
+        got_data = byte_size(chunk.data) > 0
+        new_remaining = if got_data, do: remaining - 1, else: remaining
 
         cond do
           # If up to date and we're waiting for it, stop
@@ -558,7 +618,22 @@ defmodule DurableStreams.ConformanceAdapter do
           chunk.up_to_date and live_mode == false ->
             {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
 
-          # If up to date (timeout in live mode), stop
+          # In live mode: if we got data and have remaining chunks, continue polling for more
+          # This handles the case where data arrives in batches (e.g., A then B then C)
+          chunk.up_to_date and live_mode != false and new_remaining > 0 and got_data ->
+            do_read_chunks(
+              stream,
+              opts,
+              new_remaining,
+              wait_for_up_to_date,
+              live_mode,
+              new_chunks,
+              chunk.next_offset,
+              chunk.up_to_date,
+              chunk_status
+            )
+
+          # If up to date (timeout in live mode with no new data or remaining = 0), stop
           chunk.up_to_date ->
             {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
 
@@ -567,7 +642,7 @@ defmodule DurableStreams.ConformanceAdapter do
             do_read_chunks(
               stream,
               opts,
-              remaining - 1,
+              new_remaining,
               wait_for_up_to_date,
               live_mode,
               new_chunks,

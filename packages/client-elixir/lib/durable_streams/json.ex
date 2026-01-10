@@ -249,26 +249,52 @@ defmodule DurableStreams.JSON do
     encode_string_bytes(rest, [<<c>> | acc])
   end
 
-  # UTF-8 multi-byte sequences - try to decode properly
-  defp encode_string_bytes(<<c, rest::binary>>, acc) when c >= 0x80 do
-    # Check if this starts a valid UTF-8 sequence
-    case try_decode_utf8_char(<<c, rest::binary>>) do
-      {:ok, char, remaining} ->
-        encode_string_bytes(remaining, [char | acc])
-      :error ->
-        # Not valid UTF-8 - escape as \uXXXX
+  # UTF-8 multi-byte sequences - validate and output directly if valid
+  # Invalid bytes are escaped as \uXXXX to preserve binary data
+  defp encode_string_bytes(<<c, rest::binary>> = binary, acc) when c >= 0x80 do
+    # Determine expected sequence length based on lead byte
+    case utf8_sequence_length(c) do
+      :invalid ->
+        # Not a valid UTF-8 lead byte - escape it
         hex = c |> Integer.to_string(16) |> String.pad_leading(4, "0")
         encode_string_bytes(rest, ["\\u#{hex}" | acc])
+
+      len when is_integer(len) ->
+        # Try to extract the full sequence
+        case extract_utf8_sequence(binary, len) do
+          {:ok, seq, remaining} ->
+            # Valid UTF-8 sequence - output directly
+            encode_string_bytes(remaining, [seq | acc])
+          :error ->
+            # Invalid sequence - escape the lead byte
+            hex = c |> Integer.to_string(16) |> String.pad_leading(4, "0")
+            encode_string_bytes(rest, ["\\u#{hex}" | acc])
+        end
     end
   end
 
-  # Try to decode a UTF-8 character at the start of the binary
-  defp try_decode_utf8_char(binary) do
-    case binary do
-      <<c::utf8, rest::binary>> ->
-        {:ok, <<c::utf8>>, rest}
-      _ ->
-        :error
+  # Determine expected UTF-8 sequence length based on lead byte
+  defp utf8_sequence_length(byte) when byte >= 0xC0 and byte <= 0xDF, do: 2
+  defp utf8_sequence_length(byte) when byte >= 0xE0 and byte <= 0xEF, do: 3
+  defp utf8_sequence_length(byte) when byte >= 0xF0 and byte <= 0xF7, do: 4
+  defp utf8_sequence_length(_), do: :invalid
+
+  # Extract and validate a UTF-8 sequence
+  defp extract_utf8_sequence(binary, len) when byte_size(binary) >= len do
+    <<seq::binary-size(len), rest::binary>> = binary
+    # Verify all continuation bytes are valid (10xxxxxx pattern)
+    if valid_utf8_sequence?(seq) do
+      {:ok, seq, rest}
+    else
+      :error
     end
+  end
+  defp extract_utf8_sequence(_, _), do: :error
+
+  # Validate that a UTF-8 sequence has proper continuation bytes
+  defp valid_utf8_sequence?(<<_lead, rest::binary>>) do
+    Enum.all?(:binary.bin_to_list(rest), fn byte ->
+      byte >= 0x80 and byte <= 0xBF
+    end)
   end
 end
