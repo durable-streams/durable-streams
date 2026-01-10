@@ -248,19 +248,25 @@ defmodule DurableStreams.Stream do
       |> add_extra_headers(stream.client.default_headers)
       |> add_extra_headers(extra_headers)
 
-    case HTTP.request(:get, url_with_query, headers, nil, timeout: timeout, max_retries: 0) do
+    # Use streaming mode for SSE to handle incremental responses
+    streaming = live == :sse or live == "sse"
+
+    case HTTP.request(:get, url_with_query, headers, nil, timeout: timeout, max_retries: 0, streaming: streaming) do
       {:ok, status, resp_headers, body} when status in [200, 204] ->
-        next_offset = HTTP.get_header(resp_headers, "stream-next-offset") || offset
-        up_to_date = HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
         content_type = HTTP.get_header(resp_headers, "content-type") || ""
 
         # Parse SSE response if content-type is text/event-stream
-        data =
+        # SSE has upToDate and nextOffset in the control event
+        {data, sse_next_offset, sse_up_to_date} =
           if String.contains?(content_type, "text/event-stream") do
-            parse_sse_events(body)
+            parse_sse_response(body)
           else
-            body
+            {body, nil, nil}
           end
+
+        # Use SSE control event values if present, otherwise fall back to headers
+        next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
+        up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
 
         {:ok, %{
           data: data,
@@ -281,6 +287,15 @@ defmodule DurableStreams.Stream do
 
       {:ok, status, _headers, body} ->
         {:error, {:unexpected_status, status, body}}
+
+      {:error, :timeout} when streaming ->
+        # For SSE, timeout without data means up-to-date
+        {:ok, %{
+          data: "",
+          next_offset: offset,
+          up_to_date: true,
+          status: 204
+        }}
 
       {:error, reason} ->
         {:error, reason}
@@ -349,35 +364,97 @@ defmodule DurableStreams.Stream do
     |> String.downcase()
   end
 
-  # Parse Server-Sent Events format
-  # Format: data: <content>\n\n
-  # Multiple data lines are joined with newlines
-  defp parse_sse_events(body) when is_binary(body) do
-    body
-    |> String.split(~r/\n\n+/)
-    |> Enum.map(&parse_sse_event/1)
-    |> Enum.filter(fn data -> data != "" and data != nil end)
-    |> Enum.join("")
-  end
+  # Parse Server-Sent Events response
+  # Returns {data, next_offset, up_to_date}
+  # Format:
+  #   event: data
+  #   data: <content>
+  #
+  #   event: control
+  #   data: {"streamNextOffset":"...","upToDate":true}
+  defp parse_sse_response(body) when is_binary(body) do
+    events =
+      body
+      |> String.split(~r/\n\n+/)
+      |> Enum.map(&parse_sse_event/1)
+      |> Enum.filter(fn {_type, data} -> data != "" and data != nil end)
 
-  defp parse_sse_event(event) do
-    event
-    |> String.split("\n")
-    |> Enum.reduce([], fn line, acc ->
-      case String.split(line, ": ", parts: 2) do
-        ["data", data] -> [data | acc]
-        ["data:" <> rest] -> [String.trim_leading(rest) | acc]
-        _ -> acc
+    # Extract data from data events
+    data =
+      events
+      |> Enum.filter(fn {type, _data} -> type == :data end)
+      |> Enum.map(fn {:data, data} -> data end)
+      |> Enum.join("")
+
+    # Extract control info from control event
+    {next_offset, up_to_date} =
+      events
+      |> Enum.find(fn {type, _data} -> type == :control end)
+      |> case do
+        {:control, json} -> parse_control_event(json)
+        nil -> {nil, nil}
       end
-    end)
-    |> Enum.reverse()
-    |> Enum.join("\n")
-    |> decode_sse_data()
+
+    {data, next_offset, up_to_date}
   end
 
-  defp decode_sse_data(""), do: ""
-  defp decode_sse_data(data) do
-    # SSE data might be base64-encoded
+  # Parse the control event JSON payload
+  # Format: {"streamNextOffset":"...","upToDate":true/false}
+  # Using simple pattern matching since format is predictable
+  defp parse_control_event(json) do
+    # Extract streamNextOffset
+    next_offset =
+      case Regex.run(~r/"streamNextOffset"\s*:\s*"([^"]*)"/, json) do
+        [_, offset] -> offset
+        _ -> nil
+      end
+
+    # Extract upToDate
+    up_to_date =
+      case Regex.run(~r/"upToDate"\s*:\s*(true|false)/, json) do
+        [_, "true"] -> true
+        [_, "false"] -> false
+        _ -> nil
+      end
+
+    {next_offset, up_to_date}
+  end
+
+  # Parse a single SSE event block and return {type, data}
+  defp parse_sse_event(event) do
+    lines = String.split(event, "\n")
+
+    # Extract event type (default to :data if not specified)
+    event_type =
+      Enum.find_value(lines, :data, fn line ->
+        case String.split(line, ": ", parts: 2) do
+          ["event", type] -> String.to_atom(type)
+          _ -> nil
+        end
+      end)
+
+    # Extract data lines
+    data =
+      lines
+      |> Enum.reduce([], fn line, acc ->
+        case String.split(line, ": ", parts: 2) do
+          ["data", data] -> [data | acc]
+          ["data:" <> rest] -> [String.trim_leading(rest) | acc]
+          _ -> acc
+        end
+      end)
+      |> Enum.reverse()
+      |> Enum.join("\n")
+      |> decode_sse_data(event_type)
+
+    {event_type, data}
+  end
+
+  # Don't decode control events - they're JSON
+  defp decode_sse_data("", _event_type), do: ""
+  defp decode_sse_data(data, :control), do: data
+  defp decode_sse_data(data, _event_type) do
+    # SSE data events might be base64-encoded
     # Try to decode as base64, fall back to raw data
     case Base.decode64(data) do
       {:ok, decoded} -> decoded

@@ -258,7 +258,7 @@ defmodule DurableStreams.JSON do
       :error ->
         # Not valid UTF-8 - escape as \uXXXX
         hex = c |> Integer.to_string(16) |> String.pad_leading(4, "0")
-        encode_string_bytes(rest, ["\\u00#{hex}" | acc])
+        encode_string_bytes(rest, ["\\u#{hex}" | acc])
     end
   end
 

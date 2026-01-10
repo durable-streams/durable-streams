@@ -24,13 +24,143 @@ defmodule DurableStreams.HTTP do
   def request(method, url, headers \\ [], body \\ nil, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, @default_timeout)
     max_retries = Keyword.get(opts, :max_retries, @max_retries)
+    streaming = Keyword.get(opts, :streaming, false)
 
     # Ensure inets is started
     :inets.start()
     :ssl.start()
 
-    do_request(method, url, headers, body, timeout, 0, max_retries)
+    if streaming do
+      stream_request(method, url, headers, body, timeout)
+    else
+      do_request(method, url, headers, body, timeout, 0, max_retries)
+    end
   end
+
+  @doc """
+  Make a streaming HTTP request using async mode.
+  Body is received as messages and collected until timeout or stream end.
+  """
+  def stream_request(method, url, headers, body, timeout) do
+    url_charlist = String.to_charlist(url)
+    headers_charlist = Enum.map(headers, fn {k, v} ->
+      {String.to_charlist(k), String.to_charlist(v)}
+    end)
+
+    http_opts = [
+      timeout: timeout,
+      connect_timeout: min(timeout, 10_000),
+      ssl: [
+        verify: :verify_none,
+        versions: [:"tlsv1.2", :"tlsv1.3"]
+      ]
+    ]
+
+    # Options for async streaming
+    opts = [
+      sync: false,
+      stream: :self,
+      body_format: :binary
+    ]
+
+    request =
+      case {method, body} do
+        {:get, _} -> {url_charlist, headers_charlist}
+        {:head, _} -> {url_charlist, headers_charlist}
+        {:delete, _} -> {url_charlist, headers_charlist}
+        {_, nil} ->
+          {content_type, other_headers} = extract_content_type(headers)
+          other_headers_charlist = Enum.map(other_headers, fn {k, v} ->
+            {String.to_charlist(k), String.to_charlist(v)}
+          end)
+          {url_charlist, other_headers_charlist, String.to_charlist(content_type), ~c""}
+        {_, body} when is_binary(body) ->
+          {content_type, other_headers} = extract_content_type(headers)
+          other_headers_charlist = Enum.map(other_headers, fn {k, v} ->
+            {String.to_charlist(k), String.to_charlist(v)}
+          end)
+          {url_charlist, other_headers_charlist, String.to_charlist(content_type), body}
+      end
+
+    case :httpc.request(method, request, http_opts, opts) do
+      {:ok, request_id} ->
+        collect_stream_response(request_id, timeout, nil, [], [])
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # Collect streaming response messages
+  defp collect_stream_response(request_id, timeout, status, headers, body_parts) do
+    # Calculate remaining time
+    start_time = System.monotonic_time(:millisecond)
+
+    receive do
+      {:http, {^request_id, :stream_start, resp_headers}} ->
+        # Stream started - parse headers to get status
+        parsed_headers = parse_headers(resp_headers)
+        # Continue collecting
+        elapsed = System.monotonic_time(:millisecond) - start_time
+        remaining = max(timeout - elapsed, 0)
+        collect_stream_response(request_id, remaining, 200, parsed_headers, body_parts)
+
+      {:http, {^request_id, :stream_start, resp_headers, _pid}} ->
+        # Stream started with pid (for {self, once} mode)
+        parsed_headers = parse_headers(resp_headers)
+        elapsed = System.monotonic_time(:millisecond) - start_time
+        remaining = max(timeout - elapsed, 0)
+        collect_stream_response(request_id, remaining, 200, parsed_headers, body_parts)
+
+      {:http, {^request_id, :stream, body_part}} ->
+        # Received a chunk of body
+        elapsed = System.monotonic_time(:millisecond) - start_time
+        remaining = max(timeout - elapsed, 0)
+        collect_stream_response(request_id, remaining, status, headers, [body_part | body_parts])
+
+      {:http, {^request_id, :stream_end, _resp_headers}} ->
+        # Stream completed - join body parts
+        body = body_parts |> Enum.reverse() |> IO.iodata_to_binary()
+        {:ok, status || 200, headers, body}
+
+      {:http, {^request_id, {{_, resp_status, _}, resp_headers, resp_body}}} ->
+        # Non-streaming response (error cases)
+        parsed_headers = parse_headers(resp_headers)
+        resp_body_bin = to_binary(resp_body)
+        {:ok, resp_status, parsed_headers, resp_body_bin}
+
+      {:http, {^request_id, {:error, reason}}} ->
+        {:error, reason}
+
+    after
+      timeout ->
+        # Timeout - cancel request and return what we have
+        :httpc.cancel_request(request_id)
+        if body_parts == [] do
+          {:error, :timeout}
+        else
+          # Return partial data we collected
+          body = body_parts |> Enum.reverse() |> IO.iodata_to_binary()
+          {:ok, status || 200, headers, body}
+        end
+    end
+  end
+
+  defp extract_content_type(headers) do
+    case Enum.split_with(headers, fn {k, _} -> String.downcase(k) == "content-type" end) do
+      {[{_, ct} | _], rest} -> {ct, rest}
+      {[], rest} -> {"application/octet-stream", rest}
+    end
+  end
+
+  defp parse_headers(resp_headers) do
+    Enum.map(resp_headers, fn {k, v} ->
+      {List.to_string(k), List.to_string(v)}
+    end)
+  end
+
+  defp to_binary(body) when is_list(body), do: :erlang.list_to_binary(body)
+  defp to_binary(body) when is_binary(body), do: body
 
   defp do_request(method, url, headers, body, timeout, attempt, max_retries) do
     url_charlist = String.to_charlist(url)

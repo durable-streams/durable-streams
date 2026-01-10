@@ -101,7 +101,9 @@ defmodule DurableStreams.ConformanceAdapter do
 
   defp handle_command(%{"type" => "create"} = cmd, state) do
     path = cmd["path"]
-    content_type = cmd["contentType"] || "application/octet-stream"
+    # Only use explicit content-type, or default to application/octet-stream for the server
+    explicit_content_type = cmd["contentType"]
+    content_type = explicit_content_type || "application/octet-stream"
     ttl_seconds = cmd["ttlSeconds"]
     expires_at = cmd["expiresAt"]
     headers = cmd["headers"] || %{}
@@ -128,7 +130,13 @@ defmodule DurableStreams.ConformanceAdapter do
         # Get the offset after creation
         case Stream.head(stream) do
           {:ok, %{next_offset: offset}} ->
-            new_state = put_in(state.stream_content_types[path], content_type)
+            # Only store explicitly provided content-type (for binary detection)
+            new_state =
+              if explicit_content_type do
+                put_in(state.stream_content_types[path], explicit_content_type)
+              else
+                state
+              end
             status = if already_exists, do: 200, else: 201
 
             result = %{
@@ -156,14 +164,8 @@ defmodule DurableStreams.ConformanceAdapter do
     stream = Client.stream(state.client, path)
 
     case Stream.head(stream, headers: headers) do
-      {:ok, %{next_offset: offset, content_type: content_type}} ->
-        new_state =
-          if content_type do
-            put_in(state.stream_content_types[path], content_type)
-          else
-            state
-          end
-
+      {:ok, %{next_offset: offset, content_type: _content_type}} ->
+        # Don't update content-type from server response - only use explicit content-type from create
         result = %{
           "type" => "connect",
           "success" => true,
@@ -171,7 +173,7 @@ defmodule DurableStreams.ConformanceAdapter do
           "offset" => offset
         }
 
-        {result, new_state}
+        {result, state}
 
       {:error, reason} ->
         {map_error("connect", reason), state}
