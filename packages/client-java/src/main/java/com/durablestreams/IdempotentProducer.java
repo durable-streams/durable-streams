@@ -262,6 +262,10 @@ public final class IdempotentProducer implements AutoCloseable {
     }
 
     private CompletableFuture<Void> sendBatchFireAndForget(List<byte[]> batch, long batchEpoch, long seq) {
+        return sendBatchWithRetry(batch, batchEpoch, seq, false);
+    }
+
+    private CompletableFuture<Void> sendBatchWithRetry(List<byte[]> batch, long batchEpoch, long seq, boolean isRetry) {
         // Serialize batch data
         byte[] data = serializeBatch(batch);
 
@@ -285,19 +289,26 @@ public final class IdempotentProducer implements AutoCloseable {
         // True async - no blocking .join()
         return client.getHttpClient()
                 .sendAsync(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
-                .thenAccept(response -> {
+                .thenCompose(response -> {
                     int status = response.statusCode();
 
                     if (status == 200 || status == 201 || status == 204) {
                         // Success or duplicate (idempotent)
-                        return;
+                        return CompletableFuture.completedFuture(null);
                     } else if (status == 403) {
                         // Stale epoch
-                        if (config.autoClaim) {
-                            epoch.incrementAndGet();
-                            nextSeq.set(0);
-                        }
                         long currentEpoch = parseEpochFromResponse(response);
+
+                        if (config.autoClaim && !isRetry) {
+                            // Auto-claim: retry with epoch+1
+                            long newEpoch = currentEpoch + 1;
+                            epoch.set(newEpoch);
+                            nextSeq.set(1);  // This batch will use seq 0
+
+                            // Retry with new epoch, starting at seq 0
+                            return sendBatchWithRetry(batch, newEpoch, 0, true);
+                        }
+
                         errors.offer(new StaleEpochException(currentEpoch));
                     } else if (status == 409) {
                         // Sequence conflict
@@ -309,6 +320,7 @@ public final class IdempotentProducer implements AutoCloseable {
                     if (config.onError != null) {
                         config.onError.accept(new DurableStreamException("Batch failed with status: " + status, status));
                     }
+                    return CompletableFuture.completedFuture(null);
                 })
                 .exceptionally(ex -> {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;

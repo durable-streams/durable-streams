@@ -489,17 +489,18 @@ public class ConformanceAdapter {
         String producerId = (String) cmd.get("producerId");
         Number epochNum = (Number) cmd.get("epoch");
         long epoch = epochNum != null ? epochNum.longValue() : 0;
+        Boolean autoClaim = (Boolean) cmd.get("autoClaim");
         String data = (String) cmd.get("data");
 
-        String key = path + ":" + producerId;
-        IdempotentProducer producer = producers.computeIfAbsent(key, k -> {
-            IdempotentProducer.Config config = IdempotentProducer.Config.builder()
-                    .epoch(epoch)
-                    .build();
-            return client.idempotentProducer(serverUrl + path, producerId, config);
-        });
+        // Create producer with proper config including autoClaim
+        IdempotentProducer.Config config = IdempotentProducer.Config.builder()
+                .epoch(epoch)
+                .autoClaim(Boolean.TRUE.equals(autoClaim))
+                .lingerMs(0)
+                .maxBatchBytes(1024)
+                .build();
 
-        try {
+        try (IdempotentProducer producer = client.idempotentProducer(serverUrl + path, producerId, config)) {
             producer.append(data);
             producer.flush();
 
