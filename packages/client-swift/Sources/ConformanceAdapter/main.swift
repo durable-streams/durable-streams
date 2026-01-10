@@ -41,6 +41,8 @@ struct Command: Codable {
     var name: String?
     var valueType: String?
     var initialValue: String?
+    var background: Bool?
+    var operationId: String?
 }
 
 enum LiveValue: Codable {
@@ -105,6 +107,7 @@ struct Result: Codable {
     var metrics: BenchmarkMetrics?
     var headersSent: [String: String]?
     var paramsSent: [String: String]?
+    var operationId: String?
 }
 
 struct Features: Codable {
@@ -135,11 +138,37 @@ actor AdapterState {
     var streamContentTypes: [String: String] = [:]
     var dynamicHeaders: [String: DynamicValue] = [:]
     var dynamicParams: [String: DynamicValue] = [:]
+    var backgroundOps: [String: Task<Result, Never>] = [:]
+    var opCounter: Int = 0
 
     struct DynamicValue {
         let type: String  // "counter", "timestamp", "token"
         var counter: Int = 0
         var tokenValue: String = ""
+    }
+
+    func generateOpId() -> String {
+        opCounter += 1
+        return "op-\(opCounter)"
+    }
+
+    func storeBackgroundOp(id: String, task: Task<Result, Never>) {
+        backgroundOps[id] = task
+    }
+
+    func getBackgroundOp(id: String) -> Task<Result, Never>? {
+        backgroundOps[id]
+    }
+
+    func removeBackgroundOp(id: String) {
+        backgroundOps.removeValue(forKey: id)
+    }
+
+    func cancelAllBackgroundOps() {
+        for (_, task) in backgroundOps {
+            task.cancel()
+        }
+        backgroundOps.removeAll()
     }
 
     func setServerURL(_ url: String) {
@@ -330,7 +359,7 @@ func handleInit(_ cmd: Command) async -> Result {
         clientVersion: ClientInfo.version,
         features: Features(
             batching: true,
-            sse: false,  // Not implemented yet
+            sse: true,
             longPoll: true,
             streaming: true,
             dynamicHeaders: true
@@ -751,14 +780,14 @@ func handleRead(_ cmd: Command) async -> Result {
         }
     }
 
-    // SSE is not supported - return error immediately to avoid hanging
-    if liveMode == "sse" {
-        return errorResult(cmd.type, "NOT_SUPPORTED", "SSE mode not supported")
-    }
-
     // Get dynamic values once at start
     let dynamicHeaders = await state.resolveDynamicHeaders()
     let dynamicParams = await state.resolveDynamicParams()
+
+    // Handle SSE mode separately
+    if liveMode == "sse" {
+        return await handleSSERead(cmd, path: path, serverURL: serverURL, dynamicHeaders: dynamicHeaders, dynamicParams: dynamicParams)
+    }
 
     // For live mode with maxChunks, we collect data across multiple requests
     var allChunks: [ReadChunk] = []
@@ -893,6 +922,286 @@ func handleRead(_ cmd: Command) async -> Result {
         type: "read",
         success: true,
         status: lastStatus,
+        offset: currentOffset,
+        chunks: allChunks,
+        upToDate: lastUpToDate,
+        cursor: lastCursor,
+        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+    )
+}
+
+// SSE Control event structure
+struct SSEControlEvent: Codable {
+    let streamNextOffset: String
+    var streamCursor: String?
+    var upToDate: Bool?
+}
+
+// SSE delegate for streaming HTTP response
+final class SSEDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    var continuation: AsyncStream<Data>.Continuation?
+    var responseContinuation: CheckedContinuation<HTTPURLResponse?, Error>?
+    var hasReceivedResponse = false
+    var isCancelled = false
+
+    func cancel() {
+        isCancelled = true
+        if !hasReceivedResponse {
+            responseContinuation?.resume(returning: nil)
+            responseContinuation = nil
+        }
+        continuation?.finish()
+        continuation = nil
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        hasReceivedResponse = true
+        responseContinuation?.resume(returning: response as? HTTPURLResponse)
+        responseContinuation = nil
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard !isCancelled else { return }
+        continuation?.yield(data)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error, !isCancelled {
+            if !hasReceivedResponse {
+                responseContinuation?.resume(throwing: error)
+                responseContinuation = nil
+            }
+        }
+        continuation?.finish()
+        continuation = nil
+    }
+}
+
+func handleSSERead(_ cmd: Command, path: String, serverURL: String, dynamicHeaders: [String: String], dynamicParams: [String: String]) async -> Result {
+    guard var components = URLComponents(string: serverURL + path) else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    }
+
+    var queryItems: [URLQueryItem] = []
+    let offset = cmd.offset ?? "-1"
+    queryItems.append(URLQueryItem(name: QueryParams.offset, value: offset))
+    queryItems.append(URLQueryItem(name: QueryParams.live, value: "sse"))
+
+    for (key, value) in dynamicParams {
+        queryItems.append(URLQueryItem(name: key, value: value))
+    }
+
+    components.queryItems = queryItems
+
+    guard let url = components.url else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    }
+
+    var request = URLRequest(url: url)
+    request.httpMethod = "GET"
+    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+    for (key, value) in dynamicHeaders {
+        request.setValue(value, forHTTPHeaderField: key)
+    }
+
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+    }
+
+    var allChunks: [ReadChunk] = []
+    var currentOffset = offset
+    var lastUpToDate = false
+    var lastCursor: String?
+    let maxChunks = cmd.maxChunks ?? Int.max
+    let waitForUpToDate = cmd.waitForUpToDate ?? false
+
+    // Calculate deadline for total request timeout
+    let timeoutSeconds = cmd.timeoutMs.map { Double($0) / 1000.0 } ?? 25.0
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+    // Helper to check if deadline passed
+    func isDeadlinePassed() -> Bool {
+        Date() >= deadline
+    }
+
+    // Use delegate-based streaming for Linux compatibility
+    let delegate = SSEDelegate()
+    let sseSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+    defer {
+        delegate.cancel()  // Signal to stop streaming
+        sseSession.invalidateAndCancel()  // Cleanup session
+    }
+
+    // Set up data stream continuation BEFORE starting task
+    let dataStream = AsyncStream<Data> { continuation in
+        delegate.continuation = continuation
+    }
+
+    // Create task but don't resume yet
+    let task = sseSession.dataTask(with: request)
+
+    // Wait for response headers using async continuation with timeout
+    let httpResponse: HTTPURLResponse?
+    do {
+        httpResponse = try await withCheckedThrowingContinuation { continuation in
+            // Set the response continuation BEFORE starting the task to avoid race condition
+            delegate.responseContinuation = continuation
+            // Now start the task
+            task.resume()
+        }
+    } catch let error as URLError where error.code == .timedOut || error.code == .cancelled {
+        task.cancel()
+        return Result(
+            type: "read",
+            success: true,
+            status: 200,
+            offset: currentOffset,
+            chunks: allChunks,
+            upToDate: true,
+            cursor: lastCursor,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+        )
+    } catch {
+        task.cancel()
+        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+    }
+
+    guard let httpResponse = httpResponse else {
+        task.cancel()
+        return errorResult(cmd.type, "NETWORK_ERROR", "No response")
+    }
+
+    if httpResponse.statusCode == 404 {
+        return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
+    }
+
+    if httpResponse.statusCode != 200 {
+        return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
+    }
+
+    // Parse SSE events from the data stream
+    var buffer = ""
+    var currentEventType: String?
+    var currentDataLines: [String] = []
+
+    // Start a timeout task that will cancel the SSE connection when deadline passes
+    let timeoutTask = Task {
+        let remaining = deadline.timeIntervalSinceNow
+        if remaining > 0 {
+            try? await Task.sleep(for: .seconds(remaining))
+        }
+        delegate.cancel()  // This will cause the stream to finish
+    }
+
+    defer {
+        timeoutTask.cancel()
+    }
+
+    for await data in dataStream {
+        // Check for task cancellation
+        if Task.isCancelled || isDeadlinePassed() {
+            delegate.cancel()
+            task.cancel()
+            return Result(
+                type: "read",
+                success: true,
+                status: 200,
+                offset: currentOffset,
+                chunks: allChunks,
+                upToDate: true,  // Signal up-to-date on timeout
+                cursor: lastCursor,
+                headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+                paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+            )
+        }
+
+        guard let str = String(data: data, encoding: .utf8) else { continue }
+        buffer.append(str)
+
+        // Normalize line endings and process complete lines
+        buffer = buffer.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+
+        while let newlineIndex = buffer.firstIndex(of: "\n") {
+            let line = String(buffer[..<newlineIndex])
+            buffer = String(buffer[buffer.index(after: newlineIndex)...])
+
+            if line.isEmpty {
+                // Empty line = end of event
+                if let eventType = currentEventType, !currentDataLines.isEmpty {
+                    let dataStr = currentDataLines.joined(separator: "\n")
+
+                    if eventType == "data" {
+                        // Data event - collect chunk
+                        allChunks.append(ReadChunk(data: dataStr, offset: currentOffset))
+                    } else if eventType == "control" {
+                        // Control event - parse JSON for metadata
+                        if let jsonData = dataStr.data(using: .utf8),
+                           let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
+                            currentOffset = control.streamNextOffset
+                            lastCursor = control.streamCursor
+                            lastUpToDate = control.upToDate ?? false
+                        }
+                    }
+                }
+                currentEventType = nil
+                currentDataLines = []
+
+                // Check if we should stop
+                if allChunks.count >= maxChunks {
+                    delegate.cancel()
+                    task.cancel()
+                    return Result(
+                        type: "read",
+                        success: true,
+                        status: 200,
+                        offset: currentOffset,
+                        chunks: allChunks,
+                        upToDate: lastUpToDate,
+                        cursor: lastCursor,
+                        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+                        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+                    )
+                }
+
+                if waitForUpToDate && lastUpToDate {
+                    delegate.cancel()
+                    task.cancel()
+                    return Result(
+                        type: "read",
+                        success: true,
+                        status: 200,
+                        offset: currentOffset,
+                        chunks: allChunks,
+                        upToDate: lastUpToDate,
+                        cursor: lastCursor,
+                        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+                        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+                    )
+                }
+            } else if line.hasPrefix("event:") {
+                currentEventType = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+                var content = String(line.dropFirst(5))
+                if content.hasPrefix(" ") {
+                    content = String(content.dropFirst())
+                }
+                currentDataLines.append(content)
+            }
+            // Ignore other SSE fields (id, retry, comments)
+        }
+    }
+
+    // Stream ended
+    return Result(
+        type: "read",
+        success: true,
+        status: 200,
         offset: currentOffset,
         chunks: allChunks,
         upToDate: lastUpToDate,
