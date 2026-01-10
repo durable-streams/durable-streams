@@ -36,6 +36,6 @@ class DurableStreamException extends \Exception
 
     public function isRetryable(): bool
     {
-        return in_array($this->httpStatus, [429, 502, 503, 504], true);
+        return in_array($this->httpStatus, [429, 500, 502, 503, 504], true);
     }
 }

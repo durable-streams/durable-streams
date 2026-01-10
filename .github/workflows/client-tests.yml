@@ -25,6 +25,11 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+
       - name: Install dependencies
         run: pnpm install
 
@@ -36,6 +41,11 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Install PHP client
+        run: |
+          cd packages/client-php
+          composer install --no-interaction
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -45,6 +55,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run PHP client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-php/run-conformance-adapter.sh
 
   benchmarks:
     name: Client Benchmarks

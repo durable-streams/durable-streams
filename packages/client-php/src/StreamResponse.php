@@ -186,6 +186,11 @@ final class StreamResponse implements IteratorAggregate
     public function jsonStream(): Generator
     {
         foreach ($this as $chunk) {
+            // Skip empty chunks (yielded for state checking in live mode)
+            if ($chunk === '') {
+                continue;
+            }
+
             // Parse JSON array or single values
             $data = json_decode($chunk, true, 512, JSON_THROW_ON_ERROR);
 
