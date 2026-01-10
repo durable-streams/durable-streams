@@ -25,6 +25,12 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: packages/client-rb
+
       - name: Install dependencies
         run: pnpm install
 
@@ -45,6 +51,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run Ruby client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-rb/run-conformance-adapter.sh
 
   benchmarks:
     name: Client Benchmarks
@@ -72,6 +83,12 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: packages/client-rb
 
       - name: Install dependencies
         run: pnpm install
@@ -140,6 +157,23 @@ jobs:
           echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Ruby client benchmarks
+        id: rb_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format json > benchmark-results-rb.json
+          cat benchmark-results-rb.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-rb.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-rb.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rb.json)
+
+          echo "rb_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "rb_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "rb_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,6 +183,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-ts.json
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
+            packages/client-conformance-tests/benchmark-results-rb.json
 
       - name: Generate benchmark report
         if: always() && github.event_name == 'pull_request'
@@ -165,6 +200,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format markdown >> benchmark-report.md
 
           cat benchmark-report.md
 
@@ -211,11 +249,12 @@ jobs:
           TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
+          RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + RB_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Ruby: $RB_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
