@@ -40,8 +40,10 @@ module DurableStreams
       @transport = HTTP::Transport.new
       @closed = false
       @linger_timer = nil
+      @linger_cancelled = false
       @batch_queue = Queue.new
       @sender_thread = nil
+      @last_error = nil
     end
 
     # Append a message (fire-and-forget, batched)
@@ -88,6 +90,9 @@ module DurableStreams
       batch = nil
       @mutex.synchronize do
         cancel_linger_timer
+        # Check for errors from background threads
+        raise @last_error if @last_error
+
         return if @pending.empty?
 
         batch = @pending.dup
@@ -99,6 +104,9 @@ module DurableStreams
 
       # Wait for all in-flight batches to complete
       wait_for_inflight
+
+      # Check for errors that occurred during wait
+      @mutex.synchronize { raise @last_error if @last_error }
     end
 
     # Close the producer, flushing pending data
@@ -127,14 +135,19 @@ module DurableStreams
     def start_linger_timer
       return if @linger_ms <= 0
 
+      @linger_cancelled = false
       @linger_timer = Thread.new do
-        sleep(@linger_ms / 1000.0)
-        flush unless @closed
+        begin
+          sleep(@linger_ms / 1000.0)
+          flush unless @closed || @linger_cancelled
+        rescue StandardError => e
+          @mutex.synchronize { @last_error ||= e }
+        end
       end
     end
 
     def cancel_linger_timer
-      @linger_timer&.kill
+      @linger_cancelled = true
       @linger_timer = nil
     end
 
@@ -155,11 +168,15 @@ module DurableStreams
       return if @sender_thread&.alive?
 
       @sender_thread = Thread.new do
-        loop do
-          batch = @batch_queue.pop
-          break if batch == :shutdown
+        begin
+          loop do
+            batch = @batch_queue.pop
+            break if batch == :shutdown
 
-          send_batch_sync(batch)
+            send_batch_sync(batch)
+          end
+        rescue StandardError => e
+          @mutex.synchronize { @last_error ||= e }
         end
       end
     end

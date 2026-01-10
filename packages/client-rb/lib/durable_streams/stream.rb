@@ -22,6 +22,7 @@ module DurableStreams
       @batching = batching
       @transport = client&.transport || HTTP::Transport.new
       @batch_mutex = Mutex.new
+      @batch_cv = ConditionVariable.new
       @batch_queue = []
       @batch_in_flight = false
     end
@@ -274,8 +275,10 @@ module DurableStreams
         flush_batch
       end
 
-      # Wait for result
-      sleep(0.001) until queue_entry[:done]
+      # Wait for result using ConditionVariable (efficient, no CPU spin)
+      @batch_mutex.synchronize do
+        @batch_cv.wait(@batch_mutex) until queue_entry[:done]
+      end
 
       raise queue_entry[:error] if queue_entry[:error]
 
@@ -296,16 +299,22 @@ module DurableStreams
 
         begin
           result = send_batch(messages)
-          messages.each do |msg|
-            msg[:result] = result
-            msg[:done] = true
+          @batch_mutex.synchronize do
+            messages.each do |msg|
+              msg[:result] = result
+              msg[:done] = true
+            end
+            @batch_cv.broadcast
           end
         rescue StandardError => e
-          messages.each do |msg|
-            msg[:error] = e
-            msg[:done] = true
+          @batch_mutex.synchronize do
+            messages.each do |msg|
+              msg[:error] = e
+              msg[:done] = true
+            end
+            @batch_in_flight = false
+            @batch_cv.broadcast
           end
-          @batch_mutex.synchronize { @batch_in_flight = false }
           return
         end
       end

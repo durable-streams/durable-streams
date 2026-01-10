@@ -63,13 +63,17 @@ module DurableStreams
 
     def with_reconnection
       attempts = 0
+      last_error = nil
       begin
         yield
       rescue IOError, Errno::ECONNRESET, Net::ReadTimeout, Errno::EPIPE => e
         return if @closed
 
+        last_error = e
         attempts += 1
-        return if attempts > @retry_policy.max_retries
+        if attempts > @retry_policy.max_retries
+          raise ConnectionError.new("SSE connection failed after #{attempts} retries: #{e.message}")
+        end
 
         delay = [@retry_policy.initial_delay * (@retry_policy.multiplier**attempts),
                  @retry_policy.max_delay].min

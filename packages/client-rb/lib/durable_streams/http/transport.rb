@@ -87,8 +87,7 @@ module DurableStreams
 
             return response
           rescue Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EPIPE,
-                 Net::OpenTimeout, Net::ReadTimeout, IOError, NoMethodError => e
-            # NoMethodError can occur when connection is corrupted (nil buffer issue)
+                 Net::OpenTimeout, Net::ReadTimeout, IOError => e
             last_error = e
             if attempts <= @retry_policy.max_retries
               delay = calculate_delay(attempts)
