@@ -230,12 +230,22 @@ public final class IdempotentProducer implements AutoCloseable {
 
         inFlight.incrementAndGet();
 
-        CompletableFuture<Void> future = sendBatchFireAndForget(batch, currentEpoch, seq);
-        inFlightFutures.add(future);
-        future.whenComplete((v, ex) -> {
-            inFlight.decrementAndGet();
-            inFlightFutures.remove(future);
-        });
+        // Create a CompletableFuture that we control, and add it to the queue
+        // BEFORE starting the async operation. This prevents a race where the
+        // HTTP completes before we add to the queue.
+        CompletableFuture<Void> trackedFuture = new CompletableFuture<>();
+        inFlightFutures.add(trackedFuture);
+
+        sendBatchFireAndForget(batch, currentEpoch, seq)
+            .whenComplete((v, ex) -> {
+                inFlight.decrementAndGet();
+                inFlightFutures.remove(trackedFuture);
+                if (ex != null) {
+                    trackedFuture.completeExceptionally(ex);
+                } else {
+                    trackedFuture.complete(null);
+                }
+            });
     }
 
     private void cancelLingerTimer() {
