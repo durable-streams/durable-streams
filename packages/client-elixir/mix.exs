@@ -29,7 +29,8 @@ defmodule DurableStreams.MixProject do
   end
 
   defp deps do
-    # No external dependencies - uses built-in Erlang/Elixir libs
+    # No dependencies required - uses native JSON (Elixir 1.18+)
+    # For Elixir < 1.18, add {:jason, "~> 1.4"} to use the Jason fallback
     []
   end
 

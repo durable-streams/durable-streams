@@ -28,8 +28,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.16"
-          otp-version: "26"
+          elixir-version: "1.18"
+          otp-version: "27"
 
       - name: Install dependencies
         run: pnpm install
@@ -88,8 +88,8 @@ jobs:
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.16"
-          otp-version: "26"
+          elixir-version: "1.18"
+          otp-version: "27"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
