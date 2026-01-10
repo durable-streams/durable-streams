@@ -784,7 +784,7 @@ async Task BenchmarkRoundtrip(JsonElement op)
     else
     {
         data = new byte[size];
-        Random.Shared.NextBytes(data);
+        Array.Fill(data, (byte)42); // Use fill for speed like Go adapter
     }
 
     var live = liveStr switch
@@ -797,10 +797,20 @@ async Task BenchmarkRoundtrip(JsonElement op)
     var stream = client!.GetStream(path);
     stream.ContentType = contentType;
 
-    // Append first (this creates the stream if it doesn't exist)
+    // Create stream first (append doesn't auto-create)
+    try
+    {
+        await stream.CreateAsync(new CreateStreamOptions { ContentType = contentType });
+    }
+    catch (DurableStreamException)
+    {
+        // Stream may already exist, that's ok
+    }
+
+    // Append data
     var result = await stream.AppendAsync(data);
 
-    // Calculate offset before our append - default to beginning if parse fails
+    // Calculate offset before our append
     var prevOffset = "-1";
     var nextOffsetStr = result.NextOffset?.ToString() ?? "0";
     if (int.TryParse(nextOffsetStr, out var nextOffsetInt))
@@ -808,15 +818,15 @@ async Task BenchmarkRoundtrip(JsonElement op)
         prevOffset = (nextOffsetInt - data.Length).ToString();
     }
 
-    // Read from that offset with a timeout
-    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    // Read back from that offset with live mode
+    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
     await using var response = await stream.StreamAsync(new StreamOptions
     {
         Offset = new Offset(prevOffset),
         Live = live
     }, cts.Token);
 
-    // Wait for data
+    // Wait for first chunk with data
     await foreach (var chunk in response.ReadBytesAsync(cts.Token))
     {
         if (chunk.Data.Length > 0) break;

@@ -238,6 +238,12 @@ public sealed class StreamResponse : IAsyncDisposable
 
     private async Task<ByteChunk?> ReadNextHttpChunkAsync(CancellationToken cancellationToken)
     {
+        // For long-poll, we may need to make a request now (deferred from previous chunk)
+        if (_currentResponse == null && _options.Live == LiveMode.LongPoll)
+        {
+            await MakeRequestAsync().ConfigureAwait(false);
+        }
+
         if (_currentResponse == null)
         {
             return null;
@@ -299,14 +305,24 @@ public sealed class StreamResponse : IAsyncDisposable
                 data = [];
             }
 
-            // If not done and in live mode, prepare next request
-            if (!_upToDate || _options.Live != LiveMode.Off)
+            // Store chunk before making next request (so we can return it immediately)
+            var chunk = new ByteChunk(data, new StreamCheckpoint(_offset, _cursor), _upToDate);
+
+            // Prepare for next request if we'll need one
+            // For long-poll when upToDate: DON'T pre-fetch (would block 30s for new data)
+            // For SSE or when not upToDate: pre-fetch to keep pipeline moving
+            var shouldPreFetch = !_upToDate || _options.Live == LiveMode.Sse;
+
+            if (shouldPreFetch || _options.Live == LiveMode.LongPoll)
             {
                 UpdateUrlForNextRequest();
-                await MakeRequestAsync().ConfigureAwait(false);
+                if (shouldPreFetch)
+                {
+                    await MakeRequestAsync().ConfigureAwait(false);
+                }
             }
 
-            return new ByteChunk(data, new StreamCheckpoint(_offset, _cursor), _upToDate);
+            return chunk;
         }
         finally
         {
