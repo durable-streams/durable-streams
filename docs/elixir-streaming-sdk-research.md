@@ -195,16 +195,16 @@ end
 
 #### Key Features
 
-| Feature | Description |
-|---------|-------------|
-| Back-pressure | Built on GenStage, never floods the pipeline |
+| Feature                    | Description                                   |
+| -------------------------- | --------------------------------------------- |
+| Back-pressure              | Built on GenStage, never floods the pipeline  |
 | Automatic acknowledgements | Messages acked at end of pipeline or on error |
-| Batching | Group by size and/or time |
-| Fault tolerance | Producers isolated, callbacks stateless |
-| Graceful shutdown | Items in flight processed before termination |
-| Rate limiting | Control ingestion rate |
-| Telemetry | Built-in metrics |
-| Partitioning | Preserve ordering per partition |
+| Batching                   | Group by size and/or time                     |
+| Fault tolerance            | Producers isolated, callbacks stateless       |
+| Graceful shutdown          | Items in flight processed before termination  |
+| Rate limiting              | Control ingestion rate                        |
+| Telemetry                  | Built-in metrics                              |
+| Partitioning               | Preserve ordering per partition               |
 
 #### Acknowledgement Configuration
 
@@ -267,11 +267,11 @@ Flow.from_enumerable(events)
 
 #### Flow vs Broadway
 
-| Aspect | Flow | Broadway |
-|--------|------|----------|
-| Focus | Data as a whole (aggregations, joins) | Individual events |
-| Use case | Batch processing, analytics | Message processing |
-| Features | Windows, triggers, MapReduce | Acks, metrics, failure handling |
+| Aspect   | Flow                                  | Broadway                        |
+| -------- | ------------------------------------- | ------------------------------- |
+| Focus    | Data as a whole (aggregations, joins) | Individual events               |
+| Use case | Batch processing, analytics           | Message processing              |
+| Features | Windows, triggers, MapReduce          | Acks, metrics, failure handling |
 
 ---
 
@@ -368,13 +368,13 @@ end
 
 ##### Key Callbacks
 
-| Callback | Purpose |
-|----------|---------|
-| `init/2` | Initialize subscriber state |
-| `handle_message/2` | Process messages, return commit/ack decision |
-| `assign_partitions/3` | Custom partition assignment (optional) |
-| `get_committed_offset/3` | Custom offset management (optional) |
-| `terminate/2` | Cleanup (optional) |
+| Callback                 | Purpose                                      |
+| ------------------------ | -------------------------------------------- |
+| `init/2`                 | Initialize subscriber state                  |
+| `handle_message/2`       | Process messages, return commit/ack decision |
+| `assign_partitions/3`    | Custom partition assignment (optional)       |
+| `get_committed_offset/3` | Custom offset management (optional)          |
+| `terminate/2`            | Cleanup (optional)                           |
 
 #### kafka_ex
 
@@ -884,6 +884,7 @@ Kane.Subscription.ack(subscription, messages)
 **No native Elixir client exists.**
 
 Options:
+
 1. **Use Kafka protocol** - Event Hubs supports Kafka protocol
 2. **Use AMQP** - Event Hubs supports AMQP 1.0
 
@@ -964,6 +965,7 @@ Pure Elixir implementation using binary protocol.
 ### Redpanda
 
 Redpanda is Kafka-compatible, so use any Kafka client:
+
 - **brod**
 - **kafka_ex**
 - **broadway_kafka**
@@ -988,6 +990,7 @@ Broadway.start_link(__MODULE__,
 **No native Elixir integration.**
 
 Alternatives:
+
 1. **Espresso** - Elixir stream processing library with Flink-like concepts
 2. **Use Kafka/other brokers** as intermediary between Elixir and Flink
 
@@ -1342,13 +1345,13 @@ backoff = :backoff.succeed(backoff)
 
 ### API Styles by Library Type
 
-| Pattern | Libraries | Use Case |
-|---------|-----------|----------|
-| **Broadway** | broadway_kafka, broadway_sqs, broadway_rabbitmq, broadway_cloud_pub_sub | Production message processing |
-| **GenStage** | Custom pipelines | Fine-grained control |
-| **GenServer** | brod, amqp, gnat | Direct broker communication |
-| **Behaviour** | brod_group_subscriber_v2 | Kafka consumer groups |
-| **Functional** | Mint, Redix | Low-level, process-less |
+| Pattern        | Libraries                                                               | Use Case                      |
+| -------------- | ----------------------------------------------------------------------- | ----------------------------- |
+| **Broadway**   | broadway_kafka, broadway_sqs, broadway_rabbitmq, broadway_cloud_pub_sub | Production message processing |
+| **GenStage**   | Custom pipelines                                                        | Fine-grained control          |
+| **GenServer**  | brod, amqp, gnat                                                        | Direct broker communication   |
+| **Behaviour**  | brod_group_subscriber_v2                                                | Kafka consumer groups         |
+| **Functional** | Mint, Redix                                                             | Low-level, process-less       |
 
 ### Common Configuration Patterns
 
@@ -1378,22 +1381,22 @@ Broadway.start_link(MyBroadway,
 
 ### Error Handling Strategies
 
-| Strategy | When to Use |
-|----------|-------------|
-| **Retry with backoff** | Transient failures (network, overload) |
-| **Dead letter queue** | Poison messages |
-| **Circuit breaker** | Failing dependencies |
-| **Supervision restart** | Process crashes |
+| Strategy                | When to Use                            |
+| ----------------------- | -------------------------------------- |
+| **Retry with backoff**  | Transient failures (network, overload) |
+| **Dead letter queue**   | Poison messages                        |
+| **Circuit breaker**     | Failing dependencies                   |
+| **Supervision restart** | Process crashes                        |
 
 ### Backpressure Approaches
 
-| Library | Mechanism |
-|---------|-----------|
+| Library  | Mechanism                                |
+| -------- | ---------------------------------------- |
 | GenStage | Demand-driven (consumers request events) |
-| Broadway | Built on GenStage + rate limiters |
-| RabbitMQ | Prefetch count |
-| Kafka | Consumer lag, pause/resume |
-| Finch | Connection pool limits |
+| Broadway | Built on GenStage + rate limiters        |
+| RabbitMQ | Prefetch count                           |
+| Kafka    | Consumer lag, pause/resume               |
+| Finch    | Connection pool limits                   |
 
 ---
 
