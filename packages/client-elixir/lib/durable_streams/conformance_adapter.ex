@@ -236,7 +236,9 @@ defmodule DurableStreams.ConformanceAdapter do
     path = cmd["path"]
     offset = cmd["offset"] || "-1"
     live = cmd["live"]
-    timeout_ms = cmd["timeoutMs"] || 5000
+    # Use longer timeout for SSE to handle CI latency
+    default_timeout = if live == "sse", do: 30_000, else: 5000
+    timeout_ms = cmd["timeoutMs"] || default_timeout
     max_chunks = cmd["maxChunks"] || 100
     wait_for_up_to_date = cmd["waitForUpToDate"] || false
     headers = cmd["headers"] || %{}
