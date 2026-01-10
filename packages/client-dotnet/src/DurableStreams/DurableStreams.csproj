@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>12</LangVersion>
+
+    <!-- Package metadata -->
+    <PackageId>DurableStreams</PackageId>
+    <Version>0.0.1</Version>
+    <Authors>ElectricSQL</Authors>
+    <Description>C# client for Durable Streams - persistent, resumable event streams over HTTP</Description>
+    <PackageTags>streams;events;http;sse;real-time</PackageTags>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/electric-sql/durable-streams</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+
+    <!-- Build settings -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>7</WarningLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="conformance-adapter" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -150,6 +150,39 @@ jobs:
       - name: Run Python conformance tests (async)
         run: pnpm --filter @durable-streams/client-conformance-tests test:run:python-async
 
+  conformance-tests-dotnet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Node.js dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build TypeScript packages
+        run: pnpm build
+
+      - name: Build C# adapter
+        working-directory: packages/client-dotnet
+        run: dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+
+      - name: Run C# conformance tests
+        run: pnpm --filter @durable-streams/client-conformance-tests test:run ../client-dotnet/adapter/conformance-adapter
+
   caddy-conformance:
     runs-on: ubuntu-latest
     steps:

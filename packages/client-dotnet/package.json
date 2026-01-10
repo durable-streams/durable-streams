@@ -1,0 +1,12 @@
+{
+  "name": "@durable-streams-internal/client-dotnet",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Durable Streams C# client (internal package for build scripts)",
+  "scripts": {
+    "build": "dotnet build -c Release",
+    "test": "dotnet test",
+    "publish:adapter": "dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter",
+    "conformance": "pnpm publish:adapter && pnpm --filter @durable-streams/client-conformance-tests test:run ./adapter/conformance-adapter"
+  }
+}
