@@ -291,23 +291,27 @@ describe(`y-durable-streams`, () => {
         const roomId = `awareness-${Date.now()}`
 
         const doc1 = new Y.Doc()
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        await waitForSync(provider1)
+        const doc2 = new Y.Doc()
 
-        // Set local awareness state
+        // Connect both providers first (with offset=now, clients only see updates
+        // that happen AFTER they start listening)
+        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
+        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+
+        await waitForSync(provider1)
+        await waitForSync(provider2)
+
+        // Small delay to ensure awareness streams are fully established
+        await new Promise((r) => setTimeout(r, 100))
+
+        // Now set awareness state - both clients are listening
         provider1.awareness!.setLocalStateField(`user`, {
           name: `Alice`,
           color: `#ff0000`,
         })
 
-        await new Promise((r) => setTimeout(r, 300))
-
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
         // Wait for awareness to sync
-        await new Promise((r) => setTimeout(r, 500))
+        await new Promise((r) => setTimeout(r, 300))
 
         const states = provider2.awareness!.getStates()
         const client1State = states.get(provider1.awareness!.clientID)
@@ -323,8 +327,17 @@ describe(`y-durable-streams`, () => {
         const roomId = `awareness-complex-${Date.now()}`
 
         const doc1 = new Y.Doc()
+        const doc2 = new Y.Doc()
+
+        // Connect both providers first
         const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
+        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+
         await waitForSync(provider1)
+        await waitForSync(provider2)
+
+        // Small delay to ensure awareness streams are fully established
+        await new Promise((r) => setTimeout(r, 100))
 
         // Set complex awareness state with nested objects
         provider1.awareness!.setLocalStateField(`user`, {
@@ -338,12 +351,6 @@ describe(`y-durable-streams`, () => {
         })
 
         await new Promise((r) => setTimeout(r, 300))
-
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
-        await new Promise((r) => setTimeout(r, 500))
 
         const states = provider2.awareness!.getStates()
         const client1State = states.get(provider1.awareness!.clientID)
@@ -367,23 +374,23 @@ describe(`y-durable-streams`, () => {
         const doc2 = new Y.Doc()
         const doc3 = new Y.Doc()
 
+        // Connect all three providers first
         const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
         const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+        const provider3 = createProvider(roomId, { doc: doc3, awareness: true })
 
         await waitForSync(provider1)
         await waitForSync(provider2)
+        await waitForSync(provider3)
 
-        // Set awareness for both clients
+        // Small delay to ensure awareness streams are fully established
+        await new Promise((r) => setTimeout(r, 100))
+
+        // Set awareness for clients 1 and 2 - all clients are now listening
         provider1.awareness!.setLocalStateField(`user`, { name: `Client1` })
         provider2.awareness!.setLocalStateField(`user`, { name: `Client2` })
 
-        await new Promise((r) => setTimeout(r, 500))
-
-        // Third client joins and should see both awareness states
-        const provider3 = createProvider(roomId, { doc: doc3, awareness: true })
-        await waitForSync(provider3)
-
-        await new Promise((r) => setTimeout(r, 500))
+        await new Promise((r) => setTimeout(r, 300))
 
         const states = provider3.awareness!.getStates()
 
@@ -409,6 +416,9 @@ describe(`y-durable-streams`, () => {
         await waitForSync(provider1)
         await waitForSync(provider2)
 
+        // Small delay to ensure awareness streams are fully established
+        await new Promise((r) => setTimeout(r, 100))
+
         // Initial state
         provider1.awareness!.setLocalStateField(`user`, { name: `Initial` })
         await new Promise((r) => setTimeout(r, 300))
@@ -432,8 +442,17 @@ describe(`y-durable-streams`, () => {
         const roomId = `awareness-special-${Date.now()}`
 
         const doc1 = new Y.Doc()
+        const doc2 = new Y.Doc()
+
+        // Connect both providers first
         const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
+        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+
         await waitForSync(provider1)
+        await waitForSync(provider2)
+
+        // Small delay to ensure awareness streams are fully established
+        await new Promise((r) => setTimeout(r, 100))
 
         // Set state with special characters and unicode
         provider1.awareness!.setLocalStateField(`user`, {
@@ -444,12 +463,6 @@ describe(`y-durable-streams`, () => {
 
         await new Promise((r) => setTimeout(r, 300))
 
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
-        await new Promise((r) => setTimeout(r, 500))
-
         const states = provider2.awareness!.getStates()
         const client1State = states.get(provider1.awareness!.clientID)
 
@@ -459,6 +472,75 @@ describe(`y-durable-streams`, () => {
           emoji: `👍🏻`,
           special: `"quotes" and 'apostrophes' & <html>`,
         })
+      })
+
+      it(`should not receive stale presence from disconnected users (offset=now)`, async () => {
+        const roomId = `awareness-offset-now-${Date.now()}`
+
+        // Client A connects and sets presence
+        const doc1 = new Y.Doc()
+        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
+        await waitForSync(provider1)
+
+        const client1Id = provider1.awareness!.clientID
+        provider1.awareness!.setLocalStateField(`user`, { name: `ClientA` })
+
+        // Wait for presence to be sent to the stream
+        await new Promise((r) => setTimeout(r, 300))
+
+        // Client A disconnects - their presence is now stale history
+        provider1.disconnect()
+
+        // Wait a moment for disconnect to complete
+        await new Promise((r) => setTimeout(r, 100))
+
+        // Client B connects AFTER Client A has disconnected
+        // Because awareness uses offset=now, Client B should NOT see Client A's stale presence
+        const doc2 = new Y.Doc()
+        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+        await waitForSync(provider2)
+
+        // Wait for awareness stream to be established
+        await new Promise((r) => setTimeout(r, 500))
+
+        const states = provider2.awareness!.getStates()
+
+        // Client B should NOT have Client A's presence (it was set before B connected)
+        const client1State = states.get(client1Id)
+        expect(client1State).toBeUndefined()
+
+        // Client B should have its own presence
+        expect(states.has(provider2.awareness!.clientID)).toBe(true)
+      })
+
+      it(`should broadcast presence immediately on connect, not wait for heartbeat`, async () => {
+        const roomId = `awareness-immediate-${Date.now()}`
+
+        // Client A connects first and is listening
+        const doc1 = new Y.Doc()
+        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
+        await waitForSync(provider1)
+
+        // Small delay to ensure awareness stream is fully established
+        await new Promise((r) => setTimeout(r, 100))
+
+        // Client B joins and immediately sets presence
+        const doc2 = new Y.Doc()
+        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
+        await waitForSync(provider2)
+
+        // Client B sets presence immediately after connecting
+        provider2.awareness!.setLocalStateField(`user`, { name: `NewUser` })
+
+        // Client A should see Client B's presence quickly (well under 15s heartbeat)
+        // We use 500ms which is much faster than the 15s heartbeat interval
+        await new Promise((r) => setTimeout(r, 500))
+
+        const states = provider1.awareness!.getStates()
+        const client2State = states.get(provider2.awareness!.clientID)
+
+        expect(client2State).toBeDefined()
+        expect(client2State?.user).toEqual({ name: `NewUser` })
       })
     })
 
