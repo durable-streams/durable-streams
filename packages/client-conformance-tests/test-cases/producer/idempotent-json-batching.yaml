@@ -132,3 +132,43 @@ tests:
         expect:
           data: "Hello World"
           upToDate: true
+
+  - id: client-deduplication-works
+    name: Client IdempotentProducer correctly deduplicates
+    description: |
+      This test verifies that the CLIENT's IdempotentProducer implementation
+      correctly sends Producer-Id/Epoch/Seq headers so server-side deduplication
+      actually works. Without correct headers, retries would create duplicates.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # Send a batch of items - this creates epoch=0, seq=0
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: dedup-test-producer
+        epoch: 0
+        items:
+          - data: '{"msg": "first"}'
+          - data: '{"msg": "second"}'
+        expect:
+          allSucceed: true
+      # Send the SAME batch again with a NEW producer instance at epoch=0
+      # If client sends correct headers, server should deduplicate
+      # If client sends wrong headers, this would create duplicate data
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: dedup-test-producer
+        epoch: 0
+        items:
+          - data: '{"msg": "first"}'
+          - data: '{"msg": "second"}'
+        expect:
+          allSucceed: true
+      # Verify NO duplicates - should only have 2 messages, not 4
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '[{"msg":"first"},{"msg":"second"}]'
+          upToDate: true
