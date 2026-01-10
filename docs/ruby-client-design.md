@@ -14,16 +14,16 @@ This document proposes a unified design for a Ruby client library for the Durabl
 
 ### Patterns from Streaming Platforms
 
-| Platform | Ruby Client | Key Patterns |
-|----------|-------------|--------------|
-| **Kafka** | `rdkafka-ruby`, `ruby-kafka` | Producer/Consumer separation, batching, factory pattern, thread-safe async producer |
-| **Redis Streams** | `redis-rb` | Simple method-based API (`xadd`, `xread`), blocking reads, consumer groups |
-| **NATS JetStream** | `nats-pure` | Context-based API (`nc.jetstream`), pull subscriptions with `fetch`, acknowledgment |
-| **Pulsar** | `pulsar-client-ruby` | Block-based producer/consumer patterns, sync/async modes |
-| **Kinesis** | `aws-sdk-kinesis`, `aws-kclrb` | Event streams with callbacks, SubscribeToShard for streaming |
-| **Pub/Sub** | `google-cloud-pubsub` | Streaming pull with `listen`, configurable threads/streams, acknowledgment |
-| **RabbitMQ** | `bunny` | Higher/lower level APIs, subscribe with blocks, prefetch control |
-| **SSE** | `ld-eventsource`, `server_sent_events` | Event callbacks, automatic reconnection with backoff |
+| Platform           | Ruby Client                            | Key Patterns                                                                        |
+| ------------------ | -------------------------------------- | ----------------------------------------------------------------------------------- |
+| **Kafka**          | `rdkafka-ruby`, `ruby-kafka`           | Producer/Consumer separation, batching, factory pattern, thread-safe async producer |
+| **Redis Streams**  | `redis-rb`                             | Simple method-based API (`xadd`, `xread`), blocking reads, consumer groups          |
+| **NATS JetStream** | `nats-pure`                            | Context-based API (`nc.jetstream`), pull subscriptions with `fetch`, acknowledgment |
+| **Pulsar**         | `pulsar-client-ruby`                   | Block-based producer/consumer patterns, sync/async modes                            |
+| **Kinesis**        | `aws-sdk-kinesis`, `aws-kclrb`         | Event streams with callbacks, SubscribeToShard for streaming                        |
+| **Pub/Sub**        | `google-cloud-pubsub`                  | Streaming pull with `listen`, configurable threads/streams, acknowledgment          |
+| **RabbitMQ**       | `bunny`                                | Higher/lower level APIs, subscribe with blocks, prefetch control                    |
+| **SSE**            | `ld-eventsource`, `server_sent_events` | Event callbacks, automatic reconnection with backoff                                |
 
 ### Common Ruby Patterns Identified
 
@@ -713,6 +713,7 @@ end
 ### Recommended: `httpx` gem
 
 The `httpx` gem provides:
+
 - HTTP/2 support (important for SSE multiplexing)
 - Connection pooling
 - Streaming responses
@@ -728,6 +729,7 @@ gem 'httpx'
 ### SSE Implementation
 
 **Production Requirements:** A production SSE parser must handle:
+
 - Both `\n\n` and `\r\n\r\n` event delimiters (and mixed newlines)
 - Comment lines starting with `:`
 - Empty `data:` lines
@@ -736,6 +738,7 @@ gem 'httpx'
 - Cursor/offset resumption on reconnect (critical for Durable Streams)
 
 The sketch below is **simplified for illustration**. For production, consider:
+
 - Using `ld-eventsource` gem (LaunchDarkly's mature SSE client)
 - Or implementing full [W3C SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html)
 
@@ -893,15 +896,15 @@ end
 
 ## Comparison with Existing Clients
 
-| Feature | TypeScript | Python | Go | Ruby (Proposed) |
-|---------|------------|--------|-----|-----------------|
-| Stream handle | `DurableStream` | `DurableStream` | `Stream` | `Stream` |
-| Factory methods | Static methods | Class methods | `Client.Stream()` | Both |
-| Read API | `stream()` → `StreamResponse` | `stream()` → `StreamResponse` | `Read()` → `Iterator` | `read()` → `StreamReader` |
-| Iteration | `subscribeJson()` callbacks | `iter_json()` | `for range` | `each` block / Enumerable |
-| Batching | Auto (fastq) | Auto (threading) | Manual | Auto (threading) |
-| SSE | Built-in | Built-in | Built-in | Built-in |
-| Async | Native (Promise) | `async`/`await` | Goroutines | Threads / Fibers |
+| Feature         | TypeScript                    | Python                        | Go                    | Ruby (Proposed)           |
+| --------------- | ----------------------------- | ----------------------------- | --------------------- | ------------------------- |
+| Stream handle   | `DurableStream`               | `DurableStream`               | `Stream`              | `Stream`                  |
+| Factory methods | Static methods                | Class methods                 | `Client.Stream()`     | Both                      |
+| Read API        | `stream()` → `StreamResponse` | `stream()` → `StreamResponse` | `Read()` → `Iterator` | `read()` → `StreamReader` |
+| Iteration       | `subscribeJson()` callbacks   | `iter_json()`                 | `for range`           | `each` block / Enumerable |
+| Batching        | Auto (fastq)                  | Auto (threading)              | Manual                | Auto (threading)          |
+| SSE             | Built-in                      | Built-in                      | Built-in              | Built-in                  |
+| Async           | Native (Promise)              | `async`/`await`               | Goroutines            | Threads / Fibers          |
 
 ---
 
