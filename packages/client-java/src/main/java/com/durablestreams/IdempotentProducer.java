@@ -47,7 +47,6 @@ public final class IdempotentProducer implements AutoCloseable {
     // Track in-flight futures for true fire-and-forget with flush
     private final ConcurrentLinkedQueue<CompletableFuture<Void>> inFlightFutures;
 
-    private final Map<Long, Map<Long, SeqState>> seqStates;
     private final BlockingQueue<DurableStreamException> errors;
 
     public IdempotentProducer(DurableStreamClient client, String url, String producerId, Config config) {
@@ -74,7 +73,6 @@ public final class IdempotentProducer implements AutoCloseable {
         // Track futures for true fire-and-forget
         this.inFlightFutures = new ConcurrentLinkedQueue<>();
 
-        this.seqStates = new ConcurrentHashMap<>();
         this.errors = new LinkedBlockingQueue<>();
     }
 
@@ -272,9 +270,9 @@ public final class IdempotentProducer implements AutoCloseable {
                 .uri(URI.create(url))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(data))
                 .timeout(Duration.ofSeconds(30))
-                .header("X-Producer-ID", producerId)
-                .header("X-Producer-Epoch", String.valueOf(batchEpoch))
-                .header("X-Producer-Seq", String.valueOf(seq));
+                .header("Producer-Id", producerId)
+                .header("Producer-Epoch", String.valueOf(batchEpoch))
+                .header("Producer-Seq", String.valueOf(seq));
 
         String contentType = client.getCachedContentType(url);
         if (contentType != null) {
@@ -326,7 +324,7 @@ public final class IdempotentProducer implements AutoCloseable {
     private void handleSequenceConflict(List<byte[]> batch, long batchEpoch, long seq,
                                          HttpResponse<byte[]> response) {
         // Get expected sequence from response
-        String expectedSeqStr = response.headers().firstValue("Stream-Seq").orElse(null);
+        String expectedSeqStr = response.headers().firstValue("Producer-Expected-Seq").orElse(null);
         if (expectedSeqStr == null) {
             errors.offer(new SequenceConflictException("unknown", String.valueOf(seq)));
             return;
@@ -347,7 +345,7 @@ public final class IdempotentProducer implements AutoCloseable {
     }
 
     private long parseEpochFromResponse(HttpResponse<byte[]> response) {
-        return response.headers().firstValue("X-Producer-Epoch")
+        return response.headers().firstValue("Producer-Epoch")
                 .map(Long::parseLong)
                 .orElse(0L);
     }
@@ -402,24 +400,6 @@ public final class IdempotentProducer implements AutoCloseable {
                 pos += data.length;
             }
             return result;
-        }
-    }
-
-    private static class PendingEntry {
-        final byte[] data;
-
-        PendingEntry(byte[] data) {
-            this.data = data;
-        }
-    }
-
-    private static class SeqState {
-        final long seq;
-        volatile boolean completed;
-        volatile DurableStreamException error;
-
-        SeqState(long seq) {
-            this.seq = seq;
         }
     }
 
