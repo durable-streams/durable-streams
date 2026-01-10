@@ -2,7 +2,6 @@ package com.durablestreams;
 
 import com.durablestreams.exception.*;
 import com.durablestreams.internal.RetryPolicy;
-import com.durablestreams.internal.sse.SSEParser;
 import com.durablestreams.model.*;
 
 import java.io.*;
@@ -323,7 +322,6 @@ public final class Stream {
                                     ResponseHandler<T> handler) throws DurableStreamException {
         RetryPolicy policy = client.getRetryPolicy();
         int attempt = 0;
-        Exception lastError = null;
 
         while (true) {
             try {
@@ -331,32 +329,19 @@ public final class Stream {
                         .send(request, HttpResponse.BodyHandlers.ofByteArray());
                 return handler.handle(response);
             } catch (DurableStreamException e) {
-                // Don't retry client errors
                 if (e.getStatusCode().isPresent()) {
                     int status = e.getStatusCode().get();
                     if (policy.shouldRetry(status, attempt)) {
-                        lastError = e;
                         attempt++;
-                        try {
-                            Thread.sleep(policy.getDelay(attempt).toMillis());
-                        } catch (InterruptedException ie) {
-                            Thread.currentThread().interrupt();
-                            throw e;
-                        }
+                        sleepForRetry(policy.getDelay(attempt), e);
                         continue;
                     }
                 }
                 throw e;
             } catch (IOException e) {
-                lastError = e;
                 if (attempt < policy.getMaxRetries()) {
                     attempt++;
-                    try {
-                        Thread.sleep(policy.getDelay(attempt).toMillis());
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new DurableStreamException("Request interrupted", ie);
-                    }
+                    sleepForRetry(policy.getDelay(attempt), new DurableStreamException("Request interrupted", e));
                     continue;
                 }
                 throw new DurableStreamException(operation + " failed: " + e.getMessage(), e);
@@ -364,6 +349,15 @@ public final class Stream {
                 Thread.currentThread().interrupt();
                 throw new DurableStreamException("Request interrupted", e);
             }
+        }
+    }
+
+    private void sleepForRetry(Duration delay, DurableStreamException fallbackException) throws DurableStreamException {
+        try {
+            Thread.sleep(delay.toMillis());
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw fallbackException;
         }
     }
 

@@ -152,24 +152,8 @@ public final class IdempotentProducer implements AutoCloseable {
     }
 
     private void sendBatchForFlush() {
-        // Like sendBatch but always sends (used by flush)
         if (pendingBatch.isEmpty()) return;
-
-        List<byte[]> batch = pendingBatch;
-        pendingBatch = new ArrayList<>(1024);
-        batchBytes = 0;
-
-        long seq = nextSeq.getAndIncrement();
-        long currentEpoch = epoch.get();
-
-        inFlight.incrementAndGet();
-
-        CompletableFuture<Void> future = sendBatchFireAndForget(batch, currentEpoch, seq);
-        inFlightFutures.add(future);
-        future.whenComplete((v, ex) -> {
-            inFlight.decrementAndGet();
-            inFlightFutures.remove(future);
-        });
+        dispatchBatch();
     }
 
     /**
@@ -216,49 +200,49 @@ public final class IdempotentProducer implements AutoCloseable {
     private void onLingerTimeout() {
         synchronized (batchLock) {
             lingerTimer = null;
-            if (!pendingBatch.isEmpty()) {
-                sendBatch();
-            }
+            sendBatch();
         }
     }
 
     private void sendBatch() {
-        // Must be called with batchLock held
         if (pendingBatch.isEmpty()) return;
 
-        // Cancel linger timer
-        if (lingerTimer != null) {
-            lingerTimer.cancel(false);
-            lingerTimer = null;
-        }
+        cancelLingerTimer();
 
         // Like Go: don't block if at capacity - let linger timer retry later
         if (inFlight.get() >= config.maxInFlight) {
-            // Reschedule linger timer to retry soon
             if (lingerTimer == null) {
                 lingerTimer = scheduler.schedule(this::onLingerTimeout, 1, TimeUnit.MILLISECONDS);
             }
             return;
         }
 
-        // Take the current batch
+        dispatchBatch();
+    }
+
+    private void dispatchBatch() {
         List<byte[]> batch = pendingBatch;
         pendingBatch = new ArrayList<>(1024);
         batchBytes = 0;
 
-        // Get sequence number for this batch
         long seq = nextSeq.getAndIncrement();
         long currentEpoch = epoch.get();
 
         inFlight.incrementAndGet();
 
-        // True fire-and-forget: send async and track the future
         CompletableFuture<Void> future = sendBatchFireAndForget(batch, currentEpoch, seq);
         inFlightFutures.add(future);
         future.whenComplete((v, ex) -> {
             inFlight.decrementAndGet();
             inFlightFutures.remove(future);
         });
+    }
+
+    private void cancelLingerTimer() {
+        if (lingerTimer != null) {
+            lingerTimer.cancel(false);
+            lingerTimer = null;
+        }
     }
 
     private CompletableFuture<Void> sendBatchFireAndForget(List<byte[]> batch, long batchEpoch, long seq) {
@@ -311,8 +295,7 @@ public final class IdempotentProducer implements AutoCloseable {
 
                         errors.offer(new StaleEpochException(currentEpoch));
                     } else if (status == 409) {
-                        // Sequence conflict
-                        handleSequenceConflict(batch, batchEpoch, seq, response);
+                        handleSequenceConflict(seq, response);
                     } else {
                         errors.offer(new DurableStreamException("Batch failed with status: " + status, status));
                     }
@@ -333,26 +316,10 @@ public final class IdempotentProducer implements AutoCloseable {
                 });
     }
 
-    private void handleSequenceConflict(List<byte[]> batch, long batchEpoch, long seq,
-                                         HttpResponse<byte[]> response) {
-        // Get expected sequence from response
-        String expectedSeqStr = response.headers().firstValue("Producer-Expected-Seq").orElse(null);
-        if (expectedSeqStr == null) {
-            errors.offer(new SequenceConflictException("unknown", String.valueOf(seq)));
-            return;
-        }
-
-        long expectedSeq = Long.parseLong(expectedSeqStr);
-
-        // If expected >= our seq, this is unrecoverable
-        if (expectedSeq >= seq) {
-            errors.offer(new SequenceConflictException(expectedSeqStr, String.valueOf(seq)));
-            return;
-        }
-
-        // Otherwise, wait for earlier sequences and retry
-        // For simplicity in this implementation, we just report the error
-        // A full implementation would track pending sequences and retry
+    private void handleSequenceConflict(long seq, HttpResponse<byte[]> response) {
+        String expectedSeqStr = response.headers()
+                .firstValue("Producer-Expected-Seq")
+                .orElse("unknown");
         errors.offer(new SequenceConflictException(expectedSeqStr, String.valueOf(seq)));
     }
 
@@ -399,17 +366,15 @@ public final class IdempotentProducer implements AutoCloseable {
             sb.append("]");
             return sb.toString().getBytes(StandardCharsets.UTF_8);
         } else {
-            // Concatenate binary data - avoid stream for efficiency
             int totalLen = 0;
-            for (int i = 0; i < batch.size(); i++) {
-                totalLen += batch.get(i).length;
+            for (byte[] bytes : batch) {
+                totalLen += bytes.length;
             }
             byte[] result = new byte[totalLen];
             int pos = 0;
-            for (int i = 0; i < batch.size(); i++) {
-                byte[] data = batch.get(i);
-                System.arraycopy(data, 0, result, pos, data.length);
-                pos += data.length;
+            for (byte[] bytes : batch) {
+                System.arraycopy(bytes, 0, result, pos, bytes.length);
+                pos += bytes.length;
             }
             return result;
         }

@@ -67,15 +67,16 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
         hasNextComputed = false;
         Chunk chunk = nextChunk;
         nextChunk = null;
+        updateStateFromChunk(chunk);
+        return chunk;
+    }
 
-        // Update state for next iteration
+    private void updateStateFromChunk(Chunk chunk) {
         if (chunk.getNextOffset() != null) {
             currentOffset = chunk.getNextOffset();
         }
         cursor = chunk.getCursor().orElse(null);
         upToDate = chunk.isUpToDate();
-
-        return chunk;
     }
 
     /**
@@ -100,9 +101,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
             throw e;
         }
 
-        // 204 No Content means timeout with no new data
         if (chunk.getStatusCode() == 204) {
-            // Update offset from 204 response if available
             if (chunk.getNextOffset() != null) {
                 currentOffset = chunk.getNextOffset();
             }
@@ -110,13 +109,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
             return null;
         }
 
-        // Update state
-        if (chunk.getNextOffset() != null) {
-            currentOffset = chunk.getNextOffset();
-        }
-        cursor = chunk.getCursor().orElse(null);
-        upToDate = chunk.isUpToDate();
-
+        updateStateFromChunk(chunk);
         return chunk;
     }
 
