@@ -25,6 +25,12 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/client-rust
+
       - name: Install dependencies
         run: pnpm install
 
@@ -36,6 +42,11 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Build Rust client adapter
+        run: |
+          cd packages/client-rust
+          cargo build --release
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -45,6 +56,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run Rust client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-rust/run-conformance-adapter.sh
 
   benchmarks:
     name: Client Benchmarks
@@ -67,6 +83,12 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/client-rust
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
 
@@ -83,6 +105,11 @@ jobs:
         run: |
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Build Rust client adapter
+        run: |
+          cd packages/client-rust
+          cargo build --release
 
       - name: Install Python client
         run: |
@@ -140,6 +167,23 @@ jobs:
           echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Rust client benchmarks
+        id: rust_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format json > benchmark-results-rust.json
+          cat benchmark-results-rust.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-rust.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-rust.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rust.json)
+
+          echo "rust_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "rust_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "rust_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -149,6 +193,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-ts.json
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
+            packages/client-conformance-tests/benchmark-results-rust.json
 
       - name: Generate benchmark report
         if: always() && github.event_name == 'pull_request'
@@ -165,6 +210,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format markdown >> benchmark-report.md
 
           cat benchmark-report.md
 
@@ -211,11 +259,12 @@ jobs:
           TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
+          RUST_FAILED=${{ steps.rust_benchmarks.outputs.rust_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + RUST_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Rust: $RUST_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
