@@ -62,6 +62,9 @@ public actor IdempotentProducer {
         /// Maximum concurrent batches in flight
         public var maxInFlight: Int
 
+        /// Content type for batch serialization (cached to avoid actor hops)
+        public var contentType: String?
+
         /// Error callback
         public var onError: (@Sendable (Error) -> Void)?
 
@@ -70,12 +73,14 @@ public actor IdempotentProducer {
             maxBatchBytes: Int = Defaults.maxBatchBytes,
             lingerMs: Int = Defaults.lingerMs,
             maxInFlight: Int = Defaults.maxInFlight,
+            contentType: String? = nil,
             onError: (@Sendable (Error) -> Void)? = nil
         ) {
             self.autoClaim = autoClaim
             self.maxBatchBytes = maxBatchBytes
             self.lingerMs = lingerMs
             self.maxInFlight = maxInFlight
+            self.contentType = contentType
             self.onError = onError
         }
 
@@ -113,6 +118,23 @@ public actor IdempotentProducer {
     public func appendData(_ data: Data) {
         guard !closed else { return }
         enqueueData(data)
+    }
+
+    /// Enqueue multiple raw data items at once (single actor hop).
+    /// Much faster than calling appendData() in a loop.
+    public func appendBatch(_ items: [Data]) {
+        guard !closed else { return }
+        for data in items {
+            pendingItems.append(data)
+            pendingSize += data.count
+        }
+        // Trigger send if we have room
+        if inFlightCount < config.maxInFlight && !pendingItems.isEmpty {
+            lingerTask?.cancel()
+            Task {
+                await sendBatch()
+            }
+        }
     }
 
     /// Enqueue a string for sending (returns immediately).
@@ -200,22 +222,33 @@ public actor IdempotentProducer {
         sequence += 1
         inFlightCount += 1
 
-        // Build batch data
+        // Build batch data - use cached contentType to avoid actor hop
         let batchData: Data
-        if let contentType = await stream.contentType, contentType.isJSONContentType {
+        let isJSON = config.contentType?.isJSONContentType ?? false
+
+        if isJSON {
             // JSON mode: wrap items in array
-            var arrayData = Data("[".utf8)
+            // Pre-calculate size: brackets + commas + item sizes
+            let commas = max(0, items.count - 1)
+            let totalSize = 2 + commas + items.reduce(0) { $0 + $1.count }
+            var arrayData = Data(capacity: totalSize)
+            arrayData.append(contentsOf: "[".utf8)
             for (index, item) in items.enumerated() {
                 if index > 0 {
-                    arrayData.append(Data(",".utf8))
+                    arrayData.append(contentsOf: ",".utf8)
                 }
                 arrayData.append(item)
             }
-            arrayData.append(Data("]".utf8))
+            arrayData.append(contentsOf: "]".utf8)
             batchData = arrayData
         } else {
-            // Byte mode: concatenate
-            batchData = items.reduce(Data()) { $0 + $1 }
+            // Byte mode: concatenate with pre-allocated capacity (avoids O(n²))
+            let totalSize = items.reduce(0) { $0 + $1.count }
+            var combined = Data(capacity: totalSize)
+            for item in items {
+                combined.append(item)
+            }
+            batchData = combined
         }
 
         // Send batch

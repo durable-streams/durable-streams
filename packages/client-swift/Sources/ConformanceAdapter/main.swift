@@ -1438,21 +1438,22 @@ func handleBenchmark(_ cmd: Command) async -> Result {
             }
 
             // Use IdempotentProducer for batching and pipelining - much faster than individual appends
+            let contentType = operation.contentType ?? "application/octet-stream"
             let producer = IdempotentProducer(
                 stream: stream,
                 producerId: "bench-producer-\(UUID().uuidString.prefix(8))",
                 config: IdempotentProducer.Configuration(
                     lingerMs: 0,  // Send immediately when batch is ready
-                    maxInFlight: 10  // Pipeline up to 10 batches
+                    maxInFlight: 10,  // Pipeline up to 10 batches
+                    contentType: contentType  // Cache to avoid actor hops
                 )
             )
 
             let data = Data(repeating: 0x41, count: size)
 
-            // Fire-and-forget appends - producer batches automatically
-            for _ in 0..<count {
-                await producer.appendData(data)
-            }
+            // Build all items first, then send in single actor hop
+            let items = [Data](repeating: data, count: count)
+            await producer.appendBatch(items)
 
             // Wait for all batches to complete
             _ = try await producer.flush()
