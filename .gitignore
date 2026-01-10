@@ -190,3 +190,4 @@ examples/yjs-demo/.tanstack
 
 # Local Netlify folder
 .netlify
+.claude/
