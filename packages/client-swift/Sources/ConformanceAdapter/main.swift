@@ -1426,9 +1426,6 @@ func handleBenchmark(_ cmd: Command) async -> Result {
 
         let messagesProcessed = count
         let bytesTransferred = count * size
-        // Cap concurrency to avoid overwhelming Docker networking
-        // Higher values cause connection issues; 50 is a good balance
-        let concurrency = min(operation.concurrency ?? 10, 50)
 
         do {
             // Create stream if it doesn't exist, otherwise connect
@@ -1440,30 +1437,25 @@ func handleBenchmark(_ cmd: Command) async -> Result {
                 stream = try await DurableStream.connect(url: url)
             }
 
+            // Use IdempotentProducer for batching and pipelining - much faster than individual appends
+            let producer = IdempotentProducer(
+                stream: stream,
+                producerId: "bench-producer-\(UUID().uuidString.prefix(8))",
+                config: IdempotentProducer.Configuration(
+                    lingerMs: 0,  // Send immediately when batch is ready
+                    maxInFlight: 10  // Pipeline up to 10 batches
+                )
+            )
+
             let data = Data(repeating: 0x41, count: size)
 
-            // Use concurrent appends for throughput
-            // Note: True batching (multiple messages per HTTP request) would be faster,
-            // but requires IdempotentProducer-like implementation in the Swift library
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                var inflight = 0
-
-                for _ in 0..<count {
-                    // Limit concurrency to avoid overwhelming the server
-                    if inflight >= concurrency {
-                        try await group.next()
-                        inflight -= 1
-                    }
-
-                    group.addTask {
-                        _ = try await stream.appendSync(data)
-                    }
-                    inflight += 1
-                }
-
-                // Wait for remaining tasks
-                try await group.waitForAll()
+            // Fire-and-forget appends - producer batches automatically
+            for _ in 0..<count {
+                await producer.appendData(data)
             }
+
+            // Wait for all batches to complete
+            _ = try await producer.flush()
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
