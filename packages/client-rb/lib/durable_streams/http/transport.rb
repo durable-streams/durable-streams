@@ -8,37 +8,47 @@ module DurableStreams
   module HTTP
     # HTTP transport layer with connection pooling and retry logic
     class Transport
-      # Default pool of persistent connections per host
-      @connection_pool = {}
-      @pool_mutex = Mutex.new
-
+      # Use thread-local connection pools to avoid concurrency issues
+      # Each thread gets its own set of connections
       class << self
-        attr_reader :connection_pool, :pool_mutex
-
-        # Get or create a persistent connection for the given URI
+        # Get or create a persistent connection for the given URI (thread-local)
         def connection_for(uri)
+          # Thread-local connection pool
+          Thread.current[:durable_streams_connections] ||= {}
+          pool = Thread.current[:durable_streams_connections]
+
           key = "#{uri.host}:#{uri.port}"
-          pool_mutex.synchronize do
-            conn = connection_pool[key]
-            if conn.nil? || !conn.started?
-              conn = Net::HTTP.new(uri.host, uri.port)
-              conn.use_ssl = uri.scheme == "https"
-              conn.open_timeout = 10
-              conn.read_timeout = 30
-              conn.keep_alive_timeout = 30
-              conn.start
-              connection_pool[key] = conn
-            end
-            conn
+          conn = pool[key]
+
+          if conn.nil? || !conn.started?
+            conn = Net::HTTP.new(uri.host, uri.port)
+            conn.use_ssl = uri.scheme == "https"
+            conn.open_timeout = 10
+            conn.read_timeout = 30
+            conn.keep_alive_timeout = 30
+            conn.start
+            pool[key] = conn
           end
+          conn
         end
 
-        # Close all connections
+        # Close all connections in current thread
         def close_all
-          pool_mutex.synchronize do
-            connection_pool.each_value { |conn| conn.finish if conn.started? rescue nil }
-            connection_pool.clear
-          end
+          pool = Thread.current[:durable_streams_connections]
+          return unless pool
+
+          pool.each_value { |conn| conn.finish if conn.started? rescue nil }
+          pool.clear
+        end
+
+        # Reset connection for a URI in current thread
+        def reset_connection(uri)
+          pool = Thread.current[:durable_streams_connections]
+          return unless pool
+
+          key = "#{uri.host}:#{uri.port}"
+          conn = pool.delete(key)
+          conn&.finish rescue nil
         end
       end
 
@@ -77,16 +87,14 @@ module DurableStreams
 
             return response
           rescue Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EPIPE,
-                 Net::OpenTimeout, Net::ReadTimeout, IOError => e
+                 Net::OpenTimeout, Net::ReadTimeout, IOError, NoMethodError => e
+            # NoMethodError can occur when connection is corrupted (nil buffer issue)
             last_error = e
             if attempts <= @retry_policy.max_retries
               delay = calculate_delay(attempts)
               sleep(delay)
               # Force new connection on retry
-              Transport.pool_mutex.synchronize do
-                key = "#{uri.host}:#{uri.port}"
-                Transport.connection_pool.delete(key)
-              end
+              Transport.reset_connection(uri)
               next
             end
             raise ConnectionError.new(e.message)

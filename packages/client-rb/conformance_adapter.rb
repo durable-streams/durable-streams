@@ -534,11 +534,12 @@ def handle_benchmark(cmd)
       url = "#{$server_url}#{operation["path"]}"
       content_type = operation["contentType"] || "application/octet-stream"
       live_mode = operation["live"] || "long-poll"
+      is_json = content_type.include?("json")
 
       stream = DurableStreams::Stream.create(url: url, content_type: content_type)
 
       # Generate payload
-      payload = if content_type.include?("json")
+      payload = if is_json
                   { "data" => "x" * operation["size"] }
                 else
                   "*" * operation["size"]
@@ -550,12 +551,22 @@ def handle_benchmark(cmd)
       # Start reader in background
       reader_thread = Thread.new do
         begin
-          reader = stream.read_json(offset: "-1", live: live_mode == "sse" ? :sse : :long_poll)
-          reader.each do |item|
-            read_data = item
-            break
+          live_sym = live_mode == "sse" ? :sse : :long_poll
+          if is_json
+            reader = stream.read_json(offset: "-1", live: live_sym)
+            reader.each do |item|
+              read_data = item
+              break
+            end
+            reader.close
+          else
+            reader = stream.read_bytes(offset: "-1", live: live_sym)
+            reader.each do |chunk|
+              read_data = chunk.data
+              break
+            end
+            reader.close
           end
-          reader.close
         rescue StandardError => e
           read_error = e
         end
@@ -574,7 +585,7 @@ def handle_benchmark(cmd)
       raise "Reader timed out" if reader_thread.alive?
       raise "No data received" if read_data.nil?
 
-      read_len = JSON.generate(read_data).bytesize
+      read_len = is_json ? JSON.generate(read_data).bytesize : read_data.bytesize
       metrics["bytesTransferred"] = operation["size"] + read_len
 
     else

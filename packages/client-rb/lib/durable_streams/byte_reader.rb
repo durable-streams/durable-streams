@@ -13,9 +13,11 @@ module DurableStreams
     # @param cursor [String, nil] Initial cursor
     def initialize(stream, offset: "-1", live: :auto, cursor: nil)
       @stream = stream
-      @offset = offset
+      # Default to "-1" if offset is nil or empty
+      effective_offset = (offset.nil? || offset.to_s.empty?) ? "-1" : offset.to_s
+      @offset = effective_offset
       @live = live
-      @next_offset = offset
+      @next_offset = effective_offset
       @cursor = cursor
       @up_to_date = false
       @closed = false
