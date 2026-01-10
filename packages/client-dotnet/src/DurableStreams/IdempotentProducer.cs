@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.IO;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -102,9 +104,9 @@ public sealed class IdempotentProducer : IAsyncDisposable
     /// </summary>
     public void Append<T>(T data)
     {
+        // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
         var bytes = JsonSerializer.SerializeToUtf8Bytes(data);
-        var jsonData = JsonSerializer.SerializeToElement(data);
-        AppendInternal(bytes, jsonData);
+        AppendInternal(bytes, null);
     }
 
     /// <summary>
@@ -129,9 +131,9 @@ public sealed class IdempotentProducer : IAsyncDisposable
     /// </summary>
     public bool TryAppend<T>(T data)
     {
+        // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
         var bytes = JsonSerializer.SerializeToUtf8Bytes(data);
-        var jsonData = JsonSerializer.SerializeToElement(data);
-        return TryAppendInternal(bytes, jsonData);
+        return TryAppendInternal(bytes, null);
     }
 
     private void AppendInternal(ReadOnlyMemory<byte> data, JsonElement? jsonData)
@@ -150,7 +152,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
 
             // Check if batch should send
             var shouldSend = _batchBytes >= _options.MaxBatchBytes;
-            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1;
+            // Only start timer if LingerMs > 0 (LingerMs <= 0 means batch by size only)
+            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.LingerMs > 0;
 
             if (shouldSend)
             {
@@ -183,7 +186,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
             _batchBytes += data.Length;
 
             var shouldSend = _batchBytes >= _options.MaxBatchBytes;
-            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1;
+            // Only start timer if LingerMs > 0 (LingerMs <= 0 means batch by size only)
+            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.LingerMs > 0;
 
             if (shouldSend)
             {
@@ -238,81 +242,96 @@ public sealed class IdempotentProducer : IAsyncDisposable
         _lingerTimer?.Dispose();
         _lingerTimer = null;
 
-        // Send in background
-        _ = Task.Run(async () =>
-        {
-            Exception? error = null;
-            try
-            {
-                await DoSendBatchAsync(batch, seq, epoch, CancellationToken.None).ConfigureAwait(false);
-                _epochClaimed = true;
-            }
-            catch (Exception ex)
-            {
-                error = ex;
-                RaiseError(ex, epoch, seq, seq, batch.Count);
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _inFlight);
-                SignalSeqComplete(epoch, seq, error);
+        // Fire-and-forget: start async operation without Task.Run overhead
+        // The async method returns immediately at first await, releasing the lock
+        _ = SendBatchFireAndForgetAsync(batch, seq, epoch);
+    }
 
-                // Check if more to send
-                lock (_stateLock)
+    private async Task SendBatchFireAndForgetAsync(List<PendingMessage> batch, int seq, int epoch)
+    {
+        Exception? error = null;
+        try
+        {
+            await DoSendBatchAsync(batch, seq, epoch, CancellationToken.None).ConfigureAwait(false);
+            _epochClaimed = true;
+        }
+        catch (Exception ex)
+        {
+            error = ex;
+            RaiseError(ex, epoch, seq, seq, batch.Count);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _inFlight);
+            SignalSeqComplete(epoch, seq, error);
+
+            // Check if more to send
+            lock (_stateLock)
+            {
+                if (_pendingBatch.Count > 0 && _inFlight < _options.MaxInFlight)
                 {
-                    if (_pendingBatch.Count > 0 && _inFlight < _options.MaxInFlight)
-                    {
-                        SendCurrentBatchLocked();
-                    }
+                    SendCurrentBatchLocked();
                 }
             }
-        });
+        }
     }
 
     private async Task DoSendBatchAsync(List<PendingMessage> batch, int seq, int epoch, CancellationToken cancellationToken)
     {
         var isJson = HttpHelpers.IsJsonContentType(_stream.ContentType ?? _options.ContentType);
-        byte[] body;
+        byte[]? rentedBuffer = null;
+        int bodyLength;
 
-        if (isJson)
+        try
         {
-            // JSON: send as array (server flattens one level)
-            var sb = new StringBuilder("[");
-            for (var i = 0; i < batch.Count; i++)
+            if (isJson)
             {
-                if (i > 0) sb.Append(',');
-                var jsonData = batch[i].JsonData;
-                if (jsonData.HasValue)
+                // JSON: send as array (server flattens one level)
+                // Use Utf8JsonWriter for efficient direct-to-bytes serialization
+                using var ms = new MemoryStream();
+                using (var writer = new Utf8JsonWriter(ms))
                 {
-                    sb.Append(jsonData.Value.GetRawText());
+                    writer.WriteStartArray();
+                    foreach (var msg in batch)
+                    {
+                        if (msg.JsonData.HasValue)
+                        {
+                            msg.JsonData.Value.WriteTo(writer);
+                        }
+                        else
+                        {
+                            // Raw bytes - write as raw JSON
+                            writer.WriteRawValue(msg.Data.Span);
+                        }
+                    }
+                    writer.WriteEndArray();
                 }
-                else
+                // For JSON, copy from MemoryStream to pooled buffer
+                bodyLength = (int)ms.Length;
+                rentedBuffer = ArrayPool<byte>.Shared.Rent(bodyLength);
+                ms.Position = 0;
+                ms.Read(rentedBuffer, 0, bodyLength);
+            }
+            else
+            {
+                // Bytes: concatenate into pooled buffer
+                var totalSize = batch.Sum(m => m.Data.Length);
+                rentedBuffer = ArrayPool<byte>.Shared.Rent(totalSize);
+                bodyLength = totalSize;
+                var offset = 0;
+                foreach (var msg in batch)
                 {
-                    sb.Append(Encoding.UTF8.GetString(batch[i].Data.Span));
+                    msg.Data.Span.CopyTo(rentedBuffer.AsSpan(offset));
+                    offset += msg.Data.Length;
                 }
             }
-            sb.Append(']');
-            body = Encoding.UTF8.GetBytes(sb.ToString());
-        }
-        else
-        {
-            // Bytes: concatenate
-            var totalSize = batch.Sum(m => m.Data.Length);
-            body = new byte[totalSize];
-            var offset = 0;
-            foreach (var msg in batch)
-            {
-                msg.Data.Span.CopyTo(body.AsSpan(offset));
-                offset += msg.Data.Length;
-            }
-        }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, _stream.Url);
-        _stream.Client.ApplyDefaultHeaders(request);
+            using var request = new HttpRequestMessage(HttpMethod.Post, _stream.Url);
+            _stream.Client.ApplyDefaultHeaders(request);
 
-        var contentType = _stream.ContentType ?? _options.ContentType ?? ContentTypes.OctetStream;
-        request.Content = new ByteArrayContent(body);
-        request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+            var contentType = _stream.ContentType ?? _options.ContentType ?? ContentTypes.OctetStream;
+            request.Content = new ByteArrayContent(rentedBuffer, 0, bodyLength);
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
         request.Headers.TryAddWithoutValidation(Headers.ProducerId, _producerId);
         request.Headers.TryAddWithoutValidation(Headers.ProducerEpoch, epoch.ToString());
@@ -386,6 +405,15 @@ public sealed class IdempotentProducer : IAsyncDisposable
         finally
         {
             response.Dispose();
+        }
+        }
+        finally
+        {
+            // Return pooled buffer
+            if (rentedBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
         }
     }
 

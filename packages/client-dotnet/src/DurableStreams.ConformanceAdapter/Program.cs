@@ -847,9 +847,9 @@ async Task<object> BenchmarkThroughputAppend(JsonElement op)
     stream.ContentType = ct;
     await using var producer = stream.CreateProducer("bench-producer", new IdempotentProducerOptions
     {
-        LingerMs = 1, // Small linger to ensure batches get sent
+        LingerMs = 0, // Batch by size, not time (matches Go)
         ContentType = ct,
-        MaxInFlight = concurrency
+        MaxInFlight = 5 // Match Go default
     });
 
     // Pre-generate payload (reuse same data for speed)
