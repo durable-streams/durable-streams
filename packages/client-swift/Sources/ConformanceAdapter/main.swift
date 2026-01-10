@@ -1424,8 +1424,11 @@ func handleBenchmark(_ cmd: Command) async -> Result {
             return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
         }
 
-        var messagesProcessed = 0
-        var bytesTransferred = 0
+        let messagesProcessed = count
+        let bytesTransferred = count * size
+        // Cap concurrency to avoid overwhelming Docker networking
+        // Higher values cause connection issues; 50 is a good balance
+        let concurrency = min(operation.concurrency ?? 10, 50)
 
         do {
             // Create stream if it doesn't exist, otherwise connect
@@ -1439,10 +1442,27 @@ func handleBenchmark(_ cmd: Command) async -> Result {
 
             let data = Data(repeating: 0x41, count: size)
 
-            for _ in 0..<count {
-                _ = try await stream.appendSync(data)
-                messagesProcessed += 1
-                bytesTransferred += size
+            // Use concurrent appends for throughput
+            // Note: True batching (multiple messages per HTTP request) would be faster,
+            // but requires IdempotentProducer-like implementation in the Swift library
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                var inflight = 0
+
+                for _ in 0..<count {
+                    // Limit concurrency to avoid overwhelming the server
+                    if inflight >= concurrency {
+                        try await group.next()
+                        inflight -= 1
+                    }
+
+                    group.addTask {
+                        _ = try await stream.appendSync(data)
+                    }
+                    inflight += 1
+                }
+
+                // Wait for remaining tasks
+                try await group.waitForAll()
             }
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
