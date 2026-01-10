@@ -1169,7 +1169,11 @@ func handleSSERead(_ cmd: Command, path: String, serverURL: String, dynamicHeade
                     )
                 }
 
-                if waitForUpToDate && lastUpToDate {
+                // Return when up-to-date if:
+                // 1. waitForUpToDate is set and we're up-to-date, OR
+                // 2. We have data and we're up-to-date (catch-up complete)
+                let shouldReturnOnUpToDate = waitForUpToDate || !allChunks.isEmpty
+                if shouldReturnOnUpToDate && lastUpToDate {
                     delegate.cancel()
                     task.cancel()
                     return Result(
@@ -1385,10 +1389,26 @@ func handleBenchmark(_ cmd: Command) async -> Result {
         }
 
         do {
-            let stream = try await DurableStream.connect(url: url)
-            let data = Data(repeating: 0x41, count: size)
-            let appendResult = try await stream.appendSync(data)
-            _ = try await stream.read(offset: appendResult.offset, live: .catchUp)
+            // Create stream first (roundtrip uses new path each iteration)
+            let contentType = operation.contentType ?? "application/octet-stream"
+            let stream = try await DurableStream.create(url: url, contentType: contentType)
+
+            // Generate appropriate data based on content type
+            let data: Data
+            if contentType.contains("json") {
+                // Generate valid JSON for JSON streams
+                let jsonString = String(repeating: "x", count: max(0, size - 4))
+                let json = "\"\(jsonString)\""
+                data = json.data(using: .utf8) ?? Data()
+            } else {
+                data = Data(repeating: 0x41, count: size)
+            }
+
+            _ = try await stream.appendSync(data)
+
+            // Use specified live mode - read from start to get the data we just appended
+            // For all modes including SSE, use catchUp since we just want to verify data was written
+            _ = try await stream.read(offset: .start, live: .catchUp)
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
@@ -1404,16 +1424,43 @@ func handleBenchmark(_ cmd: Command) async -> Result {
             return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
         }
 
+        var messagesProcessed = 0
+        var bytesTransferred = 0
+
         do {
-            let stream = try await DurableStream.connect(url: url)
+            // Create stream if it doesn't exist, otherwise connect
+            let stream: DurableStream
+            do {
+                stream = try await DurableStream.create(url: url, contentType: operation.contentType ?? "application/octet-stream")
+            } catch {
+                // Stream might already exist, try to connect
+                stream = try await DurableStream.connect(url: url)
+            }
+
             let data = Data(repeating: 0x41, count: size)
 
             for _ in 0..<count {
                 _ = try await stream.appendSync(data)
+                messagesProcessed += 1
+                bytesTransferred += size
             }
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
+
+        let endTime = DispatchTime.now()
+        let durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
+
+        return Result(
+            type: "benchmark",
+            success: true,
+            iterationId: iterationId,
+            durationNs: String(durationNs),
+            metrics: BenchmarkMetrics(
+                bytesTransferred: bytesTransferred,
+                messagesProcessed: messagesProcessed
+            )
+        )
 
     case "throughput_read":
         guard let path = operation.path else {
@@ -1424,11 +1471,29 @@ func handleBenchmark(_ cmd: Command) async -> Result {
             return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
         }
 
+        var bytesTransferred = 0
+
         do {
-            _ = try await stream(url: url, offset: .start)
+            // Read all data from the stream
+            let response = try await stream(url: url, offset: .start)
+            bytesTransferred = response.data.count
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
+
+        let endTime = DispatchTime.now()
+        let durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
+
+        return Result(
+            type: "benchmark",
+            success: true,
+            iterationId: iterationId,
+            durationNs: String(durationNs),
+            metrics: BenchmarkMetrics(
+                bytesTransferred: bytesTransferred,
+                messagesProcessed: 1  // Single read operation
+            )
+        )
 
     default:
         return errorResult(cmd.type, "NOT_SUPPORTED", "Unknown benchmark operation: \(operation.op)")
