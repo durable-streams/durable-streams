@@ -35,8 +35,6 @@ mod client;
 mod error;
 mod iterator;
 mod producer;
-mod retry;
-mod sse;
 mod stream;
 mod types;
 
@@ -44,7 +42,6 @@ pub use client::{Client, ClientBuilder};
 pub use error::{ProducerError, StreamError};
 pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
 pub use producer::{AppendReceipt, IdempotentProducer, ProducerBuilder};
-pub use retry::{JitterMode, RetryConfig};
 pub use stream::{AppendOptions, AppendResponse, CreateOptions, HeadResponse, Stream};
 pub use types::{LiveMode, Offset};
 

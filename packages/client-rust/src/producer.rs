@@ -11,7 +11,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::time::sleep;
 
@@ -95,7 +95,9 @@ impl ProducerBuilder {
                 .unwrap_or_else(|| "application/octet-stream".to_string())
         });
 
-        IdempotentProducer {
+        let linger = self.linger;
+
+        let producer = IdempotentProducer {
             stream: self.stream,
             producer_id: self.producer_id,
             state: Arc::new(Mutex::new(ProducerState {
@@ -105,17 +107,28 @@ impl ProducerBuilder {
                 batch_bytes: 0,
                 closed: false,
                 epoch_claimed: !self.auto_claim,
+                batch_started_at: None,
             })),
             config: Arc::new(ProducerConfig {
                 auto_claim: self.auto_claim,
                 max_batch_bytes: self.max_batch_bytes,
-                linger: self.linger,
+                linger,
                 max_in_flight: self.max_in_flight,
                 content_type,
             }),
             in_flight: Arc::new(AtomicUsize::new(0)),
             seq_state: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        };
+
+        // Spawn linger task if linger > 0
+        if linger > Duration::ZERO {
+            let producer_clone = producer.clone();
+            tokio::spawn(async move {
+                producer_clone.linger_task().await;
+            });
         }
+
+        producer
     }
 }
 
@@ -134,6 +147,8 @@ struct ProducerState {
     batch_bytes: usize,
     closed: bool,
     epoch_claimed: bool,
+    /// When the first item was added to the current pending batch
+    batch_started_at: Option<Instant>,
 }
 
 struct PendingEntry {
@@ -145,6 +160,7 @@ struct PendingEntry {
 /// Idempotent producer with exactly-once semantics.
 ///
 /// Uses Kafka-style producer IDs, epochs, and sequence numbers for deduplication.
+#[derive(Clone)]
 pub struct IdempotentProducer {
     stream: Stream,
     producer_id: String,
@@ -177,6 +193,11 @@ impl IdempotentProducer {
             return; // Silently ignore if closed
         }
 
+        // Track when batch started (for linger timer)
+        if state.pending_batch.is_empty() {
+            state.batch_started_at = Some(Instant::now());
+        }
+
         state.pending_batch.push(PendingEntry {
             data,
             #[cfg(feature = "json")]
@@ -201,6 +222,11 @@ impl IdempotentProducer {
         let mut state = self.state.lock();
         if state.closed {
             return;
+        }
+
+        // Track when batch started (for linger timer)
+        if state.pending_batch.is_empty() {
+            state.batch_started_at = Some(Instant::now());
         }
 
         let len = json_bytes.len();
@@ -261,6 +287,39 @@ impl IdempotentProducer {
         self.state.lock().next_seq
     }
 
+    /// Background task that sends batches after linger duration.
+    async fn linger_task(&self) {
+        let linger = self.config.linger;
+
+        loop {
+            // Sleep for linger duration
+            sleep(linger).await;
+
+            // Check if we should stop
+            let should_send = {
+                let state = self.state.lock();
+                if state.closed {
+                    return; // Stop the task
+                }
+
+                // Check if there's a pending batch that's old enough
+                if let Some(started_at) = state.batch_started_at {
+                    started_at.elapsed() >= linger
+                } else {
+                    false
+                }
+            };
+
+            // Send the batch if needed (outside the lock)
+            if should_send {
+                let mut state = self.state.lock();
+                if !state.pending_batch.is_empty() {
+                    self.send_batch_locked(&mut state);
+                }
+            }
+        }
+    }
+
     fn send_batch_locked(&self, state: &mut ProducerState) {
         if state.pending_batch.is_empty() {
             return;
@@ -284,6 +343,7 @@ impl IdempotentProducer {
 
         state.next_seq += 1;
         state.batch_bytes = 0;
+        state.batch_started_at = None;
 
         // Increment in-flight (atomic - no lock needed)
         self.in_flight.fetch_add(1, Ordering::AcqRel);

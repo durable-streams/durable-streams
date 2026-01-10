@@ -1,6 +1,5 @@
 //! HTTP client and configuration.
 
-use crate::retry::RetryConfig;
 use crate::stream::Stream;
 use reqwest::header::HeaderMap;
 use std::sync::Arc;
@@ -9,12 +8,11 @@ use std::time::Duration;
 /// A Durable Streams client.
 ///
 /// The client is cloneable and can be shared across threads.
-/// It manages connection pooling and retry configuration.
+/// It manages connection pooling.
 #[derive(Clone)]
 pub struct Client {
     pub(crate) inner: reqwest::Client,
     pub(crate) base_url: Option<String>,
-    pub(crate) retry_config: RetryConfig,
     pub(crate) default_headers: HeaderMap,
     pub(crate) header_provider: Option<Arc<dyn Fn() -> HeaderMap + Send + Sync>>,
 }
@@ -75,7 +73,6 @@ impl Default for Client {
 pub struct ClientBuilder {
     base_url: Option<String>,
     default_headers: HeaderMap,
-    retry_config: RetryConfig,
     timeout: Option<Duration>,
     header_provider: Option<Arc<dyn Fn() -> HeaderMap + Send + Sync>>,
 }
@@ -86,7 +83,6 @@ impl ClientBuilder {
         Self {
             base_url: None,
             default_headers: HeaderMap::new(),
-            retry_config: RetryConfig::default(),
             timeout: None,
             header_provider: None,
         }
@@ -112,12 +108,6 @@ impl ClientBuilder {
     /// Set all default headers.
     pub fn default_headers(mut self, headers: HeaderMap) -> Self {
         self.default_headers = headers;
-        self
-    }
-
-    /// Set the retry configuration.
-    pub fn retry_config(mut self, config: RetryConfig) -> Self {
-        self.retry_config = config;
         self
     }
 
@@ -151,7 +141,6 @@ impl ClientBuilder {
         Client {
             inner,
             base_url: self.base_url,
-            retry_config: self.retry_config,
             default_headers: self.default_headers,
             header_provider: self.header_provider,
         }
