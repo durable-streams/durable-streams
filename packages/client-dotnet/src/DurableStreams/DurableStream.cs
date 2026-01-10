@@ -45,9 +45,9 @@ public sealed class DurableStream
     internal DurableStreamClient Client => _client;
 
     /// <summary>
-    /// Create this stream.
+    /// Create a new stream. Returns the HTTP status code (201 = created, 200 = already existed).
     /// </summary>
-    public async Task CreateAsync(
+    public async Task<int> CreateAsync(
         CreateStreamOptions? options = null,
         CancellationToken cancellationToken = default)
     {
@@ -75,12 +75,12 @@ public sealed class DurableStream
         if (options?.InitialData != null)
         {
             request.Content = new ByteArrayContent(options.InitialData);
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         }
         else
         {
             request.Content = new ByteArrayContent([]);
-            request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
         }
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
@@ -98,6 +98,7 @@ public sealed class DurableStream
         }
 
         _contentType = HttpHelpers.GetHeader(response, Headers.ContentType) ?? contentType;
+        return (int)response.StatusCode;
     }
 
     /// <summary>
@@ -166,7 +167,7 @@ public sealed class DurableStream
 
         var contentType = _contentType ?? ContentTypes.OctetStream;
         request.Content = new ByteArrayContent(data.ToArray());
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
         using var response = await SendWithRetryAsync(request, cancellationToken, retryAppend: false).ConfigureAwait(false);
 
@@ -324,16 +325,24 @@ public sealed class DurableStream
                     .SendAsync(currentRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
                     .ConfigureAwait(false);
 
-                // Don't retry appends by default (would cause duplicates)
+                // For POST without retryAppend flag, only retry on server errors (5xx)
+                // Success (2xx) and client errors (4xx) should not be retried as data may have been written
                 if (!retryAppend && request.Method == HttpMethod.Post)
                 {
-                    return response;
+                    // Only retry 5xx server errors for non-idempotent appends
+                    if ((int)response.StatusCode < 500 || !HttpHelpers.IsRetryableStatus(response.StatusCode) || attempt >= options.MaxRetries)
+                    {
+                        return response;
+                    }
+                    // Fall through to retry logic for retryable 5xx errors
                 }
-
-                // Check if retryable
-                if (!HttpHelpers.IsRetryableStatus(response.StatusCode) || attempt >= options.MaxRetries)
+                else
                 {
-                    return response;
+                    // Check if retryable for other request types
+                    if (!HttpHelpers.IsRetryableStatus(response.StatusCode) || attempt >= options.MaxRetries)
+                    {
+                        return response;
+                    }
                 }
 
                 // Calculate retry delay

@@ -330,6 +330,22 @@ public sealed class StreamResponse : IAsyncDisposable
                 return null;
             }
 
+            // Check for HTTP errors before trying to parse SSE
+            var statusCode = _currentResponse.StatusCode;
+            if (statusCode == HttpStatusCode.NotFound)
+            {
+                throw new StreamNotFoundException(_stream.Url);
+            }
+            if (statusCode == HttpStatusCode.Gone)
+            {
+                throw new DurableStreamException("Offset no longer available",
+                    DurableStreamErrorCode.OffsetGone, 410, _stream.Url);
+            }
+            if (!_currentResponse.IsSuccessStatusCode)
+            {
+                throw DurableStreamException.FromStatusCode((int)statusCode, _stream.Url);
+            }
+
             var stream = await _currentResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             _sseParser = new SseParser(stream);
 

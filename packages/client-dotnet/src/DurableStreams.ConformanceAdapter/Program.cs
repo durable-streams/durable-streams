@@ -72,6 +72,16 @@ async Task<object> HandleInit(JsonElement root)
 {
     var serverUrl = root.GetProperty("serverUrl").GetString()!;
 
+    // When running in Docker on macOS, localhost/127.0.0.1 URLs need to be rewritten
+    // to host.docker.internal to reach the host machine
+    var dockerHost = Environment.GetEnvironmentVariable("DOCKER_HOST_OVERRIDE");
+    if (!string.IsNullOrEmpty(dockerHost))
+    {
+        serverUrl = serverUrl
+            .Replace("localhost", dockerHost)
+            .Replace("127.0.0.1", dockerHost);
+    }
+
     client = new DurableStreamClient(new DurableStreamClientOptions
     {
         BaseUrl = serverUrl,
@@ -109,7 +119,7 @@ async Task<object> HandleCreate(JsonElement root)
     try
     {
         var stream = client.GetStream(path);
-        await stream.CreateAsync(new CreateStreamOptions
+        var statusCode = await stream.CreateAsync(new CreateStreamOptions
         {
             ContentType = contentType,
             TtlSeconds = ttlSeconds,
@@ -128,7 +138,7 @@ async Task<object> HandleCreate(JsonElement root)
         {
             type = "create",
             success = true,
-            status = 201,
+            status = statusCode,
             offset = metadata.Offset?.ToString(),
             headers = new Dictionary<string, string?>
             {
@@ -139,7 +149,7 @@ async Task<object> HandleCreate(JsonElement root)
     }
     catch (DurableStreamException ex) when (ex.Code == DurableStreamErrorCode.ConflictExists)
     {
-        return new { type = "create", success = true, status = 200 };
+        return new { type = "create", success = true, status = 409 };
     }
     catch (Exception ex)
     {
@@ -188,7 +198,7 @@ async Task<object> HandleAppend(JsonElement root)
     var path = root.GetProperty("path").GetString()!;
     var data = root.GetProperty("data").GetString()!;
     var binary = GetOptionalBool(root, "binary");
-    var seq = GetOptionalString(root, "seq");
+    var seq = GetOptionalStringOrNumber(root, "seq");
     var headers = GetHeaders(root);
 
     try
@@ -282,9 +292,11 @@ async Task<object> HandleRead(JsonElement root)
 
         var chunks = new List<object>();
         var chunkCount = 0;
-        string? finalOffset = null;
-        bool upToDate = false;
+        // Use response's initial offset as default (important for offset=now)
+        string? finalOffset = response.Offset.ToString();
+        bool upToDate = response.UpToDate;
         string? cursor = null;
+        bool timedOut = false;
 
         try
         {
@@ -313,14 +325,20 @@ async Task<object> HandleRead(JsonElement root)
         }
         catch (OperationCanceledException)
         {
-            // Timeout is ok for long-poll
+            // Timeout is ok for long-poll - use response state
+            finalOffset = response.Offset.ToString();
+            upToDate = response.UpToDate;
+            timedOut = true;
         }
+
+        // Return 204 for long-poll timeout with no data
+        var status = (live == LiveMode.LongPoll && timedOut && chunks.Count == 0) ? 204 : 200;
 
         return new
         {
             type = "read",
             success = true,
-            status = 200,
+            status,
             chunks,
             offset = finalOffset,
             upToDate,
@@ -383,11 +401,19 @@ async Task<object> HandleDelete(JsonElement root)
 
         streamContentTypes.Remove(path);
 
-        return new { type = "delete", success = true, status = 204 };
+        return new { type = "delete", success = true, status = 200 };
     }
     catch (StreamNotFoundException)
     {
-        return new { type = "delete", success = true, status = 404 };
+        return new
+        {
+            type = "error",
+            success = false,
+            commandType = "delete",
+            errorCode = "NOT_FOUND",
+            status = 404,
+            message = "Stream not found"
+        };
     }
     catch (Exception ex)
     {
@@ -582,7 +608,8 @@ object HandleSetDynamicHeader(JsonElement root)
             dynamicCounters[counterKey] = 0;
             dynamicHeaders[name] = () =>
             {
-                var value = dynamicCounters[counterKey]++;
+                // Pre-increment: first call returns 1, second returns 2, etc.
+                var value = ++dynamicCounters[counterKey];
                 return value.ToString();
             };
             break;
@@ -611,7 +638,8 @@ object HandleSetDynamicParam(JsonElement root)
             dynamicCounters[counterKey] = 0;
             dynamicParams[name] = () =>
             {
-                var value = dynamicCounters[counterKey]++;
+                // Pre-increment: first call returns 1, second returns 2, etc.
+                var value = ++dynamicCounters[counterKey];
                 return value.ToString();
             };
             break;
@@ -899,6 +927,17 @@ string? GetOptionalString(JsonElement root, string name)
         : null;
 }
 
+string? GetOptionalStringOrNumber(JsonElement root, string name)
+{
+    if (!root.TryGetProperty(name, out var prop)) return null;
+    return prop.ValueKind switch
+    {
+        JsonValueKind.String => prop.GetString(),
+        JsonValueKind.Number => prop.GetRawText(),
+        _ => null
+    };
+}
+
 int? GetOptionalInt(JsonElement root, string name)
 {
     return root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.Number
@@ -989,11 +1028,24 @@ object CreateErrorFromException(string commandType, Exception ex)
         StreamNotFoundException => ("NOT_FOUND", 404),
         StaleEpochException => ("FORBIDDEN", 403),
         SequenceGapException => ("SEQUENCE_CONFLICT", 409),
-        DurableStreamException dse => (dse.Code.ToString().ToUpperInvariant(), dse.StatusCode ?? 500),
+        DurableStreamException dse => (MapErrorCode(dse), dse.StatusCode ?? 500),
         OperationCanceledException => ("TIMEOUT", null as int?),
         HttpRequestException => ("NETWORK_ERROR", null),
         _ => ("INTERNAL_ERROR", null as int?)
     };
+
+    string MapErrorCode(DurableStreamException dse)
+    {
+        // Map error codes to conformance test expected values
+        return dse.Code switch
+        {
+            DurableStreamErrorCode.BadRequest when commandType == "read" ||
+                dse.Message.ToLowerInvariant().Contains("offset") => "INVALID_OFFSET",
+            DurableStreamErrorCode.ConflictSeq => "SEQUENCE_CONFLICT",
+            DurableStreamErrorCode.ConflictExists => "CONFLICT",
+            _ => dse.Code.ToString().ToUpperInvariant()
+        };
+    }
 
     var result = new Dictionary<string, object?>
     {

@@ -312,7 +312,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
 
         var contentType = _stream.ContentType ?? _options.ContentType ?? ContentTypes.OctetStream;
         request.Content = new ByteArrayContent(body);
-        request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
         request.Headers.TryAddWithoutValidation(Headers.ProducerId, _producerId);
         request.Headers.TryAddWithoutValidation(Headers.ProducerEpoch, epoch.ToString());
