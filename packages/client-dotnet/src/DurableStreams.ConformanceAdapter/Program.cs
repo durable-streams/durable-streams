@@ -320,10 +320,11 @@ async Task<object> HandleRead(JsonElement root)
                     {
                         try
                         {
-                            System.Text.Json.JsonDocument.Parse(chunkData);
+                            using var doc = System.Text.Json.JsonDocument.Parse(chunkData);
                         }
-                        catch (System.Text.Json.JsonException ex)
+                        catch (Exception ex)
                         {
+                            // Catch any parsing exception (JsonException, ArgumentException, etc.)
                             throw new DurableStreamException(
                                 $"Failed to parse JSON response: {ex.Message}. Data: {(chunkData.Length > 100 ? chunkData[..100] + "..." : chunkData)}",
                                 DurableStreamErrorCode.ParseError,
