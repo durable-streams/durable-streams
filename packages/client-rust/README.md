@@ -9,6 +9,7 @@ Durable Streams is an open protocol for real-time sync to client applications. I
 **The problem it solves:** WebSocket and SSE connections are fragile - tabs get suspended, networks flap, devices switch, pages refresh. When that happens, you either lose in-flight data or build a bespoke resume protocol. AI streaming makes this painfully visible: when the stream fails mid-generation, the product fails even if the model did the right thing.
 
 **What you get:**
+
 - **Refresh-safe** - Users refresh the page, switch tabs, or background the app - they pick up exactly where they left off
 - **Never re-run** - Don't repeat expensive work (like LLM inference) because a client disconnected mid-stream
 - **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
@@ -343,12 +344,12 @@ match stream.append(b"data").await {
 durable-streams = { version = "0.1", default-features = false, features = ["json", "rustls"] }
 ```
 
-| Feature | Default | Description |
-|---------|---------|-------------|
-| `json` | Yes | JSON serialization support |
-| `rustls` | Yes | TLS via rustls (pure Rust) |
-| `native-tls` | No | TLS via system libraries |
-| `tracing` | No | Integration with `tracing` crate |
+| Feature      | Default | Description                      |
+| ------------ | ------- | -------------------------------- |
+| `json`       | Yes     | JSON serialization support       |
+| `rustls`     | Yes     | TLS via rustls (pure Rust)       |
+| `native-tls` | No      | TLS via system libraries         |
+| `tracing`    | No      | Integration with `tracing` crate |
 
 ## Use Cases
 
