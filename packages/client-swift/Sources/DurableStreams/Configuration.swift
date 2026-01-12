@@ -258,28 +258,12 @@ public struct RetryConfig: Sendable {
     /// Check if we should retry on this error.
     public func shouldRetry(_ error: DurableStreamError) -> Bool {
         switch error.code {
-        case .timeout, .serverBusy, .networkError:
-            return true
-        case .rateLimited:
+        case .timeout, .serverBusy, .networkError, .rateLimited:
             return true
         default:
             return false
         }
     }
-}
-
-// MARK: - Subscriber Action
-
-/// Control flow for subscribers with backpressure support.
-public enum SubscriberAction: Sendable {
-    /// Continue receiving messages
-    case `continue`
-
-    /// Stop the subscription
-    case stop
-
-    /// Pause briefly before continuing (backpressure)
-    case pauseFor(milliseconds: Int)
 }
 
 // MARK: - Convenience Extensions
