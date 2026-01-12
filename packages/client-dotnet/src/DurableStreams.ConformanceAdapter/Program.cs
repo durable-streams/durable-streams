@@ -298,29 +298,64 @@ async Task<object> HandleRead(JsonElement root)
         string? cursor = null;
         bool timedOut = false;
 
+        // Determine if we should use JSON parsing based on content type
+        var isJson = streamContentTypes.TryGetValue(path, out var contentType) &&
+                     contentType?.Contains("application/json") == true;
+
         try
         {
-            await foreach (var chunk in response.ReadBytesAsync(cts.Token))
+            if (isJson)
             {
-                finalOffset = chunk.Checkpoint.Offset.ToString();
-                upToDate = chunk.UpToDate;
-                cursor = chunk.Checkpoint.Cursor;
-
-                // Only add chunks with data (matches Go behavior)
-                if (chunk.Data.Length > 0)
+                // Use JSON parsing to trigger PARSE_ERROR on malformed JSON
+                await foreach (var batch in response.ReadJsonAsync<System.Text.Json.JsonElement>(cts.Token))
                 {
-                    var chunkData = Encoding.UTF8.GetString(chunk.Data.Span);
-                    chunks.Add(new
-                    {
-                        data = chunkData,
-                        offset = chunk.Checkpoint.Offset.ToString()
-                    });
-                    chunkCount++;
-                }
+                    finalOffset = batch.Checkpoint.Offset.ToString();
+                    upToDate = batch.UpToDate;
+                    cursor = batch.Checkpoint.Cursor;
 
-                if (chunkCount >= maxChunks) break;
-                if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
-                if (upToDate && waitForUpToDate) break;
+                    // Serialize the JSON items back to string for the test framework
+                    foreach (var item in batch.Items)
+                    {
+                        var chunkData = System.Text.Json.JsonSerializer.Serialize(item);
+                        chunks.Add(new
+                        {
+                            data = chunkData,
+                            offset = batch.Checkpoint.Offset.ToString()
+                        });
+                        chunkCount++;
+                        if (chunkCount >= maxChunks) break;
+                    }
+
+                    if (chunkCount >= maxChunks) break;
+                    if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
+                    if (upToDate && waitForUpToDate) break;
+                }
+            }
+            else
+            {
+                // Use byte reading for non-JSON content
+                await foreach (var chunk in response.ReadBytesAsync(cts.Token))
+                {
+                    finalOffset = chunk.Checkpoint.Offset.ToString();
+                    upToDate = chunk.UpToDate;
+                    cursor = chunk.Checkpoint.Cursor;
+
+                    // Only add chunks with data (matches Go behavior)
+                    if (chunk.Data.Length > 0)
+                    {
+                        var chunkData = Encoding.UTF8.GetString(chunk.Data.Span);
+                        chunks.Add(new
+                        {
+                            data = chunkData,
+                            offset = chunk.Checkpoint.Offset.ToString()
+                        });
+                        chunkCount++;
+                    }
+
+                    if (chunkCount >= maxChunks) break;
+                    if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
+                    if (upToDate && waitForUpToDate) break;
+                }
             }
         }
         catch (OperationCanceledException)

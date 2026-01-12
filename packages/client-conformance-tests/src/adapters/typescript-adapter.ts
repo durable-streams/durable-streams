@@ -326,9 +326,26 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         // Collect chunks using body() for non-live mode or bodyStream() for live
         const maxChunks = command.maxChunks ?? 100
 
+        // Determine if we should use JSON parsing based on content type
+        const contentType = streamContentTypes.get(command.path)
+        const isJson = contentType?.includes(`application/json`) ?? false
+
         if (!live) {
-          // For non-live mode, use body() to get all data
-          try {
+          // For non-live mode, use json() or body() based on content type
+          if (isJson) {
+            // Use JSON parsing to trigger PARSE_ERROR on malformed JSON
+            const items = await response.json()
+            if (items.length > 0) {
+              // Serialize items back to string for the test framework
+              for (const item of items) {
+                chunks.push({
+                  data: JSON.stringify(item),
+                  offset: response.offset,
+                })
+              }
+            }
+          } else {
+            // Use byte reading for non-JSON content
             const data = await response.body()
             if (data.length > 0) {
               chunks.push({
@@ -336,11 +353,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
                 offset: response.offset,
               })
             }
-            finalOffset = response.offset
-            upToDate = response.upToDate
-          } catch {
-            // If body fails, stream might be empty
           }
+          finalOffset = response.offset
+          upToDate = response.upToDate
         } else {
           // For live mode, use subscribeBytes which provides per-chunk metadata
           const decoder = new TextDecoder()
