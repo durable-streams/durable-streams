@@ -1,7 +1,7 @@
 # Ruby Client Design for Durable Streams
 
-**Status**: Draft for Review
-**Date**: 2026-01-09
+**Status**: Implemented
+**Date**: 2026-01-09 (Design) / 2026-01-12 (Updated to match implementation)
 **Author**: Claude
 
 ## Executive Summary
@@ -220,9 +220,9 @@ module DurableStreams
     end
 
     # Create stream on server (PUT)
-    # Note: Named `create` to match Client#create and Stream.create factory
-    def create(content_type: nil, ttl_seconds: nil,
-               expires_at: nil, body: nil)
+    # Note: Named `create_stream` to distinguish from Stream.create factory method
+    def create_stream(content_type: nil, ttl_seconds: nil,
+                      expires_at: nil, body: nil)
     end
 
     # Delete stream (DELETE)
@@ -288,17 +288,22 @@ We expose this explicitly with separate reader classes to avoid type confusion:
 
 ```ruby
 module DurableStreams
-  # Base reader with shared functionality
-  class BaseReader
-    attr_reader :next_offset, :cursor, :up_to_date
+  # Reader for JSON streams - yields parsed Ruby objects
+  # Note: No BaseReader class; common code is inline in each reader for simplicity
+  class JsonReader
+    include Enumerable
 
-    def initialize(stream, offset: "-1", live: :auto)
+    attr_reader :next_offset, :cursor, :up_to_date, :status
+
+    def initialize(stream, offset: "-1", live: :auto, cursor: nil)
       @stream = stream
-      @offset = offset
+      @offset = (offset.nil? || offset.to_s.empty?) ? "-1" : offset.to_s
       @live = live
-      @next_offset = offset
+      @next_offset = @offset
+      @cursor = cursor
       @up_to_date = false
       @closed = false
+      @status = nil  # Tracks HTTP status (useful for 204 handling)
     end
 
     # Cancel/close the reader
@@ -309,11 +314,10 @@ module DurableStreams
     def closed?
       @closed
     end
-  end
 
-  # Reader for JSON streams - yields parsed Ruby objects
-  class JsonReader < BaseReader
-    include Enumerable
+    def up_to_date?
+      @up_to_date
+    end
 
     # Iterate over individual JSON messages
     # @yield [Object] Each parsed JSON message
@@ -362,8 +366,33 @@ module DurableStreams
   end
 
   # Reader for byte streams - yields raw chunks
-  class ByteReader < BaseReader
+  class ByteReader
     include Enumerable
+
+    attr_reader :next_offset, :cursor, :up_to_date, :status
+
+    def initialize(stream, offset: "-1", live: :auto, cursor: nil)
+      @stream = stream
+      @offset = (offset.nil? || offset.to_s.empty?) ? "-1" : offset.to_s
+      @live = live
+      @next_offset = @offset
+      @cursor = cursor
+      @up_to_date = false
+      @closed = false
+      @status = nil
+    end
+
+    def close
+      @closed = true
+    end
+
+    def closed?
+      @closed
+    end
+
+    def up_to_date?
+      @up_to_date
+    end
 
     # Iterate over byte chunks
     # @yield [ByteChunk] Each chunk with data, next_offset, cursor, up_to_date
@@ -491,33 +520,36 @@ end  # reader automatically closed
 
 ### 5. IdempotentProducer Class
 
-For exactly-once writes with batching:
+For exactly-once writes with batching. Takes a URL directly (standalone, doesn't require a Stream object):
 
 ```ruby
 module DurableStreams
   class IdempotentProducer
-    # @param stream [Stream] Target stream
+    # @param url [String] Stream URL
     # @param producer_id [String] Stable identifier for this producer
     # @param epoch [Integer] Starting epoch (increment on restart)
     # @param auto_claim [Boolean] Auto-retry with epoch+1 on 403
-    # @param max_batch_bytes [Integer] Max bytes before flush
-    # @param linger_ms [Integer] Max wait before flush
-    # @param max_in_flight [Integer] Concurrent batch limit
-    # @param on_error [Proc] Error callback for async errors
+    # @param max_batch_bytes [Integer] Max bytes before flush (default: 1MB)
+    # @param linger_ms [Integer] Max wait before flush (default: 5ms)
+    # @param max_in_flight [Integer] Concurrent batch limit (default: 5)
+    # @param content_type [String] Content type for the stream
+    # @param headers [Hash] Additional headers
     def initialize(
-      stream,
+      url:,
       producer_id:,
       epoch: 0,
       auto_claim: false,
       max_batch_bytes: 1_048_576,
       linger_ms: 5,
       max_in_flight: 5,
-      on_error: nil
+      content_type: nil,
+      headers: {}
     )
     end
 
     # Current epoch (may increase if auto_claim triggers)
-    attr_reader :epoch
+    # Current sequence number
+    attr_reader :epoch, :seq
 
     # Append a message (fire-and-forget, batched)
     # @param data [Object] Data to append
@@ -527,7 +559,7 @@ module DurableStreams
 
     # Append and wait for acknowledgment
     # @param data [Object] Data to append
-    # @return [AppendResult]
+    # @return [IdempotentAppendResult]
     def append_sync(data)
     end
 
@@ -546,13 +578,10 @@ end
 **Usage:**
 
 ```ruby
-stream = DurableStreams::Stream.connect(url: "https://...")
-
 producer = DurableStreams::IdempotentProducer.new(
-  stream,
+  url: "https://streams.example.com/orders",
   producer_id: "order-service-1",
-  epoch: load_epoch_from_disk || 0,
-  on_error: ->(err) { logger.error("Producer error: #{err}") }
+  epoch: load_epoch_from_disk || 0
 )
 
 # Fire-and-forget (batched internally)
@@ -567,40 +596,57 @@ producer.close
 
 ### 6. Data Types
 
-Field naming follows the protocol header `Stream-Next-Offset` and Go client convention:
+Field naming follows the protocol header `Stream-Next-Offset` and Go client convention.
+Uses `Struct.new` with `keyword_init: true` for broader Ruby version compatibility:
 
 ```ruby
 module DurableStreams
+  # Protocol header constants
+  STREAM_NEXT_OFFSET_HEADER = "stream-next-offset"
+  STREAM_UP_TO_DATE_HEADER = "stream-up-to-date"
+  STREAM_CURSOR_HEADER = "stream-cursor"
+  STREAM_TTL_HEADER = "stream-ttl"
+  STREAM_EXPIRES_AT_HEADER = "stream-expires-at"
+  STREAM_SEQ_HEADER = "stream-seq"
+  PRODUCER_ID_HEADER = "producer-id"
+  PRODUCER_EPOCH_HEADER = "producer-epoch"
+  PRODUCER_SEQ_HEADER = "producer-seq"
+  PRODUCER_EXPECTED_SEQ_HEADER = "producer-expected-seq"
+  PRODUCER_RECEIVED_SEQ_HEADER = "producer-received-seq"
+
   # Result from HEAD request
   # next_offset: The tail offset (position after last byte, where next append goes)
-  HeadResult = Data.define(:exists, :content_type, :next_offset, :etag, :cache_control)
+  HeadResult = Struct.new(:exists, :content_type, :next_offset, :etag, :cache_control, keyword_init: true) do
+    def exists? = exists
+  end
 
   # Result from append
   # next_offset: The new tail offset after this append (for checkpointing)
-  AppendResult = Data.define(:next_offset, :duplicate) do
-    def duplicate? = duplicate
+  AppendResult = Struct.new(:next_offset, :duplicate, keyword_init: true) do
+    def duplicate? = duplicate || false
   end
 
   # A batch of JSON messages with metadata
   # next_offset: Position to resume from (pass to next read)
-  JsonBatch = Data.define(:items, :next_offset, :cursor, :up_to_date) do
-    def up_to_date? = up_to_date
+  JsonBatch = Struct.new(:items, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def up_to_date? = up_to_date || false
   end
 
   # A byte chunk (for non-JSON streams)
   # next_offset: Position to resume from (pass to next read)
-  ByteChunk = Data.define(:data, :next_offset, :cursor, :up_to_date) do
-    def up_to_date? = up_to_date
+  ByteChunk = Struct.new(:data, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def up_to_date? = up_to_date || false
+  end
+
+  # Result from idempotent producer append
+  # Includes epoch and seq for tracking producer state
+  IdempotentAppendResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
+    def duplicate? = duplicate || false
   end
 
   # Retry policy configuration
-  RetryPolicy = Data.define(
-    :max_retries,
-    :initial_delay,
-    :max_delay,
-    :multiplier,
-    :retryable_statuses
-  ) do
+  RetryPolicy = Struct.new(:max_retries, :initial_delay, :max_delay, :multiplier, :retryable_statuses,
+                           keyword_init: true) do
     def self.default
       new(
         max_retries: 5,
@@ -611,45 +657,77 @@ module DurableStreams
       )
     end
   end
+
+  # Helper: Check if content type is JSON
+  def self.json_content_type?(content_type)
+    return false if content_type.nil?
+    normalized = content_type.split(";").first&.strip&.downcase
+    normalized == "application/json"
+  end
+
+  # Helper: Check if content type supports SSE
+  def self.sse_compatible?(content_type)
+    return false if content_type.nil?
+    normalized = content_type.split(";").first&.strip&.downcase
+    normalized == "application/json" || normalized&.start_with?("text/")
+  end
 end
 ```
 
 ### 7. Error Handling
 
-Following Ruby conventions with typed exceptions:
+Following Ruby conventions with typed exceptions. Includes a `code` attribute for programmatic error handling:
 
 ```ruby
 module DurableStreams
   # Base error class
   class Error < StandardError
-    attr_reader :url, :status, :headers
+    attr_reader :url, :status, :headers, :code
 
-    def initialize(message, url: nil, status: nil, headers: nil)
+    def initialize(message = nil, url: nil, status: nil, headers: nil, code: nil)
       super(message)
       @url = url
       @status = status
-      @headers = headers
+      @headers = headers || {}
+      @code = code
     end
   end
 
   # Stream not found (404)
-  class StreamNotFoundError < Error; end
+  class StreamNotFoundError < Error
+    def initialize(url: nil, **opts)
+      super("Stream not found: #{url}", url: url, status: 404, code: "NOT_FOUND", **opts)
+    end
+  end
 
   # Stream already exists with different config (409)
-  class StreamExistsError < Error; end
+  class StreamExistsError < Error
+    def initialize(url: nil, **opts)
+      super("Stream already exists: #{url}", url: url, status: 409, code: "CONFLICT_EXISTS", **opts)
+    end
+  end
 
   # Sequence conflict (409 with Stream-Seq)
-  class SeqConflictError < Error; end
+  class SeqConflictError < Error
+    def initialize(url: nil, **opts)
+      super("Sequence conflict", url: url, status: 409, code: "CONFLICT_SEQ", **opts)
+    end
+  end
 
   # Content type mismatch (409)
-  class ContentTypeMismatchError < Error; end
+  class ContentTypeMismatchError < Error
+    def initialize(url: nil, expected: nil, actual: nil, **opts)
+      super("Content type mismatch: expected #{expected}, got #{actual}",
+            url: url, status: 409, code: "CONFLICT", **opts)
+    end
+  end
 
   # Producer epoch is stale (403)
   class StaleEpochError < Error
     attr_reader :current_epoch
 
-    def initialize(message, current_epoch:, **opts)
-      super(message, **opts)
+    def initialize(message = "Stale producer epoch", current_epoch: nil, **opts)
+      super(message, status: 403, code: "FORBIDDEN", **opts)
       @current_epoch = current_epoch
     end
   end
@@ -657,73 +735,122 @@ module DurableStreams
   # Producer sequence gap (409)
   class SequenceGapError < Error
     attr_reader :expected_seq, :received_seq
+
+    def initialize(expected_seq: nil, received_seq: nil, **opts)
+      super("Sequence gap: expected #{expected_seq}, got #{received_seq}",
+            status: 409, code: "SEQUENCE_GAP", **opts)
+      @expected_seq = expected_seq
+      @received_seq = received_seq
+    end
   end
 
   # Rate limited (429)
-  class RateLimitedError < Error; end
+  class RateLimitedError < Error
+    def initialize(url: nil, **opts)
+      super("Rate limited", url: url, status: 429, code: "RATE_LIMITED", **opts)
+    end
+  end
 
   # Bad request (400)
-  class BadRequestError < Error; end
+  class BadRequestError < Error
+    def initialize(message = "Bad request", url: nil, **opts)
+      super(message, url: url, status: 400, code: "BAD_REQUEST", **opts)
+    end
+  end
 
   # Network/connection error
-  class ConnectionError < Error; end
+  class ConnectionError < Error
+    def initialize(message = "Connection error", **opts)
+      super(message, code: "NETWORK_ERROR", **opts)
+    end
+  end
+
+  # Timeout error
+  class TimeoutError < Error
+    def initialize(message = "Request timeout", **opts)
+      super(message, code: "TIMEOUT", **opts)
+    end
+  end
 
   # Reader already consumed
-  class AlreadyConsumedError < Error; end
+  class AlreadyConsumedError < Error
+    def initialize(**opts)
+      super("Reader already consumed", code: "ALREADY_CONSUMED", **opts)
+    end
+  end
+
+  # SSE not supported for this content type
+  class SSENotSupportedError < Error
+    def initialize(content_type: nil, **opts)
+      super("SSE not supported for content type: #{content_type}",
+            status: 400, code: "SSE_NOT_SUPPORTED", **opts)
+    end
+  end
+
+  # Generic fetch error for unexpected statuses
+  class FetchError < Error
+    def initialize(message = "Fetch error", url: nil, status: nil, **opts)
+      super(message, url: url, status: status, code: "UNEXPECTED_STATUS", **opts)
+    end
+  end
+
+  # Helper: Map HTTP status to appropriate error
+  def self.error_from_status(status, url: nil, body: nil, headers: nil, operation: nil)
+    case status
+    when 400 then BadRequestError.new(body || "Bad request", url: url, headers: headers)
+    when 403 then StaleEpochError.new(body || "Forbidden", url: url, headers: headers)
+    when 404 then StreamNotFoundError.new(url: url, headers: headers)
+    when 409
+      if headers&.key?("stream-seq")
+        SeqConflictError.new(url: url, headers: headers)
+      else
+        StreamExistsError.new(url: url, headers: headers)
+      end
+    when 429 then RateLimitedError.new(url: url, headers: headers)
+    else FetchError.new(body || "HTTP #{status}", url: url, status: status, headers: headers)
+    end
+  end
 end
 ```
 
 ### 8. Configuration
 
-Global and per-request configuration:
+Simplified global configuration (only logger is configurable globally):
 
 ```ruby
 module DurableStreams
-  # Global configuration
   class << self
-    attr_accessor :default_timeout
-    attr_accessor :default_retry_policy
+    # Global logger instance
     attr_accessor :logger
-    attr_accessor :http_adapter  # :net_http, :httpx, :faraday
-
-    def configure
-      yield self
-    end
   end
 
-  # Defaults
-  self.default_timeout = 30
-  self.default_retry_policy = RetryPolicy.default
-  self.logger = Logger.new($stdout, level: Logger::WARN)
-  self.http_adapter = :net_http
+  # Default: no logging
+  self.logger = nil
 end
 
 # Usage
-DurableStreams.configure do |config|
-  config.default_timeout = 60
-  config.logger = Rails.logger
-  config.http_adapter = :httpx  # Use httpx for HTTP/2 support
-end
+DurableStreams.logger = Logger.new($stdout)
+DurableStreams.logger = Rails.logger
 ```
+
+Note: Per-request configuration (timeout, headers, etc.) is handled at the Client/Stream level rather than globally.
 
 ---
 
 ## HTTP Transport Considerations
 
-### Recommended: `httpx` gem
+### Implementation: `net/http` (stdlib)
 
-The `httpx` gem provides:
+The implementation uses Ruby's built-in `net/http` for zero dependencies:
 
-- HTTP/2 support (important for SSE multiplexing)
-- Connection pooling
-- Streaming responses
-- Thread-safe by default
+- Thread-local connection pooling for efficiency
+- Streaming response support for SSE
+- No external gem dependencies
 
 ```ruby
-# In Gemfile
-gem 'httpx'
-
-# Or fall back to net/http for zero dependencies
+# No additional gems required - uses Ruby stdlib
+require 'net/http'
+require 'json'
 ```
 
 ### SSE Implementation
@@ -917,24 +1044,19 @@ packages/client-rb/
 │       ├── version.rb
 │       ├── client.rb
 │       ├── stream.rb
-│       ├── stream_reader.rb
-│       ├── stream_writer.rb
+│       ├── json_reader.rb       # JSON stream reader
+│       ├── byte_reader.rb       # Byte stream reader
 │       ├── idempotent_producer.rb
 │       ├── sse_reader.rb
 │       ├── http/
-│       │   ├── transport.rb
-│       │   ├── net_http_adapter.rb
-│       │   └── httpx_adapter.rb
+│       │   └── transport.rb     # net/http-based transport
 │       ├── types.rb
 │       └── errors.rb
 ├── lib/durable_streams.rb       # Main entry point
-├── spec/
-│   ├── spec_helper.rb
-│   ├── stream_spec.rb
-│   ├── stream_reader_spec.rb
-│   └── ...
+├── conformance_adapter.rb       # For conformance test suite
 ├── durable_streams.gemspec
 ├── Gemfile
+├── design.md                    # This file
 └── README.md
 ```
 
@@ -948,12 +1070,10 @@ Gem::Specification.new do |spec|
   spec.version       = DurableStreams::VERSION
   spec.summary       = "Ruby client for Durable Streams protocol"
 
-  spec.required_ruby_version = ">= 3.2.0"  # Required for Data.define
+  # Uses Struct (not Data.define) for broader compatibility
+  spec.required_ruby_version = ">= 3.0.0"
 
-  # No required dependencies (uses net/http by default)
-
-  # Optional for better performance
-  spec.add_development_dependency "httpx", "~> 1.0"
+  # No runtime dependencies - uses net/http from stdlib
 
   # Testing
   spec.add_development_dependency "rspec", "~> 3.12"
@@ -968,10 +1088,8 @@ end
 ```ruby
 require 'durable_streams'
 
-# Configure globally
-DurableStreams.configure do |config|
-  config.logger = Logger.new($stdout)
-end
+# Configure logger (optional)
+DurableStreams.logger = Logger.new($stdout)
 
 # Create a client with auth
 client = DurableStreams::Client.new(
@@ -984,9 +1102,9 @@ client = DurableStreams::Client.new(
 # Create a stream
 stream = client.create("/events/orders", content_type: "application/json")
 
-# Write with idempotent producer
+# Write with idempotent producer (takes URL directly)
 producer = DurableStreams::IdempotentProducer.new(
-  stream,
+  url: "https://streams.example.com/events/orders",
   producer_id: "order-service-#{Process.pid}",
   epoch: 0
 )
@@ -1023,19 +1141,21 @@ client.close
 
 ---
 
-## Open Questions for Review
+## Implementation Decisions
 
-1. **Async support**: Should we support `Async` gem natively, or leave it to users?
+The following questions from the original design have been resolved:
 
-2. **HTTP client**: Default to `net/http` (zero deps) or `httpx` (better features)?
+1. **Async support**: Left to users (works with threads, compatible with fiber schedulers)
 
-3. **Thread safety**: Should `Stream` be thread-safe, or require one per thread?
+2. **HTTP client**: `net/http` (zero dependencies, stdlib only)
 
-4. **Naming**: `StreamReader` vs `StreamIterator` vs `StreamSession`?
+3. **Thread safety**: Thread-local connection pooling in Transport; readers are single-threaded
 
-5. **Rails integration**: Should we provide ActiveJob adapter or ActionCable integration?
+4. **Naming**: `JsonReader` and `ByteReader` (explicit type distinction)
 
-6. **Fiber scheduler**: Ruby 3.0+ has native fiber scheduler - worth supporting?
+5. **Rails integration**: Not included in core library (can be added as separate gem)
+
+6. **Fiber scheduler**: Compatible but not explicitly supported
 
 ---
 
