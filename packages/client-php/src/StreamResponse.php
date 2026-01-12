@@ -40,7 +40,7 @@ final class StreamResponse implements IteratorAggregate
      * @param string $initialOffset Starting offset
      * @param string|false $liveMode Live mode: false, 'long-poll', or 'sse'
      * @param array<string, string|callable> $headers Request headers (values can be callables)
-     * @param HttpClient $client HTTP client
+     * @param HttpClientInterface $client HTTP client
      * @param float $timeout Request timeout
      * @param (callable(DurableStreamException): ?array)|null $onError Error handler
      */
@@ -104,12 +104,36 @@ final class StreamResponse implements IteratorAggregate
      * Resolve headers, evaluating any callable values.
      *
      * @return array<string, string>
+     * @throws DurableStreamException if a header callable fails
      */
     private function resolveHeaders(): array
     {
         $resolved = [];
         foreach ($this->headers as $name => $value) {
-            $resolved[$name] = is_callable($value) ? $value() : $value;
+            if (is_callable($value)) {
+                try {
+                    $result = $value();
+                    if (!is_string($result)) {
+                        throw new DurableStreamException(
+                            sprintf("Header callable for '%s' returned %s, expected string", $name, gettype($result)),
+                            'INVALID_HEADER_VALUE'
+                        );
+                    }
+                    $resolved[$name] = $result;
+                } catch (DurableStreamException $e) {
+                    throw $e;
+                } catch (\Throwable $e) {
+                    throw new DurableStreamException(
+                        sprintf("Failed to resolve header '%s': %s", $name, $e->getMessage()),
+                        'HEADER_RESOLUTION_FAILED',
+                        null,
+                        [],
+                        $e
+                    );
+                }
+            } else {
+                $resolved[$name] = $value;
+            }
         }
         return $resolved;
     }

@@ -15,6 +15,18 @@ final class RetryOptions
         public readonly int $maxDelayMs = 5000,
         public readonly float $multiplier = 2.0,
     ) {
+        if ($maxRetries < 0) {
+            throw new \InvalidArgumentException('maxRetries must be >= 0');
+        }
+        if ($initialDelayMs <= 0) {
+            throw new \InvalidArgumentException('initialDelayMs must be > 0');
+        }
+        if ($maxDelayMs < $initialDelayMs) {
+            throw new \InvalidArgumentException('maxDelayMs must be >= initialDelayMs');
+        }
+        if ($multiplier < 1.0) {
+            throw new \InvalidArgumentException('multiplier must be >= 1.0');
+        }
     }
 
     /**

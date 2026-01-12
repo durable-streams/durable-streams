@@ -18,7 +18,7 @@ use DurableStreams\Internal\HttpClientInterface;
  *   headers?: array<string, string|callable>,
  *   timeout?: float,
  *   retry?: RetryOptions,
- *   client?: HttpClient,
+ *   client?: HttpClientInterface,
  *   onError?: callable(DurableStreamException): ?array,
  * } $options
  */

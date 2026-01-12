@@ -16,6 +16,10 @@ use Psr\Http\Message\StreamFactoryInterface;
  *
  * Wraps a PSR-18 compliant HTTP client, adding retry logic and
  * error handling consistent with the built-in cURL client.
+ *
+ * **Note:** The `$timeout` parameter is accepted for interface compatibility but
+ * is ignored. PSR-18 does not standardize per-request timeouts - configure
+ * timeouts on the underlying PSR-18 client instead.
  */
 final class Psr18HttpClient implements HttpClientInterface
 {

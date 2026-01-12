@@ -14,8 +14,16 @@ use DurableStreams\Internal\HttpClientInterface;
 /**
  * Idempotent producer with exactly-once semantics.
  *
+ * Exactly-once delivery is achieved via Producer-Id, Producer-Epoch, and Producer-Seq
+ * headers which allow the server to detect and deduplicate messages.
+ *
  * Uses local batching for efficiency. Items are queued locally via enqueue()
  * and sent when flush() is called or batch size limits are reached.
+ *
+ * **PHP Limitations vs other clients:**
+ * - No `lingerMs` (auto-flush timer) - PHP has no background threads, so batches
+ *   only flush on size limits or explicit flush() call
+ * - No `maxInFlight` (pipelining) - batches are sent synchronously, not concurrently
  */
 final class IdempotentProducer
 {
@@ -149,21 +157,21 @@ final class IdempotentProducer
     private function sendBatch(array $batch): void
     {
         $maxAttempts = 3;
+        $lastException = null;
 
         for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
             try {
                 $this->doSend($batch);
                 return;
             } catch (DurableStreamException $e) {
+                $lastException = $e;
+
                 // Handle stale epoch
                 if ($e->getHttpStatus() === 403) {
-                    if ($this->autoClaim) {
-                        // Parse current epoch from response headers
-                        $headers = $e->getHeaders();
-                        $currentEpoch = isset($headers['producer-epoch'])
-                            ? (int)$headers['producer-epoch']
-                            : $this->epoch;
+                    $headers = $e->getHeaders();
+                    $currentEpoch = $this->parseEpochHeader($headers);
 
+                    if ($this->autoClaim) {
                         $this->epoch = $currentEpoch + 1;
                         $batch['epoch'] = $this->epoch;
                         $batch['seq'] = 0;
@@ -171,17 +179,18 @@ final class IdempotentProducer
                         continue;
                     }
 
-                    $headers = $e->getHeaders();
-                    $currentEpoch = isset($headers['producer-epoch'])
-                        ? (int)$headers['producer-epoch']
-                        : $this->epoch;
-
                     throw new StaleEpochException($currentEpoch, $e);
                 }
 
                 // Handle sequence conflict (duplicate detection)
                 if ($e instanceof SeqConflictException) {
-                    // Batch already delivered, safe to continue
+                    // Log for debugging - could indicate misconfiguration
+                    error_log(sprintf(
+                        '[DurableStreams] SeqConflict treated as duplicate (producer=%s, epoch=%d, seq=%d)',
+                        $this->producerId,
+                        $batch['epoch'],
+                        $batch['seq']
+                    ));
                     return;
                 }
 
@@ -191,9 +200,34 @@ final class IdempotentProducer
         }
 
         throw new DurableStreamException(
-            "Failed to send batch after {$maxAttempts} attempts",
-            'MAX_RETRIES_EXCEEDED'
+            sprintf(
+                'Failed to send batch after %d attempts. Last error: %s',
+                $maxAttempts,
+                $lastException?->getMessage() ?? 'unknown'
+            ),
+            'MAX_RETRIES_EXCEEDED',
+            $lastException?->getHttpStatus(),
+            [],
+            $lastException
         );
+    }
+
+    /**
+     * Parse epoch from response headers with warning on missing header.
+     *
+     * @param array<string, string> $headers
+     */
+    private function parseEpochHeader(array $headers): int
+    {
+        if (isset($headers['producer-epoch'])) {
+            return (int) $headers['producer-epoch'];
+        }
+
+        error_log(sprintf(
+            '[DurableStreams] WARNING: 403 response missing producer-epoch header (producer=%s). Server may not be protocol-compliant.',
+            $this->producerId
+        ));
+        return $this->epoch;
     }
 
     /**
