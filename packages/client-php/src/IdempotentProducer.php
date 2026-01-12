@@ -63,6 +63,16 @@ final class IdempotentProducer
         ?string $contentType = null,
         ?HttpClientInterface $client = null,
     ) {
+        if ($epoch < 0) {
+            throw new \InvalidArgumentException('epoch must be >= 0');
+        }
+        if ($maxBatchBytes <= 0) {
+            throw new \InvalidArgumentException('maxBatchBytes must be > 0');
+        }
+        if ($maxBatchItems <= 0) {
+            throw new \InvalidArgumentException('maxBatchItems must be > 0');
+        }
+
         $this->epoch = $epoch;
         $this->autoClaim = $autoClaim;
         $this->maxBatchBytes = $maxBatchBytes;

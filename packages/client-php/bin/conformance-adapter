@@ -13,6 +13,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use DurableStreams\DurableStream;
 use DurableStreams\IdempotentProducer;
+use DurableStreams\RetryOptions;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Exception\StreamNotFoundException;
@@ -33,6 +34,7 @@ const ERROR_UNEXPECTED = 'UNEXPECTED_STATUS';
 const ERROR_PARSE = 'PARSE_ERROR';
 const ERROR_INTERNAL = 'INTERNAL_ERROR';
 const ERROR_NOT_SUPPORTED = 'NOT_SUPPORTED';
+const ERROR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
 
 // Global state
 $serverUrl = '';
@@ -162,6 +164,8 @@ function handleInit(array $cmd): array {
             'longPoll' => true,
             'streaming' => true,
             'dynamicHeaders' => true,
+            'retryOptions' => true,  // PHP has RetryOptions class
+            'batchItems' => true,    // PHP has maxBatchItems option
         ],
     ];
 }
@@ -690,6 +694,76 @@ function handleBenchmark(array $cmd): array {
     }
 }
 
+function handleValidate(array $cmd): array {
+    $target = $cmd['target'];
+    $targetType = $target['target'];
+
+    try {
+        switch ($targetType) {
+            case 'retry-options':
+                // Test RetryOptions validation
+                new RetryOptions(
+                    maxRetries: $target['maxRetries'] ?? 3,
+                    initialDelayMs: $target['initialDelayMs'] ?? 100,
+                    maxDelayMs: $target['maxDelayMs'] ?? 5000,
+                    multiplier: $target['multiplier'] ?? 2.0,
+                );
+                return [
+                    'type' => 'validate',
+                    'success' => true,
+                ];
+
+            case 'idempotent-producer':
+                // Test IdempotentProducer validation
+                // Note: IdempotentProducer doesn't currently validate all params
+                // but we test what we can
+                global $serverUrl, $sharedClient;
+
+                $producer = new IdempotentProducer(
+                    url: $serverUrl . '/test-validate',
+                    producerId: $target['producerId'] ?? 'test-producer',
+                    epoch: $target['epoch'] ?? 0,
+                    maxBatchBytes: $target['maxBatchBytes'] ?? 1048576,
+                    maxBatchItems: $target['maxBatchItems'] ?? 1000,
+                    client: $sharedClient,
+                );
+
+                // Producer was created successfully
+                unset($producer);
+
+                return [
+                    'type' => 'validate',
+                    'success' => true,
+                ];
+
+            default:
+                return [
+                    'type' => 'error',
+                    'success' => false,
+                    'commandType' => 'validate',
+                    'errorCode' => ERROR_NOT_SUPPORTED,
+                    'message' => "Unknown validation target: {$targetType}",
+                ];
+        }
+    } catch (InvalidArgumentException $e) {
+        return [
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'validate',
+            'errorCode' => ERROR_INVALID_ARGUMENT,
+            'message' => $e->getMessage(),
+        ];
+    } catch (Throwable $e) {
+        return [
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'validate',
+            'errorCode' => ERROR_INVALID_ARGUMENT,
+            'message' => $e->getMessage(),
+        ];
+    }
+}
+
 function handleCommand(array $cmd): array {
     $type = $cmd['type'];
 
@@ -709,6 +783,7 @@ function handleCommand(array $cmd): array {
             'idempotent-append' => handleIdempotentAppend($cmd),
             'idempotent-append-batch' => handleIdempotentAppendBatch($cmd),
             'benchmark' => handleBenchmark($cmd),
+            'validate' => handleValidate($cmd),
             default => [
                 'type' => 'error',
                 'success' => false,

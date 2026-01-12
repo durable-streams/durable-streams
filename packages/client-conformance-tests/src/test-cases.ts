@@ -406,6 +406,49 @@ export interface ClearDynamicOperation {
 }
 
 /**
+ * Validate client-side input parameters.
+ * Tests that clients properly validate inputs before making network requests.
+ */
+export interface ValidateOperation {
+  action: `validate`
+  /** What to validate */
+  target: ValidateTarget
+  expect?: ValidateExpectation
+}
+
+/**
+ * Validation target types.
+ */
+export type ValidateTarget =
+  | ValidateRetryOptionsTarget
+  | ValidateIdempotentProducerTarget
+
+export interface ValidateRetryOptionsTarget {
+  target: `retry-options`
+  maxRetries?: number
+  initialDelayMs?: number
+  maxDelayMs?: number
+  multiplier?: number
+}
+
+export interface ValidateIdempotentProducerTarget {
+  target: `idempotent-producer`
+  producerId?: string
+  epoch?: number
+  maxBatchBytes?: number
+  maxBatchItems?: number
+}
+
+export interface ValidateExpectation {
+  /** If true, validation should pass */
+  valid?: boolean
+  /** Expected error code if validation fails */
+  errorCode?: string
+  /** Expected error message substring if validation fails */
+  errorContains?: string
+}
+
+/**
  * All possible test operations.
  */
 export type TestOperation =
@@ -428,6 +471,7 @@ export type TestOperation =
   | SetDynamicHeaderOperation
   | SetDynamicParamOperation
   | ClearDynamicOperation
+  | ValidateOperation
 
 // =============================================================================
 // Expectations
