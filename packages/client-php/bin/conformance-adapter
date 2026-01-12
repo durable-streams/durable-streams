@@ -166,6 +166,7 @@ function handleInit(array $cmd): array {
             'dynamicHeaders' => true,
             'retryOptions' => true,  // PHP has RetryOptions class
             'batchItems' => true,    // PHP has maxBatchItems option
+            'strictZeroValidation' => true,  // PHP rejects 0 as invalid
         ],
     ];
 }

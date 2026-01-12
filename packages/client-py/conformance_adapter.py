@@ -45,6 +45,7 @@ ERROR_CODES = {
     "PARSE_ERROR": "PARSE_ERROR",
     "INTERNAL_ERROR": "INTERNAL_ERROR",
     "NOT_SUPPORTED": "NOT_SUPPORTED",
+    "INVALID_ARGUMENT": "INVALID_ARGUMENT",
 }
 
 # Global state
@@ -197,6 +198,7 @@ def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
             "longPoll": True,
             "streaming": True,
             "dynamicHeaders": True,
+            "strictZeroValidation": True,
         },
     }
 
@@ -835,6 +837,71 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
     return asyncio.run(do_append())
 
 
+def handle_validate(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle validate command for testing client-side input validation."""
+    target = cmd["target"]
+    target_type = target["target"]
+
+    try:
+        if target_type == "retry-options":
+            # Python client doesn't have a separate RetryOptions class
+            # Return NOT_SUPPORTED to skip these tests
+            return {
+                "type": "error",
+                "success": False,
+                "commandType": "validate",
+                "errorCode": ERROR_CODES["NOT_SUPPORTED"],
+                "message": "Python client does not have RetryOptions class",
+            }
+
+        elif target_type == "idempotent-producer":
+            # Test IdempotentProducer validation
+            import asyncio
+
+            async def test_producer():
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    # Try to create producer with given options
+                    _producer = IdempotentProducer(
+                        url=f"{server_url}/test-validate",
+                        producer_id=target.get("producerId", "test-producer"),
+                        client=client,
+                        epoch=target.get("epoch", 0),
+                        max_batch_bytes=target.get("maxBatchBytes", 1024 * 1024),
+                    )
+                    return {
+                        "type": "validate",
+                        "success": True,
+                    }
+
+            return asyncio.run(test_producer())
+
+        else:
+            return {
+                "type": "error",
+                "success": False,
+                "commandType": "validate",
+                "errorCode": ERROR_CODES["NOT_SUPPORTED"],
+                "message": f"Unknown validation target: {target_type}",
+            }
+
+    except ValueError as e:
+        return {
+            "type": "error",
+            "success": False,
+            "commandType": "validate",
+            "errorCode": ERROR_CODES["INVALID_ARGUMENT"],
+            "message": str(e),
+        }
+    except Exception as e:
+        return {
+            "type": "error",
+            "success": False,
+            "commandType": "validate",
+            "errorCode": ERROR_CODES["INVALID_ARGUMENT"],
+            "message": str(e),
+        }
+
+
 def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle idempotent-append-batch command."""
     import asyncio
@@ -927,6 +994,8 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_idempotent_append(cmd)
         elif cmd_type == "idempotent-append-batch":
             return handle_idempotent_append_batch(cmd)
+        elif cmd_type == "validate":
+            return handle_validate(cmd)
         else:
             return {
                 "type": "error",

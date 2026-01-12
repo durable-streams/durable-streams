@@ -134,6 +134,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           longPoll: true,
           streaming: true,
           dynamicHeaders: true,
+          strictZeroValidation: true,
         },
       }
     }

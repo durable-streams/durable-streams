@@ -370,6 +370,12 @@ export interface InitResult {
     streaming?: boolean
     /** Supports dynamic headers/params (functions evaluated per-request) */
     dynamicHeaders?: boolean
+    /** Supports RetryOptions validation (PHP-specific) */
+    retryOptions?: boolean
+    /** Supports maxBatchItems option (PHP-specific) */
+    batchItems?: boolean
+    /** Rejects zero values as invalid (vs treating 0 as "use default" like Go) */
+    strictZeroValidation?: boolean
   }
 }
 

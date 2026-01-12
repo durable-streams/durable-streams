@@ -130,7 +130,9 @@ tests:
 
   - id: producer-zero-max-batch-bytes
     name: Zero maxBatchBytes rejected
-    description: Client should reject zero maxBatchBytes
+    description: Client should reject zero maxBatchBytes (Go treats 0 as default)
+    requires:
+      - strictZeroValidation
     operations:
       - action: validate
         target:

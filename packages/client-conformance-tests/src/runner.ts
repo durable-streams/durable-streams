@@ -81,6 +81,7 @@ interface ClientFeatures {
   dynamicHeaders?: boolean
   retryOptions?: boolean
   batchItems?: boolean
+  strictZeroValidation?: boolean
 }
 
 interface ExecutionContext {
@@ -1096,6 +1097,8 @@ function featureToProperty(feature: string): keyof ClientFeatures | undefined {
     "retry-options": `retryOptions`,
     batchItems: `batchItems`,
     "batch-items": `batchItems`,
+    strictZeroValidation: `strictZeroValidation`,
+    "strict-zero-validation": `strictZeroValidation`,
   }
   return map[feature]
 }

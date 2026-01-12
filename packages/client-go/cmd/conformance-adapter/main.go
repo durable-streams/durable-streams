@@ -63,6 +63,17 @@ type Command struct {
 	Name         string `json:"name,omitempty"`
 	ValueType    string `json:"valueType,omitempty"` // "counter" | "timestamp" | "token"
 	InitialValue string `json:"initialValue,omitempty"`
+	// Validate fields
+	Target *ValidateTarget `json:"target,omitempty"`
+}
+
+// ValidateTarget for input validation testing
+type ValidateTarget struct {
+	Target        string `json:"target"` // "retry-options" | "idempotent-producer"
+	ProducerID    string `json:"producerId,omitempty"`
+	Epoch         *int   `json:"epoch,omitempty"`
+	MaxBatchBytes *int   `json:"maxBatchBytes,omitempty"`
+	MaxRetries    *int   `json:"maxRetries,omitempty"`
 }
 
 // BenchmarkOperation represents a benchmark operation
@@ -260,6 +271,8 @@ func handleCommand(cmd Command) Result {
 		return handleIdempotentAppend(cmd)
 	case "idempotent-append-batch":
 		return handleIdempotentAppendBatch(cmd)
+	case "validate":
+		return handleValidate(cmd)
 	case "shutdown":
 		return Result{Type: "shutdown", Success: true}
 	default:
@@ -659,6 +672,54 @@ func handleClearDynamic(cmd Command) Result {
 	return Result{
 		Type:    "clear-dynamic",
 		Success: true,
+	}
+}
+
+func handleValidate(cmd Command) Result {
+	if cmd.Target == nil {
+		return sendError("validate", "PARSE_ERROR", "missing target")
+	}
+
+	target := cmd.Target
+
+	switch target.Target {
+	case "retry-options":
+		// Go client doesn't have a separate RetryOptions class
+		return sendError("validate", "NOT_SUPPORTED", "Go client does not have RetryOptions class")
+
+	case "idempotent-producer":
+		// Test IdempotentProducer validation
+		producerID := target.ProducerID
+		if producerID == "" {
+			producerID = "test-producer"
+		}
+
+		config := durablestreams.IdempotentProducerConfig{}
+		if target.Epoch != nil {
+			config.Epoch = *target.Epoch
+		}
+		if target.MaxBatchBytes != nil {
+			config.MaxBatchBytes = *target.MaxBatchBytes
+		}
+
+		_, err := client.IdempotentProducer(serverURL+"/test-validate", producerID, config)
+		if err != nil {
+			return Result{
+				Type:        "error",
+				Success:     false,
+				CommandType: "validate",
+				ErrorCode:   "INVALID_ARGUMENT",
+				Message:     err.Error(),
+			}
+		}
+
+		return Result{
+			Type:    "validate",
+			Success: true,
+		}
+
+	default:
+		return sendError("validate", "NOT_SUPPORTED", fmt.Sprintf("unknown validation target: %s", target.Target))
 	}
 }
 
