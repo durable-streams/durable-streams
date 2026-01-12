@@ -307,7 +307,7 @@ async Task<object> HandleRead(JsonElement root)
             if (isJson)
             {
                 // Use JSON parsing to trigger PARSE_ERROR on malformed JSON
-                await foreach (var batch in response.ReadJsonAsync<System.Text.Json.JsonElement>(cts.Token))
+                await foreach (var batch in response.ReadJsonBatchesAsync<System.Text.Json.JsonElement>(cts.Token))
                 {
                     finalOffset = batch.Checkpoint.Offset.ToString();
                     upToDate = batch.UpToDate;
