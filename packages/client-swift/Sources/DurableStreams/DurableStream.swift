@@ -158,6 +158,52 @@ public actor DurableStream {
         }
     }
 
+    // MARK: - Factory Methods (HandleConfiguration)
+
+    /// Create a new stream with unified configuration.
+    /// - Throws: `DurableStreamError.conflictExists` if stream already exists
+    public static func create(
+        url: URL,
+        contentType: String = "application/json",
+        ttlSeconds: Int? = nil,
+        expiresAt: String? = nil,
+        handleConfig: HandleConfiguration
+    ) async throws -> DurableStream {
+        try await create(
+            url: url,
+            contentType: contentType,
+            ttlSeconds: ttlSeconds,
+            expiresAt: expiresAt,
+            config: Configuration(from: handleConfig)
+        )
+    }
+
+    /// Connect to an existing stream with unified configuration.
+    /// - Throws: `DurableStreamError.notFound` if stream doesn't exist
+    public static func connect(
+        url: URL,
+        handleConfig: HandleConfiguration
+    ) async throws -> DurableStream {
+        try await connect(url: url, config: Configuration(from: handleConfig))
+    }
+
+    /// Create if not exists, or connect if it does (unified configuration).
+    public static func createOrConnect(
+        url: URL,
+        contentType: String = "application/json",
+        ttlSeconds: Int? = nil,
+        expiresAt: String? = nil,
+        handleConfig: HandleConfiguration
+    ) async throws -> DurableStream {
+        try await createOrConnect(
+            url: url,
+            contentType: contentType,
+            ttlSeconds: ttlSeconds,
+            expiresAt: expiresAt,
+            config: Configuration(from: handleConfig)
+        )
+    }
+
     /// Get stream metadata without establishing a handle.
     public static func head(url: URL, config: Configuration = .default) async throws -> StreamInfo {
         let httpClient = HTTPClient(
@@ -249,6 +295,168 @@ public actor DurableStream {
 
         let items = try decoder.decode([T].self, from: result.data)
         return JsonBatch(items: items, offset: result.offset, upToDate: result.upToDate, cursor: result.cursor)
+    }
+
+    // MARK: - Streaming
+
+    /// Stream individual JSON messages as they arrive.
+    ///
+    /// This is a convenience method that uses long-poll streaming under the hood:
+    /// ```swift
+    /// for try await message in handle.messages(as: ChatMessage.self) {
+    ///     print("Received: \(message)")
+    /// }
+    /// ```
+    ///
+    /// For batch-level control (e.g., checkpointing per-batch), use `jsonBatches()` instead.
+    public func messages<T: Decodable & Sendable>(
+        as type: T.Type,
+        from offset: Offset = .start,
+        decoder: JSONDecoder = JSONDecoder()
+    ) -> AsyncThrowingStream<T, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    for try await batch in self.jsonBatches(as: type, from: offset, decoder: decoder) {
+                        for item in batch.items {
+                            continuation.yield(item)
+                        }
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Stream JSON batches as they arrive.
+    ///
+    /// Each batch includes the offset for checkpointing:
+    /// ```swift
+    /// for try await batch in handle.jsonBatches(as: Event.self) {
+    ///     try await database.transaction { tx in
+    ///         for event in batch.items {
+    ///             try await tx.apply(event)
+    ///         }
+    ///         try await tx.saveOffset(batch.offset)
+    ///     }
+    /// }
+    /// ```
+    public func jsonBatches<T: Decodable & Sendable>(
+        as type: T.Type,
+        from offset: Offset = .start,
+        decoder: JSONDecoder = JSONDecoder()
+    ) -> AsyncThrowingStream<JsonBatch<T>, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.runStreamLoop(
+                    from: offset,
+                    continuation: continuation,
+                    transform: { data, resultOffset, upToDate, cursor in
+                        if data.isEmpty {
+                            return JsonBatch<T>(items: [], offset: resultOffset, upToDate: upToDate, cursor: cursor)
+                        }
+                        let items = try decoder.decode([T].self, from: data)
+                        return JsonBatch<T>(items: items, offset: resultOffset, upToDate: upToDate, cursor: cursor)
+                    }
+                )
+            }
+        }
+    }
+
+    /// Stream byte chunks as they arrive.
+    public func byteChunks(from offset: Offset = .start) -> AsyncThrowingStream<ByteChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.runStreamLoop(
+                    from: offset,
+                    continuation: continuation,
+                    transform: { data, resultOffset, upToDate, cursor in
+                        ByteChunk(data: data, offset: resultOffset, upToDate: upToDate, cursor: cursor)
+                    }
+                )
+            }
+        }
+    }
+
+    /// Stream text chunks as they arrive.
+    public func textChunks(from offset: Offset = .start) -> AsyncThrowingStream<TextChunk, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.runStreamLoop(
+                    from: offset,
+                    continuation: continuation,
+                    transform: { data, resultOffset, upToDate, cursor in
+                        let text = String(data: data, encoding: .utf8) ?? ""
+                        return TextChunk(text: text, offset: resultOffset, upToDate: upToDate, cursor: cursor)
+                    }
+                )
+            }
+        }
+    }
+
+    /// Internal streaming loop using long-poll.
+    private func runStreamLoop<T: Sendable>(
+        from offset: Offset,
+        continuation: AsyncThrowingStream<T, Error>.Continuation,
+        transform: @escaping @Sendable (Data, Offset, Bool, String?) throws -> T
+    ) async {
+        var currentOffset = offset
+        var currentCursor: String? = nil
+
+        while !Task.isCancelled {
+            do {
+                // Build request with long-poll parameters
+                var params: [String: String] = [
+                    QueryParams.offset: currentOffset.rawValue,
+                    QueryParams.live: "long-poll"
+                ]
+
+                if let cursor = currentCursor {
+                    params[QueryParams.cursor] = cursor
+                }
+
+                let requestURL = await httpClient.buildURL(base: url, params: params)
+                let request = await httpClient.buildRequest(url: requestURL)
+
+                let (data, metadata) = try await httpClient.perform(request)
+
+                switch metadata.status {
+                case 200:
+                    let newOffset = metadata.offset ?? currentOffset
+                    let result = try transform(data, newOffset, metadata.upToDate, metadata.cursor)
+                    continuation.yield(result)
+                    currentOffset = newOffset
+                    currentCursor = metadata.cursor
+
+                case 204:
+                    // Long-poll timeout, retry with same offset
+                    continue
+
+                case 410:
+                    continuation.finish(throwing: DurableStreamError.retentionExpired(offset: currentOffset))
+                    return
+
+                default:
+                    let body = String(data: data, encoding: .utf8)
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body))
+                    return
+                }
+            } catch let error as DurableStreamError {
+                if error.code == .timeout || error.code == .serverBusy {
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms backoff
+                    continue
+                }
+                continuation.finish(throwing: error)
+                return
+            } catch {
+                continuation.finish(throwing: error)
+                return
+            }
+        }
+
+        continuation.finish()
     }
 
     // MARK: - Writing (Synchronous)
@@ -360,6 +568,128 @@ public actor DurableStream {
     public func close() async throws {
         _ = try await flush()
         batchTask?.cancel()
+    }
+
+    // MARK: - SSE Streaming
+
+    /// Stream JSON messages using Server-Sent Events.
+    ///
+    /// SSE provides a persistent connection for real-time updates.
+    /// Use long-poll (`messages()`) unless you specifically need SSE.
+    ///
+    /// Note: SSE streaming uses polling-based implementation for cross-platform
+    /// compatibility. For true persistent connections on Apple platforms,
+    /// consider using platform-specific URLSession APIs directly.
+    ///
+    /// ```swift
+    /// for try await message in handle.messagesSSE(as: ChatMessage.self) {
+    ///     print("Received: \(message)")
+    /// }
+    /// ```
+    public func messagesSSE<T: Decodable & Sendable>(
+        as type: T.Type,
+        from offset: Offset = .start,
+        decoder: JSONDecoder = JSONDecoder()
+    ) -> AsyncThrowingStream<T, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    for try await event in self.sseEvents(from: offset) {
+                        guard event.effectiveEvent == "message" else {
+                            continue
+                        }
+
+                        guard let data = event.data.data(using: .utf8) else {
+                            continue
+                        }
+
+                        let item = try decoder.decode(T.self, from: data)
+                        continuation.yield(item)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    /// Stream raw SSE events from the stream.
+    ///
+    /// Uses SSE live mode to receive server-sent events. Events are parsed
+    /// per the EventSource specification.
+    public func sseEvents(from offset: Offset = .start) -> AsyncThrowingStream<SSEEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.runSSELoop(from: offset, continuation: continuation)
+            }
+        }
+    }
+
+    /// Internal SSE streaming loop.
+    /// Uses chunked polling to fetch SSE data cross-platform.
+    private func runSSELoop(
+        from offset: Offset,
+        continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
+    ) async {
+        var currentOffset = offset
+        var pendingData = Data()
+
+        while !Task.isCancelled {
+            do {
+                let queryParams: [String: String] = [
+                    QueryParams.offset: currentOffset.rawValue,
+                    QueryParams.live: "sse"
+                ]
+
+                let requestURL = await httpClient.buildURL(base: url, params: queryParams)
+                var request = await httpClient.buildRequest(url: requestURL)
+                request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+
+                let (data, metadata) = try await httpClient.perform(request)
+
+                switch metadata.status {
+                case 200:
+                    // Parse SSE events from the response
+                    let (events, remaining) = SSEParser.parse(data: data, pendingData: pendingData)
+                    pendingData = remaining
+
+                    for event in events {
+                        continuation.yield(event)
+                    }
+
+                    // Update offset for next request
+                    if let newOffset = metadata.offset {
+                        currentOffset = newOffset
+                    }
+
+                case 204:
+                    // No new data, continue polling
+                    continue
+
+                case 410:
+                    continuation.finish(throwing: DurableStreamError.retentionExpired(offset: currentOffset))
+                    return
+
+                default:
+                    let body = String(data: data, encoding: .utf8)
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body))
+                    return
+                }
+            } catch let error as DurableStreamError {
+                if error.code == .timeout || error.code == .serverBusy {
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms backoff
+                    continue
+                }
+                continuation.finish(throwing: error)
+                return
+            } catch {
+                continuation.finish(throwing: error)
+                return
+            }
+        }
+
+        continuation.finish()
     }
 }
 
