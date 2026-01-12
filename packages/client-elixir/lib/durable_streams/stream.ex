@@ -290,9 +290,16 @@ defmodule DurableStreams.Stream do
 
       {:error, :timeout} when streaming ->
         # For SSE, timeout without data means up-to-date
+        # We need to get the actual tail offset from the server via HEAD
+        # rather than returning the input offset (which could be "now")
+        actual_offset =
+          case head(stream) do
+            {:ok, %{next_offset: off}} -> off
+            _ -> offset  # Fallback to input offset if HEAD fails
+          end
         {:ok, %{
           data: "",
-          next_offset: offset,
+          next_offset: actual_offset,
           up_to_date: true,
           status: 204
         }}
