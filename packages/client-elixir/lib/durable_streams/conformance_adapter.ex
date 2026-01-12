@@ -5,7 +5,7 @@ defmodule DurableStreams.ConformanceAdapter do
   Communicates with the test runner via JSON-line protocol over stdin/stdout.
   """
 
-  alias DurableStreams.{Client, Stream, JSON}
+  alias DurableStreams.{Client, Stream, Writer, JSON}
 
   @client_name "durable-streams-elixir"
   @client_version "0.1.0"
@@ -803,11 +803,26 @@ defmodule DurableStreams.ConformanceAdapter do
 
     data = :crypto.strong_rand_bytes(size)
 
+    # Use Writer for fire-and-forget batched writes
+    {:ok, writer} = Writer.start_link(
+      stream: stream,
+      producer_id: "benchmark-#{:erlang.unique_integer([:positive])}",
+      epoch: 0,
+      max_batch_size: 100,
+      linger_ms: 1,
+      max_in_flight: 10
+    )
+
     start = System.monotonic_time(:nanosecond)
 
+    # Fire-and-forget all writes
     Enum.each(1..count, fn _ ->
-      Stream.append(stream, data)
+      Writer.append(writer, data)
     end)
+
+    # Wait for all writes to complete
+    Writer.flush(writer)
+    Writer.close(writer)
 
     duration = System.monotonic_time(:nanosecond) - start
     duration_sec = duration / 1_000_000_000
