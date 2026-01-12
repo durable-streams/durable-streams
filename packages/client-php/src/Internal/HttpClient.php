@@ -5,29 +5,35 @@ declare(strict_types=1);
 namespace DurableStreams\Internal;
 
 use DurableStreams\Exception\DurableStreamException;
+use DurableStreams\Exception\RateLimitedException;
 use DurableStreams\Exception\SeqConflictException;
 use DurableStreams\Exception\StreamExistsException;
 use DurableStreams\Exception\StreamNotFoundException;
+use DurableStreams\Exception\UnauthorizedException;
+use DurableStreams\RetryOptions;
 
 /**
  * High-performance HTTP client using cURL.
  *
  * Uses persistent connections via cURL handle reuse for maximum throughput.
  */
-final class HttpClient
+final class HttpClient implements HttpClientInterface
 {
     /** @var \CurlHandle|null Reusable cURL handle for connection pooling */
     private ?\CurlHandle $handle = null;
 
     private float $timeout;
     private float $connectTimeout;
+    private RetryOptions $retryOptions;
 
     public function __construct(
         float $timeout = 30.0,
         float $connectTimeout = 10.0,
+        ?RetryOptions $retryOptions = null,
     ) {
         $this->timeout = $timeout;
         $this->connectTimeout = $connectTimeout;
+        $this->retryOptions = $retryOptions ?? RetryOptions::default();
     }
 
     public function __destruct()
@@ -82,14 +88,15 @@ final class HttpClient
         ?string $body = null,
         ?float $timeout = null,
     ): HttpResponse {
-        $maxRetries = 3;
+        $maxRetries = $this->retryOptions->maxRetries;
         $lastException = null;
         $lastResponse = null;
 
         for ($attempt = 0; $attempt <= $maxRetries; $attempt++) {
-            // Exponential backoff (0ms, 100ms, 200ms, 400ms)
-            if ($attempt > 0) {
-                usleep((int)(100000 * pow(2, $attempt - 1)));
+            // Exponential backoff using configured options
+            $delayMs = $this->retryOptions->delayForAttempt($attempt);
+            if ($delayMs > 0) {
+                usleep($delayMs * 1000);
             }
 
             try {
@@ -277,13 +284,13 @@ final class HttpClient
                 throw new DurableStreamException($body ?: 'Bad request', 'BAD_REQUEST', $status, $headers);
 
             case 401:
-                throw new DurableStreamException('Unauthorized', 'UNAUTHORIZED', $status, $headers);
+                throw new UnauthorizedException($body ?: 'Unauthorized', $headers);
 
             case 403:
                 throw new DurableStreamException($body ?: 'Forbidden', 'FORBIDDEN', $status, $headers);
 
             case 429:
-                throw new DurableStreamException('Rate limited', 'RATE_LIMITED', $status, $headers);
+                throw new RateLimitedException($body ?: 'Rate limited', $headers);
 
             default:
                 if ($status >= 500) {

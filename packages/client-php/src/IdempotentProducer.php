@@ -9,6 +9,7 @@ use DurableStreams\Exception\MessageTooLargeException;
 use DurableStreams\Exception\SeqConflictException;
 use DurableStreams\Exception\StaleEpochException;
 use DurableStreams\Internal\HttpClient;
+use DurableStreams\Internal\HttpClientInterface;
 
 /**
  * Idempotent producer with exactly-once semantics.
@@ -28,7 +29,7 @@ final class IdempotentProducer
     private array $currentBatch = [];
     private int $currentBatchSize = 0;
 
-    private HttpClient $client;
+    private HttpClientInterface $client;
     private ?string $contentType;
     private int $maxBatchBytes;
     private int $maxBatchItems;
@@ -42,7 +43,7 @@ final class IdempotentProducer
      * @param int $maxBatchBytes Maximum batch size in bytes
      * @param int $maxBatchItems Maximum items per batch
      * @param string|null $contentType Content type (auto-detected if not provided)
-     * @param HttpClient|null $client HTTP client
+     * @param HttpClientInterface|null $client HTTP client
      */
     public function __construct(
         private readonly string $url,
@@ -52,7 +53,7 @@ final class IdempotentProducer
         int $maxBatchBytes = 1024 * 1024,
         int $maxBatchItems = 1000,
         ?string $contentType = null,
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ) {
         $this->epoch = $epoch;
         $this->autoClaim = $autoClaim;

@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace DurableStreams;
 
+use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Internal\HttpClient;
+use DurableStreams\Internal\HttpClientInterface;
 use DurableStreams\Internal\HttpResponse;
 use Generator;
 use IteratorAggregate;
@@ -27,25 +29,35 @@ final class StreamResponse implements IteratorAggregate
     /** @var string|null Buffered response body for non-live reads */
     private ?string $body = null;
 
+    /** @var array<string, string|callable> Headers (static or dynamic) */
+    private array $headers;
+
+    /** @var (callable(DurableStreamException): ?array)|null Error handler */
+    private $onError;
+
     /**
      * @param string $url Stream URL
      * @param string $initialOffset Starting offset
      * @param string|false $liveMode Live mode: false, 'long-poll', or 'sse'
-     * @param array<string, string> $headers Request headers
+     * @param array<string, string|callable> $headers Request headers (values can be callables)
      * @param HttpClient $client HTTP client
      * @param float $timeout Request timeout
+     * @param (callable(DurableStreamException): ?array)|null $onError Error handler
      */
     public function __construct(
         private readonly string $url,
         string $initialOffset,
         private readonly string|false $liveMode,
-        private readonly array $headers,
-        private readonly HttpClient $client,
-        private readonly float $timeout,
+        array $headers,
+        private HttpClientInterface $client,
+        private float $timeout,
+        ?callable $onError = null,
     ) {
         $this->offset = $initialOffset;
         $this->live = $liveMode !== false;
         $this->status = 0;
+        $this->headers = $headers;
+        $this->onError = $onError;
     }
 
     /**
@@ -89,6 +101,38 @@ final class StreamResponse implements IteratorAggregate
     }
 
     /**
+     * Resolve headers, evaluating any callable values.
+     *
+     * @return array<string, string>
+     */
+    private function resolveHeaders(): array
+    {
+        $resolved = [];
+        foreach ($this->headers as $name => $value) {
+            $resolved[$name] = is_callable($value) ? $value() : $value;
+        }
+        return $resolved;
+    }
+
+    /**
+     * Apply options returned from onError callback.
+     *
+     * @param array<string, mixed> $options
+     */
+    private function applyErrorOptions(array $options): void
+    {
+        if (isset($options['headers'])) {
+            $this->headers = array_merge($this->headers, $options['headers']);
+        }
+        if (isset($options['timeout'])) {
+            $this->timeout = (float) $options['timeout'];
+        }
+        if (isset($options['client']) && $options['client'] instanceof HttpClientInterface) {
+            $this->client = $options['client'];
+        }
+    }
+
+    /**
      * Fetch the next chunk of data.
      */
     private function fetch(): HttpResponse
@@ -115,7 +159,27 @@ final class StreamResponse implements IteratorAggregate
             $url .= '?' . http_build_query($query);
         }
 
-        return $this->client->get($url, $this->headers, $this->timeout);
+        // Resolve dynamic headers
+        $resolvedHeaders = $this->resolveHeaders();
+
+        try {
+            return $this->client->get($url, $resolvedHeaders, $this->timeout);
+        } catch (DurableStreamException $e) {
+            // If we have an error handler, give it a chance to recover
+            if ($this->onError !== null) {
+                $result = ($this->onError)($e);
+
+                if ($result !== null) {
+                    // Apply returned options and retry
+                    $this->applyErrorOptions($result);
+                    $resolvedHeaders = $this->resolveHeaders();
+                    return $this->client->get($url, $resolvedHeaders, $this->timeout);
+                }
+            }
+
+            // No recovery - rethrow
+            throw $e;
+        }
     }
 
     /**

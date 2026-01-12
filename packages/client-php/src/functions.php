@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace DurableStreams;
 
+use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Internal\HttpClient;
+use DurableStreams\Internal\HttpClientInterface;
 
 /**
  * Create a stream response for reading from a Durable Stream.
@@ -13,9 +15,11 @@ use DurableStreams\Internal\HttpClient;
  *   url: string,
  *   offset?: string,
  *   live?: string|false,
- *   headers?: array<string, string>,
+ *   headers?: array<string, string|callable>,
  *   timeout?: float,
+ *   retry?: RetryOptions,
  *   client?: HttpClient,
+ *   onError?: callable(DurableStreamException): ?array,
  * } $options
  */
 function stream(array $options): StreamResponse
@@ -25,7 +29,12 @@ function stream(array $options): StreamResponse
     $live = $options['live'] ?? false;
     $headers = $options['headers'] ?? [];
     $timeout = $options['timeout'] ?? 30.0;
-    $client = $options['client'] ?? new HttpClient(timeout: $timeout);
+    $retry = $options['retry'] ?? null;
+    $onError = $options['onError'] ?? null;
+    $client = $options['client'] ?? new HttpClient(
+        timeout: $timeout,
+        retryOptions: $retry,
+    );
 
     return new StreamResponse(
         url: $url,
@@ -34,6 +43,7 @@ function stream(array $options): StreamResponse
         headers: $headers,
         client: $client,
         timeout: $timeout,
+        onError: $onError,
     );
 }
 
