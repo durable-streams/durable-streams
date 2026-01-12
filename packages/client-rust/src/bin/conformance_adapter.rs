@@ -884,10 +884,7 @@ async fn benchmark_throughput_append(app_state: &AppState, op: &BenchmarkOperati
         .content_type(&content_type)
         .build();
 
-    // Use static buffer to avoid Arc overhead in benchmark hot path
-    let payload_vec: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
-    let payload_static: &'static [u8] = Box::leak(payload_vec.into_boxed_slice());
-    let payload = Bytes::from_static(payload_static);
+    let payload: Bytes = (0..size).map(|i| (i % 256) as u8).collect::<Vec<u8>>().into();
 
     let start = Instant::now();
 

@@ -182,7 +182,12 @@ impl IdempotentProducer {
     ///
     /// Returns immediately - data is queued for sending.
     /// Use `flush()` to wait for all data to be written.
-    /// Errors are handled centrally, not per-append.
+    ///
+    /// # Silent Failures
+    ///
+    /// This method silently ignores appends if the producer is closed.
+    /// Network and server errors during batch sending are not surfaced
+    /// per-append; use `flush()` to ensure data is durably written.
     #[inline]
     pub fn append(&self, data: impl Into<Bytes>) {
         let data = data.into();
@@ -211,6 +216,15 @@ impl IdempotentProducer {
     }
 
     /// Append JSON data (fire-and-forget).
+    ///
+    /// # Silent Failures
+    ///
+    /// This method silently ignores:
+    /// - Appends if the producer is closed
+    /// - JSON serialization errors
+    ///
+    /// Network and server errors during batch sending are not surfaced
+    /// per-append; use `flush()` to ensure data is durably written.
     #[cfg(feature = "json")]
     #[inline]
     pub fn append_json<T: serde::Serialize>(&self, data: &T) {

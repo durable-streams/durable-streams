@@ -35,7 +35,13 @@ pub struct Chunk {
     pub up_to_date: bool,
     /// Cursor for CDN request collapsing.
     pub cursor: Option<String>,
-    /// HTTP status code from the response (200, 204, etc.)
+    /// HTTP status code from the response.
+    ///
+    /// Common values:
+    /// - `200`: Success with data
+    /// - `204`: No content (long-poll timeout or caught up)
+    /// - `304`: Not modified
+    /// - `0`: SSE connection closed, reconnect will happen on next iteration
     pub status_code: u16,
 }
 

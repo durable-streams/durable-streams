@@ -101,15 +101,11 @@ impl PartialOrd for Offset {
 ///
 /// ## `LiveMode::Auto` Fallback Behavior
 ///
-/// When `Auto` is selected, the client attempts live modes in this order:
+/// When `Auto` is selected:
 ///
-/// 1. **SSE first**: If the stream content type is `text/*` or `application/json`,
-///    attempt SSE connection
-///
-/// 2. **Fallback to long-poll**: SSE falls back to long-poll when:
-///    - Content type doesn't support SSE (e.g., `application/octet-stream`)
-///    - Server returns 400 Bad Request for SSE (unsupported)
-///    - SSE connections fail repeatedly with short durations (< 1s)
+/// 1. **Catch-up first**: Regular HTTP reads until `up_to_date`
+/// 2. **SSE after catch-up**: Attempts SSE connection for live tailing
+/// 3. **Fallback to long-poll**: If SSE fails (400 or wrong content type)
 ///
 /// The fallback is transparent to the user - iteration continues seamlessly.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
