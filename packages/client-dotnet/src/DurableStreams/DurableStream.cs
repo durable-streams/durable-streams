@@ -52,7 +52,7 @@ public sealed class DurableStream
         CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Put, _url);
-        _client.ApplyDefaultHeaders(request);
+        await _client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (options?.Headers != null)
         {
@@ -107,7 +107,7 @@ public sealed class DurableStream
     public async Task<StreamMetadata> HeadAsync(CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Head, _url);
-        _client.ApplyDefaultHeaders(request);
+        await _client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
 
@@ -150,7 +150,7 @@ public sealed class DurableStream
         }
 
         using var request = new HttpRequestMessage(HttpMethod.Post, _url);
-        _client.ApplyDefaultHeaders(request);
+        await _client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
 
         if (options?.Headers != null)
         {
@@ -232,7 +232,7 @@ public sealed class DurableStream
     public async Task DeleteAsync(CancellationToken cancellationToken = default)
     {
         using var request = new HttpRequestMessage(HttpMethod.Delete, _url);
-        _client.ApplyDefaultHeaders(request);
+        await _client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
 
         using var response = await SendWithRetryAsync(request, cancellationToken).ConfigureAwait(false);
 

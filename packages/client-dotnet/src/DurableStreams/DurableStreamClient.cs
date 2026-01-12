@@ -140,14 +140,26 @@ public sealed class DurableStreamClient : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
-    /// Build headers for a request.
+    /// Build headers for a request, including both static and dynamic headers.
+    /// Dynamic headers are evaluated per-request, enabling token refresh during retries.
     /// </summary>
-    internal void ApplyDefaultHeaders(HttpRequestMessage request)
+    internal async ValueTask ApplyDefaultHeadersAsync(HttpRequestMessage request, CancellationToken cancellationToken = default)
     {
+        // Apply static headers
         if (_options.DefaultHeaders != null)
         {
             foreach (var (key, value) in _options.DefaultHeaders)
             {
+                request.Headers.TryAddWithoutValidation(key, value);
+            }
+        }
+
+        // Apply dynamic headers (evaluated per-request)
+        if (_options.DynamicHeaders != null)
+        {
+            foreach (var (key, factory) in _options.DynamicHeaders)
+            {
+                var value = await factory(cancellationToken).ConfigureAwait(false);
                 request.Headers.TryAddWithoutValidation(key, value);
             }
         }

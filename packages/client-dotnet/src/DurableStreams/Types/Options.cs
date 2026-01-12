@@ -11,9 +11,16 @@ public class DurableStreamClientOptions
     public string? BaseUrl { get; set; }
 
     /// <summary>
-    /// Default headers for all requests.
+    /// Default headers for all requests (static values).
     /// </summary>
     public Dictionary<string, string>? DefaultHeaders { get; set; }
+
+    /// <summary>
+    /// Dynamic headers evaluated per-request. Use for token refresh,
+    /// correlation IDs, or other values that change between requests.
+    /// The factory is called for EACH HTTP request (including retries).
+    /// </summary>
+    public Dictionary<string, Func<CancellationToken, ValueTask<string>>>? DynamicHeaders { get; set; }
 
     /// <summary>
     /// Timeout for individual operations.

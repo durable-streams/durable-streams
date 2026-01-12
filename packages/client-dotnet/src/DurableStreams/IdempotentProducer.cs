@@ -327,7 +327,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
             }
 
             using var request = new HttpRequestMessage(HttpMethod.Post, _stream.Url);
-            _stream.Client.ApplyDefaultHeaders(request);
+            await _stream.Client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
 
             var contentType = _stream.ContentType ?? _options.ContentType ?? ContentTypes.OctetStream;
             request.Content = new ByteArrayContent(rentedBuffer, 0, bodyLength);

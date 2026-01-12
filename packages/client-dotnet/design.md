@@ -154,8 +154,9 @@ public interface IDurableStream
 
     /// <summary>
     /// Append data to the stream.
+    /// Returns AppendResult with NextOffset and Duplicate flag.
     /// </summary>
-    Task AppendAsync(
+    Task<AppendResult> AppendAsync(
         ReadOnlyMemory<byte> data,
         AppendOptions? options = null,
         CancellationToken cancellationToken = default);
@@ -163,7 +164,7 @@ public interface IDurableStream
     /// <summary>
     /// Append a JSON-serializable object to the stream.
     /// </summary>
-    Task AppendAsync<T>(
+    Task<AppendResult> AppendJsonAsync<T>(
         T data,
         AppendOptions? options = null,
         CancellationToken cancellationToken = default);
@@ -171,16 +172,8 @@ public interface IDurableStream
     /// <summary>
     /// Append string data to the stream.
     /// </summary>
-    Task AppendAsync(
+    Task<AppendResult> AppendAsync(
         string data,
-        AppendOptions? options = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Append from an async stream source.
-    /// </summary>
-    Task AppendStreamAsync(
-        IAsyncEnumerable<ReadOnlyMemory<byte>> source,
         AppendOptions? options = null,
         CancellationToken cancellationToken = default);
 
@@ -188,15 +181,9 @@ public interface IDurableStream
 
     /// <summary>
     /// Start a streaming read session.
+    /// Returns a StreamResponse for consuming data via various patterns.
     /// </summary>
-    Task<IStreamResponse<TJson>> StreamAsync<TJson>(
-        StreamOptions? options = null,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Start a streaming read session (untyped JSON).
-    /// </summary>
-    Task<IStreamResponse<JsonElement>> StreamAsync(
+    Task<StreamResponse> StreamAsync(
         StreamOptions? options = null,
         CancellationToken cancellationToken = default);
 
@@ -209,8 +196,9 @@ public interface IDurableStream
 
     /// <summary>
     /// Create this stream if it doesn't exist.
+    /// Returns HTTP status code: 201 (created), 200 (already exists), 409 (conflict).
     /// </summary>
-    Task CreateAsync(
+    Task<int> CreateAsync(
         CreateStreamOptions? options = null,
         CancellationToken cancellationToken = default);
 
@@ -230,11 +218,11 @@ public interface IDurableStream
 }
 ```
 
-### 3. IStreamResponse
+### 3. StreamResponse
 
 The streaming read session, with multiple consumption patterns.
 
-> **Consumer Semantics**: `IStreamResponse` is a **single-consumer** abstraction.
+> **Consumer Semantics**: `StreamResponse` is a **single-consumer** abstraction.
 > Only ONE of the `Read*Async()` or `ReadAll*Async()` methods should be called
 > per response instance. Calling multiple methods on the same response will result
 > in partial/interleaved data or `InvalidOperationException`. If you need multiple
@@ -249,50 +237,50 @@ The streaming read session, with multiple consumption patterns.
 /// per response instance. The response owns a network connection and must be
 /// disposed via 'await using'.
 /// </summary>
-public interface IStreamResponse<TJson> : IAsyncDisposable
+public class StreamResponse : IAsyncDisposable
 {
     // === Session Info ===
 
-    string Url { get; }
-    string? ContentType { get; }
-    LiveMode Live { get; }
-    Offset StartOffset { get; }
+    public string Url { get; }
+    public string? ContentType { get; }
+    public LiveMode Live { get; }
+    public Offset StartOffset { get; }
 
     // === Evolving State ===
 
     /// <summary>
     /// Current offset (advances as data is consumed).
     /// </summary>
-    Offset Offset { get; }
+    public Offset Offset { get; }
 
     /// <summary>
     /// Current checkpoint (offset + cursor for resumption).
     /// </summary>
-    StreamCheckpoint Checkpoint { get; }
+    public StreamCheckpoint Checkpoint { get; }
 
     /// <summary>
     /// Whether we've reached the current end of stream.
     /// </summary>
-    bool UpToDate { get; }
+    public bool UpToDate { get; }
 
     // === Accumulating Helpers (catch-up only) ===
 
     /// <summary>
     /// Accumulate all bytes until upToDate, then return.
     /// </summary>
-    Task<ReadOnlyMemory<byte>> ReadAllBytesAsync(
+    public Task<byte[]> ReadAllBytesAsync(
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Accumulate all JSON items until upToDate, then return.
     /// </summary>
-    Task<IReadOnlyList<TJson>> ReadAllJsonAsync(
+    public Task<List<T>> ReadAllJsonAsync<T>(
         CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Accumulate all text until upToDate, then return.
     /// </summary>
-    Task<string> ReadAllTextAsync(
+    public Task<string> ReadAllTextAsync(
         CancellationToken cancellationToken = default);
 
     // === IAsyncEnumerable Streams ===
@@ -300,25 +288,25 @@ public interface IStreamResponse<TJson> : IAsyncDisposable
     /// <summary>
     /// Stream raw byte chunks as they arrive.
     /// </summary>
-    IAsyncEnumerable<ByteChunk> ReadBytesAsync(
+    public IAsyncEnumerable<ByteChunk> ReadBytesAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stream individual JSON items as they arrive.
     /// </summary>
-    IAsyncEnumerable<TJson> ReadJsonAsync(
+    public IAsyncEnumerable<T> ReadJsonAsync<T>(
         [EnumeratorCancellation] CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stream JSON batches with metadata as they arrive.
     /// </summary>
-    IAsyncEnumerable<JsonBatch<TJson>> ReadJsonBatchesAsync(
+    public IAsyncEnumerable<JsonBatch<T>> ReadJsonBatchesAsync<T>(
         [EnumeratorCancellation] CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Stream text chunks as they arrive.
     /// </summary>
-    IAsyncEnumerable<TextChunk> ReadTextAsync(
+    public IAsyncEnumerable<TextChunk> ReadTextAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default);
 
     // === Lifecycle ===
@@ -326,12 +314,7 @@ public interface IStreamResponse<TJson> : IAsyncDisposable
     /// <summary>
     /// Cancel the session.
     /// </summary>
-    void Cancel();
-
-    /// <summary>
-    /// Task that completes when the session closes.
-    /// </summary>
-    Task Closed { get; }
+    public void Cancel();
 }
 ```
 
@@ -456,39 +439,41 @@ public class DurableStreamClientOptions
     public string? BaseUrl { get; set; }
 
     /// <summary>
-    /// Default headers for all requests.
-    /// Supports static values or async factories for token refresh.
+    /// Default headers for all requests (static values).
     /// </summary>
-    public IDictionary<string, HeaderValue>? DefaultHeaders { get; set; }
+    public Dictionary<string, string>? DefaultHeaders { get; set; }
 
     /// <summary>
-    /// Custom HttpClient factory.
+    /// Dynamic headers evaluated per-request. Use for token refresh,
+    /// correlation IDs, or other values that change between requests.
+    /// The factory is called for EACH HTTP request (including retries).
     /// </summary>
-    public Func<HttpClient>? HttpClientFactory { get; set; }
+    public Dictionary<string, Func<CancellationToken, ValueTask<string>>>? DynamicHeaders { get; set; }
 
     /// <summary>
-    /// Backoff options for retries.
+    /// Timeout for individual operations.
     /// </summary>
-    public BackoffOptions Backoff { get; set; } = BackoffOptions.Default;
+    public TimeSpan? Timeout { get; set; }
 
     /// <summary>
-    /// JSON serializer options.
+    /// Maximum number of retries for transient errors.
     /// </summary>
-    public JsonSerializerOptions? JsonOptions { get; set; }
-}
+    public int MaxRetries { get; set; } = 3;
 
-/// <summary>
-/// Header value that can be static or dynamically generated.
-/// Matches TypeScript pattern for per-request token refresh.
-/// </summary>
-public readonly struct HeaderValue
-{
-    public string? StaticValue { get; }
-    public Func<CancellationToken, ValueTask<string>>? Factory { get; }
+    /// <summary>
+    /// Initial delay for exponential backoff.
+    /// </summary>
+    public TimeSpan InitialRetryDelay { get; set; } = TimeSpan.FromMilliseconds(100);
 
-    public static implicit operator HeaderValue(string value) => new(value);
-    public static implicit operator HeaderValue(Func<string> factory) => new(factory);
-    public static implicit operator HeaderValue(Func<CancellationToken, ValueTask<string>> factory) => new(factory);
+    /// <summary>
+    /// Maximum delay for exponential backoff.
+    /// </summary>
+    public TimeSpan MaxRetryDelay { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// Backoff multiplier.
+    /// </summary>
+    public double RetryMultiplier { get; set; } = 2.0;
 }
 ```
 
@@ -549,9 +534,9 @@ public class StreamOptions
     public string? Offset { get; set; }
 
     /// <summary>
-    /// Live mode: false (catch-up only), Auto, LongPoll, or SSE.
+    /// Live mode: Off (catch-up only), LongPoll, or SSE.
     /// </summary>
-    public LiveMode Live { get; set; } = LiveMode.Auto;
+    public LiveMode Live { get; set; } = LiveMode.Off;
 
     /// <summary>
     /// Request-specific headers (merged with client defaults).
@@ -577,27 +562,26 @@ public enum LiveMode
     Off = 0,
 
     /// <summary>
-    /// Behavior driven by consumption method.
+    /// Long-poll mode with server timeout.
     /// </summary>
-    Auto = 1,
+    LongPoll = 1,
 
     /// <summary>
-    /// Explicit long-poll mode.
+    /// Server-Sent Events persistent connection.
     /// </summary>
-    LongPoll = 2,
-
-    /// <summary>
-    /// Explicit SSE mode.
-    /// </summary>
-    Sse = 3
+    Sse = 2
 }
 ```
 
 ---
 
-## Builder Pattern
+## .NET Ergonomic Enhancements (Future)
 
-Following Pulsar and Entity Framework patterns:
+The following sections describe optional .NET-specific enhancements that improve developer experience but are **not required by the protocol conformance tests**. These can be implemented incrementally.
+
+### Builder Pattern (Not Yet Implemented)
+
+Following Pulsar and Entity Framework patterns, builders provide a fluent API for configuration:
 
 ```csharp
 public class DurableStreamClientBuilder
@@ -658,7 +642,7 @@ var client = new DurableStreamClientBuilder()
     .Build();
 ```
 
-### IdempotentProducerBuilder
+### IdempotentProducerBuilder (Not Yet Implemented)
 
 ```csharp
 public class IdempotentProducerBuilder
@@ -709,9 +693,7 @@ var producer = stream.CreateProducerBuilder("order-service-1")
     .Build();
 ```
 
----
-
-## Dependency Injection Integration
+### Dependency Injection Integration (Not Yet Implemented)
 
 Following patterns from Confluent.Kafka.DependencyInjection and Azure SDK:
 
@@ -834,6 +816,17 @@ public readonly record struct StreamCheckpoint(
 }
 ```
 
+### AppendResult
+
+```csharp
+/// <summary>
+/// Result of an append operation.
+/// </summary>
+public readonly record struct AppendResult(
+    Offset? NextOffset,
+    bool Duplicate = false);
+```
+
 ### Batch Types
 
 ```csharp
@@ -869,7 +862,9 @@ public readonly record struct StreamMetadata(
     string? ContentType,
     Offset? Offset,
     string? ETag,
-    string? CacheControl);
+    string? CacheControl,
+    int? TtlSeconds,
+    DateTimeOffset? ExpiresAt);
 ```
 
 ---
@@ -971,28 +966,31 @@ public class StreamNotFoundException : DurableStreamException
 
 ```csharp
 // Create client (singleton, inject via DI in real apps)
-await using var client = new DurableStreamClientBuilder()
-    .WithBaseUrl("https://streams.example.com")
-    .WithHeader("Authorization", "Bearer my-token")
-    .Build();
+await using var client = new DurableStreamClient(new DurableStreamClientOptions
+{
+    BaseUrl = "https://streams.example.com",
+    DefaultHeaders = new Dictionary<string, string>
+    {
+        ["Authorization"] = "Bearer my-token"
+    }
+});
 
 // Create a stream
-var stream = await client.CreateStreamAsync(
-    "/my-account/chat/room-1",
-    new CreateStreamOptions { ContentType = "application/json" });
+var stream = client.GetStream("/my-account/chat/room-1");
+await stream.CreateAsync(new CreateStreamOptions { ContentType = "application/json" });
 
-// Append data
-await stream.AppendAsync(new { message = "Hello, world!" });
+// Append JSON data
+await stream.AppendJsonAsync(new { message = "Hello, world!" });
 
 // Read with accumulator (catch-up only)
-await using var response = await stream.StreamAsync<ChatMessage>();
-var messages = await response.ReadAllJsonAsync();
+await using var response = await stream.StreamAsync();
+var messages = await response.ReadAllJsonAsync<ChatMessage>();
 
 // Read with IAsyncEnumerable (live streaming)
-await using var liveResponse = await stream.StreamAsync<ChatMessage>(
+await using var liveResponse = await stream.StreamAsync(
     new StreamOptions { Live = LiveMode.LongPoll });
 
-await foreach (var message in liveResponse.ReadJsonAsync())
+await foreach (var message in liveResponse.ReadJsonAsync<ChatMessage>())
 {
     Console.WriteLine(message.Text);
 }
@@ -1003,10 +1001,13 @@ await foreach (var message in liveResponse.ReadJsonAsync())
 ```csharp
 // Create producer
 var stream = client.GetStream("/orders/events");
-await using var producer = stream.CreateProducerBuilder("order-service-1")
-    .WithAutoClaim()
-    .WithBatching(maxBatchBytes: 1024 * 1024, lingerMs: 5, maxInFlight: 5)
-    .Build();
+await using var producer = stream.CreateProducer("order-service-1", new IdempotentProducerOptions
+{
+    AutoClaim = true,
+    MaxBatchBytes = 1024 * 1024,
+    LingerMs = 5,
+    MaxInFlight = 5
+});
 
 // Handle errors
 producer.OnError += (sender, e) =>
@@ -1025,9 +1026,10 @@ await producer.FlushAsync();
 ### Live Consumption with IAsyncEnumerable
 
 ```csharp
-await using var client = new DurableStreamClientBuilder()
-    .WithBaseUrl("https://streams.example.com")
-    .Build();
+await using var client = new DurableStreamClient(new DurableStreamClientOptions
+{
+    BaseUrl = "https://streams.example.com"
+});
 
 var stream = client.GetStream("/sensors/temperature");
 
@@ -1039,12 +1041,12 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-await using var response = await stream.StreamAsync<TemperatureReading>(
+await using var response = await stream.StreamAsync(
     new StreamOptions { Live = LiveMode.Sse });
 
 try
 {
-    await foreach (var batch in response.ReadJsonBatchesAsync(cts.Token))
+    await foreach (var batch in response.ReadJsonBatchesAsync<TemperatureReading>(cts.Token))
     {
         foreach (var reading in batch.Items)
         {
@@ -1068,9 +1070,9 @@ catch (OperationCanceledException)
 [Route("api/[controller]")]
 public class StreamController : ControllerBase
 {
-    private readonly IDurableStreamClient _client;
+    private readonly DurableStreamClient _client;
 
-    public StreamController(IDurableStreamClient client)
+    public StreamController(DurableStreamClient client)
     {
         _client = client;
     }
@@ -1083,7 +1085,7 @@ public class StreamController : ControllerBase
     {
         var stream = _client.GetStream($"/chats/{streamId}");
 
-        await using var response = await stream.StreamAsync<ChatMessage>(
+        await using var response = await stream.StreamAsync(
             new StreamOptions
             {
                 Offset = offset ?? Offset.Beginning,
@@ -1091,7 +1093,7 @@ public class StreamController : ControllerBase
             },
             cancellationToken);
 
-        await foreach (var message in response.ReadJsonAsync(cancellationToken))
+        await foreach (var message in response.ReadJsonAsync<ChatMessage>(cancellationToken))
         {
             yield return message;
         }
@@ -1102,16 +1104,21 @@ public class StreamController : ControllerBase
 ### Dynamic Auth Token Refresh
 
 ```csharp
-// Following the TypeScript pattern: functions called per-request
-var client = new DurableStreamClientBuilder()
-    .WithHeader("Authorization", async ct =>
+// Dynamic headers are evaluated per-request for token refresh
+var client = new DurableStreamClient(new DurableStreamClientOptions
+{
+    BaseUrl = "https://streams.example.com",
+    DynamicHeaders = new Dictionary<string, Func<CancellationToken, ValueTask<string>>>
     {
-        // Called for EACH request (including long-poll retries)
-        // Allows token refresh during long-lived sessions
-        var token = await tokenProvider.GetTokenAsync(ct);
-        return $"Bearer {token}";
-    })
-    .Build();
+        ["Authorization"] = async ct =>
+        {
+            // Called for EACH HTTP request (including long-poll retries)
+            // Allows token refresh during long-lived sessions
+            var token = await tokenProvider.GetTokenAsync(ct);
+            return $"Bearer {token}";
+        }
+    }
+});
 ```
 
 ---

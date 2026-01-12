@@ -461,7 +461,7 @@ public sealed class StreamResponse : IAsyncDisposable
     private async Task MakeRequestAsync()
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, _url);
-        _stream.Client.ApplyDefaultHeaders(request);
+        await _stream.Client.ApplyDefaultHeadersAsync(request, _cts.Token).ConfigureAwait(false);
 
         if (_options.Headers != null)
         {
