@@ -124,6 +124,7 @@ struct Features {
     batching: bool,
     sse: bool,
     long_poll: bool,
+    auto: bool,
     streaming: bool,
     dynamic_headers: bool,
 }
@@ -244,6 +245,7 @@ async fn handle_init(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
             batching: true,
             sse: true,
             long_poll: true,
+            auto: true,
             streaming: true,
             dynamic_headers: true,
         }),
@@ -409,6 +411,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         Some(Value::String(s)) => match s.as_str() {
             "long-poll" => LiveMode::LongPoll,
             "sse" => LiveMode::Sse,
+            "auto" => LiveMode::Auto,
             _ => LiveMode::Off,
         },
         Some(Value::Bool(false)) => LiveMode::Off,

@@ -77,6 +77,7 @@ interface ClientFeatures {
   batching?: boolean
   sse?: boolean
   longPoll?: boolean
+  auto?: boolean
   streaming?: boolean
   dynamicHeaders?: boolean
 }
@@ -1051,6 +1052,7 @@ function featureToProperty(feature: string): keyof ClientFeatures | undefined {
     sse: `sse`,
     "long-poll": `longPoll`,
     longPoll: `longPoll`,
+    auto: `auto`,
     streaming: `streaming`,
     dynamicHeaders: `dynamicHeaders`,
     "dynamic-headers": `dynamicHeaders`,

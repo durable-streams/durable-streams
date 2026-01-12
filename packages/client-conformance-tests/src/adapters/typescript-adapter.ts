@@ -132,6 +132,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           batching: true,
           sse: true,
           longPoll: true,
+          auto: true,
           streaming: true,
           dynamicHeaders: true,
         },
@@ -268,11 +269,13 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         }
 
         // Determine live mode
-        let live: `long-poll` | `sse` | false
+        let live: `auto` | `long-poll` | `sse` | false
         if (command.live === `long-poll`) {
           live = `long-poll`
         } else if (command.live === `sse`) {
           live = `sse`
+        } else if (command.live === `auto`) {
+          live = `auto`
         } else {
           live = false
         }
