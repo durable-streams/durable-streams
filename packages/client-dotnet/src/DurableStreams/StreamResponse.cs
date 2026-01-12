@@ -510,17 +510,25 @@ public sealed class StreamResponse : IAsyncDisposable
             var items = JsonSerializer.Deserialize<List<T>>(data);
             return items ?? [];
         }
-        catch
+        catch (JsonException)
         {
-            // Try as single item
+            // Try as single item (server may send unwrapped single values)
             try
             {
                 var item = JsonSerializer.Deserialize<T>(data);
                 return item != null ? [item] : [];
             }
-            catch
+            catch (JsonException ex)
             {
-                return [];
+                // Log and throw - don't silently swallow parse errors
+                var preview = data.Length > 100
+                    ? Encoding.UTF8.GetString(data[..100]) + "..."
+                    : Encoding.UTF8.GetString(data);
+                throw new DurableStreamException(
+                    $"Failed to parse JSON response: {ex.Message}. Data preview: {preview}",
+                    DurableStreamErrorCode.BadRequest,
+                    null,
+                    null);
             }
         }
     }
@@ -533,7 +541,6 @@ public sealed class StreamResponse : IAsyncDisposable
 
         _cts.Cancel();
         CloseSseConnection();
-        _currentResponse?.Dispose();
         _cts.Dispose();
 
         return ValueTask.CompletedTask;

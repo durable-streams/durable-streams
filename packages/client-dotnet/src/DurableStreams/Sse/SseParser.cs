@@ -114,8 +114,17 @@ internal sealed class SseParser : IDisposable
         {
             "data" => (SseEventType.Data, new SseDataEvent(data)),
             "control" => ParseControlEvent(data),
-            _ => null // Unknown event type
+            _ => HandleUnknownEvent(eventType, data)
         };
+    }
+
+    private static (SseEventType Type, object Event)? HandleUnknownEvent(string eventType, string data)
+    {
+        // Log unknown event types for debugging protocol mismatches
+        System.Diagnostics.Debug.WriteLine(
+            $"[DurableStreams] Unknown SSE event type '{eventType}'. " +
+            $"This may indicate a protocol version mismatch. Data: {data.Substring(0, Math.Min(100, data.Length))}");
+        return null;
     }
 
     private static (SseEventType Type, object Event)? ParseControlEvent(string data)
@@ -138,9 +147,13 @@ internal sealed class SseParser : IDisposable
 
             return (SseEventType.Control, new SseControlEvent(streamNextOffset, streamCursor, upToDate));
         }
-        catch
+        catch (JsonException ex)
         {
-            return null;
+            // Control events contain critical stream position data - don't silently ignore parse failures
+            System.Diagnostics.Debug.WriteLine(
+                $"[DurableStreams] Failed to parse SSE control event: {ex.Message}. Data: {data}");
+            throw new InvalidOperationException(
+                $"SSE control event contained invalid JSON: {ex.Message}. Data: {data}", ex);
         }
     }
 

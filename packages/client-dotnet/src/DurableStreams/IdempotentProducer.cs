@@ -1,10 +1,8 @@
 using System.Buffers;
-using System.IO;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Channels;
 using DurableStreams.Internal;
 
 namespace DurableStreams;
@@ -18,7 +16,6 @@ public sealed class IdempotentProducer : IAsyncDisposable
     private readonly DurableStream _stream;
     private readonly string _producerId;
     private readonly IdempotentProducerOptions _options;
-    private readonly Channel<PendingMessage> _channel;
     private readonly SemaphoreSlim _flushLock = new(1, 1);
     private readonly object _stateLock = new();
 
@@ -82,13 +79,6 @@ public sealed class IdempotentProducer : IAsyncDisposable
         {
             _stream.ContentType = options.ContentType;
         }
-
-        _channel = Channel.CreateBounded<PendingMessage>(new BoundedChannelOptions(options.MaxBufferedMessages)
-        {
-            FullMode = BoundedChannelFullMode.Wait,
-            SingleReader = false,
-            SingleWriter = false
-        });
     }
 
     /// <summary>
@@ -253,7 +243,10 @@ public sealed class IdempotentProducer : IAsyncDisposable
         try
         {
             await DoSendBatchAsync(batch, seq, epoch, CancellationToken.None).ConfigureAwait(false);
-            _epochClaimed = true;
+            lock (_stateLock)
+            {
+                _epochClaimed = true;
+            }
         }
         catch (Exception ex)
         {
@@ -523,9 +516,14 @@ public sealed class IdempotentProducer : IAsyncDisposable
         {
             await FlushAsync().ConfigureAwait(false);
         }
-        catch
+        catch (Exception ex)
         {
-            // Ignore errors during dispose
+            // Log flush errors during dispose - data may have been lost
+            System.Diagnostics.Debug.WriteLine(
+                $"[DurableStreams] IdempotentProducer flush failed during dispose: {ex.Message}. " +
+                $"Pending messages may not have been delivered.");
+            // Also raise OnError so subscribers are notified
+            RaiseError(ex, _epoch, _nextSeq - 1, _nextSeq - 1, _pendingBatch.Count);
         }
 
         _lingerTimer?.Dispose();
