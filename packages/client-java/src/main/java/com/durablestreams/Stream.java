@@ -282,6 +282,48 @@ public final class Stream {
         return executeWithRetry(request, "read", response -> parseReadResponse(response, offset));
     }
 
+    // Package-private for ChunkIterator - creates SSE streaming connection
+    com.durablestreams.internal.sse.SSEStreamingReader openSSEStream(Offset offset, String cursor)
+            throws DurableStreamException {
+        HttpRequest request = buildSSERequest(offset, cursor);
+        return new com.durablestreams.internal.sse.SSEStreamingReader(
+                client.getHttpClient(), request, offset);
+    }
+
+    private HttpRequest buildSSERequest(Offset offset, String cursor) {
+        StringBuilder urlBuilder = new StringBuilder(url);
+        List<String> params = new ArrayList<>();
+
+        Map<String, String> extraParams = client.resolveParams();
+        extraParams.forEach((k, v) -> params.add(encode(k) + "=" + encode(v)));
+
+        if (offset != null) {
+            params.add("offset=" + encode(offset.getValue()));
+        }
+        params.add("live=sse");
+        if (cursor != null) {
+            params.add("cursor=" + encode(cursor));
+        }
+
+        if (!params.isEmpty()) {
+            Collections.sort(params);
+            urlBuilder.append("?").append(String.join("&", params));
+        }
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(urlBuilder.toString()))
+                .GET()
+                .header("Accept", "text/event-stream");
+
+        // SSE connections are long-lived, don't set a short timeout
+        // The connection will be closed by the server after ~60 seconds per protocol
+
+        Map<String, String> headers = client.resolveHeaders();
+        headers.forEach(builder::header);
+
+        return builder.build();
+    }
+
     private HttpRequest buildReadRequest(Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
         StringBuilder urlBuilder = new StringBuilder(url);
         List<String> params = new ArrayList<>();
@@ -372,9 +414,25 @@ public final class Stream {
 
     // ==================== Request Builders ====================
 
+    /**
+     * Build URL with query parameters applied.
+     * Query params are applied to ALL operations for auth gateway compatibility.
+     */
+    private String buildUrlWithParams() {
+        Map<String, String> params = client.resolveParams();
+        if (params.isEmpty()) {
+            return url;
+        }
+
+        List<String> paramList = new ArrayList<>();
+        params.forEach((k, v) -> paramList.add(encode(k) + "=" + encode(v)));
+        Collections.sort(paramList);
+        return url + "?" + String.join("&", paramList);
+    }
+
     private HttpRequest buildCreateRequest(String contentType, Duration ttl, Instant expiresAt) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(buildUrlWithParams()))
                 .method("PUT", HttpRequest.BodyPublishers.noBody())
                 .timeout(Duration.ofSeconds(30));
 
@@ -396,7 +454,7 @@ public final class Stream {
 
     private HttpRequest buildAppendRequest(byte[] data, Long seq) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(buildUrlWithParams()))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(data))
                 .timeout(Duration.ofSeconds(30));
 
@@ -414,7 +472,7 @@ public final class Stream {
 
     private HttpRequest buildHeadRequest() {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(buildUrlWithParams()))
                 .method("HEAD", HttpRequest.BodyPublishers.noBody())
                 .timeout(Duration.ofSeconds(30));
 
@@ -426,7 +484,7 @@ public final class Stream {
 
     private HttpRequest buildDeleteRequest() {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(URI.create(buildUrlWithParams()))
                 .DELETE()
                 .timeout(Duration.ofSeconds(30));
 

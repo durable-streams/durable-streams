@@ -388,7 +388,7 @@ The client implements the [Durable Streams Protocol](../../PROTOCOL.md). Key ope
 
 ## License
 
-Apache 2.0 - see [LICENSE](../../LICENSE)
+MIT - see [LICENSE](../../LICENSE)
 
 ## Links
 

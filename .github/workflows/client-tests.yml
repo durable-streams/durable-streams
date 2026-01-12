@@ -44,7 +44,7 @@ jobs:
       - name: Build Java client adapter
         run: |
           cd packages/client-java
-          gradle build
+          ./gradlew build
 
       - name: Run TypeScript client conformance tests
         run: |
@@ -107,7 +107,7 @@ jobs:
       - name: Build Java client adapter
         run: |
           cd packages/client-java
-          gradle build
+          ./gradlew build
 
       - name: Install Python client
         run: |

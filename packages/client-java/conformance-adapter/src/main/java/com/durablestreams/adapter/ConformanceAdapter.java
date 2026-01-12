@@ -294,8 +294,8 @@ public class ConformanceAdapter {
             boolean upToDate = false;
             int status = 200;
 
-            // For SSE mode, treat it as long-poll since we don't have true SSE streaming
-            LiveMode effectiveMode = (liveMode == LiveMode.SSE) ? LiveMode.LONG_POLL : liveMode;
+            // SSE mode now uses true streaming
+            LiveMode effectiveMode = liveMode;
 
             try (ChunkIterator iterator = stream.read(offset, effectiveMode, timeout, null)) {
                 int count = 0;
