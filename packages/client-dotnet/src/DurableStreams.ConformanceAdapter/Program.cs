@@ -1039,6 +1039,7 @@ object CreateErrorFromException(string commandType, Exception ex)
         StaleEpochException => ("FORBIDDEN", 403),
         SequenceGapException => ("SEQUENCE_CONFLICT", 409),
         DurableStreamException dse => (MapErrorCode(dse), dse.StatusCode ?? 500),
+        InvalidOperationException when ex.Message.Contains("SSE") || ex.Message.Contains("JSON") => ("PARSE_ERROR", null as int?),
         OperationCanceledException => ("TIMEOUT", null as int?),
         HttpRequestException => ("NETWORK_ERROR", null),
         _ => ("INTERNAL_ERROR", null as int?)
@@ -1049,6 +1050,7 @@ object CreateErrorFromException(string commandType, Exception ex)
         // Map error codes to conformance test expected values
         return dse.Code switch
         {
+            DurableStreamErrorCode.ParseError => "PARSE_ERROR",
             DurableStreamErrorCode.BadRequest when commandType == "read" ||
                 dse.Message.ToLowerInvariant().Contains("offset") => "INVALID_OFFSET",
             DurableStreamErrorCode.ConflictSeq => "SEQUENCE_CONFLICT",

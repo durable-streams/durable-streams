@@ -42,7 +42,10 @@ public enum DurableStreamErrorCode
     NetworkError,
 
     /// <summary>Operation timed out.</summary>
-    Timeout
+    Timeout,
+
+    /// <summary>Failed to parse response (JSON or SSE).</summary>
+    ParseError
 }
 
 /// <summary>

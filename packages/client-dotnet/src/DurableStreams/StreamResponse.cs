@@ -526,7 +526,7 @@ public sealed class StreamResponse : IAsyncDisposable
                     : Encoding.UTF8.GetString(data);
                 throw new DurableStreamException(
                     $"Failed to parse JSON response: {ex.Message}. Data preview: {preview}",
-                    DurableStreamErrorCode.BadRequest,
+                    DurableStreamErrorCode.ParseError,
                     null,
                     null);
             }

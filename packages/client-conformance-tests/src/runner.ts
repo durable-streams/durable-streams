@@ -729,6 +729,7 @@ async function executeOperation(
             method: op.method,
             corruptBody: op.corruptBody,
             jitterMs: op.jitterMs,
+            injectSseEvent: op.injectSseEvent,
           }),
         })
 
@@ -742,6 +743,8 @@ async function executeOperation(
           faultTypes.push(`truncate=${op.truncateBodyBytes}b`)
         if (op.corruptBody) faultTypes.push(`corrupt`)
         if (op.probability != null) faultTypes.push(`p=${op.probability}`)
+        if (op.injectSseEvent)
+          faultTypes.push(`sse:${op.injectSseEvent.eventType}`)
         const faultDesc = faultTypes.join(`,`) || `unknown`
 
         if (verbose) {

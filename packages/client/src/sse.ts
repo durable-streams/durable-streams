@@ -6,6 +6,7 @@
  * - `event: control` events contain `streamNextOffset` and optional `streamCursor` and `upToDate`
  */
 
+import { DurableStreamError } from "./error"
 import type { Offset } from "./types"
 
 /**
@@ -79,10 +80,17 @@ export async function* parseSSEStream(
                   streamCursor: control.streamCursor,
                   upToDate: control.upToDate,
                 }
-              } catch {
-                // Invalid control event, skip
+              } catch (err) {
+                // Control events contain critical offset data - don't silently ignore
+                const preview =
+                  dataStr.length > 100 ? dataStr.slice(0, 100) + `...` : dataStr
+                throw new DurableStreamError(
+                  `Failed to parse SSE control event: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+                  `PARSE_ERROR`
+                )
               }
             }
+            // Unknown event types are silently skipped per protocol
           }
           currentEvent = { data: [] }
         } else if (line.startsWith(`event:`)) {
@@ -122,8 +130,13 @@ export async function* parseSSEStream(
             streamCursor: control.streamCursor,
             upToDate: control.upToDate,
           }
-        } catch {
-          // Invalid control event, skip
+        } catch (err) {
+          const preview =
+            dataStr.length > 100 ? dataStr.slice(0, 100) + `...` : dataStr
+          throw new DurableStreamError(
+            `Failed to parse SSE control event: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
         }
       }
     }

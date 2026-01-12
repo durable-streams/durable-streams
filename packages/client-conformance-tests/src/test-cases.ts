@@ -364,6 +364,13 @@ export interface InjectErrorOperation {
   corruptBody?: boolean
   /** Add jitter to delay (random 0-jitterMs added to delayMs) */
   jitterMs?: number
+  /** Inject an SSE event with custom type and data (for testing SSE parsing) */
+  injectSseEvent?: {
+    /** Event type (e.g., "unknown", "control", "data") */
+    eventType: string
+    /** Event data (will be sent as-is) */
+    data: string
+  }
 }
 
 /**
