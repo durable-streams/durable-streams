@@ -5,11 +5,6 @@ declare(strict_types=1);
 namespace DurableStreams\Internal;
 
 use DurableStreams\Exception\DurableStreamException;
-use DurableStreams\Exception\RateLimitedException;
-use DurableStreams\Exception\SeqConflictException;
-use DurableStreams\Exception\StreamExistsException;
-use DurableStreams\Exception\StreamNotFoundException;
-use DurableStreams\Exception\UnauthorizedException;
 use DurableStreams\RetryOptions;
 
 /**
@@ -19,6 +14,8 @@ use DurableStreams\RetryOptions;
  */
 final class HttpClient implements HttpClientInterface
 {
+    use HttpErrorHandler;
+
     /** @var \CurlHandle|null Reusable cURL handle for connection pooling */
     private ?\CurlHandle $handle = null;
 
@@ -137,14 +134,6 @@ final class HttpClient implements HttpClientInterface
     }
 
     /**
-     * Check if an HTTP status code is retryable.
-     */
-    private function isRetryableStatus(int $status): bool
-    {
-        return in_array($status, [429, 500, 502, 503, 504], true);
-    }
-
-    /**
      * Execute a single HTTP request (no retry logic).
      */
     private function doRequest(
@@ -163,18 +152,18 @@ final class HttpClient implements HttpClientInterface
         }
 
         // Set request-specific options
+        $isHead = $method === 'HEAD';
         curl_setopt_array($handle, [
             CURLOPT_URL => $url,
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $curlHeaders,
             CURLOPT_TIMEOUT_MS => (int)(($timeout ?? $this->timeout) * 1000),
+            CURLOPT_NOBODY => $isHead,
         ]);
 
-        // Handle body
-        if ($body !== null) {
-            curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
-        } else {
-            curl_setopt($handle, CURLOPT_POSTFIELDS, '');
+        // Handle body (skip for HEAD requests)
+        if (!$isHead) {
+            curl_setopt($handle, CURLOPT_POSTFIELDS, $body ?? '');
         }
 
         // Execute
@@ -226,91 +215,6 @@ final class HttpClient implements HttpClientInterface
     }
 
     /**
-     * Handle HTTP error status codes.
-     *
-     * @throws DurableStreamException
-     */
-    private function handleErrorStatus(
-        int $status,
-        string $url,
-        array $headers,
-        string $body,
-    ): void {
-        if ($status >= 200 && $status < 300) {
-            return;
-        }
-
-        // 204 No Content is valid for some operations
-        if ($status === 204) {
-            return;
-        }
-
-        switch ($status) {
-            case 404:
-                throw new StreamNotFoundException($url);
-
-            case 409:
-                // Check if this is a sequence conflict (idempotent producer headers)
-                $expectedSeq = isset($headers['producer-expected-seq'])
-                    ? (int)$headers['producer-expected-seq']
-                    : null;
-                $receivedSeq = isset($headers['producer-received-seq'])
-                    ? (int)$headers['producer-received-seq']
-                    : null;
-
-                if ($expectedSeq !== null || $receivedSeq !== null) {
-                    throw new SeqConflictException(
-                        "Sequence conflict: expected {$expectedSeq}, received {$receivedSeq}",
-                        $expectedSeq,
-                        $receivedSeq,
-                        $headers
-                    );
-                }
-
-                // Check if body indicates Stream-Seq conflict
-                if (stripos($body, 'sequence conflict') !== false) {
-                    throw new SeqConflictException(
-                        $body ?: 'Sequence conflict',
-                        null,
-                        null,
-                        $headers
-                    );
-                }
-
-                // Otherwise it's a stream exists conflict
-                throw new StreamExistsException($url);
-
-            case 400:
-                throw new DurableStreamException($body ?: 'Bad request', 'BAD_REQUEST', $status, $headers);
-
-            case 401:
-                throw new UnauthorizedException($body ?: 'Unauthorized', $headers);
-
-            case 403:
-                throw new DurableStreamException($body ?: 'Forbidden', 'FORBIDDEN', $status, $headers);
-
-            case 429:
-                throw new RateLimitedException($body ?: 'Rate limited', $headers);
-
-            default:
-                if ($status >= 500) {
-                    throw new DurableStreamException(
-                        "Server error: {$status}",
-                        'SERVER_ERROR',
-                        $status,
-                        $headers
-                    );
-                }
-                throw new DurableStreamException(
-                    "Unexpected status: {$status}",
-                    'UNEXPECTED_STATUS',
-                    $status,
-                    $headers
-                );
-        }
-    }
-
-    /**
      * Convenience method for GET requests.
      */
     public function get(string $url, array $headers = [], ?float $timeout = null): HttpResponse
@@ -339,37 +243,7 @@ final class HttpClient implements HttpClientInterface
      */
     public function head(string $url, array $headers = []): HttpResponse
     {
-        $handle = $this->getHandle();
-
-        $curlHeaders = [];
-        foreach ($headers as $name => $value) {
-            $curlHeaders[] = "{$name}: {$value}";
-        }
-
-        curl_setopt_array($handle, [
-            CURLOPT_URL => $url,
-            CURLOPT_CUSTOMREQUEST => 'HEAD',
-            CURLOPT_HTTPHEADER => $curlHeaders,
-            CURLOPT_NOBODY => true,
-            CURLOPT_TIMEOUT_MS => (int)($this->timeout * 1000),
-        ]);
-
-        $response = curl_exec($handle);
-
-        // Reset NOBODY for future requests
-        curl_setopt($handle, CURLOPT_NOBODY, false);
-
-        if ($response === false) {
-            $error = curl_error($handle);
-            throw new DurableStreamException("Network error: {$error}", 'NETWORK_ERROR');
-        }
-
-        $statusCode = (int)curl_getinfo($handle, CURLINFO_HTTP_CODE);
-        $responseHeaders = $this->parseHeaders($response);
-
-        $this->handleErrorStatus($statusCode, $url, $responseHeaders, '');
-
-        return new HttpResponse($statusCode, $responseHeaders, '');
+        return $this->request('HEAD', $url, $headers);
     }
 
     /**
