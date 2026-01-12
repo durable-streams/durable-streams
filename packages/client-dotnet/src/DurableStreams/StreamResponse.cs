@@ -526,9 +526,9 @@ public sealed class StreamResponse : IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed) return;
+        if (_disposed) return ValueTask.CompletedTask;
         _disposed = true;
 
         _cts.Cancel();
@@ -536,6 +536,6 @@ public sealed class StreamResponse : IAsyncDisposable
         _currentResponse?.Dispose();
         _cts.Dispose();
 
-        await Task.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 }

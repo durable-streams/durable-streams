@@ -145,7 +145,6 @@ public sealed class DurableStreamClient : IAsyncDisposable, IDisposable
     /// </summary>
     internal async ValueTask ApplyDefaultHeadersAsync(HttpRequestMessage request, CancellationToken cancellationToken = default)
     {
-        // Apply static headers
         if (_options.DefaultHeaders != null)
         {
             foreach (var (key, value) in _options.DefaultHeaders)
@@ -154,7 +153,6 @@ public sealed class DurableStreamClient : IAsyncDisposable, IDisposable
             }
         }
 
-        // Apply dynamic headers (evaluated per-request)
         if (_options.DynamicHeaders != null)
         {
             foreach (var (key, factory) in _options.DynamicHeaders)

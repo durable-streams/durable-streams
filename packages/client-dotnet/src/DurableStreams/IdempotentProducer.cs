@@ -333,32 +333,27 @@ public sealed class IdempotentProducer : IAsyncDisposable
             request.Content = new ByteArrayContent(rentedBuffer, 0, bodyLength);
             request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
 
-        request.Headers.TryAddWithoutValidation(Headers.ProducerId, _producerId);
-        request.Headers.TryAddWithoutValidation(Headers.ProducerEpoch, epoch.ToString());
-        request.Headers.TryAddWithoutValidation(Headers.ProducerSeq, seq.ToString());
+            request.Headers.TryAddWithoutValidation(Headers.ProducerId, _producerId);
+            request.Headers.TryAddWithoutValidation(Headers.ProducerEpoch, epoch.ToString());
+            request.Headers.TryAddWithoutValidation(Headers.ProducerSeq, seq.ToString());
 
-        var response = await _stream.Client.HttpClient
-            .SendAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+            using var response = await _stream.Client.HttpClient
+                .SendAsync(request, cancellationToken)
+                .ConfigureAwait(false);
 
-        try
-        {
             var statusCode = response.StatusCode;
 
             switch (statusCode)
             {
                 case HttpStatusCode.OK:
                 case HttpStatusCode.NoContent:
-                    // Success (200 = new data, 204 = duplicate)
                     return;
 
                 case HttpStatusCode.Forbidden:
-                    // Stale epoch (zombie fencing)
                     var currentEpoch = HttpHelpers.GetIntHeader(response, Headers.ProducerEpoch) ?? epoch;
 
                     if (_options.AutoClaim)
                     {
-                        // Auto-retry with new epoch
                         var newEpoch = currentEpoch + 1;
                         lock (_stateLock)
                         {
@@ -372,13 +367,11 @@ public sealed class IdempotentProducer : IAsyncDisposable
                     throw new StaleEpochException(currentEpoch, _stream.Url);
 
                 case HttpStatusCode.Conflict:
-                    // Sequence gap - request arrived out of order
                     var expectedSeq = HttpHelpers.GetIntHeader(response, Headers.ProducerExpectedSeq) ?? 0;
                     var receivedSeq = HttpHelpers.GetIntHeader(response, Headers.ProducerReceivedSeq) ?? seq;
 
                     if (expectedSeq < seq)
                     {
-                        // Wait for earlier sequences to complete
                         for (var s = expectedSeq; s < seq; s++)
                         {
                             var error = await WaitForSeqAsync(epoch, s, cancellationToken).ConfigureAwait(false);
@@ -387,7 +380,6 @@ public sealed class IdempotentProducer : IAsyncDisposable
                                 throw error;
                             }
                         }
-                        // Retry
                         await DoSendBatchAsync(batch, seq, epoch, cancellationToken).ConfigureAwait(false);
                         return;
                     }
@@ -398,14 +390,9 @@ public sealed class IdempotentProducer : IAsyncDisposable
                     throw new StreamNotFoundException(_stream.Url);
 
                 default:
-                    var body2 = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
-                    throw DurableStreamException.FromStatusCode((int)statusCode, _stream.Url, body2);
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    throw DurableStreamException.FromStatusCode((int)statusCode, _stream.Url, body);
             }
-        }
-        finally
-        {
-            response.Dispose();
-        }
         }
         finally
         {
