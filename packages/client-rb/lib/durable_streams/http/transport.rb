@@ -37,7 +37,14 @@ module DurableStreams
           pool = Thread.current[:durable_streams_connections]
           return unless pool
 
-          pool.each_value { |conn| conn.finish if conn.started? rescue nil }
+          pool.each_value do |conn|
+            next unless conn.started?
+            begin
+              conn.finish
+            rescue StandardError => e
+              DurableStreams.logger&.debug("Connection close error: #{e.class}: #{e.message}")
+            end
+          end
           pool.clear
         end
 
@@ -48,7 +55,13 @@ module DurableStreams
 
           key = "#{uri.host}:#{uri.port}"
           conn = pool.delete(key)
-          conn&.finish rescue nil
+          return unless conn
+
+          begin
+            conn.finish
+          rescue StandardError => e
+            DurableStreams.logger&.debug("Connection reset error: #{e.class}: #{e.message}")
+          end
         end
       end
 

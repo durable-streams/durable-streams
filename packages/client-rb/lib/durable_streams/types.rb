@@ -17,6 +17,11 @@ module DurableStreams
   # Result from HEAD request
   # next_offset: The tail offset (position after last byte, where next append goes)
   HeadResult = Struct.new(:exists, :content_type, :next_offset, :etag, :cache_control, keyword_init: true) do
+    def initialize(**)
+      super
+      freeze
+    end
+
     def exists?
       exists
     end
@@ -25,6 +30,11 @@ module DurableStreams
   # Result from append
   # next_offset: The new tail offset after this append (for checkpointing)
   AppendResult = Struct.new(:next_offset, :duplicate, keyword_init: true) do
+    def initialize(**)
+      super
+      freeze
+    end
+
     def duplicate?
       duplicate || false
     end
@@ -33,6 +43,11 @@ module DurableStreams
   # A batch of JSON messages with metadata
   # next_offset: Position to resume from (pass to next read)
   JsonBatch = Struct.new(:items, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def initialize(items: [], **)
+      super(items: Array(items).freeze, **)
+      freeze
+    end
+
     def up_to_date?
       up_to_date || false
     end
@@ -41,12 +56,17 @@ module DurableStreams
   # A byte chunk (for non-JSON streams)
   # next_offset: Position to resume from (pass to next read)
   ByteChunk = Struct.new(:data, :next_offset, :cursor, :up_to_date, keyword_init: true) do
+    def initialize(**)
+      super
+      freeze
+    end
+
     def up_to_date?
       up_to_date || false
     end
   end
 
-  # Retry policy configuration
+  # Retry policy configuration (not frozen - may be modified before use)
   RetryPolicy = Struct.new(:max_retries, :initial_delay, :max_delay, :multiplier, :retryable_statuses,
                            keyword_init: true) do
     def self.default
@@ -55,13 +75,18 @@ module DurableStreams
         initial_delay: 0.1,
         max_delay: 30.0,
         multiplier: 2.0,
-        retryable_statuses: [429, 500, 502, 503, 504]
-      )
+        retryable_statuses: [429, 500, 502, 503, 504].freeze
+      ).freeze
     end
   end
 
   # Idempotent append result
   IdempotentAppendResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
+    def initialize(**)
+      super
+      freeze
+    end
+
     def duplicate?
       duplicate || false
     end

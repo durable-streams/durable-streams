@@ -51,8 +51,16 @@ module DurableStreams
     # Close the SSE connection
     def close
       @closed = true
-      @http_response&.instance_variable_get(:@socket)&.close rescue nil
-      @connection&.finish rescue nil
+      begin
+        @http_response&.instance_variable_get(:@socket)&.close
+      rescue StandardError => e
+        DurableStreams.logger&.debug("SSE socket close error (expected during cleanup): #{e.class}: #{e.message}")
+      end
+      begin
+        @connection&.finish
+      rescue StandardError => e
+        DurableStreams.logger&.debug("SSE connection finish error (expected during cleanup): #{e.class}: #{e.message}")
+      end
     end
 
     def closed?
@@ -115,7 +123,11 @@ module DurableStreams
         yield response
       end
     ensure
-      @connection&.finish rescue nil
+      begin
+        @connection&.finish
+      rescue StandardError => e
+        DurableStreams.logger&.debug("SSE connection cleanup error: #{e.class}: #{e.message}")
+      end
     end
 
     def parse_events
@@ -167,8 +179,10 @@ module DurableStreams
             cursor: @cursor,
             up_to_date: @up_to_date
           }
-        rescue JSON::ParserError
-          # Ignore malformed control events
+        rescue JSON::ParserError => e
+          DurableStreams.logger&.warn(
+            "Malformed SSE control event ignored: #{e.message} (data: #{data.slice(0, 200)})"
+          )
           return nil
         end
       end

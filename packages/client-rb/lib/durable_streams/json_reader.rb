@@ -143,7 +143,15 @@ module DurableStreams
 
       # Parse JSON body
       items = if response.body && !response.body.empty?
-                JSON.parse(response.body)
+                begin
+                  JSON.parse(response.body)
+                rescue JSON::ParserError => e
+                  raise FetchError.new(
+                    "Invalid JSON response from server: #{e.message}",
+                    url: @stream.url,
+                    status: response.status
+                  )
+                end
               else
                 []
               end
@@ -176,7 +184,15 @@ module DurableStreams
 
         # Only yield if there's data
         if event[:data] && !event[:data].empty?
-          items = JSON.parse(event[:data])
+          begin
+            items = JSON.parse(event[:data])
+          rescue JSON::ParserError => e
+            raise FetchError.new(
+              "Invalid JSON in SSE event: #{e.message}",
+              url: @stream.url,
+              status: 200
+            )
+          end
           items = [items] unless items.is_a?(Array)
 
           batch = JsonBatch.new(

@@ -140,7 +140,15 @@ module DurableStreams
           sleep(@linger_ms / 1000.0)
           flush unless @closed || @linger_cancelled
         rescue StandardError => e
-          @mutex.synchronize { @last_error ||= e }
+          @mutex.synchronize do
+            if @last_error
+              DurableStreams.logger&.warn(
+                "Additional error in linger timer (first error already recorded): #{e.class}: #{e.message}"
+              )
+            else
+              @last_error = e
+            end
+          end
         end
       end
     end
@@ -175,7 +183,18 @@ module DurableStreams
             send_batch_sync(batch)
           end
         rescue StandardError => e
-          @mutex.synchronize { @last_error ||= e }
+          DurableStreams.logger&.error(
+            "Sender thread died unexpectedly: #{e.class}: #{e.message}"
+          )
+          @mutex.synchronize do
+            if @last_error
+              DurableStreams.logger&.warn(
+                "Sender thread error (first error already recorded): #{e.class}: #{e.message}"
+              )
+            else
+              @last_error = e
+            end
+          end
         end
       end
     end
@@ -206,17 +225,24 @@ module DurableStreams
         rescue StaleEpochError => e
           if @auto_claim && retry_count < 3
             new_epoch = nil
+            new_batch = nil
             @mutex.synchronize do
               # Use the server's current epoch + 1, or at minimum our epoch + 1
               server_epoch = e.current_epoch || @epoch
               new_epoch = [server_epoch + 1, @epoch + 1].max
               @epoch = new_epoch
-              # Reset seq for new epoch since we're starting fresh
-              @seq = -1
-            end
-            # Rebuild the batch with seq starting from 0 for the new epoch
-            new_batch = batch.each_with_index.map do |msg, idx|
-              { data: msg[:data], seq: idx }
+              # Rebuild the batch with seq starting from 0 for the new epoch
+              new_batch = batch.each_with_index.map do |msg, idx|
+                { data: msg[:data], seq: idx }
+              end
+              # Update @seq to the last seq in the batch so subsequent appends continue correctly
+              # Any pending messages will be re-sequenced on next flush
+              @seq = new_batch.size - 1
+              # Re-sequence any pending messages to continue after the batch
+              @pending.each_with_index do |msg, idx|
+                msg[:seq] = @seq + 1 + idx
+              end
+              @seq += @pending.size
             end
             send_batch_request_with_epoch(new_batch, new_epoch)
           else
