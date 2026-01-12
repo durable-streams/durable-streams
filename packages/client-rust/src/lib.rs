@@ -42,7 +42,7 @@ pub use client::{Client, ClientBuilder};
 pub use error::{ProducerError, StreamError};
 pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
 pub use producer::{AppendReceipt, IdempotentProducer, ProducerBuilder};
-pub use stream::{AppendOptions, AppendResponse, CreateOptions, HeadResponse, Stream};
+pub use stream::{AppendOptions, AppendResponse, CreateOptions, DurableStream, HeadResponse};
 pub use types::{LiveMode, Offset};
 
 /// Done sentinel - indicates iteration is complete

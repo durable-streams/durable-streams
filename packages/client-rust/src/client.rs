@@ -1,6 +1,6 @@
 //! HTTP client and configuration.
 
-use crate::stream::Stream;
+use crate::stream::DurableStream;
 use reqwest::header::HeaderMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,7 +35,7 @@ impl Client {
     /// The url can be:
     /// - A full URL: "https://example.com/streams/my-stream"
     /// - A path (if base_url was set): "/streams/my-stream"
-    pub fn stream(&self, url: &str) -> Stream {
+    pub fn stream(&self, url: &str) -> DurableStream {
         let full_url = if url.starts_with("http://") || url.starts_with("https://") {
             url.to_string()
         } else if let Some(base) = &self.base_url {
@@ -44,7 +44,7 @@ impl Client {
             url.to_string()
         };
 
-        Stream {
+        DurableStream {
             url: full_url,
             client: self.clone(),
             content_type: None,

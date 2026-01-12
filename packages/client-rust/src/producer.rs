@@ -2,7 +2,7 @@
 
 use crate::error::{ProducerError, StreamError};
 use crate::stream::{
-    Stream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH, HEADER_PRODUCER_EXPECTED_SEQ,
+    DurableStream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH, HEADER_PRODUCER_EXPECTED_SEQ,
     HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_OFFSET,
 };
 use crate::types::Offset;
@@ -26,7 +26,7 @@ pub struct AppendReceipt {
 
 /// Builder for configuring an idempotent producer.
 pub struct ProducerBuilder {
-    stream: Stream,
+    stream: DurableStream,
     producer_id: String,
     epoch: u64,
     auto_claim: bool,
@@ -37,7 +37,7 @@ pub struct ProducerBuilder {
 }
 
 impl ProducerBuilder {
-    pub(crate) fn new(stream: Stream, producer_id: String) -> Self {
+    pub(crate) fn new(stream: DurableStream, producer_id: String) -> Self {
         Self {
             stream,
             producer_id,
@@ -162,7 +162,7 @@ struct PendingEntry {
 /// Uses Kafka-style producer IDs, epochs, and sequence numbers for deduplication.
 #[derive(Clone)]
 pub struct IdempotentProducer {
-    stream: Stream,
+    stream: DurableStream,
     producer_id: String,
     state: Arc<Mutex<ProducerState>>,
     config: Arc<ProducerConfig>,
@@ -389,7 +389,7 @@ impl IdempotentProducer {
 }
 
 async fn do_send_batch(
-    stream: &Stream,
+    stream: &DurableStream,
     producer_id: &str,
     content_type: &str,
     batch: Vec<PendingEntry>,
@@ -402,7 +402,7 @@ async fn do_send_batch(
 }
 
 async fn do_send_batch_with_retry(
-    stream: &Stream,
+    stream: &DurableStream,
     producer_id: &str,
     content_type: &str,
     batch: Vec<PendingEntry>,

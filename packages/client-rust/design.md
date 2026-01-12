@@ -479,25 +479,6 @@ impl IdempotentProducer {
     pub fn append_json<T: Serialize>(&self, data: &T) -> Result<(), ProducerError> { ... }
 
     // =========================================================================
-    // Acknowledged API (Correctness-Critical)
-    // =========================================================================
-    //
-    // Use these when you need confirmation that data was durably written.
-    // Lower throughput than fire-and-forget, but provides per-message receipts.
-
-    /// Append data and wait for server acknowledgment.
-    ///
-    /// Returns a receipt with the offset after the data was written.
-    /// Use this for correctness-critical writes where you need confirmation.
-    ///
-    /// Note: Still benefits from batching - if multiple `append_acked` calls
-    /// are pending, they may be batched together, but each gets its own receipt.
-    pub async fn append_acked(&self, data: impl Into<Bytes>) -> Result<AppendReceipt, ProducerError> { ... }
-
-    /// Append JSON data and wait for server acknowledgment.
-    pub async fn append_json_acked<T: Serialize>(&self, data: &T) -> Result<AppendReceipt, ProducerError> { ... }
-
-    // =========================================================================
     // Lifecycle
     // =========================================================================
 
@@ -1060,21 +1041,13 @@ causes method resolution confusion (inherent wins, shadows `StreamExt::next`).
 
 **Decision**: Added `JitterMode` enum with Full (default), Equal, Decorrelated, and None options.
 
-### 4. Acknowledged Append API
-
-**Problem**: Fire-and-forget only doesn't serve correctness-critical use cases that need
-per-message confirmation.
-
-**Decision**: Added `append_acked()` and `append_json_acked()` that return `AppendReceipt`
-with offset and duplicate flag.
-
-### 5. Documented Chunk and up_to_date Semantics
+### 4. Documented Chunk and up_to_date Semantics
 
 **Problem**: The meaning of `Chunk` and `up_to_date` varies by read mode but wasn't documented.
 
 **Decision**: Added detailed doc comments explaining semantics in each mode (catch-up, long-poll, SSE).
 
-### 6. Documented LiveMode::Auto Fallback Behavior
+### 5. Documented LiveMode::Auto Fallback Behavior
 
 **Problem**: How Auto mode handles SSE failures wasn't specified.
 

@@ -1,7 +1,7 @@
 //! Stream consumption with ChunkIterator.
 
 use crate::error::StreamError;
-use crate::stream::{Stream, HEADER_STREAM_CURSOR, HEADER_STREAM_OFFSET, HEADER_STREAM_UP_TO_DATE};
+use crate::stream::{DurableStream, HEADER_STREAM_CURSOR, HEADER_STREAM_OFFSET, HEADER_STREAM_UP_TO_DATE};
 use crate::types::{LiveMode, Offset};
 use bytes::Bytes;
 use std::time::Duration;
@@ -41,7 +41,7 @@ pub struct Chunk {
 
 /// Builder for configuring stream reads.
 pub struct ReadBuilder {
-    stream: Stream,
+    stream: DurableStream,
     offset: Offset,
     live: LiveMode,
     timeout: Duration,
@@ -50,7 +50,7 @@ pub struct ReadBuilder {
 }
 
 impl ReadBuilder {
-    pub(crate) fn new(stream: Stream) -> Self {
+    pub(crate) fn new(stream: DurableStream) -> Self {
         Self {
             stream,
             offset: Offset::Beginning,
@@ -110,7 +110,7 @@ impl ReadBuilder {
 
 /// Iterator for reading chunks from a stream.
 pub struct ChunkIterator {
-    stream: Stream,
+    stream: DurableStream,
     offset: Offset,
     live: LiveMode,
     timeout: Duration,

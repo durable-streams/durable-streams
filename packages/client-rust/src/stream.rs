@@ -30,13 +30,13 @@ pub(crate) const HEADER_PRODUCER_EXPECTED_SEQ: &str = "producer-expected-seq";
 /// This is a lightweight, cloneable object - not a persistent connection.
 /// Operations make HTTP requests on demand.
 #[derive(Clone)]
-pub struct Stream {
+pub struct DurableStream {
     pub(crate) url: String,
     pub(crate) client: Client,
     pub(crate) content_type: Option<String>,
 }
 
-impl Stream {
+impl DurableStream {
     /// Get the stream URL.
     pub fn url(&self) -> &str {
         &self.url
