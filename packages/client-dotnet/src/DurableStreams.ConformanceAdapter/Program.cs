@@ -299,8 +299,11 @@ async Task<object> HandleRead(JsonElement root)
         bool timedOut = false;
 
         // Determine if we should use JSON parsing based on content type
-        var isJson = streamContentTypes.TryGetValue(path, out var contentType) &&
-                     contentType?.Contains("application/json") == true;
+        // Check both the cache and the response's content type header
+        var cachedContentType = streamContentTypes.GetValueOrDefault(path);
+        var responseContentType = response.ContentType;
+        var effectiveContentType = responseContentType ?? cachedContentType;
+        var isJson = effectiveContentType?.Contains("application/json") == true;
 
         try
         {
