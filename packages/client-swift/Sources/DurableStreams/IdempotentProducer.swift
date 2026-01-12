@@ -62,6 +62,9 @@ public actor IdempotentProducer {
         /// Maximum concurrent batches in flight
         public var maxInFlight: Int
 
+        /// Maximum retries for sequence gap errors before giving up
+        public var maxSequenceGapRetries: Int
+
         /// Content type for batch serialization (cached to avoid actor hops)
         public var contentType: String?
 
@@ -73,6 +76,7 @@ public actor IdempotentProducer {
             maxBatchBytes: Int = Defaults.maxBatchBytes,
             lingerMs: Int = Defaults.lingerMs,
             maxInFlight: Int = Defaults.maxInFlight,
+            maxSequenceGapRetries: Int = 10,
             contentType: String? = nil,
             onError: (@Sendable (Error) -> Void)? = nil
         ) {
@@ -80,6 +84,7 @@ public actor IdempotentProducer {
             self.maxBatchBytes = maxBatchBytes
             self.lingerMs = lingerMs
             self.maxInFlight = maxInFlight
+            self.maxSequenceGapRetries = maxSequenceGapRetries
             self.contentType = contentType
             self.onError = onError
         }
@@ -207,7 +212,7 @@ public actor IdempotentProducer {
         }
     }
 
-    private func sendBatch() async {
+    private func sendBatch(sequenceGapRetryCount: Int = 0) async {
         guard !pendingItems.isEmpty else { return }
 
         // Take current pending items
@@ -287,8 +292,19 @@ public actor IdempotentProducer {
             }
 
         } catch let error as DurableStreamError where error.code == .sequenceGap {
-            // Handle sequence gap by retrying
+            // Handle sequence gap by retrying with limit
             inFlightCount -= 1
+
+            let newRetryCount = sequenceGapRetryCount + 1
+            if newRetryCount > config.maxSequenceGapRetries {
+                // Exceeded max retries, fail permanently
+                let maxRetriesError = DurableStreamError.badRequest(
+                    message: "Exceeded max sequence gap retries (\(config.maxSequenceGapRetries))"
+                )
+                config.onError?(maxRetriesError)
+                failFlushContinuations(maxRetriesError)
+                return
+            }
 
             // Re-enqueue items for retry
             for item in items.reversed() {
@@ -296,10 +312,10 @@ public actor IdempotentProducer {
                 pendingSize += item.count
             }
 
-            // Retry sending
+            // Retry sending with incremented count
             Task {
                 try? await Task.sleep(for: .milliseconds(10))
-                await sendBatch()
+                await sendBatch(sequenceGapRetryCount: newRetryCount)
             }
 
         } catch {

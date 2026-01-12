@@ -91,7 +91,7 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
         queryParams[QueryParams.live] = liveValue
     }
 
-    let requestURL = await httpClient.buildURL(base: options.url, params: queryParams)
+    let requestURL = try await httpClient.buildURL(base: options.url, params: queryParams)
     let request = await httpClient.buildRequest(url: requestURL)
 
     let (data, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
@@ -372,7 +372,7 @@ public struct StreamResponse: Sendable {
                     queryParams[QueryParams.cursor] = cursor
                 }
 
-                let requestURL = await httpClient.buildURL(base: ctx.url, params: queryParams)
+                let requestURL = try await httpClient.buildURL(base: ctx.url, params: queryParams)
                 let request = await httpClient.buildRequest(url: requestURL)
 
                 let (responseData, metadata) = try await httpClient.perform(request)

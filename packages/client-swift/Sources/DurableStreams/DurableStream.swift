@@ -250,7 +250,7 @@ public actor DurableStream {
             params[QueryParams.live] = liveValue
         }
 
-        let requestURL = await httpClient.buildURL(base: url, params: params)
+        let requestURL = try await httpClient.buildURL(base: url, params: params)
         let request = await httpClient.buildRequest(
             url: requestURL,
             additionalHeaders: headers
@@ -268,6 +268,7 @@ public actor DurableStream {
     }
 
     /// Read all data as text.
+    /// Note: Non-UTF-8 data is converted to empty string rather than throwing.
     public func readText(offset: Offset = .start) async throws -> TextResult {
         let result = try await read(offset: offset, live: .catchUp)
         let text = String(data: result.data, encoding: .utf8) ?? ""
@@ -315,17 +316,25 @@ public actor DurableStream {
         decoder: JSONDecoder = JSONDecoder()
     ) -> AsyncThrowingStream<T, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     for try await batch in self.jsonBatches(as: type, from: offset, decoder: decoder) {
+                        if Task.isCancelled { break }
                         for item in batch.items {
                             continuation.yield(item)
                         }
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if !Task.isCancelled {
+                        continuation.finish(throwing: error)
+                    } else {
+                        continuation.finish()
+                    }
                 }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -349,7 +358,7 @@ public actor DurableStream {
         decoder: JSONDecoder = JSONDecoder()
     ) -> AsyncThrowingStream<JsonBatch<T>, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runStreamLoop(
                     from: offset,
                     continuation: continuation,
@@ -362,13 +371,16 @@ public actor DurableStream {
                     }
                 )
             }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 
     /// Stream byte chunks as they arrive.
     public func byteChunks(from offset: Offset = .start) -> AsyncThrowingStream<ByteChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runStreamLoop(
                     from: offset,
                     continuation: continuation,
@@ -377,13 +389,17 @@ public actor DurableStream {
                     }
                 )
             }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
         }
     }
 
     /// Stream text chunks as they arrive.
+    /// Note: Non-UTF-8 data is converted to empty string rather than throwing.
     public func textChunks(from offset: Offset = .start) -> AsyncThrowingStream<TextChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runStreamLoop(
                     from: offset,
                     continuation: continuation,
@@ -392,6 +408,9 @@ public actor DurableStream {
                         return TextChunk(text: text, offset: resultOffset, upToDate: upToDate, cursor: cursor)
                     }
                 )
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -417,7 +436,7 @@ public actor DurableStream {
                     params[QueryParams.cursor] = cursor
                 }
 
-                let requestURL = await httpClient.buildURL(base: url, params: params)
+                let requestURL = try await httpClient.buildURL(base: url, params: params)
                 let request = await httpClient.buildRequest(url: requestURL)
 
                 let (data, metadata) = try await httpClient.perform(request)
@@ -558,9 +577,9 @@ public actor DurableStream {
     // MARK: - Flush and Close
 
     /// Flush any pending batched writes.
+    /// Note: DurableStream uses synchronous writes. For batched writes with
+    /// fire-and-forget semantics, use IdempotentProducer instead.
     public func flush() async throws -> FlushResult {
-        // For now, we don't implement client-side batching in this version
-        // Batching is handled by IdempotentProducer
         return FlushResult(offset: lastOffset ?? Offset(rawValue: "0"))
     }
 
@@ -592,9 +611,10 @@ public actor DurableStream {
         decoder: JSONDecoder = JSONDecoder()
     ) -> AsyncThrowingStream<T, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     for try await event in self.sseEvents(from: offset) {
+                        if Task.isCancelled { break }
                         guard event.effectiveEvent == "message" else {
                             continue
                         }
@@ -608,8 +628,15 @@ public actor DurableStream {
                     }
                     continuation.finish()
                 } catch {
-                    continuation.finish(throwing: error)
+                    if !Task.isCancelled {
+                        continuation.finish(throwing: error)
+                    } else {
+                        continuation.finish()
+                    }
                 }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -620,8 +647,11 @@ public actor DurableStream {
     /// per the EventSource specification.
     public func sseEvents(from offset: Offset = .start) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runSSELoop(from: offset, continuation: continuation)
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
             }
         }
     }
@@ -642,7 +672,7 @@ public actor DurableStream {
                     QueryParams.live: "sse"
                 ]
 
-                let requestURL = await httpClient.buildURL(base: url, params: queryParams)
+                let requestURL = try await httpClient.buildURL(base: url, params: queryParams)
                 var request = await httpClient.buildRequest(url: requestURL)
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 

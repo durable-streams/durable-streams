@@ -69,12 +69,15 @@ internal actor HTTPClient {
     }
 
     /// Build a URL with query parameters.
+    /// - Throws: `DurableStreamError.badRequest` if the URL cannot be constructed
     func buildURL(
         base: URL,
         params: [String: String] = [:],
         additionalParams: ParamsRecord = [:]
-    ) async -> URL {
-        var components = URLComponents(url: base, resolvingAgainstBaseURL: true)!
+    ) async throws -> URL {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: true) else {
+            throw DurableStreamError.badRequest(message: "Invalid base URL: \(base)")
+        }
         var queryItems = components.queryItems ?? []
 
         // Add static params
@@ -98,7 +101,10 @@ internal actor HTTPClient {
             components.queryItems = queryItems
         }
 
-        return components.url!
+        guard let url = components.url else {
+            throw DurableStreamError.badRequest(message: "Cannot construct URL from components")
+        }
+        return url
     }
 
     /// Build a URLRequest with headers.

@@ -46,6 +46,7 @@ public struct SSEParser: Sendable {
 
     /// Parse SSE events from data.
     /// Returns parsed events and any remaining incomplete data.
+    /// Handles CR, LF, and CRLF line endings per the EventSource spec.
     public static func parse(data: Data, pendingData: Data = Data()) -> (events: [SSEEvent], remaining: Data) {
         var combined = pendingData
         combined.append(data)
@@ -60,18 +61,16 @@ public struct SSEParser: Sendable {
         var eventId: String? = nil
         var retryMs: Int? = nil
 
-        // Split into lines
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        // Split into lines handling CR, LF, and CRLF per EventSource spec
+        let lines = splitLines(text)
 
-        for (index, line) in lines.enumerated() {
-            let lineStr = String(line)
-
-            // Check if this is the last line and it doesn't end with newline
+        for (index, lineStr) in lines.enumerated() {
+            // Check if this is the last line and text doesn't end with a line terminator
             // (meaning it's potentially incomplete)
             let isLastLine = index == lines.count - 1
-            let textEndsWithNewline = text.hasSuffix("\n")
+            let textEndsWithTerminator = text.hasSuffix("\n") || text.hasSuffix("\r")
 
-            if isLastLine && !textEndsWithNewline && !lineStr.isEmpty {
+            if isLastLine && !textEndsWithTerminator && !lineStr.isEmpty {
                 // This line might be incomplete, save it for next parse
                 break
             }
@@ -124,17 +123,64 @@ public struct SSEParser: Sendable {
 
         // Return any incomplete data at the end
         let remaining: Data
-        if let lastLineStart = text.range(of: "\n", options: .backwards)?.upperBound,
-           !text.hasSuffix("\n") {
-            let remainingText = String(text[lastLineStart...])
-            remaining = remainingText.data(using: .utf8) ?? Data()
-        } else if !text.hasSuffix("\n") && events.isEmpty {
-            remaining = combined
+        let textEndsWithTerminator = text.hasSuffix("\n") || text.hasSuffix("\r")
+        if !textEndsWithTerminator {
+            // Find the last line terminator
+            if let lastTerminatorIndex = findLastLineTerminator(text) {
+                let remainingText = String(text[text.index(after: lastTerminatorIndex)...])
+                remaining = remainingText.data(using: .utf8) ?? Data()
+            } else {
+                // No terminator found, entire text is incomplete
+                remaining = combined
+            }
         } else {
             remaining = Data()
         }
 
         return (events, remaining)
+    }
+
+    /// Split text into lines handling CR, LF, and CRLF per EventSource spec.
+    private static func splitLines(_ text: String) -> [String] {
+        var lines: [String] = []
+        var currentLine = ""
+        var previousWasCR = false
+
+        for char in text {
+            if char == "\r" {
+                lines.append(currentLine)
+                currentLine = ""
+                previousWasCR = true
+            } else if char == "\n" {
+                if previousWasCR {
+                    // CRLF: CR already produced a line, skip the LF
+                    previousWasCR = false
+                } else {
+                    // Standalone LF
+                    lines.append(currentLine)
+                    currentLine = ""
+                }
+            } else {
+                previousWasCR = false
+                currentLine.append(char)
+            }
+        }
+
+        // Add final line if any
+        lines.append(currentLine)
+
+        return lines
+    }
+
+    /// Find the index of the last line terminator (CR or LF) in the text.
+    private static func findLastLineTerminator(_ text: String) -> String.Index? {
+        var lastIndex: String.Index? = nil
+        for (index, char) in text.enumerated() {
+            if char == "\r" || char == "\n" {
+                lastIndex = text.index(text.startIndex, offsetBy: index)
+            }
+        }
+        return lastIndex
     }
 
     /// Parse a line into field and value.

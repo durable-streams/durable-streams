@@ -137,10 +137,12 @@ public actor StreamLifecycleManager {
 
 extension DurableStream {
     /// Capture the current state for suspension.
+    /// Note: The offset is set to "0" (start). For accurate resumption, track the
+    /// offset from your streaming operations and pass it to the resume methods.
     public func captureState() -> SuspendedStreamState {
         SuspendedStreamState(
             url: url,
-            offset: Offset(rawValue: "0"), // Will be updated by streaming operations
+            offset: Offset(rawValue: "0"),
             contentType: contentType
         )
     }
