@@ -1,6 +1,5 @@
 //! Error types for the Durable Streams client.
 
-use std::time::Duration;
 use thiserror::Error;
 
 /// Main error type for stream operations.

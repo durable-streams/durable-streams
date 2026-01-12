@@ -280,17 +280,11 @@ impl ChunkIterator {
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
 
-                let _up_to_date_header = resp
-                    .headers()
-                    .get(HEADER_STREAM_UP_TO_DATE)
-                    .and_then(|v| v.to_str().ok())
-                    == Some("true");
-
                 if let Some(offset) = next_offset {
                     self.offset = offset;
                 }
-                if let Some(c) = cursor.clone() {
-                    self.cursor = Some(c);
+                if cursor.is_some() {
+                    self.cursor = cursor.clone();
                 }
                 self.up_to_date = true; // 204 always means up-to-date
 
