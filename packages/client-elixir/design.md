@@ -1,5 +1,30 @@
 # Elixir Durable Streams Client Design
 
+## Implementation Status
+
+| Component             | Status          | Notes                                   |
+| --------------------- | --------------- | --------------------------------------- |
+| `Stream`              | **Implemented** | Full CRUD operations                    |
+| `Client`              | **Implemented** | Using `:httpc` instead of Finch         |
+| `HTTP`                | **Implemented** | Retry logic, streaming support          |
+| `JSON`                | **Implemented** | Native Elixir 1.18+ with Jason fallback |
+| `Consumer`            | **Implemented** | GenServer with callback behaviour       |
+| `Writer`              | **Implemented** | Fire-and-forget with batching           |
+| SSE Parser            | **Partial**     | Inline in Stream module                 |
+| `Producer` (GenStage) | Not implemented | For Broadway integration                |
+| `Broadway.Producer`   | Not implemented | At-least-once/at-most-once modes        |
+| Error Types           | Not implemented | Using tuple errors instead              |
+| Telemetry             | Not implemented | No observability hooks                  |
+
+### Key Differences from Design
+
+1. **HTTP Client**: Uses Erlang `:httpc` instead of Finch (simpler, no deps)
+2. **Consumer API**: Uses `callback: {Module, args}` tuple instead of separate options
+3. **Error Handling**: Uses `{:error, reason}` tuples instead of structured exceptions
+4. **No External Dependencies**: Zero deps, uses native Elixir/Erlang only
+
+---
+
 ## Overview
 
 This document presents a unified design for an idiomatic Elixir client for the Durable Streams protocol. The design synthesizes:
