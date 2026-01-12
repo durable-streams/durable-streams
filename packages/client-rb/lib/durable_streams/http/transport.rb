@@ -187,7 +187,7 @@ module DurableStreams
       end
 
       def [](header)
-        @headers[header.downcase]
+        @headers[header.to_s.downcase]
       end
     end
 
@@ -207,7 +207,7 @@ module DurableStreams
       end
 
       def [](header)
-        @headers[header.downcase]
+        @headers[header.to_s.downcase]
       end
 
       # Read chunks from the response body

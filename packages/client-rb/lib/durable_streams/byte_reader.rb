@@ -13,11 +13,9 @@ module DurableStreams
     # @param cursor [String, nil] Initial cursor
     def initialize(stream, offset: "-1", live: :auto, cursor: nil)
       @stream = stream
-      # Default to "-1" if offset is nil or empty
-      effective_offset = (offset.nil? || offset.to_s.empty?) ? "-1" : offset.to_s
-      @offset = effective_offset
+      @offset = DurableStreams.normalize_offset(offset)
       @live = live
-      @next_offset = effective_offset
+      @next_offset = @offset
       @cursor = cursor
       @up_to_date = false
       @closed = false
@@ -125,10 +123,10 @@ module DurableStreams
                                                headers: response.headers)
       end
 
-      # Parse response headers
-      @next_offset = response[STREAM_NEXT_OFFSET_HEADER] || @next_offset
-      @cursor = response[STREAM_CURSOR_HEADER] || @cursor
-      @up_to_date = response[STREAM_UP_TO_DATE_HEADER] == "true"
+      headers = DurableStreams.parse_stream_headers(response, next_offset: @next_offset, cursor: @cursor)
+      @next_offset = headers[:next_offset]
+      @cursor = headers[:cursor]
+      @up_to_date = headers[:up_to_date]
 
       ByteChunk.new(
         data: response.body || "",

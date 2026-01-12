@@ -68,10 +68,8 @@ module DurableStreams
         raise DurableStreams.error_from_status(response.status, url: @url, headers: response.headers)
       end
 
-      # Update instance content type
-      if response[:"content-type"]
-        @content_type = response["content-type"]
-      end
+      # Update instance content type from response
+      @content_type = response["content-type"] if response["content-type"]
 
       HeadResult.new(
         exists: true,
@@ -212,9 +210,7 @@ module DurableStreams
 
     # --- Internal Accessors ---
 
-    def transport
-      @transport
-    end
+    attr_reader :transport
 
     def resolved_headers(extra = {})
       HTTP.resolve_headers(@headers).merge(extra)
@@ -227,36 +223,7 @@ module DurableStreams
     private
 
     def append_direct(data, seq)
-      resolved_headers = HTTP.resolve_headers(@headers)
-      resolved_params = HTTP.resolve_params(@params)
-      request_url = HTTP.build_url(@url, resolved_params)
-
-      ct = @content_type
-      resolved_headers["content-type"] = ct if ct
-      resolved_headers[STREAM_SEQ_HEADER] = seq.to_s if seq
-
-      # For JSON mode, wrap in array (server flattens one level)
-      body = if DurableStreams.json_content_type?(ct)
-               JSON.generate([data])
-             else
-               data.is_a?(String) ? data : data.to_s
-             end
-
-      response = @transport.request(:post, request_url, headers: resolved_headers, body: body)
-
-      if response.status == 409
-        raise SeqConflictError.new(url: @url)
-      end
-
-      unless response.success? || response.status == 204
-        raise DurableStreams.error_from_status(response.status, url: @url, body: response.body,
-                                               headers: response.headers)
-      end
-
-      next_offset = response[STREAM_NEXT_OFFSET_HEADER]
-      raise FetchError.new("Server did not return #{STREAM_NEXT_OFFSET_HEADER} header", url: @url) unless next_offset
-
-      AppendResult.new(next_offset: next_offset)
+      post_append([data], seq: seq)
     end
 
     def append_with_batching(data, seq)
@@ -321,25 +288,23 @@ module DurableStreams
     end
 
     def send_batch(messages)
-      resolved_headers = HTTP.resolve_headers(@headers)
-      resolved_params = HTTP.resolve_params(@params)
-      request_url = HTTP.build_url(@url, resolved_params)
-
-      ct = @content_type
-      resolved_headers["content-type"] = ct if ct
-
-      # Get highest seq
       highest_seq = messages.reverse.find { |m| m[:seq] }&.fetch(:seq)
-      resolved_headers[STREAM_SEQ_HEADER] = highest_seq.to_s if highest_seq
+      post_append(messages.map { |m| m[:data] }, seq: highest_seq)
+    end
 
-      # Build batched body
-      body = if DurableStreams.json_content_type?(ct)
-               JSON.generate(messages.map { |m| m[:data] })
+    def post_append(data_items, seq: nil)
+      headers = HTTP.resolve_headers(@headers)
+      headers["content-type"] = @content_type if @content_type
+      headers[STREAM_SEQ_HEADER] = seq.to_s if seq
+
+      body = if DurableStreams.json_content_type?(@content_type)
+               JSON.generate(data_items)
              else
-               messages.map { |m| m[:data].is_a?(String) ? m[:data] : m[:data].to_s }.join
+               data_items.map { |d| d.is_a?(String) ? d : d.to_s }.join
              end
 
-      response = @transport.request(:post, request_url, headers: resolved_headers, body: body)
+      request_url = HTTP.build_url(@url, HTTP.resolve_params(@params))
+      response = @transport.request(:post, request_url, headers: headers, body: body)
 
       if response.status == 409
         raise SeqConflictError.new(url: @url)

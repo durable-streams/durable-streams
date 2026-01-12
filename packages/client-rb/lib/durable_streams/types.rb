@@ -82,4 +82,21 @@ module DurableStreams
     normalized = content_type.split(";").first&.strip&.downcase
     normalized == "application/json" || normalized&.start_with?("text/")
   end
+
+  # Normalize offset to a valid string (defaults to "-1" for empty/nil)
+  def self.normalize_offset(offset)
+    offset.nil? || offset.to_s.empty? ? "-1" : offset.to_s
+  end
+
+  # Parse common response headers for stream metadata
+  # @param response [HTTP::Response] HTTP response
+  # @param defaults [Hash] Default values for missing headers
+  # @return [Hash] Parsed header values
+  def self.parse_stream_headers(response, defaults = {})
+    {
+      next_offset: response[STREAM_NEXT_OFFSET_HEADER] || defaults[:next_offset],
+      cursor: response[STREAM_CURSOR_HEADER] || defaults[:cursor],
+      up_to_date: response[STREAM_UP_TO_DATE_HEADER] == "true"
+    }
+  end
 end
