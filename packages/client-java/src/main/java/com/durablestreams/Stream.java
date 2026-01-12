@@ -172,11 +172,16 @@ public final class Stream {
      * Create the stream asynchronously with full options.
      */
     public CompletableFuture<Void> createAsync(String contentType, Duration ttl, Instant expiresAt) {
-        HttpRequest request = buildCreateRequest(contentType, ttl, expiresAt);
+        try {
+            HttpRequest request = buildCreateRequest(contentType, ttl, expiresAt);
 
-        return client.getHttpClient()
-                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(this::parseCreateResponse);
+            return client.getHttpClient()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenApply(this::parseCreateResponse);
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    e instanceof DurableStreamException ? e : new DurableStreamException("Failed to build request", e));
+        }
     }
 
     /**
@@ -190,37 +195,52 @@ public final class Stream {
      * Append data to the stream asynchronously with optional sequence number.
      */
     public CompletableFuture<AppendResult> appendAsync(byte[] data, Long seq) {
-        if (data == null || data.length == 0) {
-            return CompletableFuture.failedFuture(new DurableStreamException("Cannot append empty data"));
+        try {
+            if (data == null || data.length == 0) {
+                return CompletableFuture.failedFuture(new DurableStreamException("Cannot append empty data"));
+            }
+
+            HttpRequest request = buildAppendRequest(data, seq);
+
+            return client.getHttpClient()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenApply(response -> parseAppendResponse(response, seq));
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    e instanceof DurableStreamException ? e : new DurableStreamException("Failed to build request", e));
         }
-
-        HttpRequest request = buildAppendRequest(data, seq);
-
-        return client.getHttpClient()
-                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(response -> parseAppendResponse(response, seq));
     }
 
     /**
      * Get stream metadata asynchronously.
      */
     public CompletableFuture<Metadata> headAsync() {
-        HttpRequest request = buildHeadRequest();
+        try {
+            HttpRequest request = buildHeadRequest();
 
-        return client.getHttpClient()
-                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(this::parseHeadResponse);
+            return client.getHttpClient()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenApply(this::parseHeadResponse);
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    e instanceof DurableStreamException ? e : new DurableStreamException("Failed to build request", e));
+        }
     }
 
     /**
      * Delete the stream asynchronously.
      */
     public CompletableFuture<Void> deleteAsync() {
-        HttpRequest request = buildDeleteRequest();
+        try {
+            HttpRequest request = buildDeleteRequest();
 
-        return client.getHttpClient()
-                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(this::parseDeleteResponse);
+            return client.getHttpClient()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenApply(this::parseDeleteResponse);
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    e instanceof DurableStreamException ? e : new DurableStreamException("Failed to build request", e));
+        }
     }
 
     /**
@@ -242,11 +262,16 @@ public final class Stream {
      */
     public CompletableFuture<Chunk> readOnceAsync(Offset offset, LiveMode liveMode,
                                                    Duration timeout, String cursor) {
-        HttpRequest request = buildReadRequest(offset, liveMode, timeout, cursor);
+        try {
+            HttpRequest request = buildReadRequest(offset, liveMode, timeout, cursor);
 
-        return client.getHttpClient()
-                .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                .thenApply(response -> parseReadResponse(response, offset));
+            return client.getHttpClient()
+                    .sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenApply(response -> parseReadResponse(response, offset));
+        } catch (Exception e) {
+            return CompletableFuture.failedFuture(
+                    e instanceof DurableStreamException ? e : new DurableStreamException("Failed to build request", e));
+        }
     }
 
     // Package-private for ChunkIterator
@@ -275,6 +300,8 @@ public final class Stream {
         }
 
         if (!params.isEmpty()) {
+            // Sort parameters lexicographically for optimal CDN cache behavior per protocol spec
+            Collections.sort(params);
             urlBuilder.append("?").append(String.join("&", params));
         }
 

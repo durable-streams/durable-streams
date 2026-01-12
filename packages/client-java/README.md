@@ -242,6 +242,8 @@ CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
 
 ## Error Handling
 
+All exceptions extend `RuntimeException` (unchecked), so you don't need to declare them in method signatures. However, you should handle them appropriately:
+
 ```java
 try {
     stream.append(data);

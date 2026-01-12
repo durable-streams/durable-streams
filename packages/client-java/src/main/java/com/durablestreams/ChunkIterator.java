@@ -3,9 +3,11 @@ package com.durablestreams;
 import com.durablestreams.exception.DurableStreamException;
 import com.durablestreams.model.*;
 
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Iterator for reading chunks from a stream.
@@ -55,7 +57,9 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
             hasNextComputed = true;
             return nextChunk != null;
         } catch (DurableStreamException e) {
-            throw new RuntimeException(e);
+            // DurableStreamException extends RuntimeException, so re-throw directly
+            // to preserve exception type for callers
+            throw e;
         }
     }
 
@@ -91,10 +95,10 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
         try {
             chunk = stream.readOnce(currentOffset, liveMode, timeout, cursor);
         } catch (DurableStreamException e) {
-            // Check if this is a timeout exception
+            // Check if this is a timeout exception using proper instanceof checks
             Throwable cause = e.getCause();
-            if (cause != null && cause.getClass().getName().contains("Timeout")) {
-                // Treat timeout as 204 - no new data
+            if (cause instanceof HttpTimeoutException || cause instanceof TimeoutException) {
+                // Treat timeout as 204 - no new data available within timeout
                 upToDate = true;
                 return null;
             }

@@ -38,6 +38,7 @@ public final class IdempotentProducer implements AutoCloseable {
     private final AtomicBoolean closed;
 
     private final Object batchLock = new Object();
+    private final Object epochLock = new Object();  // Protects epoch transitions during auto-claim
     private List<byte[]> pendingBatch;  // Store byte[] directly to avoid wrapper allocation
     private int batchBytes;
     private ScheduledFuture<?> lingerTimer;
@@ -53,7 +54,7 @@ public final class IdempotentProducer implements AutoCloseable {
         this.client = client;
         this.url = url;
         this.producerId = producerId;
-        // Normalize config like Go: lingerMs=0 means use default (5ms)
+        // LingerMs=0 treated as default (5ms) for backward compatibility
         this.config = config.lingerMs == 0 ? config.withLingerMs(5) : config;
 
         this.epoch = new AtomicLong(config.epoch);
@@ -103,6 +104,9 @@ public final class IdempotentProducer implements AutoCloseable {
 
     /**
      * Wait for all pending batches to complete.
+     *
+     * @throws DurableStreamException if any batch failed during flush
+     * @throws DurableStreamException with cause InterruptedException if thread was interrupted
      */
     public void flush() throws DurableStreamException {
         // Keep sending until all batches are dispatched and completed
@@ -137,17 +141,33 @@ public final class IdempotentProducer implements AutoCloseable {
                 if (anyFuture != null) {
                     try {
                         anyFuture.get(100, TimeUnit.MILLISECONDS);
-                    } catch (Exception ignored) {
-                        // Timeout or completion - either way, loop again
+                    } catch (TimeoutException e) {
+                        // Expected - just continue polling
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new DurableStreamException("Flush interrupted", e);
+                    } catch (ExecutionException e) {
+                        // Batch failure - error is already queued via whenComplete handler
+                        // Continue to drain remaining in-flight operations
+                    } catch (CancellationException e) {
+                        // Task was cancelled - continue draining
                     }
                 }
             }
         }
 
-        // Check for errors
-        DurableStreamException error = errors.poll();
-        if (error != null) {
-            throw error;
+        // Collect all errors, using suppressed exceptions for multiple failures
+        DurableStreamException firstError = null;
+        DurableStreamException error;
+        while ((error = errors.poll()) != null) {
+            if (firstError == null) {
+                firstError = error;
+            } else {
+                firstError.addSuppressed(error);
+            }
+        }
+        if (firstError != null) {
+            throw firstError;
         }
     }
 
@@ -291,29 +311,45 @@ public final class IdempotentProducer implements AutoCloseable {
                         return CompletableFuture.completedFuture(null);
                     } else if (status == 403) {
                         // Stale epoch
-                        long currentEpoch = parseEpochFromResponse(response);
+                        long serverEpoch = parseEpochFromResponse(response);
 
                         if (config.autoClaim && !isRetry) {
                             // Auto-claim: retry with epoch+1
-                            long newEpoch = currentEpoch + 1;
-                            epoch.set(newEpoch);
-                            nextSeq.set(1);  // This batch will use seq 0
-
+                            // Synchronize to prevent multiple concurrent batches from racing
+                            synchronized (epochLock) {
+                                long currentEpoch = epoch.get();
+                                // Only claim if we haven't already moved past this epoch
+                                if (currentEpoch <= serverEpoch) {
+                                    long newEpoch = serverEpoch + 1;
+                                    epoch.set(newEpoch);
+                                    nextSeq.set(1);  // Reset sequence for new epoch
+                                }
+                            }
                             // Retry with new epoch, starting at seq 0
-                            return sendBatchWithRetry(batch, newEpoch, 0, true);
+                            return sendBatchWithRetry(batch, epoch.get(), 0, true);
                         }
 
-                        errors.offer(new StaleEpochException(currentEpoch));
+                        StaleEpochException err = new StaleEpochException(serverEpoch);
+                        errors.offer(err);
+                        if (config.onError != null) {
+                            config.onError.accept(err);
+                        }
+                        return CompletableFuture.failedFuture(err);
                     } else if (status == 409) {
-                        handleSequenceConflict(seq, response);
+                        SequenceConflictException err = handleSequenceConflict(seq, response);
+                        errors.offer(err);
+                        if (config.onError != null) {
+                            config.onError.accept(err);
+                        }
+                        return CompletableFuture.failedFuture(err);
                     } else {
-                        errors.offer(new DurableStreamException("Batch failed with status: " + status, status));
+                        DurableStreamException err = new DurableStreamException("Batch failed with status: " + status, status);
+                        errors.offer(err);
+                        if (config.onError != null) {
+                            config.onError.accept(err);
+                        }
+                        return CompletableFuture.failedFuture(err);
                     }
-
-                    if (config.onError != null) {
-                        config.onError.accept(new DurableStreamException("Batch failed with status: " + status, status));
-                    }
-                    return CompletableFuture.completedFuture(null);
                 })
                 .exceptionally(ex -> {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
@@ -326,11 +362,11 @@ public final class IdempotentProducer implements AutoCloseable {
                 });
     }
 
-    private void handleSequenceConflict(long seq, HttpResponse<byte[]> response) {
+    private SequenceConflictException handleSequenceConflict(long seq, HttpResponse<byte[]> response) {
         String expectedSeqStr = response.headers()
                 .firstValue("Producer-Expected-Seq")
                 .orElse("unknown");
-        errors.offer(new SequenceConflictException(expectedSeqStr, String.valueOf(seq)));
+        return new SequenceConflictException(expectedSeqStr, String.valueOf(seq));
     }
 
     private long parseEpochFromResponse(HttpResponse<byte[]> response) {

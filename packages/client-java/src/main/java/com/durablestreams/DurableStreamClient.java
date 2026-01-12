@@ -14,6 +14,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 /**
@@ -38,6 +41,7 @@ public final class DurableStreamClient implements AutoCloseable {
     }
 
     private final HttpClient httpClient;
+    private final ExecutorService ownedExecutor;  // Non-null if we created the executor
     private final RetryPolicy retryPolicy;
     private final Map<String, String> defaultHeaders;
     private final Map<String, Supplier<String>> dynamicHeaders;
@@ -46,7 +50,17 @@ public final class DurableStreamClient implements AutoCloseable {
     private final Map<String, String> contentTypeCache;
 
     private DurableStreamClient(Builder builder) {
-        this.httpClient = builder.httpClient != null ? builder.httpClient : createDefaultHttpClient();
+        if (builder.httpClient != null) {
+            this.httpClient = builder.httpClient;
+            this.ownedExecutor = null;  // User provided client, they manage lifecycle
+        } else {
+            this.ownedExecutor = Executors.newCachedThreadPool(r -> {
+                Thread t = new Thread(r, "durable-streams-http");
+                t.setDaemon(true);
+                return t;
+            });
+            this.httpClient = createDefaultHttpClient(this.ownedExecutor);
+        }
         this.retryPolicy = builder.retryPolicy != null ? builder.retryPolicy : RetryPolicy.defaults();
         this.defaultHeaders = new HashMap<>(builder.defaultHeaders);
         this.dynamicHeaders = new ConcurrentHashMap<>(builder.dynamicHeaders);
@@ -69,17 +83,12 @@ public final class DurableStreamClient implements AutoCloseable {
         return new Builder();
     }
 
-    private static HttpClient createDefaultHttpClient() {
+    private static HttpClient createDefaultHttpClient(ExecutorService executor) {
         return HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)
                 .connectTimeout(Duration.ofSeconds(30))
                 .followRedirects(HttpClient.Redirect.NORMAL)
-                // Use a cached thread pool for parallel requests
-                .executor(java.util.concurrent.Executors.newCachedThreadPool(r -> {
-                    Thread t = new Thread(r, "durable-streams-http");
-                    t.setDaemon(true);
-                    return t;
-                }))
+                .executor(executor)
                 .build();
     }
 
@@ -160,7 +169,18 @@ public final class DurableStreamClient implements AutoCloseable {
 
     @Override
     public void close() {
-        // HttpClient doesn't need explicit closing in Java 11+
+        // Shutdown executor if we created it (not if user provided their own HttpClient)
+        if (ownedExecutor != null) {
+            ownedExecutor.shutdown();
+            try {
+                if (!ownedExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    ownedExecutor.shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                ownedExecutor.shutdownNow();
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 
     public static final class Builder {
