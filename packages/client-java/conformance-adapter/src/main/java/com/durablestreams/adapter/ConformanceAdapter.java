@@ -338,12 +338,15 @@ public class ConformanceAdapter {
                         }
                         chunks.add(chunkObj);
                         emptyCount = 0;
-                    } else if (upToDate) {
-                        // Empty data with upToDate means we're caught up
+                        // Only count chunks with actual data toward maxChunks limit
+                        count++;
+                    } else if (upToDate && effectiveMode == LiveMode.OFF) {
+                        // Empty data with upToDate means we're caught up (catch-up mode only)
                         break;
+                    } else if (chunk.getData() == null || chunk.getData().length == 0) {
+                        // Empty chunk in live mode - count toward emptyCount to avoid infinite loop
+                        emptyCount++;
                     }
-
-                    count++;
 
                     if (effectiveMode == LiveMode.OFF && upToDate) {
                         break;

@@ -11,7 +11,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -161,7 +163,8 @@ public final class SSEStreamingReader implements AutoCloseable {
 
     private void readLoop() {
         SSEParser parser = new SSEParser(inputStream);
-        String pendingData = null;
+        // Accumulate data from multiple data events until control event
+        List<String> pendingDataList = new ArrayList<>();
 
         try {
             while (!closed.get() && !Thread.currentThread().isInterrupted()) {
@@ -172,11 +175,15 @@ public final class SSEStreamingReader implements AutoCloseable {
                 }
 
                 if ("data".equals(event.getEvent())) {
-                    // Store data, wait for control event
-                    pendingData = event.getData();
+                    // Accumulate data events until we see a control event
+                    pendingDataList.add(event.getData());
                 } else if ("control".equals(event.getEvent())) {
-                    // Parse control event and create chunk
-                    Chunk chunk = createChunkFromControl(pendingData, event.getData());
+                    // Combine all accumulated data and create chunk
+                    String allData = String.join("", pendingDataList);
+                    Chunk chunk = createChunkFromControl(
+                        allData.isEmpty() ? null : allData,
+                        event.getData()
+                    );
                     if (chunk != null) {
                         chunkQueue.offer(new ChunkOrError(chunk));
 
@@ -187,7 +194,7 @@ public final class SSEStreamingReader implements AutoCloseable {
                         currentCursor = chunk.getCursor().orElse(null);
                         upToDate = chunk.isUpToDate();
                     }
-                    pendingData = null;
+                    pendingDataList.clear();
                 }
                 // Ignore other event types
             }
