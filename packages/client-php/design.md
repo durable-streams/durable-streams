@@ -58,7 +58,7 @@ DurableStream (static factory methods)
 DurableStream (instance)
     ├── head(): HeadResult
     ├── append(mixed $data): AppendResult
-    ├── stream(): StreamResponse
+    ├── read(): StreamResponse
     ├── delete(): void
     └── close(): void
 

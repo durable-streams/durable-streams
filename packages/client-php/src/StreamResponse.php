@@ -382,30 +382,6 @@ final class StreamResponse implements IteratorAggregate
     }
 
     /**
-     * Read all data as bytes.
-     *
-     * @throws LogicException if called on a live stream
-     */
-    public function readBytes(): string
-    {
-        if ($this->live) {
-            throw new LogicException('Cannot call readBytes() on a live stream - it would block forever');
-        }
-
-        if ($this->body !== null) {
-            return $this->body;
-        }
-
-        $chunks = [];
-        foreach ($this as $chunk) {
-            $chunks[] = $chunk;
-        }
-
-        $this->body = implode('', $chunks);
-        return $this->body;
-    }
-
-    /**
      * Collect all JSON items into an array.
      *
      * @return array<mixed>
@@ -432,6 +408,20 @@ final class StreamResponse implements IteratorAggregate
      */
     public function body(): string
     {
-        return $this->readBytes();
+        if ($this->live) {
+            throw new LogicException('Cannot call body() on a live stream - it would block forever');
+        }
+
+        if ($this->body !== null) {
+            return $this->body;
+        }
+
+        $chunks = [];
+        foreach ($this as $chunk) {
+            $chunks[] = $chunk;
+        }
+
+        $this->body = implode('', $chunks);
+        return $this->body;
     }
 }

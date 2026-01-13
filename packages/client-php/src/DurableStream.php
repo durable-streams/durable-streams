@@ -169,17 +169,6 @@ final class DurableStream
     }
 
     /**
-     * Append with explicit headers (for IdempotentProducer).
-     *
-     * @param string|array<mixed> $data Data to append
-     * @param array<string, string> $headers Headers to send
-     */
-    public function appendWithHeaders(string|array $data, array $headers): AppendResult
-    {
-        return $this->append($data, null, $headers);
-    }
-
-    /**
      * Read from the stream.
      *
      * @param string $offset Starting offset
@@ -201,25 +190,6 @@ final class DurableStream
             'client' => $this->client,
             'timeout' => $timeout,
         ]);
-    }
-
-    /**
-     * Stream from the stream (alias for read()).
-     *
-     * This method exists for TypeScript client API parity.
-     *
-     * @param string $offset Starting offset
-     * @param string|false $live Live mode: false, 'auto', 'long-poll', or 'sse'
-     * @param array<string, string> $extraHeaders Additional headers
-     * @param float|null $timeout Timeout in seconds
-     */
-    public function stream(
-        string $offset = '-1',
-        string|false $live = false,
-        array $extraHeaders = [],
-        ?float $timeout = null,
-    ): StreamResponse {
-        return $this->read($offset, $live, $extraHeaders, $timeout);
     }
 
     /**

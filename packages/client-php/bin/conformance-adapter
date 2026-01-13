@@ -560,7 +560,7 @@ function handleBenchmark(array $cmd): array {
                     'live' => false,
                     'client' => $sharedClient,
                 ]);
-                $data = $response->readBytes();
+                $data = $response->body();
                 $metrics['bytesTransferred'] = strlen($data);
                 break;
 
