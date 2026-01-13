@@ -116,6 +116,19 @@ Following the Go client pattern, a `Client` manages HTTP connections:
 ```ruby
 module DurableStreams
   class Client
+    # Block form for automatic cleanup (recommended)
+    # @yield [Client] The client instance
+    # @return [Object] The block's return value
+    def self.open(**options, &block)
+      client = new(**options)
+      return client unless block_given?
+      begin
+        yield client
+      ensure
+        client.close
+      end
+    end
+
     # @param base_url [String] Optional base URL for relative paths
     # @param headers [Hash, Proc] Default headers (static or callable)
     # @param params [Hash, Proc] Default query params (static or callable)
@@ -159,7 +172,17 @@ end
 **Usage:**
 
 ```ruby
-# Create a reusable client
+# Block form (recommended - auto-closes)
+DurableStreams::Client.open(
+  base_url: "https://streams.example.com",
+  headers: { "Authorization" => -> { "Bearer #{refresh_token}" } }
+) do |client|
+  chat_stream = client.stream("/chat/room-1")
+  events_stream = client.stream("/events/user-123")
+  # ...
+end # auto-closes
+
+# Manual form
 client = DurableStreams::Client.new(
   base_url: "https://streams.example.com",
   headers: { "Authorization" => -> { "Bearer #{refresh_token}" } },
@@ -212,11 +235,34 @@ module DurableStreams
       end
     end
 
+    # Check if a stream exists without raising
+    # @param url [String] Stream URL
+    # @return [Boolean]
+    def self.exists?(url:, **options)
+      new(url: url, **options).exists?
+    end
+
     # --- Metadata Operations ---
 
     # HEAD - Get stream metadata
     # @return [HeadResult]
     def head
+    end
+
+    # Check if stream exists without raising
+    # @return [Boolean]
+    def exists?
+      head
+      true
+    rescue StreamNotFoundError
+      false
+    end
+
+    # Check if this is a JSON stream
+    # @return [Boolean]
+    def json?
+      head if @content_type.nil?
+      DurableStreams.json_content_type?(@content_type)
     end
 
     # Create stream on server (PUT)
@@ -571,6 +617,11 @@ module DurableStreams
     # Close the producer, flushing pending data
     def close
     end
+
+    # Check if the producer has been closed
+    # @return [Boolean]
+    def closed?
+    end
   end
 end
 ```
@@ -710,7 +761,8 @@ module DurableStreams
   # Sequence conflict (409 with Stream-Seq)
   class SeqConflictError < Error
     def initialize(url: nil, **opts)
-      super("Sequence conflict", url: url, status: 409, code: "CONFLICT_SEQ", **opts)
+      message = url ? "Sequence conflict: #{url}" : "Sequence conflict"
+      super(message, url: url, status: 409, code: "CONFLICT_SEQ", **opts)
     end
   end
 
@@ -736,9 +788,10 @@ module DurableStreams
   class SequenceGapError < Error
     attr_reader :expected_seq, :received_seq
 
-    def initialize(expected_seq: nil, received_seq: nil, **opts)
-      super("Sequence gap: expected #{expected_seq}, got #{received_seq}",
-            status: 409, code: "SEQUENCE_GAP", **opts)
+    def initialize(expected_seq: nil, received_seq: nil, url: nil, **opts)
+      message = "Sequence gap: expected #{expected_seq}, got #{received_seq}"
+      message = "#{message} (#{url})" if url
+      super(message, url: url, status: 409, code: "SEQUENCE_GAP", **opts)
       @expected_seq = expected_seq
       @received_seq = received_seq
     end
@@ -747,7 +800,8 @@ module DurableStreams
   # Rate limited (429)
   class RateLimitedError < Error
     def initialize(url: nil, **opts)
-      super("Rate limited", url: url, status: 429, code: "RATE_LIMITED", **opts)
+      message = url ? "Rate limited: #{url}" : "Rate limited"
+      super(message, url: url, status: 429, code: "RATE_LIMITED", **opts)
     end
   end
 
@@ -776,6 +830,13 @@ module DurableStreams
   class AlreadyConsumedError < Error
     def initialize(**opts)
       super("Reader already consumed", code: "ALREADY_CONSUMED", **opts)
+    end
+  end
+
+  # Producer or stream has been closed
+  class ClosedError < Error
+    def initialize(message = "Producer is closed", **opts)
+      super(message, code: "CLOSED", **opts)
     end
   end
 
@@ -1071,7 +1132,7 @@ Gem::Specification.new do |spec|
   spec.summary       = "Ruby client for Durable Streams protocol"
 
   # Uses Struct (not Data.define) for broader compatibility
-  spec.required_ruby_version = ">= 3.0.0"
+  spec.required_ruby_version = ">= 3.1.0"
 
   # No runtime dependencies - uses net/http from stdlib
 
