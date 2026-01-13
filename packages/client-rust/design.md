@@ -9,7 +9,7 @@ This document proposes a design for a Rust client library for the Durable Stream
 Based on analysis of existing Rust streaming SDKs, the following principles guide this design:
 
 1. **Idiomatic Rust**: Use traits, generics, `Result<T, E>`, and the ownership system effectively
-2. **Async-First**: Built on `tokio` with `async/await`, implementing `futures::Stream` where appropriate
+2. **Async-First**: Built on `tokio` with `async/await`
 3. **Zero-Cost Abstractions**: Tiered API (low-level and high-level) like rdkafka
 4. **Builder Pattern**: Configuration via fluent builders (pulsar-rs, async-nats pattern)
 5. **Type Safety**: Strong typing for protocol concepts (offsets, live modes, etc.)
@@ -171,7 +171,7 @@ impl DurableStream {
     pub async fn delete(&self) -> Result<(), StreamError> { ... }
 
     /// Create a reader for consuming the stream
-    pub fn reader(&self) -> ReaderBuilder { ... }
+    pub fn read(&self) -> ReadBuilder { ... }
 
     /// Create an idempotent producer
     pub fn producer(&self, producer_id: impl Into<String>) -> ProducerBuilder { ... }
@@ -272,51 +272,43 @@ Following Go's `ChunkIterator` and rdkafka's `StreamConsumer`:
 
 ```rust
 /// Builder for configuring stream readers
-pub struct ReaderBuilder<'a> {
-    stream: &'a DurableStream,
+#[must_use = "builders do nothing unless you call .build()"]
+pub struct ReadBuilder {
+    stream: DurableStream,
     offset: Offset,
     live: LiveMode,
-    on_error: Option<Box<dyn ErrorHandler>>,
+    timeout: Duration,
+    headers: Vec<(String, String)>,
+    cursor: Option<String>,
 }
 
-impl<'a> ReaderBuilder<'a> {
+impl ReadBuilder {
     pub fn offset(mut self, offset: Offset) -> Self { ... }
 
     pub fn live(mut self, mode: LiveMode) -> Self { ... }
 
-    /// Error handler for recoverable errors (pattern from TS/Python clients)
-    pub fn on_error<F>(mut self, handler: F) -> Self
-    where
-        F: Fn(&StreamError) -> ErrorAction + Send + Sync + 'static { ... }
+    pub fn timeout(mut self, timeout: Duration) -> Self { ... }
 
-    /// Build a chunk iterator
-    pub async fn chunks(self) -> Result<ChunkIterator, StreamError> { ... }
+    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self { ... }
 
-    /// Build a bytes stream
-    pub async fn bytes(self) -> Result<impl Stream<Item = Result<Bytes, StreamError>>, StreamError> { ... }
+    pub fn cursor(mut self, cursor: impl Into<String>) -> Self { ... }
 
-    /// Build a JSON stream (for application/json streams)
-    pub async fn json<T: DeserializeOwned>(self) -> Result<impl Stream<Item = Result<T, StreamError>>, StreamError> { ... }
-}
-
-/// Action to take after an error
-pub enum ErrorAction {
-    /// Retry with optionally modified headers/params
-    Retry { headers: Option<HeaderMap> },
-    /// Stop iteration and propagate error
-    Stop,
+    /// Build the ChunkIterator.
+    /// No network request is made until `next_chunk()` is called.
+    pub fn build(self) -> ChunkIterator { ... }
 }
 
 /// Low-level chunk iterator (like Go's ChunkIterator)
 pub struct ChunkIterator {
     // Internal state
-    stream_url: String,
-    client: Client,
+    stream: DurableStream,
     offset: Offset,
     cursor: Option<String>,
     live: LiveMode,
     up_to_date: bool,
-    // ... internal http state
+    closed: bool,
+    done: bool,
+    sse_state: Option<SseState>,
 }
 
 impl ChunkIterator {
@@ -329,17 +321,15 @@ impl ChunkIterator {
     /// Current cursor for CDN collapsing
     pub fn cursor(&self) -> Option<&str> { ... }
 
-    /// Cancel and clean up
-    pub async fn close(self) -> Result<(), StreamError> { ... }
+    /// Close the iterator and release resources
+    pub fn close(&mut self) { ... }
+
+    /// Fetch the next chunk
+    pub async fn next_chunk(&mut self) -> Result<Option<Chunk>, StreamError> { ... }
 }
 
-// NOTE: ChunkIterator implements `futures::Stream` but does NOT have an
-// inherent `next()` method. This avoids method resolution confusion where
-// an inherent method would shadow `StreamExt::next()`.
-//
-// Users should use `StreamExt::next()` from the futures crate:
-//   use futures::StreamExt;
-//   while let Some(chunk) = iterator.next().await { ... }
+// NOTE: We don't implement futures::Stream here because the async recursion
+// makes it complex. Users should use next_chunk() directly in a loop.
 
 /// A chunk of data from the stream.
 ///
@@ -389,32 +379,23 @@ pub struct Chunk {
 }
 ```
 
-### 6. Stream Trait Implementation
+### 6. Iteration Pattern
 
-Implementing `futures::Stream` for ergonomic async iteration:
+Using the `next_chunk()` method for async iteration:
 
 ```rust
-impl Stream for ChunkIterator {
-    type Item = Result<Chunk, StreamError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // Implementation delegates to internal async state machine
-        ...
-    }
-}
-
 // Usage:
-use futures::StreamExt;
-
-let mut chunks = stream.reader()
+let mut reader = stream.read()
     .offset(Offset::Beginning)
     .live(LiveMode::Auto)
-    .chunks()
-    .await?;
+    .build();
 
-while let Some(chunk) = chunks.next().await {
-    let chunk = chunk?;
+while let Some(chunk) = reader.next_chunk().await? {
     println!("Got {} bytes at offset {:?}", chunk.data.len(), chunk.next_offset);
+
+    if chunk.up_to_date {
+        println!("Caught up to stream tail");
+    }
 }
 ```
 
@@ -545,11 +526,8 @@ pub enum StreamError {
     #[error("stream already exists with different configuration")]
     Conflict,
 
-    #[error("content type mismatch: expected {expected}, got {actual}")]
-    ContentTypeMismatch { expected: String, actual: String },
-
-    #[error("sequence conflict: {0}")]
-    SeqConflict(String),
+    #[error("sequence conflict")]
+    SeqConflict,
 
     #[error("offset gone (retention/compaction): {offset}")]
     OffsetGone { offset: String },
@@ -572,39 +550,21 @@ pub enum StreamError {
     #[error("network error: {0}")]
     Network(#[source] reqwest::Error),
 
-    #[error("timeout")]
-    Timeout,
+    #[error("iterator closed")]
+    IteratorClosed,
 
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    #[error("sse not supported for content type: {content_type}")]
-    SseNotSupported { content_type: String },
+    #[error("cannot append empty data")]
+    EmptyAppend,
 }
 
 impl StreamError {
     /// Whether this error is retryable
     pub fn is_retryable(&self) -> bool {
-        matches!(self,
-            StreamError::RateLimited { .. } |
-            StreamError::ServerError { status, .. } if *status >= 500 |
-            StreamError::Network(_) |
-            StreamError::Timeout
+        matches!(
+            self,
+            StreamError::RateLimited { .. }
+                | StreamError::ServerError { status, .. } if *status >= 500
         )
-    }
-
-    /// HTTP status code if applicable
-    pub fn status_code(&self) -> Option<u16> {
-        match self {
-            StreamError::NotFound { .. } => Some(404),
-            StreamError::Conflict => Some(409),
-            StreamError::Unauthorized => Some(401),
-            StreamError::Forbidden => Some(403),
-            StreamError::RateLimited { .. } => Some(429),
-            StreamError::BadRequest { .. } => Some(400),
-            StreamError::ServerError { status, .. } => Some(*status),
-            _ => None,
-        }
     }
 }
 ```
@@ -671,8 +631,7 @@ compression = ["reqwest/gzip", "reqwest/brotli"]
 ### Basic Reading
 
 ```rust
-use durable_streams::{Client, DurableStream, Offset, LiveMode};
-use futures::StreamExt;
+use durable_streams::{Client, Offset, LiveMode};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -685,14 +644,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = client.stream("https://api.example.com/streams/my-stream");
 
     // Read all data, then tail for new data
-    let mut reader = stream.reader()
+    let mut reader = stream.read()
         .offset(Offset::Beginning)
         .live(LiveMode::Auto)
-        .chunks()
-        .await?;
+        .build();
 
-    while let Some(result) = reader.next().await {
-        let chunk = result?;
+    while let Some(chunk) = reader.next_chunk().await? {
         println!("Received {} bytes", chunk.data.len());
 
         if chunk.up_to_date {
@@ -708,7 +665,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use durable_streams::{Client, Offset, LiveMode};
-use futures::StreamExt;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -722,16 +678,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder().build()?;
     let stream = client.stream("https://api.example.com/streams/events");
 
-    // Stream as typed JSON
-    let mut events = stream.reader()
+    // Read and parse JSON events
+    let mut reader = stream.read()
         .offset(Offset::Now) // Only new events
         .live(LiveMode::Sse)
-        .json::<Event>()
-        .await?;
+        .build();
 
-    while let Some(result) = events.next().await {
-        let event = result?;
-        println!("Event: {:?}", event);
+    while let Some(chunk) = reader.next_chunk().await? {
+        if !chunk.data.is_empty() {
+            let events: Vec<Event> = serde_json::from_slice(&chunk.data)?;
+            for event in events {
+                println!("Event: {:?}", event);
+            }
+        }
     }
 
     Ok(())
@@ -741,29 +700,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Idempotent Producer
 
 ```rust
-use durable_streams::{Client, DurableStream};
+use durable_streams::{Client, CreateOptions};
+use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::builder().build()?;
     let stream = client.stream("https://api.example.com/streams/orders");
 
-    // Create the stream
-    stream.create(Default::default()).await?;
+    // Create the stream with JSON content type
+    stream.create_with(
+        CreateOptions::new().content_type("application/json")
+    ).await?;
 
-    // Create idempotent producer
+    // Create idempotent producer with error handling
     let producer = stream.producer("order-service-1")
         .epoch(0)
         .auto_claim(true) // Auto-recover on restart
         .linger(Duration::from_millis(5))
+        .content_type("application/json")
+        .on_error(Arc::new(|err| {
+            eprintln!("Batch failed: {}", err);
+        }))
         .build();
 
-    // Fire-and-forget writes
+    // Fire-and-forget writes (errors reported via on_error callback)
     for i in 0..1000 {
         producer.append_json(&serde_json::json!({
             "order_id": i,
             "status": "created"
-        }))?;
+        }));
     }
 
     // Ensure all data is written
@@ -774,48 +741,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Error Handling with Recovery
+### Error Handling
 
 ```rust
-use durable_streams::{Client, Offset, LiveMode, StreamError, ErrorAction};
+use durable_streams::{Client, StreamError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder()
-        .header_provider(|| {
-            // Refresh auth token on each request
-            let token = get_fresh_token();
-            let mut headers = HeaderMap::new();
-            headers.insert("Authorization", format!("Bearer {}", token).parse().unwrap());
-            headers
-        })
-        .build()?;
-
+    let client = Client::builder().build()?;
     let stream = client.stream("https://api.example.com/streams/data");
 
-    let mut reader = stream.reader()
-        .offset(Offset::Beginning)
-        .live(LiveMode::Auto)
-        .on_error(|err| {
-            match err {
-                StreamError::Unauthorized => {
-                    // Token might be expired, retry will get fresh token
-                    ErrorAction::Retry { headers: None }
-                }
-                StreamError::RateLimited { retry_after } => {
-                    // Could log or adjust behavior
-                    ErrorAction::Retry { headers: None }
-                }
-                _ => ErrorAction::Stop,
+    match stream.append(b"data").await {
+        Ok(response) => {
+            println!("Written at offset: {:?}", response.next_offset);
+        }
+        Err(StreamError::NotFound { url }) => {
+            println!("Stream doesn't exist: {}", url);
+        }
+        Err(StreamError::Conflict) => {
+            println!("Stream already exists with different config");
+        }
+        Err(StreamError::RateLimited { retry_after }) => {
+            if let Some(duration) = retry_after {
+                tokio::time::sleep(duration).await;
             }
-        })
-        .chunks()
-        .await?;
-
-    // Process with automatic error recovery
-    while let Some(chunk) = reader.next().await {
-        let chunk = chunk?;
-        process(chunk.data);
+        }
+        Err(e) if e.is_retryable() => {
+            println!("Transient error, can retry: {}", e);
+        }
+        Err(e) => {
+            println!("Fatal error: {}", e);
+        }
     }
 
     Ok(())
@@ -946,13 +902,13 @@ struct SseEvent {
 
 ## Comparison with Existing Clients
 
-| Feature        | TypeScript         | Python             | Go                   | Rust (Proposed)     |
+| Feature        | TypeScript         | Python             | Go                   | Rust                |
 | -------------- | ------------------ | ------------------ | -------------------- | ------------------- |
 | API Style      | Functional + Class | Functional + Class | Functional + Methods | Trait + Builder     |
 | Async          | Promise            | async/await + sync | context.Context      | async/await (tokio) |
-| Streaming      | ReadableStream     | Iterator           | Iterator             | futures::Stream     |
+| Streaming      | ReadableStream     | Iterator           | Iterator             | next_chunk() loop   |
 | Error Handling | Typed codes        | Typed exceptions   | Wrapped sentinels    | thiserror enum      |
-| Consumption    | Multiple modes     | One-shot           | Iterator             | Stream trait        |
+| Consumption    | Multiple modes     | One-shot           | Iterator             | ChunkIterator       |
 | Type Safety    | TypeScript         | Runtime            | Compile-time         | Compile-time        |
 | Zero-copy      | No                 | No                 | Yes                  | Yes (Bytes)         |
 
@@ -963,33 +919,26 @@ struct SseEvent {
 ```toml
 [dependencies]
 # Async runtime
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 # HTTP client
 reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 
-# Async streams
-futures = "0.3"
-async-stream = "0.3"
-
 # Bytes handling
 bytes = "1"
+
+# Fast mutex
+parking_lot = "0.12"
 
 # Error handling
 thiserror = "2"
 
-# Random (for jitter)
-rand = "0.8"
+# JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
-# JSON (optional)
-serde = { version = "1", features = ["derive"], optional = true }
-serde_json = { version = "1", optional = true }
-
-# Datetime (consider using std::time::SystemTime to reduce deps)
-chrono = { version = "0.4", features = ["serde"] }
-
-# HTTP types
-http = "1"
+# Base64 encoding (for conformance adapter)
+base64 = "0.22"
 
 # Tracing (optional)
 tracing = { version = "0.1", optional = true }
@@ -1028,26 +977,22 @@ if the server commits but the client doesn't receive the response.
 - `write()` - POST without retries (prevents duplicates)
 - `idempotent_write()` - POST with Producer headers, safe to retry
 
-### 2. No Inherent `next()` Method on ChunkIterator
+### 2. Async `next_chunk()` Method Instead of Stream Trait
 
-**Problem**: Defining both inherent `async fn next()` and implementing `futures::Stream`
-causes method resolution confusion (inherent wins, shadows `StreamExt::next`).
+**Problem**: Implementing `futures::Stream` for async iteration is complex with internal
+async recursion (e.g., reconnection logic). It also requires the `futures` dependency.
 
-**Decision**: Only implement `Stream` trait. Users use `StreamExt::next()` from futures crate.
+**Decision**: Provide a simple `async fn next_chunk() -> Result<Option<Chunk>, StreamError>`
+method. Users iterate with `while let Some(chunk) = reader.next_chunk().await? { ... }`.
+This is explicit, easy to understand, and avoids the complexity of pinned async state machines.
 
-### 3. Jitter in Backoff Configuration
-
-**Problem**: Without jitter, synchronized reconnects create thundering herd effects.
-
-**Decision**: Added `JitterMode` enum with Full (default), Equal, Decorrelated, and None options.
-
-### 4. Documented Chunk and up_to_date Semantics
+### 3. Documented Chunk and up_to_date Semantics
 
 **Problem**: The meaning of `Chunk` and `up_to_date` varies by read mode but wasn't documented.
 
 **Decision**: Added detailed doc comments explaining semantics in each mode (catch-up, long-poll, SSE).
 
-### 5. Documented LiveMode::Auto Fallback Behavior
+### 4. Documented LiveMode::Auto Fallback Behavior
 
 **Problem**: How Auto mode handles SSE failures wasn't specified.
 
@@ -1071,35 +1016,37 @@ causes method resolution confusion (inherent wins, shadows `StreamExt::next`).
 
 ---
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1: Core Reading
+All phases complete:
 
-- [ ] `Client` and `ClientConfig`
-- [ ] `DurableStream` handle
-- [ ] `ChunkIterator` with catch-up reads
-- [ ] Basic error types
+### Phase 1: Core Reading ✅
 
-### Phase 2: Live Modes
+- [x] `Client` and `ClientBuilder`
+- [x] `DurableStream` handle
+- [x] `ChunkIterator` with catch-up reads
+- [x] Error types with `thiserror`
 
-- [ ] Long-poll support
-- [ ] SSE parser and support
-- [ ] `LiveMode::Auto` with fallback logic
+### Phase 2: Live Modes ✅
 
-### Phase 3: Writing
+- [x] Long-poll support
+- [x] SSE parser and support
+- [x] `LiveMode::Auto` with fallback logic
 
-- [ ] `create()`, `append()`, `delete()`, `head()`
-- [ ] Content-type handling
+### Phase 3: Writing ✅
 
-### Phase 4: Idempotent Producer
+- [x] `create()`, `append()`, `delete()`, `head()`
+- [x] Content-type handling
 
-- [ ] `IdempotentProducer` with batching
-- [ ] Epoch/sequence management
-- [ ] Auto-claim support
+### Phase 4: Idempotent Producer ✅
 
-### Phase 5: Polish
+- [x] `IdempotentProducer` with batching
+- [x] Epoch/sequence management
+- [x] Auto-claim support
+- [x] `on_error` callback for Kafka-style error handling
 
-- [ ] Conformance test integration
-- [ ] Documentation
-- [ ] Examples
-- [ ] Benchmarks
+### Phase 5: Polish ✅
+
+- [x] Conformance test integration
+- [x] Documentation (README, design.md)
+- [x] Examples in README
