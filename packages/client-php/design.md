@@ -511,6 +511,8 @@ packages/client-php/
 | **SSE Support**   | Yes                | Yes            | Yes                | No (long-poll only)          |
 | **Long-Poll**     | Yes                | Yes            | Yes                | Yes (default)                |
 | **Configuration** | Options objects    | kwargs         | Functional options | Constructor params + arrays  |
+| **lingerMs**      | Yes                | Yes            | Yes                | No (sync model)              |
+| **maxInFlight**   | Yes                | Yes            | Yes                | No (sync model)              |
 
 ---
 

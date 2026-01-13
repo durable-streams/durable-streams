@@ -493,6 +493,12 @@ catch (RateLimitedException $e) {
 | **Batching**    | Async queue    | Thread + deque | Channels   | Local queue + flush |
 | **SSE Support** | Yes            | Yes            | Yes        | No (long-poll only) |
 
+**PHP-specific limitations** (due to synchronous execution model):
+
+- No `lingerMs` - batches only flush on size limits or explicit `flush()` call (no background timer)
+- No `maxInFlight` - batches sent synchronously, not pipelined
+- No SSE - passing `live: 'sse'` throws `LogicException`; use `'long-poll'` or `'auto'`
+
 ## Protocol
 
 Durable Streams is built on a simple HTTP-based protocol:
