@@ -129,7 +129,7 @@ namespace DurableStreams;
  * @param array{
  *   url: string,
  *   offset?: string,
- *   live?: string|false,
+ *   live?: LiveMode,
  *   headers?: array<string, string|callable>,
  *   timeout?: float,
  *   retry?: RetryOptions,
@@ -203,16 +203,17 @@ final class StreamResponse implements \IteratorAggregate
     public function isLive(): bool;
 }
 
-final class StreamChunk
+final class StreamChunk implements \Stringable
 {
     public readonly ?string $data;
     public readonly string $offset;
     public readonly bool $upToDate;
     public readonly int $status;
     public function hasData(): bool;
+    public function __toString(): string;
 }
 
-final class JsonBatch implements \Countable
+final class JsonBatch implements \Countable, \IteratorAggregate
 {
     public readonly array $items;
     public readonly string $offset;
@@ -220,6 +221,7 @@ final class JsonBatch implements \Countable
     public readonly int $status;
     public function hasItems(): bool;
     public function count(): int;
+    public function getIterator(): \Traversable;
 }
 ```
 
@@ -329,8 +331,9 @@ $client = new Psr18HttpClient(
 
 ### Termination Behavior
 
-- `live: false` (catch-up): Stop when `upToDate` is true
-- `live: 'long-poll'`: Keep polling forever (until cancelled or error)
+- `LiveMode::Off` (catch-up): Stop when `upToDate` is true
+- `LiveMode::LongPoll`: Keep polling forever (until cancelled or error)
+- `LiveMode::Auto`: Maps to `LongPoll` in PHP
 
 ---
 
@@ -359,12 +362,13 @@ foreach ($response->jsonStream() as $event) {
 <?php
 
 use function DurableStreams\stream;
+use DurableStreams\LiveMode;
 use DurableStreams\Exception\UnauthorizedException;
 
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => 'now',
-    'live' => 'long-poll',
+    'live' => LiveMode::LongPoll,
     'headers' => [
         // Dynamic header - called before each request
         'Authorization' => fn() => 'Bearer ' . getCurrentToken(),
@@ -433,6 +437,7 @@ $response = stream([
 <?php
 
 use function DurableStreams\stream;
+use DurableStreams\LiveMode;
 
 $running = true;
 pcntl_signal(SIGTERM, function () use (&$running) {
@@ -445,7 +450,7 @@ pcntl_signal(SIGINT, function () use (&$running) {
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => $lastOffset ?? '-1',
-    'live' => 'auto',  // Maps to 'long-poll' in PHP
+    'live' => LiveMode::Auto,
 ]);
 
 foreach ($response->jsonBatches() as $batch) {

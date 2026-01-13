@@ -404,6 +404,7 @@ Long-running consumer with graceful shutdown:
 <?php
 
 use function DurableStreams\stream;
+use DurableStreams\LiveMode;
 
 $running = true;
 pcntl_signal(SIGTERM, function () use (&$running) { $running = false; });
@@ -412,7 +413,7 @@ pcntl_signal(SIGINT, function () use (&$running) { $running = false; });
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => loadCheckpoint() ?? '-1',
-    'live' => 'auto',  // Maps to 'long-poll' in PHP
+    'live' => LiveMode::Auto,
 ]);
 
 foreach ($response->jsonBatches() as $batch) {
@@ -506,7 +507,7 @@ catch (RateLimitedException $e) {
 
 - No `lingerMs` - batches only flush on size limits or explicit `flush()` call (no background timer)
 - No `maxInFlight` - batches sent synchronously, not pipelined
-- No SSE - passing `live: 'sse'` throws `LogicException`; use `'long-poll'` or `'auto'`
+- No SSE - use `LiveMode::LongPoll` or `LiveMode::Auto` instead
 
 ## Protocol
 
