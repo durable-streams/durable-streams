@@ -21,6 +21,19 @@ pub enum Offset {
 }
 
 impl Offset {
+    /// Create an offset at a specific position.
+    ///
+    /// This is a convenience constructor for `Offset::At`.
+    ///
+    /// # Example
+    /// ```
+    /// use durable_streams::Offset;
+    /// let offset = Offset::at("abc123");
+    /// ```
+    pub fn at(s: impl Into<String>) -> Self {
+        Offset::At(s.into())
+    }
+
     /// Parse from protocol string
     pub fn parse(s: &str) -> Self {
         match s {

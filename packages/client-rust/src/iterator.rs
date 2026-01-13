@@ -35,14 +35,14 @@ pub struct Chunk {
     pub up_to_date: bool,
     /// Cursor for CDN request collapsing.
     pub cursor: Option<String>,
-    /// HTTP status code from the response.
+    /// HTTP status code from the response, if applicable.
     ///
     /// Common values:
-    /// - `200`: Success with data
-    /// - `204`: No content (long-poll timeout or caught up)
-    /// - `304`: Not modified
-    /// - `0`: SSE connection closed, reconnect will happen on next iteration
-    pub status_code: u16,
+    /// - `Some(200)`: Success with data
+    /// - `Some(204)`: No content (long-poll timeout or caught up)
+    /// - `Some(304)`: Not modified
+    /// - `None`: SSE connection closed, reconnect will happen on next iteration
+    pub status_code: Option<u16>,
 }
 
 /// Builder for configuring stream reads.
@@ -70,8 +70,16 @@ impl ReadBuilder {
     }
 
     /// Set the starting offset.
-    pub fn offset(mut self, offset: Offset) -> Self {
-        self.offset = offset;
+    ///
+    /// Accepts `Offset` or string types that convert to `Offset::At`.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// stream.read().offset(Offset::Beginning)
+    /// stream.read().offset("abc123")  // equivalent to Offset::at("abc123")
+    /// ```
+    pub fn offset(mut self, offset: impl Into<Offset>) -> Self {
+        self.offset = offset.into();
         self
     }
 
@@ -227,7 +235,7 @@ impl ChunkIterator {
                     next_offset: self.offset.clone(),
                     up_to_date: true,
                     cursor: self.cursor.clone(),
-                    status_code: 204,
+                    status_code: Some(204),
                 }));
             }
             Err(e) => return Err(e.into()),
@@ -273,7 +281,7 @@ impl ChunkIterator {
                     next_offset,
                     up_to_date,
                     cursor,
-                    status_code: 200,
+                    status_code: Some(200),
                 }))
             }
             204 => {
@@ -308,7 +316,7 @@ impl ChunkIterator {
                     next_offset: self.offset.clone(),
                     up_to_date: true,
                     cursor: self.cursor.clone(),
-                    status_code: 204,
+                    status_code: Some(204),
                 }))
             }
             304 => {
@@ -326,7 +334,7 @@ impl ChunkIterator {
                     next_offset: self.offset.clone(),
                     up_to_date: self.up_to_date,
                     cursor: self.cursor.clone(),
-                    status_code: 304,
+                    status_code: Some(304),
                 }))
             }
             404 => Err(StreamError::NotFound {
@@ -459,7 +467,7 @@ impl ChunkIterator {
                                             next_offset: self.offset.clone(),
                                             up_to_date: true,
                                             cursor: self.cursor.clone(),
-                                            status_code: 200,
+                                            status_code: Some(200),
                                         }));
                                     }
                                 }
@@ -471,7 +479,7 @@ impl ChunkIterator {
                                     next_offset: self.offset.clone(),
                                     up_to_date: self.up_to_date,
                                     cursor: self.cursor.clone(),
-                                    status_code: 200,
+                                    status_code: Some(200),
                                 }));
                             }
                         }
@@ -501,7 +509,7 @@ impl ChunkIterator {
                             next_offset: self.offset.clone(),
                             up_to_date: self.up_to_date,
                             cursor: self.cursor.clone(),
-                            status_code: 0, // Indicates reconnect needed
+                            status_code: None, // SSE closed, reconnect on next iteration
                         }));
                     }
                     self.done = true;

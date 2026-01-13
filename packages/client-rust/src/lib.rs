@@ -42,3 +42,23 @@ pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
 pub use producer::{Producer, ProducerBuilder};
 pub use stream::{AppendOptions, AppendResponse, CreateOptions, DurableStream, HeadResponse};
 pub use types::{LiveMode, Offset};
+
+/// Prelude module for convenient imports.
+///
+/// # Example
+/// ```
+/// use durable_streams::prelude::*;
+/// ```
+///
+/// This imports the most commonly used types:
+/// - [`Client`] - The main client for connecting to streams
+/// - [`Offset`] - Stream position specification
+/// - [`LiveMode`] - Live tailing mode configuration
+/// - [`StreamError`] - Error type for stream operations
+/// - [`Chunk`] - Data chunk from reading a stream
+pub mod prelude {
+    pub use crate::client::Client;
+    pub use crate::error::StreamError;
+    pub use crate::iterator::Chunk;
+    pub use crate::types::{LiveMode, Offset};
+}

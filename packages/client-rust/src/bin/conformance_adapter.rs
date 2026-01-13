@@ -468,8 +468,8 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
 
                 match chunk_result {
                     Ok(Ok(Some(chunk))) => {
-                        if chunk.status_code != 0 {
-                            status = chunk.status_code;
+                        if let Some(code) = chunk.status_code {
+                            status = code;
                         }
 
                         if !chunk.data.is_empty() {
