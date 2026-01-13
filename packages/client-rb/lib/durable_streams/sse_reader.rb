@@ -7,7 +7,7 @@ require "net/http"
 module DurableStreams
   # SSE (Server-Sent Events) reader for live streaming
   class SSEReader
-    attr_reader :next_offset, :cursor, :up_to_date
+    attr_reader :next_offset, :cursor, :up_to_date, :status
 
     # @param stream [Stream] Parent stream handle
     # @param offset [String] Starting offset
@@ -21,6 +21,7 @@ module DurableStreams
       @retry_policy = retry_policy || RetryPolicy.default
       @up_to_date = false
       @closed = false
+      @status = nil
       @buffer = +""
       @http_response = nil
       @connection = nil
@@ -114,12 +115,12 @@ module DurableStreams
       request["Accept"] = "text/event-stream"
 
       @connection.request(request) do |response|
-        status = response.code.to_i
-        if status == 404
+        @status = response.code.to_i
+        if @status == 404
           raise StreamNotFoundError.new(url: @stream.url)
         end
-        unless status >= 200 && status < 300
-          raise DurableStreams.error_from_status(status, url: @stream.url)
+        unless @status >= 200 && @status < 300
+          raise DurableStreams.error_from_status(@status, url: @stream.url)
         end
         yield response
       end
