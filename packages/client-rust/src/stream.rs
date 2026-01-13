@@ -45,12 +45,27 @@ impl DurableStream {
         &self.url
     }
 
-    /// Get the cached content type (populated after create/head).
+    /// Get the content type set on this stream handle.
+    ///
+    /// This is used as the default Content-Type for append operations
+    /// and by the Producer for JSON mode detection.
+    ///
+    /// Note: This is not automatically populated from the server.
+    /// Use [`set_content_type`](Self::set_content_type) to set it after
+    /// creating a stream, or set it explicitly on the Producer.
     pub fn content_type(&self) -> Option<&str> {
         self.content_type.as_deref()
     }
 
-    /// Set the content type (useful when you know it without calling head).
+    /// Set the content type for this stream handle.
+    ///
+    /// This affects append operations and Producer JSON mode detection.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut stream = client.stream("...");
+    /// stream.set_content_type("application/json");
+    /// ```
     pub fn set_content_type(&mut self, ct: impl Into<String>) {
         self.content_type = Some(ct.into());
     }
@@ -365,6 +380,7 @@ impl DurableStream {
 
 /// Options for creating a stream.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct CreateOptions {
     pub content_type: Option<String>,
     pub ttl: Option<Duration>,
@@ -406,6 +422,7 @@ impl CreateOptions {
 
 /// Options for appending to a stream.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct AppendOptions {
     pub seq: Option<String>,
     pub if_match: Option<String>,
@@ -469,6 +486,7 @@ impl DeleteOptions {
 
 /// Response from an append operation.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct AppendResponse {
     pub next_offset: Offset,
     pub etag: Option<String>,
@@ -476,6 +494,7 @@ pub struct AppendResponse {
 
 /// Response from a HEAD operation.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct HeadResponse {
     pub next_offset: Offset,
     pub content_type: Option<String>,

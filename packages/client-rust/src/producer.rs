@@ -102,13 +102,16 @@ impl ProducerBuilder {
     ///
     /// ```ignore
     /// let producer = stream.producer("my-producer")
-    ///     .on_error(Arc::new(|err| {
+    ///     .on_error(|err| {
     ///         eprintln!("Batch failed: {}", err);
-    ///     }))
+    ///     })
     ///     .build();
     /// ```
-    pub fn on_error(mut self, callback: OnErrorCallback) -> Self {
-        self.on_error = Some(callback);
+    pub fn on_error<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(ProducerError) + Send + Sync + 'static,
+    {
+        self.on_error = Some(Arc::new(callback));
         self
     }
 

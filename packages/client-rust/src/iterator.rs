@@ -26,6 +26,7 @@ use std::time::Duration;
 /// | **Long-poll** | Server timed out with no new data (204 response) |
 /// | **SSE** | Control event included `upToDate: true` |
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Chunk {
     /// The raw data bytes for this chunk.
     pub data: Bytes,

@@ -99,7 +99,6 @@ For high-throughput writes with exactly-once delivery guarantees, use `Producer`
 
 ```rust
 use durable_streams::{Client, CreateOptions};
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
@@ -119,9 +118,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .linger(Duration::from_millis(5))   // Batch for 5ms
         .max_batch_bytes(64 * 1024)         // 64KB max batch
         .content_type("application/json")   // Match stream content type
-        .on_error(Arc::new(|err| {          // Handle batch errors (Kafka-style)
+        .on_error(|err| {                     // Handle batch errors (Kafka-style)
             eprintln!("Batch failed: {}", err);
-        }))
+        })
         .build();
 
     // Fire-and-forget writes - automatically batched & pipelined

@@ -701,7 +701,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```rust
 use durable_streams::{Client, CreateOptions};
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
@@ -720,9 +719,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .auto_claim(true) // Auto-recover on restart
         .linger(Duration::from_millis(5))
         .content_type("application/json")
-        .on_error(Arc::new(|err| {
+        .on_error(|err| {
             eprintln!("Batch failed: {}", err);
-        }))
+        })
         .build();
 
     // Fire-and-forget writes (errors reported via on_error callback)
