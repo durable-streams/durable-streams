@@ -75,14 +75,14 @@ LLM inference is expensive. When a user's tab gets suspended or they refresh the
 
 ```elixir
 defmodule MyApp.AIStreamer do
-  alias DurableStreams.{Client, Stream, Writer}
+  use DurableStreams  # Imports Client, DS, Writer, Consumer
 
   def stream_generation(prompt, generation_id) do
     client = Client.new(System.get_env("DURABLE_STREAMS_URL"))
     stream = Client.stream(client, "/generations/#{generation_id}")
 
     # Create stream for this generation
-    {:ok, stream} = Stream.create(stream, content_type: "text/plain")
+    {:ok, stream} = DS.create(stream, content_type: "text/plain")
 
     # Use Writer for reliable, exactly-once token delivery
     {:ok, writer} = Writer.start_link(
@@ -104,7 +104,7 @@ defmodule MyApp.AIStreamer do
 end
 
 # Client-side: resume from last seen position (refresh-safe)
-{:ok, chunk} = Stream.read(stream, offset: saved_offset, live: :long_poll)
+{:ok, chunk} = DS.read(stream, offset: saved_offset, live: :long_poll)
 # User sees tokens from where they left off, not from the beginning
 ```
 
@@ -115,7 +115,7 @@ Stream database changes to web and mobile clients for real-time synchronization:
 ```elixir
 defmodule MyApp.ChangeStreamer do
   use GenServer
-  alias DurableStreams.{Client, Writer}
+  use DurableStreams
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -139,7 +139,7 @@ defmodule MyApp.ChangeStreamer do
 
   def handle_info({:db_change, change}, state) do
     # Fire-and-forget - Writer batches and handles retries
-    Writer.append(state.writer, Jason.encode!(change))
+    Writer.append(state.writer, JSON.encode!(change))
     {:noreply, state}
   end
 end
@@ -151,14 +151,14 @@ Build event-sourced systems with durable event logs:
 
 ```elixir
 defmodule MyApp.OrderAggregate do
-  alias DurableStreams.{Client, Stream}
+  use DurableStreams
 
   def replay_order(order_id) do
     client = Client.new(System.get_env("DURABLE_STREAMS_URL"))
     stream = Client.stream(client, "/orders/#{order_id}/events")
 
     # Read all events from beginning
-    {:ok, chunks} = Stream.read_all(stream, offset: "-1")
+    {:ok, chunks} = DS.read_all(stream, offset: "-1")
 
     # Replay events to rebuild state
     chunks
@@ -390,39 +390,39 @@ Or use auto-claim for simpler deployments:
 For simple scripts or custom implementations, use the Stream module directly:
 
 ```elixir
-alias DurableStreams.Stream
+alias DurableStreams.Stream, as: DS
 
 # Create
-{:ok, stream} = Stream.create(stream, content_type: "text/plain")
+{:ok, stream} = DS.create(stream, content_type: "text/plain")
 
 # Append
-{:ok, result} = Stream.append(stream, "Hello, World!")
+{:ok, result} = DS.append(stream, "Hello, World!")
 
 # Read single chunk
-{:ok, chunk} = Stream.read(stream, offset: "-1")
+{:ok, chunk} = DS.read(stream, offset: "-1")
 
 # Read all available data
-{:ok, chunks} = Stream.read_all(stream)
+{:ok, chunks} = DS.read_all(stream)
 
 # Get metadata
-{:ok, meta} = Stream.head(stream)
+{:ok, meta} = DS.head(stream)
 
 # Delete
-:ok = Stream.delete(stream)
+:ok = DS.delete(stream)
 ```
 
 ### Manual Idempotent Appends
 
 ```elixir
 # For manual sequence management
-{:ok, _} = Stream.append(stream, data,
+{:ok, _} = DS.append(stream, data,
   producer_id: "my-producer",
   producer_epoch: 0,
   producer_seq: 0
 )
 
 # Increment seq for each message
-{:ok, _} = Stream.append(stream, data2,
+{:ok, _} = DS.append(stream, data2,
   producer_id: "my-producer",
   producer_epoch: 0,
   producer_seq: 1

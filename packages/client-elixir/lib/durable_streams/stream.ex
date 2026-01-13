@@ -284,11 +284,22 @@ defmodule DurableStreams.Stream do
 
         case events do
           [] ->
-            # No events - return empty with metadata
+            # No events - need to get actual offset from server
+            # (especially important when offset was "now")
+            actual_offset =
+              if final_offset do
+                final_offset
+              else
+                case head(stream) do
+                  {:ok, %{next_offset: off}} -> off
+                  {:error, _} -> offset
+                end
+              end
+
             {:ok, %{
               data: "",
-              next_offset: final_offset || offset,
-              up_to_date: up_to_date,
+              next_offset: actual_offset,
+              up_to_date: up_to_date || true,
               status: 204
             }}
 

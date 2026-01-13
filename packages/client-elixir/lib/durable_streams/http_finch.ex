@@ -98,13 +98,30 @@ defmodule DurableStreams.HTTP.Finch do
 
       case result do
         {:ok, acc} ->
-          # Flush any remaining buffer
-          acc = flush_buffer(acc)
-          {:ok, %{
-            next_offset: acc.next_offset,
-            up_to_date: acc.up_to_date,
-            events_delivered: acc.events_delivered
-          }}
+          # Check for error status codes before treating as success
+          cond do
+            acc.status == 404 ->
+              {:error, :not_found}
+
+            acc.status == 400 ->
+              {:error, {:bad_request, ""}}
+
+            acc.status == 410 ->
+              earliest = get_header(acc.headers, "stream-earliest-offset")
+              {:error, {:gone, earliest}}
+
+            acc.status != nil and acc.status >= 400 ->
+              {:error, {:unexpected_status, acc.status, ""}}
+
+            true ->
+              # Success - flush any remaining buffer
+              acc = flush_buffer(acc)
+              {:ok, %{
+                next_offset: acc.next_offset,
+                up_to_date: acc.up_to_date,
+                events_delivered: acc.events_delivered
+              }}
+          end
 
         {:error, %Finch.Error{reason: :request_timeout}} ->
           # Timeout is normal for SSE - return what we have
