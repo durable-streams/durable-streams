@@ -391,10 +391,12 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                 # Use JSON parsing to trigger PARSE_ERROR on malformed JSON
                 import json as json_module
                 items = response.read_json()
-                for item in items:
+                if items:
+                    # Serialize items array as compact JSON (no spaces)
+                    # to match TypeScript JSON.stringify() output
                     chunks.append(
                         {
-                            "data": json_module.dumps(item),
+                            "data": json_module.dumps(items, separators=(",", ":")),
                             "offset": response.offset,
                         }
                     )
