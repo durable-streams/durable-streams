@@ -131,7 +131,7 @@ public class ConformanceAdapter {
                 // Stream doesn't exist, we'll create it
             }
 
-            client.createStream(url, contentType, ttl, null);
+            client.create(url, contentType, ttl, null);
             Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -293,7 +293,7 @@ public class ConformanceAdapter {
             // SSE mode now uses true streaming
             LiveMode effectiveMode = liveMode;
 
-            try (ChunkIterator iterator = client.read(url, offset, effectiveMode, timeout, null)) {
+            try (ChunkIterator iterator = client.read(url, ReadOptions.from(offset).live(effectiveMode).timeout(timeout))) {
                 int count = 0;
                 int emptyCount = 0;
                 while (count < maxChunks && emptyCount < 2) {
@@ -499,7 +499,7 @@ public class ConformanceAdapter {
                 .maxBatchBytes(1024)
                 .build();
 
-        try (IdempotentProducer producer = client.idempotentProducer(serverUrl + path, producerId, config)) {
+        try (IdempotentProducer producer = client.producer(serverUrl + path, producerId, config)) {
             producer.append(data);
             producer.flush();
 
@@ -535,7 +535,7 @@ public class ConformanceAdapter {
                 .maxBatchBytes(100)
                 .build();
 
-        try (IdempotentProducer producer = client.idempotentProducer(serverUrl + path, producerId, config)) {
+        try (IdempotentProducer producer = client.producer(serverUrl + path, producerId, config)) {
             for (Object item : items) {
                 producer.append(item.toString());
             }
@@ -621,7 +621,7 @@ public class ConformanceAdapter {
                     String offset = (String) operation.get("offset");
                     String url = serverUrl + path;
                     int totalBytes = 0;
-                    try (ChunkIterator it = client.read(url, offset != null ? Offset.of(offset) : Offset.BEGINNING)) {
+                    try (ChunkIterator it = client.read(url, ReadOptions.from(offset != null ? Offset.of(offset) : Offset.BEGINNING))) {
                         while (it.hasNext()) {
                             Chunk chunk = it.next();
                             totalBytes += chunk.getData().length;
@@ -638,7 +638,7 @@ public class ConformanceAdapter {
 
                     String url = serverUrl + path;
                     try {
-                        client.createStream(url, contentType != null ? contentType : "application/octet-stream");
+                        client.create(url, contentType != null ? contentType : "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
 
                     byte[] payload = new byte[size];
@@ -648,7 +648,7 @@ public class ConformanceAdapter {
                     // Read back via long-poll
                     LiveMode mode = "sse".equals(liveMode) ? LiveMode.SSE : LiveMode.LONG_POLL;
                     int readBytes = 0;
-                    try (ChunkIterator it = client.read(url, Offset.BEGINNING, mode, Duration.ofSeconds(5), null)) {
+                    try (ChunkIterator it = client.read(url, ReadOptions.fromBeginning().live(mode).timeout(Duration.ofSeconds(5)))) {
                         Chunk chunk = it.poll(Duration.ofSeconds(5));
                         if (chunk != null) {
                             readBytes = chunk.getData().length;
@@ -661,7 +661,7 @@ public class ConformanceAdapter {
                     String contentType = (String) operation.get("contentType");
                     String url = serverUrl + path;
                     try {
-                        client.createStream(url, contentType != null ? contentType : "application/octet-stream");
+                        client.create(url, contentType != null ? contentType : "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
                     break;
                 }
@@ -675,7 +675,7 @@ public class ConformanceAdapter {
 
                     String url = serverUrl + path;
                     try {
-                        client.createStream(url, "application/octet-stream");
+                        client.create(url, "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
 
                     byte[] payload = new byte[size];
@@ -685,7 +685,7 @@ public class ConformanceAdapter {
                     IdempotentProducer.Config producerConfig = IdempotentProducer.Config.builder()
                             .lingerMs(0)  // Will normalize to 5ms like Go
                             .build();
-                    IdempotentProducer producer = client.idempotentProducer(url, "bench-producer", producerConfig);
+                    IdempotentProducer producer = client.producer(url, "bench-producer", producerConfig);
 
                     try {
                         for (int i = 0; i < count; i++) {
@@ -704,7 +704,7 @@ public class ConformanceAdapter {
                     String url = serverUrl + path;
                     int totalBytes = 0;
                     int msgCount = 0;
-                    try (ChunkIterator it = client.read(url, Offset.BEGINNING)) {
+                    try (ChunkIterator it = client.read(url, ReadOptions.fromBeginning())) {
                         while (it.hasNext()) {
                             Chunk chunk = it.next();
                             totalBytes += chunk.getData().length;

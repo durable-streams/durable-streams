@@ -79,30 +79,30 @@ public final class DurableStream implements AutoCloseable {
     public static DurableStream create();
     public static Builder builder();
 
-    // Create (sync only - one-time setup)
-    public void createStream(String url, String contentType);
-    public void createStream(String url, String contentType, Duration ttl, Instant expiresAt);
+    // Create
+    public void create(String url);                          // default content type
+    public void create(String url, String contentType);
+    public void create(String url, String contentType, Duration ttl, Instant expiresAt);
 
     // Append (sync + async for high throughput)
     public AppendResult append(String url, byte[] data);
     public CompletableFuture<AppendResult> appendAsync(String url, byte[] data);
 
-    // Metadata & Delete (sync only - rare operations)
+    // Metadata & Delete
     public Metadata head(String url);
     public void delete(String url);
 
     // Read
     public ChunkIterator read(String url);
-    public ChunkIterator read(String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor);
+    public ChunkIterator read(String url, ReadOptions options);
 
     // JSON reading
     public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser);
-    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser,
-                                         Offset offset, LiveMode liveMode, Duration timeout, String cursor);
+    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser, ReadOptions options);
 
-    // Idempotent producer
-    public IdempotentProducer idempotentProducer(String url, String producerId);
-    public IdempotentProducer idempotentProducer(String url, String producerId, Config config);
+    // Producer
+    public IdempotentProducer producer(String url, String producerId);
+    public IdempotentProducer producer(String url, String producerId, Config config);
 
     public void close();
 }
@@ -133,8 +133,8 @@ var client = DurableStream.create();
 String url = "https://api.example.com/streams/events";
 
 // Create
-client.createStream(url, "application/json");                  // With content type
-client.createStream(url, "application/json", ttl, expiresAt);  // Full options
+client.create(url, "application/json");                  // With content type
+client.create(url, "application/json", ttl, expiresAt);  // Full options
 
 // Append
 AppendResult result = client.append(url, data);          // byte[]
@@ -179,8 +179,8 @@ try (var chunks = client.read(url)) {
     }
 }
 
-// With offset and live mode
-try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, timeout, cursor)) {
+// With ReadOptions - fluent API
+try (var chunks = client.read(url, ReadOptions.from(offset).live(LiveMode.LONG_POLL).timeout(timeout))) {
     while (true) {
         Chunk chunk = chunks.poll(Duration.ofSeconds(30));
         if (chunk != null) process(chunk);
@@ -279,7 +279,7 @@ Exactly-once write semantics using `(producerId, epoch, seq)` headers.
 ### 6.1 Basic Usage
 
 ```java
-try (var producer = client.idempotentProducer(url, "my-producer")) {
+try (var producer = client.producer(url, "my-producer")) {
     producer.append(data1);  // Fire-and-forget
     producer.append(data2);
     producer.append(data3);
@@ -300,22 +300,22 @@ var config = IdempotentProducer.Config.builder()
     .onError(e -> log.error("Batch failed", e))
     .build();
 
-var producer = client.idempotentProducer(url, "my-producer", config);
+var producer = client.producer(url, "my-producer", config);
 ```
 
 ### 6.3 Epoch Management
 
 ```java
 // First run
-var producer = client.idempotentProducer(url, "order-service",
+var producer = client.producer(url, "order-service",
     Config.builder().epoch(0).build());
 
 // After restart - increment epoch to fence out zombies
-var producer = client.idempotentProducer(url, "order-service",
+var producer = client.producer(url, "order-service",
     Config.builder().epoch(1).build());
 
 // Or use auto-claim for serverless/ephemeral environments
-var producer = client.idempotentProducer(url, "lambda-function",
+var producer = client.producer(url, "lambda-function",
     Config.builder().autoClaim(true).build());
 ```
 
@@ -352,7 +352,7 @@ try {
     client.append(url, data);
 } catch (StreamNotFoundException e) {
     // Stream doesn't exist - create it first
-    client.createStream(url, "application/json");
+    client.create(url, "application/json");
     client.append(url, data);
 } catch (SequenceConflictException e) {
     log.error("Sequence conflict: expected {}, got {}",
@@ -431,9 +431,8 @@ var client = DurableStream.builder()
 Gson gson = new Gson();
 Type listType = new TypeToken<List<Event>>(){}.getType();
 
-try (var iter = client.readJson(url,
-        json -> gson.fromJson(json, listType),
-        Offset.NOW, LiveMode.SSE, null, null)) {
+var options = ReadOptions.fromNow().live(LiveMode.SSE);
+try (var iter = client.readJson(url, json -> gson.fromJson(json, listType), options)) {
     for (Event event : iter.items()) {
         System.out.printf("Event: %s - %s%n", event.type(), event.data());
     }
@@ -451,7 +450,7 @@ var config = IdempotentProducer.Config.builder()
     .onError(e -> alertOps(e))
     .build();
 
-try (var producer = client.idempotentProducer(ORDERS_URL, "order-service", config)) {
+try (var producer = client.producer(ORDERS_URL, "order-service", config)) {
     for (Order order : orderStream()) {
         producer.append(gson.toJson(order));
     }

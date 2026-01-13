@@ -29,7 +29,7 @@ import java.util.function.Supplier;
  * <p>Usage:
  * <pre>{@code
  * var client = DurableStream.create();
- * client.createStream("http://localhost:3000/streams/my-stream", "application/json");
+ * client.create("http://localhost:3000/streams/my-stream", "application/json");
  * client.append("http://localhost:3000/streams/my-stream", "{\"hello\":\"world\"}".getBytes());
  * }</pre>
  *
@@ -93,13 +93,22 @@ public final class DurableStream implements AutoCloseable {
     // ==================== Create ====================
 
     /**
+     * Create a stream with default content type (application/octet-stream).
+     *
+     * @param url Stream URL
+     */
+    public void create(String url) throws DurableStreamException {
+        create(url, "application/octet-stream", null, null);
+    }
+
+    /**
      * Create a stream with the specified content type.
      *
      * @param url Stream URL
      * @param contentType MIME type (e.g., "application/json")
      */
-    public void createStream(String url, String contentType) throws DurableStreamException {
-        createStream(url, contentType, null, null);
+    public void create(String url, String contentType) throws DurableStreamException {
+        create(url, contentType, null, null);
     }
 
     /**
@@ -110,7 +119,7 @@ public final class DurableStream implements AutoCloseable {
      * @param ttl Time-to-live duration
      * @param expiresAt Absolute expiration time
      */
-    public void createStream(String url, String contentType, Duration ttl, Instant expiresAt)
+    public void create(String url, String contentType, Duration ttl, Instant expiresAt)
             throws DurableStreamException {
         HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt);
         executeWithRetry(request, "create", response -> parseCreateResponse(response, url));
@@ -178,21 +187,30 @@ public final class DurableStream implements AutoCloseable {
      * Read from a stream (catch-up mode, from beginning).
      */
     public ChunkIterator read(String url) throws DurableStreamException {
-        return read(url, null, LiveMode.OFF, null, null);
+        return read(url, ReadOptions.create());
     }
 
     /**
-     * Read from a stream with full options.
+     * Read from a stream with options.
+     *
+     * <p>Example:
+     * <pre>{@code
+     * // Live tail with SSE
+     * client.read(url, ReadOptions.from(offset).live(LiveMode.SSE).timeout(Duration.ofSeconds(30)))
+     *
+     * // Or using builder
+     * client.read(url, ReadOptions.builder().offset(offset).liveMode(LiveMode.SSE).build())
+     * }</pre>
      *
      * @param url Stream URL
-     * @param offset Starting offset (null for beginning)
-     * @param liveMode Live tailing mode
-     * @param timeout Request timeout
-     * @param cursor CDN cursor for collapsing
+     * @param options Read options (offset, live mode, timeout, cursor)
      */
-    public ChunkIterator read(String url, Offset offset, LiveMode liveMode,
-                               Duration timeout, String cursor) throws DurableStreamException {
-        return new ChunkIterator(this, url, offset, liveMode, timeout, cursor);
+    public ChunkIterator read(String url, ReadOptions options) throws DurableStreamException {
+        return new ChunkIterator(this, url,
+                options.getOffset(),
+                options.getLiveMode(),
+                options.getTimeout(),
+                options.getCursor());
     }
 
     // ==================== Read JSON ====================
@@ -214,32 +232,35 @@ public final class DurableStream implements AutoCloseable {
      */
     public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser)
             throws DurableStreamException {
-        return readJson(url, parser, null, LiveMode.OFF, null, null);
+        return readJson(url, parser, ReadOptions.create());
     }
 
     /**
-     * Read JSON from a stream with full options.
+     * Read JSON from a stream with options.
      */
-    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser, Offset offset,
-                                         LiveMode liveMode, Duration timeout, String cursor)
+    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser, ReadOptions options)
             throws DurableStreamException {
-        ChunkIterator chunkIterator = new ChunkIterator(this, url, offset, liveMode, timeout, cursor);
+        ChunkIterator chunkIterator = new ChunkIterator(this, url,
+                options.getOffset(),
+                options.getLiveMode(),
+                options.getTimeout(),
+                options.getCursor());
         return new JsonIterator<>(chunkIterator, parser);
     }
 
-    // ==================== Idempotent Producer ====================
+    // ==================== Producer ====================
 
     /**
      * Create an idempotent producer for exactly-once writes.
      */
-    public IdempotentProducer idempotentProducer(String url, String producerId) {
-        return idempotentProducer(url, producerId, IdempotentProducer.Config.defaults());
+    public IdempotentProducer producer(String url, String producerId) {
+        return producer(url, producerId, IdempotentProducer.Config.defaults());
     }
 
     /**
      * Create an idempotent producer with custom configuration.
      */
-    public IdempotentProducer idempotentProducer(String url, String producerId,
+    public IdempotentProducer producer(String url, String producerId,
                                                   IdempotentProducer.Config config) {
         return new IdempotentProducer(this, url, producerId, config);
     }

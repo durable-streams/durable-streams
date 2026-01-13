@@ -53,7 +53,7 @@ var client = DurableStream.create();
 String url = "https://your-server.com/streams/events";
 
 // Create a JSON stream
-client.createStream(url, "application/json");
+client.create(url, "application/json");
 
 // Append data
 client.append(url, "{\"event\":\"user.created\",\"userId\":\"123\"}".getBytes());
@@ -74,10 +74,12 @@ try (var chunks = client.read(url)) {
 ### Resume from an Offset
 
 ```java
+import com.durablestreams.model.ReadOptions;
+
 // Resume from where you left off
 var savedOffset = Offset.of("abc123xyz");
 
-try (var chunks = client.read(url, savedOffset)) {
+try (var chunks = client.read(url, ReadOptions.from(savedOffset))) {
     for (var chunk : chunks) {
         process(chunk);
     }
@@ -88,9 +90,10 @@ try (var chunks = client.read(url, savedOffset)) {
 
 ```java
 import com.durablestreams.model.LiveMode;
+import com.durablestreams.model.ReadOptions;
 
 // Long-poll mode - server holds connection until data arrives
-try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, null, null)) {
+try (var chunks = client.read(url, ReadOptions.from(offset).live(LiveMode.LONG_POLL))) {
     while (true) {
         var chunk = chunks.poll(Duration.ofSeconds(30));
         if (chunk != null) {
@@ -100,7 +103,7 @@ try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, null, null)) {
 }
 
 // SSE mode - continuous streaming
-try (var chunks = client.read(url, offset, LiveMode.SSE, null, null)) {
+try (var chunks = client.read(url, ReadOptions.from(offset).live(LiveMode.SSE))) {
     for (var chunk : chunks) {
         process(chunk);  // Chunks arrive as data is appended
     }
@@ -170,7 +173,7 @@ For high-throughput exactly-once writes, use `IdempotentProducer`. It batches ap
 ### Basic Usage
 
 ```java
-try (var producer = client.idempotentProducer(url, "my-producer")) {
+try (var producer = client.producer(url, "my-producer")) {
     // Fire-and-forget - calls return immediately
     producer.append("{\"event\":\"a\"}");
     producer.append("{\"event\":\"b\"}");
@@ -194,7 +197,7 @@ var config = IdempotentProducer.Config.builder()
     .onError(e -> log.error("Batch failed", e))
     .build();
 
-var producer = client.idempotentProducer(url, "order-service", config);
+var producer = client.producer(url, "order-service", config);
 ```
 
 ### Epoch-Based Fencing
@@ -203,15 +206,15 @@ Epochs prevent "zombie" producers from causing duplicates after failover:
 
 ```java
 // First deployment
-var producer = client.idempotentProducer(url, "worker-1",
+var producer = client.producer(url, "worker-1",
     Config.builder().epoch(0).build());
 
 // After restart - increment epoch to fence out old instance
-var producer = client.idempotentProducer(url, "worker-1",
+var producer = client.producer(url, "worker-1",
     Config.builder().epoch(1).build());
 
 // Or use autoClaim for serverless environments
-var producer = client.idempotentProducer(url, "lambda-handler",
+var producer = client.producer(url, "lambda-handler",
     Config.builder().autoClaim(true).build());
 ```
 
@@ -239,7 +242,7 @@ try {
     client.append(url, data);
 } catch (StreamNotFoundException e) {
     // 404 - Stream doesn't exist
-    client.createStream(url, "application/json");
+    client.create(url, "application/json");
     client.append(url, data);
 } catch (SequenceConflictException e) {
     // 409 - Sequence number regression
@@ -318,14 +321,11 @@ public class EventProcessor {
     }
 
     public void processEvents(String streamUrl, Offset startOffset) {
-        try (var iter = client.readJson(
-                streamUrl,
-                json -> gson.fromJson(json, listType),
-                startOffset,
-                LiveMode.LONG_POLL,
-                Duration.ofSeconds(30),
-                null)) {
+        var options = ReadOptions.from(startOffset)
+            .live(LiveMode.LONG_POLL)
+            .timeout(Duration.ofSeconds(30));
 
+        try (var iter = client.readJson(streamUrl, json -> gson.fromJson(json, listType), options)) {
             for (Event event : iter.items()) {
                 switch (event.type()) {
                     case "user.created" -> handleUserCreated(event);
@@ -347,7 +347,7 @@ public class EventProcessor {
             .onError(e -> log.error("Failed to send batch", e))
             .build();
 
-        try (var producer = client.idempotentProducer(streamUrl, "event-producer", config)) {
+        try (var producer = client.producer(streamUrl, "event-producer", config)) {
             for (Event event : events) {
                 producer.append(gson.toJson(event));
             }
