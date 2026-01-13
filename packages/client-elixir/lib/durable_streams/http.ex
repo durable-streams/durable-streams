@@ -4,11 +4,6 @@ defmodule DurableStreams.HTTP do
 
   Provides connection pooling via :httpc profiles, automatic retries for
   transient failures, and streaming support for SSE.
-
-  Note: Mint backend is currently disabled. Without connection pooling,
-  Mint's per-request connection overhead makes it slower than :httpc's
-  pooled connections. Future versions may add Finch (Mint with pooling)
-  for higher throughput.
   """
 
   require Logger
@@ -17,10 +12,6 @@ defmodule DurableStreams.HTTP do
   @max_retries 3
   @retry_delays [100, 500, 1000]
   @profile :durable_streams_http
-
-  # Disable Mint for now - without connection pooling it's slower than :httpc
-  # In the future, consider using Finch (which builds on Mint with pooling)
-  @mint_available false
 
   @type headers :: [{String.t(), String.t()}]
   @type response :: {:ok, status :: integer(), headers(), body :: binary()} | {:error, term()}
@@ -58,11 +49,6 @@ defmodule DurableStreams.HTTP do
   end
 
   @doc """
-  Check if using the high-performance Mint backend.
-  """
-  def using_mint?, do: @mint_available
-
-  @doc """
   Make an HTTP request with automatic retries for transient failures.
   """
 
@@ -78,50 +64,12 @@ defmodule DurableStreams.HTTP do
     max_retries = Keyword.get(opts, :max_retries, @max_retries)
     streaming = Keyword.get(opts, :streaming, false)
 
+    ensure_started()
+
     if streaming do
-      # Streaming always uses :httpc for now
-      ensure_started()
       stream_request(method, url, headers, body, timeout)
     else
-      # Use Mint for non-streaming if available
-      if @mint_available do
-        do_request_mint(method, url, headers, body, timeout, 0, max_retries)
-      else
-        ensure_started()
-        do_request(method, url, headers, body, timeout, 0, max_retries)
-      end
-    end
-  end
-
-  # Mint-based request with retries
-  defp do_request_mint(method, url, headers, body, timeout, attempt, max_retries) do
-    result = DurableStreams.HTTP.Mint.request(method, url, headers, body, timeout: timeout)
-
-    case result do
-      {:ok, status, resp_headers, resp_body} when status >= 500 or status == 429 ->
-        maybe_retry_mint(method, url, headers, body, timeout, attempt, max_retries, status, resp_headers, resp_body)
-
-      {:ok, _status, _headers, _body} = success ->
-        success
-
-      {:error, reason} when attempt < max_retries ->
-        delay = Enum.at(@retry_delays, attempt, 1000)
-        Logger.warning("HTTP request failed (attempt #{attempt + 1}/#{max_retries}): #{inspect(reason)}, retrying in #{delay}ms")
-        Process.sleep(delay)
-        do_request_mint(method, url, headers, body, timeout, attempt + 1, max_retries)
-
-      {:error, _reason} = error ->
-        error
-    end
-  end
-
-  defp maybe_retry_mint(method, url, headers, body, timeout, attempt, max_retries, status, resp_headers, resp_body) do
-    if attempt < max_retries do
-      delay = calculate_retry_delay(status, resp_headers, attempt)
-      Process.sleep(delay)
-      do_request_mint(method, url, headers, body, timeout, attempt + 1, max_retries)
-    else
-      {:ok, status, resp_headers, resp_body}
+      do_request(method, url, headers, body, timeout, 0, max_retries)
     end
   end
 
