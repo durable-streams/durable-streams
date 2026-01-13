@@ -88,13 +88,19 @@ defmodule DurableStreams.HTTP.Finch do
       }
 
       # Use Finch.stream with receive_timeout for SSE
-      result = Finch.stream(
-        request,
-        @finch_name,
-        initial_acc,
-        &handle_stream_message/2,
-        receive_timeout: timeout
-      )
+      # Wrap in try/rescue to catch any unexpected exceptions
+      result =
+        try do
+          Finch.stream(
+            request,
+            @finch_name,
+            initial_acc,
+            &handle_stream_message/2,
+            receive_timeout: timeout
+          )
+        rescue
+          e -> {:error, {:exception, Exception.message(e)}}
+        end
 
       case result do
         {:ok, acc} ->
@@ -126,6 +132,10 @@ defmodule DurableStreams.HTTP.Finch do
         {:error, %Finch.Error{reason: :request_timeout}} ->
           # Timeout is normal for SSE - return what we have
           {:ok, %{next_offset: nil, up_to_date: false, events_delivered: 0}}
+
+        {:error, %Finch.Error{reason: reason}} ->
+          # Other Finch errors
+          {:error, {:connection_error, reason}}
 
         {:error, reason} ->
           {:error, reason}
@@ -173,13 +183,12 @@ defmodule DurableStreams.HTTP.Finch do
   # Deliver a single SSE event to the callback
   defp deliver_event(%{type: "control", data: data}, acc) do
     # Control events update stream metadata
+    # Format: {"streamNextOffset": "...", "upToDate": true/false}
     case parse_control_data(data) do
-      {:ok, %{"nextOffset" => offset}} ->
-        up_to_date = data["upToDate"] || acc.up_to_date
-        %{acc | next_offset: offset, up_to_date: up_to_date}
-
-      {:ok, %{"upToDate" => up_to_date}} ->
-        %{acc | up_to_date: up_to_date}
+      {:ok, control} ->
+        next_offset = control["streamNextOffset"] || acc.next_offset
+        up_to_date = control["upToDate"] || acc.up_to_date
+        %{acc | next_offset: next_offset, up_to_date: up_to_date}
 
       _ ->
         acc
