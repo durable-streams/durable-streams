@@ -11,6 +11,8 @@ defmodule DurableStreams.HTTP do
   for higher throughput.
   """
 
+  require Logger
+
   @default_timeout 30_000
   @max_retries 3
   @retry_delays [100, 500, 1000]
@@ -104,7 +106,6 @@ defmodule DurableStreams.HTTP do
 
       {:error, reason} when attempt < max_retries ->
         delay = Enum.at(@retry_delays, attempt, 1000)
-        require Logger
         Logger.warning("HTTP request failed (attempt #{attempt + 1}/#{max_retries}): #{inspect(reason)}, retrying in #{delay}ms")
         Process.sleep(delay)
         do_request_mint(method, url, headers, body, timeout, attempt + 1, max_retries)
@@ -300,7 +301,6 @@ defmodule DurableStreams.HTTP do
 
       {:error, reason} when attempt < max_retries ->
         delay = Enum.at(@retry_delays, attempt, 1000)
-        require Logger
         Logger.warning("HTTP request failed (attempt #{attempt + 1}/#{max_retries}): #{inspect(reason)}, retrying in #{delay}ms")
         Process.sleep(delay)
         do_request(method, url, headers, body, timeout, attempt + 1, max_retries)

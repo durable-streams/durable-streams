@@ -5,7 +5,8 @@ defmodule DurableStreams.ConformanceAdapter do
   Communicates with the test runner via JSON-line protocol over stdin/stdout.
   """
 
-  alias DurableStreams.{Client, Stream, Writer, HTTP, JSON}
+  require Logger
+  alias DurableStreams.{Client, Stream, Writer, JSON}
 
   @client_name "durable-streams-elixir"
   @client_version "0.1.0"
@@ -22,6 +23,17 @@ defmodule DurableStreams.ConformanceAdapter do
   end
 
   def main(_args) do
+    # Remove the default logger handler that writes to stdout
+    # and add one that writes to stderr
+    case :logger.get_handler_config(:default) do
+      {:ok, handler_config} ->
+        :logger.remove_handler(:default)
+        new_config = put_in(handler_config.config[:type], :standard_error)
+        :logger.add_handler(:default, :logger_std_h, new_config)
+      _ ->
+        :ok
+    end
+
     state = %State{
       stream_content_types: %{},
       dynamic_headers: %{},
@@ -51,16 +63,30 @@ defmodule DurableStreams.ConformanceAdapter do
         else
           case JSON.decode(line) do
             {:ok, command} ->
-              {result, new_state} = handle_command(command, state)
-              output = JSON.encode!(result)
-              IO.puts(output)
-              # Ensure output is flushed immediately
-              :io.put_chars(:standard_io, [])
+              try do
+                {result, new_state} = handle_command(command, state)
+                output = JSON.encode!(result)
+                :ok = IO.puts(output)
 
-              if command["type"] == "shutdown" do
-                :ok
-              else
-                loop(new_state)
+                if command["type"] == "shutdown" do
+                  :ok
+                else
+                  loop(new_state)
+                end
+              rescue
+                e ->
+                  result = error_result(command["type"] || "unknown", "INTERNAL_ERROR", Exception.message(e))
+                  IO.puts(JSON.encode!(result))
+                  loop(state)
+              catch
+                :exit, reason ->
+                  result = error_result(command["type"] || "unknown", "INTERNAL_ERROR", "Process exit: #{inspect(reason)}")
+                  IO.puts(JSON.encode!(result))
+                  loop(state)
+                kind, reason ->
+                  result = error_result(command["type"] || "unknown", "INTERNAL_ERROR", "#{kind}: #{inspect(reason)}")
+                  IO.puts(JSON.encode!(result))
+                  loop(state)
               end
 
             {:error, _} ->
@@ -551,18 +577,46 @@ defmodule DurableStreams.ConformanceAdapter do
     iteration_id = cmd["iterationId"]
     operation = cmd["operation"]
 
-    {duration_ns, metrics} = run_benchmark(operation, state)
+    try do
+      {duration_ns, metrics} = run_benchmark(operation, state)
 
-    result =
-      %{
-        "type" => "benchmark",
-        "success" => true,
-        "iterationId" => iteration_id,
-        "durationNs" => Integer.to_string(duration_ns)
-      }
-      |> maybe_add_metrics(metrics)
+      result =
+        %{
+          "type" => "benchmark",
+          "success" => true,
+          "iterationId" => iteration_id,
+          "durationNs" => Integer.to_string(duration_ns)
+        }
+        |> maybe_add_metrics(metrics)
 
-    {result, state}
+      {result, state}
+    rescue
+      e ->
+        result = %{
+          "type" => "benchmark",
+          "success" => false,
+          "iterationId" => iteration_id,
+          "error" => Exception.message(e)
+        }
+        {result, state}
+    catch
+      :exit, reason ->
+        result = %{
+          "type" => "benchmark",
+          "success" => false,
+          "iterationId" => iteration_id,
+          "error" => "Process exit: #{inspect(reason)}"
+        }
+        {result, state}
+      kind, reason ->
+        result = %{
+          "type" => "benchmark",
+          "success" => false,
+          "iterationId" => iteration_id,
+          "error" => "#{kind}: #{inspect(reason)}"
+        }
+        {result, state}
+    end
   end
 
   defp handle_command(%{"type" => "shutdown"}, state) do
@@ -767,6 +821,7 @@ defmodule DurableStreams.ConformanceAdapter do
 
   defp run_benchmark(%{"op" => "roundtrip", "path" => path, "size" => size} = op, state) do
     content_type = op["contentType"] || state.stream_content_types[path] || "application/octet-stream"
+    live_mode = parse_live_mode(op["live"])
 
     stream =
       state.client
@@ -782,7 +837,7 @@ defmodule DurableStreams.ConformanceAdapter do
         # Calculate previous offset
         {offset_int, ""} = Integer.parse(offset)
         prev_offset = Integer.to_string(offset_int - size)
-        Stream.read(stream, offset: prev_offset)
+        Stream.read(stream, offset: prev_offset, live: live_mode)
 
       _ ->
         :ok
@@ -792,6 +847,10 @@ defmodule DurableStreams.ConformanceAdapter do
 
     {duration, nil}
   end
+
+  defp parse_live_mode("sse"), do: :sse
+  defp parse_live_mode("long-poll"), do: :long_poll
+  defp parse_live_mode(_), do: false
 
   defp run_benchmark(%{"op" => "throughput_append", "path" => path, "count" => count, "size" => size}, state) do
     content_type = state.stream_content_types[path] || "application/octet-stream"

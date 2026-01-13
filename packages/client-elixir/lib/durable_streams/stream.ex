@@ -5,6 +5,8 @@ defmodule DurableStreams.Stream do
   Provides operations for creating, reading, appending, and deleting streams.
   """
 
+  require Logger
+
   alias DurableStreams.{Client, HTTP}
 
   defstruct [:client, :path, :content_type, :extra_headers]
@@ -116,7 +118,6 @@ defmodule DurableStreams.Stream do
       {:ok, 200, resp_headers, _body} ->
         next_offset = case HTTP.get_header(resp_headers, "stream-next-offset") do
           nil ->
-            require Logger
             Logger.warning("HEAD response missing stream-next-offset header, defaulting to -1")
             "-1"
           offset -> offset
@@ -197,7 +198,6 @@ defmodule DurableStreams.Stream do
       {:ok, status, resp_headers, _body} when status in [200, 204] ->
         next_offset = case HTTP.get_header(resp_headers, "stream-next-offset") do
           nil ->
-            require Logger
             Logger.warning("Append response missing stream-next-offset header, defaulting to -1")
             "-1"
           offset -> offset
@@ -320,6 +320,28 @@ defmodule DurableStreams.Stream do
           next_offset: actual_offset,
           up_to_date: true,
           status: 204
+        }}
+
+      {:error, {:timeout_partial, %{status: status, headers: resp_headers, partial_body: body}}} when streaming ->
+        # For SSE, partial data on timeout is expected - we received some events
+        content_type = HTTP.get_header(resp_headers, "content-type") || ""
+
+        {data, sse_next_offset, sse_up_to_date} =
+          if String.contains?(content_type, "text/event-stream") do
+            parse_sse_response(body)
+          else
+            {body, nil, nil}
+          end
+
+        # Use SSE control event values if present, otherwise fall back to headers
+        next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
+        up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
+
+        {:ok, %{
+          data: data,
+          next_offset: next_offset,
+          up_to_date: up_to_date,
+          status: status
         }}
 
       {:error, reason} ->

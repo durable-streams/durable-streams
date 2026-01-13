@@ -29,9 +29,13 @@ defmodule DurableStreams.MixProject do
   end
 
   defp deps do
-    # No dependencies required - uses native JSON (Elixir 1.18+)
-    # For Elixir < 1.18, add {:jason, "~> 1.4"} to use the Jason fallback
-    []
+    [
+      # Optional high-performance HTTP client (5-10x faster than :httpc)
+      {:mint, "~> 1.6", optional: true},
+      {:castore, "~> 1.0", optional: true}
+      # Note: Without Mint, uses built-in :httpc (no external deps)
+      # For Elixir < 1.18, add {:jason, "~> 1.4"} to use the Jason fallback
+    ]
   end
 
   defp escript do
