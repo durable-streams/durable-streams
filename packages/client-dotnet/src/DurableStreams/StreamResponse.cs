@@ -33,6 +33,9 @@ public sealed class StreamResponse : IAsyncDisposable
     // Pending SSE data (data event received, waiting for control)
     private string? _pendingSseData;
 
+    // SSE reconnection backoff state
+    private int _sseReconnectAttempts;
+
     /// <summary>
     /// The stream URL.
     /// </summary>
@@ -367,7 +370,7 @@ public sealed class StreamResponse : IAsyncDisposable
 
             // Update content type
             var contentType = HttpHelpers.GetHeader(_currentResponse, Headers.ContentType);
-            if (contentType != null && !contentType.StartsWith("text/event-stream"))
+            if (contentType != null && !contentType.StartsWith("text/event-stream", StringComparison.OrdinalIgnoreCase))
             {
                 _stream.ContentType = contentType;
             }
@@ -384,6 +387,12 @@ public sealed class StreamResponse : IAsyncDisposable
 
                 if (_options.Live == LiveMode.Sse)
                 {
+                    // Backoff before reconnecting to avoid hot-loop on flaky connections
+                    _sseReconnectAttempts++;
+                    var baseDelay = Math.Min(100 * (1 << Math.Min(_sseReconnectAttempts - 1, 6)), 5000); // 100ms -> 5s max
+                    var jitter = Random.Shared.Next(0, baseDelay / 2);
+                    await Task.Delay(baseDelay + jitter, cancellationToken).ConfigureAwait(false);
+
                     UpdateUrlForNextRequest();
                     await MakeRequestAsync().ConfigureAwait(false);
 
@@ -421,6 +430,9 @@ public sealed class StreamResponse : IAsyncDisposable
                     _cursor = controlEvt.StreamCursor;
                 }
                 _upToDate = controlEvt.UpToDate;
+
+                // Reset reconnect backoff on successful data
+                _sseReconnectAttempts = 0;
 
                 // Return pending data with control metadata
                 var data = _pendingSseData != null ? Encoding.UTF8.GetBytes(_pendingSseData) : [];
@@ -499,15 +511,17 @@ public sealed class StreamResponse : IAsyncDisposable
         }
     }
 
-    private static List<T> ParseJsonBatch<T>(ReadOnlySpan<byte> data)
+    private List<T> ParseJsonBatch<T>(ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty)
             return [];
 
+        var jsonOptions = _stream.Client.Options.JsonSerializerOptions;
+
         try
         {
             // Try to parse as array
-            var items = JsonSerializer.Deserialize<List<T>>(data);
+            var items = JsonSerializer.Deserialize<List<T>>(data, jsonOptions);
             return items ?? [];
         }
         catch (JsonException)
@@ -515,7 +529,7 @@ public sealed class StreamResponse : IAsyncDisposable
             // Try as single item (server may send unwrapped single values)
             try
             {
-                var item = JsonSerializer.Deserialize<T>(data);
+                var item = JsonSerializer.Deserialize<T>(data, jsonOptions);
                 return item != null ? [item] : [];
             }
             catch (JsonException ex)

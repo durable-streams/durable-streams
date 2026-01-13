@@ -95,7 +95,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
     public void Append<T>(T data)
     {
         // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(data);
+        var jsonOptions = _stream.Client.Options.JsonSerializerOptions;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(data, jsonOptions);
         AppendInternal(bytes, null);
     }
 
@@ -122,7 +123,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
     public bool TryAppend<T>(T data)
     {
         // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(data);
+        var jsonOptions = _stream.Client.Options.JsonSerializerOptions;
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(data, jsonOptions);
         return TryAppendInternal(bytes, null);
     }
 
@@ -227,7 +229,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
         _pendingBatch = [];
         _batchBytes = 0;
         _nextSeq++;
-        _inFlight++;
+        Interlocked.Increment(ref _inFlight);
 
         _lingerTimer?.Dispose();
         _lingerTimer = null;

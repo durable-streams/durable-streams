@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace DurableStreams;
 
 /// <summary>
@@ -16,9 +18,9 @@ public class DurableStreamClientOptions
     public Dictionary<string, string>? DefaultHeaders { get; set; }
 
     /// <summary>
-    /// Dynamic headers evaluated per-request. Use for token refresh,
-    /// correlation IDs, or other values that change between requests.
-    /// The factory is called for EACH HTTP request (including retries).
+    /// Dynamic headers evaluated at the start of each operation. Use for token refresh,
+    /// correlation IDs, or other values that change between operations.
+    /// Note: Headers are evaluated once per operation, not re-evaluated on retries.
     /// </summary>
     public Dictionary<string, Func<CancellationToken, ValueTask<string>>>? DynamicHeaders { get; set; }
 
@@ -46,6 +48,12 @@ public class DurableStreamClientOptions
     /// Backoff multiplier.
     /// </summary>
     public double RetryMultiplier { get; set; } = 2.0;
+
+    /// <summary>
+    /// JSON serialization options for reading and writing JSON data.
+    /// If not specified, default System.Text.Json options are used.
+    /// </summary>
+    public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 }
 
 /// <summary>
@@ -114,11 +122,6 @@ public class StreamOptions
     /// Cursor for CDN collapsing (from previous response).
     /// </summary>
     public string? Cursor { get; set; }
-
-    /// <summary>
-    /// Timeout for long-poll requests.
-    /// </summary>
-    public TimeSpan? Timeout { get; set; }
 
     /// <summary>
     /// Additional headers for the request.

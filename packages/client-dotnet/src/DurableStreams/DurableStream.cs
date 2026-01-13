@@ -211,16 +211,17 @@ public sealed class DurableStream
         CancellationToken cancellationToken = default)
     {
         var isJson = HttpHelpers.IsJsonContentType(_contentType);
+        var jsonOptions = _client.Options.JsonSerializerOptions;
         byte[] bytes;
 
         if (isJson)
         {
             // Wrap in array for JSON mode (server flattens one level)
-            bytes = JsonSerializer.SerializeToUtf8Bytes(new[] { data });
+            bytes = JsonSerializer.SerializeToUtf8Bytes(new[] { data }, jsonOptions);
         }
         else
         {
-            bytes = JsonSerializer.SerializeToUtf8Bytes(data);
+            bytes = JsonSerializer.SerializeToUtf8Bytes(data, jsonOptions);
         }
 
         return await AppendAsync(bytes, options, cancellationToken).ConfigureAwait(false);

@@ -58,9 +58,10 @@ public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
     public static implicit operator string(Offset offset) => offset._value;
 
     /// <summary>
-    /// Implicit conversion to Offset.
+    /// Explicit conversion from string to Offset.
+    /// Use this for server-provided offset values. For sentinel values, prefer Offset.Beginning or Offset.Now.
     /// </summary>
-    public static implicit operator Offset(string value) => new(value);
+    public static explicit operator Offset(string value) => new(value);
 
     /// <summary>
     /// Lexicographic comparison (per protocol specification).

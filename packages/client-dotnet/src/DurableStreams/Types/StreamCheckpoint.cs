@@ -16,6 +16,7 @@ public readonly record struct StreamCheckpoint(
 
     /// <summary>
     /// Create a checkpoint from just a string offset (no cursor).
+    /// Use for server-provided offset values.
     /// </summary>
-    public static implicit operator StreamCheckpoint(string offset) => new(new Offset(offset));
+    public static explicit operator StreamCheckpoint(string offset) => new(new Offset(offset));
 }
