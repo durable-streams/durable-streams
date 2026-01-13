@@ -19,7 +19,7 @@ import java.util.concurrent.TimeoutException;
  */
 public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, AutoCloseable {
 
-    private final Stream stream;
+    private final DurableStream stream;
     private final LiveMode liveMode;
     private final Duration timeout;
 
@@ -34,7 +34,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private SSEStreamingReader sseReader;
     private boolean sseStarted;
 
-    ChunkIterator(Stream stream, Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
+    ChunkIterator(DurableStream stream, Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
         this.stream = stream;
         this.currentOffset = offset != null ? offset : Offset.BEGINNING;
         this.liveMode = liveMode != null ? liveMode : LiveMode.OFF;
@@ -51,6 +51,15 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
         return this;
     }
 
+    /**
+     * Returns true if there are more chunks available.
+     *
+     * <p><strong>Note:</strong> This method may block and perform network I/O.
+     * In live modes (SSE, long-poll), it will wait for data from the server.
+     * For non-blocking checks, use {@link #poll(Duration)} instead.
+     *
+     * @throws DurableStreamException if a network or server error occurs
+     */
     @Override
     public boolean hasNext() {
         if (closed) return false;

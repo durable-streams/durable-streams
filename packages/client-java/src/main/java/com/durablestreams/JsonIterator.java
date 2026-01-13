@@ -1,5 +1,6 @@
 package com.durablestreams;
 
+import com.durablestreams.exception.DurableStreamException;
 import com.durablestreams.model.Chunk;
 import com.durablestreams.model.JsonBatch;
 import com.durablestreams.model.Offset;
@@ -108,17 +109,14 @@ public final class JsonIterator<T> implements Iterator<JsonBatch<T>>, Iterable<J
      *
      * @param timeout Maximum time to wait for data
      * @return The next batch, or null if no data available within timeout
+     * @throws DurableStreamException if an error occurs while reading
      */
-    public JsonBatch<T> poll(Duration timeout) {
-        try {
-            Chunk chunk = chunkIterator.poll(timeout);
-            if (chunk == null) {
-                return null;
-            }
-            return parseChunk(chunk);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
+    public JsonBatch<T> poll(Duration timeout) throws DurableStreamException {
+        Chunk chunk = chunkIterator.poll(timeout);
+        if (chunk == null) {
+            return null;
         }
+        return parseChunk(chunk);
     }
 
     /**

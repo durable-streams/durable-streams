@@ -21,7 +21,8 @@ public final class JsonBatch<T> implements Iterable<T> {
     private final String cursor;
 
     public JsonBatch(List<T> items, Offset nextOffset, boolean upToDate, String cursor) {
-        this.items = items != null ? items : List.of();
+        // Defensive copy - List.copyOf creates an unmodifiable copy
+        this.items = items != null ? List.copyOf(items) : List.of();
         this.nextOffset = nextOffset;
         this.upToDate = upToDate;
         this.cursor = cursor;

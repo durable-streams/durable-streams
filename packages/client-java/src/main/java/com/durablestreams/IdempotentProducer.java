@@ -24,6 +24,10 @@ import java.util.function.Consumer;
  *
  * <p>Call {@link #flush()} to wait for all pending batches, or {@link #close()}
  * to flush and clean up resources.
+ *
+ * <p><strong>Thread Safety:</strong> This class is thread-safe. Multiple threads
+ * may call {@link #append(Object)} concurrently. The producer uses internal
+ * synchronization to ensure batches are sent atomically.
  */
 public final class IdempotentProducer implements AutoCloseable {
 
@@ -37,9 +41,13 @@ public final class IdempotentProducer implements AutoCloseable {
     private final AtomicInteger inFlight;
     private final AtomicBoolean closed;
 
+    // Lock for batch accumulation and dispatch
     private final Object batchLock = new Object();
-    private final Object epochLock = new Object();  // Protects epoch transitions during auto-claim
-    private List<byte[]> pendingBatch;  // Store byte[] directly to avoid wrapper allocation
+    // Lock for epoch transitions during auto-claim retry
+    private final Object epochLock = new Object();
+
+    // Guarded by batchLock
+    private List<byte[]> pendingBatch;
     private int batchBytes;
     private ScheduledFuture<?> lingerTimer;
 
@@ -316,17 +324,21 @@ public final class IdempotentProducer implements AutoCloseable {
                         if (config.autoClaim && !isRetry) {
                             // Auto-claim: retry with epoch+1
                             // Synchronize to prevent multiple concurrent batches from racing
+                            long retrySeq;
                             synchronized (epochLock) {
                                 long currentEpoch = epoch.get();
                                 // Only claim if we haven't already moved past this epoch
                                 if (currentEpoch <= serverEpoch) {
                                     long newEpoch = serverEpoch + 1;
                                     epoch.set(newEpoch);
-                                    nextSeq.set(1);  // Reset sequence for new epoch
+                                    nextSeq.set(0);  // Reset sequence for new epoch
                                 }
+                                // Get next sequence atomically within lock to prevent
+                                // multiple retried batches from using the same seq
+                                retrySeq = nextSeq.getAndIncrement();
                             }
-                            // Retry with new epoch, starting at seq 0
-                            return sendBatchWithRetry(batch, epoch.get(), 0, true);
+                            // Retry with new epoch and proper sequence
+                            return sendBatchWithRetry(batch, epoch.get(), retrySeq, true);
                         }
 
                         StaleEpochException err = new StaleEpochException(serverEpoch);

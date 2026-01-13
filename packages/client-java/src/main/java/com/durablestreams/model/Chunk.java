@@ -23,9 +23,18 @@ public final class Chunk {
         this.upToDate = upToDate;
         this.cursor = cursor;
         this.statusCode = statusCode;
-        this.headers = headers != null ? headers : Map.of();
+        // Defensive copy - Map.copyOf creates an unmodifiable copy
+        this.headers = headers != null ? Map.copyOf(headers) : Map.of();
     }
 
+    /**
+     * Returns the raw chunk data.
+     *
+     * <p><strong>Note:</strong> The returned byte array is not copied for performance reasons.
+     * Callers should not modify the array contents. If modification is needed, clone the array first.
+     *
+     * @return the chunk data bytes, or null if no data
+     */
     public byte[] getData() {
         return data;
     }

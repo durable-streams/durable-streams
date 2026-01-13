@@ -19,12 +19,12 @@ import java.util.function.Function;
 /**
  * Handle for stream operations (create, append, read, delete, head).
  */
-public final class Stream {
+public final class DurableStream {
 
     private final DurableStreamClient client;
     private final String url;
 
-    Stream(DurableStreamClient client, String url) {
+    DurableStream(DurableStreamClient client, String url) {
         this.client = client;
         this.url = url;
     }

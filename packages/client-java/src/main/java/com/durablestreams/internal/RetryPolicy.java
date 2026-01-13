@@ -19,7 +19,8 @@ public final class RetryPolicy {
         this.initialDelay = initialDelay;
         this.maxDelay = maxDelay;
         this.multiplier = multiplier;
-        this.retryableStatuses = retryableStatuses;
+        // Defensive copy - Set.copyOf creates an unmodifiable copy
+        this.retryableStatuses = retryableStatuses != null ? Set.copyOf(retryableStatuses) : Set.of();
     }
 
     /**
