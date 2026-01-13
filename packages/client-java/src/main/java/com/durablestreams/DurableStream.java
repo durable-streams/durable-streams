@@ -116,27 +116,6 @@ public final class DurableStream implements AutoCloseable {
         executeWithRetry(request, "create", response -> parseCreateResponse(response, url));
     }
 
-    /**
-     * Create a stream asynchronously.
-     */
-    public CompletableFuture<Void> createStreamAsync(String url, String contentType) {
-        return createStreamAsync(url, contentType, null, null);
-    }
-
-    /**
-     * Create a stream asynchronously with full options.
-     */
-    public CompletableFuture<Void> createStreamAsync(String url, String contentType,
-                                                      Duration ttl, Instant expiresAt) {
-        try {
-            HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt);
-            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenApply(response -> parseCreateResponse(response, url));
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(wrapException(e));
-        }
-    }
-
     // ==================== Append ====================
 
     /**
@@ -147,9 +126,9 @@ public final class DurableStream implements AutoCloseable {
     }
 
     /**
-     * Append data to a stream with optional sequence number.
+     * Append data with sequence number (package-private for testing).
      */
-    public AppendResult append(String url, byte[] data, Long seq) throws DurableStreamException {
+    AppendResult append(String url, byte[] data, Long seq) throws DurableStreamException {
         if (data == null || data.length == 0) {
             throw new DurableStreamException("Cannot append empty data");
         }
@@ -161,20 +140,13 @@ public final class DurableStream implements AutoCloseable {
      * Append data to a stream asynchronously.
      */
     public CompletableFuture<AppendResult> appendAsync(String url, byte[] data) {
-        return appendAsync(url, data, null);
-    }
-
-    /**
-     * Append data to a stream asynchronously with optional sequence number.
-     */
-    public CompletableFuture<AppendResult> appendAsync(String url, byte[] data, Long seq) {
         try {
             if (data == null || data.length == 0) {
                 return CompletableFuture.failedFuture(new DurableStreamException("Cannot append empty data"));
             }
-            HttpRequest request = buildAppendRequest(url, data, seq);
+            HttpRequest request = buildAppendRequest(url, data, null);
             return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenApply(response -> parseAppendResponse(response, url, seq));
+                    .thenApply(response -> parseAppendResponse(response, url, null));
         } catch (Exception e) {
             return CompletableFuture.failedFuture(wrapException(e));
         }
@@ -190,19 +162,6 @@ public final class DurableStream implements AutoCloseable {
         return executeWithRetry(request, "head", response -> parseHeadResponse(response, url));
     }
 
-    /**
-     * Get stream metadata asynchronously.
-     */
-    public CompletableFuture<Metadata> headAsync(String url) {
-        try {
-            HttpRequest request = buildHeadRequest(url);
-            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenApply(response -> parseHeadResponse(response, url));
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(wrapException(e));
-        }
-    }
-
     // ==================== Delete ====================
 
     /**
@@ -213,19 +172,6 @@ public final class DurableStream implements AutoCloseable {
         executeWithRetry(request, "delete", this::parseDeleteResponse);
     }
 
-    /**
-     * Delete a stream asynchronously.
-     */
-    public CompletableFuture<Void> deleteAsync(String url) {
-        try {
-            HttpRequest request = buildDeleteRequest(url);
-            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenApply(this::parseDeleteResponse);
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(wrapException(e));
-        }
-    }
-
     // ==================== Read ====================
 
     /**
@@ -233,13 +179,6 @@ public final class DurableStream implements AutoCloseable {
      */
     public ChunkIterator read(String url) throws DurableStreamException {
         return read(url, null, LiveMode.OFF, null, null);
-    }
-
-    /**
-     * Read from a stream starting at offset.
-     */
-    public ChunkIterator read(String url, Offset offset) throws DurableStreamException {
-        return read(url, offset, LiveMode.OFF, null, null);
     }
 
     /**
@@ -254,34 +193,6 @@ public final class DurableStream implements AutoCloseable {
     public ChunkIterator read(String url, Offset offset, LiveMode liveMode,
                                Duration timeout, String cursor) throws DurableStreamException {
         return new ChunkIterator(this, url, offset, liveMode, timeout, cursor);
-    }
-
-    /**
-     * Read a single chunk asynchronously.
-     */
-    public CompletableFuture<Chunk> readOnceAsync(String url) {
-        return readOnceAsync(url, null, LiveMode.OFF, null, null);
-    }
-
-    /**
-     * Read a single chunk asynchronously with offset.
-     */
-    public CompletableFuture<Chunk> readOnceAsync(String url, Offset offset) {
-        return readOnceAsync(url, offset, LiveMode.OFF, null, null);
-    }
-
-    /**
-     * Read a single chunk asynchronously with full options.
-     */
-    public CompletableFuture<Chunk> readOnceAsync(String url, Offset offset, LiveMode liveMode,
-                                                   Duration timeout, String cursor) {
-        try {
-            HttpRequest request = buildReadRequest(url, offset, liveMode, timeout, cursor);
-            return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
-                    .thenApply(response -> parseReadResponse(response, url, offset));
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(wrapException(e));
-        }
     }
 
     // ==================== Read JSON ====================
@@ -304,14 +215,6 @@ public final class DurableStream implements AutoCloseable {
     public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser)
             throws DurableStreamException {
         return readJson(url, parser, null, LiveMode.OFF, null, null);
-    }
-
-    /**
-     * Read JSON from a stream with offset.
-     */
-    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser, Offset offset)
-            throws DurableStreamException {
-        return readJson(url, parser, offset, LiveMode.OFF, null, null);
     }
 
     /**
@@ -355,25 +258,19 @@ public final class DurableStream implements AutoCloseable {
         return new SSEStreamingReader(httpClient, request, offset);
     }
 
-    // ==================== Dynamic header/param management ====================
+    // ==================== Dynamic header/param management (package-private for testing) ====================
 
-    public void setDynamicHeader(String name, Supplier<String> supplier) {
+    void setDynamicHeader(String name, Supplier<String> supplier) {
         dynamicHeaders.put(name, supplier);
     }
 
-    public void setDynamicParam(String name, Supplier<String> supplier) {
+    void setDynamicParam(String name, Supplier<String> supplier) {
         dynamicParams.put(name, supplier);
     }
 
-    public void clearDynamic() {
+    void clearDynamic() {
         dynamicHeaders.clear();
         dynamicParams.clear();
-    }
-
-    // ==================== Accessors ====================
-
-    public HttpClient getHttpClient() {
-        return httpClient;
     }
 
     RetryPolicy getRetryPolicy() {

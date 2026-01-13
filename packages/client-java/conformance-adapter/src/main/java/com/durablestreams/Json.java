@@ -1,4 +1,4 @@
-package com.durablestreams.adapter;
+package com.durablestreams;
 
 import java.util.*;
 import java.util.regex.*;

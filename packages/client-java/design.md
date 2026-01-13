@@ -75,27 +75,35 @@ The main client for all stream operations. URL is passed to each operation direc
 ```java
 public final class DurableStream implements AutoCloseable {
 
-    // Quick start with defaults
+    // Factory
     public static DurableStream create();
-
-    // Full configuration via builder
     public static Builder builder();
 
-    // Stream operations (URL passed directly)
+    // Create (sync only - one-time setup)
     public void createStream(String url, String contentType);
+    public void createStream(String url, String contentType, Duration ttl, Instant expiresAt);
+
+    // Append (sync + async for high throughput)
     public AppendResult append(String url, byte[] data);
-    public ChunkIterator read(String url);
+    public CompletableFuture<AppendResult> appendAsync(String url, byte[] data);
+
+    // Metadata & Delete (sync only - rare operations)
     public Metadata head(String url);
     public void delete(String url);
 
+    // Read
+    public ChunkIterator read(String url);
+    public ChunkIterator read(String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor);
+
     // JSON reading
     public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser);
+    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser,
+                                         Offset offset, LiveMode liveMode, Duration timeout, String cursor);
 
     // Idempotent producer
     public IdempotentProducer idempotentProducer(String url, String producerId);
     public IdempotentProducer idempotentProducer(String url, String producerId, Config config);
 
-    @Override
     public void close();
 }
 ```
@@ -141,28 +149,18 @@ client.delete(url);
 
 ### 3.2 Asynchronous Operations
 
-Every sync operation has an async variant returning `CompletableFuture`:
+For high-throughput appends, use `appendAsync`:
 
 ```java
-// Create
-client.createStreamAsync(url, "application/json")
-    .thenRun(() -> log.info("Stream created"));
-
-// Append
+// Async append
 client.appendAsync(url, data)
     .thenAccept(result -> log.info("Appended at: {}", result.getNextOffset()));
 
-// Metadata
-client.headAsync(url)
-    .thenAccept(meta -> log.info("Content-Type: {}", meta.getContentType()));
-
-// Delete
-client.deleteAsync(url)
-    .thenRun(() -> log.info("Stream deleted"));
-
-// Read once
-client.readOnceAsync(url)
-    .thenAccept(chunk -> process(chunk));
+// Parallel appends
+var futures = urls.stream()
+    .map(u -> client.appendAsync(u, data))
+    .toList();
+CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 ```
 
 ---
@@ -181,14 +179,7 @@ try (var chunks = client.read(url)) {
     }
 }
 
-// With offset
-try (var chunks = client.read(url, Offset.BEGINNING)) {
-    for (var chunk : chunks) {
-        process(chunk);
-    }
-}
-
-// Live modes
+// With offset and live mode
 try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, timeout, cursor)) {
     while (true) {
         Chunk chunk = chunks.poll(Duration.ofSeconds(30));
@@ -470,14 +461,12 @@ try (var producer = client.idempotentProducer(ORDERS_URL, "order-service", confi
 ### 9.4 Async Operations
 
 ```java
-// Chain async operations
-client.createStreamAsync(url, "application/json")
-    .thenCompose(v -> client.appendAsync(url, data))
-    .thenAccept(result -> log.info("Appended at: {}", result.getNextOffset()))
-    .exceptionally(e -> {
-        log.error("Failed", e);
-        return null;
-    });
+// Parallel appends for high throughput
+var futures = urls.stream()
+    .map(u -> client.appendAsync(u, data))
+    .toList();
+CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+    .thenRun(() -> log.info("All appends complete"));
 ```
 
 ---

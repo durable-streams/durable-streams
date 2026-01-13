@@ -217,21 +217,10 @@ var producer = client.idempotentProducer(url, "lambda-handler",
 
 ## Async API
 
-Every operation has an async variant returning `CompletableFuture`:
+For high-throughput appends, use `appendAsync`:
 
 ```java
-// Chain operations
-client.createStreamAsync(url, "application/json")
-    .thenCompose(v -> client.appendAsync(url, data))
-    .thenAccept(result -> {
-        log.info("Appended at offset: {}", result.getNextOffset());
-    })
-    .exceptionally(e -> {
-        log.error("Failed", e);
-        return null;
-    });
-
-// Parallel operations across multiple streams
+// Parallel appends across multiple streams
 var urls = List.of(url1, url2, url3);
 var futures = urls.stream()
     .map(u -> client.appendAsync(u, data))

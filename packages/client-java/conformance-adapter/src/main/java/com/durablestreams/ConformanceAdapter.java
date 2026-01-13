@@ -1,6 +1,5 @@
-package com.durablestreams.adapter;
+package com.durablestreams;
 
-import com.durablestreams.*;
 import com.durablestreams.exception.*;
 import com.durablestreams.model.*;
 

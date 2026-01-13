@@ -18,14 +18,14 @@ dependencies {
 }
 
 application {
-    mainClass = 'com.durablestreams.adapter.ConformanceAdapter'
+    mainClass = 'com.durablestreams.ConformanceAdapter'
 }
 
 jar {
     dependsOn ':jar'  // Explicit dependency on parent project's jar
     manifest {
         attributes(
-            'Main-Class': 'com.durablestreams.adapter.ConformanceAdapter'
+            'Main-Class': 'com.durablestreams.ConformanceAdapter'
         )
     }
     // Create fat JAR with all dependencies
