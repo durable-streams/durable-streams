@@ -31,7 +31,8 @@ defmodule DurableStreams.Stream do
   @type read_chunk :: %{
           data: binary(),
           next_offset: offset(),
-          up_to_date: boolean()
+          up_to_date: boolean(),
+          status: integer()
         }
 
   @doc """
@@ -113,7 +114,13 @@ defmodule DurableStreams.Stream do
 
     case HTTP.request(:head, url(stream), headers, nil, timeout: stream.client.timeout) do
       {:ok, 200, resp_headers, _body} ->
-        next_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+        next_offset = case HTTP.get_header(resp_headers, "stream-next-offset") do
+          nil ->
+            require Logger
+            Logger.warning("HEAD response missing stream-next-offset header, defaulting to -1")
+            "-1"
+          offset -> offset
+        end
         content_type = HTTP.get_header(resp_headers, "content-type")
 
         {:ok, %{next_offset: next_offset, content_type: normalize_content_type(content_type)}}
@@ -188,7 +195,13 @@ defmodule DurableStreams.Stream do
 
     case HTTP.request(:post, url(stream), headers, data, timeout: stream.client.timeout) do
       {:ok, status, resp_headers, _body} when status in [200, 204] ->
-        next_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+        next_offset = case HTTP.get_header(resp_headers, "stream-next-offset") do
+          nil ->
+            require Logger
+            Logger.warning("Append response missing stream-next-offset header, defaulting to -1")
+            "-1"
+          offset -> offset
+        end
         duplicate = status == 204
 
         {:ok, %{next_offset: next_offset, duplicate: duplicate}}
@@ -294,8 +307,13 @@ defmodule DurableStreams.Stream do
         # rather than returning the input offset (which could be "now")
         actual_offset =
           case head(stream) do
-            {:ok, %{next_offset: off}} -> off
-            _ -> offset  # Fallback to input offset if HEAD fails
+            {:ok, %{next_offset: off}} ->
+              off
+
+            {:error, head_reason} ->
+              require Logger
+              Logger.warning("SSE timeout: HEAD request failed with #{inspect(head_reason)}, using input offset")
+              offset
           end
         {:ok, %{
           data: "",
@@ -432,10 +450,13 @@ defmodule DurableStreams.Stream do
     lines = String.split(event, "\n")
 
     # Extract event type (default to :data if not specified)
+    # Use explicit matching to avoid atom table exhaustion from untrusted input
     event_type =
       Enum.find_value(lines, :data, fn line ->
         case String.split(line, ": ", parts: 2) do
-          ["event", type] -> String.to_atom(type)
+          ["event", "data"] -> :data
+          ["event", "control"] -> :control
+          ["event", _unknown] -> :unknown
           _ -> nil
         end
       end)

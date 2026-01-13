@@ -5,7 +5,7 @@ defmodule DurableStreams.ConformanceAdapter do
   Communicates with the test runner via JSON-line protocol over stdin/stdout.
   """
 
-  alias DurableStreams.{Client, Stream, Writer, JSON}
+  alias DurableStreams.{Client, Stream, Writer, HTTP, JSON}
 
   @client_name "durable-streams-elixir"
   @client_version "0.1.0"
@@ -820,9 +820,9 @@ defmodule DurableStreams.ConformanceAdapter do
       Writer.append(writer, data)
     end)
 
-    # Wait for all writes to complete
-    Writer.flush(writer)
-    Writer.close(writer)
+    # Wait for all writes to complete (use longer timeout for large counts)
+    Writer.flush(writer, 120_000)
+    Writer.close(writer, 120_000)
 
     duration = System.monotonic_time(:nanosecond) - start
     duration_sec = duration / 1_000_000_000

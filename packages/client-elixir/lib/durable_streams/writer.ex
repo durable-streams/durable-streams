@@ -382,25 +382,77 @@ defmodule DurableStreams.Writer do
     items = Enum.reverse(state.pending_items)
     seq_start = state.next_seq
 
-    # For simplicity, we send items one at a time with incrementing seq
-    # A more sophisticated implementation could batch JSON arrays
+    # Check if this is a JSON stream - if so, batch into single request
+    is_json = json_content_type?(state.stream.content_type)
+
     task = Task.async(fn ->
-      send_items_sequentially(state.stream, items, state.producer_id, state.epoch, seq_start)
+      if is_json do
+        send_json_batch(state.stream, items, state.producer_id, state.epoch, seq_start)
+      else
+        send_items_sequentially(state.stream, items, state.producer_id, state.epoch, seq_start)
+      end
     end)
 
     # Track in-flight batch
     waiters = items |> Enum.map(fn {_data, waiter} -> waiter end) |> Enum.filter(&(&1 != nil))
     in_flight = Map.put(state.in_flight, task.ref, {items, seq_start, waiters})
 
+    # For JSON batches, seq only increments by 1 (the whole batch is one seq)
+    next_seq = if is_json, do: seq_start + 1, else: seq_start + length(items)
+
     %{state |
       pending_items: [],
       pending_bytes: 0,
       linger_timer: nil,
-      next_seq: seq_start + length(items),
+      next_seq: next_seq,
       in_flight: in_flight
     }
   end
 
+  defp json_content_type?(nil), do: false
+  defp json_content_type?(ct), do: String.starts_with?(String.downcase(ct), "application/json")
+
+  # For JSON streams: batch all items into a single array and send as ONE request
+  # This is the key optimization - one HTTP call instead of N
+  defp send_json_batch(stream, items, producer_id, epoch, seq) do
+    # Parse each item as JSON, wrap in array
+    parsed_items =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn {{data, _waiter}, idx} ->
+        case DurableStreams.JSON.decode(data) do
+          {:ok, parsed} ->
+            parsed
+
+          {:error, reason} ->
+            Logger.error("JSON batch item #{idx} parse failed: #{inspect(reason)}")
+            raise ArgumentError, "Item #{idx} is not valid JSON: #{inspect(reason)}"
+        end
+      end)
+
+    # Encode the array - server will flatten one level
+    batch_data = DurableStreams.JSON.encode!(parsed_items)
+
+    result = Stream.append(stream, batch_data,
+      producer_id: producer_id,
+      producer_epoch: epoch,
+      producer_seq: seq
+    )
+
+    case result do
+      {:ok, append_result} ->
+        # Return success for all items
+        {:ok, Enum.map(items, fn _ -> {:ok, append_result} end)}
+
+      {:error, {:stale_epoch, server_epoch}} ->
+        {:error, {:stale_epoch, server_epoch}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # For non-JSON streams: send items sequentially with incrementing seq
   defp send_items_sequentially(stream, items, producer_id, epoch, seq_start) do
     results =
       items
@@ -467,7 +519,10 @@ defmodule DurableStreams.Writer do
             {:noreply, maybe_send_batch(state)}
 
           {:error, reason} ->
-            # Notify error callback
+            # Always log write failures for observability
+            Logger.warning("Writer batch failed: #{inspect(reason)} (#{length(items)} items)")
+
+            # Notify error callback if present
             if state.on_error do
               item_data = Enum.map(items, fn {data, _waiter} -> data end)
               state.on_error.(reason, item_data)
@@ -503,12 +558,22 @@ defmodule DurableStreams.Writer do
     end)
   end
 
-  defp parse_epoch(nil), do: 0
+  defp parse_epoch(nil) do
+    Logger.warning("Received nil epoch from server, defaulting to 0")
+    0
+  end
+
   defp parse_epoch(epoch) when is_integer(epoch), do: epoch
+
   defp parse_epoch(epoch) when is_binary(epoch) do
     case Integer.parse(epoch) do
-      {n, _} -> n
-      :error -> 0
+      {n, ""} -> n
+      {n, trailing} ->
+        Logger.warning("Epoch #{inspect(epoch)} has trailing data #{inspect(trailing)}, using #{n}")
+        n
+      :error ->
+        Logger.error("Failed to parse epoch #{inspect(epoch)}, defaulting to 0 - this may cause duplicate writes")
+        0
     end
   end
 end

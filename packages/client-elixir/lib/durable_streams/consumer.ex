@@ -279,8 +279,8 @@ defmodule DurableStreams.Consumer do
   end
 
   @impl true
-  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
-    # Handle monitored process going down if needed
+  def handle_info({:DOWN, _ref, :process, pid, reason}, state) do
+    Logger.debug("Consumer received DOWN message: process #{inspect(pid)} terminated with #{inspect(reason)}")
     {:noreply, state}
   end
 
@@ -348,9 +348,19 @@ defmodule DurableStreams.Consumer do
 
   defp maybe_notify_up_to_date(true, state) do
     if function_exported?(state.callback_module, :handle_up_to_date, 1) do
-      case state.callback_module.handle_up_to_date(state.callback_state) do
-        {:ok, new_callback_state} ->
-          %{state | callback_state: new_callback_state}
+      try do
+        case state.callback_module.handle_up_to_date(state.callback_state) do
+          {:ok, new_callback_state} ->
+            %{state | callback_state: new_callback_state}
+
+          other ->
+            Logger.warning("handle_up_to_date returned unexpected value: #{inspect(other)}")
+            state
+        end
+      rescue
+        e ->
+          Logger.error("handle_up_to_date raised #{inspect(e.__struct__)}: #{Exception.message(e)}")
+          state
       end
     else
       state

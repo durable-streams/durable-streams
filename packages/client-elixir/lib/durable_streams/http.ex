@@ -1,19 +1,69 @@
 defmodule DurableStreams.HTTP do
   @moduledoc """
-  Low-level HTTP client using Erlang's :httpc.
-  Provides connection pooling, retries, and streaming support.
+  Low-level HTTP client using Erlang's built-in :httpc.
+
+  Provides connection pooling via :httpc profiles, automatic retries for
+  transient failures, and streaming support for SSE.
+
+  Note: Mint backend is currently disabled. Without connection pooling,
+  Mint's per-request connection overhead makes it slower than :httpc's
+  pooled connections. Future versions may add Finch (Mint with pooling)
+  for higher throughput.
   """
 
   @default_timeout 30_000
   @max_retries 3
   @retry_delays [100, 500, 1000]
+  @profile :durable_streams_http
+
+  # Disable Mint for now - without connection pooling it's slower than :httpc
+  # In the future, consider using Finch (which builds on Mint with pooling)
+  @mint_available false
 
   @type headers :: [{String.t(), String.t()}]
   @type response :: {:ok, status :: integer(), headers(), body :: binary()} | {:error, term()}
 
   @doc """
+  Initialize the HTTP client with optimized connection pooling.
+  Call this once at application startup.
+  """
+  def init do
+    :inets.start()
+    :ssl.start()
+
+    # Create a dedicated httpc profile with connection pooling
+    case :inets.start(:httpc, profile: @profile) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      error -> error
+    end
+
+    # Configure the profile for high performance
+    :httpc.set_options([
+      # Keep connections alive
+      keep_alive_timeout: 120_000,
+      # Allow many connections per host
+      max_sessions: 100,
+      max_keep_alive_length: 50,
+      # Enable pipelining
+      pipeline_timeout: 30_000,
+      max_pipeline_length: 10,
+      # Cookies disabled for speed
+      cookies: :disabled
+    ], @profile)
+
+    :ok
+  end
+
+  @doc """
+  Check if using the high-performance Mint backend.
+  """
+  def using_mint?, do: @mint_available
+
+  @doc """
   Make an HTTP request with automatic retries for transient failures.
   """
+
   @spec request(
           method :: :get | :post | :put | :head | :delete,
           url :: String.t(),
@@ -26,14 +76,62 @@ defmodule DurableStreams.HTTP do
     max_retries = Keyword.get(opts, :max_retries, @max_retries)
     streaming = Keyword.get(opts, :streaming, false)
 
-    # Ensure inets is started
-    :inets.start()
-    :ssl.start()
-
     if streaming do
+      # Streaming always uses :httpc for now
+      ensure_started()
       stream_request(method, url, headers, body, timeout)
     else
-      do_request(method, url, headers, body, timeout, 0, max_retries)
+      # Use Mint for non-streaming if available
+      if @mint_available do
+        do_request_mint(method, url, headers, body, timeout, 0, max_retries)
+      else
+        ensure_started()
+        do_request(method, url, headers, body, timeout, 0, max_retries)
+      end
+    end
+  end
+
+  # Mint-based request with retries
+  defp do_request_mint(method, url, headers, body, timeout, attempt, max_retries) do
+    result = DurableStreams.HTTP.Mint.request(method, url, headers, body, timeout: timeout)
+
+    case result do
+      {:ok, status, resp_headers, resp_body} when status >= 500 or status == 429 ->
+        maybe_retry_mint(method, url, headers, body, timeout, attempt, max_retries, status, resp_headers, resp_body)
+
+      {:ok, _status, _headers, _body} = success ->
+        success
+
+      {:error, reason} when attempt < max_retries ->
+        delay = Enum.at(@retry_delays, attempt, 1000)
+        require Logger
+        Logger.warning("HTTP request failed (attempt #{attempt + 1}/#{max_retries}): #{inspect(reason)}, retrying in #{delay}ms")
+        Process.sleep(delay)
+        do_request_mint(method, url, headers, body, timeout, attempt + 1, max_retries)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp maybe_retry_mint(method, url, headers, body, timeout, attempt, max_retries, status, resp_headers, resp_body) do
+    if attempt < max_retries do
+      delay = calculate_retry_delay(status, resp_headers, attempt)
+      Process.sleep(delay)
+      do_request_mint(method, url, headers, body, timeout, attempt + 1, max_retries)
+    else
+      {:ok, status, resp_headers, resp_body}
+    end
+  end
+
+  defp ensure_started do
+    # Use persistent_term for cross-process initialization tracking
+    case :persistent_term.get(:durable_streams_http_init, false) do
+      true -> :ok
+      false ->
+        init()
+        :persistent_term.put(:durable_streams_http_init, true)
+        :ok
     end
   end
 
@@ -43,44 +141,21 @@ defmodule DurableStreams.HTTP do
   """
   def stream_request(method, url, headers, body, timeout) do
     url_charlist = String.to_charlist(url)
-    headers_charlist = Enum.map(headers, fn {k, v} ->
-      {String.to_charlist(k), String.to_charlist(v)}
-    end)
-
-    http_opts = [
-      timeout: timeout,
-      connect_timeout: min(timeout, 10_000),
-      ssl: [
-        verify: :verify_none,
-        versions: [:"tlsv1.2", :"tlsv1.3"]
-      ]
-    ]
-
-    # Options for async streaming
-    opts = [
-      sync: false,
-      stream: :self,
-      body_format: :binary
-    ]
+    headers_charlist = headers_to_charlist(headers)
+    http_opts = http_options(timeout)
 
     request =
       case {method, body} do
-        {:get, _} -> {url_charlist, headers_charlist}
-        {:head, _} -> {url_charlist, headers_charlist}
-        {:delete, _} -> {url_charlist, headers_charlist}
-        {_, nil} ->
+        {m, _} when m in [:get, :head, :delete] ->
+          {url_charlist, headers_charlist}
+
+        {_, body_data} ->
           {content_type, other_headers} = extract_content_type(headers)
-          other_headers_charlist = Enum.map(other_headers, fn {k, v} ->
-            {String.to_charlist(k), String.to_charlist(v)}
-          end)
-          {url_charlist, other_headers_charlist, String.to_charlist(content_type), ~c""}
-        {_, body} when is_binary(body) ->
-          {content_type, other_headers} = extract_content_type(headers)
-          other_headers_charlist = Enum.map(other_headers, fn {k, v} ->
-            {String.to_charlist(k), String.to_charlist(v)}
-          end)
-          {url_charlist, other_headers_charlist, String.to_charlist(content_type), body}
+          body_to_send = if body_data == nil, do: ~c"", else: body_data
+          {url_charlist, headers_to_charlist(other_headers), String.to_charlist(content_type), body_to_send}
       end
+
+    opts = [sync: false, stream: :self, body_format: :binary]
 
     case :httpc.request(method, request, http_opts, opts) do
       {:ok, request_id} ->
@@ -139,9 +214,9 @@ defmodule DurableStreams.HTTP do
         if body_parts == [] do
           {:error, :timeout}
         else
-          # Return partial data we collected
+          # Return error with partial data - caller must handle truncation
           body = body_parts |> Enum.reverse() |> IO.iodata_to_binary()
-          {:ok, status || 200, headers, body}
+          {:error, {:timeout_partial, %{status: status || 200, headers: headers, partial_body: body}}}
         end
     end
   end
@@ -159,85 +234,74 @@ defmodule DurableStreams.HTTP do
     end)
   end
 
+  defp headers_to_charlist(headers) do
+    Enum.map(headers, fn {k, v} ->
+      {String.to_charlist(k), String.to_charlist(v)}
+    end)
+  end
+
+  defp http_options(timeout) do
+    [
+      timeout: timeout,
+      connect_timeout: min(timeout, 10_000),
+      ssl: ssl_options()
+    ]
+  end
+
+  defp ssl_options do
+    base_opts = [versions: [:"tlsv1.2", :"tlsv1.3"]]
+
+    if Application.get_env(:durable_streams, :verify_ssl, false) do
+      # Production: verify peer certificates
+      cacerts = :public_key.cacerts_get()
+      [{:verify, :verify_peer}, {:cacerts, cacerts} | base_opts]
+    else
+      # Development: skip verification (default for backwards compatibility)
+      [{:verify, :verify_none} | base_opts]
+    end
+  end
+
   defp to_binary(body) when is_list(body), do: :erlang.list_to_binary(body)
   defp to_binary(body) when is_binary(body), do: body
 
   defp do_request(method, url, headers, body, timeout, attempt, max_retries) do
     url_charlist = String.to_charlist(url)
-    headers_charlist = Enum.map(headers, fn {k, v} ->
-      {String.to_charlist(k), String.to_charlist(v)}
-    end)
+    headers_charlist = headers_to_charlist(headers)
+    http_opts = http_options(timeout)
 
-    http_opts = [
-      timeout: timeout,
-      connect_timeout: min(timeout, 10_000),
-      ssl: [
-        verify: :verify_none,
-        versions: [:"tlsv1.2", :"tlsv1.3"]
-      ]
-    ]
-
-    # Extract content-type from headers for POST/PUT requests
-    {content_type_charlist, other_headers} =
-      case Enum.split_with(headers, fn {k, _} -> String.downcase(k) == "content-type" end) do
-        {[{_, ct} | _], rest} -> {String.to_charlist(ct), rest}
-        {[], rest} -> {~c"application/octet-stream", rest}
-      end
-
-    other_headers_charlist = Enum.map(other_headers, fn {k, v} ->
-      {String.to_charlist(k), String.to_charlist(v)}
-    end)
+    {content_type, other_headers} = extract_content_type(headers)
+    content_type_charlist = String.to_charlist(content_type)
+    other_headers_charlist = headers_to_charlist(other_headers)
 
     request =
       case {method, body} do
-        {:get, _} ->
-          {url_charlist, headers_charlist}
-
-        {:head, _} ->
-          {url_charlist, headers_charlist}
-
-        {:delete, _} ->
+        {m, _} when m in [:get, :head, :delete] ->
           {url_charlist, headers_charlist}
 
         {_, nil} ->
-          # PUT/POST with empty body - use extracted content-type
           {url_charlist, other_headers_charlist, content_type_charlist, ~c""}
 
-        {_, body} when is_binary(body) ->
-          {url_charlist, other_headers_charlist, content_type_charlist, body}
+        {_, body_data} when is_binary(body_data) ->
+          {url_charlist, other_headers_charlist, content_type_charlist, body_data}
       end
 
-    result =
-      case method do
-        :get -> :httpc.request(:get, request, http_opts, [body_format: :binary])
-        :head -> :httpc.request(:head, request, http_opts, [body_format: :binary])
-        :delete -> :httpc.request(:delete, request, http_opts, [body_format: :binary])
-        :post -> :httpc.request(:post, request, http_opts, [body_format: :binary])
-        :put -> :httpc.request(:put, request, http_opts, [body_format: :binary])
-      end
+    result = :httpc.request(method, request, http_opts, [body_format: :binary], @profile)
 
     case result do
       {:ok, {{_, status, _}, resp_headers, resp_body}} ->
-        parsed_headers =
-          Enum.map(resp_headers, fn {k, v} ->
-            {List.to_string(k), List.to_string(v)}
-          end)
+        parsed_headers = parse_headers(resp_headers)
+        resp_body_bin = to_binary(resp_body)
 
-        resp_body_bin =
-          case resp_body do
-            body when is_list(body) -> :erlang.list_to_binary(body)
-            body when is_binary(body) -> body
-          end
-
-        # Retry on 5xx or 429
         if status >= 500 or status == 429 do
           maybe_retry(method, url, headers, body, timeout, attempt, max_retries, status, parsed_headers, resp_body_bin)
         else
           {:ok, status, parsed_headers, resp_body_bin}
         end
 
-      {:error, _reason} when attempt < max_retries ->
+      {:error, reason} when attempt < max_retries ->
         delay = Enum.at(@retry_delays, attempt, 1000)
+        require Logger
+        Logger.warning("HTTP request failed (attempt #{attempt + 1}/#{max_retries}): #{inspect(reason)}, retrying in #{delay}ms")
         Process.sleep(delay)
         do_request(method, url, headers, body, timeout, attempt + 1, max_retries)
 
@@ -248,32 +312,28 @@ defmodule DurableStreams.HTTP do
 
   defp maybe_retry(method, url, headers, body, timeout, attempt, max_retries, status, resp_headers, resp_body) do
     if attempt < max_retries do
-      # Check for Retry-After header on 429
-      delay =
-        case status do
-          429 ->
-            resp_headers
-            |> Enum.find(fn {k, _} -> String.downcase(k) == "retry-after" end)
-            |> case do
-              {_, val} ->
-                case Integer.parse(val) do
-                  {secs, ""} -> secs * 1000
-                  _ -> Enum.at(@retry_delays, attempt, 1000)
-                end
-
-              nil ->
-                Enum.at(@retry_delays, attempt, 1000)
-            end
-
-          _ ->
-            Enum.at(@retry_delays, attempt, 1000)
-        end
-
+      delay = calculate_retry_delay(status, resp_headers, attempt)
       Process.sleep(delay)
       do_request(method, url, headers, body, timeout, attempt + 1, max_retries)
     else
       {:ok, status, resp_headers, resp_body}
     end
+  end
+
+  defp calculate_retry_delay(429, headers, attempt) do
+    case Enum.find(headers, fn {k, _} -> String.downcase(k) == "retry-after" end) do
+      {_, val} ->
+        case Integer.parse(val) do
+          {secs, ""} -> secs * 1000
+          _ -> Enum.at(@retry_delays, attempt, 1000)
+        end
+      nil ->
+        Enum.at(@retry_delays, attempt, 1000)
+    end
+  end
+
+  defp calculate_retry_delay(_status, _headers, attempt) do
+    Enum.at(@retry_delays, attempt, 1000)
   end
 
   @doc """
@@ -286,5 +346,49 @@ defmodule DurableStreams.HTTP do
     Enum.find_value(headers, fn {k, v} ->
       if String.downcase(k) == name_lower, do: v
     end)
+  end
+
+  @doc """
+  Fire multiple async POST requests and collect all responses.
+  Uses HTTP pipelining for maximum throughput.
+  Returns list of results in order.
+  """
+  @spec post_batch(String.t(), headers(), [binary()], keyword()) :: [{:ok, integer(), headers(), binary()} | {:error, term()}]
+  def post_batch(url, headers, bodies, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @default_timeout)
+    ensure_started()
+
+    url_charlist = String.to_charlist(url)
+    {content_type, other_headers} = extract_content_type(headers)
+    headers_charlist = headers_to_charlist(other_headers)
+    content_type_charlist = String.to_charlist(content_type)
+    http_opts = http_options(timeout)
+
+    request_ids =
+      Enum.map(bodies, fn body ->
+        request = {url_charlist, headers_charlist, content_type_charlist, body}
+        :httpc.request(:post, request, http_opts, [sync: false, body_format: :binary], @profile)
+      end)
+
+    Enum.map(request_ids, fn
+      {:ok, request_id} -> collect_async_response(request_id, timeout)
+      {:error, reason} -> {:error, reason}
+    end)
+  end
+
+  defp collect_async_response(request_id, timeout) do
+    receive do
+      {:http, {^request_id, {{_, status, _}, resp_headers, resp_body}}} ->
+        parsed_headers = parse_headers(resp_headers)
+        resp_body_bin = to_binary(resp_body)
+        {:ok, status, parsed_headers, resp_body_bin}
+
+      {:http, {^request_id, {:error, reason}}} ->
+        {:error, reason}
+    after
+      timeout ->
+        :httpc.cancel_request(request_id)
+        {:error, :timeout}
+    end
   end
 end
