@@ -2,26 +2,28 @@
 
 ## Implementation Status
 
-| Component             | Status          | Notes                                   |
-| --------------------- | --------------- | --------------------------------------- |
-| `Stream`              | **Implemented** | Full CRUD operations                    |
-| `Client`              | **Implemented** | Using `:httpc` instead of Finch         |
-| `HTTP`                | **Implemented** | Retry logic, streaming support          |
-| `JSON`                | **Implemented** | Native Elixir 1.18+ with Jason fallback |
-| `Consumer`            | **Implemented** | GenServer with callback behaviour       |
-| `Writer`              | **Implemented** | Fire-and-forget with batching           |
-| SSE Parser            | **Partial**     | Inline in Stream module                 |
-| `Producer` (GenStage) | Not implemented | For Broadway integration                |
-| `Broadway.Producer`   | Not implemented | At-least-once/at-most-once modes        |
-| Error Types           | Not implemented | Using tuple errors instead              |
-| Telemetry             | Not implemented | No observability hooks                  |
+| Component             | Status          | Notes                                    |
+| --------------------- | --------------- | ---------------------------------------- |
+| `Stream`              | **Implemented** | Full CRUD operations + `enumerate/2`     |
+| `Client`              | **Implemented** | Using `:httpc` for standard requests     |
+| `HTTP`                | **Implemented** | Retry logic, streaming support           |
+| `HTTP.Finch`          | **Implemented** | True SSE streaming (optional dependency) |
+| `JSON`                | **Implemented** | Native Elixir 1.18+ with Jason fallback  |
+| `Consumer`            | **Implemented** | GenServer with callback behaviour        |
+| `Writer`              | **Implemented** | Fire-and-forget with batching            |
+| SSE Parser            | **Implemented** | Via Finch for incremental delivery       |
+| `Producer` (GenStage) | Not implemented | For Broadway integration                 |
+| `Broadway.Producer`   | Not implemented | At-least-once/at-most-once modes         |
+| Error Types           | Not implemented | Using tuple errors instead               |
+| Telemetry             | Not implemented | No observability hooks                   |
 
 ### Key Differences from Design
 
-1. **HTTP Client**: Uses Erlang `:httpc` instead of Finch (simpler, no deps)
+1. **HTTP Client**: Uses `:httpc` for standard requests, Finch (optional) for SSE streaming
 2. **Consumer API**: Uses `callback: {Module, args}` tuple instead of separate options
 3. **Error Handling**: Uses `{:error, reason}` tuples instead of structured exceptions
-4. **No External Dependencies**: Zero deps, uses native Elixir/Erlang only
+4. **Stream Aliasing**: Uses `alias DurableStreams.Stream, as: DS` to avoid shadowing Elixir's `Stream`
+5. **Minimal Dependencies**: Finch/castore optional, only needed for true SSE streaming
 
 ---
 
@@ -1272,7 +1274,7 @@ defmodule DurableStreams.SSE do
   defp finalize_event("data", data_lines) do
     json = Enum.join(data_lines, "\n")
 
-    case Jason.decode(json) do
+    case JSON.decode(json) do
       {:ok, decoded} ->
         {:data, decoded}
 
@@ -1285,7 +1287,7 @@ defmodule DurableStreams.SSE do
   defp finalize_event("control", data_lines) do
     json = Enum.join(data_lines, "\n")
 
-    case Jason.decode(json) do
+    case JSON.decode(json) do
       {:ok, control} ->
         {:control, %{
           stream_next_offset: control["streamNextOffset"],
@@ -1520,25 +1522,33 @@ end
 ### Basic Operations
 
 ```elixir
+# Use DurableStreams for convenient aliases
+# Aliases: Client, DS (for DurableStreams.Stream), Consumer, Writer
+use DurableStreams
+
 # Create a stream handle
-stream = DurableStreams.Stream.new("https://streams.example.com/my-stream",
-  headers: %{"authorization" => "Bearer #{token}"},
-  content_type: "application/json"
-)
+client = Client.new("https://streams.example.com")
+stream = Client.stream(client, "/my-stream")
 
 # Create the stream on the server
-{:ok, stream} = DurableStreams.Stream.create(stream, ttl_seconds: 3600)
+{:ok, stream} = DS.create(stream,
+  content_type: "application/json",
+  ttl_seconds: 3600
+)
 
 # Append data
-:ok = DurableStreams.Stream.append(stream, %{event: "user_created", user_id: 123})
+{:ok, _} = DS.append(stream, ~s({"event": "user_created", "user_id": 123}))
 
 # Read all data (catch-up)
-{:ok, items} = DurableStreams.Stream.read_json(stream, live: false)
-IO.inspect(items)  # [%{"event" => "user_created", "user_id" => 123}]
+{:ok, chunks} = DS.read_all(stream, offset: "-1")
+IO.inspect(chunks)
 
 # Delete stream
-:ok = DurableStreams.Stream.delete(stream)
+:ok = DS.delete(stream)
 ```
+
+> **Note**: We alias `DurableStreams.Stream` as `DS` to avoid shadowing Elixir's
+> built-in `Stream` module for lazy enumerables.
 
 ### Long-Running Consumer
 
@@ -1680,16 +1690,26 @@ end
 ### Streaming with Enumerable
 
 ```elixir
-# Stream as Enumerable (lazy)
+use DurableStreams
+
+# Stream as Enumerable (lazy) using DS.enumerate/2
 stream
-|> DurableStreams.Stream.stream_json(live: false)
+|> DS.enumerate(live: :long_poll)
+|> Stream.map(fn chunk -> JSON.decode!(chunk.data) end)
 |> Stream.filter(&(&1["type"] == "purchase"))
 |> Stream.take(100)
 |> Enum.to_list()
 
+# Stop when caught up
+stream
+|> DS.enumerate()
+|> Stream.take_while(fn chunk -> not chunk.up_to_date end)
+|> Enum.each(&process_chunk/1)
+
 # Process with Flow for parallel computation
 stream
-|> DurableStreams.Stream.stream_json(live: false)
+|> DS.enumerate(live: false)
+|> Stream.flat_map(fn chunk -> JSON.decode!(chunk.data) end)
 |> Flow.from_enumerable()
 |> Flow.partition(key: {:key, "user_id"})
 |> Flow.reduce(fn -> %{} end, fn event, acc ->
@@ -1750,17 +1770,25 @@ config :durable_streams,
 # mix.exs
 defp deps do
   [
-    {:finch, "~> 0.18"},       # HTTP client
-    {:jason, "~> 1.4"},        # JSON encoding/decoding
-    {:backoff, "~> 1.1"},      # Exponential backoff (Erlang)
-    {:telemetry, "~> 1.2"},    # Telemetry for observability
+    # Required for SSE streaming (optional without SSE)
+    {:finch, "~> 0.18"},
+    {:castore, "~> 1.0"},
 
-    # Optional
-    {:broadway, "~> 1.0", optional: true},  # Broadway integration
+    # Note: JSON is native in Elixir 1.18+
+    # For Elixir < 1.18, add: {:jason, "~> 1.4"}
+
+    # Optional - for Broadway integration
+    {:broadway, "~> 1.0", optional: true},
     {:gen_stage, "~> 1.2"},    # GenStage (included with Broadway)
+
+    # Optional - for observability
+    {:telemetry, "~> 1.2"},
   ]
 end
 ```
+
+> **Note**: The core library uses only `:httpc` and native Elixir JSON. Finch is only
+> required for true SSE streaming - without it, SSE falls back to long-poll behavior.
 
 ---
 
