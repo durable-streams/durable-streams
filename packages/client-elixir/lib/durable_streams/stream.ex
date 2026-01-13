@@ -3,6 +3,31 @@ defmodule DurableStreams.Stream do
   A handle to a durable stream.
 
   Provides operations for creating, reading, appending, and deleting streams.
+
+  ## Pipe-Friendly API
+
+  Stream handles support a fluent builder pattern:
+
+      client
+      |> Client.stream("/events")
+      |> DS.with_content_type("application/json")
+      |> DS.with_headers(%{"x-tenant" => "acme"})
+      |> DS.create!()
+
+  ## Bang Functions
+
+  All operations have `!` variants that raise on error:
+
+      stream = DS.create!(stream, content_type: "application/json")
+      chunk = DS.read!(stream)
+      DS.append!(stream, data)
+
+  ## JSON Convenience
+
+  For JSON streams, use the `_json` variants:
+
+      {:ok, items} = DS.read_json(stream)
+      DS.append_json!(stream, %{event: "clicked", user_id: 123})
   """
 
   require Logger
@@ -56,6 +81,39 @@ defmodule DurableStreams.Stream do
   @spec set_content_type(t(), String.t()) :: t()
   def set_content_type(%__MODULE__{} = stream, content_type) do
     %{stream | content_type: content_type}
+  end
+
+  # ============================================================================
+  # Pipe-Friendly Builders
+  # ============================================================================
+
+  @doc """
+  Set the content type (pipe-friendly alias for `set_content_type/2`).
+
+  ## Example
+
+      stream
+      |> DS.with_content_type("application/json")
+      |> DS.create!()
+  """
+  @spec with_content_type(t(), String.t()) :: t()
+  def with_content_type(%__MODULE__{} = stream, content_type) do
+    %{stream | content_type: content_type}
+  end
+
+  @doc """
+  Add extra headers to include with all requests on this stream handle.
+
+  ## Example
+
+      stream
+      |> DS.with_headers(%{"x-tenant" => "acme", "x-request-id" => "abc123"})
+      |> DS.create!()
+  """
+  @spec with_headers(t(), map()) :: t()
+  def with_headers(%__MODULE__{} = stream, headers) when is_map(headers) do
+    merged = Map.merge(stream.extra_headers, headers)
+    %{stream | extra_headers: merged}
   end
 
   @doc """
@@ -458,6 +516,194 @@ defmodule DurableStreams.Stream do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # ============================================================================
+  # Bang Functions (raise on error)
+  # ============================================================================
+
+  @doc """
+  Create the stream on the server, raising on error.
+
+  See `create/2` for options.
+  """
+  @spec create!(t(), keyword()) :: t()
+  def create!(%__MODULE__{} = stream, opts \\ []) do
+    case create(stream, opts) do
+      {:ok, stream} -> stream
+      {:error, reason} -> raise "Failed to create stream: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Get stream metadata, raising on error.
+
+  See `head/2` for options.
+  """
+  @spec head!(t(), keyword()) :: head_result()
+  def head!(%__MODULE__{} = stream, opts \\ []) do
+    case head(stream, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "Failed to get stream head: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Delete the stream, raising on error.
+
+  See `delete/2` for options.
+  """
+  @spec delete!(t(), keyword()) :: :ok
+  def delete!(%__MODULE__{} = stream, opts \\ []) do
+    case delete(stream, opts) do
+      :ok -> :ok
+      {:error, reason} -> raise "Failed to delete stream: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Append data to the stream, raising on error.
+
+  See `append/3` for options.
+  """
+  @spec append!(t(), binary(), keyword()) :: append_result()
+  def append!(%__MODULE__{} = stream, data, opts \\ []) do
+    case append(stream, data, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "Failed to append to stream: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Read from the stream, raising on error.
+
+  See `read/2` for options.
+  """
+  @spec read!(t(), keyword()) :: read_chunk()
+  def read!(%__MODULE__{} = stream, opts \\ []) do
+    case read(stream, opts) do
+      {:ok, chunk} -> chunk
+      {:error, reason} -> raise "Failed to read from stream: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Read all chunks until up-to-date, raising on error.
+
+  See `read_all/2` for options.
+  """
+  @spec read_all!(t(), keyword()) :: [read_chunk()]
+  def read_all!(%__MODULE__{} = stream, opts \\ []) do
+    case read_all(stream, opts) do
+      {:ok, chunks} -> chunks
+      {:error, reason} -> raise "Failed to read all from stream: #{inspect(reason)}"
+    end
+  end
+
+  # ============================================================================
+  # JSON Convenience Functions
+  # ============================================================================
+
+  @doc """
+  Read from a JSON stream and parse the response.
+
+  Returns `{:ok, items, metadata}` where items is the parsed JSON array
+  and metadata contains `next_offset` and `up_to_date`.
+
+  ## Options
+
+  Same as `read/2`.
+
+  ## Example
+
+      {:ok, items, meta} = DS.read_json(stream)
+      IO.inspect(items)  # [%{"id" => 1}, %{"id" => 2}]
+      IO.inspect(meta.next_offset)  # "42"
+  """
+  @spec read_json(t(), keyword()) :: {:ok, list(), map()} | {:error, term()}
+  def read_json(%__MODULE__{} = stream, opts \\ []) do
+    case read(stream, opts) do
+      {:ok, chunk} ->
+        if chunk.data == "" or byte_size(chunk.data) == 0 do
+          {:ok, [], %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+        else
+          case DurableStreams.JSON.decode(chunk.data) do
+            {:ok, items} when is_list(items) ->
+              {:ok, items, %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+            {:ok, item} ->
+              {:ok, [item], %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+            {:error, reason} ->
+              {:error, {:json_decode_error, reason}}
+          end
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Read from a JSON stream, raising on error.
+
+  Returns `{items, metadata}` tuple.
+
+  ## Example
+
+      {items, meta} = DS.read_json!(stream)
+  """
+  @spec read_json!(t(), keyword()) :: {list(), map()}
+  def read_json!(%__MODULE__{} = stream, opts \\ []) do
+    case read_json(stream, opts) do
+      {:ok, items, meta} -> {items, meta}
+      {:error, reason} -> raise "Failed to read JSON from stream: #{inspect(reason)}"
+    end
+  end
+
+  @doc """
+  Append JSON data to the stream.
+
+  Encodes the term as JSON before appending. For arrays, each element
+  becomes a separate item in the stream (JSON batching).
+
+  ## Options
+
+  Same as `append/3`.
+
+  ## Example
+
+      DS.append_json(stream, %{event: "clicked", user_id: 123})
+      DS.append_json(stream, [%{id: 1}, %{id: 2}])  # Batch append
+  """
+  @spec append_json(t(), term(), keyword()) :: {:ok, append_result()} | {:error, term()}
+  def append_json(%__MODULE__{} = stream, data, opts \\ []) do
+    case DurableStreams.JSON.encode(data) do
+      {:ok, json} ->
+        # Ensure stream has JSON content type
+        stream = if stream.content_type == nil do
+          %{stream | content_type: "application/json"}
+        else
+          stream
+        end
+        append(stream, json, opts)
+
+      {:error, reason} ->
+        {:error, {:json_encode_error, reason}}
+    end
+  end
+
+  @doc """
+  Append JSON data to the stream, raising on error.
+
+  ## Example
+
+      DS.append_json!(stream, %{event: "clicked"})
+  """
+  @spec append_json!(t(), term(), keyword()) :: append_result()
+  def append_json!(%__MODULE__{} = stream, data, opts \\ []) do
+    case append_json(stream, data, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "Failed to append JSON to stream: #{inspect(reason)}"
     end
   end
 

@@ -49,20 +49,33 @@ alias DurableStreams.Stream, as: DS
 # Create a client pointing to your Durable Streams server
 client = Client.new("http://localhost:4437")
 
-# Get a stream handle (no network I/O yet)
-stream = Client.stream(client, "/my-app/events")
+# Pipe-friendly stream creation with bang functions
+stream =
+  client
+  |> Client.stream("/my-app/events")
+  |> DS.with_content_type("application/json")
+  |> DS.create!()
 
-# Create the stream on the server
-{:ok, stream} = DS.create(stream, content_type: "application/json")
+# JSON convenience functions for structured data
+DS.append_json!(stream, %{type: "user_created", id: 1})
+DS.append_json!(stream, %{type: "user_updated", id: 1})
 
-# Append some events
-{:ok, _} = DS.append(stream, ~s({"type": "user_created", "id": 1}))
-{:ok, _} = DS.append(stream, ~s({"type": "user_updated", "id": 1}))
+# Read and parse JSON in one call
+{items, meta} = DS.read_json!(stream, offset: "-1")
+IO.inspect(items)           # [%{"type" => "user_created", ...}, ...]
+IO.puts(meta.next_offset)   # "42"
+```
 
-# Read from the beginning
-{:ok, chunk} = DS.read(stream, offset: "-1")
-IO.puts("Data: #{chunk.data}")
-IO.puts("Next offset: #{chunk.next_offset}")
+### Traditional Error Handling
+
+All functions also have non-bang variants returning `{:ok, result}` / `{:error, reason}`:
+
+```elixir
+case DS.read(stream) do
+  {:ok, chunk} -> process(chunk.data)
+  {:error, :not_found} -> create_stream()
+  {:error, reason} -> Logger.error("Failed: #{inspect(reason)}")
+end
 ```
 
 > **Note**: We alias `DurableStreams.Stream` as `DS` to avoid shadowing Elixir's built-in `Stream` module (lazy enumerables). Alternative aliases: `DSStream`, `DStream`, or just use the full module name.
