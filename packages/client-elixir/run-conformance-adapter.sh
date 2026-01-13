@@ -1,6 +1,13 @@
 #!/bin/bash
 # Run the Elixir conformance adapter
-# Requires the escript to be built first: mix escript.build
+# Builds the escript if not present
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "$SCRIPT_DIR/conformance-adapter" "$@"
+cd "$SCRIPT_DIR"
+
+# Build the escript if missing
+if [ ! -x ./conformance-adapter ]; then
+  mix escript.build >&2
+fi
+
+exec ./conformance-adapter "$@"

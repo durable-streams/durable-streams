@@ -45,7 +45,9 @@ jobs:
       - name: Build Elixir client adapter
         run: |
           cd packages/client-elixir
-          mix deps.get || true
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
           mix compile
           mix escript.build
 
@@ -111,7 +113,9 @@ jobs:
       - name: Build Elixir client adapter
         run: |
           cd packages/client-elixir
-          mix deps.get || true
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
           mix compile
           mix escript.build
 

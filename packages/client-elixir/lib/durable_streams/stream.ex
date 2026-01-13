@@ -248,6 +248,70 @@ defmodule DurableStreams.Stream do
     timeout = Keyword.get(opts, :timeout, stream.client.timeout)
     extra_headers = Keyword.get(opts, :headers, %{})
 
+    # Use Finch for true SSE streaming when available
+    is_sse = live == :sse or live == "sse"
+    if is_sse and DurableStreams.HTTP.Finch.available?() do
+      read_sse_finch(stream, offset, timeout, extra_headers)
+    else
+      read_httpc(stream, offset, live, timeout, extra_headers)
+    end
+  end
+
+  # SSE streaming using Finch (true incremental delivery)
+  defp read_sse_finch(stream, offset, timeout, extra_headers) do
+    query_params = [{"offset", offset}, {"live", "sse"}]
+    url_with_query = url(stream) <> "?" <> URI.encode_query(query_params)
+
+    headers =
+      [{"accept", "text/event-stream"}]
+      |> add_extra_headers(stream.client.default_headers)
+      |> add_extra_headers(extra_headers)
+
+    # Accumulate events into a single response for API compatibility
+    events_ref = make_ref()
+    Process.put(events_ref, [])
+
+    on_event = fn
+      {:event, data, next_offset, up_to_date} ->
+        events = Process.get(events_ref)
+        Process.put(events_ref, [{data, next_offset, up_to_date} | events])
+    end
+
+    case DurableStreams.HTTP.Finch.stream_sse(url_with_query, headers, [timeout: timeout], on_event) do
+      {:ok, %{next_offset: final_offset, up_to_date: up_to_date}} ->
+        events = Process.get(events_ref) |> Enum.reverse()
+        Process.delete(events_ref)
+
+        case events do
+          [] ->
+            # No events - return empty with metadata
+            {:ok, %{
+              data: "",
+              next_offset: final_offset || offset,
+              up_to_date: up_to_date,
+              status: 204
+            }}
+
+          events ->
+            # Combine all event data
+            data = events |> Enum.map(fn {d, _, _} -> d end) |> Enum.join("")
+            {_, last_offset, last_up_to_date} = List.last(events)
+            {:ok, %{
+              data: data,
+              next_offset: last_offset || final_offset || offset,
+              up_to_date: last_up_to_date || up_to_date,
+              status: 200
+            }}
+        end
+
+      {:error, reason} ->
+        Process.delete(events_ref)
+        {:error, reason}
+    end
+  end
+
+  # Standard HTTP read using :httpc
+  defp read_httpc(stream, offset, live, timeout, extra_headers) do
     # Build query parameters
     query_params =
       [{"offset", offset}]
@@ -377,6 +441,63 @@ defmodule DurableStreams.Stream do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Returns an Elixir `Stream` that yields chunks from the durable stream.
+
+  This provides a pipe-friendly, lazy enumerable for consuming stream data.
+  Useful for scripting, testing, and functional composition with `Stream.*`/`Enum.*`.
+
+  ## Options
+
+  - `:offset` - Starting offset (default: `"-1"`)
+  - `:live` - Live mode: `false`, `:long_poll`, or `:sse` (default: `:long_poll`)
+
+  ## Example
+
+      # Process chunks lazily
+      stream
+      |> DurableStreams.Stream.enumerate(live: :long_poll)
+      |> Stream.map(fn chunk -> JSON.decode!(chunk.data) end)
+      |> Stream.take(10)
+      |> Enum.to_list()
+
+      # Stop when caught up
+      stream
+      |> DurableStreams.Stream.enumerate()
+      |> Stream.take_while(fn chunk -> not chunk.up_to_date end)
+      |> Enum.each(&process_chunk/1)
+  """
+  @spec enumerate(t(), keyword()) :: Enumerable.t()
+  def enumerate(%__MODULE__{} = stream, opts \\ []) do
+    start_offset = Keyword.get(opts, :offset, "-1")
+    live = Keyword.get(opts, :live, :long_poll)
+    read_opts = Keyword.put(opts, :live, live)
+
+    Stream.resource(
+      fn -> start_offset end,
+      fn offset ->
+        case read(stream, Keyword.put(read_opts, :offset, offset)) do
+          {:ok, chunk} ->
+            if byte_size(chunk.data) > 0 do
+              {[chunk], chunk.next_offset}
+            else
+              # Empty chunk (timeout with no data) - continue from same offset
+              {[], offset}
+            end
+
+          {:error, :timeout} ->
+            # Timeout is normal for long-poll - continue polling
+            {[], offset}
+
+          {:error, reason} ->
+            # Other errors halt the stream
+            raise "DurableStreams.Stream.enumerate error: #{inspect(reason)}"
+        end
+      end,
+      fn _offset -> :ok end
+    )
   end
 
   # Helper functions

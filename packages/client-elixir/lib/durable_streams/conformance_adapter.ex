@@ -118,7 +118,7 @@ defmodule DurableStreams.ConformanceAdapter do
       "clientVersion" => @client_version,
       "features" => %{
         "batching" => true,
-        "sse" => true,
+        "sse" => DurableStreams.HTTP.Finch.available?(),  # True SSE requires Finch
         "longPoll" => true,
         "streaming" => true,
         "dynamicHeaders" => true

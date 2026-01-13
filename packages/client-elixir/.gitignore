@@ -1,0 +1,9 @@
+# Elixir build artifacts
+/_build/
+/deps/
+
+# Elixir crash dumps
+erl_crash.dump
+
+# Built escript (should be built on demand, not committed)
+/conformance-adapter

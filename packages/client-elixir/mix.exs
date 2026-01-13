@@ -30,10 +30,12 @@ defmodule DurableStreams.MixProject do
 
   defp deps do
     [
-      # Optional high-performance HTTP client (5-10x faster than :httpc)
-      {:mint, "~> 1.6", optional: true},
-      {:castore, "~> 1.0", optional: true}
-      # Note: Without Mint, uses built-in :httpc (no external deps)
+      # Finch for true SSE streaming (included for conformance tests)
+      # Users who don't need SSE can exclude this dependency
+      {:finch, "~> 0.18"},
+      # CA certificates for HTTPS
+      {:castore, "~> 1.0"}
+      # Note: Finch is required for SSE support. Without it, SSE falls back to long-poll.
       # For Elixir < 1.18, add {:jason, "~> 1.4"} to use the Jason fallback
     ]
   end

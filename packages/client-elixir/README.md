@@ -42,7 +42,9 @@ end
 ## Quick Start
 
 ```elixir
-alias DurableStreams.{Client, Stream}
+# Alias as DS to avoid shadowing Elixir's Stream module
+alias DurableStreams.Client
+alias DurableStreams.Stream, as: DS
 
 # Create a client pointing to your Durable Streams server
 client = Client.new("http://localhost:4437")
@@ -51,17 +53,19 @@ client = Client.new("http://localhost:4437")
 stream = Client.stream(client, "/my-app/events")
 
 # Create the stream on the server
-{:ok, stream} = Stream.create(stream, content_type: "application/json")
+{:ok, stream} = DS.create(stream, content_type: "application/json")
 
 # Append some events
-{:ok, _} = Stream.append(stream, ~s({"type": "user_created", "id": 1}))
-{:ok, _} = Stream.append(stream, ~s({"type": "user_updated", "id": 1}))
+{:ok, _} = DS.append(stream, ~s({"type": "user_created", "id": 1}))
+{:ok, _} = DS.append(stream, ~s({"type": "user_updated", "id": 1}))
 
 # Read from the beginning
-{:ok, chunk} = Stream.read(stream, offset: "-1")
+{:ok, chunk} = DS.read(stream, offset: "-1")
 IO.puts("Data: #{chunk.data}")
 IO.puts("Next offset: #{chunk.next_offset}")
 ```
+
+> **Note**: We alias `DurableStreams.Stream` as `DS` to avoid shadowing Elixir's built-in `Stream` module (lazy enumerables). Alternative aliases: `DSStream`, `DStream`, or just use the full module name.
 
 ## Use Cases
 
@@ -160,7 +164,7 @@ defmodule MyApp.OrderAggregate do
     chunks
     |> Enum.flat_map(fn chunk ->
       chunk.data
-      |> Jason.decode!()
+      |> JSON.decode!()
     end)
     |> Enum.reduce(%Order{id: order_id}, &apply_event/2)
   end
@@ -260,7 +264,7 @@ defmodule MyApp.EventConsumer do
     # batch.next_offset - offset for checkpointing
     # batch.up_to_date - true when caught up with live stream
 
-    events = Jason.decode!(batch.data)
+    events = JSON.decode!(batch.data)
     Enum.each(events, &process_event/1)
 
     # Persist offset for crash recovery
@@ -487,7 +491,20 @@ Throughput depends on your server and network, but the client can handle hundred
 
 ### SSE (Server-Sent Events)
 
-SSE support is limited due to `:httpc` not supporting true streaming responses. SSE reads will timeout and return available data. For real-time streaming, prefer `:long_poll` mode which works reliably.
+SSE requires the optional [Finch](https://github.com/sneako/finch) dependency for true incremental streaming:
+
+```elixir
+# Add to mix.exs for SSE support
+def deps do
+  [
+    {:durable_streams, "~> 0.1.0"},
+    {:finch, "~> 0.18"},
+    {:castore, "~> 1.0"}
+  ]
+end
+```
+
+Without Finch, SSE mode falls back to `:long_poll` behavior. The built-in `:httpc` client doesn't support true streaming - it buffers chunks until timeout.
 
 ### No External Dependencies
 
@@ -515,7 +532,7 @@ cd ../.. && pnpm test:run -- --client elixir
 
 ## License
 
-Apache 2.0 - see the [LICENSE](../../LICENSE) file for details.
+MIT - see the [LICENSE](../../LICENSE) file for details.
 
 ## Links
 

@@ -2,7 +2,7 @@ defmodule DurableStreamsTest do
   use ExUnit.Case
   doctest DurableStreams
 
-  test "greets the world" do
-    assert DurableStreams.hello() == :world
+  test "returns version" do
+    assert DurableStreams.version() == "0.1.0"
   end
 end

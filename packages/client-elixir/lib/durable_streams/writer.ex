@@ -249,8 +249,6 @@ defmodule DurableStreams.Writer do
 
   @impl true
   def handle_call(:flush, from, state) do
-    state = %{state | flush_waiters: [from | state.flush_waiters]}
-
     # Send pending batch immediately
     state = if length(state.pending_items) > 0 do
       send_batch(state)
@@ -258,18 +256,18 @@ defmodule DurableStreams.Writer do
       state
     end
 
-    # Check if already flushed
+    # Check if already flushed - reply directly without adding to waiters
     if map_size(state.in_flight) == 0 and length(state.pending_items) == 0 do
-      reply_to_flush_waiters(state)
-      {:reply, :ok, %{state | flush_waiters: []}}
+      {:reply, :ok, state}
     else
-      {:noreply, state}
+      # Not yet flushed - add to waiters and wait for batch completion
+      {:noreply, %{state | flush_waiters: [from | state.flush_waiters]}}
     end
   end
 
   @impl true
   def handle_call(:close, from, state) do
-    state = %{state | closed: true, flush_waiters: [from | state.flush_waiters]}
+    state = %{state | closed: true}
 
     # Send pending batch immediately
     state = if length(state.pending_items) > 0 do
@@ -278,12 +276,12 @@ defmodule DurableStreams.Writer do
       state
     end
 
-    # Check if already flushed
+    # Check if already flushed - reply directly and stop
     if map_size(state.in_flight) == 0 do
-      reply_to_flush_waiters(state)
       {:stop, :normal, :ok, state}
     else
-      {:noreply, state}
+      # Not yet flushed - add to waiters and wait for batch completion
+      {:noreply, %{state | flush_waiters: [from | state.flush_waiters]}}
     end
   end
 
@@ -385,7 +383,9 @@ defmodule DurableStreams.Writer do
     # Check if this is a JSON stream - if so, batch into single request
     is_json = json_content_type?(state.stream.content_type)
 
-    task = Task.async(fn ->
+    # Use async_nolink so task crashes don't take down the Writer
+    # (we handle failures via :DOWN messages)
+    task = Task.Supervisor.async_nolink(DurableStreams.TaskSupervisor, fn ->
       if is_json do
         send_json_batch(state.stream, items, state.producer_id, state.epoch, seq_start)
       else
@@ -415,40 +415,46 @@ defmodule DurableStreams.Writer do
   # For JSON streams: batch all items into a single array and send as ONE request
   # This is the key optimization - one HTTP call instead of N
   defp send_json_batch(stream, items, producer_id, epoch, seq) do
-    # Parse each item as JSON, wrap in array
-    parsed_items =
+    # Parse each item as JSON, collecting errors
+    parse_result =
       items
       |> Enum.with_index()
-      |> Enum.map(fn {{data, _waiter}, idx} ->
+      |> Enum.reduce_while([], fn {{data, _waiter}, idx}, acc ->
         case DurableStreams.JSON.decode(data) do
           {:ok, parsed} ->
-            parsed
+            {:cont, [parsed | acc]}
 
           {:error, reason} ->
             Logger.error("JSON batch item #{idx} parse failed: #{inspect(reason)}")
-            raise ArgumentError, "Item #{idx} is not valid JSON: #{inspect(reason)}"
+            {:halt, {:error, {:invalid_json, idx, reason}}}
         end
       end)
 
-    # Encode the array - server will flatten one level
-    batch_data = DurableStreams.JSON.encode!(parsed_items)
+    case parse_result do
+      {:error, _} = err ->
+        err
 
-    result = Stream.append(stream, batch_data,
-      producer_id: producer_id,
-      producer_epoch: epoch,
-      producer_seq: seq
-    )
+      parsed_items when is_list(parsed_items) ->
+        # Encode the array (reversed back to original order) - server will flatten one level
+        batch_data = DurableStreams.JSON.encode!(Enum.reverse(parsed_items))
 
-    case result do
-      {:ok, append_result} ->
-        # Return success for all items
-        {:ok, Enum.map(items, fn _ -> {:ok, append_result} end)}
+        result = Stream.append(stream, batch_data,
+          producer_id: producer_id,
+          producer_epoch: epoch,
+          producer_seq: seq
+        )
 
-      {:error, {:stale_epoch, server_epoch}} ->
-        {:error, {:stale_epoch, server_epoch}}
+        case result do
+          {:ok, append_result} ->
+            # Return success for all items
+            {:ok, Enum.map(items, fn _ -> {:ok, append_result} end)}
 
-      {:error, reason} ->
-        {:error, reason}
+          {:error, {:stale_epoch, server_epoch}} ->
+            {:error, {:stale_epoch, server_epoch}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
     end
   end
 
@@ -499,9 +505,10 @@ defmodule DurableStreams.Writer do
 
         case result do
           {:ok, results} ->
-            # Reply to sync waiters
-            Enum.zip(waiters, results)
-            |> Enum.each(fn {waiter, item_result} ->
+            # Reply to sync waiters - zip items with results to maintain alignment
+            # (filtering nil waiters would break positional correspondence)
+            Enum.zip(items, results)
+            |> Enum.each(fn {{_data, waiter}, item_result} ->
               if waiter, do: GenServer.reply(waiter, item_result)
             end)
 
