@@ -300,12 +300,14 @@ end
 
 # Add to your supervision tree
 children = [
-  {DurableStreams.Consumer,
-    stream: stream,
-    callback: {MyApp.EventConsumer, []},
-    live: :long_poll,
-    offset: MyApp.Repo.load_offset() || "-1",
-    name: MyApp.EventConsumer}
+  %{
+    id: MyApp.EventConsumer,
+    start: {DurableStreams.Consumer, :start_link, [
+      MyApp.EventConsumer,
+      %{},  # init_arg passed to MyApp.EventConsumer.init/1
+      [stream: stream, live: :long_poll, offset: MyApp.Repo.load_offset() || "-1"]
+    ]}
+  }
 ]
 
 Supervisor.start_link(children, strategy: :one_for_one)
@@ -316,11 +318,12 @@ Supervisor.start_link(children, strategy: :one_for_one)
 | Option          | Default      | Description                              |
 | --------------- | ------------ | ---------------------------------------- |
 | `:stream`       | required     | Stream handle from `Client.stream/2`     |
-| `:callback`     | required     | `{Module, args}` tuple                   |
 | `:live`         | `:long_poll` | Live mode: `false`, `:long_poll`, `:sse` |
 | `:offset`       | `"-1"`       | Starting offset                          |
 | `:backoff_base` | `1000`       | Initial backoff delay (ms)               |
 | `:backoff_max`  | `30000`      | Maximum backoff delay (ms)               |
+
+Note: The callback module and init_arg are positional arguments to `start_link/3`, not options.
 
 ## Idempotent Writer
 
@@ -427,24 +430,32 @@ alias DurableStreams.Stream, as: DS
 ### Manual Idempotent Appends
 
 ```elixir
-# For manual sequence management
-{:ok, _} = DS.append(stream, data,
+# For manual sequence management (low-level API)
+{:ok, result} = DS.append(stream, data,
   producer_id: "my-producer",
   epoch: 0,
   producer_seq: 0
 )
 
 # Increment seq for each message
-{:ok, _} = DS.append(stream, data2,
+{:ok, result} = DS.append(stream, data2,
   producer_id: "my-producer",
   epoch: 0,
   producer_seq: 1
 )
+
+# result is a %DurableStreams.AppendResult{} struct with:
+# - next_offset: the offset after this append
+# - duplicate: true if this was a duplicate (204 response)
 ```
 
 ## Error Handling
 
-All operations return `{:ok, result}` or `{:error, reason}`:
+All operations return `{:ok, result}` or `{:error, reason}`. Results are typed structs:
+
+- `%DurableStreams.ReadChunk{}` - from `read/2` with `data`, `next_offset`, `up_to_date`, `status`
+- `%DurableStreams.AppendResult{}` - from `append/3` with `next_offset`, `duplicate`
+- `%DurableStreams.HeadResult{}` - from `head/2` with `next_offset`, `content_type`
 
 ```elixir
 case DurableStreams.Stream.read(stream, offset: offset) do
@@ -486,7 +497,7 @@ end
 
 - **Consumer**: Long-running GenServer for reading with auto-reconnect and backoff
 - **Writer**: Fire-and-forget producer with batching, pipelining, and exactly-once delivery
-- **Stream**: Pure functions for individual operations
+- **Stream**: Pure functions for individual operations returning typed structs
 - **HTTP**: Connection-pooled HTTP client using Erlang's built-in `:httpc`
 
 ## Performance

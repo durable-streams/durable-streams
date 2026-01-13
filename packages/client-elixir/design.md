@@ -20,10 +20,13 @@
 ### Key Differences from Design
 
 1. **HTTP Client**: Uses `:httpc` for standard requests, Finch (optional) for SSE streaming
-2. **Consumer API**: Uses `callback: {Module, args}` tuple instead of separate options
-3. **Error Handling**: Uses `{:error, reason}` tuples instead of structured exceptions
+2. **Consumer API**: Uses `start_link(module, init_arg, opts)` pattern like GenServer
+3. **Error Handling**: Uses `{:error, reason}` tuples; bang functions (`create!`, `read!`) raise
 4. **Stream Aliasing**: Uses `alias DurableStreams.Stream, as: DS` to avoid shadowing Elixir's `Stream`
 5. **Minimal Dependencies**: Finch/castore optional, only needed for true SSE streaming
+6. **Result Structs**: Returns `%ReadChunk{}`, `%AppendResult{}`, `%HeadResult{}` instead of maps
+7. **JSON API**: `read_json/2` returns `{:ok, {items, meta}}` (2-tuple with nested tuple)
+8. **Producer Options**: Uses `:epoch` (not `:producer_epoch`) for consistency with Writer
 
 ---
 
