@@ -25,6 +25,40 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Build Go client adapter
+        run: |
+          cd packages/client-go
+          go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Run TypeScript client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ts
+
+      - name: Run Go client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+  elixir-conformance:
+    name: Elixir Conformance Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -37,11 +71,6 @@ jobs:
       - name: Build packages
         run: pnpm build
 
-      - name: Build Go client adapter
-        run: |
-          cd packages/client-go
-          go build -o conformance-adapter ./cmd/conformance-adapter
-
       - name: Build Elixir client adapter
         run: |
           cd packages/client-elixir
@@ -50,16 +79,6 @@ jobs:
           mix deps.get
           mix compile
           mix escript.build
-
-      - name: Run TypeScript client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ts
-
-      - name: Run Go client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
 
       - name: Run Elixir client conformance tests
         run: |

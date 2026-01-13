@@ -75,6 +75,10 @@ defmodule DurableStreams.HTTP.Finch do
     else
       timeout = Keyword.get(opts, :timeout, 30_000)
 
+      # DEBUG
+      IO.puts(:standard_error, "[DEBUG SSE] stream_sse called: url=#{url}")
+      IO.puts(:standard_error, "[DEBUG SSE] Finch process: #{inspect(Process.whereis(@finch_name))}")
+
       request = Finch.build(:get, url, headers)
 
       initial_acc = %{
@@ -99,17 +103,25 @@ defmodule DurableStreams.HTTP.Finch do
             receive_timeout: timeout
           )
         rescue
-          e -> {:error, {:exception, Exception.message(e)}}
+          e ->
+            IO.puts(:standard_error, "[DEBUG SSE] Exception in Finch.stream: #{Exception.message(e)}")
+            IO.puts(:standard_error, "[DEBUG SSE] Stacktrace: #{inspect(__STACKTRACE__)}")
+            {:error, {:exception, Exception.message(e)}}
         end
+
+      IO.puts(:standard_error, "[DEBUG SSE] Finch.stream result: #{inspect(result)}")
 
       case result do
         {:ok, acc} ->
+          IO.puts(:standard_error, "[DEBUG SSE] Got {:ok, acc} with status=#{inspect(acc.status)}")
           # Check for error status codes before treating as success
           cond do
             acc.status == 404 ->
+              IO.puts(:standard_error, "[DEBUG SSE] Returning :not_found")
               {:error, :not_found}
 
             acc.status == 400 ->
+              IO.puts(:standard_error, "[DEBUG SSE] Returning :bad_request")
               {:error, {:bad_request, ""}}
 
             acc.status == 410 ->
@@ -117,11 +129,13 @@ defmodule DurableStreams.HTTP.Finch do
               {:error, {:gone, earliest}}
 
             acc.status != nil and acc.status >= 400 ->
+              IO.puts(:standard_error, "[DEBUG SSE] Returning :unexpected_status #{acc.status}")
               {:error, {:unexpected_status, acc.status, ""}}
 
             true ->
               # Success - flush any remaining buffer
               acc = flush_buffer(acc)
+              IO.puts(:standard_error, "[DEBUG SSE] Success path, next_offset=#{inspect(acc.next_offset)}")
               {:ok, %{
                 next_offset: acc.next_offset,
                 up_to_date: acc.up_to_date,
@@ -130,14 +144,17 @@ defmodule DurableStreams.HTTP.Finch do
           end
 
         {:error, %Finch.Error{reason: :request_timeout}} ->
+          IO.puts(:standard_error, "[DEBUG SSE] Finch timeout")
           # Timeout is normal for SSE - return what we have
           {:ok, %{next_offset: nil, up_to_date: false, events_delivered: 0}}
 
         {:error, %Finch.Error{reason: reason}} ->
+          IO.puts(:standard_error, "[DEBUG SSE] Finch error: #{inspect(reason)}")
           # Other Finch errors
           {:error, {:connection_error, reason}}
 
         {:error, reason} ->
+          IO.puts(:standard_error, "[DEBUG SSE] Other error: #{inspect(reason)}")
           {:error, reason}
       end
     end
@@ -146,14 +163,17 @@ defmodule DurableStreams.HTTP.Finch do
   # Handle streaming messages from Finch
   defp handle_stream_message({:status, status}, acc) when status >= 400 do
     # Error status - halt immediately, don't try to parse error body as SSE
+    IO.puts(:standard_error, "[DEBUG SSE] handle_stream_message: error status #{status}, halting")
     {:halt, %{acc | status: status}}
   end
 
   defp handle_stream_message({:status, status}, acc) do
+    IO.puts(:standard_error, "[DEBUG SSE] handle_stream_message: status #{status}")
     {:cont, %{acc | status: status}}
   end
 
   defp handle_stream_message({:headers, headers}, acc) do
+    IO.puts(:standard_error, "[DEBUG SSE] handle_stream_message: headers received")
     # Extract next_offset from headers if present
     next_offset = get_header(headers, "stream-next-offset")
     up_to_date = get_header(headers, "stream-up-to-date") == "true"
