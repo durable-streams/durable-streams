@@ -225,52 +225,142 @@ final class StreamResponse implements IteratorAggregate
     }
 
     /**
-     * Iterate over raw body chunks.
+     * Iterate over typed chunks (recommended API).
      *
-     * For non-live mode, continues fetching until Stream-Up-To-Date is true.
-     * For live mode (long-poll), yields after each fetch even if empty.
-     * This allows the consumer to check isUpToDate() and cancel().
+     * Each chunk represents one HTTP response from the server. In live mode,
+     * chunks are yielded even when there's no new data, allowing you to:
+     * - Check the current offset for checkpointing
+     * - Inspect upToDate status
+     * - Call cancel() to stop iteration
      *
-     * @return Generator<int, string>
+     * Example:
+     * ```php
+     * foreach ($response->chunks() as $chunk) {
+     *     if ($chunk->hasData()) {
+     *         processData($chunk->data);
+     *     }
+     *     saveCheckpoint($chunk->offset);
+     * }
+     * ```
+     *
+     * @return Generator<int, StreamChunk>
      */
-    public function getIterator(): Generator
+    public function chunks(): Generator
     {
         // Initial fetch
         $response = $this->fetch();
         $this->updateFromResponse($response);
 
-        if ($response->status !== 204 && $response->body !== '') {
-            yield $response->body;
-        }
+        $data = ($response->status !== 204 && $response->body !== '')
+            ? $response->body
+            : null;
+
+        yield new StreamChunk(
+            data: $data,
+            offset: $this->offset,
+            upToDate: $this->upToDate,
+            status: $response->status,
+            cursor: $this->cursor,
+        );
 
         // For non-live mode, continue until caught up (upToDate is true)
-        // The server may return partial data due to chunk size limits
         if (!$this->live) {
             while (!$this->upToDate && !$this->cancelled) {
                 $response = $this->fetch();
                 $this->updateFromResponse($response);
 
-                if ($response->status !== 204 && $response->body !== '') {
-                    yield $response->body;
-                }
+                $data = ($response->status !== 204 && $response->body !== '')
+                    ? $response->body
+                    : null;
+
+                yield new StreamChunk(
+                    data: $data,
+                    offset: $this->offset,
+                    upToDate: $this->upToDate,
+                    status: $response->status,
+                    cursor: $this->cursor,
+                );
             }
             return;
         }
-
-        // For live mode, yield empty string to give consumer a chance
-        // to check state (isUpToDate, getOffset) and cancel if needed.
-        // Consumer should call cancel() when they want to stop iteration.
-        yield '';
 
         // Continue polling for live mode until cancelled
         while (!$this->cancelled) {
             $response = $this->fetch();
             $this->updateFromResponse($response);
 
-            if ($response->status !== 204 && $response->body !== '') {
-                yield $response->body;
-            } else {
-                // Yield empty string to allow state check
+            $data = ($response->status !== 204 && $response->body !== '')
+                ? $response->body
+                : null;
+
+            yield new StreamChunk(
+                data: $data,
+                offset: $this->offset,
+                upToDate: $this->upToDate,
+                status: $response->status,
+                cursor: $this->cursor,
+            );
+        }
+    }
+
+    /**
+     * Iterate over JSON batches (recommended for JSON streams).
+     *
+     * Each batch represents one HTTP response, containing all items from that
+     * response plus metadata. This matches the TypeScript client's subscribeJson
+     * pattern, making it easy to translate examples across languages.
+     *
+     * Example:
+     * ```php
+     * foreach ($response->jsonBatches() as $batch) {
+     *     foreach ($batch->items as $item) {
+     *         processItem($item);
+     *     }
+     *     saveCheckpoint($batch->offset);
+     * }
+     * ```
+     *
+     * @return Generator<int, JsonBatch>
+     */
+    public function jsonBatches(): Generator
+    {
+        foreach ($this->chunks() as $chunk) {
+            $items = [];
+
+            if ($chunk->hasData()) {
+                $data = json_decode($chunk->data, true, 512, JSON_THROW_ON_ERROR);
+
+                if (is_array($data) && array_is_list($data)) {
+                    $items = $data;
+                } else {
+                    $items = [$data];
+                }
+            }
+
+            yield new JsonBatch(
+                items: $items,
+                offset: $chunk->offset,
+                upToDate: $chunk->upToDate,
+                status: $chunk->status,
+            );
+        }
+    }
+
+    /**
+     * Iterate over raw body strings.
+     *
+     * Note: In live mode, empty strings are yielded between HTTP responses
+     * to allow state checking. Consider using chunks() instead for a cleaner API.
+     *
+     * @return Generator<int, string>
+     */
+    public function getIterator(): Generator
+    {
+        foreach ($this->chunks() as $chunk) {
+            if ($chunk->hasData()) {
+                yield $chunk->data;
+            } elseif ($this->live) {
+                // Yield empty string in live mode for backwards compatibility
                 yield '';
             }
         }
@@ -279,25 +369,16 @@ final class StreamResponse implements IteratorAggregate
     /**
      * Iterate over individual JSON items.
      *
+     * Note: This yields items one-by-one without batch boundaries.
+     * Consider using jsonBatches() instead for checkpointing support.
+     *
      * @return Generator<int, mixed>
      */
     public function jsonStream(): Generator
     {
-        foreach ($this as $chunk) {
-            // Skip empty chunks (yielded for state checking in live mode)
-            if ($chunk === '') {
-                continue;
-            }
-
-            // Parse JSON array or single values
-            $data = json_decode($chunk, true, 512, JSON_THROW_ON_ERROR);
-
-            if (is_array($data) && array_is_list($data)) {
-                foreach ($data as $item) {
-                    yield $item;
-                }
-            } else {
-                yield $data;
+        foreach ($this->jsonBatches() as $batch) {
+            foreach ($batch->items as $item) {
+                yield $item;
             }
         }
     }
