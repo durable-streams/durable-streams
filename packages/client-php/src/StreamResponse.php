@@ -38,7 +38,7 @@ final class StreamResponse implements IteratorAggregate
     /**
      * @param string $url Stream URL
      * @param string $initialOffset Starting offset
-     * @param string|false $liveMode Live mode: false, 'long-poll', or 'sse'
+     * @param LiveMode $liveMode Live mode
      * @param array<string, string|callable> $headers Request headers (values can be callables)
      * @param HttpClientInterface $client HTTP client
      * @param float $timeout Request timeout
@@ -47,14 +47,14 @@ final class StreamResponse implements IteratorAggregate
     public function __construct(
         private readonly string $url,
         string $initialOffset,
-        private readonly string|false $liveMode,
+        private readonly LiveMode $liveMode,
         array $headers,
         private HttpClientInterface $client,
         private float $timeout,
         ?callable $onError = null,
     ) {
         $this->offset = $initialOffset;
-        $this->live = $liveMode !== false;
+        $this->live = $liveMode->isLive();
         $this->status = 0;
         $this->headers = $headers;
         $this->onError = $onError;
@@ -161,18 +161,14 @@ final class StreamResponse implements IteratorAggregate
      */
     private function fetch(): HttpResponse
     {
-        // SSE is not supported in synchronous PHP
-        if ($this->liveMode === 'sse') {
-            throw new LogicException('SSE mode is not supported. Use long-poll instead.');
-        }
-
         $url = $this->url;
         $query = [];
 
         $query['offset'] = $this->offset;
 
-        if ($this->liveMode !== false) {
-            $query['live'] = $this->liveMode;
+        $liveQueryValue = $this->liveMode->toQueryValue();
+        if ($liveQueryValue !== false) {
+            $query['live'] = $liveQueryValue;
         }
 
         if ($this->cursor !== null) {

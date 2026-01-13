@@ -79,20 +79,29 @@ StreamResponse (read session)
     ├── getOffset(): string
     └── isLive(): bool
 
-StreamChunk
+StreamChunk (implements Stringable)
     ├── data: ?string
     ├── offset: string
     ├── upToDate: bool
     ├── status: int
-    └── hasData(): bool
+    ├── hasData(): bool
+    └── __toString(): string
 
-JsonBatch (implements Countable)
+JsonBatch (implements Countable, IteratorAggregate)
     ├── items: array
     ├── offset: string
     ├── upToDate: bool
     ├── status: int
     ├── hasItems(): bool
-    └── count(): int
+    ├── count(): int
+    └── getIterator(): Traversable
+
+LiveMode (enum)
+    ├── Off         (catch-up mode)
+    ├── LongPoll    (block until new data)
+    ├── Auto        (maps to LongPoll)
+    ├── toQueryValue(): string|false
+    └── isLive(): bool
 
 RetryOptions
     ├── maxRetries: int

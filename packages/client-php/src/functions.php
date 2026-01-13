@@ -14,7 +14,7 @@ use DurableStreams\Internal\HttpClientInterface;
  * @param array{
  *   url: string,
  *   offset?: string,
- *   live?: string|false,
+ *   live?: LiveMode|string|false,
  *   headers?: array<string, string|callable>,
  *   timeout?: float,
  *   retry?: RetryOptions,
@@ -26,7 +26,7 @@ function stream(array $options): StreamResponse
 {
     $url = $options['url'];
     $offset = $options['offset'] ?? '-1';
-    $live = $options['live'] ?? false;
+    $live = $options['live'] ?? LiveMode::Off;
     $headers = $options['headers'] ?? [];
     $timeout = $options['timeout'] ?? 30.0;
     $retry = $options['retry'] ?? null;
@@ -36,21 +36,43 @@ function stream(array $options): StreamResponse
         retryOptions: $retry,
     );
 
-    // Map 'auto' to 'long-poll' for TypeScript client parity
-    // (SSE is not supported in synchronous PHP)
-    if ($live === 'auto') {
-        $live = 'long-poll';
-    }
+    // Normalize live mode to LiveMode enum
+    $liveMode = normalizeLiveMode($live);
 
     return new StreamResponse(
         url: $url,
         initialOffset: $offset,
-        liveMode: $live,
+        liveMode: $liveMode,
         headers: $headers,
         client: $client,
         timeout: $timeout,
         onError: $onError,
     );
+}
+
+/**
+ * Normalize live mode to LiveMode enum.
+ *
+ * Accepts LiveMode enum, string ('long-poll', 'auto', 'sse'), or false.
+ *
+ * @param LiveMode|string|false $live
+ */
+function normalizeLiveMode(LiveMode|string|false $live): LiveMode
+{
+    if ($live instanceof LiveMode) {
+        return $live;
+    }
+
+    if ($live === false) {
+        return LiveMode::Off;
+    }
+
+    return match ($live) {
+        'long-poll' => LiveMode::LongPoll,
+        'auto' => LiveMode::Auto,
+        'sse' => LiveMode::LongPoll, // SSE not supported, fall back to long-poll
+        default => LiveMode::Off,
+    };
 }
 
 /**

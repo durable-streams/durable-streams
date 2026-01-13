@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace DurableStreams;
 
+use Stringable;
+
 /**
  * A chunk of data from a stream read operation.
  *
@@ -15,8 +17,13 @@ namespace DurableStreams;
  *
  * In live mode, chunks with null data are yielded to allow state inspection
  * and cancellation between long-poll requests.
+ *
+ * Implements Stringable so you can use the chunk directly as a string:
+ * ```php
+ * echo $chunk; // outputs $chunk->data
+ * ```
  */
-final class StreamChunk
+final class StreamChunk implements Stringable
 {
     /**
      * @param string|null $data Raw bytes from this response, or null if no new data
@@ -39,5 +46,13 @@ final class StreamChunk
     public function hasData(): bool
     {
         return $this->data !== null && $this->data !== '';
+    }
+
+    /**
+     * Convert to string (returns data or empty string).
+     */
+    public function __toString(): string
+    {
+        return $this->data ?? '';
     }
 }

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace DurableStreams;
 
+use ArrayIterator;
 use Countable;
+use IteratorAggregate;
+use Traversable;
 
 /**
  * A batch of JSON items from a stream read operation.
@@ -17,9 +20,15 @@ use Countable;
  * This mirrors the TypeScript client's `subscribeJson` callback pattern,
  * making it easy to translate examples across languages.
  *
+ * Implements IteratorAggregate so you can iterate directly:
+ * ```php
+ * foreach ($batch as $item) { ... }
+ * ```
+ *
  * @template T The type of items in this batch
+ * @implements IteratorAggregate<int, T>
  */
-final class JsonBatch implements Countable
+final class JsonBatch implements Countable, IteratorAggregate
 {
     /**
      * @param array<int, T> $items Parsed JSON items from this response
@@ -48,5 +57,15 @@ final class JsonBatch implements Countable
     public function count(): int
     {
         return count($this->items);
+    }
+
+    /**
+     * Get an iterator over the items.
+     *
+     * @return Traversable<int, T>
+     */
+    public function getIterator(): Traversable
+    {
+        return new ArrayIterator($this->items);
     }
 }

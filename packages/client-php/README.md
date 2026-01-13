@@ -43,18 +43,22 @@ foreach ($response->jsonStream() as $event) {
 ```php
 <?php
 
+use DurableStreams\LiveMode;
 use function DurableStreams\stream;
 
 // Subscribe to live updates
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => $lastOffset ?? '-1',
-    'live' => 'long-poll',
+    'live' => LiveMode::LongPoll,
 ]);
 
-foreach ($response->jsonStream() as $event) {
-    processEvent($event);
-    saveCheckpoint($response->getOffset());
+// Iterate directly over batches
+foreach ($response->jsonBatches() as $batch) {
+    foreach ($batch as $event) {  // JsonBatch is iterable
+        processEvent($event);
+    }
+    saveCheckpoint($batch->offset);
 }
 ```
 
@@ -153,16 +157,20 @@ Subscribe to live updates—the request blocks until new data arrives:
 ```php
 <?php
 
+use DurableStreams\LiveMode;
+
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
-    'offset' => 'now',         // Start from current position
-    'live' => 'long-poll',     // Keep polling for new data
+    'offset' => 'now',             // Start from current position
+    'live' => LiveMode::LongPoll,  // Keep polling for new data
 ]);
 
 // This loop runs forever (until cancelled)
-foreach ($response->jsonStream() as $event) {
-    handleEvent($event);
-    saveCheckpoint($response->getOffset());
+foreach ($response->jsonBatches() as $batch) {
+    foreach ($batch as $event) {
+        handleEvent($event);
+    }
+    saveCheckpoint($batch->offset);
 }
 ```
 
@@ -189,11 +197,12 @@ Handle recoverable errors like authentication failures:
 ```php
 <?php
 
+use DurableStreams\LiveMode;
 use DurableStreams\Exception\UnauthorizedException;
 
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
-    'live' => 'long-poll',
+    'live' => LiveMode::LongPoll,
     'headers' => [
         'Authorization' => fn() => 'Bearer ' . $token,
     ],

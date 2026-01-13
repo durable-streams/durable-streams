@@ -172,13 +172,13 @@ final class DurableStream
      * Read from the stream.
      *
      * @param string $offset Starting offset
-     * @param string|false $live Live mode: false, 'auto', 'long-poll', or 'sse'
+     * @param LiveMode|string|false $live Live mode
      * @param array<string, string> $extraHeaders Additional headers
      * @param float|null $timeout Timeout in seconds
      */
     public function read(
         string $offset = '-1',
-        string|false $live = false,
+        LiveMode|string|false $live = LiveMode::Off,
         array $extraHeaders = [],
         ?float $timeout = null,
     ): StreamResponse {
