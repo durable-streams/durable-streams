@@ -61,7 +61,7 @@ DS.append_json!(stream, %{type: "user_created", id: 1})
 DS.append_json!(stream, %{type: "user_updated", id: 1})
 
 # Read and parse JSON in one call
-{items, meta} = DS.read_json!(stream, offset: "-1")
+{:ok, {items, meta}} = DS.read_json(stream, offset: "-1")
 IO.inspect(items)           # [%{"type" => "user_created", ...}, ...]
 IO.puts(meta.next_offset)   # "42"
 ```
@@ -430,14 +430,14 @@ alias DurableStreams.Stream, as: DS
 # For manual sequence management
 {:ok, _} = DS.append(stream, data,
   producer_id: "my-producer",
-  producer_epoch: 0,
+  epoch: 0,
   producer_seq: 0
 )
 
 # Increment seq for each message
 {:ok, _} = DS.append(stream, data2,
   producer_id: "my-producer",
-  producer_epoch: 0,
+  epoch: 0,
   producer_seq: 1
 )
 ```

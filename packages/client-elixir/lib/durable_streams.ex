@@ -52,6 +52,7 @@ defmodule DurableStreams do
       alias DurableStreams.Stream, as: DS
       alias DurableStreams.Consumer
       alias DurableStreams.Writer
+      alias DurableStreams.{ReadChunk, AppendResult, HeadResult}
     end
   end
 

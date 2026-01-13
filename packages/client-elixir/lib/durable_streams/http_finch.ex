@@ -1,24 +1,7 @@
 defmodule DurableStreams.HTTP.Finch do
-  @moduledoc """
-  Finch-based HTTP client with true SSE streaming support.
-
-  Finch provides incremental streaming via `Finch.stream/5`, which invokes
-  a callback for each chunk as it arrives from the server. This enables
-  real Server-Sent Events support where events are processed immediately
-  rather than being buffered until timeout.
-
-  ## Installation
-
-  Add Finch to your dependencies:
-
-      {:finch, "~> 0.18"},
-      {:castore, "~> 1.0"}
-
-  ## Usage
-
-  The module is used automatically when Finch is available and SSE mode
-  is requested. No configuration needed.
-  """
+  @moduledoc false
+  # Internal: Finch-based HTTP client with true SSE streaming support.
+  # Used automatically when Finch is available and SSE mode is requested.
 
   require Logger
 

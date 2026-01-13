@@ -1,10 +1,8 @@
 defmodule DurableStreams.HTTP do
-  @moduledoc """
-  Low-level HTTP client using Erlang's built-in :httpc.
-
-  Provides connection pooling via :httpc profiles, automatic retries for
-  transient failures, and streaming support for SSE.
-  """
+  @moduledoc false
+  # Internal: Low-level HTTP client using Erlang's built-in :httpc.
+  # Provides connection pooling via :httpc profiles, automatic retries for
+  # transient failures, and streaming support for SSE.
 
   require Logger
 

@@ -826,7 +826,7 @@ defmodule DurableStreams.ConformanceAdapter do
   defp do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state) do
     opts = [
       producer_id: producer_id,
-      producer_epoch: epoch,
+      epoch: epoch,
       producer_seq: seq
     ]
 
@@ -880,7 +880,7 @@ defmodule DurableStreams.ConformanceAdapter do
 
       opts = [
         producer_id: producer_id,
-        producer_epoch: epoch,
+        epoch: epoch,
         producer_seq: 0
       ]
 
@@ -917,7 +917,7 @@ defmodule DurableStreams.ConformanceAdapter do
 
           opts = [
             producer_id: producer_id,
-            producer_epoch: epoch,
+            epoch: epoch,
             producer_seq: idx
           ]
 

@@ -32,7 +32,7 @@ defmodule DurableStreams.Stream do
 
   require Logger
 
-  alias DurableStreams.{Client, HTTP}
+  alias DurableStreams.{Client, HTTP, ReadChunk, AppendResult, HeadResult}
 
   defstruct [:client, :path, :content_type, :extra_headers]
 
@@ -45,22 +45,9 @@ defmodule DurableStreams.Stream do
 
   @type offset :: String.t()
 
-  @type head_result :: %{
-          next_offset: offset(),
-          content_type: String.t() | nil
-        }
-
-  @type append_result :: %{
-          next_offset: offset(),
-          duplicate: boolean()
-        }
-
-  @type read_chunk :: %{
-          data: binary(),
-          next_offset: offset(),
-          up_to_date: boolean(),
-          status: integer()
-        }
+  @type head_result :: HeadResult.t()
+  @type append_result :: AppendResult.t()
+  @type read_chunk :: ReadChunk.t()
 
   @doc """
   Create a new stream handle.
@@ -182,7 +169,7 @@ defmodule DurableStreams.Stream do
         end
         content_type = HTTP.get_header(resp_headers, "content-type")
 
-        {:ok, %{next_offset: next_offset, content_type: normalize_content_type(content_type)}}
+        {:ok, %HeadResult{next_offset: next_offset, content_type: normalize_content_type(content_type)}}
 
       {:ok, 404, _headers, _body} ->
         {:error, :not_found}
@@ -228,17 +215,17 @@ defmodule DurableStreams.Stream do
   ## Options
 
   - `:headers` - Additional headers
-  - `:seq` - Sequence number for ordering
+  - `:seq` - Sequence number for stream-level ordering
   - `:producer_id` - Producer ID for idempotent writes
-  - `:producer_epoch` - Producer epoch
-  - `:producer_seq` - Producer sequence number
+  - `:epoch` - Producer epoch for fencing
+  - `:producer_seq` - Producer sequence number for deduplication
   """
   @spec append(t(), binary(), keyword()) :: {:ok, append_result()} | {:error, term()}
   def append(%__MODULE__{} = stream, data, opts \\ []) do
     extra_headers = Keyword.get(opts, :headers, %{})
     seq = Keyword.get(opts, :seq)
     producer_id = Keyword.get(opts, :producer_id)
-    producer_epoch = Keyword.get(opts, :producer_epoch)
+    epoch = Keyword.get(opts, :epoch)
     producer_seq = Keyword.get(opts, :producer_seq)
 
     content_type = stream.content_type || "application/octet-stream"
@@ -247,7 +234,7 @@ defmodule DurableStreams.Stream do
       [{"content-type", content_type}]
       |> maybe_add_header("stream-seq", seq && to_string(seq))
       |> maybe_add_header("producer-id", producer_id)
-      |> maybe_add_header("producer-epoch", producer_epoch && to_string(producer_epoch))
+      |> maybe_add_header("producer-epoch", epoch && to_string(epoch))
       |> maybe_add_header("producer-seq", producer_seq && to_string(producer_seq))
       |> add_extra_headers(stream.client.default_headers)
       |> add_extra_headers(extra_headers)
@@ -262,7 +249,7 @@ defmodule DurableStreams.Stream do
         end
         duplicate = status == 204
 
-        {:ok, %{next_offset: next_offset, duplicate: duplicate}}
+        {:ok, %AppendResult{next_offset: next_offset, duplicate: duplicate}}
 
       {:ok, 404, _headers, _body} ->
         {:error, :not_found}
@@ -361,7 +348,7 @@ defmodule DurableStreams.Stream do
                 end
               end
 
-            {:ok, %{
+            {:ok, %ReadChunk{
               data: "",
               next_offset: actual_offset,
               up_to_date: up_to_date || true,
@@ -372,7 +359,7 @@ defmodule DurableStreams.Stream do
             # Combine all event data
             data = events |> Enum.map(fn {d, _, _} -> d end) |> Enum.join("")
             {_, last_offset, last_up_to_date} = List.last(events)
-            {:ok, %{
+            {:ok, %ReadChunk{
               data: data,
               next_offset: last_offset || final_offset || offset,
               up_to_date: last_up_to_date || up_to_date,
@@ -421,7 +408,7 @@ defmodule DurableStreams.Stream do
         next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
         up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
 
-        {:ok, %{
+        {:ok, %ReadChunk{
           data: data,
           next_offset: next_offset,
           up_to_date: up_to_date,
@@ -455,7 +442,7 @@ defmodule DurableStreams.Stream do
               Logger.warning("SSE timeout: HEAD request failed with #{inspect(head_reason)}, using input offset")
               offset
           end
-        {:ok, %{
+        {:ok, %ReadChunk{
           data: "",
           next_offset: actual_offset,
           up_to_date: true,
@@ -477,7 +464,7 @@ defmodule DurableStreams.Stream do
         next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
         up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
 
-        {:ok, %{
+        {:ok, %ReadChunk{
           data: data,
           next_offset: next_offset,
           up_to_date: up_to_date,
@@ -608,7 +595,7 @@ defmodule DurableStreams.Stream do
   @doc """
   Read from a JSON stream and parse the response.
 
-  Returns `{:ok, items, metadata}` where items is the parsed JSON array
+  Returns `{:ok, {items, metadata}}` where items is the parsed JSON array
   and metadata contains `next_offset` and `up_to_date`.
 
   ## Options
@@ -617,22 +604,24 @@ defmodule DurableStreams.Stream do
 
   ## Example
 
-      {:ok, items, meta} = DS.read_json(stream)
+      {:ok, {items, meta}} = DS.read_json(stream)
       IO.inspect(items)  # [%{"id" => 1}, %{"id" => 2}]
       IO.inspect(meta.next_offset)  # "42"
   """
-  @spec read_json(t(), keyword()) :: {:ok, list(), map()} | {:error, term()}
+  @spec read_json(t(), keyword()) :: {:ok, {list(), map()}} | {:error, term()}
   def read_json(%__MODULE__{} = stream, opts \\ []) do
     case read(stream, opts) do
       {:ok, chunk} ->
+        meta = %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}
+
         if chunk.data == "" or byte_size(chunk.data) == 0 do
-          {:ok, [], %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+          {:ok, {[], meta}}
         else
           case DurableStreams.JSON.decode(chunk.data) do
             {:ok, items} when is_list(items) ->
-              {:ok, items, %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+              {:ok, {items, meta}}
             {:ok, item} ->
-              {:ok, [item], %{next_offset: chunk.next_offset, up_to_date: chunk.up_to_date}}
+              {:ok, {[item], meta}}
             {:error, reason} ->
               {:error, {:json_decode_error, reason}}
           end
@@ -655,7 +644,7 @@ defmodule DurableStreams.Stream do
   @spec read_json!(t(), keyword()) :: {list(), map()}
   def read_json!(%__MODULE__{} = stream, opts \\ []) do
     case read_json(stream, opts) do
-      {:ok, items, meta} -> {items, meta}
+      {:ok, {items, meta}} -> {items, meta}
       {:error, reason} -> raise "Failed to read JSON from stream: #{inspect(reason)}"
     end
   end

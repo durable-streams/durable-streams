@@ -60,9 +60,8 @@ defmodule DurableStreams.Consumer do
 
   ## Starting a Consumer
 
-      {:ok, pid} = DurableStreams.Consumer.start_link(
+      {:ok, pid} = DurableStreams.Consumer.start_link(MyConsumer, init_arg,
         stream: my_stream,
-        callback: {MyConsumer, []},
         live: :long_poll,
         offset: "-1"
       )
@@ -70,7 +69,6 @@ defmodule DurableStreams.Consumer do
   ## Options
 
   - `:stream` - A `DurableStreams.Stream` struct (required)
-  - `:callback` - Tuple of `{Module, args}` where Module implements the Consumer behaviour
   - `:live` - Live mode: `false`, `:long_poll`, or `:sse` (default: `:long_poll`)
   - `:offset` - Starting offset (default: `"-1"` for beginning)
   - `:name` - GenServer name registration
@@ -147,12 +145,23 @@ defmodule DurableStreams.Consumer do
   @doc """
   Start a Consumer process linked to the current process.
 
-  See module documentation for options.
+  ## Arguments
+
+  - `module` - A module implementing the `DurableStreams.Consumer` behaviour
+  - `init_arg` - Argument passed to the callback module's `init/1`
+  - `opts` - Options (see module documentation)
+
+  ## Example
+
+      {:ok, pid} = Consumer.start_link(MyConsumer, %{db: db},
+        stream: stream,
+        offset: "-1"
+      )
   """
-  @spec start_link(keyword()) :: GenServer.on_start()
-  def start_link(opts) do
+  @spec start_link(module(), term(), keyword()) :: GenServer.on_start()
+  def start_link(module, init_arg, opts) when is_atom(module) do
     {gen_opts, consumer_opts} = Keyword.split(opts, [:name])
-    GenServer.start_link(__MODULE__, consumer_opts, gen_opts)
+    GenServer.start_link(__MODULE__, {module, init_arg, consumer_opts}, gen_opts)
   end
 
   @doc """
@@ -201,15 +210,14 @@ defmodule DurableStreams.Consumer do
   # GenServer callbacks
 
   @impl true
-  def init(opts) do
+  def init({callback_module, init_arg, opts}) do
     stream = Keyword.fetch!(opts, :stream)
-    {callback_module, callback_args} = extract_callback(opts)
     live_mode = Keyword.get(opts, :live, :long_poll)
     offset = Keyword.get(opts, :offset, "-1")
     backoff_base = Keyword.get(opts, :backoff_base, 1_000)
     backoff_max = Keyword.get(opts, :backoff_max, 30_000)
 
-    case callback_module.init(callback_args) do
+    case callback_module.init(init_arg) do
       {:ok, callback_state} ->
         state = %__MODULE__{
           stream: stream,
@@ -378,20 +386,5 @@ defmodule DurableStreams.Consumer do
     # Add jitter: 75-125% of current backoff
     jitter = 0.75 + :rand.uniform() * 0.5
     round(state.backoff_current * jitter)
-  end
-
-  # Extract callback module and args from opts
-  # Supports both new `callback: {Module, args}` and legacy `callback_module:` format
-  defp extract_callback(opts) do
-    case Keyword.get(opts, :callback) do
-      {module, args} when is_atom(module) ->
-        {module, args}
-
-      nil ->
-        # Legacy format for backwards compatibility
-        module = Keyword.fetch!(opts, :callback_module)
-        args = Keyword.get(opts, :callback_args, [])
-        {module, args}
-    end
   end
 end

@@ -1,8 +1,7 @@
 defmodule DurableStreams.JSON do
-  @moduledoc """
-  JSON encoder/decoder wrapper.
-  Uses native JSON (Elixir 1.18+) when available, falls back to Jason.
-  """
+  @moduledoc false
+  # Internal: JSON encoder/decoder wrapper.
+  # Uses native JSON (Elixir 1.18+) when available, falls back to Jason.
 
   # Check at compile time which JSON implementation is available
   @native_json_available Code.ensure_loaded?(JSON) and function_exported?(JSON, :decode!, 1)

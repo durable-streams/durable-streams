@@ -440,7 +440,7 @@ defmodule DurableStreams.Writer do
 
         result = Stream.append(stream, batch_data,
           producer_id: producer_id,
-          producer_epoch: epoch,
+          epoch: epoch,
           producer_seq: seq
         )
 
@@ -466,7 +466,7 @@ defmodule DurableStreams.Writer do
       |> Enum.reduce_while([], fn {{data, _waiter}, seq}, acc ->
         result = Stream.append(stream, data,
           producer_id: producer_id,
-          producer_epoch: epoch,
+          epoch: epoch,
           producer_seq: seq
         )
 
