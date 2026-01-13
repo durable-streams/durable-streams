@@ -183,15 +183,6 @@ public readonly record struct AppendResult(
     bool Duplicate = false);
 
 /// <summary>
-/// Result of an idempotent append operation.
-/// </summary>
-public readonly record struct IdempotentAppendResult(
-    Offset? NextOffset,
-    bool Duplicate,
-    int Epoch,
-    int Seq);
-
-/// <summary>
 /// Event arguments for producer errors.
 /// </summary>
 public class ProducerErrorEventArgs : EventArgs
