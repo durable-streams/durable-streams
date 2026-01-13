@@ -27,7 +27,7 @@ Or install directly:
 gem install durable_streams
 ```
 
-**Requirements:** Ruby 3.0+ (uses `Struct` with `keyword_init`)
+**Requirements:** Ruby 3.1+
 
 ## Quick Start
 
@@ -365,4 +365,4 @@ Bug reports and pull requests welcome at https://github.com/durable-streams/dura
 
 ## License
 
-Apache 2.0 - see [LICENSE](https://github.com/durable-streams/durable-streams/blob/main/LICENSE)
+MIT - see [LICENSE](https://github.com/durable-streams/durable-streams/blob/main/LICENSE)

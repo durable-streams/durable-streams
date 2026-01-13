@@ -279,6 +279,13 @@ module DurableStreams
               msg[:error] = e
               msg[:done] = true
             end
+            # Also fail any messages that arrived while we were sending
+            # to prevent them from waiting forever
+            @batch_queue.each do |msg|
+              msg[:error] = e
+              msg[:done] = true
+            end
+            @batch_queue.clear
             @batch_in_flight = false
             @batch_cv.broadcast
           end

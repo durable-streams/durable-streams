@@ -42,7 +42,8 @@ module DurableStreams
     # @param headers [Hash] HTTP headers
     # @return [AppendResult]
     def append(url:, data:, headers: {})
-      stream = Stream.new(url: url, headers: headers)
+      # Use connect to learn content-type via HEAD, ensuring correct serialization
+      stream = Stream.connect(url: url, headers: headers)
       stream.append(data)
     end
 
