@@ -66,17 +66,27 @@ for try await event in handle.messages(as: AppEvent.self) {
 ### Resume from Last Position
 
 ```swift
-// Load saved offset from UserDefaults, Keychain, or database
-let savedOffset = UserDefaults.standard.string(forKey: "stream.offset")
-    .map { Offset(rawValue: $0) } ?? .start
+// Offset is Codable — save and restore with JSONEncoder/Decoder
+func loadOffset() -> Offset {
+    guard let data = UserDefaults.standard.data(forKey: "stream.offset"),
+          let offset = try? JSONDecoder().decode(Offset.self, from: data) else {
+        return .start
+    }
+    return offset
+}
+
+func saveOffset(_ offset: Offset) {
+    if let data = try? JSONEncoder().encode(offset) {
+        UserDefaults.standard.set(data, forKey: "stream.offset")
+    }
+}
 
 // Stream with per-batch checkpointing
-for try await batch in handle.jsonBatches(as: AppEvent.self, from: savedOffset) {
+for try await batch in handle.jsonBatches(as: AppEvent.self, from: loadOffset()) {
     for event in batch.items {
         try await processEvent(event)
     }
-    // Save offset after processing each batch
-    UserDefaults.standard.set(batch.offset.rawValue, forKey: "stream.offset")
+    saveOffset(batch.offset)  // Checkpoint after each batch
 }
 ```
 
@@ -162,7 +172,7 @@ let response = try await stream(
     live: .catchUp
 )
 
-let messages = try response.json(as: [Message].self)
+let messages = try response.json(as: Message.self)
 print("Got \(messages.items.count) messages, next offset: \(messages.offset)")
 ```
 
@@ -301,6 +311,27 @@ BatchingConfig.lowLatency
 
 // No batching
 BatchingConfig.disabled
+
+// Custom with Swift Duration (Swift-native convenience API)
+BatchingConfig(maxBytes: 512_000, linger: .milliseconds(10))
+```
+
+### Retry Configuration
+
+```swift
+// Default retry policy
+RetryConfig.default
+
+// Aggressive retries
+RetryConfig.aggressive
+
+// Custom with Swift Duration
+let retry = RetryConfig(
+    maxAttempts: 5,
+    baseDelay: .milliseconds(100),
+    maxDelay: .seconds(10),
+    jitterFactor: 0.2
+)
 ```
 
 ### Dynamic Headers

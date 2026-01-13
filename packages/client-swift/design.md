@@ -113,7 +113,7 @@ Opaque, lexicographically sortable position marker.
 ```swift
 /// Represents a position in a Durable Stream.
 /// Offsets are opaque strings that can be compared lexicographically.
-public struct Offset: Sendable, Hashable, Comparable, CustomStringConvertible {
+public struct Offset: Sendable, Hashable, Comparable, Codable, CustomStringConvertible, ExpressibleByStringLiteral {
     public let rawValue: String
 
     /// Start of stream (returns all messages)
@@ -141,7 +141,7 @@ Controls real-time subscription behavior.
 
 ```swift
 /// Specifies how the client should handle real-time updates.
-public enum LiveMode: Sendable {
+public enum LiveMode: Sendable, Equatable, CaseIterable {
     /// Read existing data only, stop at end of stream
     case catchUp
 
@@ -181,7 +181,7 @@ public struct JsonBatch<T: Decodable & Sendable>: Sendable {
 }
 
 /// A chunk of bytes from the stream.
-public struct ByteChunk: Sendable {
+public struct ByteChunk: Sendable, Equatable {
     /// Raw byte data
     public let data: Data
 
@@ -193,7 +193,7 @@ public struct ByteChunk: Sendable {
 }
 
 /// A text chunk from the stream.
-public struct TextChunk: Sendable {
+public struct TextChunk: Sendable, Equatable {
     /// UTF-8 decoded text
     public let text: String
 
