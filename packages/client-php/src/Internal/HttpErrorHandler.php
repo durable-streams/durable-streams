@@ -62,7 +62,7 @@ trait HttpErrorHandler
                 }
 
                 if (stripos($body, 'sequence conflict') !== false) {
-                    throw new SeqConflictException($body ?: 'Sequence conflict', null, null, $headers);
+                    throw new SeqConflictException($body, null, null, $headers);
                 }
 
                 throw new StreamExistsException($url);

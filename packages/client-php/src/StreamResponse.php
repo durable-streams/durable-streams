@@ -179,9 +179,7 @@ final class StreamResponse implements IteratorAggregate
             $query['cursor'] = $this->cursor;
         }
 
-        if (!empty($query)) {
-            $url .= '?' . http_build_query($query);
-        }
+        $url .= '?' . http_build_query($query);
 
         // Resolve dynamic headers
         $resolvedHeaders = $this->resolveHeaders();

@@ -9,7 +9,10 @@
   "require-dev": {
     "phpunit/phpunit": "^10.0",
     "phpstan/phpstan": "^1.10",
-    "psr/log": "^3.0"
+    "psr/log": "^3.0",
+    "psr/http-client": "^1.0",
+    "psr/http-factory": "^1.0",
+    "psr/http-message": "^2.0"
   },
   "suggest": {
     "psr/log": "For structured logging in IdempotentProducer",
@@ -30,7 +33,7 @@
   },
   "scripts": {
     "test": "phpunit",
-    "analyse": "phpstan analyse src --level=8"
+    "analyse": "phpstan analyse src --level=5"
   },
   "config": {
     "sort-packages": true

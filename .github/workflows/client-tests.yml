@@ -46,6 +46,11 @@ jobs:
           cd packages/client-php
           composer install --no-interaction
 
+      - name: Run PHPStan
+        run: |
+          cd packages/client-php
+          composer analyse
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
