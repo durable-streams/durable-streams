@@ -19,7 +19,8 @@ import java.util.concurrent.TimeoutException;
  */
 public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, AutoCloseable {
 
-    private final DurableStream stream;
+    private final DurableStream client;
+    private final String url;
     private final LiveMode liveMode;
     private final Duration timeout;
 
@@ -34,8 +35,9 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private SSEStreamingReader sseReader;
     private boolean sseStarted;
 
-    ChunkIterator(DurableStream stream, Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
-        this.stream = stream;
+    ChunkIterator(DurableStream client, String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
+        this.client = client;
+        this.url = url;
         this.currentOffset = offset != null ? offset : Offset.BEGINNING;
         this.liveMode = liveMode != null ? liveMode : LiveMode.OFF;
         this.timeout = timeout;
@@ -114,7 +116,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
 
         Chunk chunk;
         try {
-            chunk = stream.readOnce(currentOffset, liveMode, timeout, cursor);
+            chunk = client.readOnce(url,currentOffset, liveMode, timeout, cursor);
         } catch (DurableStreamException e) {
             Throwable cause = e.getCause();
             if (cause instanceof HttpTimeoutException || cause instanceof TimeoutException) {
@@ -156,7 +158,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private void ensureSSEStarted() throws DurableStreamException {
         if (sseStarted) return;
 
-        sseReader = stream.openSSEStream(currentOffset, cursor);
+        sseReader = client.openSSEStream(url,currentOffset, cursor);
         sseReader.start();
         sseStarted = true;
     }
@@ -167,7 +169,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
             return fetchNextSSE();
         }
 
-        Chunk chunk = stream.readOnce(currentOffset, liveMode, timeout, cursor);
+        Chunk chunk = client.readOnce(url,currentOffset, liveMode, timeout, cursor);
 
         // 204 No Content - in live modes, this means timeout with no data
         if (chunk.getStatusCode() == 204) {

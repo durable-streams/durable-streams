@@ -20,7 +20,7 @@ public class ConformanceAdapter {
     private static final String CLIENT_NAME = "durable-streams-java";
     private static final String CLIENT_VERSION = "0.1.0";
 
-    private static DurableStreamClient client;
+    private static DurableStream client;
     private static String serverUrl;
 
     // Dynamic header/param state
@@ -94,7 +94,7 @@ public class ConformanceAdapter {
         serverUrl = (String) cmd.get("serverUrl");
 
         // Create client
-        client = DurableStreamClient.builder().build();
+        client = DurableStream.builder().build();
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("type", "init");
@@ -121,20 +121,19 @@ public class ConformanceAdapter {
 
         Duration ttl = ttlSeconds != null ? Duration.ofSeconds(ttlSeconds) : null;
 
+        String url = serverUrl + path;
         try {
-            DurableStream stream = client.stream(serverUrl + path);
-
             // Check if stream already exists (for idempotent behavior)
             boolean alreadyExists = false;
             try {
-                stream.head();
+                client.head(url);
                 alreadyExists = true;
             } catch (StreamNotFoundException ignored) {
                 // Stream doesn't exist, we'll create it
             }
 
-            stream.create(contentType, ttl, null);
-            Metadata meta = stream.head();
+            client.createStream(url, contentType, ttl, null);
+            Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "create");
@@ -147,8 +146,7 @@ public class ConformanceAdapter {
         } catch (StreamExistsException e) {
             // Stream was created between our check and create call - treat as idempotent success
             try {
-                DurableStream stream = client.stream(serverUrl + path);
-                Metadata meta = stream.head();
+                Metadata meta = client.head(url);
                 Map<String, Object> result = new LinkedHashMap<>();
                 result.put("type", "create");
                 result.put("success", true);
@@ -182,13 +180,13 @@ public class ConformanceAdapter {
             bytes = new byte[0];
         }
 
+        String url = serverUrl + path;
         try {
             // Check if stream exists first for proper 404 handling
             if (bytes.length == 0) {
                 // For empty data, check if stream exists first
-                DurableStream stream = client.stream(serverUrl + path);
                 try {
-                    stream.head();  // Will throw 404 if not found
+                    client.head(url);  // Will throw 404 if not found
                     return errorResult("append", "INVALID_REQUEST", "Cannot append empty data", 400);
                 } catch (StreamNotFoundException e) {
                     return errorResult("append", "NOT_FOUND", "Stream not found", 404);
@@ -214,8 +212,7 @@ public class ConformanceAdapter {
             }
 
             try {
-                DurableStream stream = client.stream(serverUrl + path);
-                AppendResult appendResult = stream.append(bytes, seq);
+                AppendResult appendResult = client.append(url, bytes, seq);
 
                 // Get offset - prefer from AppendResult, fallback to head()
                 String offset = null;
@@ -223,7 +220,7 @@ public class ConformanceAdapter {
                     offset = appendResult.getNextOffset().getValue();
                 } else {
                     // Fallback to head() if append didn't return offset
-                    Metadata meta = stream.head();
+                    Metadata meta = client.head(url);
                     if (meta.getNextOffset() != null) {
                         offset = meta.getNextOffset().getValue();
                     }
@@ -286,8 +283,8 @@ public class ConformanceAdapter {
             timeout = Duration.ofSeconds(30);
         }
 
+        String url = serverUrl + path;
         try {
-            DurableStream stream = client.stream(serverUrl + path);
             List<Map<String, Object>> chunks = new ArrayList<>();
             // Initialize with the request offset
             String finalOffset = offsetStr != null ? offsetStr : "-1";
@@ -297,7 +294,7 @@ public class ConformanceAdapter {
             // SSE mode now uses true streaming
             LiveMode effectiveMode = liveMode;
 
-            try (ChunkIterator iterator = stream.read(offset, effectiveMode, timeout, null)) {
+            try (ChunkIterator iterator = client.read(url, offset, effectiveMode, timeout, null)) {
                 int count = 0;
                 int emptyCount = 0;
                 while (count < maxChunks && emptyCount < 2) {
@@ -420,10 +417,10 @@ public class ConformanceAdapter {
 
     private static Map<String, Object> handleHead(Map<String, Object> cmd) {
         String path = (String) cmd.get("path");
+        String url = serverUrl + path;
 
         try {
-            DurableStream stream = client.stream(serverUrl + path);
-            Metadata meta = stream.head();
+            Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "head");
@@ -446,10 +443,10 @@ public class ConformanceAdapter {
 
     private static Map<String, Object> handleDelete(Map<String, Object> cmd) {
         String path = (String) cmd.get("path");
+        String url = serverUrl + path;
 
         try {
-            DurableStream stream = client.stream(serverUrl + path);
-            stream.delete();
+            client.delete(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "delete");
@@ -466,10 +463,10 @@ public class ConformanceAdapter {
 
     private static Map<String, Object> handleConnect(Map<String, Object> cmd) {
         String path = (String) cmd.get("path");
+        String url = serverUrl + path;
 
         try {
-            DurableStream stream = client.stream(serverUrl + path);
-            Metadata meta = stream.head();
+            Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "connect");
@@ -614,18 +611,18 @@ public class ConformanceAdapter {
                 case "append": {
                     Number sizeNum = (Number) operation.get("size");
                     int size = sizeNum != null ? sizeNum.intValue() : 100;
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     byte[] payload = new byte[size];
                     java.util.Arrays.fill(payload, (byte) 42);
-                    stream.append(payload);
+                    client.append(url, payload);
                     metrics.put("bytesTransferred", size);
                     break;
                 }
                 case "read": {
                     String offset = (String) operation.get("offset");
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     int totalBytes = 0;
-                    try (ChunkIterator it = stream.read(offset != null ? Offset.of(offset) : Offset.BEGINNING)) {
+                    try (ChunkIterator it = client.read(url, offset != null ? Offset.of(offset) : Offset.BEGINNING)) {
                         while (it.hasNext()) {
                             Chunk chunk = it.next();
                             totalBytes += chunk.getData().length;
@@ -640,19 +637,19 @@ public class ConformanceAdapter {
                     String contentType = (String) operation.get("contentType");
                     String liveMode = (String) operation.get("live");
 
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     try {
-                        stream.create(contentType != null ? contentType : "application/octet-stream");
+                        client.createStream(url, contentType != null ? contentType : "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
 
                     byte[] payload = new byte[size];
                     java.util.Arrays.fill(payload, (byte) 42);
-                    stream.append(payload);
+                    client.append(url, payload);
 
                     // Read back via long-poll
                     LiveMode mode = "sse".equals(liveMode) ? LiveMode.SSE : LiveMode.LONG_POLL;
                     int readBytes = 0;
-                    try (ChunkIterator it = stream.read(Offset.BEGINNING, mode, Duration.ofSeconds(5), null)) {
+                    try (ChunkIterator it = client.read(url, Offset.BEGINNING, mode, Duration.ofSeconds(5), null)) {
                         Chunk chunk = it.poll(Duration.ofSeconds(5));
                         if (chunk != null) {
                             readBytes = chunk.getData().length;
@@ -663,9 +660,9 @@ public class ConformanceAdapter {
                 }
                 case "create": {
                     String contentType = (String) operation.get("contentType");
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     try {
-                        stream.create(contentType != null ? contentType : "application/octet-stream");
+                        client.createStream(url, contentType != null ? contentType : "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
                     break;
                 }
@@ -677,9 +674,9 @@ public class ConformanceAdapter {
                     int count = countNum != null ? countNum.intValue() : 1000;
                     int concurrency = concurrencyNum != null ? concurrencyNum.intValue() : 10;
 
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     try {
-                        stream.create("application/octet-stream");
+                        client.createStream(url, "application/octet-stream");
                     } catch (StreamExistsException ignored) {}
 
                     byte[] payload = new byte[size];
@@ -689,8 +686,7 @@ public class ConformanceAdapter {
                     IdempotentProducer.Config producerConfig = IdempotentProducer.Config.builder()
                             .lingerMs(0)  // Will normalize to 5ms like Go
                             .build();
-                    IdempotentProducer producer = client.idempotentProducer(
-                            serverUrl + path, "bench-producer", producerConfig);
+                    IdempotentProducer producer = client.idempotentProducer(url, "bench-producer", producerConfig);
 
                     try {
                         for (int i = 0; i < count; i++) {
@@ -706,10 +702,10 @@ public class ConformanceAdapter {
                     break;
                 }
                 case "throughput_read": {
-                    DurableStream stream = client.stream(serverUrl + path);
+                    String url = serverUrl + path;
                     int totalBytes = 0;
                     int msgCount = 0;
-                    try (ChunkIterator it = stream.read(Offset.BEGINNING)) {
+                    try (ChunkIterator it = client.read(url, Offset.BEGINNING)) {
                         while (it.hasNext()) {
                             Chunk chunk = it.next();
                             totalBytes += chunk.getData().length;

@@ -49,21 +49,21 @@ dependencies {
 ```java
 import com.durablestreams.*;
 
-var client = DurableStreamClient.create();
-var stream = client.stream("https://your-server.com/streams/events");
+var client = DurableStream.create();
+String url = "https://your-server.com/streams/events";
 
 // Create a JSON stream
-stream.create("application/json");
+client.createStream(url, "application/json");
 
 // Append data
-stream.append("{\"event\":\"user.created\",\"userId\":\"123\"}".getBytes());
+client.append(url, "{\"event\":\"user.created\",\"userId\":\"123\"}".getBytes());
 ```
 
 ### Read from a Stream
 
 ```java
 // Read all data (catch-up mode)
-try (var chunks = stream.read()) {
+try (var chunks = client.read(url)) {
     for (var chunk : chunks) {
         System.out.println(chunk.getDataAsString());
         // Save chunk.getNextOffset() for resumption
@@ -77,7 +77,7 @@ try (var chunks = stream.read()) {
 // Resume from where you left off
 var savedOffset = Offset.of("abc123xyz");
 
-try (var chunks = stream.read(savedOffset)) {
+try (var chunks = client.read(url, savedOffset)) {
     for (var chunk : chunks) {
         process(chunk);
     }
@@ -90,7 +90,7 @@ try (var chunks = stream.read(savedOffset)) {
 import com.durablestreams.model.LiveMode;
 
 // Long-poll mode - server holds connection until data arrives
-try (var chunks = stream.read(offset, LiveMode.LONG_POLL, null, null)) {
+try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, null, null)) {
     while (true) {
         var chunk = chunks.poll(Duration.ofSeconds(30));
         if (chunk != null) {
@@ -100,7 +100,7 @@ try (var chunks = stream.read(offset, LiveMode.LONG_POLL, null, null)) {
 }
 
 // SSE mode - continuous streaming
-try (var chunks = stream.read(offset, LiveMode.SSE, null, null)) {
+try (var chunks = client.read(url, offset, LiveMode.SSE, null, null)) {
     for (var chunk : chunks) {
         process(chunk);  // Chunks arrive as data is appended
     }
@@ -122,7 +122,7 @@ record Event(String type, String userId) {}
 Gson gson = new Gson();
 Type listType = new TypeToken<List<Event>>(){}.getType();
 
-try (var iter = stream.readJson(json -> gson.fromJson(json, listType))) {
+try (var iter = client.readJson(url, json -> gson.fromJson(json, listType))) {
     // Iterate individual items (flattens batches)
     for (Event event : iter.items()) {
         System.out.printf("Event: %s for user %s%n", event.type(), event.userId());
@@ -140,7 +140,7 @@ ObjectMapper mapper = new ObjectMapper();
 JavaType listType = mapper.getTypeFactory()
     .constructCollectionType(List.class, Event.class);
 
-try (var iter = stream.readJson(json -> mapper.readValue(json, listType))) {
+try (var iter = client.readJson(url, json -> mapper.readValue(json, listType))) {
     // Use Java Streams
     iter.itemStream()
         .filter(e -> e.type().equals("user.created"))
@@ -152,7 +152,7 @@ try (var iter = stream.readJson(json -> mapper.readValue(json, listType))) {
 
 ```java
 // Iterate batches (preserves server response boundaries)
-try (var iter = stream.readJson(parser)) {
+try (var iter = client.readJson(url, parser)) {
     for (JsonBatch<Event> batch : iter) {
         System.out.printf("Batch of %d items, upToDate=%s%n",
             batch.size(), batch.isUpToDate());
@@ -221,8 +221,8 @@ Every operation has an async variant returning `CompletableFuture`:
 
 ```java
 // Chain operations
-stream.createAsync("application/json")
-    .thenCompose(v -> stream.appendAsync(data))
+client.createStreamAsync(url, "application/json")
+    .thenCompose(v -> client.appendAsync(url, data))
     .thenAccept(result -> {
         log.info("Appended at offset: {}", result.getNextOffset());
     })
@@ -231,9 +231,10 @@ stream.createAsync("application/json")
         return null;
     });
 
-// Parallel operations
-var futures = streams.stream()
-    .map(s -> s.appendAsync(data))
+// Parallel operations across multiple streams
+var urls = List.of(url1, url2, url3);
+var futures = urls.stream()
+    .map(u -> client.appendAsync(u, data))
     .toList();
 
 CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
@@ -246,11 +247,11 @@ All exceptions extend `RuntimeException` (unchecked), so you don't need to decla
 
 ```java
 try {
-    stream.append(data);
+    client.append(url, data);
 } catch (StreamNotFoundException e) {
     // 404 - Stream doesn't exist
-    stream.create("application/json");
-    stream.append(data);
+    client.createStream(url, "application/json");
+    client.append(url, data);
 } catch (SequenceConflictException e) {
     // 409 - Sequence number regression
     log.error("Conflict: expected {}, got {}",
@@ -270,7 +271,7 @@ try {
 ## Client Configuration
 
 ```java
-var client = DurableStreamClient.builder()
+var client = DurableStream.builder()
     // Custom HTTP client
     .httpClient(HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
@@ -298,13 +299,12 @@ var client = DurableStreamClient.builder()
 
 ## Thread Safety
 
-| Component             | Thread Safety                            |
-| --------------------- | ---------------------------------------- |
-| `DurableStreamClient` | Thread-safe (share across threads)       |
-| `DurableStream`       | Thread-safe (each operation independent) |
-| `ChunkIterator`       | NOT thread-safe (single consumer)        |
-| `JsonIterator`        | NOT thread-safe (single consumer)        |
-| `IdempotentProducer`  | Thread-safe (concurrent `append()` OK)   |
+| Component            | Thread Safety                          |
+| -------------------- | -------------------------------------- |
+| `DurableStream`      | Thread-safe (share across threads)     |
+| `ChunkIterator`      | NOT thread-safe (single consumer)      |
+| `JsonIterator`       | NOT thread-safe (single consumer)      |
+| `IdempotentProducer` | Thread-safe (concurrent `append()` OK) |
 
 ## Complete Example: Event Processing
 
@@ -318,20 +318,19 @@ public class EventProcessor {
 
     record Event(String type, String userId, Map<String, Object> data) {}
 
-    private final DurableStreamClient client;
+    private final DurableStream client;
     private final Gson gson = new Gson();
     private final Type listType = new TypeToken<List<Event>>(){}.getType();
 
     public EventProcessor() {
-        this.client = DurableStreamClient.builder()
+        this.client = DurableStream.builder()
             .header("Authorization", "Bearer " + System.getenv("API_TOKEN"))
             .build();
     }
 
     public void processEvents(String streamUrl, Offset startOffset) {
-        var stream = client.stream(streamUrl);
-
-        try (var iter = stream.readJson(
+        try (var iter = client.readJson(
+                streamUrl,
                 json -> gson.fromJson(json, listType),
                 startOffset,
                 LiveMode.LONG_POLL,

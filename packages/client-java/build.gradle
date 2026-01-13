@@ -21,9 +21,6 @@ dependencies {
     // No external dependencies - zero-dependency like Go client
 }
 
-test {
-    useJUnitPlatform()
-}
 
 jar {
     manifest {

@@ -31,7 +31,7 @@ import java.util.function.Consumer;
  */
 public final class IdempotentProducer implements AutoCloseable {
 
-    private final DurableStreamClient client;
+    private final DurableStream client;
     private final String url;
     private final String producerId;
     private final Config config;
@@ -58,7 +58,7 @@ public final class IdempotentProducer implements AutoCloseable {
 
     private final BlockingQueue<DurableStreamException> errors;
 
-    public IdempotentProducer(DurableStreamClient client, String url, String producerId, Config config) {
+    public IdempotentProducer(DurableStream client, String url, String producerId, Config config) {
         this.client = client;
         this.url = url;
         this.producerId = producerId;

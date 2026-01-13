@@ -38,8 +38,7 @@ The design prioritizes:
 
 ```
 com.durablestreams
-├── DurableStreamClient        # Main entry point with builder
-├── DurableStream              # Handle for stream operations
+├── DurableStream              # Main client with all operations
 ├── ChunkIterator              # Iterator for reading chunks
 ├── JsonIterator<T>            # Type-safe JSON iterator
 ├── IdempotentProducer         # Exactly-once producer with batching
@@ -69,24 +68,30 @@ com.durablestreams
 
 ## 2. Core API
 
-### 2.1 DurableStreamClient
+### 2.1 DurableStream
 
-The main entry point for all operations:
+The main client for all stream operations. URL is passed to each operation directly:
 
 ```java
-public final class DurableStreamClient implements AutoCloseable {
+public final class DurableStream implements AutoCloseable {
 
     // Quick start with defaults
-    public static DurableStreamClient create();
+    public static DurableStream create();
 
     // Full configuration via builder
     public static Builder builder();
 
-    // Get a stream handle
-    public DurableStream stream(String url);
-    public DurableStream stream(URI url);
+    // Stream operations (URL passed directly)
+    public void createStream(String url, String contentType);
+    public AppendResult append(String url, byte[] data);
+    public ChunkIterator read(String url);
+    public Metadata head(String url);
+    public void delete(String url);
 
-    // Create an idempotent producer
+    // JSON reading
+    public <T> JsonIterator<T> readJson(String url, Function<String, List<T>> parser);
+
+    // Idempotent producer
     public IdempotentProducer idempotentProducer(String url, String producerId);
     public IdempotentProducer idempotentProducer(String url, String producerId, Config config);
 
@@ -98,7 +103,7 @@ public final class DurableStreamClient implements AutoCloseable {
 ### 2.2 Builder Pattern
 
 ```java
-var client = DurableStreamClient.builder()
+var client = DurableStream.builder()
     .httpClient(customHttpClient)           // Optional: custom HttpClient
     .retryPolicy(RetryPolicy.defaults())    // Optional: retry configuration
     .header("Authorization", "Bearer " + token)  // Static headers
@@ -111,27 +116,27 @@ var client = DurableStreamClient.builder()
 
 ## 3. Stream Operations
 
-The `DurableStream` class provides all operations on a specific stream URL.
+All operations take the stream URL directly.
 
 ### 3.1 Synchronous Operations
 
 ```java
-var stream = client.stream("https://api.example.com/streams/events");
+var client = DurableStream.create();
+String url = "https://api.example.com/streams/events";
 
 // Create
-stream.create();                                    // Default content type
-stream.create("application/json");                  // With content type
-stream.create("application/json", ttl, expiresAt);  // Full options
+client.createStream(url, "application/json");                  // With content type
+client.createStream(url, "application/json", ttl, expiresAt);  // Full options
 
 // Append
-AppendResult result = stream.append(data);          // byte[]
-AppendResult result = stream.append(data, seq);     // With sequence number
+AppendResult result = client.append(url, data);          // byte[]
+AppendResult result = client.append(url, data, seq);     // With sequence number
 
 // Metadata
-Metadata meta = stream.head();
+Metadata meta = client.head(url);
 
 // Delete
-stream.delete();
+client.delete(url);
 ```
 
 ### 3.2 Asynchronous Operations
@@ -140,23 +145,23 @@ Every sync operation has an async variant returning `CompletableFuture`:
 
 ```java
 // Create
-stream.createAsync()
+client.createStreamAsync(url, "application/json")
     .thenRun(() -> log.info("Stream created"));
 
 // Append
-stream.appendAsync(data)
+client.appendAsync(url, data)
     .thenAccept(result -> log.info("Appended at: {}", result.getNextOffset()));
 
 // Metadata
-stream.headAsync()
+client.headAsync(url)
     .thenAccept(meta -> log.info("Content-Type: {}", meta.getContentType()));
 
 // Delete
-stream.deleteAsync()
+client.deleteAsync(url)
     .thenRun(() -> log.info("Stream deleted"));
 
 // Read once
-stream.readOnceAsync()
+client.readOnceAsync(url)
     .thenAccept(chunk -> process(chunk));
 ```
 
@@ -170,21 +175,21 @@ Implements `Iterator<Chunk>`, `Iterable<Chunk>`, and `AutoCloseable` for natural
 
 ```java
 // Catch-up mode (default): reads all data, stops when up-to-date
-try (var chunks = stream.read()) {
+try (var chunks = client.read(url)) {
     for (var chunk : chunks) {
         System.out.println(chunk.getDataAsString());
     }
 }
 
 // With offset
-try (var chunks = stream.read(Offset.BEGINNING)) {
+try (var chunks = client.read(url, Offset.BEGINNING)) {
     for (var chunk : chunks) {
         process(chunk);
     }
 }
 
 // Live modes
-try (var chunks = stream.read(offset, LiveMode.LONG_POLL, timeout, cursor)) {
+try (var chunks = client.read(url, offset, LiveMode.LONG_POLL, timeout, cursor)) {
     while (true) {
         Chunk chunk = chunks.poll(Duration.ofSeconds(30));
         if (chunk != null) process(chunk);
@@ -223,7 +228,7 @@ Type-safe JSON iteration with zero dependencies - you provide the parser:
 Gson gson = new Gson();
 Type listType = new TypeToken<List<Event>>(){}.getType();
 
-try (var iter = stream.readJson(json -> gson.fromJson(json, listType))) {
+try (var iter = client.readJson(url, json -> gson.fromJson(json, listType))) {
     for (Event event : iter.items()) {
         process(event);
     }
@@ -234,7 +239,7 @@ ObjectMapper mapper = new ObjectMapper();
 JavaType listType = mapper.getTypeFactory()
     .constructCollectionType(List.class, Event.class);
 
-try (var iter = stream.readJson(json -> mapper.readValue(json, listType))) {
+try (var iter = client.readJson(url, json -> mapper.readValue(json, listType))) {
     iter.itemStream()
         .filter(e -> e.getType().equals("order"))
         .forEach(this::processOrder);
@@ -353,11 +358,11 @@ DurableStreamException          // Base class
 
 ```java
 try {
-    stream.append(data);
+    client.append(url, data);
 } catch (StreamNotFoundException e) {
     // Stream doesn't exist - create it first
-    stream.create("application/json");
-    stream.append(data);
+    client.createStream(url, "application/json");
+    client.append(url, data);
 } catch (SequenceConflictException e) {
     log.error("Sequence conflict: expected {}, got {}",
         e.getExpectedSeq(), e.getReceivedSeq());
@@ -396,13 +401,12 @@ var client = DurableStreamClient.builder()
 
 ### 8.1 Thread Safety
 
-| Component             | Thread Safety   | Notes                      |
-| --------------------- | --------------- | -------------------------- |
-| `DurableStreamClient` | Thread-safe     | Shared instance            |
-| `DurableStream`       | Thread-safe     | Each operation independent |
-| `ChunkIterator`       | NOT thread-safe | Single consumer            |
-| `JsonIterator`        | NOT thread-safe | Single consumer            |
-| `IdempotentProducer`  | Thread-safe     | Concurrent `append()` OK   |
+| Component            | Thread Safety   | Notes                    |
+| -------------------- | --------------- | ------------------------ |
+| `DurableStream`      | Thread-safe     | Shared instance          |
+| `ChunkIterator`      | NOT thread-safe | Single consumer          |
+| `JsonIterator`       | NOT thread-safe | Single consumer          |
+| `IdempotentProducer` | Thread-safe     | Concurrent `append()` OK |
 
 ### 8.2 Async Execution
 
@@ -415,10 +419,10 @@ Async operations use the HttpClient's executor (default: cached thread pool with
 ### 9.1 Simple Read
 
 ```java
-var client = DurableStreamClient.create();
-var stream = client.stream("https://api.example.com/streams/events");
+var client = DurableStream.create();
+String url = "https://api.example.com/streams/events";
 
-for (var chunk : stream.read()) {
+for (var chunk : client.read(url)) {
     System.out.println("Data: " + chunk.getDataAsString());
     System.out.println("Next offset: " + chunk.getNextOffset());
 }
@@ -429,16 +433,16 @@ for (var chunk : stream.read()) {
 ```java
 record Event(String type, String data) {}
 
-var client = DurableStreamClient.builder()
+var client = DurableStream.builder()
     .header("Authorization", "Bearer " + token)
     .build();
 
 Gson gson = new Gson();
 Type listType = new TypeToken<List<Event>>(){}.getType();
 
-try (var iter = client.stream(url)
-        .readJson(json -> gson.fromJson(json, listType),
-                  Offset.NOW, LiveMode.SSE, null, null)) {
+try (var iter = client.readJson(url,
+        json -> gson.fromJson(json, listType),
+        Offset.NOW, LiveMode.SSE, null, null)) {
     for (Event event : iter.items()) {
         System.out.printf("Event: %s - %s%n", event.type(), event.data());
     }
@@ -466,11 +470,9 @@ try (var producer = client.idempotentProducer(ORDERS_URL, "order-service", confi
 ### 9.4 Async Operations
 
 ```java
-var stream = client.stream(url);
-
 // Chain async operations
-stream.createAsync("application/json")
-    .thenCompose(v -> stream.appendAsync(data))
+client.createStreamAsync(url, "application/json")
+    .thenCompose(v -> client.appendAsync(url, data))
     .thenAccept(result -> log.info("Appended at: {}", result.getNextOffset()))
     .exceptionally(e -> {
         log.error("Failed", e);
