@@ -24,7 +24,7 @@ Based on analysis of existing Rust streaming SDKs, the following principles guid
 ┌─────────────────────────────────────────────────────────────────┐
 │                         User-Facing API                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  stream()          DurableStream        IdempotentProducer      │
+│  stream()          DurableStream        Producer      │
 │  (functional)      (handle class)       (exactly-once)          │
 ├─────────────────────────────────────────────────────────────────┤
 │                      Core Abstractions                           │
@@ -85,7 +85,7 @@ impl ClientConfig {
 ///
 /// **Important**: Retries are only safe for idempotent operations:
 /// - GET/HEAD requests: Always safe to retry
-/// - POST append with IdempotentProducer: Safe (has Producer-Id/Epoch/Seq)
+/// - POST append with Producer: Safe (has Producer-Id/Epoch/Seq)
 /// - Plain POST append: NOT safe to retry (can cause duplicates)
 ///
 /// The client enforces this by using different retry policies for different
@@ -431,17 +431,17 @@ impl<'a> ProducerBuilder<'a> {
 
     pub fn max_in_flight(mut self, count: usize) -> Self { ... }
 
-    pub fn build(self) -> IdempotentProducer { ... }
+    pub fn build(self) -> Producer { ... }
 }
 
 /// Idempotent producer with exactly-once semantics
-pub struct IdempotentProducer {
+pub struct Producer {
     // Internal state managed by background task
     inner: Arc<ProducerInner>,
     handle: tokio::task::JoinHandle<()>,
 }
 
-impl IdempotentProducer {
+impl Producer {
     // =========================================================================
     // Fire-and-Forget API (High Throughput)
     // =========================================================================
@@ -802,7 +802,7 @@ impl HttpClient {
     ///
     /// Plain appends are NOT safe to retry - if the server commits the write
     /// but we don't receive the response (network error), retrying would
-    /// duplicate data. Use IdempotentProducer for safe retries on writes.
+    /// duplicate data. Use Producer for safe retries on writes.
     async fn write(&self, req: Request) -> Result<Response, StreamError> {
         self.execute_once(req).await
     }
@@ -1040,7 +1040,7 @@ All phases complete:
 
 ### Phase 4: Idempotent Producer ✅
 
-- [x] `IdempotentProducer` with batching
+- [x] `Producer` with batching
 - [x] Epoch/sequence management
 - [x] Auto-claim support
 - [x] `on_error` callback for Kafka-style error handling

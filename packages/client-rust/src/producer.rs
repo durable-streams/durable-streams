@@ -113,7 +113,7 @@ impl ProducerBuilder {
     }
 
     /// Build the producer.
-    pub fn build(self) -> IdempotentProducer {
+    pub fn build(self) -> Producer {
         let content_type = self.content_type.unwrap_or_else(|| {
             self.stream
                 .content_type
@@ -123,7 +123,7 @@ impl ProducerBuilder {
 
         let linger = self.linger;
 
-        let producer = IdempotentProducer {
+        let producer = Producer {
             stream: self.stream,
             producer_id: self.producer_id,
             state: Arc::new(Mutex::new(ProducerState {
@@ -187,9 +187,11 @@ struct PendingEntry {
 
 /// Idempotent producer with exactly-once semantics.
 ///
-/// Uses Kafka-style producer IDs, epochs, and sequence numbers for deduplication.
+/// Provides high-throughput, fire-and-forget writes with automatic batching,
+/// pipelining, and exactly-once delivery guarantees via producer ID, epoch,
+/// and sequence numbers.
 #[derive(Clone)]
-pub struct IdempotentProducer {
+pub struct Producer {
     stream: DurableStream,
     producer_id: String,
     state: Arc<Mutex<ProducerState>>,
@@ -205,7 +207,7 @@ struct SeqState {
     waiters: Vec<oneshot::Sender<Result<(), String>>>,
 }
 
-impl IdempotentProducer {
+impl Producer {
     /// Append data (fire-and-forget, batched internally).
     ///
     /// Returns immediately - data is queued for sending.

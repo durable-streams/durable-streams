@@ -93,9 +93,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### High-Throughput Writes with IdempotentProducer
+### High-Throughput Writes with Producer
 
-For high-throughput writes with exactly-once delivery guarantees, use `IdempotentProducer`:
+For high-throughput writes with exactly-once delivery guarantees, use `Producer`:
 
 ```rust
 use durable_streams::{Client, CreateOptions};
@@ -285,7 +285,7 @@ reader.offset();
 reader.close();
 ```
 
-### IdempotentProducer
+### Producer
 
 ```rust
 let producer = stream.producer("producer-id")

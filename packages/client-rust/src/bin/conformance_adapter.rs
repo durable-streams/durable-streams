@@ -35,7 +35,7 @@ struct Command {
     data: Option<String>,
     binary: Option<bool>,
     seq: Option<i32>,
-    // IdempotentProducer fields
+    // Producer fields
     producer_id: Option<String>,
     epoch: Option<i32>,
     auto_claim: Option<bool>,

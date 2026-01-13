@@ -39,6 +39,6 @@ mod types;
 pub use client::{Client, ClientBuilder};
 pub use error::{InvalidHeaderError, ProducerError, StreamError};
 pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
-pub use producer::{IdempotentProducer, ProducerBuilder};
+pub use producer::{Producer, ProducerBuilder};
 pub use stream::{AppendOptions, AppendResponse, CreateOptions, DurableStream, HeadResponse};
 pub use types::{LiveMode, Offset};
