@@ -95,11 +95,13 @@ The PHP client provides two main APIs:
 
 - **Exactly-Once Writes** - `IdempotentProducer` provides Kafka-style exactly-once semantics with automatic deduplication
 - **Automatic Batching** - Multiple writes are batched together for high throughput
+- **Typed Iteration** - `chunks()` and `jsonBatches()` methods provide clean, typed iteration with offset tracking
 - **Generator-Based Streaming** - Memory-efficient consumption using PHP's native `yield` pattern
 - **Resumable** - Offset-based reads let you resume from any point
 - **Dynamic Headers** - Support for callable headers (e.g., for token refresh)
 - **Error Recovery** - `onError` callback for handling recoverable errors like 401s
 - **PSR-18 Compatible** - Use your own HTTP client or the built-in cURL client
+- **PSR-3 Logging** - Optional structured logging for `IdempotentProducer`
 
 ## Reading Streams
 
@@ -332,14 +334,23 @@ try {
 ### Iteration
 
 ```php
-// Iterate over raw chunks
-foreach ($response as $chunk) {
-    if ($chunk !== '') {
-        echo $chunk;
+// Recommended: Iterate over typed chunks (one per HTTP response)
+foreach ($response->chunks() as $chunk) {
+    if ($chunk->hasData()) {
+        echo $chunk->data;
     }
+    saveCheckpoint($chunk->offset);
 }
 
-// Iterate over JSON items (memory-efficient)
+// Recommended: Iterate over JSON batches (matches TypeScript subscribeJson)
+foreach ($response->jsonBatches() as $batch) {
+    foreach ($batch->items as $item) {
+        processItem($item);
+    }
+    saveCheckpoint($batch->offset);
+}
+
+// Low-level: Iterate over individual JSON items
 foreach ($response->jsonStream() as $item) {
     processItem($item);
 }
@@ -392,10 +403,10 @@ pcntl_signal(SIGINT, function () use (&$running) { $running = false; });
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => loadCheckpoint() ?? '-1',
-    'live' => 'long-poll',
+    'live' => 'auto',  // Maps to 'long-poll' in PHP
 ]);
 
-foreach ($response as $chunk) {
+foreach ($response->jsonBatches() as $batch) {
     pcntl_signal_dispatch(); // Check for signals
 
     if (!$running) {
@@ -403,13 +414,10 @@ foreach ($response as $chunk) {
         break;
     }
 
-    if ($chunk !== '') {
-        $events = json_decode($chunk, true);
-        foreach ($events as $event) {
-            processEvent($event);
-        }
-        saveCheckpoint($response->getOffset());
+    foreach ($batch->items as $event) {
+        processEvent($event);
     }
+    saveCheckpoint($batch->offset);
 }
 
 echo "Graceful shutdown complete\n";

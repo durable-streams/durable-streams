@@ -69,13 +69,30 @@ IdempotentProducer
     └── close(): void
 
 StreamResponse (read session)
-    ├── getIterator(): Generator<string>
-    ├── jsonStream(): Generator<mixed>
+    ├── chunks(): Generator<StreamChunk>     (recommended)
+    ├── jsonBatches(): Generator<JsonBatch>  (recommended for JSON)
+    ├── getIterator(): Generator<string>     (low-level)
+    ├── jsonStream(): Generator<mixed>       (low-level)
     ├── json(): array               (throws on live streams)
     ├── body(): string              (throws on live streams)
     ├── cancel(): void              (soft-cancel)
     ├── getOffset(): string
     └── isLive(): bool
+
+StreamChunk
+    ├── data: ?string
+    ├── offset: string
+    ├── upToDate: bool
+    ├── status: int
+    └── hasData(): bool
+
+JsonBatch (implements Countable)
+    ├── items: array
+    ├── offset: string
+    ├── upToDate: bool
+    ├── status: int
+    ├── hasItems(): bool
+    └── count(): int
 
 RetryOptions
     ├── maxRetries: int
@@ -122,6 +139,8 @@ Batching producer with exactly-once semantics:
 
 namespace DurableStreams;
 
+use Psr\Log\LoggerInterface;
+
 final class IdempotentProducer
 {
     public function __construct(
@@ -133,6 +152,7 @@ final class IdempotentProducer
         int $maxBatchItems = 1000,
         ?string $contentType = null,
         ?HttpClientInterface $client = null,
+        ?LoggerInterface $logger = null,  // PSR-3 logger
     );
 
     public function enqueue(mixed $data): void;
@@ -146,7 +166,7 @@ final class IdempotentProducer
 
 ### 3. StreamResponse
 
-Generator-based iteration:
+Generator-based iteration with typed chunks:
 
 ```php
 <?php
@@ -155,14 +175,42 @@ namespace DurableStreams;
 
 final class StreamResponse implements \IteratorAggregate
 {
-    public function getIterator(): \Generator;
-    public function jsonStream(): \Generator;
-    public function json(): array;  // throws on live streams
-    public function body(): string; // throws on live streams
+    // Recommended iteration methods
+    public function chunks(): \Generator;      // yields StreamChunk
+    public function jsonBatches(): \Generator; // yields JsonBatch
+
+    // Low-level iteration
+    public function getIterator(): \Generator; // yields string
+    public function jsonStream(): \Generator;  // yields mixed
+
+    // Collect all (throws on live streams)
+    public function json(): array;
+    public function body(): string;
+
+    // Control
     public function cancel(): void;
     public function getOffset(): string;
     public function isUpToDate(): bool;
     public function isLive(): bool;
+}
+
+final class StreamChunk
+{
+    public readonly ?string $data;
+    public readonly string $offset;
+    public readonly bool $upToDate;
+    public readonly int $status;
+    public function hasData(): bool;
+}
+
+final class JsonBatch implements \Countable
+{
+    public readonly array $items;
+    public readonly string $offset;
+    public readonly bool $upToDate;
+    public readonly int $status;
+    public function hasItems(): bool;
+    public function count(): int;
 }
 ```
 
@@ -388,10 +436,10 @@ pcntl_signal(SIGINT, function () use (&$running) {
 $response = stream([
     'url' => 'https://api.example.com/streams/events',
     'offset' => $lastOffset ?? '-1',
-    'live' => 'long-poll',
+    'live' => 'auto',  // Maps to 'long-poll' in PHP
 ]);
 
-foreach ($response as $chunk) {
+foreach ($response->jsonBatches() as $batch) {
     pcntl_signal_dispatch();
 
     if (!$running) {
@@ -399,12 +447,10 @@ foreach ($response as $chunk) {
         break;
     }
 
-    if ($chunk !== '') {
-        foreach (json_decode($chunk, true) as $event) {
-            processEvent($event);
-        }
-        saveCheckpoint($response->getOffset());
+    foreach ($batch->items as $event) {
+        processEvent($event);
     }
+    saveCheckpoint($batch->offset);
 }
 
 echo "Graceful shutdown complete\n";
@@ -422,6 +468,8 @@ packages/client-php/
 │   ├── DurableStream.php
 │   ├── IdempotentProducer.php
 │   ├── StreamResponse.php
+│   ├── StreamChunk.php
+│   ├── JsonBatch.php
 │   ├── RetryOptions.php
 │   ├── functions.php
 │   │
@@ -443,6 +491,7 @@ packages/client-php/
 │       ├── HttpClientInterface.php
 │       ├── HttpClient.php
 │       ├── Psr18HttpClient.php
+│       ├── HttpErrorHandler.php
 │       └── HttpResponse.php
 │
 └── tests/
