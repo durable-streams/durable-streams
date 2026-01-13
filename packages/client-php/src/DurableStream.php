@@ -6,6 +6,7 @@ namespace DurableStreams;
 
 use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Internal\HttpClient;
+use DurableStreams\Internal\HttpClientInterface;
 use DurableStreams\Result\AppendResult;
 use DurableStreams\Result\HeadResult;
 
@@ -14,7 +15,7 @@ use DurableStreams\Result\HeadResult;
  */
 final class DurableStream
 {
-    private HttpClient $client;
+    private HttpClientInterface $client;
     private ?string $contentType;
 
     /** @var array<string, string> */
@@ -24,13 +25,13 @@ final class DurableStream
      * @param string $url Full URL of the stream
      * @param string|null $contentType Content type (auto-detected if not provided)
      * @param array<string, string> $headers Additional headers to send with each request
-     * @param HttpClient|null $client HTTP client (created if not provided)
+     * @param HttpClientInterface|null $client HTTP client (created if not provided)
      */
     public function __construct(
         private readonly string $url,
         ?string $contentType = null,
         array $headers = [],
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ) {
         $this->client = $client ?? new HttpClient();
         $this->contentType = $contentType;
@@ -45,7 +46,7 @@ final class DurableStream
      * @param array<string, string> $headers Additional headers
      * @param int|null $ttlSeconds Optional TTL in seconds
      * @param string|null $expiresAt Optional absolute expiry (ISO 8601)
-     * @param HttpClient|null $client HTTP client to use
+     * @param HttpClientInterface|null $client HTTP client to use
      * @return self
      */
     public static function create(
@@ -54,7 +55,7 @@ final class DurableStream
         array $headers = [],
         ?int $ttlSeconds = null,
         ?string $expiresAt = null,
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ): self {
         $httpClient = $client ?? new HttpClient();
 
@@ -80,13 +81,13 @@ final class DurableStream
      *
      * @param string $url Full URL of the stream
      * @param array<string, string> $headers Additional headers
-     * @param HttpClient|null $client HTTP client to use
+     * @param HttpClientInterface|null $client HTTP client to use
      * @return self
      */
     public static function connect(
         string $url,
         array $headers = [],
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ): self {
         $stream = new self($url, null, $headers, $client);
         // Validate the stream exists and get content type
@@ -113,12 +114,12 @@ final class DurableStream
      *
      * @param string $url Full URL of the stream
      * @param array<string, string>|null $headers Additional headers
-     * @param HttpClient|null $client HTTP client to use
+     * @param HttpClientInterface|null $client HTTP client to use
      */
     public static function headStatic(
         string $url,
         ?array $headers = null,
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ): HeadResult {
         $httpClient = $client ?? new HttpClient();
         $response = $httpClient->head($url, $headers ?? []);
@@ -206,12 +207,12 @@ final class DurableStream
      * Delete the stream.
      *
      * @param array<string, string>|null $headers Additional headers
-     * @param HttpClient|null $client HTTP client to use
+     * @param HttpClientInterface|null $client HTTP client to use
      */
     public static function deleteStatic(
         string $url,
         ?array $headers = null,
-        ?HttpClient $client = null,
+        ?HttpClientInterface $client = null,
     ): void {
         $httpClient = $client ?? new HttpClient();
         $httpClient->delete($url, $headers ?? []);
