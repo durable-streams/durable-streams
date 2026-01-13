@@ -287,6 +287,8 @@ module DurableStreams
     end
 
     # Shovel operator for append (Ruby idiom)
+    # Fire-and-forget - returns self for chaining, not AppendResult
+    # Use append() if you need the next_offset from AppendResult
     # @param data [Object] Data to append
     # @return [self] Returns self for chaining
     def <<(data)
@@ -297,7 +299,8 @@ module DurableStreams
     # --- Read Operations ---
 
     # Iterate over messages (Enumerable interface)
-    # Uses auto-detected reader with live: false (catch-up only)
+    # Catch-up only: reads from beginning with live: false
+    # Use subscribe(live: :sse) for live streaming
     # @yield [Object] Each message
     def each(&block)
       return enum_for(:each) unless block_given?
@@ -585,6 +588,7 @@ For exactly-once writes with batching. Takes a URL directly (standalone, doesn't
 module DurableStreams
   class IdempotentProducer
     # Block form for automatic cleanup (recommended)
+    # Preserves original exception if close also raises
     # @yield [IdempotentProducer] The producer instance
     # @return [Object] The block's return value
     def self.open(**options, &block)
@@ -593,7 +597,12 @@ module DurableStreams
       begin
         yield producer
       ensure
-        producer.close
+        begin
+          producer.close
+        rescue StandardError => close_error
+          raise unless $!  # Re-raise close error if no original exception
+          DurableStreams.logger&.warn("Error during producer close: #{close_error.message}")
+        end
       end
     end
 
@@ -630,6 +639,8 @@ module DurableStreams
     end
 
     # Shovel operator for append (Ruby idiom)
+    # Fire-and-forget - returns self for chaining, no acknowledgment
+    # Use append_sync() if you need confirmation of delivery
     # @param data [Object] Data to append
     # @return [self] Returns self for chaining
     def <<(data)
@@ -639,7 +650,7 @@ module DurableStreams
 
     # Append and wait for acknowledgment
     # @param data [Object] Data to append
-    # @return [IdempotentAppendResult]
+    # @return [IdempotentAppendResult] With epoch and seq
     def append_sync(data)
     end
 
