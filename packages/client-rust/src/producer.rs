@@ -24,7 +24,11 @@ pub struct AppendReceipt {
     pub duplicate: bool,
 }
 
+/// Type alias for error callback function.
+pub type OnErrorCallback = Arc<dyn Fn(ProducerError) + Send + Sync>;
+
 /// Builder for configuring an idempotent producer.
+#[must_use = "builders do nothing unless you call .build()"]
 pub struct ProducerBuilder {
     stream: DurableStream,
     producer_id: String,
@@ -34,6 +38,7 @@ pub struct ProducerBuilder {
     linger: Duration,
     max_in_flight: usize,
     content_type: Option<String>,
+    on_error: Option<OnErrorCallback>,
 }
 
 impl ProducerBuilder {
@@ -47,6 +52,7 @@ impl ProducerBuilder {
             linger: Duration::from_millis(5),
             max_in_flight: 5,
             content_type: None,
+            on_error: None,
         }
     }
 
@@ -86,6 +92,26 @@ impl ProducerBuilder {
         self
     }
 
+    /// Set error callback for batch failures.
+    ///
+    /// Following Kafka semantics, errors from batch sends are reported via this
+    /// callback rather than through `flush()`. This enables fire-and-forget
+    /// usage while still allowing error handling when needed.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let producer = stream.producer("my-producer")
+    ///     .on_error(Arc::new(|err| {
+    ///         eprintln!("Batch failed: {}", err);
+    ///     }))
+    ///     .build();
+    /// ```
+    pub fn on_error(mut self, callback: OnErrorCallback) -> Self {
+        self.on_error = Some(callback);
+        self
+    }
+
     /// Build the producer.
     pub fn build(self) -> IdempotentProducer {
         let content_type = self.content_type.unwrap_or_else(|| {
@@ -115,6 +141,7 @@ impl ProducerBuilder {
                 linger,
                 max_in_flight: self.max_in_flight,
                 content_type,
+                on_error: self.on_error,
             }),
             in_flight: Arc::new(AtomicUsize::new(0)),
             seq_state: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
@@ -138,6 +165,7 @@ struct ProducerConfig {
     linger: Duration,
     max_in_flight: usize,
     content_type: String,
+    on_error: Option<OnErrorCallback>,
 }
 
 struct ProducerState {
@@ -228,9 +256,16 @@ impl IdempotentProducer {
     #[cfg(feature = "json")]
     #[inline]
     pub fn append_json<T: serde::Serialize>(&self, data: &T) {
-        let json_bytes = match serde_json::to_vec(data) {
-            Ok(b) => b,
+        // Convert to Value first (avoids serialize -> parse -> unwrap)
+        let json_value = match serde_json::to_value(data) {
+            Ok(v) => v,
             Err(_) => return, // Silently ignore serialization errors
+        };
+
+        // Serialize to bytes for size tracking
+        let json_bytes = match serde_json::to_vec(&json_value) {
+            Ok(b) => b,
+            Err(_) => return, // Shouldn't happen if to_value succeeded
         };
 
         let mut state = self.state.lock();
@@ -245,8 +280,8 @@ impl IdempotentProducer {
 
         let len = json_bytes.len();
         state.pending_batch.push(PendingEntry {
-            data: Bytes::from(json_bytes.clone()),
-            json_data: Some(serde_json::from_slice(&json_bytes).unwrap()),
+            data: Bytes::from(json_bytes),
+            json_data: Some(json_value),
         });
         state.batch_bytes += len;
 
@@ -255,7 +290,13 @@ impl IdempotentProducer {
         }
     }
 
-    /// Flush all pending data and wait for acknowledgment.
+    /// Flush all pending data and wait for all in-flight batches to complete.
+    ///
+    /// This method blocks until all buffered records have been sent and acknowledged.
+    /// Following Kafka semantics, errors are reported via the `on_error` callback
+    /// (if configured), not through the return value of this method.
+    ///
+    /// Call this before shutdown to ensure all messages have been sent.
     pub async fn flush(&self) -> Result<(), ProducerError> {
         // Keep sending batches until everything is flushed
         loop {
@@ -383,6 +424,13 @@ impl IdempotentProducer {
                 }
             }
 
+            // Call on_error callback if configured and error occurred
+            if let Err(ref e) = result {
+                if let Some(ref callback) = config.on_error {
+                    callback(e.clone());
+                }
+            }
+
             // Signal completion
             {
                 let mut seq_map = seq_state.lock().await;
@@ -434,20 +482,28 @@ async fn do_send_batch_with_retry(
     let body = if is_json {
         #[cfg(feature = "json")]
         {
-            // Wrap in array for JSON batching
-            let values: Vec<serde_json::Value> = batch
-                .iter()
-                .filter_map(|e| e.json_data.clone())
-                .collect();
+            // Check for mixed append types (some with json_data, some without)
+            let json_count = batch.iter().filter(|e| e.json_data.is_some()).count();
+            let raw_count = batch.len() - json_count;
 
-            if values.is_empty() {
-                // Fall back to raw bytes
+            if json_count > 0 && raw_count > 0 {
+                // Mixed types in a JSON batch - this would silently drop entries
+                return Err(ProducerError::MixedAppendTypes);
+            }
+
+            if json_count > 0 {
+                // All entries have json_data - wrap in array for JSON batching
+                let values: Vec<serde_json::Value> = batch
+                    .iter()
+                    .filter_map(|e| e.json_data.clone())
+                    .collect();
+                serde_json::to_vec(&values).unwrap_or_default()
+            } else {
+                // All raw bytes - concatenate
                 batch
                     .iter()
                     .flat_map(|e| e.data.iter().copied())
                     .collect::<Vec<u8>>()
-            } else {
-                serde_json::to_vec(&values).unwrap_or_default()
             }
         }
         #[cfg(not(feature = "json"))]
@@ -515,6 +571,7 @@ async fn do_send_batch_with_retry(
                     let mut s = state.lock();
                     s.epoch = new_epoch;
                     s.next_seq = 1; // This batch uses seq 0
+                    s.epoch_claimed = false; // Reset so pipelining waits for seq 0 to succeed
                 }
                 // Retry with new epoch
                 return Box::pin(do_send_batch_with_retry(
@@ -571,9 +628,8 @@ async fn do_send_batch_with_retry(
                 received: seq,
             })
         }
-        _ => Err(ProducerError::Stream(StreamError::from_status(
-            status,
-            &stream.url,
-        ))),
+        _ => Err(ProducerError::Stream {
+            message: StreamError::from_status(status, &stream.url).to_string(),
+        }),
     }
 }

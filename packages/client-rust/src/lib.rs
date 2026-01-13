@@ -6,8 +6,7 @@
 //! # Quick Start
 //!
 //! ```rust,no_run
-//! use durable_streams::{Client, Offset, LiveMode};
-//! use futures::StreamExt;
+//! use durable_streams::{Client, Offset};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,9 +20,8 @@
 //!     stream.append(b"hello world").await?;
 //!
 //!     // Read data
-//!     let mut reader = stream.read().offset(Offset::Beginning).send().await?;
-//!     while let Some(chunk) = reader.next().await {
-//!         let chunk = chunk?;
+//!     let mut reader = stream.read().offset(Offset::Beginning).build();
+//!     while let Some(chunk) = reader.next_chunk().await? {
 //!         println!("Got {} bytes", chunk.data.len());
 //!     }
 //!
@@ -39,8 +37,8 @@ mod stream;
 mod types;
 
 pub use client::{Client, ClientBuilder};
-pub use error::{ProducerError, StreamError};
+pub use error::{InvalidHeaderError, ProducerError, StreamError};
 pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
-pub use producer::{AppendReceipt, IdempotentProducer, ProducerBuilder};
+pub use producer::{AppendReceipt, IdempotentProducer, OnErrorCallback, ProducerBuilder};
 pub use stream::{AppendOptions, AppendResponse, CreateOptions, DurableStream, HeadResponse};
 pub use types::{LiveMode, Offset};

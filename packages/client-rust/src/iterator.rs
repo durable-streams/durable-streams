@@ -46,6 +46,8 @@ pub struct Chunk {
 }
 
 /// Builder for configuring stream reads.
+#[derive(Debug)]
+#[must_use = "builders do nothing unless you call .build()"]
 pub struct ReadBuilder {
     stream: DurableStream,
     offset: Offset,
@@ -97,9 +99,11 @@ impl ReadBuilder {
         self
     }
 
-    /// Build and send the read request, returning a ChunkIterator.
-    pub async fn send(self) -> Result<ChunkIterator, StreamError> {
-        Ok(ChunkIterator {
+    /// Build the ChunkIterator.
+    ///
+    /// No network request is made until `next_chunk()` is called.
+    pub fn build(self) -> ChunkIterator {
+        ChunkIterator {
             stream: self.stream,
             offset: self.offset,
             live: self.live,
@@ -110,7 +114,7 @@ impl ReadBuilder {
             closed: false,
             done: false,
             sse_state: None,
-        })
+        }
     }
 }
 

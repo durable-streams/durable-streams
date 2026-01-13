@@ -1,5 +1,6 @@
 //! HTTP client and configuration.
 
+use crate::error::InvalidHeaderError;
 use crate::stream::DurableStream;
 use reqwest::header::HeaderMap;
 use std::sync::Arc;
@@ -17,10 +18,27 @@ pub struct Client {
     pub(crate) header_provider: Option<Arc<dyn Fn() -> HeaderMap + Send + Sync>>,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("base_url", &self.base_url)
+            .field("default_headers", &self.default_headers)
+            .field("has_header_provider", &self.header_provider.is_some())
+            .finish()
+    }
+}
+
 impl Client {
     /// Create a new client with default settings.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client fails to build. Use `Client::builder().build()`
+    /// for fallible construction.
     pub fn new() -> Self {
-        ClientBuilder::new().build()
+        ClientBuilder::new()
+            .build()
+            .expect("Failed to build default HTTP client")
     }
 
     /// Create a client builder for customization.
@@ -70,6 +88,7 @@ impl Default for Client {
 }
 
 /// Builder for configuring a Client.
+#[must_use = "builders do nothing unless you call .build()"]
 pub struct ClientBuilder {
     base_url: Option<String>,
     default_headers: HeaderMap,
@@ -95,6 +114,9 @@ impl ClientBuilder {
     }
 
     /// Add a default header for all requests.
+    ///
+    /// Invalid header names or values are silently ignored. Use
+    /// [`try_default_header`](Self::try_default_header) if you need error handling.
     pub fn default_header(mut self, key: &str, value: &str) -> Self {
         if let (Ok(name), Ok(val)) = (
             reqwest::header::HeaderName::from_bytes(key.as_bytes()),
@@ -103,6 +125,23 @@ impl ClientBuilder {
             self.default_headers.insert(name, val);
         }
         self
+    }
+
+    /// Add a default header, returning an error if the name or value is invalid.
+    ///
+    /// Use this instead of [`default_header`](Self::default_header) when you need
+    /// to know if header configuration failed.
+    pub fn try_default_header(
+        mut self,
+        key: &str,
+        value: &str,
+    ) -> std::result::Result<Self, InvalidHeaderError> {
+        let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
+            .map_err(|_| InvalidHeaderError::InvalidName(key.to_string()))?;
+        let val = reqwest::header::HeaderValue::from_str(value)
+            .map_err(|_| InvalidHeaderError::InvalidValue(value.to_string()))?;
+        self.default_headers.insert(name, val);
+        Ok(self)
     }
 
     /// Set all default headers.
@@ -127,7 +166,10 @@ impl ClientBuilder {
     }
 
     /// Build the client.
-    pub fn build(self) -> Client {
+    ///
+    /// Returns an error if the underlying HTTP client fails to build
+    /// (e.g., due to TLS configuration issues).
+    pub fn build(self) -> Result<Client, reqwest::Error> {
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(90));
@@ -136,14 +178,14 @@ impl ClientBuilder {
             builder = builder.timeout(timeout);
         }
 
-        let inner = builder.build().expect("Failed to build HTTP client");
+        let inner = builder.build()?;
 
-        Client {
+        Ok(Client {
             inner,
             base_url: self.base_url,
             default_headers: self.default_headers,
             header_provider: self.header_provider,
-        }
+        })
     }
 }
 

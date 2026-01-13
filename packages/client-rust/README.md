@@ -48,8 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read from the beginning
     let mut reader = stream.read()
         .offset(Offset::Beginning)
-        .send()
-        .await?;
+        .build();
 
     while let Some(chunk) = reader.next_chunk().await? {
         println!("Received: {:?}", String::from_utf8_lossy(&chunk.data));
@@ -78,8 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = stream.read()
         .offset(Offset::Beginning)
         .live(LiveMode::Auto)  // SSE preferred, falls back to long-poll
-        .send()
-        .await?;
+        .build();
 
     while let Some(chunk) = reader.next_chunk().await? {
         if !chunk.data.is_empty() {
@@ -101,6 +99,7 @@ For high-throughput writes with exactly-once delivery guarantees, use `Idempoten
 
 ```rust
 use durable_streams::{Client, CreateOptions};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::main]
@@ -113,12 +112,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         CreateOptions::new().content_type("application/json")
     ).await?;
 
-    // Create an idempotent producer
+    // Create an idempotent producer with error handling
     let producer = stream.producer("my-service-1")
         .epoch(0)
-        .auto_claim(true)           // Auto-recover on restart
-        .linger(Duration::from_millis(5))  // Batch for 5ms
-        .max_batch_bytes(64 * 1024) // 64KB max batch
+        .auto_claim(true)                   // Auto-recover on restart
+        .linger(Duration::from_millis(5))   // Batch for 5ms
+        .max_batch_bytes(64 * 1024)         // 64KB max batch
+        .content_type("application/json")   // Match stream content type
+        .on_error(Arc::new(|err| {          // Handle batch errors (Kafka-style)
+            eprintln!("Batch failed: {}", err);
+        }))
         .build();
 
     // Fire-and-forget writes - automatically batched & pipelined
@@ -129,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }));
     }
 
-    // Ensure all data is durably written
+    // Wait for all batches to complete (errors reported via on_error callback)
     producer.flush().await?;
     producer.close().await?;
 
@@ -157,8 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut reader = stream.read()
         .offset(offset)
-        .send()
-        .await?;
+        .build();
 
     while let Some(chunk) = reader.next_chunk().await? {
         process_data(&chunk.data);
@@ -176,10 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Client
 
 ```rust
-// Default client
+// Default client (panics on error - fine for most apps)
 let client = Client::new();
 
-// With configuration
+// With configuration (returns Result for error handling)
 let client = Client::builder()
     .base_url("http://localhost:4437")
     .default_header("Authorization", "Bearer token")
@@ -190,7 +192,7 @@ let client = Client::builder()
         headers.insert("X-Request-Id", uuid::Uuid::new_v4().to_string().parse().unwrap());
         headers
     })
-    .build();
+    .build()?;  // Returns Result<Client, reqwest::Error>
 ```
 
 ### DurableStream
@@ -212,8 +214,7 @@ stream.append(b"data").await?;
 let reader = stream.read()
     .offset(Offset::Beginning)
     .live(LiveMode::Auto)
-    .send()
-    .await?;
+    .build();
 
 // Metadata
 let head = stream.head().await?;
@@ -259,8 +260,7 @@ LiveMode::Sse
 let mut reader = stream.read()
     .offset(Offset::Beginning)
     .live(LiveMode::Auto)
-    .send()
-    .await?;
+    .build();
 
 // Iterate over chunks
 while let Some(chunk) = reader.next_chunk().await? {
@@ -373,8 +373,7 @@ producer.flush().await?;
 let mut reader = stream.read()
     .offset(Offset::At(last_seen_offset))
     .live(LiveMode::Auto)
-    .send()
-    .await?;
+    .build();
 
 while let Some(chunk) = reader.next_chunk().await? {
     render_tokens(&chunk.data);
@@ -400,8 +399,7 @@ producer.append_json(&serde_json::json!({
 let mut reader = stream.read()
     .offset(last_processed_offset)
     .live(LiveMode::Auto)
-    .send()
-    .await?;
+    .build();
 
 while let Some(chunk) = reader.next_chunk().await? {
     let events: Vec<Event> = serde_json::from_slice(&chunk.data)?;
@@ -428,8 +426,7 @@ for change in postgres_logical_replication.changes() {
 let mut reader = stream.read()
     .offset(local_sync_offset)
     .live(LiveMode::Auto)
-    .send()
-    .await?;
+    .build();
 
 while let Some(chunk) = reader.next_chunk().await? {
     apply_changes_to_local_db(&chunk.data)?;

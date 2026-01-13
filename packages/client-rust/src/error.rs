@@ -3,6 +3,15 @@
 use std::time::Duration;
 use thiserror::Error;
 
+/// Error for invalid HTTP header configuration.
+#[derive(Debug, Clone, Error)]
+pub enum InvalidHeaderError {
+    #[error("invalid header name: {0}")]
+    InvalidName(String),
+    #[error("invalid header value: {0}")]
+    InvalidValue(String),
+}
+
 /// Main error type for stream operations.
 #[derive(Debug, Error)]
 pub enum StreamError {
@@ -11,9 +20,6 @@ pub enum StreamError {
 
     #[error("stream already exists with different configuration")]
     Conflict,
-
-    #[error("content type mismatch: expected {expected}, got {actual}")]
-    ContentTypeMismatch { expected: String, actual: String },
 
     #[error("sequence conflict")]
     SeqConflict,
@@ -45,17 +51,11 @@ pub enum StreamError {
     #[error("json error: {0}")]
     Json(String),
 
-    #[error("sse not supported for content type: {content_type}")]
-    SseNotSupported { content_type: String },
-
     #[error("empty append not allowed")]
     EmptyAppend,
 
     #[error("iterator closed")]
     IteratorClosed,
-
-    #[error("iteration complete")]
-    Done,
 }
 
 impl StreamError {
@@ -146,7 +146,7 @@ impl From<serde_json::Error> for StreamError {
 }
 
 /// Producer-specific errors.
-#[derive(Debug, Error)]
+#[derive(Debug, Clone, Error)]
 pub enum ProducerError {
     #[error("producer is closed")]
     Closed,
@@ -157,12 +157,25 @@ pub enum ProducerError {
     #[error("sequence gap: expected {expected}, received {received}")]
     SequenceGap { expected: u64, received: u64 },
 
-    #[error("stream error: {0}")]
-    Stream(#[from] StreamError),
+    #[error("stream error: {message}")]
+    Stream { message: String },
+
+    #[error("mixed append types in JSON mode")]
+    MixedAppendTypes,
 }
 
 impl From<reqwest::Error> for ProducerError {
     fn from(err: reqwest::Error) -> Self {
-        ProducerError::Stream(StreamError::from(err))
+        ProducerError::Stream {
+            message: StreamError::from(err).to_string(),
+        }
+    }
+}
+
+impl From<StreamError> for ProducerError {
+    fn from(err: StreamError) -> Self {
+        ProducerError::Stream {
+            message: err.to_string(),
+        }
     }
 }

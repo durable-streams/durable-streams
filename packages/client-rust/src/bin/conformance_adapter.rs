@@ -226,7 +226,10 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
 
 async fn handle_init(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
     let server_url = cmd.server_url.unwrap_or_default();
-    let client = Client::builder().base_url(&server_url).build();
+    let client = Client::builder()
+        .base_url(&server_url)
+        .build()
+        .expect("Failed to build HTTP client");
 
     *state.lock().await = Some(AppState {
         server_url,
@@ -446,7 +449,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let mut up_to_date = false;
     let mut status = 200u16;
 
-    match builder.send().await {
+    match Ok(builder.build()) {
         Ok(mut iter) => {
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -810,7 +813,7 @@ async fn benchmark_read(app_state: &AppState, op: &BenchmarkOperation) -> (i64, 
     }
 
     let start = Instant::now();
-    if let Ok(mut iter) = builder.send().await {
+    if let Ok(mut iter) = Ok(builder.build()) {
         let _ = iter.next_chunk().await;
     }
     (start.elapsed().as_nanos() as i64, None)
@@ -848,7 +851,7 @@ async fn benchmark_roundtrip(app_state: &AppState, op: &BenchmarkOperation) -> (
 
             let builder = stream.read().offset(Offset::parse(&prev_offset)).live(live_mode);
 
-            if let Ok(mut iter) = builder.send().await {
+            if let Ok(mut iter) = Ok(builder.build()) {
                 let _ = iter.next_chunk().await;
             }
         }
@@ -923,7 +926,8 @@ async fn benchmark_throughput_read(app_state: &AppState, op: &BenchmarkOperation
     let mut total_bytes = 0;
     let mut count = 0;
 
-    if let Ok(mut iter) = stream.read().offset(Offset::Beginning).send().await {
+    let mut iter = stream.read().offset(Offset::Beginning).build();
+    {
         loop {
             match iter.next_chunk().await {
                 Ok(Some(chunk)) => {
@@ -1042,7 +1046,8 @@ fn producer_error_result(cmd_type: &str, err: durable_streams::ProducerError) ->
         durable_streams::ProducerError::Closed => ("CLOSED", None),
         durable_streams::ProducerError::StaleEpoch { .. } => ("STALE_EPOCH", Some(403)),
         durable_streams::ProducerError::SequenceGap { .. } => ("SEQUENCE_GAP", Some(409)),
-        durable_streams::ProducerError::Stream(e) => (e.to_error_code(), e.status_code()),
+        durable_streams::ProducerError::Stream { .. } => ("STREAM_ERROR", None),
+        durable_streams::ProducerError::MixedAppendTypes => ("MIXED_APPEND_TYPES", None),
     };
 
     Result {
