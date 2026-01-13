@@ -22,7 +22,16 @@ module DurableStreams
       begin
         yield producer
       ensure
-        producer.close
+        # Preserve original exception if close also raises
+        begin
+          producer.close
+        rescue StandardError => close_error
+          raise unless $!  # Re-raise close error if no original exception
+
+          DurableStreams.logger&.warn(
+            "Error during producer close (original exception preserved): #{close_error.class}: #{close_error.message}"
+          )
+        end
       end
     end
 

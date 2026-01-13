@@ -177,16 +177,16 @@ stream.content_type          # Content type from last head/read
 DurableStreams::Stream.exists?(url: "https://...")  # => true/false
 
 # Writing
-stream.append(data, seq: nil)  # Append data, returns AppendResult
-stream << data                 # Shovel operator (returns self for chaining)
+stream.append(data, seq: nil)  # Append data, returns AppendResult with next_offset
+stream << data                 # Fire-and-forget (returns self, no offset - use append if you need it)
 
 # Reading (Stream includes Enumerable)
-stream.each { |msg| ... }                  # Iterate messages (live: false)
+stream.each { |msg| ... }                  # Catch-up iteration (offset: "-1", live: false)
 stream.read(offset: "-1", live: :auto)     # Returns JsonReader or ByteReader
 stream.read_json(offset: "-1", live: :sse) # Force JSON reader
 stream.read_bytes(offset: "-1")            # Force byte reader
 stream.read_all(offset: "-1")              # Read all and return array
-stream.subscribe(offset:, live:) { |msg| } # Iterate with block
+stream.subscribe(offset:, live:) { |msg| } # Live streaming with full control
 
 # Lifecycle
 stream.create_stream(content_type:, ttl_seconds: nil, expires_at: nil)
@@ -231,8 +231,8 @@ producer = DurableStreams::IdempotentProducer.new(
 )
 
 producer.append(data)      # Fire-and-forget (batched)
-producer << data           # Shovel operator (returns self for chaining)
-producer.append_sync(data) # Wait for acknowledgment
+producer << data           # Same as append (returns self, no ack - use append_sync if you need it)
+producer.append_sync(data) # Wait for acknowledgment, returns IdempotentAppendResult
 producer.flush             # Flush pending batches
 producer.close             # Flush and close
 producer.closed?           # Check if closed
