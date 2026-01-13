@@ -25,6 +25,9 @@ pub(crate) const HEADER_PRODUCER_EPOCH: &str = "producer-epoch";
 pub(crate) const HEADER_PRODUCER_SEQ: &str = "producer-seq";
 pub(crate) const HEADER_PRODUCER_EXPECTED_SEQ: &str = "producer-expected-seq";
 
+/// Maximum retries for transient errors on append operations
+const MAX_APPEND_RETRIES: u32 = 3;
+
 /// A handle to a durable stream.
 ///
 /// This is a lightweight, cloneable object - not a persistent connection.
@@ -130,10 +133,9 @@ impl DurableStream {
             .unwrap_or("application/octet-stream");
 
         // Retry logic for transient errors
-        let max_retries = 3;
         let mut last_error = None;
 
-        for attempt in 0..=max_retries {
+        for attempt in 0..=MAX_APPEND_RETRIES {
             if attempt > 0 {
                 // Exponential backoff: 100ms, 200ms, 400ms
                 tokio::time::sleep(std::time::Duration::from_millis(100 * (1 << (attempt - 1)))).await;

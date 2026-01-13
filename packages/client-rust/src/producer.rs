@@ -375,6 +375,17 @@ impl IdempotentProducer {
         }
     }
 
+    /// Send the current batch in a background task.
+    ///
+    /// # Safety Invariant
+    ///
+    /// This method is called while holding the mutex lock on `ProducerState`.
+    /// It extracts data from the state (cloning batch contents), then spawns
+    /// a background task with the cloned data. The lock is released when this
+    /// method returns, before any async work occurs. This is safe because:
+    /// - We don't await while holding the lock
+    /// - The spawned task receives cloned/owned data, not references to locked state
+    /// - The mutex is sync-only (parking_lot), not held across await points
     fn send_batch_locked(&self, state: &mut ProducerState) {
         if state.pending_batch.is_empty() {
             return;
