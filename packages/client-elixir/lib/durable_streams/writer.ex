@@ -514,31 +514,27 @@ defmodule DurableStreams.Writer do
 
           {:error, {:stale_epoch, server_epoch}} when state.auto_claim ->
             # Auto-claim: bump epoch and retry
-            Logger.info("Writer auto-claiming epoch #{server_epoch + 1}")
-            new_epoch = parse_epoch(server_epoch) + 1
-            state = %{state | epoch: new_epoch, next_seq: 0}
+            case parse_epoch(server_epoch) do
+              {:ok, parsed_epoch} ->
+                Logger.info("Writer auto-claiming epoch #{parsed_epoch + 1}")
+                new_epoch = parsed_epoch + 1
+                state = %{state | epoch: new_epoch, next_seq: 0}
 
-            # Re-queue items for retry
-            state = Enum.reduce(items, state, fn {data, waiter}, acc ->
-              add_to_batch(data, waiter, acc)
-            end)
+                # Re-queue items for retry
+                state = Enum.reduce(items, state, fn {data, waiter}, acc ->
+                  add_to_batch(data, waiter, acc)
+                end)
 
-            {:noreply, maybe_send_batch(state)}
+                {:noreply, maybe_send_batch(state)}
 
-          {:error, reason} ->
-            # Always log write failures for observability
-            Logger.warning("Writer batch failed: #{inspect(reason)} (#{length(items)} items)")
-
-            # Notify error callback if present
-            if state.on_error do
-              item_data = Enum.map(items, fn {data, _waiter} -> data end)
-              state.on_error.(reason, item_data)
+              {:error, _parse_reason} ->
+                # Cannot parse epoch - treat as regular error
+                Logger.error("Failed to parse epoch from server, cannot auto-claim")
+                notify_batch_error({:stale_epoch, server_epoch}, items, waiters, state)
             end
 
-            # Reply to sync waiters with error
-            Enum.each(waiters, fn waiter ->
-              if waiter, do: GenServer.reply(waiter, {:error, reason})
-            end)
+          {:error, reason} ->
+            notify_batch_error(reason, items, waiters, state)
         end
 
         # Check if we should notify flush waiters
@@ -565,22 +561,28 @@ defmodule DurableStreams.Writer do
     end)
   end
 
-  defp parse_epoch(nil) do
-    Logger.warning("Received nil epoch from server, defaulting to 0")
-    0
+  defp notify_batch_error(reason, items, waiters, state) do
+    Logger.warning("Writer batch failed: #{inspect(reason)} (#{length(items)} items)")
+
+    if state.on_error do
+      item_data = Enum.map(items, fn {data, _waiter} -> data end)
+      state.on_error.(reason, item_data)
+    end
+
+    Enum.each(waiters, fn waiter ->
+      if waiter, do: GenServer.reply(waiter, {:error, reason})
+    end)
   end
 
-  defp parse_epoch(epoch) when is_integer(epoch), do: epoch
+  defp parse_epoch(nil), do: {:error, :nil_epoch}
+
+  defp parse_epoch(epoch) when is_integer(epoch), do: {:ok, epoch}
 
   defp parse_epoch(epoch) when is_binary(epoch) do
     case Integer.parse(epoch) do
-      {n, ""} -> n
-      {n, trailing} ->
-        Logger.warning("Epoch #{inspect(epoch)} has trailing data #{inspect(trailing)}, using #{n}")
-        n
-      :error ->
-        Logger.error("Failed to parse epoch #{inspect(epoch)}, defaulting to 0 - this may cause duplicate writes")
-        0
+      {n, ""} -> {:ok, n}
+      {n, _trailing} -> {:ok, n}
+      :error -> {:error, {:invalid_epoch, epoch}}
     end
   end
 end

@@ -200,12 +200,12 @@ defmodule DurableStreams.HTTP do
   defp ssl_options do
     base_opts = [versions: [:"tlsv1.2", :"tlsv1.3"]]
 
-    if Application.get_env(:durable_streams, :verify_ssl, false) do
-      # Production: verify peer certificates
+    if Application.get_env(:durable_streams, :verify_ssl, true) do
+      # Verify peer certificates (default)
       cacerts = :public_key.cacerts_get()
       [{:verify, :verify_peer}, {:cacerts, cacerts} | base_opts]
     else
-      # Development: skip verification (default for backwards compatibility)
+      # Skip verification (set verify_ssl: false for local development)
       [{:verify, :verify_none} | base_opts]
     end
   end
