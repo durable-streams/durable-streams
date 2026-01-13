@@ -98,6 +98,7 @@ public interface IDurableStreamClient : IAsyncDisposable
     /// Create a cold handle to a stream (no network I/O).
     /// </summary>
     IDurableStream GetStream(string url);
+    IDurableStream GetStream(Uri uri);
 
     /// <summary>
     /// Create a cold handle to a stream with custom options.
@@ -111,6 +112,10 @@ public interface IDurableStreamClient : IAsyncDisposable
         string url,
         CreateStreamOptions? options = null,
         CancellationToken cancellationToken = default);
+    Task<IDurableStream> CreateStreamAsync(
+        Uri uri,
+        CreateStreamOptions? options = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Validate that a stream exists via HEAD and return a handle.
@@ -119,12 +124,19 @@ public interface IDurableStreamClient : IAsyncDisposable
         string url,
         StreamHandleOptions? options = null,
         CancellationToken cancellationToken = default);
+    Task<IDurableStream> ConnectAsync(
+        Uri uri,
+        StreamHandleOptions? options = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Delete a stream.
     /// </summary>
     Task DeleteStreamAsync(
         string url,
+        CancellationToken cancellationToken = default);
+    Task DeleteStreamAsync(
+        Uri uri,
         CancellationToken cancellationToken = default);
 }
 ```
@@ -444,11 +456,17 @@ public class DurableStreamClientOptions
     public Dictionary<string, string>? DefaultHeaders { get; set; }
 
     /// <summary>
-    /// Dynamic headers evaluated per-request. Use for token refresh,
-    /// correlation IDs, or other values that change between requests.
-    /// The factory is called for EACH HTTP request (including retries).
+    /// Dynamic headers evaluated at the start of each operation. Use for token refresh,
+    /// correlation IDs, or other values that change between operations.
+    /// Note: Headers are evaluated once per operation, not re-evaluated on retries.
     /// </summary>
     public Dictionary<string, Func<CancellationToken, ValueTask<string>>>? DynamicHeaders { get; set; }
+
+    /// <summary>
+    /// JSON serialization options for reading and writing JSON data.
+    /// If not specified, default System.Text.Json options are used.
+    /// </summary>
+    public JsonSerializerOptions? JsonSerializerOptions { get; set; }
 
     /// <summary>
     /// Timeout for individual operations.
@@ -529,9 +547,9 @@ public class IdempotentProducerOptions
 public class StreamOptions
 {
     /// <summary>
-    /// Starting offset. Use "-1" for beginning, "now" for tail.
+    /// Starting offset. Use Offset.Beginning for start, Offset.Now for tail.
     /// </summary>
-    public string? Offset { get; set; }
+    public Offset? Offset { get; set; }
 
     /// <summary>
     /// Live mode: Off (catch-up only), LongPoll, or SSE.
@@ -780,7 +798,7 @@ public readonly struct Offset : IEquatable<Offset>, IComparable<Offset>
     public override string ToString() => _value;
 
     public static implicit operator string(Offset offset) => offset._value;
-    public static implicit operator Offset(string value) => new(value);
+    public static explicit operator Offset(string value) => new(value);  // Explicit to prevent accidental invalid offsets
 
     // Lexicographic comparison
     public int CompareTo(Offset other) =>
@@ -813,6 +831,11 @@ public readonly record struct StreamCheckpoint(
     /// Create a checkpoint from just an offset (no cursor).
     /// </summary>
     public static implicit operator StreamCheckpoint(Offset offset) => new(offset);
+
+    /// <summary>
+    /// Explicit conversion from string offset (no cursor).
+    /// </summary>
+    public static explicit operator StreamCheckpoint(string offset) => new(new Offset(offset));
 }
 ```
 
@@ -1088,7 +1111,7 @@ public class StreamController : ControllerBase
         await using var response = await stream.StreamAsync(
             new StreamOptions
             {
-                Offset = offset ?? Offset.Beginning,
+                Offset = offset != null ? new Offset(offset) : Offset.Beginning,
                 Live = LiveMode.LongPoll
             },
             cancellationToken);
@@ -1112,8 +1135,8 @@ var client = new DurableStreamClient(new DurableStreamClientOptions
     {
         ["Authorization"] = async ct =>
         {
-            // Called for EACH HTTP request (including long-poll retries)
-            // Allows token refresh during long-lived sessions
+            // Called at the start of each operation (not re-evaluated on retries)
+            // Allows token refresh between operations
             var token = await tokenProvider.GetTokenAsync(ct);
             return $"Bearer {token}";
         }

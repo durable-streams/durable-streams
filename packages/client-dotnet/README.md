@@ -164,15 +164,19 @@ public sealed class DurableStreamClient : IAsyncDisposable
 {
     // Create a handle (no network I/O)
     DurableStream GetStream(string url);
+    DurableStream GetStream(Uri uri);
 
     // Create a stream and return a handle
     Task<DurableStream> CreateStreamAsync(string url, CreateStreamOptions? options = null);
+    Task<DurableStream> CreateStreamAsync(Uri uri, CreateStreamOptions? options = null);
 
     // Validate existence via HEAD and return a handle
     Task<DurableStream> ConnectAsync(string url);
+    Task<DurableStream> ConnectAsync(Uri uri);
 
     // Delete a stream
     Task DeleteStreamAsync(string url);
+    Task DeleteStreamAsync(Uri uri);
 }
 ```
 
@@ -275,7 +279,8 @@ var client = new DurableStreamClient(new DurableStreamClientOptions
         ["Authorization"] = "Bearer my-token"
     },
 
-    // Dynamic headers (evaluated per-request for token refresh)
+    // Dynamic headers (evaluated at the start of each operation)
+    // Note: Not re-evaluated on retries within the same operation
     DynamicHeaders = new Dictionary<string, Func<CancellationToken, ValueTask<string>>>
     {
         ["Authorization"] = async ct =>
@@ -283,6 +288,12 @@ var client = new DurableStreamClient(new DurableStreamClientOptions
             var token = await tokenProvider.GetTokenAsync(ct);
             return $"Bearer {token}";
         }
+    },
+
+    // Custom JSON serialization options (optional)
+    JsonSerializerOptions = new JsonSerializerOptions
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     },
 
     // Retry configuration
