@@ -83,7 +83,7 @@ module DurableStreams
           raise ConnectionError.new("SSE connection failed after #{attempts} retries: #{e.message}")
         end
 
-        delay = [@retry_policy.initial_delay * (@retry_policy.multiplier**attempts),
+        delay = [@retry_policy.initial_delay * (@retry_policy.multiplier**(attempts - 1)),
                  @retry_policy.max_delay].min
         sleep(delay)
         @buffer = +""
@@ -109,8 +109,9 @@ module DurableStreams
       path = "#{path}?#{uri.query}" if uri.query
 
       request = Net::HTTP::Get.new(path)
-      request["Accept"] = "text/event-stream"
+      # Apply user headers first, then force Accept header for SSE
       @stream.resolved_headers.each { |k, v| request[k] = v }
+      request["Accept"] = "text/event-stream"
 
       @connection.request(request) do |response|
         status = response.code.to_i

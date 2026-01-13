@@ -11,7 +11,7 @@ Gem::Specification.new do |spec|
   spec.summary = "Ruby client for Durable Streams protocol"
   spec.description = "A Ruby client library for the Durable Streams protocol - persistent, resumable event streams over HTTP."
   spec.homepage = "https://github.com/durable-streams/durable-streams"
-  spec.license = "Apache-2.0"
+  spec.license = "MIT"
   spec.required_ruby_version = ">= 3.1.0"
 
   spec.metadata["homepage_uri"] = spec.homepage

@@ -94,7 +94,8 @@ module DurableStreams
       when :sse
         raise SSENotSupportedError.new(content_type: @stream.content_type)
       when :auto
-        params[:live] = "long-poll" unless @up_to_date
+        # Auto mode: long-poll when up-to-date to wait for new data
+        params[:live] = "long-poll" if @up_to_date
       when false
         # No live param for catch-up only
       end

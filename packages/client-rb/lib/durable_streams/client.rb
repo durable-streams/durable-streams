@@ -70,7 +70,9 @@ module DurableStreams
       if url.start_with?("http://") || url.start_with?("https://")
         url
       elsif @base_url
-        "#{@base_url}#{url}"
+        # Ensure path starts with / when joining with base_url
+        path = url.start_with?("/") ? url : "/#{url}"
+        "#{@base_url}#{path}"
       else
         url
       end
