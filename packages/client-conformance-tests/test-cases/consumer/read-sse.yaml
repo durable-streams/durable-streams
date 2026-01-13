@@ -230,3 +230,27 @@ tests:
         expect:
           data: "a\u0085b\u2028c\u2029d"
           minChunks: 1
+
+  - id: sse-strips-single-leading-space
+    name: SSE strips only single leading space
+    description: |
+      Per EventSource spec section 9.2.4: "If value starts with a
+      U+0020 SPACE character, remove it from value."
+      Only ONE space should be removed, preserving any additional spaces.
+      This prevents parsers from using trim() or similar which would
+      incorrectly strip all leading/trailing whitespace.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "  two leading spaces"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: " two leading spaces"
+          minChunks: 1
