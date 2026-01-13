@@ -680,14 +680,11 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
             // IdempotentProducer doesn't currently validate constructor params in TS
 
-            const _producer = new IdempotentProducer(
-              ds,
-              target.producerId ?? `test-producer`,
-              {
-                epoch: target.epoch,
-                maxBatchBytes: target.maxBatchBytes,
-              }
-            )
+            // Creating the producer tests validation - we don't need the instance
+            new IdempotentProducer(ds, target.producerId ?? `test-producer`, {
+              epoch: target.epoch,
+              maxBatchBytes: target.maxBatchBytes,
+            })
 
             return {
               type: `validate`,

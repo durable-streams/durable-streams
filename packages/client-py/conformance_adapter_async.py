@@ -46,6 +46,7 @@ ERROR_CODES = {
     "PARSE_ERROR": "PARSE_ERROR",
     "INTERNAL_ERROR": "INTERNAL_ERROR",
     "NOT_SUPPORTED": "NOT_SUPPORTED",
+    "INVALID_ARGUMENT": "INVALID_ARGUMENT",
 }
 
 # Global state
@@ -179,6 +180,7 @@ async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
             "longPoll": True,
             "streaming": True,
             "dynamicHeaders": True,
+            "strictZeroValidation": True,
         },
     }
 
@@ -809,6 +811,61 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
             await producer.close()
 
 
+def handle_validate(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle validate command for testing client-side input validation."""
+    target = cmd["target"]
+    target_type = target["target"]
+
+    try:
+        if target_type == "retry-options":
+            # Python client does not have a separate RetryOptions class
+            return {
+                "type": "error",
+                "success": False,
+                "commandType": "validate",
+                "errorCode": ERROR_CODES["NOT_SUPPORTED"],
+                "message": "Python client does not have RetryOptions class",
+            }
+        elif target_type == "idempotent-producer":
+            # Test IdempotentProducer validation by attempting to create one
+            producer_id = target.get("producerId", "test-producer")
+            epoch = target.get("epoch", 0)
+            max_batch_bytes = target.get("maxBatchBytes", 1024 * 1024)
+            max_in_flight = target.get("maxInFlight", 5)
+            linger_ms = target.get("lingerMs", 5)
+
+            # Create a producer to test validation (use a dummy URL)
+            _producer = IdempotentProducer(
+                url="http://localhost:9999/test-validate",
+                producer_id=producer_id,
+                epoch=epoch,
+                max_batch_bytes=max_batch_bytes,
+                max_in_flight=max_in_flight,
+                linger_ms=linger_ms,
+            )
+
+            return {
+                "type": "validate",
+                "success": True,
+            }
+        else:
+            return {
+                "type": "error",
+                "success": False,
+                "commandType": "validate",
+                "errorCode": ERROR_CODES["NOT_SUPPORTED"],
+                "message": f"Unknown validation target: {target_type}",
+            }
+    except ValueError as e:
+        return {
+            "type": "error",
+            "success": False,
+            "commandType": "validate",
+            "errorCode": ERROR_CODES["INVALID_ARGUMENT"],
+            "message": str(e),
+        }
+
+
 async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
     """Route command to appropriate handler."""
     cmd_type = cmd["type"]
@@ -842,6 +899,8 @@ async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return await handle_idempotent_append(cmd)
         elif cmd_type == "idempotent-append-batch":
             return await handle_idempotent_append_batch(cmd)
+        elif cmd_type == "validate":
+            return handle_validate(cmd)
         else:
             return {
                 "type": "error",
