@@ -265,7 +265,11 @@ public final class DurableStream implements AutoCloseable {
         return new IdempotentProducer(this, url, producerId, config);
     }
 
-    // ==================== Package-private for ChunkIterator ====================
+    // ==================== Package-private for internal use ====================
+
+    HttpClient getHttpClient() {
+        return httpClient;
+    }
 
     Chunk readOnce(String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor)
             throws DurableStreamException {

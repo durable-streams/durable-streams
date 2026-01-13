@@ -393,15 +393,9 @@ public final class IdempotentProducer implements AutoCloseable {
         } else if (data instanceof String) {
             return ((String) data).getBytes(StandardCharsets.UTF_8);
         } else {
-            // For other objects, assume JSON (requires Gson at runtime)
-            try {
-                Class<?> gsonClass = Class.forName("com.google.gson.Gson");
-                Object gson = gsonClass.getDeclaredConstructor().newInstance();
-                String json = (String) gsonClass.getMethod("toJson", Object.class).invoke(gson, data);
-                return json.getBytes(StandardCharsets.UTF_8);
-            } catch (Exception e) {
-                throw new RuntimeException("Cannot serialize object without Gson on classpath", e);
-            }
+            throw new IllegalArgumentException(
+                "append() accepts byte[] or String only. Serialize objects before appending: " +
+                "producer.append(gson.toJson(myObject))");
         }
     }
 

@@ -381,7 +381,7 @@ var policy = RetryPolicy.builder()
     .maxRetries(10)
     .build();
 
-var client = DurableStreamClient.builder()
+var client = DurableStream.builder()
     .retryPolicy(policy)
     .build();
 ```
