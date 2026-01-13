@@ -887,7 +887,7 @@ public readonly record struct StreamMetadata(
     string? ETag,
     string? CacheControl,
     int? TtlSeconds,
-    DateTimeOffset? ExpiresAt);
+    string? ExpiresAt);  // RFC 3339 string from server
 ```
 
 ---
