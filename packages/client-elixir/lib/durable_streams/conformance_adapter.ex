@@ -23,6 +23,9 @@ defmodule DurableStreams.ConformanceAdapter do
   end
 
   def main(_args) do
+    # Start the application (needed for Finch/SSE support)
+    {:ok, _} = Application.ensure_all_started(:durable_streams)
+
     # Remove the default logger handler that writes to stdout
     # and add one that writes to stderr
     case :logger.get_handler_config(:default) do
