@@ -144,6 +144,11 @@ defmodule DurableStreams.HTTP.Finch do
   end
 
   # Handle streaming messages from Finch
+  defp handle_stream_message({:status, status}, acc) when status >= 400 do
+    # Error status - halt immediately, don't try to parse error body as SSE
+    {:halt, %{acc | status: status}}
+  end
+
   defp handle_stream_message({:status, status}, acc) do
     {:cont, %{acc | status: status}}
   end
