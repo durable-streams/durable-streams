@@ -152,6 +152,9 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
         return ERROR_CODES["TIMEOUT"], None
     if isinstance(err, httpx.ConnectError):
         return ERROR_CODES["NETWORK_ERROR"], None
+    # JSON/UTF-8 parsing errors
+    if isinstance(err, (json.JSONDecodeError, UnicodeDecodeError)):
+        return ERROR_CODES["PARSE_ERROR"], None
     return ERROR_CODES["INTERNAL_ERROR"], None
 
 

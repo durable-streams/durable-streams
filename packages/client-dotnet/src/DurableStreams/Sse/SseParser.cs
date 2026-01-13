@@ -97,7 +97,17 @@ internal sealed class SseParser : IDisposable
 
     private (SseEventType Type, object Event)? FlushEvent()
     {
-        if (_eventType == null || _dataBuffer.Length == 0)
+        // For data events, require non-empty data
+        // For control events, still try to parse even if empty (empty is invalid JSON)
+        if (_eventType == null)
+        {
+            _eventType = null;
+            _dataBuffer.Clear();
+            return null;
+        }
+
+        // Skip data events with empty content
+        if (_eventType == "data" && _dataBuffer.Length == 0)
         {
             _eventType = null;
             _dataBuffer.Clear();
@@ -150,10 +160,13 @@ internal sealed class SseParser : IDisposable
         catch (JsonException ex)
         {
             // Control events contain critical stream position data - don't silently ignore parse failures
-            System.Diagnostics.Debug.WriteLine(
-                $"[DurableStreams] Failed to parse SSE control event: {ex.Message}. Data: {data}");
-            throw new InvalidOperationException(
-                $"SSE control event contained invalid JSON: {ex.Message}. Data: {data}", ex);
+            var preview = data.Length > 100 ? data[..100] + "..." : data;
+            throw new DurableStreamException(
+                $"Failed to parse SSE control event: {ex.Message}. Data: {preview}",
+                DurableStreamErrorCode.ParseError,
+                null,
+                null,
+                ex);
         }
     }
 

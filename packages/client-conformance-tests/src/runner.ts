@@ -300,7 +300,13 @@ async function executeOperation(
 
     case `append`: {
       const path = resolveVariables(op.path, variables)
-      const data = op.data ? resolveVariables(op.data, variables) : ``
+      // Handle json property (YAML object) by stringifying, or use data string directly
+      const data =
+        op.json !== undefined
+          ? JSON.stringify(op.json)
+          : op.data
+            ? resolveVariables(op.data, variables)
+            : ``
 
       const result = await client.send(
         {

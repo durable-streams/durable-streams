@@ -336,13 +336,12 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             // Use JSON parsing to trigger PARSE_ERROR on malformed JSON
             const items = await response.json()
             if (items.length > 0) {
-              // Serialize items back to string for the test framework
-              for (const item of items) {
-                chunks.push({
-                  data: JSON.stringify(item),
-                  offset: response.offset,
-                })
-              }
+              // Serialize the items array back to string for the test framework
+              // Keep as array format to match what the server returns
+              chunks.push({
+                data: JSON.stringify(items),
+                offset: response.offset,
+              })
             }
           } else {
             // Use byte reading for non-JSON content
@@ -364,7 +363,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           let done = false
 
           // Create a promise that resolves when we're done collecting chunks
-          await new Promise<void>((resolve) => {
+          await new Promise<void>((resolve, reject) => {
             // Set up subscription timeout
             const subscriptionTimeoutId = setTimeout(() => {
               done = true
@@ -435,11 +434,12 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
                   resolve()
                 }
               })
-              .catch(() => {
+              .catch((err) => {
                 if (!done) {
                   done = true
                   clearTimeout(subscriptionTimeoutId)
-                  resolve()
+                  // Propagate errors (like SSE parse errors) to the outer handler
+                  reject(err)
                 }
               })
 
@@ -702,6 +702,8 @@ function errorResult(
     } else if (err.code === `BAD_REQUEST`) {
       errorCode = ErrorCodes.INVALID_OFFSET
       status = 400
+    } else if (err.code === `PARSE_ERROR`) {
+      errorCode = ErrorCodes.PARSE_ERROR
     }
 
     return {
@@ -755,6 +757,24 @@ function errorResult(
         success: false,
         commandType,
         errorCode: ErrorCodes.NETWORK_ERROR,
+        message: err.message,
+      }
+    }
+
+    // JSON parsing errors (SyntaxError) or SSE parsing errors
+    if (
+      err instanceof SyntaxError ||
+      err.name === `SyntaxError` ||
+      err.message.includes(`JSON`) ||
+      err.message.includes(`parse`) ||
+      err.message.includes(`SSE`) ||
+      err.message.includes(`control event`)
+    ) {
+      return {
+        type: `error`,
+        success: false,
+        commandType,
+        errorCode: ErrorCodes.PARSE_ERROR,
         message: err.message,
       }
     }
