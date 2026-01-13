@@ -14,7 +14,7 @@ use DurableStreams\Internal\HttpClientInterface;
  * @param array{
  *   url: string,
  *   offset?: string,
- *   live?: LiveMode|string|false,
+ *   live?: LiveMode,
  *   headers?: array<string, string|callable>,
  *   timeout?: float,
  *   retry?: RetryOptions,
@@ -36,43 +36,15 @@ function stream(array $options): StreamResponse
         retryOptions: $retry,
     );
 
-    // Normalize live mode to LiveMode enum
-    $liveMode = normalizeLiveMode($live);
-
     return new StreamResponse(
         url: $url,
         initialOffset: $offset,
-        liveMode: $liveMode,
+        liveMode: $live,
         headers: $headers,
         client: $client,
         timeout: $timeout,
         onError: $onError,
     );
-}
-
-/**
- * Normalize live mode to LiveMode enum.
- *
- * Accepts LiveMode enum, string ('long-poll', 'auto', 'sse'), or false.
- *
- * @param LiveMode|string|false $live
- */
-function normalizeLiveMode(LiveMode|string|false $live): LiveMode
-{
-    if ($live instanceof LiveMode) {
-        return $live;
-    }
-
-    if ($live === false) {
-        return LiveMode::Off;
-    }
-
-    return match ($live) {
-        'long-poll' => LiveMode::LongPoll,
-        'auto' => LiveMode::Auto,
-        'sse' => LiveMode::LongPoll, // SSE not supported, fall back to long-poll
-        default => LiveMode::Off,
-    };
 }
 
 /**
