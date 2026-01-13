@@ -797,15 +797,24 @@ private struct SSEEventBuilder {
     var id: String?
     var retry: Int?
 
+    /// Strip only one leading space per EventSource spec.
+    private func stripLeadingSpace(_ value: String) -> String {
+        if value.hasPrefix(" ") {
+            return String(value.dropFirst())
+        }
+        return value
+    }
+
     mutating func parseLine(_ line: String) {
         if line.hasPrefix("event:") {
-            event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            event = stripLeadingSpace(String(line.dropFirst(6)))
         } else if line.hasPrefix("data:") {
-            data.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+            data.append(stripLeadingSpace(String(line.dropFirst(5))))
         } else if line.hasPrefix("id:") {
-            id = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            id = stripLeadingSpace(String(line.dropFirst(3)))
         } else if line.hasPrefix("retry:") {
-            retry = Int(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces))
+            let value = stripLeadingSpace(String(line.dropFirst(6)))
+            retry = Int(value)
         } else if line.hasPrefix(":") {
             // Comment, ignore
         }

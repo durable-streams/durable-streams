@@ -11,9 +11,10 @@ import Testing
     #expect(custom.rawValue == "abc123")
 }
 
-@Test func testLiveModeValues() async throws {
-    #expect(LiveMode.catchUp.rawValue == "catch-up")
-    #expect(LiveMode.longPoll.rawValue == "long-poll")
-    #expect(LiveMode.sse.rawValue == "sse")
-    #expect(LiveMode.auto.rawValue == "auto")
+@Test func testLiveModeQueryValues() async throws {
+    // LiveMode uses queryValue (not rawValue) for URL parameters
+    #expect(LiveMode.catchUp.queryValue == nil)  // catchUp omits the parameter
+    #expect(LiveMode.longPoll.queryValue == "long-poll")
+    #expect(LiveMode.sse.queryValue == "sse")
+    #expect(LiveMode.auto.queryValue == "long-poll")  // auto defaults to long-poll
 }
