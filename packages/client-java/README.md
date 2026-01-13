@@ -301,7 +301,7 @@ var client = DurableStreamClient.builder()
 | Component             | Thread Safety                            |
 | --------------------- | ---------------------------------------- |
 | `DurableStreamClient` | Thread-safe (share across threads)       |
-| `Stream`              | Thread-safe (each operation independent) |
+| `DurableStream`       | Thread-safe (each operation independent) |
 | `ChunkIterator`       | NOT thread-safe (single consumer)        |
 | `JsonIterator`        | NOT thread-safe (single consumer)        |
 | `IdempotentProducer`  | Thread-safe (concurrent `append()` OK)   |

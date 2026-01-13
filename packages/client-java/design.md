@@ -39,7 +39,7 @@ The design prioritizes:
 ```
 com.durablestreams
 ├── DurableStreamClient        # Main entry point with builder
-├── Stream                     # Handle for stream operations
+├── DurableStream              # Handle for stream operations
 ├── ChunkIterator              # Iterator for reading chunks
 ├── JsonIterator<T>            # Type-safe JSON iterator
 ├── IdempotentProducer         # Exactly-once producer with batching
@@ -83,8 +83,8 @@ public final class DurableStreamClient implements AutoCloseable {
     public static Builder builder();
 
     // Get a stream handle
-    public Stream stream(String url);
-    public Stream stream(URI url);
+    public DurableStream stream(String url);
+    public DurableStream stream(URI url);
 
     // Create an idempotent producer
     public IdempotentProducer idempotentProducer(String url, String producerId);
@@ -111,7 +111,7 @@ var client = DurableStreamClient.builder()
 
 ## 3. Stream Operations
 
-The `Stream` class provides all operations on a specific stream URL.
+The `DurableStream` class provides all operations on a specific stream URL.
 
 ### 3.1 Synchronous Operations
 
@@ -399,7 +399,7 @@ var client = DurableStreamClient.builder()
 | Component             | Thread Safety   | Notes                      |
 | --------------------- | --------------- | -------------------------- |
 | `DurableStreamClient` | Thread-safe     | Shared instance            |
-| `Stream`              | Thread-safe     | Each operation independent |
+| `DurableStream`       | Thread-safe     | Each operation independent |
 | `ChunkIterator`       | NOT thread-safe | Single consumer            |
 | `JsonIterator`        | NOT thread-safe | Single consumer            |
 | `IdempotentProducer`  | Thread-safe     | Concurrent `append()` OK   |
