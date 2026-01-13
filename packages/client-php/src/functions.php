@@ -36,6 +36,12 @@ function stream(array $options): StreamResponse
         retryOptions: $retry,
     );
 
+    // Map 'auto' to 'long-poll' for TypeScript client parity
+    // (SSE is not supported in synchronous PHP)
+    if ($live === 'auto') {
+        $live = 'long-poll';
+    }
+
     return new StreamResponse(
         url: $url,
         initialOffset: $offset,

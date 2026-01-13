@@ -10,6 +10,7 @@ use DurableStreams\Exception\SeqConflictException;
 use DurableStreams\Exception\StaleEpochException;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Internal\HttpClientInterface;
+use Psr\Log\LoggerInterface;
 
 /**
  * Idempotent producer with exactly-once semantics.
@@ -42,6 +43,7 @@ final class IdempotentProducer
     private int $maxBatchBytes;
     private int $maxBatchItems;
     private bool $autoClaim;
+    private ?LoggerInterface $logger;
 
     /**
      * @param string $url Stream URL
@@ -52,6 +54,7 @@ final class IdempotentProducer
      * @param int $maxBatchItems Maximum items per batch
      * @param string|null $contentType Content type (auto-detected if not provided)
      * @param HttpClientInterface|null $client HTTP client
+     * @param LoggerInterface|null $logger PSR-3 logger for diagnostic messages
      */
     public function __construct(
         private readonly string $url,
@@ -62,6 +65,7 @@ final class IdempotentProducer
         int $maxBatchItems = 1000,
         ?string $contentType = null,
         ?HttpClientInterface $client = null,
+        ?LoggerInterface $logger = null,
     ) {
         if ($epoch < 0) {
             throw new \InvalidArgumentException('epoch must be >= 0');
@@ -79,6 +83,7 @@ final class IdempotentProducer
         $this->maxBatchItems = $maxBatchItems;
         $this->contentType = $contentType;
         $this->client = $client ?? new HttpClient();
+        $this->logger = $logger;
     }
 
     /**
@@ -249,13 +254,12 @@ final class IdempotentProducer
             // If expected > received, server is ahead of us - this is a duplicate
             // (server already processed higher sequences)
             if ($expectedSeq > $receivedSeq) {
-                error_log(sprintf(
-                    '[DurableStreams] SeqConflict: duplicate detected (producer=%s, epoch=%d, seq=%d, expected=%d)',
-                    $this->producerId,
-                    $batch['epoch'],
-                    $batch['seq'],
-                    $expectedSeq
-                ));
+                $this->logger?->debug('SeqConflict: duplicate detected', [
+                    'producer' => $this->producerId,
+                    'epoch' => $batch['epoch'],
+                    'seq' => $batch['seq'],
+                    'expected' => $expectedSeq,
+                ]);
                 return;
             }
 
@@ -275,12 +279,11 @@ final class IdempotentProducer
 
         // If we don't have enough info, treat conservatively as duplicate
         // Log warning as this indicates incomplete protocol implementation
-        error_log(sprintf(
-            '[DurableStreams] SeqConflict with incomplete headers, treating as duplicate (producer=%s, epoch=%d, seq=%d)',
-            $this->producerId,
-            $batch['epoch'],
-            $batch['seq']
-        ));
+        $this->logger?->warning('SeqConflict with incomplete headers, treating as duplicate', [
+            'producer' => $this->producerId,
+            'epoch' => $batch['epoch'],
+            'seq' => $batch['seq'],
+        ]);
     }
 
     /**
@@ -294,10 +297,9 @@ final class IdempotentProducer
             return (int) $headers['producer-epoch'];
         }
 
-        error_log(sprintf(
-            '[DurableStreams] WARNING: 403 response missing producer-epoch header (producer=%s). Server may not be protocol-compliant.',
-            $this->producerId
-        ));
+        $this->logger?->warning('403 response missing producer-epoch header. Server may not be protocol-compliant.', [
+            'producer' => $this->producerId,
+        ]);
         return $this->epoch;
     }
 

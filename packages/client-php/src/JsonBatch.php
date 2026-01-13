@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace DurableStreams;
 
+use Countable;
+
 /**
  * A batch of JSON items from a stream read operation.
  *
@@ -17,7 +19,7 @@ namespace DurableStreams;
  *
  * @template T The type of items in this batch
  */
-final class JsonBatch
+final class JsonBatch implements Countable
 {
     /**
      * @param array<int, T> $items Parsed JSON items from this response
