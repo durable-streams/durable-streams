@@ -813,9 +813,8 @@ async fn benchmark_read(app_state: &AppState, op: &BenchmarkOperation) -> (i64, 
     }
 
     let start = Instant::now();
-    if let Ok(mut iter) = Ok(builder.build()) {
-        let _ = iter.next_chunk().await;
-    }
+    let mut iter = builder.build();
+    let _ = iter.next_chunk().await;
     (start.elapsed().as_nanos() as i64, None)
 }
 
@@ -849,11 +848,11 @@ async fn benchmark_roundtrip(app_state: &AppState, op: &BenchmarkOperation) -> (
                 _ => LiveMode::LongPoll,
             };
 
-            let builder = stream.read().offset(Offset::parse(&prev_offset)).live(live_mode);
-
-            if let Ok(mut iter) = Ok(builder.build()) {
-                let _ = iter.next_chunk().await;
-            }
+            let mut iter = stream.read()
+                .offset(Offset::parse(&prev_offset))
+                .live(live_mode)
+                .build();
+            let _ = iter.next_chunk().await;
         }
     }
 
