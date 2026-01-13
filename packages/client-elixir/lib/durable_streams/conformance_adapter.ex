@@ -24,15 +24,7 @@ defmodule DurableStreams.ConformanceAdapter do
 
   def main(_args) do
     # Start the application (needed for Finch/SSE support)
-    case Application.ensure_all_started(:durable_streams) do
-      {:ok, started} ->
-        IO.puts(:standard_error, "[DEBUG] Started apps: #{inspect(started)}")
-      {:error, reason} ->
-        IO.puts(:standard_error, "[DEBUG] Failed to start: #{inspect(reason)}")
-    end
-
-    IO.puts(:standard_error, "[DEBUG] Finch available?: #{DurableStreams.HTTP.Finch.available?()}")
-    IO.puts(:standard_error, "[DEBUG] Finch process: #{inspect(Process.whereis(DurableStreams.Finch))}")
+    Application.ensure_all_started(:durable_streams)
 
     # Remove the default logger handler that writes to stdout
     # and add one that writes to stderr
