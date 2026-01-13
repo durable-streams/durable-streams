@@ -101,11 +101,11 @@ defmodule DurableStreams.ConformanceAdapter do
     end
   end
 
-  defp handle_command(%{"type" => "init"} = cmd, state) do
+  defp handle_command(%{"type" => "init"} = cmd, %State{} = state) do
     server_url = cmd["serverUrl"]
     client = Client.new(server_url)
 
-    new_state = %State{
+    new_state = %{
       state
       | server_url: server_url,
         client: client,
@@ -384,41 +384,6 @@ defmodule DurableStreams.ConformanceAdapter do
     do_idempotent_append(stream, data, producer_id, epoch, 0, auto_claim, state)
   end
 
-  defp do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state) do
-    opts = [
-      producer_id: producer_id,
-      producer_epoch: epoch,
-      producer_seq: seq
-    ]
-
-    case Stream.append(stream, data, opts) do
-      {:ok, _result} ->
-        result = %{
-          "type" => "idempotent-append",
-          "success" => true,
-          "status" => 200
-        }
-        {result, state}
-
-      {:error, {:stale_epoch, server_epoch}} when auto_claim ->
-        # Auto-claim: retry with server_epoch + 1
-        new_epoch = parse_epoch(server_epoch) + 1
-        do_idempotent_append(stream, data, producer_id, new_epoch, 0, false, state)
-
-      {:error, reason} ->
-        {map_error("idempotent-append", reason), state}
-    end
-  end
-
-  defp parse_epoch(nil), do: 0
-  defp parse_epoch(epoch) when is_integer(epoch), do: epoch
-  defp parse_epoch(epoch) when is_binary(epoch) do
-    case Integer.parse(epoch) do
-      {n, ""} -> n
-      _ -> 0
-    end
-  end
-
   defp handle_command(%{"type" => "idempotent-append-batch"} = cmd, state) do
     path = cmd["path"]
     items = cmd["items"] || []
@@ -438,91 +403,6 @@ defmodule DurableStreams.ConformanceAdapter do
     is_json = String.starts_with?(String.downcase(content_type), "application/json")
 
     do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state)
-  end
-
-  defp do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state) do
-    if is_json do
-      # For JSON streams: batch all items as a single array
-      # The server flattens one level, so [[a],[b]] becomes two entries [a] and [b]
-      parsed_items =
-        Enum.map(items, fn item ->
-          data = if is_map(item), do: item["data"] || item, else: item
-          case JSON.decode(data) do
-            {:ok, parsed} -> parsed
-            {:error, _} -> data
-          end
-        end)
-
-      # Wrap all items in an array and send as a single batch
-      batch_data = JSON.encode!(parsed_items)
-
-      opts = [
-        producer_id: producer_id,
-        producer_epoch: epoch,
-        producer_seq: 0
-      ]
-
-      result =
-        case Stream.append(stream, batch_data, opts) do
-          {:ok, _} -> :ok
-          {:error, {:stale_epoch, server_epoch}} when auto_claim ->
-            {:auto_claim, server_epoch}
-          {:error, reason} -> {:error, reason}
-        end
-
-      case result do
-        :ok ->
-          {%{
-            "type" => "idempotent-append-batch",
-            "success" => true,
-            "status" => 200
-          }, state}
-
-        {:auto_claim, server_epoch} ->
-          new_epoch = parse_epoch(server_epoch) + 1
-          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
-
-        {:error, reason} ->
-          {map_error("idempotent-append-batch", reason), state}
-      end
-    else
-      # For non-JSON streams: send items sequentially with incrementing seq
-      result =
-        items
-        |> Enum.with_index()
-        |> Enum.reduce_while(:ok, fn {item, idx}, _acc ->
-          data = if is_map(item), do: item["data"] || item, else: item
-
-          opts = [
-            producer_id: producer_id,
-            producer_epoch: epoch,
-            producer_seq: idx
-          ]
-
-          case Stream.append(stream, data, opts) do
-            {:ok, _} -> {:cont, :ok}
-            {:error, {:stale_epoch, server_epoch}} when auto_claim ->
-              {:halt, {:auto_claim, server_epoch}}
-            {:error, reason} -> {:halt, {:error, reason}}
-          end
-        end)
-
-      case result do
-        :ok ->
-          {%{
-            "type" => "idempotent-append-batch",
-            "success" => true,
-            "status" => 200
-          }, state}
-
-        {:auto_claim, server_epoch} ->
-          new_epoch = parse_epoch(server_epoch) + 1
-          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
-
-        {:error, reason} ->
-          {map_error("idempotent-append-batch", reason), state}
-      end
-    end
   end
 
   defp handle_command(%{"type" => "set-dynamic-header"} = cmd, state) do
@@ -851,10 +731,6 @@ defmodule DurableStreams.ConformanceAdapter do
     {duration, nil}
   end
 
-  defp parse_live_mode("sse"), do: :sse
-  defp parse_live_mode("long-poll"), do: :long_poll
-  defp parse_live_mode(_), do: false
-
   defp run_benchmark(%{"op" => "throughput_append", "path" => path, "count" => count, "size" => size}, state) do
     content_type = state.stream_content_types[path] || "application/octet-stream"
 
@@ -927,6 +803,132 @@ defmodule DurableStreams.ConformanceAdapter do
 
   defp run_benchmark(_op, _state) do
     {0, nil}
+  end
+
+  # Helper functions (grouped here to avoid warnings about non-grouped clauses)
+
+  defp do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state) do
+    opts = [
+      producer_id: producer_id,
+      producer_epoch: epoch,
+      producer_seq: seq
+    ]
+
+    case Stream.append(stream, data, opts) do
+      {:ok, _result} ->
+        result = %{
+          "type" => "idempotent-append",
+          "success" => true,
+          "status" => 200
+        }
+        {result, state}
+
+      {:error, {:stale_epoch, server_epoch}} when auto_claim ->
+        # Auto-claim: retry with server_epoch + 1
+        new_epoch = parse_epoch(server_epoch) + 1
+        do_idempotent_append(stream, data, producer_id, new_epoch, 0, false, state)
+
+      {:error, reason} ->
+        {map_error("idempotent-append", reason), state}
+    end
+  end
+
+  defp parse_epoch(nil), do: 0
+  defp parse_epoch(epoch) when is_integer(epoch), do: epoch
+  defp parse_epoch(epoch) when is_binary(epoch) do
+    case Integer.parse(epoch) do
+      {n, ""} -> n
+      _ -> 0
+    end
+  end
+
+  defp parse_live_mode("sse"), do: :sse
+  defp parse_live_mode("long-poll"), do: :long_poll
+  defp parse_live_mode(_), do: false
+
+  defp do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state) do
+    if is_json do
+      # For JSON streams: batch all items as a single array
+      # The server flattens one level, so [[a],[b]] becomes two entries [a] and [b]
+      parsed_items =
+        Enum.map(items, fn item ->
+          data = if is_map(item), do: item["data"] || item, else: item
+          case JSON.decode(data) do
+            {:ok, parsed} -> parsed
+            {:error, _} -> data
+          end
+        end)
+
+      # Wrap all items in an array and send as a single batch
+      batch_data = JSON.encode!(parsed_items)
+
+      opts = [
+        producer_id: producer_id,
+        producer_epoch: epoch,
+        producer_seq: 0
+      ]
+
+      result =
+        case Stream.append(stream, batch_data, opts) do
+          {:ok, _} -> :ok
+          {:error, {:stale_epoch, server_epoch}} when auto_claim ->
+            {:auto_claim, server_epoch}
+          {:error, reason} -> {:error, reason}
+        end
+
+      case result do
+        :ok ->
+          {%{
+            "type" => "idempotent-append-batch",
+            "success" => true,
+            "status" => 200
+          }, state}
+
+        {:auto_claim, server_epoch} ->
+          new_epoch = parse_epoch(server_epoch) + 1
+          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
+
+        {:error, reason} ->
+          {map_error("idempotent-append-batch", reason), state}
+      end
+    else
+      # For non-JSON streams: send items sequentially with incrementing seq
+      result =
+        items
+        |> Enum.with_index()
+        |> Enum.reduce_while(:ok, fn {item, idx}, _acc ->
+          data = if is_map(item), do: item["data"] || item, else: item
+
+          opts = [
+            producer_id: producer_id,
+            producer_epoch: epoch,
+            producer_seq: idx
+          ]
+
+          case Stream.append(stream, data, opts) do
+            {:ok, _} -> {:cont, :ok}
+            {:error, {:stale_epoch, server_epoch}} when auto_claim ->
+              {:halt, {:auto_claim, server_epoch}}
+            {:error, reason} -> {:halt, {:error, reason}}
+          end
+        end)
+
+      case result do
+        :ok ->
+          {%{
+            "type" => "idempotent-append-batch",
+            "success" => true,
+            "status" => 200
+          }, state}
+
+        {:auto_claim, server_epoch} ->
+          new_epoch = parse_epoch(server_epoch) + 1
+          do_idempotent_batch(stream, items, producer_id, new_epoch, false, is_json, state)
+
+        {:error, reason} ->
+          {map_error("idempotent-append-batch", reason), state}
+      end
+    end
   end
 
   # Error mapping

@@ -6,7 +6,6 @@ defmodule DurableStreams.JSON do
 
   # Check at compile time which JSON implementation is available
   @native_json_available Code.ensure_loaded?(JSON) and function_exported?(JSON, :decode!, 1)
-  @jason_available Code.ensure_loaded?(Jason) and function_exported?(Jason, :decode!, 1)
 
   if @native_json_available do
     @doc """
@@ -45,7 +44,8 @@ defmodule DurableStreams.JSON do
       JSON.encode!(term)
     end
   else
-    if @jason_available do
+    # Check for Jason as fallback (Elixir < 1.18)
+    if Code.ensure_loaded?(Jason) and function_exported?(Jason, :decode!, 1) do
       @doc """
       Decode a JSON string into an Elixir term.
       """
