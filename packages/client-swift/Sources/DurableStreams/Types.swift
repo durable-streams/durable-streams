@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Core Types
 
 import Foundation
 
 /// Represents a position in a Durable Stream.
 /// Offsets are opaque strings that can be compared lexicographically.
-public struct Offset: Sendable, Hashable, Comparable, CustomStringConvertible, ExpressibleByStringLiteral {
+public struct Offset: Sendable, Hashable, Comparable, Codable, CustomStringConvertible, ExpressibleByStringLiteral {
     public let rawValue: String
 
     /// Start of stream (returns all messages)
@@ -31,7 +31,7 @@ public struct Offset: Sendable, Hashable, Comparable, CustomStringConvertible, E
 }
 
 /// Specifies how the client should handle real-time updates.
-public enum LiveMode: Sendable, Equatable {
+public enum LiveMode: Sendable, Equatable, CaseIterable {
     /// Read existing data only, stop at end of stream
     case catchUp
 
@@ -77,7 +77,7 @@ public struct JsonBatch<T: Sendable>: Sendable {
 }
 
 /// A chunk of bytes from the stream.
-public struct ByteChunk: Sendable {
+public struct ByteChunk: Sendable, Equatable {
     /// Raw byte data
     public let data: Data
 
@@ -99,7 +99,7 @@ public struct ByteChunk: Sendable {
 }
 
 /// A chunk of text from the stream.
-public struct TextChunk: Sendable {
+public struct TextChunk: Sendable, Equatable {
     /// UTF-8 decoded text
     public let text: String
 
@@ -121,7 +121,7 @@ public struct TextChunk: Sendable {
 }
 
 /// Result of accumulating text content.
-public struct TextResult: Sendable {
+public struct TextResult: Sendable, Equatable {
     public let text: String
     public let offset: Offset
     public let upToDate: Bool
@@ -134,7 +134,7 @@ public struct TextResult: Sendable {
 }
 
 /// Result of accumulating byte content.
-public struct ByteResult: Sendable {
+public struct ByteResult: Sendable, Equatable {
     public let data: Data
     public let offset: Offset
     public let upToDate: Bool
@@ -169,7 +169,7 @@ public struct StreamInfo: Sendable {
 }
 
 /// Result of an append operation.
-public struct AppendResult: Sendable {
+public struct AppendResult: Sendable, Equatable {
     /// The offset assigned to the appended data
     public let offset: Offset
 
@@ -183,7 +183,7 @@ public struct AppendResult: Sendable {
 }
 
 /// Result of a flush operation.
-public struct FlushResult: Sendable {
+public struct FlushResult: Sendable, Equatable {
     /// The offset after all flushed data
     public let offset: Offset
 

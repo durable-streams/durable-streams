@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - SSE Parser
 
 import Foundation
@@ -7,7 +7,7 @@ import FoundationNetworking
 #endif
 
 /// A parsed Server-Sent Event.
-public struct SSEEvent: Sendable {
+public struct SSEEvent: Sendable, Equatable {
     /// Event type (nil defaults to "message")
     public let event: String?
 

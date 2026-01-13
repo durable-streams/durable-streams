@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Unified Configuration
 
 import Foundation
@@ -8,7 +8,7 @@ import FoundationNetworking
 
 // MARK: - Handle Configuration
 
-/// Unified configuration for DurableStreamHandle operations.
+/// Unified configuration for DurableStream operations.
 ///
 /// Combines HTTP settings, batching behavior, idempotent producer options,
 /// and retry policies into a single configuration object.
@@ -290,6 +290,58 @@ extension IdempotentProducer.Configuration {
             autoClaim: config.autoClaimOnStaleEpoch,
             contentType: contentType,
             onError: config.onError
+        )
+    }
+}
+
+// MARK: - Swift Duration Convenience APIs
+
+extension RetryConfig {
+    /// Base delay as Swift Duration (convenience for Swift-native code).
+    public var baseDelay: Duration {
+        get { .milliseconds(baseDelayMs) }
+        set { baseDelayMs = Int(newValue.components.seconds * 1000 + newValue.components.attoseconds / 1_000_000_000_000_000) }
+    }
+
+    /// Maximum delay as Swift Duration.
+    public var maxDelay: Duration {
+        get { .milliseconds(maxDelayMs) }
+        set { maxDelayMs = Int(newValue.components.seconds * 1000 + newValue.components.attoseconds / 1_000_000_000_000_000) }
+    }
+
+    /// Create a retry configuration using Swift Duration types.
+    public init(
+        maxAttempts: Int = 3,
+        baseDelay: Duration,
+        maxDelay: Duration,
+        jitterFactor: Double = 0.2
+    ) {
+        self.init(
+            maxAttempts: maxAttempts,
+            baseDelayMs: Int(baseDelay.components.seconds * 1000 + baseDelay.components.attoseconds / 1_000_000_000_000_000),
+            maxDelayMs: Int(maxDelay.components.seconds * 1000 + maxDelay.components.attoseconds / 1_000_000_000_000_000),
+            jitterFactor: jitterFactor
+        )
+    }
+}
+
+extension BatchingConfig {
+    /// Linger time as Swift Duration (convenience for Swift-native code).
+    public var linger: Duration {
+        get { .milliseconds(lingerMs) }
+        set { lingerMs = Int(newValue.components.seconds * 1000 + newValue.components.attoseconds / 1_000_000_000_000_000) }
+    }
+
+    /// Create a batching configuration using Swift Duration.
+    public init(
+        maxBytes: Int = Defaults.maxBatchBytes,
+        linger: Duration,
+        maxInFlight: Int = Defaults.maxInFlight
+    ) {
+        self.init(
+            maxBytes: maxBytes,
+            lingerMs: Int(linger.components.seconds * 1000 + linger.components.attoseconds / 1_000_000_000_000_000),
+            maxInFlight: maxInFlight
         )
     }
 }

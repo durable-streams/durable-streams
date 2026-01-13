@@ -431,7 +431,7 @@ try await serviceGroup.run()
 
 This client implements the full [Durable Streams protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md):
 
-- **177/177** conformance tests passing
+- **178/178** conformance tests passing
 - Offset-based resumption
 - Long-poll and SSE live modes
 - Idempotent producers with epoch/sequence management
@@ -440,7 +440,7 @@ This client implements the full [Durable Streams protocol](https://github.com/du
 
 ## License
 
-Apache 2.0 — see [LICENSE](../../LICENSE)
+MIT — see [LICENSE](../../LICENSE)
 
 ## Links
 

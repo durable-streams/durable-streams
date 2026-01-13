@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - HTTP Client
 
 import Foundation
@@ -180,6 +180,110 @@ internal actor HTTPClient {
         }
 
         return (data, metadata)
+    }
+
+    /// Perform a streaming request and return an async byte sequence with metadata.
+    /// This is used for SSE where we need to process bytes as they arrive.
+    /// Works cross-platform (including Linux) using a delegate-based approach.
+    func performStreaming(_ request: URLRequest) async throws -> (AsyncThrowingStream<UInt8, Error>, ResponseMetadata) {
+        let streamingDelegate = StreamingDelegate()
+        let delegateSession = URLSession(configuration: .default, delegate: streamingDelegate, delegateQueue: nil)
+
+        let task = delegateSession.dataTask(with: request)
+        streamingDelegate.setTask(task)
+        task.resume()
+
+        // Wait for the response headers
+        let metadata = try await streamingDelegate.waitForHeaders()
+
+        // Return the byte stream
+        return (streamingDelegate.byteStream, metadata)
+    }
+}
+
+/// Delegate-based streaming for cross-platform SSE support.
+/// This works on both Apple platforms and Linux.
+final class StreamingDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private var continuation: AsyncThrowingStream<UInt8, Error>.Continuation?
+    private var headersContinuation: CheckedContinuation<ResponseMetadata, Error>?
+    private var response: HTTPURLResponse?
+    private var task: URLSessionDataTask?
+    private let lock = NSLock()
+
+    let byteStream: AsyncThrowingStream<UInt8, Error>
+
+    override init() {
+        var cont: AsyncThrowingStream<UInt8, Error>.Continuation?
+        byteStream = AsyncThrowingStream { cont = $0 }
+        super.init()
+        self.continuation = cont
+    }
+
+    func setTask(_ task: URLSessionDataTask) {
+        lock.lock()
+        self.task = task
+        lock.unlock()
+    }
+
+    func waitForHeaders() async throws -> ResponseMetadata {
+        try await withCheckedThrowingContinuation { cont in
+            lock.lock()
+            if let response = self.response {
+                lock.unlock()
+                cont.resume(returning: ResponseMetadata(from: response))
+            } else {
+                self.headersContinuation = cont
+                lock.unlock()
+            }
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        lock.lock()
+        if let httpResponse = response as? HTTPURLResponse {
+            self.response = httpResponse
+            let metadata = ResponseMetadata(from: httpResponse)
+            headersContinuation?.resume(returning: metadata)
+            headersContinuation = nil
+        }
+        lock.unlock()
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.lock()
+        let cont = continuation
+        lock.unlock()
+
+        for byte in data {
+            cont?.yield(byte)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        lock.lock()
+        let cont = continuation
+        let headersCont = headersContinuation
+        continuation = nil
+        headersContinuation = nil
+        lock.unlock()
+
+        if let error = error {
+            let dsError: DurableStreamError
+            if let urlError = error as? URLError {
+                if urlError.code == .timedOut {
+                    dsError = DurableStreamError.timeout()
+                } else {
+                    dsError = DurableStreamError.networkError(urlError)
+                }
+            } else {
+                dsError = DurableStreamError.networkError(error)
+            }
+            cont?.finish(throwing: dsError)
+            headersCont?.resume(throwing: dsError)
+        } else {
+            cont?.finish()
+        }
     }
 }
 

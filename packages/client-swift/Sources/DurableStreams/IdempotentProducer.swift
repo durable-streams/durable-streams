@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Idempotent Producer
 
 import Foundation
@@ -153,6 +153,7 @@ public actor IdempotentProducer {
     }
 
     /// Wait for all pending items to be acknowledged.
+    @discardableResult
     public func flush() async throws -> FlushResult {
         guard !closed else {
             return FlushResult(offset: lastOffset ?? Offset(rawValue: "0"), duplicateCount: duplicateCount)
@@ -191,28 +192,28 @@ public actor IdempotentProducer {
         pendingItems.append(data)
         pendingSize += data.count
 
-        // Check if we should send immediately
-        if pendingSize >= config.maxBatchBytes || inFlightCount < config.maxInFlight {
-            // Cancel any pending linger timer
+        // Send immediately only when batch size threshold is reached
+        if pendingSize >= config.maxBatchBytes {
             lingerTask?.cancel()
-
-            // If we have room for more in-flight batches, send now
+            lingerTask = nil
             if inFlightCount < config.maxInFlight {
                 Task {
                     await sendBatch()
                 }
             }
         } else if lingerTask == nil {
-            // Start linger timer
+            // Start linger timer to collect more items before sending
             lingerTask = Task {
                 try? await Task.sleep(for: .milliseconds(config.lingerMs))
                 guard !Task.isCancelled else { return }
-                await sendBatch()
+                if inFlightCount < config.maxInFlight {
+                    await sendBatch()
+                }
             }
         }
     }
 
-    private func sendBatch(sequenceGapRetryCount: Int = 0) async {
+    private func sendBatch(sequenceGapRetryCount: Int = 0, isRetry: Bool = false) async {
         guard !pendingItems.isEmpty else { return }
 
         // Take current pending items
@@ -225,7 +226,12 @@ public actor IdempotentProducer {
 
         // Increment sequence for next batch
         sequence += 1
-        inFlightCount += 1
+
+        // Only increment inFlightCount for new batches, not retries
+        // (retries already have inFlightCount accounted for)
+        if !isRetry {
+            inFlightCount += 1
+        }
 
         // Build batch data - use cached contentType to avoid actor hop
         let batchData: Data
@@ -271,19 +277,38 @@ public actor IdempotentProducer {
             }
 
             inFlightCount -= 1
+
+            // Try to send pending items now that capacity freed up
+            if !pendingItems.isEmpty && inFlightCount < config.maxInFlight {
+                lingerTask?.cancel()
+                lingerTask = nil
+                Task {
+                    await sendBatch()
+                }
+            }
+
             checkFlushComplete()
 
         } catch let error as DurableStreamError where error.code == .staleEpoch {
             // Handle stale epoch
             if config.autoClaim, let details = error.details, let currentEpoch = details["currentEpoch"].flatMap({ Int($0) }) {
-                // Bump epoch and retry
+                // Bump epoch and retry (don't decrement inFlightCount - we're retrying)
                 epoch = currentEpoch + 1
                 sequence = 0
-                inFlightCount -= 1
 
-                // Re-enqueue items
-                for item in items {
-                    enqueueData(item)
+                // Re-enqueue items directly (bypass enqueueData to avoid linger timer)
+                for item in items.reversed() {
+                    pendingItems.insert(item, at: 0)
+                    pendingSize += item.count
+                }
+
+                // Cancel linger timer and immediately send the re-queued batch
+                // Note: inFlightCount is still 1, so flush() will wait
+                // Use isRetry: true since we're reusing the existing inFlightCount
+                lingerTask?.cancel()
+                lingerTask = nil
+                Task {
+                    await sendBatch(isRetry: true)
                 }
             } else {
                 inFlightCount -= 1
@@ -292,7 +317,7 @@ public actor IdempotentProducer {
             }
 
         } catch let error as DurableStreamError where error.code == .sequenceGap {
-            // Handle sequence gap by retrying with limit
+            // Handle sequence gap by resetting to expected sequence and retrying
             inFlightCount -= 1
 
             let newRetryCount = sequenceGapRetryCount + 1
@@ -304,6 +329,11 @@ public actor IdempotentProducer {
                 config.onError?(maxRetriesError)
                 failFlushContinuations(maxRetriesError)
                 return
+            }
+
+            // Reset sequence to expected value from server
+            if let expectedStr = error.details?["expected"], let expected = Int(expectedStr) {
+                sequence = expected
             }
 
             // Re-enqueue items for retry

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Main Stream Handle
 
 import Foundation
@@ -263,7 +263,8 @@ public actor DurableStream {
             offset: metadata.offset ?? offset,
             upToDate: metadata.upToDate,
             cursor: metadata.cursor,
-            contentType: metadata.contentType
+            contentType: metadata.contentType,
+            status: metadata.status
         )
     }
 
@@ -423,6 +424,8 @@ public actor DurableStream {
     ) async {
         var currentOffset = offset
         var currentCursor: String? = nil
+        var retryAttempt = 0
+        let retryConfig = RetryConfig.default
 
         while !Task.isCancelled {
             do {
@@ -448,9 +451,11 @@ public actor DurableStream {
                     continuation.yield(result)
                     currentOffset = newOffset
                     currentCursor = metadata.cursor
+                    retryAttempt = 0  // Reset retry count on success
 
                 case 204:
                     // Long-poll timeout, retry with same offset
+                    retryAttempt = 0  // Timeout is normal, reset retry count
                     continue
 
                 case 410:
@@ -464,7 +469,9 @@ public actor DurableStream {
                 }
             } catch let error as DurableStreamError {
                 if error.code == .timeout || error.code == .serverBusy {
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms backoff
+                    retryAttempt += 1
+                    let delayMs = retryConfig.delayForAttempt(retryAttempt)
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                     continue
                 }
                 continuation.finish(throwing: error)
@@ -481,23 +488,43 @@ public actor DurableStream {
     // MARK: - Writing (Synchronous)
 
     /// Append data to the stream (awaits server acknowledgment).
-    public func appendSync(_ data: Data, contentType: String? = nil) async throws -> AppendResult {
+    ///
+    /// - Parameters:
+    ///   - data: The data to append
+    ///   - contentType: Optional content type override
+    ///   - seq: Optional Stream-Seq header for writer coordination (must be monotonically increasing)
+    public func appendSync(_ data: Data, contentType: String? = nil, seq: Int? = nil) async throws -> AppendResult {
         let ct = contentType ?? self.contentType ?? "application/octet-stream"
+
+        var headers: [String: String] = [:]
+        if let seq = seq {
+            headers[Headers.streamSeq] = String(seq)
+        }
 
         let request = await httpClient.buildRequest(
             url: url,
             method: "POST",
+            headers: headers,
             body: data,
             contentType: ct
         )
 
-        let (_, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
+        let (responseData, metadata) = try await httpClient.perform(request)
 
-        let isDuplicate = metadata.status == 204
-        let offset = metadata.offset ?? lastOffset ?? Offset(rawValue: "0")
-        lastOffset = offset
+        switch metadata.status {
+        case 200, 204:
+            let isDuplicate = metadata.status == 204
+            let offset = metadata.offset ?? lastOffset ?? Offset(rawValue: "0")
+            lastOffset = offset
+            return AppendResult(offset: offset, isDuplicate: isDuplicate)
 
-        return AppendResult(offset: offset, isDuplicate: isDuplicate)
+        case 409:
+            throw DurableStreamError(code: .conflictSeq, message: "Sequence conflict", status: 409)
+
+        default:
+            let body = String(data: responseData, encoding: .utf8)
+            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body)
+        }
     }
 
     /// Append a string to the stream.
@@ -579,6 +606,7 @@ public actor DurableStream {
     /// Flush any pending batched writes.
     /// Note: DurableStream uses synchronous writes. For batched writes with
     /// fire-and-forget semantics, use IdempotentProducer instead.
+    @discardableResult
     public func flush() async throws -> FlushResult {
         return FlushResult(offset: lastOffset ?? Offset(rawValue: "0"))
     }
@@ -657,13 +685,14 @@ public actor DurableStream {
     }
 
     /// Internal SSE streaming loop.
-    /// Uses chunked polling to fetch SSE data cross-platform.
+    /// Uses true streaming to receive SSE events as they arrive.
     private func runSSELoop(
         from offset: Offset,
         continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
     ) async {
         var currentOffset = offset
-        var pendingData = Data()
+        var retryAttempt = 0
+        let retryConfig = RetryConfig.default
 
         while !Task.isCancelled {
             do {
@@ -676,25 +705,59 @@ public actor DurableStream {
                 var request = await httpClient.buildRequest(url: requestURL)
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
-                let (data, metadata) = try await httpClient.perform(request)
+                // Use streaming to receive bytes as they arrive
+                let (bytes, metadata) = try await httpClient.performStreaming(request)
 
                 switch metadata.status {
                 case 200:
-                    // Parse SSE events from the response
-                    let (events, remaining) = SSEParser.parse(data: data, pendingData: pendingData)
-                    pendingData = remaining
+                    retryAttempt = 0  // Reset retry count on success
 
-                    for event in events {
+                    // Stream and parse SSE events incrementally
+                    var lineBuffer = Data()
+                    var currentEvent = SSEEventBuilder()
+
+                    for try await byte in bytes {
+                        if Task.isCancelled { break }
+
+                        if byte == 0x0A { // LF - end of line
+                            let line = String(data: lineBuffer, encoding: .utf8) ?? ""
+                            lineBuffer = Data()
+
+                            if line.isEmpty {
+                                // Empty line = end of event
+                                if let event = currentEvent.build() {
+                                    continuation.yield(event)
+
+                                    // Update offset from control events
+                                    if event.effectiveEvent == "control",
+                                       let jsonData = event.data.data(using: .utf8),
+                                       let control = try? JSONDecoder().decode(SSEControlPayload.self, from: jsonData) {
+                                        currentOffset = Offset(rawValue: control.streamNextOffset)
+                                    }
+                                }
+                                currentEvent = SSEEventBuilder()
+                            } else {
+                                // Parse the line
+                                currentEvent.parseLine(line)
+                            }
+                        } else if byte != 0x0D { // Skip CR
+                            lineBuffer.append(byte)
+                        }
+                    }
+
+                    // Handle any remaining partial event
+                    if let event = currentEvent.build() {
                         continuation.yield(event)
                     }
 
-                    // Update offset for next request
+                    // Update offset from response headers if available
                     if let newOffset = metadata.offset {
                         currentOffset = newOffset
                     }
 
                 case 204:
                     // No new data, continue polling
+                    retryAttempt = 0  // Timeout is normal, reset retry count
                     continue
 
                 case 410:
@@ -702,16 +765,20 @@ public actor DurableStream {
                     return
 
                 default:
-                    let body = String(data: data, encoding: .utf8)
-                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body))
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: nil))
                     return
                 }
             } catch let error as DurableStreamError {
                 if error.code == .timeout || error.code == .serverBusy {
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms backoff
+                    retryAttempt += 1
+                    let delayMs = retryConfig.delayForAttempt(retryAttempt)
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                     continue
                 }
                 continuation.finish(throwing: error)
+                return
+            } catch is CancellationError {
+                continuation.finish()
                 return
             } catch {
                 continuation.finish(throwing: error)
@@ -723,6 +790,45 @@ public actor DurableStream {
     }
 }
 
+/// Helper to build SSE events incrementally.
+private struct SSEEventBuilder {
+    var event: String?
+    var data: [String] = []
+    var id: String?
+    var retry: Int?
+
+    mutating func parseLine(_ line: String) {
+        if line.hasPrefix("event:") {
+            event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+        } else if line.hasPrefix("data:") {
+            data.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+        } else if line.hasPrefix("id:") {
+            id = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        } else if line.hasPrefix("retry:") {
+            retry = Int(String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces))
+        } else if line.hasPrefix(":") {
+            // Comment, ignore
+        }
+    }
+
+    func build() -> SSEEvent? {
+        guard !data.isEmpty || event != nil else { return nil }
+        return SSEEvent(
+            event: event,
+            data: data.joined(separator: "\n"),
+            id: id,
+            retry: retry
+        )
+    }
+}
+
+/// Payload for SSE control events.
+private struct SSEControlPayload: Codable {
+    let streamNextOffset: String
+    var streamCursor: String?
+    var upToDate: Bool?
+}
+
 /// Result of a stream read operation.
 public struct StreamReadResult: Sendable {
     public let data: Data
@@ -730,12 +836,14 @@ public struct StreamReadResult: Sendable {
     public let upToDate: Bool
     public let cursor: String?
     public let contentType: String?
+    public let status: Int
 
-    public init(data: Data, offset: Offset, upToDate: Bool, cursor: String? = nil, contentType: String? = nil) {
+    public init(data: Data, offset: Offset, upToDate: Bool, cursor: String? = nil, contentType: String? = nil, status: Int = 200) {
         self.data = data
         self.offset = offset
         self.upToDate = upToDate
         self.cursor = cursor
         self.contentType = contentType
+        self.status = status
     }
 }

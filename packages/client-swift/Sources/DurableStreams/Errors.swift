@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Error Types
 
 import Foundation
 
 /// Standard error codes for Durable Streams operations.
-public enum ErrorCode: String, Sendable {
+public enum ErrorCode: String, Sendable, CaseIterable {
     case notFound = "NOT_FOUND"
     case conflict = "CONFLICT"
     case conflictSeq = "CONFLICT_SEQ"
@@ -26,7 +26,7 @@ public enum ErrorCode: String, Sendable {
 }
 
 /// Errors specific to Durable Streams operations.
-public struct DurableStreamError: Error, Sendable {
+public struct DurableStreamError: Error, Sendable, Equatable {
     /// The error code
     public let code: ErrorCode
 
@@ -176,5 +176,20 @@ extension DurableStreamError: LocalizedError {
             return "[\(code.rawValue)] \(message) (HTTP \(status))"
         }
         return "[\(code.rawValue)] \(message)"
+    }
+}
+
+extension DurableStreamError: CustomDebugStringConvertible {
+    public var debugDescription: String {
+        var parts = ["DurableStreamError(\(code.rawValue))"]
+        parts.append("message: \"\(message)\"")
+        if let status = status {
+            parts.append("status: \(status)")
+        }
+        if let details = details, !details.isEmpty {
+            let detailStr = details.map { "\($0.key): \($0.value)" }.joined(separator: ", ")
+            parts.append("details: [\(detailStr)]")
+        }
+        return parts.joined(separator: ", ")
     }
 }

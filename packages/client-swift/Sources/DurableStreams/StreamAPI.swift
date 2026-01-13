@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Stream API (Read-Only)
 
 import Foundation
@@ -342,8 +342,10 @@ public struct StreamResponse: Sendable {
             return
         }
 
-        // If already up-to-date and not in streaming mode, we're done
+        // Determine effective live mode once
         let effectiveLive = live == .auto ? .longPoll : live
+
+        // If already up-to-date and in catch-up mode, we're done
         if upToDate && effectiveLive == .catchUp {
             continuation.finish()
             return
@@ -352,6 +354,8 @@ public struct StreamResponse: Sendable {
         // Continue with long-poll loop
         var currentOffset = offset
         var currentCursor = cursor
+        var retryAttempt = 0
+        let retryConfig = RetryConfig.default
 
         let httpClient = HTTPClient(
             session: ctx.session,
@@ -384,9 +388,17 @@ public struct StreamResponse: Sendable {
                     continuation.yield(result)
                     currentOffset = newOffset
                     currentCursor = metadata.cursor
+                    retryAttempt = 0  // Reset retry count on success
+
+                    // In catch-up mode, stop when we've caught up
+                    if metadata.upToDate && effectiveLive == .catchUp {
+                        continuation.finish()
+                        return
+                    }
 
                 case 204:
                     // Long-poll timeout, retry with same offset
+                    retryAttempt = 0  // Timeout is normal, reset retry count
                     continue
 
                 case 410:
@@ -402,8 +414,9 @@ public struct StreamResponse: Sendable {
             } catch let error as DurableStreamError {
                 // Check if this is a retriable error
                 if shouldRetryStreamingError(error) {
-                    // Brief backoff before retry
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                    retryAttempt += 1
+                    let delayMs = retryConfig.delayForAttempt(retryAttempt)
+                    try? await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
                     continue
                 }
                 continuation.finish(throwing: error)

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - iOS Lifecycle Management
 
 import Foundation
@@ -9,7 +9,7 @@ import FoundationNetworking
 // MARK: - Suspended State
 
 /// State captured when a stream is suspended.
-public struct SuspendedStreamState: Sendable {
+public struct SuspendedStreamState: Sendable, Codable {
     /// The stream URL
     public let url: URL
 

@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
 // DurableStreams Swift Client - Conformance Test Adapter
 //
 // This adapter implements the stdin/stdout JSON-line protocol for
 // the client conformance test runner.
+//
+// IMPORTANT: This adapter MUST use the DurableStreams library for all operations.
+// No raw URLSession calls allowed - we're testing the library, not HTTP.
 
 import DurableStreams
 import Foundation
@@ -11,9 +14,6 @@ import FoundationNetworking
 #endif
 
 // MARK: - Command Types
-
-// Note: The conformance test runner sends items as strings directly, not as objects
-// So we need to decode either string or {data: string} format
 
 struct Command: Codable {
     let type: String
@@ -135,6 +135,7 @@ struct BenchmarkMetrics: Codable {
 
 actor AdapterState {
     var serverURL: String = ""
+    var streamHandles: [String: DurableStream] = [:]
     var streamContentTypes: [String: String] = [:]
     var dynamicHeaders: [String: DynamicValue] = [:]
     var dynamicParams: [String: DynamicValue] = [:]
@@ -173,6 +174,8 @@ actor AdapterState {
 
     func setServerURL(_ url: String) {
         serverURL = url
+        streamHandles.removeAll()
+        streamContentTypes.removeAll()
     }
 
     func setContentType(path: String, contentType: String) {
@@ -181,6 +184,18 @@ actor AdapterState {
 
     func getContentType(path: String) -> String? {
         streamContentTypes[path]
+    }
+
+    func cacheHandle(path: String, handle: DurableStream) {
+        streamHandles[path] = handle
+    }
+
+    func getHandle(path: String) -> DurableStream? {
+        streamHandles[path]
+    }
+
+    func removeHandle(path: String) {
+        streamHandles.removeValue(forKey: path)
     }
 
     func setDynamicHeader(name: String, type: String, initialValue: String?) {
@@ -239,23 +254,12 @@ actor AdapterState {
 
 let state = AdapterState()
 
-// Create a URLSession with reasonable timeouts
-let sessionConfig: URLSessionConfiguration = {
-    let config = URLSessionConfiguration.default
-    config.timeoutIntervalForRequest = 25.0  // 25 seconds (under the 30s test timeout)
-    config.timeoutIntervalForResource = 30.0
-    return config
-}()
-let urlSession = URLSession(configuration: sessionConfig)
-
 // MARK: - Main Loop
 
-// Helper to write output and flush using FileHandle (Swift 6 safe)
 func writeOutput(_ string: String) {
     let handle = FileHandle.standardOutput
     if let data = (string + "\n").data(using: .utf8) {
         handle.write(data)
-        // Explicitly synchronize to ensure data is flushed
         try? handle.synchronize()
     }
 }
@@ -343,7 +347,6 @@ func handleInit(_ cmd: Command) async -> Result {
     }
 
     // When running in Docker on macOS, replace localhost with host.docker.internal
-    // This allows the container to reach services on the host machine
     if ProcessInfo.processInfo.environment["DOCKER_HOST_REWRITE"] == "1" {
         serverUrl = serverUrl
             .replacingOccurrences(of: "://localhost:", with: "://host.docker.internal:")
@@ -367,6 +370,8 @@ func handleInit(_ cmd: Command) async -> Result {
     )
 }
 
+// MARK: - Create (uses DurableStream.create)
+
 func handleCreate(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Missing path")
@@ -379,48 +384,47 @@ func handleCreate(_ cmd: Command) async -> Result {
 
     let contentType = cmd.contentType ?? "application/octet-stream"
 
-    // Get dynamic headers
+    // Build headers
     let dynamicHeaders = await state.resolveDynamicHeaders()
-    var allHeaders = dynamicHeaders
+    var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
     if let cmdHeaders = cmd.headers {
-        allHeaders.merge(cmdHeaders) { _, new in new }
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
     }
 
     do {
-        // Build request manually for more control
-        var request = URLRequest(url: url)
-        request.httpMethod = "PUT"
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+        let handle = try await DurableStream.create(
+            url: url,
+            contentType: contentType,
+            ttlSeconds: cmd.ttlSeconds,
+            expiresAt: cmd.expiresAt,
+            config: DurableStream.Configuration(headers: allHeaders)
+        )
 
-        if let ttl = cmd.ttlSeconds {
-            request.setValue(String(ttl), forHTTPHeaderField: Headers.streamTTL)
-        }
-        if let expires = cmd.expiresAt {
-            request.setValue(expires, forHTTPHeaderField: Headers.streamExpiresAt)
-        }
+        await state.setContentType(path: path, contentType: contentType)
+        await state.cacheHandle(path: path, handle: handle)
 
-        for (key, value) in allHeaders {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
+        // Get the offset
+        let info = try await DurableStream.head(url: url)
 
-        let (_, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-        }
-
-        if httpResponse.statusCode == 201 {
-            await state.setContentType(path: path, contentType: contentType)
-            let offset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-            return Result(type: "create", success: true, status: 201, offset: offset)
-        } else if httpResponse.statusCode == 409 {
-            return errorResult(cmd.type, "CONFLICT", "Stream already exists", status: 409)
-        } else {
-            return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-        }
+        return Result(
+            type: "create",
+            success: true,
+            status: 201,
+            offset: info.offset?.rawValue
+        )
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
     } catch {
         return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 }
+
+// MARK: - Connect (uses DurableStream.connect)
 
 func handleConnect(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
@@ -432,37 +436,44 @@ func handleConnect(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
+    // Build headers
+    var allHeaders: HeadersRecord = [:]
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+
     do {
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
+        let handle = try await DurableStream.connect(
+            url: url,
+            config: DurableStream.Configuration(headers: allHeaders)
+        )
 
-        if let cmdHeaders = cmd.headers {
-            for (key, value) in cmdHeaders {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
+        // Get content type from the handle
+        let ct = await handle.contentType
+        if let ct = ct {
+            await state.setContentType(path: path, contentType: ct)
         }
+        await state.cacheHandle(path: path, handle: handle)
 
-        let (_, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-        }
+        // Get the offset
+        let info = try await DurableStream.head(url: url)
 
-        if httpResponse.statusCode == 200 {
-            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")
-            if let ct = contentType {
-                await state.setContentType(path: path, contentType: ct)
-            }
-            let offset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-            return Result(type: "connect", success: true, status: 200, offset: offset)
-        } else if httpResponse.statusCode == 404 {
-            return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-        } else {
-            return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-        }
+        return Result(
+            type: "connect",
+            success: true,
+            status: 200,
+            offset: info.offset?.rawValue
+        )
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
     } catch {
         return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 }
+
+// MARK: - Append (uses stream.appendSync or appendWithProducer)
 
 func handleAppend(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
@@ -492,7 +503,6 @@ func handleAppend(_ cmd: Command) async -> Result {
     // Wrap in JSON array if needed
     let finalBody: Data
     if isJSON && !bodyData.isEmpty {
-        // Wrap the data in a JSON array
         var arrayData = Data("[".utf8)
         arrayData.append(bodyData)
         arrayData.append(Data("]".utf8))
@@ -505,85 +515,83 @@ func handleAppend(_ cmd: Command) async -> Result {
     let dynamicHeaders = await state.resolveDynamicHeaders()
     let dynamicParams = await state.resolveDynamicParams()
 
+    // Build headers for the request
+    var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+
     // Retry loop for transient errors
     var retryCount = 0
     let maxRetries = 3
 
     while true {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = finalBody
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-
-        // Add dynamic headers
-        for (key, value) in dynamicHeaders {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-
-        // Add command headers
-        if let cmdHeaders = cmd.headers {
-            for (key, value) in cmdHeaders {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-        }
-
-        // Add producer headers if present (all three are required together)
-        if let producerId = cmd.producerId, let epoch = cmd.epoch {
-            request.setValue(producerId, forHTTPHeaderField: Headers.producerId)
-            request.setValue(String(epoch), forHTTPHeaderField: Headers.producerEpoch)
-            if let seq = cmd.seq {
-                request.setValue(String(seq), forHTTPHeaderField: Headers.producerSeq)
-            }
-        } else if let seq = cmd.seq {
-            // Simple sequence ordering (without full producer headers)
-            request.setValue(String(seq), forHTTPHeaderField: Headers.streamSeq)
-        }
-
         do {
-            let (_, response) = try await urlSession.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
+            // Get or create handle
+            let handle: DurableStream
+            if let cached = await state.getHandle(path: path) {
+                handle = cached
+            } else {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders)
+                )
+                await state.cacheHandle(path: path, handle: handle)
             }
 
-            let offset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-            let isDuplicate = httpResponse.statusCode == 204
-            let producerSeq = httpResponse.value(forHTTPHeaderField: Headers.producerSeq).flatMap { Int($0) }
+            // Check if this is a producer append or simple append
+            if let producerId = cmd.producerId, let epoch = cmd.epoch {
+                let result = try await handle.appendWithProducer(
+                    finalBody,
+                    producerId: producerId,
+                    epoch: epoch,
+                    seq: cmd.seq ?? 0,
+                    contentType: contentType
+                )
 
-            if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
-                // Normalize to 200 for successful appends (204 is also success per protocol)
                 return Result(
                     type: "append",
                     success: true,
                     status: 200,
-                    offset: offset,
-                    duplicate: isDuplicate,
-                    producerSeq: producerSeq,
+                    offset: result.offset.rawValue,
+                    duplicate: result.isDuplicate,
                     headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
                     paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
                 )
-            } else if httpResponse.statusCode == 500 || httpResponse.statusCode == 503 || httpResponse.statusCode == 429 {
-                // Transient error - retry with backoff
-                if retryCount < maxRetries {
-                    retryCount += 1
-                    let delay = Double(retryCount) * 0.1  // Simple linear backoff
-                    try await Task.sleep(for: .seconds(delay))
-                    continue
-                }
-                return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-            } else if httpResponse.statusCode == 403 {
-                return errorResult(cmd.type, "FORBIDDEN", "Stale epoch", status: 403)
-            } else if httpResponse.statusCode == 404 {
-                return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-            } else if httpResponse.statusCode == 409 {
-                return errorResult(cmd.type, "SEQUENCE_CONFLICT", "Sequence conflict", status: 409)
             } else {
-                return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
+                // Simple append with optional Stream-Seq
+                let result = try await handle.appendSync(finalBody, contentType: contentType, seq: cmd.seq)
+
+                return Result(
+                    type: "append",
+                    success: true,
+                    status: 200,
+                    offset: result.offset.rawValue,
+                    duplicate: result.isDuplicate,
+                    headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+                    paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+                )
             }
+        } catch let error as DurableStreamError {
+            // Check for retryable errors
+            if (error.status == 500 || error.status == 503 || error.status == 429) && retryCount < maxRetries {
+                retryCount += 1
+                try? await Task.sleep(for: .seconds(Double(retryCount) * 0.1))
+                continue
+            }
+            return mapError(cmd.type, error)
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
     }
 }
+
+// MARK: - Idempotent Append (uses stream.appendWithProducer)
 
 func handleIdempotentAppend(_ cmd: Command) async -> Result {
     guard let path = cmd.path,
@@ -616,57 +624,57 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
 
     var currentEpoch = cmd.epoch ?? 0
     let autoClaim = cmd.autoClaim ?? false
-    var maxRetries = autoClaim ? 3 : 0
+    var epochRetries = autoClaim ? 3 : 0
 
     while true {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.httpBody = bodyData
-        request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-        request.setValue(producerId, forHTTPHeaderField: Headers.producerId)
-        request.setValue(String(currentEpoch), forHTTPHeaderField: Headers.producerEpoch)
-        request.setValue(String(cmd.seq ?? 0), forHTTPHeaderField: Headers.producerSeq)
-
         do {
-            let (_, response) = try await urlSession.data(for: request)
-            guard let httpResponse = response as? HTTPURLResponse else {
-                return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-            }
-
-            let offset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-            let isDuplicate = httpResponse.statusCode == 204
-
-            if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
-                return Result(
-                    type: "idempotent-append",
-                    success: true,
-                    status: 200,
-                    offset: offset,
-                    duplicate: isDuplicate
-                )
-            } else if httpResponse.statusCode == 403 {
-                // Stale epoch - if autoClaim, bump epoch and retry
-                if autoClaim && maxRetries > 0 {
-                    if let epochStr = httpResponse.value(forHTTPHeaderField: Headers.producerEpoch),
-                       let serverEpoch = Int(epochStr) {
-                        currentEpoch = serverEpoch + 1
-                    } else {
-                        currentEpoch += 1
-                    }
-                    maxRetries -= 1
-                    continue
-                }
-                return errorResult(cmd.type, "STALE_EPOCH", "Stale epoch", status: 403)
-            } else if httpResponse.statusCode == 409 {
-                return errorResult(cmd.type, "SEQUENCE_GAP", "Sequence gap", status: 409)
+            // Get or create handle
+            let handle: DurableStream
+            if let cached = await state.getHandle(path: path) {
+                handle = cached
             } else {
-                return errorResult(cmd.type, "UNEXPECTED_STATUS", "Status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
+                handle = try await DurableStream.connect(url: url)
+                await state.cacheHandle(path: path, handle: handle)
             }
+
+            let result = try await handle.appendWithProducer(
+                bodyData,
+                producerId: producerId,
+                epoch: currentEpoch,
+                seq: cmd.seq ?? 0,
+                contentType: contentType
+            )
+
+            return Result(
+                type: "idempotent-append",
+                success: true,
+                status: 200,
+                offset: result.offset.rawValue,
+                duplicate: result.isDuplicate
+            )
+        } catch let error as DurableStreamError where error.code == .staleEpoch {
+            // Handle stale epoch - if autoClaim, bump epoch and retry
+            if autoClaim && epochRetries > 0 {
+                if let details = error.details, let epochStr = details["currentEpoch"], let serverEpoch = Int(epochStr) {
+                    currentEpoch = serverEpoch + 1
+                } else {
+                    currentEpoch += 1
+                }
+                epochRetries -= 1
+                continue
+            }
+            return errorResult(cmd.type, "STALE_EPOCH", "Stale epoch", status: 403)
+        } catch let error as DurableStreamError where error.code == .sequenceGap {
+            return errorResult(cmd.type, "SEQUENCE_GAP", "Sequence gap", status: 409)
+        } catch let error as DurableStreamError {
+            return mapError(cmd.type, error)
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
     }
 }
+
+// MARK: - Idempotent Append Batch (uses IdempotentProducer)
 
 func handleIdempotentAppendBatch(_ cmd: Command) async -> Result {
     guard let path = cmd.path,
@@ -680,85 +688,60 @@ func handleIdempotentAppendBatch(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    // Use direct HTTP requests instead of IdempotentProducer
     let contentType = await state.getContentType(path: path) ?? "application/octet-stream"
-    let isJSON = contentType.normalizedContentType() == "application/json"
-    var currentEpoch = cmd.epoch ?? 0
     let autoClaim = cmd.autoClaim ?? false
-    var epochRetries = autoClaim ? 3 : 0
-    var lastOffset: String?
+    let epoch = cmd.epoch ?? 0
 
-    // Outer loop for epoch retries (autoclaim)
-    epochLoop: while true {
-        var currentSeq = 0
+    do {
+        // Get or create handle
+        let handle: DurableStream
+        if let cached = await state.getHandle(path: path) {
+            handle = cached
+        } else {
+            handle = try await DurableStream.connect(url: url)
+            await state.cacheHandle(path: path, handle: handle)
+        }
 
-        // Send items sequentially with producer headers
+        let producer = IdempotentProducer(
+            stream: handle,
+            producerId: producerId,
+            epoch: epoch,
+            config: IdempotentProducer.Configuration(
+                autoClaim: autoClaim,
+                maxInFlight: 1,  // Sequential for conformance
+                contentType: contentType
+            )
+        )
+
+        // Append all items
         for itemData in items {
-            let bodyData: Data
-            if isJSON {
-                // For JSON streams, wrap in array
-                var arrayData = Data("[".utf8)
-                if let jsonData = itemData.data(using: .utf8) {
-                    arrayData.append(jsonData)
-                }
-                arrayData.append(Data("]".utf8))
-                bodyData = arrayData
-            } else {
-                bodyData = itemData.data(using: .utf8) ?? Data()
-            }
-
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.httpBody = bodyData
-            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
-            request.setValue(producerId, forHTTPHeaderField: Headers.producerId)
-            request.setValue(String(currentEpoch), forHTTPHeaderField: Headers.producerEpoch)
-            request.setValue(String(currentSeq), forHTTPHeaderField: Headers.producerSeq)
-
-            do {
-                let (_, response) = try await urlSession.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-                }
-
-                if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
-                    lastOffset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-                    currentSeq += 1
-                } else if httpResponse.statusCode == 403 {
-                    // Stale epoch - if autoClaim, bump epoch and restart
-                    if autoClaim && epochRetries > 0 {
-                        if let epochStr = httpResponse.value(forHTTPHeaderField: Headers.producerEpoch),
-                           let serverEpoch = Int(epochStr) {
-                            currentEpoch = serverEpoch + 1
-                        } else {
-                            currentEpoch += 1
-                        }
-                        epochRetries -= 1
-                        continue epochLoop  // Restart from beginning with new epoch
-                    }
-                    return errorResult(cmd.type, "STALE_EPOCH", "Stale epoch", status: 403)
-                } else if httpResponse.statusCode == 409 {
-                    return errorResult(cmd.type, "SEQUENCE_GAP", "Sequence gap", status: 409)
-                } else {
-                    return errorResult(cmd.type, "UNEXPECTED_STATUS", "Status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-                }
-            } catch {
-                return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+            if let data = itemData.data(using: .utf8) {
+                await producer.appendData(data)
             }
         }
 
-        // All items sent successfully
-        break epochLoop
-    }
+        // Flush and get result
+        let result = try await producer.flush()
 
-    return Result(
-        type: "idempotent-append-batch",
-        success: true,
-        status: 200,
-        offset: lastOffset,
-        producerSeq: items.count - 1  // 0-indexed sequence
-    )
+        return Result(
+            type: "idempotent-append-batch",
+            success: true,
+            status: 200,
+            offset: result.offset.rawValue,
+            producerSeq: items.count - 1
+        )
+    } catch let error as DurableStreamError where error.code == .staleEpoch {
+        return errorResult(cmd.type, "STALE_EPOCH", "Stale epoch", status: 403)
+    } catch let error as DurableStreamError where error.code == .sequenceGap {
+        return errorResult(cmd.type, "SEQUENCE_GAP", "Sequence gap", status: 409)
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
+    } catch {
+        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+    }
 }
+
+// MARK: - Read (uses stream.read or streaming APIs)
 
 func handleRead(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
@@ -766,155 +749,151 @@ func handleRead(_ cmd: Command) async -> Result {
     }
 
     let serverURL = await state.serverURL
+    guard let url = URL(string: serverURL + path) else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    }
 
-    // Add live mode
-    var liveMode = "catchUp"
+    // Determine live mode
+    var liveMode: LiveMode = .catchUp
     if let live = cmd.live {
         switch live {
         case .bool(let value):
             if value {
-                liveMode = "long-poll"
+                liveMode = .longPoll
             }
         case .string(let value):
-            liveMode = value
+            switch value {
+            case "long-poll":
+                liveMode = .longPoll
+            case "sse":
+                liveMode = .sse
+            default:
+                liveMode = .catchUp
+            }
         }
     }
 
-    // Get dynamic values once at start
+    // Get dynamic values
     let dynamicHeaders = await state.resolveDynamicHeaders()
     let dynamicParams = await state.resolveDynamicParams()
 
-    // Handle SSE mode separately
-    if liveMode == "sse" {
-        return await handleSSERead(cmd, path: path, serverURL: serverURL, dynamicHeaders: dynamicHeaders, dynamicParams: dynamicParams)
-    }
-
-    // For live mode with maxChunks, we collect data across multiple requests
-    var allChunks: [ReadChunk] = []
-    var currentOffset = cmd.offset ?? "-1"
-    var lastUpToDate = false
-    var lastCursor: String?
-    var lastStatus = 200  // Track the actual HTTP status
+    let offset = Offset(rawValue: cmd.offset ?? "-1")
     let maxChunks = cmd.maxChunks ?? Int.max
     let waitForUpToDate = cmd.waitForUpToDate ?? false
+    let timeoutSeconds = cmd.timeoutMs.map { Double($0) / 1000.0 } ?? 25.0
 
-    // Outer loop for collecting chunks (for live mode with maxChunks)
-    chunkLoop: while allChunks.count < maxChunks {
-        guard var components = URLComponents(string: serverURL + path) else {
-            return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    // Build headers
+    var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
         }
+    }
 
-        var queryItems: [URLQueryItem] = []
-        queryItems.append(URLQueryItem(name: QueryParams.offset, value: currentOffset))
+    // For SSE mode, use the SSE streaming API
+    if liveMode == .sse {
+        return await handleSSERead(
+            cmd,
+            url: url,
+            offset: offset,
+            maxChunks: maxChunks,
+            waitForUpToDate: waitForUpToDate,
+            timeoutSeconds: timeoutSeconds,
+            dynamicHeaders: dynamicHeaders,
+            dynamicParams: dynamicParams,
+            headers: allHeaders
+        )
+    }
 
-        if liveMode == "long-poll" {
-            queryItems.append(URLQueryItem(name: QueryParams.live, value: "long-poll"))
-        }
+    // For catch-up or long-poll mode
+    var allChunks: [ReadChunk] = []
+    var currentOffset = offset
+    var lastUpToDate = false
+    var lastCursor: String?
+    var lastStatus = 200
+    var retryCount = 0
+    let maxRetries = 5
 
-        for (key, value) in dynamicParams {
-            queryItems.append(URLQueryItem(name: key, value: value))
-        }
+    // Retry loop with timeout
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
 
-        components.queryItems = queryItems
-
-        guard let url = components.url else {
-            return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
-        }
-
-        // Retry loop for transient errors
-        var retryCount = 0
-        let maxRetries = 3
-
-        retryLoop: while true {
-            var request = URLRequest(url: url)
-            request.httpMethod = "GET"
-
-            for (key, value) in dynamicHeaders {
-                request.setValue(value, forHTTPHeaderField: key)
+    while allChunks.count < maxChunks && Date() < deadline {
+        do {
+            // Get or create handle
+            let handle: DurableStream
+            if let cached = await state.getHandle(path: path) {
+                handle = cached
+            } else {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders)
+                )
+                await state.cacheHandle(path: path, handle: handle)
             }
 
-            if let cmdHeaders = cmd.headers {
-                for (key, value) in cmdHeaders {
-                    request.setValue(value, forHTTPHeaderField: key)
-                }
-            }
+            let result = try await handle.read(
+                offset: currentOffset,
+                live: liveMode,
+                headers: [:]  // Already in config
+            )
 
-            if let timeoutMs = cmd.timeoutMs {
-                request.timeoutInterval = Double(timeoutMs) / 1000.0
-            }
+            // Reset retry count on success
+            retryCount = 0
 
-            do {
-                let (data, response) = try await urlSession.data(for: request)
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-                }
+            lastStatus = result.status
+            lastUpToDate = result.upToDate
+            lastCursor = result.cursor
 
-                if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
-                    let newOffset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-                    lastUpToDate = httpResponse.value(forHTTPHeaderField: Headers.streamUpToDate) != nil
-                    lastCursor = httpResponse.value(forHTTPHeaderField: Headers.streamCursor)
-                    lastStatus = httpResponse.statusCode
-
-                    // Collect chunk if there's data
-                    if !data.isEmpty {
-                        if let text = String(data: data, encoding: .utf8) {
-                            allChunks.append(ReadChunk(data: text, offset: newOffset))
-                        } else {
-                            allChunks.append(ReadChunk(data: data.base64EncodedString(), binary: true, offset: newOffset))
-                        }
-                    }
-
-                    // Update offset for next iteration
-                    if let newOffset = newOffset {
-                        currentOffset = newOffset
-                    }
-
-                    // Decide whether to continue collecting
-                    // For catch-up mode (liveMode == "catchUp"), return immediately
-                    if liveMode == "catchUp" {
-                        break chunkLoop
-                    }
-
-                    // In long-poll mode with maxChunks, keep polling until we hit the limit
-                    let hasMaxChunksLimit = cmd.maxChunks != nil
-                    if liveMode == "long-poll" && hasMaxChunksLimit && allChunks.count < maxChunks {
-                        // Continue collecting in long-poll mode until maxChunks reached
-                        continue chunkLoop
-                    } else if waitForUpToDate && !lastUpToDate {
-                        continue chunkLoop
-                    } else {
-                        break chunkLoop
-                    }
-                } else if httpResponse.statusCode == 500 || httpResponse.statusCode == 503 || httpResponse.statusCode == 429 {
-                    if retryCount < maxRetries {
-                        retryCount += 1
-                        try await Task.sleep(for: .seconds(Double(retryCount) * 0.1))
-                        continue retryLoop
-                    }
-                    return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-                } else if httpResponse.statusCode == 400 {
-                    return errorResult(cmd.type, "INVALID_OFFSET", "Invalid offset", status: 400)
-                } else if httpResponse.statusCode == 404 {
-                    return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-                } else if httpResponse.statusCode == 410 {
-                    return errorResult(cmd.type, "RETENTION_EXPIRED", "Data expired", status: 410)
+            // Collect chunk if there's data
+            if !result.data.isEmpty {
+                if let text = String(data: result.data, encoding: .utf8) {
+                    allChunks.append(ReadChunk(data: text, offset: result.offset.rawValue))
                 } else {
-                    return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
+                    allChunks.append(ReadChunk(data: result.data.base64EncodedString(), binary: true, offset: result.offset.rawValue))
                 }
-            } catch let urlError as URLError where urlError.code == .timedOut {
-                // Timeout - return what we have with upToDate=true
-                lastUpToDate = true
-                break chunkLoop
-            } catch let urlError as URLError where urlError.code == .networkConnectionLost || urlError.code == .notConnectedToInternet {
-                if retryCount < maxRetries {
-                    retryCount += 1
-                    try? await Task.sleep(for: .seconds(0.1))
-                    continue retryLoop
-                }
-                return errorResult(cmd.type, "NETWORK_ERROR", urlError.localizedDescription)
-            } catch {
-                return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
             }
+
+            currentOffset = result.offset
+
+            // For catch-up mode, return immediately
+            if liveMode == .catchUp {
+                break
+            }
+
+            // In long-poll mode with maxChunks, keep polling
+            if liveMode == .longPoll && cmd.maxChunks != nil && allChunks.count < maxChunks {
+                continue
+            } else if waitForUpToDate && !lastUpToDate {
+                continue
+            } else {
+                break
+            }
+        } catch let error as DurableStreamError {
+            // Handle retryable errors
+            if (error.status == 500 || error.status == 503 || error.status == 429) && retryCount < maxRetries {
+                retryCount += 1
+                try? await Task.sleep(for: .seconds(Double(retryCount) * 0.1))
+                continue
+            }
+
+            // Handle specific non-retryable errors
+            if error.code == .badRequest {
+                return errorResult(cmd.type, "INVALID_OFFSET", "Invalid offset", status: 400)
+            } else if error.code == .notFound {
+                return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
+            } else if error.code == .retentionExpired {
+                return errorResult(cmd.type, "RETENTION_EXPIRED", "Data expired", status: 410)
+            } else if error.code == .timeout || error.code == .serverBusy {
+                // Timeout in long-poll - return what we have
+                lastUpToDate = true
+                break
+            }
+            return mapError(cmd.type, error)
+        } catch {
+            return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
     }
 
@@ -922,7 +901,7 @@ func handleRead(_ cmd: Command) async -> Result {
         type: "read",
         success: true,
         status: lastStatus,
-        offset: currentOffset,
+        offset: currentOffset.rawValue,
         chunks: allChunks,
         upToDate: lastUpToDate,
         cursor: lastCursor,
@@ -931,289 +910,103 @@ func handleRead(_ cmd: Command) async -> Result {
     )
 }
 
-// SSE Control event structure
+// MARK: - SSE Read (uses stream.sseEvents)
+
+func handleSSERead(
+    _ cmd: Command,
+    url: URL,
+    offset: Offset,
+    maxChunks: Int,
+    waitForUpToDate: Bool,
+    timeoutSeconds: Double,
+    dynamicHeaders: [String: String],
+    dynamicParams: [String: String],
+    headers: HeadersRecord
+) async -> Result {
+    var allChunks: [ReadChunk] = []
+    var currentOffset = offset
+    var lastUpToDate = false
+    var lastCursor: String?
+
+    let deadline = Date().addingTimeInterval(timeoutSeconds)
+
+    do {
+        let handle = try await DurableStream.connect(
+            url: url,
+            config: DurableStream.Configuration(headers: headers)
+        )
+
+        // Start a timeout task
+        let sseTask = Task {
+            for try await event in await handle.sseEvents(from: offset) {
+                if Task.isCancelled || Date() >= deadline {
+                    break
+                }
+
+                // Parse event data
+                if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
+                    allChunks.append(ReadChunk(data: event.data, offset: currentOffset.rawValue))
+                } else if event.effectiveEvent == "control" {
+                    // Parse control event for metadata
+                    if let jsonData = event.data.data(using: .utf8),
+                       let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
+                        currentOffset = Offset(rawValue: control.streamNextOffset)
+                        lastCursor = control.streamCursor
+                        lastUpToDate = control.upToDate ?? false
+                    }
+                }
+
+                // Check exit conditions
+                if allChunks.count >= maxChunks {
+                    break
+                }
+
+                let shouldReturnOnUpToDate = waitForUpToDate || !allChunks.isEmpty
+                if shouldReturnOnUpToDate && lastUpToDate {
+                    break
+                }
+            }
+        }
+
+        // Wait with timeout
+        let timeoutTask = Task {
+            try? await Task.sleep(for: .seconds(timeoutSeconds))
+            sseTask.cancel()
+        }
+
+        _ = await sseTask.result
+        timeoutTask.cancel()
+
+    } catch let error as DurableStreamError {
+        if error.code == .notFound {
+            return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
+        }
+        return mapError(cmd.type, error)
+    } catch {
+        // Timeout or cancellation - return what we have
+        lastUpToDate = true
+    }
+
+    return Result(
+        type: "read",
+        success: true,
+        status: 200,
+        offset: currentOffset.rawValue,
+        chunks: allChunks,
+        upToDate: lastUpToDate,
+        cursor: lastCursor,
+        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+    )
+}
+
 struct SSEControlEvent: Codable {
     let streamNextOffset: String
     var streamCursor: String?
     var upToDate: Bool?
 }
 
-// SSE delegate for streaming HTTP response
-final class SSEDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-    var continuation: AsyncStream<Data>.Continuation?
-    var responseContinuation: CheckedContinuation<HTTPURLResponse?, Error>?
-    var hasReceivedResponse = false
-    var isCancelled = false
-
-    func cancel() {
-        isCancelled = true
-        if !hasReceivedResponse {
-            responseContinuation?.resume(returning: nil)
-            responseContinuation = nil
-        }
-        continuation?.finish()
-        continuation = nil
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        hasReceivedResponse = true
-        responseContinuation?.resume(returning: response as? HTTPURLResponse)
-        responseContinuation = nil
-        completionHandler(.allow)
-    }
-
-    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard !isCancelled else { return }
-        continuation?.yield(data)
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error = error, !isCancelled {
-            if !hasReceivedResponse {
-                responseContinuation?.resume(throwing: error)
-                responseContinuation = nil
-            }
-        }
-        continuation?.finish()
-        continuation = nil
-    }
-}
-
-func handleSSERead(_ cmd: Command, path: String, serverURL: String, dynamicHeaders: [String: String], dynamicParams: [String: String]) async -> Result {
-    guard var components = URLComponents(string: serverURL + path) else {
-        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
-    }
-
-    var queryItems: [URLQueryItem] = []
-    let offset = cmd.offset ?? "-1"
-    queryItems.append(URLQueryItem(name: QueryParams.offset, value: offset))
-    queryItems.append(URLQueryItem(name: QueryParams.live, value: "sse"))
-
-    for (key, value) in dynamicParams {
-        queryItems.append(URLQueryItem(name: key, value: value))
-    }
-
-    components.queryItems = queryItems
-
-    guard let url = components.url else {
-        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
-    }
-
-    var request = URLRequest(url: url)
-    request.httpMethod = "GET"
-    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-
-    for (key, value) in dynamicHeaders {
-        request.setValue(value, forHTTPHeaderField: key)
-    }
-
-    if let cmdHeaders = cmd.headers {
-        for (key, value) in cmdHeaders {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-    }
-
-    var allChunks: [ReadChunk] = []
-    var currentOffset = offset
-    var lastUpToDate = false
-    var lastCursor: String?
-    let maxChunks = cmd.maxChunks ?? Int.max
-    let waitForUpToDate = cmd.waitForUpToDate ?? false
-
-    // Calculate deadline for total request timeout
-    let timeoutSeconds = cmd.timeoutMs.map { Double($0) / 1000.0 } ?? 25.0
-    let deadline = Date().addingTimeInterval(timeoutSeconds)
-
-    // Helper to check if deadline passed
-    func isDeadlinePassed() -> Bool {
-        Date() >= deadline
-    }
-
-    // Use delegate-based streaming for Linux compatibility
-    let delegate = SSEDelegate()
-    let sseSession = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-    defer {
-        delegate.cancel()  // Signal to stop streaming
-        sseSession.invalidateAndCancel()  // Cleanup session
-    }
-
-    // Set up data stream continuation BEFORE starting task
-    let dataStream = AsyncStream<Data> { continuation in
-        delegate.continuation = continuation
-    }
-
-    // Create task but don't resume yet
-    let task = sseSession.dataTask(with: request)
-
-    // Wait for response headers using async continuation with timeout
-    let httpResponse: HTTPURLResponse?
-    do {
-        httpResponse = try await withCheckedThrowingContinuation { continuation in
-            // Set the response continuation BEFORE starting the task to avoid race condition
-            delegate.responseContinuation = continuation
-            // Now start the task
-            task.resume()
-        }
-    } catch let error as URLError where error.code == .timedOut || error.code == .cancelled {
-        task.cancel()
-        return Result(
-            type: "read",
-            success: true,
-            status: 200,
-            offset: currentOffset,
-            chunks: allChunks,
-            upToDate: true,
-            cursor: lastCursor,
-            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
-        )
-    } catch {
-        task.cancel()
-        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
-    }
-
-    guard let httpResponse = httpResponse else {
-        task.cancel()
-        return errorResult(cmd.type, "NETWORK_ERROR", "No response")
-    }
-
-    if httpResponse.statusCode == 404 {
-        return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-    }
-
-    if httpResponse.statusCode != 200 {
-        return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-    }
-
-    // Parse SSE events from the data stream
-    var buffer = ""
-    var currentEventType: String?
-    var currentDataLines: [String] = []
-
-    // Start a timeout task that will cancel the SSE connection when deadline passes
-    let timeoutTask = Task {
-        let remaining = deadline.timeIntervalSinceNow
-        if remaining > 0 {
-            try? await Task.sleep(for: .seconds(remaining))
-        }
-        delegate.cancel()  // This will cause the stream to finish
-    }
-
-    defer {
-        timeoutTask.cancel()
-    }
-
-    for await data in dataStream {
-        // Check for task cancellation
-        if Task.isCancelled || isDeadlinePassed() {
-            delegate.cancel()
-            task.cancel()
-            return Result(
-                type: "read",
-                success: true,
-                status: 200,
-                offset: currentOffset,
-                chunks: allChunks,
-                upToDate: true,  // Signal up-to-date on timeout
-                cursor: lastCursor,
-                headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-                paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
-            )
-        }
-
-        guard let str = String(data: data, encoding: .utf8) else { continue }
-        buffer.append(str)
-
-        // Normalize line endings and process complete lines
-        buffer = buffer.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
-
-        while let newlineIndex = buffer.firstIndex(of: "\n") {
-            let line = String(buffer[..<newlineIndex])
-            buffer = String(buffer[buffer.index(after: newlineIndex)...])
-
-            if line.isEmpty {
-                // Empty line = end of event
-                if let eventType = currentEventType, !currentDataLines.isEmpty {
-                    let dataStr = currentDataLines.joined(separator: "\n")
-
-                    if eventType == "data" {
-                        // Data event - collect chunk
-                        allChunks.append(ReadChunk(data: dataStr, offset: currentOffset))
-                    } else if eventType == "control" {
-                        // Control event - parse JSON for metadata
-                        if let jsonData = dataStr.data(using: .utf8),
-                           let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
-                            currentOffset = control.streamNextOffset
-                            lastCursor = control.streamCursor
-                            lastUpToDate = control.upToDate ?? false
-                        }
-                    }
-                }
-                currentEventType = nil
-                currentDataLines = []
-
-                // Check if we should stop
-                if allChunks.count >= maxChunks {
-                    delegate.cancel()
-                    task.cancel()
-                    return Result(
-                        type: "read",
-                        success: true,
-                        status: 200,
-                        offset: currentOffset,
-                        chunks: allChunks,
-                        upToDate: lastUpToDate,
-                        cursor: lastCursor,
-                        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-                        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
-                    )
-                }
-
-                // Return when up-to-date if:
-                // 1. waitForUpToDate is set and we're up-to-date, OR
-                // 2. We have data and we're up-to-date (catch-up complete)
-                let shouldReturnOnUpToDate = waitForUpToDate || !allChunks.isEmpty
-                if shouldReturnOnUpToDate && lastUpToDate {
-                    delegate.cancel()
-                    task.cancel()
-                    return Result(
-                        type: "read",
-                        success: true,
-                        status: 200,
-                        offset: currentOffset,
-                        chunks: allChunks,
-                        upToDate: lastUpToDate,
-                        cursor: lastCursor,
-                        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-                        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
-                    )
-                }
-            } else if line.hasPrefix("event:") {
-                currentEventType = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
-                var content = String(line.dropFirst(5))
-                if content.hasPrefix(" ") {
-                    content = String(content.dropFirst())
-                }
-                currentDataLines.append(content)
-            }
-            // Ignore other SSE fields (id, retry, comments)
-        }
-    }
-
-    // Stream ended
-    return Result(
-        type: "read",
-        success: true,
-        status: 200,
-        offset: currentOffset,
-        chunks: allChunks,
-        upToDate: lastUpToDate,
-        cursor: lastCursor,
-        headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
-    )
-}
+// MARK: - Head (uses DurableStream.head)
 
 func handleHead(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
@@ -1225,41 +1018,35 @@ func handleHead(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
+    // Build headers
+    var allHeaders: HeadersRecord = [:]
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+
     do {
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
+        let info = try await DurableStream.head(
+            url: url,
+            config: DurableStream.Configuration(headers: allHeaders)
+        )
 
-        if let cmdHeaders = cmd.headers {
-            for (key, value) in cmdHeaders {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-        }
-
-        let (_, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-        }
-
-        if httpResponse.statusCode == 200 {
-            let offset = httpResponse.value(forHTTPHeaderField: Headers.streamNextOffset)
-            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")
-
-            return Result(
-                type: "head",
-                success: true,
-                status: 200,
-                offset: offset,
-                contentType: contentType
-            )
-        } else if httpResponse.statusCode == 404 {
-            return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-        } else {
-            return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-        }
+        return Result(
+            type: "head",
+            success: true,
+            status: 200,
+            offset: info.offset?.rawValue,
+            contentType: info.contentType
+        )
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
     } catch {
         return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 }
+
+// MARK: - Delete (uses DurableStream.delete)
 
 func handleDelete(_ cmd: Command) async -> Result {
     guard let path = cmd.path else {
@@ -1271,33 +1058,35 @@ func handleDelete(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
+    // Build headers
+    var allHeaders: HeadersRecord = [:]
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+
     do {
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
+        try await DurableStream.delete(
+            url: url,
+            config: DurableStream.Configuration(headers: allHeaders)
+        )
 
-        if let cmdHeaders = cmd.headers {
-            for (key, value) in cmdHeaders {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-        }
+        await state.removeHandle(path: path)
 
-        let (_, response) = try await urlSession.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            return errorResult(cmd.type, "NETWORK_ERROR", "Invalid response")
-        }
-
-        if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
-            // Normalize to 200 for successful deletes
-            return Result(type: "delete", success: true, status: 200)
-        } else if httpResponse.statusCode == 404 {
-            return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
-        } else {
-            return errorResult(cmd.type, "UNEXPECTED_STATUS", "Unexpected status: \(httpResponse.statusCode)", status: httpResponse.statusCode)
-        }
+        return Result(
+            type: "delete",
+            success: true,
+            status: 200
+        )
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
     } catch {
         return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 }
+
+// MARK: - Dynamic Headers/Params
 
 func handleSetDynamicHeader(_ cmd: Command) async -> Result {
     guard let name = cmd.name, let valueType = cmd.valueType else {
@@ -1322,6 +1111,8 @@ func handleClearDynamic(_ cmd: Command) async -> Result {
     return Result(type: "clear-dynamic", success: true)
 }
 
+// MARK: - Benchmark (already uses library)
+
 func handleBenchmark(_ cmd: Command) async -> Result {
     guard let iterationId = cmd.iterationId, let operation = cmd.operation else {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Missing iterationId or operation")
@@ -1329,7 +1120,6 @@ func handleBenchmark(_ cmd: Command) async -> Result {
 
     let startTime = DispatchTime.now()
 
-    // Execute the benchmark operation
     switch operation.op {
     case "create":
         guard let path = operation.path else {
@@ -1356,9 +1146,9 @@ func handleBenchmark(_ cmd: Command) async -> Result {
         }
 
         do {
-            let stream = try await DurableStream.connect(url: url)
-            let data = Data(repeating: 0x41, count: size)  // 'A' bytes
-            _ = try await stream.appendSync(data)
+            let handle = try await DurableStream.connect(url: url)
+            let data = Data(repeating: 0x41, count: size)
+            _ = try await handle.appendSync(data)
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
@@ -1389,14 +1179,11 @@ func handleBenchmark(_ cmd: Command) async -> Result {
         }
 
         do {
-            // Create stream first (roundtrip uses new path each iteration)
             let contentType = operation.contentType ?? "application/octet-stream"
-            let stream = try await DurableStream.create(url: url, contentType: contentType)
+            let handle = try await DurableStream.create(url: url, contentType: contentType)
 
-            // Generate appropriate data based on content type
             let data: Data
             if contentType.contains("json") {
-                // Generate valid JSON for JSON streams
                 let jsonString = String(repeating: "x", count: max(0, size - 4))
                 let json = "\"\(jsonString)\""
                 data = json.data(using: .utf8) ?? Data()
@@ -1404,11 +1191,8 @@ func handleBenchmark(_ cmd: Command) async -> Result {
                 data = Data(repeating: 0x41, count: size)
             }
 
-            _ = try await stream.appendSync(data)
-
-            // Use specified live mode - read from start to get the data we just appended
-            // For all modes including SSE, use catchUp since we just want to verify data was written
-            _ = try await stream.read(offset: .start, live: .catchUp)
+            _ = try await handle.appendSync(data)
+            _ = try await handle.read(offset: .start, live: .catchUp)
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
         }
@@ -1428,34 +1212,27 @@ func handleBenchmark(_ cmd: Command) async -> Result {
         let bytesTransferred = count * size
 
         do {
-            // Create stream if it doesn't exist, otherwise connect
-            let stream: DurableStream
+            let handle: DurableStream
             do {
-                stream = try await DurableStream.create(url: url, contentType: operation.contentType ?? "application/octet-stream")
+                handle = try await DurableStream.create(url: url, contentType: operation.contentType ?? "application/octet-stream")
             } catch {
-                // Stream might already exist, try to connect
-                stream = try await DurableStream.connect(url: url)
+                handle = try await DurableStream.connect(url: url)
             }
 
-            // Use IdempotentProducer for batching and pipelining - much faster than individual appends
             let contentType = operation.contentType ?? "application/octet-stream"
             let producer = IdempotentProducer(
-                stream: stream,
+                stream: handle,
                 producerId: "bench-producer-\(UUID().uuidString.prefix(8))",
                 config: IdempotentProducer.Configuration(
-                    lingerMs: 0,  // Send immediately when batch is ready
-                    maxInFlight: 10,  // Pipeline up to 10 batches
-                    contentType: contentType  // Cache to avoid actor hops
+                    lingerMs: 0,
+                    maxInFlight: 10,
+                    contentType: contentType
                 )
             )
 
             let data = Data(repeating: 0x41, count: size)
-
-            // Build all items first, then send in single actor hop
             let items = [Data](repeating: data, count: count)
             await producer.appendBatch(items)
-
-            // Wait for all batches to complete
             _ = try await producer.flush()
         } catch {
             return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
@@ -1487,7 +1264,6 @@ func handleBenchmark(_ cmd: Command) async -> Result {
         var bytesTransferred = 0
 
         do {
-            // Read all data from the stream
             let response = try await stream(url: url, offset: .start)
             bytesTransferred = response.data.count
         } catch {
@@ -1504,7 +1280,7 @@ func handleBenchmark(_ cmd: Command) async -> Result {
             durationNs: String(durationNs),
             metrics: BenchmarkMetrics(
                 bytesTransferred: bytesTransferred,
-                messagesProcessed: 1  // Single read operation
+                messagesProcessed: 1
             )
         )
 
@@ -1525,26 +1301,6 @@ func handleBenchmark(_ cmd: Command) async -> Result {
 
 // MARK: - Helpers
 
-/// Execute an async operation with a timeout
-func withTimeout<T: Sendable>(seconds: Double, operation: @escaping @Sendable () async throws -> T) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask {
-            try await operation()
-        }
-
-        group.addTask {
-            try await Task.sleep(for: .seconds(seconds))
-            throw TimeoutError()
-        }
-
-        let result = try await group.next()!
-        group.cancelAll()
-        return result
-    }
-}
-
-struct TimeoutError: Error, Sendable {}
-
 func errorResult(_ commandType: String, _ errorCode: String, _ message: String, status: Int? = nil) -> Result {
     Result(
         type: "error",
@@ -1553,6 +1309,45 @@ func errorResult(_ commandType: String, _ errorCode: String, _ message: String, 
         commandType: commandType,
         errorCode: errorCode,
         message: message
+    )
+}
+
+func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
+    let errorCode: String
+    switch error.code {
+    case .notFound:
+        errorCode = "NOT_FOUND"
+    case .conflict, .conflictExists:
+        errorCode = "CONFLICT"
+    case .conflictSeq:
+        errorCode = "SEQUENCE_CONFLICT"
+    case .badRequest:
+        errorCode = "INVALID_OFFSET"
+    case .unauthorized:
+        errorCode = "UNAUTHORIZED"
+    case .forbidden:
+        errorCode = "FORBIDDEN"
+    case .staleEpoch:
+        errorCode = "STALE_EPOCH"
+    case .sequenceGap:
+        errorCode = "SEQUENCE_GAP"
+    case .retentionExpired:
+        errorCode = "RETENTION_EXPIRED"
+    case .timeout:
+        errorCode = "TIMEOUT"
+    case .networkError:
+        errorCode = "NETWORK_ERROR"
+    default:
+        errorCode = "UNEXPECTED_STATUS"
+    }
+
+    return Result(
+        type: "error",
+        success: false,
+        status: error.status,
+        commandType: commandType,
+        errorCode: errorCode,
+        message: error.message
     )
 }
 
