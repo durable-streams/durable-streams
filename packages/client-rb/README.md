@@ -197,7 +197,6 @@ stream.subscribe(offset:, live:) { |msg| } # Iterate with block
 # Lifecycle
 stream.create_stream(content_type:, ttl_seconds: nil, expires_at: nil)
 stream.delete
-stream.close
 ```
 
 ### Readers

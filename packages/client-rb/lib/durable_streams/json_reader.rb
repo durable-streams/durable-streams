@@ -73,7 +73,6 @@ module DurableStreams
       each { |msg| result << msg }
       result
     end
-    alias messages to_a
 
     # Cancel/close the reader
     def close
