@@ -70,7 +70,8 @@ final class Psr18HttpClient implements HttpClientInterface
                 return $response;
             } catch (DurableStreamException $e) {
                 // Network errors and timeouts are retryable
-                if ($e->getErrorCode() === 'NETWORK_ERROR' && $attempt < $maxRetries) {
+                $errorCode = $e->getErrorCode();
+                if (($errorCode === 'NETWORK_ERROR' || $errorCode === 'TIMEOUT') && $attempt < $maxRetries) {
                     $lastException = $e;
                     continue;
                 }

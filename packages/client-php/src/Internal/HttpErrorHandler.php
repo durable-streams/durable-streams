@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace DurableStreams\Internal;
 
 use DurableStreams\Exception\DurableStreamException;
+use DurableStreams\Exception\MessageTooLargeException;
 use DurableStreams\Exception\RateLimitedException;
 use DurableStreams\Exception\SeqConflictException;
 use DurableStreams\Exception\StreamExistsException;
@@ -74,6 +75,9 @@ trait HttpErrorHandler
 
             case 403:
                 throw new DurableStreamException($body ?: 'Forbidden', 'FORBIDDEN', $status, $headers);
+
+            case 413:
+                throw MessageTooLargeException::fromServerResponse($body, $headers);
 
             case 429:
                 throw new RateLimitedException($body ?: 'Rate limited', $headers);

@@ -227,6 +227,7 @@ final class StreamResponse implements IteratorAggregate
     /**
      * Iterate over raw body chunks.
      *
+     * For non-live mode, continues fetching until Stream-Up-To-Date is true.
      * For live mode (long-poll), yields after each fetch even if empty.
      * This allows the consumer to check isUpToDate() and cancel().
      *
@@ -242,8 +243,17 @@ final class StreamResponse implements IteratorAggregate
             yield $response->body;
         }
 
-        // For non-live mode, stop after initial fetch
+        // For non-live mode, continue until caught up (upToDate is true)
+        // The server may return partial data due to chunk size limits
         if (!$this->live) {
+            while (!$this->upToDate && !$this->cancelled) {
+                $response = $this->fetch();
+                $this->updateFromResponse($response);
+
+                if ($response->status !== 204 && $response->body !== '') {
+                    yield $response->body;
+                }
+            }
             return;
         }
 

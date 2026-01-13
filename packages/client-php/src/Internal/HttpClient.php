@@ -112,7 +112,8 @@ final class HttpClient implements HttpClientInterface
                 return $response;
             } catch (DurableStreamException $e) {
                 // Network errors and timeouts are retryable
-                if ($e->getErrorCode() === 'NETWORK_ERROR' && $attempt < $maxRetries) {
+                $errorCode = $e->getErrorCode();
+                if (($errorCode === 'NETWORK_ERROR' || $errorCode === 'TIMEOUT') && $attempt < $maxRetries) {
                     $lastException = $e;
                     continue;
                 }
@@ -153,6 +154,8 @@ final class HttpClient implements HttpClientInterface
 
         // Set request-specific options
         $isHead = $method === 'HEAD';
+        $methodsWithBody = ['POST', 'PUT', 'PATCH'];
+
         curl_setopt_array($handle, [
             CURLOPT_URL => $url,
             CURLOPT_CUSTOMREQUEST => $method,
@@ -161,9 +164,13 @@ final class HttpClient implements HttpClientInterface
             CURLOPT_NOBODY => $isHead,
         ]);
 
-        // Handle body (skip for HEAD requests)
-        if (!$isHead) {
+        // Only set POSTFIELDS for methods that support a body
+        // Setting it on GET/DELETE can cause unexpected cURL behavior
+        if (in_array($method, $methodsWithBody, true)) {
             curl_setopt($handle, CURLOPT_POSTFIELDS, $body ?? '');
+        } else {
+            // Clear any previously set POSTFIELDS for GET/DELETE/HEAD
+            curl_setopt($handle, CURLOPT_POSTFIELDS, null);
         }
 
         // Execute

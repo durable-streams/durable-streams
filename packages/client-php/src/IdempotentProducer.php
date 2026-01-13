@@ -182,25 +182,32 @@ final class IdempotentProducer
                     $currentEpoch = $this->parseEpochHeader($headers);
 
                     if ($this->autoClaim) {
-                        $this->epoch = $currentEpoch + 1;
-                        $batch['epoch'] = $this->epoch;
+                        $newEpoch = $currentEpoch + 1;
+                        $this->epoch = $newEpoch;
+
+                        // Update current batch to use new epoch with seq 0
+                        $batch['epoch'] = $newEpoch;
                         $batch['seq'] = 0;
-                        $this->nextSeq = 1;
+
+                        // Rebase all remaining pending batches to new epoch
+                        // Sequences start at 1 since current batch uses seq 0
+                        $nextSeq = 1;
+                        foreach ($this->pendingBatches as &$pending) {
+                            $pending['epoch'] = $newEpoch;
+                            $pending['seq'] = $nextSeq++;
+                        }
+                        unset($pending);
+
+                        $this->nextSeq = $nextSeq;
                         continue;
                     }
 
                     throw new StaleEpochException($currentEpoch, $e);
                 }
 
-                // Handle sequence conflict (duplicate detection)
+                // Handle sequence conflict
                 if ($e instanceof SeqConflictException) {
-                    // Log for debugging - could indicate misconfiguration
-                    error_log(sprintf(
-                        '[DurableStreams] SeqConflict treated as duplicate (producer=%s, epoch=%d, seq=%d)',
-                        $this->producerId,
-                        $batch['epoch'],
-                        $batch['seq']
-                    ));
+                    $this->handleSeqConflict($e, $batch);
                     return;
                 }
 
@@ -220,6 +227,60 @@ final class IdempotentProducer
             [],
             $lastException
         );
+    }
+
+    /**
+     * Handle sequence conflict exception.
+     *
+     * A 409 with sequence conflict can mean:
+     * - receivedSeq <= expectedSeq-1: true duplicate, safe to ignore (server already has this data)
+     * - receivedSeq > expectedSeq: sequence gap, data loss risk - throw error
+     *
+     * @param SeqConflictException $e
+     * @param array{data: mixed, seq: int, epoch: int} $batch
+     */
+    private function handleSeqConflict(SeqConflictException $e, array $batch): void
+    {
+        $expectedSeq = $e->getExpectedSeq();
+        $receivedSeq = $e->getReceivedSeq();
+
+        // If we have both values, we can determine if this is a true duplicate
+        if ($expectedSeq !== null && $receivedSeq !== null) {
+            // If expected > received, server is ahead of us - this is a duplicate
+            // (server already processed higher sequences)
+            if ($expectedSeq > $receivedSeq) {
+                error_log(sprintf(
+                    '[DurableStreams] SeqConflict: duplicate detected (producer=%s, epoch=%d, seq=%d, expected=%d)',
+                    $this->producerId,
+                    $batch['epoch'],
+                    $batch['seq'],
+                    $expectedSeq
+                ));
+                return;
+            }
+
+            // If received > expected, we skipped sequences - this is a gap, data may be lost
+            // This shouldn't happen in PHP's synchronous model, but if it does, throw
+            throw new DurableStreamException(
+                sprintf(
+                    'Sequence gap detected: expected seq %d but sent seq %d. Possible data loss.',
+                    $expectedSeq,
+                    $receivedSeq
+                ),
+                'SEQUENCE_GAP',
+                409,
+                $e->getHeaders()
+            );
+        }
+
+        // If we don't have enough info, treat conservatively as duplicate
+        // Log warning as this indicates incomplete protocol implementation
+        error_log(sprintf(
+            '[DurableStreams] SeqConflict with incomplete headers, treating as duplicate (producer=%s, epoch=%d, seq=%d)',
+            $this->producerId,
+            $batch['epoch'],
+            $batch['seq']
+        ));
     }
 
     /**
