@@ -67,14 +67,14 @@ public class CreateStreamOptions
     public string? ContentType { get; set; }
 
     /// <summary>
-    /// Time-to-live in seconds.
+    /// Time-to-live for the stream.
     /// </summary>
-    public int? TtlSeconds { get; set; }
+    public TimeSpan? Ttl { get; set; }
 
     /// <summary>
-    /// Absolute expiry time (ISO 8601).
+    /// Absolute expiry time.
     /// </summary>
-    public string? ExpiresAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
 
     /// <summary>
     /// Initial data to write to the stream.
@@ -124,6 +124,22 @@ public class StreamOptions
     public string? Cursor { get; set; }
 
     /// <summary>
+    /// Resume from a saved checkpoint (sets Offset and Cursor).
+    /// This is a convenience property that decomposes the checkpoint.
+    /// </summary>
+    public StreamCheckpoint? Checkpoint
+    {
+        set
+        {
+            if (value.HasValue)
+            {
+                Offset = value.Value.Offset;
+                Cursor = value.Value.Cursor;
+            }
+        }
+    }
+
+    /// <summary>
     /// Additional headers for the request.
     /// </summary>
     public Dictionary<string, string>? Headers { get; set; }
@@ -150,9 +166,9 @@ public class IdempotentProducerOptions
     public int MaxBatchBytes { get; set; } = 1024 * 1024; // 1MB
 
     /// <summary>
-    /// Maximum time to wait for more messages before sending (ms).
+    /// Maximum time to wait for more messages before sending.
     /// </summary>
-    public int LingerMs { get; set; } = 5;
+    public TimeSpan Linger { get; set; } = TimeSpan.FromMilliseconds(5);
 
     /// <summary>
     /// Maximum concurrent batches in flight.
@@ -181,6 +197,22 @@ public class IdempotentProducerOptions
 public readonly record struct AppendResult(
     Offset? NextOffset,
     bool Duplicate = false);
+
+/// <summary>
+/// Result of creating a stream.
+/// </summary>
+public enum CreateStreamResult
+{
+    /// <summary>
+    /// A new stream was created (HTTP 201).
+    /// </summary>
+    Created,
+
+    /// <summary>
+    /// The stream already existed (HTTP 200).
+    /// </summary>
+    AlreadyExisted
+}
 
 /// <summary>
 /// Event arguments for producer errors.

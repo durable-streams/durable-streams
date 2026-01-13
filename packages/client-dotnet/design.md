@@ -208,9 +208,9 @@ public interface IDurableStream
 
     /// <summary>
     /// Create this stream if it doesn't exist.
-    /// Returns HTTP status code: 201 (created), 200 (already exists), 409 (conflict).
+    /// Returns Created if a new stream was created, or AlreadyExisted if it existed.
     /// </summary>
-    Task<int> CreateAsync(
+    Task<CreateStreamResult> CreateAsync(
         CreateStreamOptions? options = null,
         CancellationToken cancellationToken = default);
 
@@ -517,9 +517,9 @@ public class IdempotentProducerOptions
     public int MaxBatchBytes { get; set; } = 1024 * 1024; // 1MB
 
     /// <summary>
-    /// Maximum time to wait for more messages before sending (ms).
+    /// Maximum time to wait for more messages before sending.
     /// </summary>
-    public int LingerMs { get; set; } = 5;
+    public TimeSpan Linger { get; set; } = TimeSpan.FromMilliseconds(5);
 
     /// <summary>
     /// Maximum concurrent batches in flight.
@@ -557,19 +557,20 @@ public class StreamOptions
     public LiveMode Live { get; set; } = LiveMode.Off;
 
     /// <summary>
-    /// Request-specific headers (merged with client defaults).
+    /// Cursor for CDN collapsing (from previous response).
     /// </summary>
-    public IDictionary<string, HeaderValue>? Headers { get; set; }
+    public string? Cursor { get; set; }
 
     /// <summary>
-    /// Request-specific query parameters.
+    /// Resume from a saved checkpoint (sets Offset and Cursor).
+    /// This is a convenience property that decomposes the checkpoint.
     /// </summary>
-    public IDictionary<string, string>? Params { get; set; }
+    public StreamCheckpoint? Checkpoint { set; }
 
     /// <summary>
-    /// Treat content as JSON even if Content-Type doesn't indicate it.
+    /// Request-specific headers.
     /// </summary>
-    public bool ForceJson { get; set; } = false;
+    public Dictionary<string, string>? Headers { get; set; }
 }
 
 public enum LiveMode
@@ -886,8 +887,8 @@ public readonly record struct StreamMetadata(
     Offset? Offset,
     string? ETag,
     string? CacheControl,
-    int? TtlSeconds,
-    string? ExpiresAt);  // RFC 3339 string from server
+    TimeSpan? Ttl,
+    DateTimeOffset? ExpiresAt);
 ```
 
 ---
@@ -1028,7 +1029,7 @@ await using var producer = stream.CreateProducer("order-service-1", new Idempote
 {
     AutoClaim = true,
     MaxBatchBytes = 1024 * 1024,
-    LingerMs = 5,
+    Linger = TimeSpan.FromMilliseconds(5),
     MaxInFlight = 5
 });
 

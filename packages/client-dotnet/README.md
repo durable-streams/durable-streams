@@ -84,7 +84,7 @@ await using var producer = stream.CreateProducer("my-service-1", new IdempotentP
 {
     AutoClaim = true,           // Auto-recover from epoch conflicts
     MaxBatchBytes = 1024 * 1024, // 1MB batch size
-    LingerMs = 5                // Batch for 5ms before sending
+    Linger = TimeSpan.FromMilliseconds(5)  // Batch for 5ms before sending
 });
 
 // Handle errors (fire-and-forget model)
@@ -117,7 +117,7 @@ var stream = client.GetStream("/my-stream");
 await stream.CreateAsync(new CreateStreamOptions
 {
     ContentType = "application/json",
-    TtlSeconds = 3600  // Auto-delete after 1 hour
+    Ttl = TimeSpan.FromHours(1)  // Auto-delete after 1 hour
 });
 ```
 
@@ -130,11 +130,10 @@ Offsets are opaque tokens that identify positions within a stream. Always use of
 Offset.Beginning  // "-1" - Start of stream
 Offset.Now        // "now" - Current tail (skip existing data)
 
-// Resume from a saved offset
+// Resume from a saved checkpoint (simplest approach)
 var response = await stream.StreamAsync(new StreamOptions
 {
-    Offset = savedCheckpoint.Offset,
-    Cursor = savedCheckpoint.Cursor  // Optional CDN optimization
+    Checkpoint = savedCheckpoint  // Sets Offset and Cursor automatically
 });
 
 // Save the checkpoint as you consume
@@ -200,7 +199,7 @@ public sealed class DurableStream
 
     // Metadata
     Task<StreamMetadata> HeadAsync();
-    Task<int> CreateAsync(CreateStreamOptions? options = null);
+    Task<CreateStreamResult> CreateAsync(CreateStreamOptions? options = null);
     Task DeleteAsync();
 
     // Create an idempotent producer
@@ -311,7 +310,7 @@ var producer = stream.CreateProducer("my-producer", new IdempotentProducerOption
     Epoch = 0,                  // Starting epoch (increment on restart)
     AutoClaim = true,           // Auto-increment epoch on 403
     MaxBatchBytes = 1024 * 1024, // 1MB
-    LingerMs = 5,               // Wait for more messages
+    Linger = TimeSpan.FromMilliseconds(5),  // Wait for more messages
     MaxInFlight = 5,            // Concurrent batches
     MaxBufferedMessages = 10_000,
     MaxBufferedBytes = 64 * 1024 * 1024  // 64MB
@@ -404,7 +403,7 @@ var stream = await client.CreateStreamAsync($"/generations/{generationId}",
 await using var producer = stream.CreateProducer(generationId, new IdempotentProducerOptions
 {
     AutoClaim = true,
-    LingerMs = 10  // Low latency for token streaming
+    Linger = TimeSpan.FromMilliseconds(10)  // Low latency for token streaming
 });
 
 bool fenced = false;

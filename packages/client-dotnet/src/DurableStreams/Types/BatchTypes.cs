@@ -34,5 +34,5 @@ public readonly record struct StreamMetadata(
     Offset? Offset,
     string? ETag,
     string? CacheControl,
-    int? TtlSeconds,
-    string? ExpiresAt);
+    TimeSpan? Ttl,
+    DateTimeOffset? ExpiresAt);

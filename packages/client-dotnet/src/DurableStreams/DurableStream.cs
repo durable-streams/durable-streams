@@ -45,9 +45,9 @@ public sealed class DurableStream
     internal DurableStreamClient Client => _client;
 
     /// <summary>
-    /// Create a new stream. Returns the HTTP status code (201 = created, 200 = already existed).
+    /// Create a new stream. Returns Created if a new stream was created, or AlreadyExisted if it existed.
     /// </summary>
-    public async Task<int> CreateAsync(
+    public async Task<CreateStreamResult> CreateAsync(
         CreateStreamOptions? options = null,
         CancellationToken cancellationToken = default)
     {
@@ -63,13 +63,14 @@ public sealed class DurableStream
         }
 
         var contentType = options?.ContentType ?? ContentTypes.OctetStream;
-        if (options?.TtlSeconds != null)
+        if (options?.Ttl != null)
         {
-            request.Headers.TryAddWithoutValidation(Headers.StreamTtl, options.TtlSeconds.Value.ToString());
+            var ttlSeconds = (int)options.Ttl.Value.TotalSeconds;
+            request.Headers.TryAddWithoutValidation(Headers.StreamTtl, ttlSeconds.ToString());
         }
         if (options?.ExpiresAt != null)
         {
-            request.Headers.TryAddWithoutValidation(Headers.StreamExpiresAt, options.ExpiresAt);
+            request.Headers.TryAddWithoutValidation(Headers.StreamExpiresAt, options.ExpiresAt.Value.ToString("o"));
         }
 
         if (options?.InitialData != null)
@@ -98,7 +99,9 @@ public sealed class DurableStream
         }
 
         _contentType = HttpHelpers.GetHeader(response, Headers.ContentType) ?? contentType;
-        return (int)response.StatusCode;
+        return response.StatusCode == HttpStatusCode.Created
+            ? CreateStreamResult.Created
+            : CreateStreamResult.AlreadyExisted;
     }
 
     /// <summary>
@@ -125,14 +128,17 @@ public sealed class DurableStream
         _contentType = contentType;
 
         var nextOffsetHeader = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
+        var ttlSeconds = HttpHelpers.GetIntHeader(response, Headers.StreamTtl);
+        var expiresAtStr = HttpHelpers.GetHeader(response, Headers.StreamExpiresAt);
+
         return new StreamMetadata(
             Exists: true,
             ContentType: contentType,
             Offset: nextOffsetHeader != null ? new Offset(nextOffsetHeader) : (Offset?)null,
             ETag: HttpHelpers.GetHeader(response, Headers.ETag),
             CacheControl: HttpHelpers.GetHeader(response, Headers.CacheControl),
-            TtlSeconds: HttpHelpers.GetIntHeader(response, Headers.StreamTtl),
-            ExpiresAt: HttpHelpers.GetHeader(response, Headers.StreamExpiresAt)
+            Ttl: ttlSeconds.HasValue ? TimeSpan.FromSeconds(ttlSeconds.Value) : null,
+            ExpiresAt: expiresAtStr != null && DateTimeOffset.TryParse(expiresAtStr, out var expiresAt) ? expiresAt : null
         );
     }
 

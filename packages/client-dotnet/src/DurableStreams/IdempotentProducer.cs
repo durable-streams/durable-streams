@@ -144,8 +144,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
 
             // Check if batch should send
             var shouldSend = _batchBytes >= _options.MaxBatchBytes;
-            // Only start timer if LingerMs > 0 (LingerMs <= 0 means batch by size only)
-            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.LingerMs > 0;
+            // Only start timer if Linger > 0 (Linger <= 0 means batch by size only)
+            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.Linger > TimeSpan.Zero;
 
             if (shouldSend)
             {
@@ -156,8 +156,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
                 _lingerTimer = new Timer(
                     _ => OnLingerTimerExpired(),
                     null,
-                    _options.LingerMs,
-                    Timeout.Infinite);
+                    _options.Linger,
+                    Timeout.InfiniteTimeSpan);
             }
         }
     }
@@ -178,8 +178,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
             _batchBytes += data.Length;
 
             var shouldSend = _batchBytes >= _options.MaxBatchBytes;
-            // Only start timer if LingerMs > 0 (LingerMs <= 0 means batch by size only)
-            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.LingerMs > 0;
+            // Only start timer if Linger > 0 (Linger <= 0 means batch by size only)
+            var shouldStartTimer = !shouldSend && _lingerTimer == null && _pendingBatch.Count == 1 && _options.Linger > TimeSpan.Zero;
 
             if (shouldSend)
             {
@@ -190,8 +190,8 @@ public sealed class IdempotentProducer : IAsyncDisposable
                 _lingerTimer = new Timer(
                     _ => OnLingerTimerExpired(),
                     null,
-                    _options.LingerMs,
-                    Timeout.Infinite);
+                    _options.Linger,
+                    Timeout.InfiniteTimeSpan);
             }
 
             return true;

@@ -179,9 +179,11 @@ public sealed class StreamResponse : IAsyncDisposable
 
     /// <summary>
     /// Accumulate all bytes until upToDate, then return.
+    /// Only valid with LiveMode.Off; throws InvalidOperationException for live modes.
     /// </summary>
     public async Task<byte[]> ReadAllBytesAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfLiveMode();
         using var ms = new MemoryStream();
         await foreach (var chunk in ReadBytesAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -195,9 +197,11 @@ public sealed class StreamResponse : IAsyncDisposable
 
     /// <summary>
     /// Accumulate all JSON items until upToDate, then return.
+    /// Only valid with LiveMode.Off; throws InvalidOperationException for live modes.
     /// </summary>
     public async Task<List<T>> ReadAllJsonAsync<T>(CancellationToken cancellationToken = default)
     {
+        ThrowIfLiveMode();
         var result = new List<T>();
         await foreach (var item in ReadJsonAsync<T>(cancellationToken).ConfigureAwait(false))
         {
@@ -208,9 +212,11 @@ public sealed class StreamResponse : IAsyncDisposable
 
     /// <summary>
     /// Accumulate all text until upToDate, then return.
+    /// Only valid with LiveMode.Off; throws InvalidOperationException for live modes.
     /// </summary>
     public async Task<string> ReadAllTextAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfLiveMode();
         var sb = new StringBuilder();
         await foreach (var chunk in ReadTextAsync(cancellationToken).ConfigureAwait(false))
         {
@@ -508,6 +514,16 @@ public sealed class StreamResponse : IAsyncDisposable
             throw new InvalidOperationException(
                 "This response has already been consumed. " +
                 "IStreamResponse is single-consumer; create a new StreamAsync() session for multiple reads.");
+        }
+    }
+
+    private void ThrowIfLiveMode()
+    {
+        if (_options.Live != LiveMode.Off)
+        {
+            throw new InvalidOperationException(
+                $"ReadAll* methods require LiveMode.Off. Current mode is {_options.Live}. " +
+                "Use the streaming Read* methods (ReadBytesAsync, ReadJsonAsync, etc.) for live modes.");
         }
     }
 
