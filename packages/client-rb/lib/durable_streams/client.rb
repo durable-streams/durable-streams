@@ -6,6 +6,25 @@ module DurableStreams
   class Client
     attr_reader :base_url, :headers, :params, :timeout, :retry_policy
 
+    # Open a client with block form for automatic cleanup
+    # @example
+    #   Client.open(base_url: "https://...") do |client|
+    #     stream = client.stream("/events")
+    #     # ...
+    #   end # auto-closes
+    # @yield [Client] The client instance
+    # @return [Object] The block's return value
+    def self.open(**options, &block)
+      client = new(**options)
+      return client unless block_given?
+
+      begin
+        yield client
+      ensure
+        client.close
+      end
+    end
+
     # @param base_url [String, nil] Optional base URL for relative paths
     # @param headers [Hash] Default headers (values can be strings or callables)
     # @param params [Hash] Default query params (values can be strings or callables)

@@ -49,6 +49,14 @@ module DurableStreams
       stream
     end
 
+    # Check if a stream exists without raising
+    # @param url [String] Stream URL
+    # @return [Boolean]
+    def self.exists?(url:, **options)
+      stream = new(url: url, **options)
+      stream.exists?
+    end
+
     # --- Metadata Operations ---
 
     # HEAD - Get stream metadata
@@ -78,6 +86,22 @@ module DurableStreams
         etag: response["etag"],
         cache_control: response["cache-control"]
       )
+    end
+
+    # Check if stream exists without raising
+    # @return [Boolean]
+    def exists?
+      head
+      true
+    rescue StreamNotFoundError
+      false
+    end
+
+    # Check if this is a JSON stream
+    # @return [Boolean]
+    def json?
+      head if @content_type.nil?
+      DurableStreams.json_content_type?(@content_type)
     end
 
     # Create stream on server (PUT)
@@ -196,10 +220,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @return [Array] All messages from offset to current end
     def read_all(offset: "-1")
-      reader = read(offset: offset, live: false)
-      result = reader.to_a
-      reader.close
-      result
+      read(offset: offset, live: false, &:to_a)
     end
 
     # Convenience: Subscribe to live updates with a block

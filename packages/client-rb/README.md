@@ -150,6 +150,13 @@ DurableStreams.read(url:, offset: "-1", headers: {})      # One-shot read
 ### Client
 
 ```ruby
+# Block form (recommended - auto-closes)
+DurableStreams::Client.open(base_url: "https://...") do |client|
+  stream = client.stream("/events")
+  # ...
+end # auto-closes
+
+# Manual form
 client = DurableStreams::Client.new(
   base_url: "https://...",   # Optional base URL
   headers: {},               # Default headers (can be Proc for dynamic values)
@@ -170,7 +177,12 @@ stream = DurableStreams::Stream.connect(url: "https://...")
 
 # Metadata
 stream.head                  # => HeadResult (exists, content_type, next_offset, ...)
+stream.exists?               # Check if stream exists (no exception)
+stream.json?                 # Check if JSON content type
 stream.content_type          # Content type from last head/read
+
+# Class method for existence check
+DurableStreams::Stream.exists?(url: "https://...")  # => true/false
 
 # Writing
 stream.append(data, seq: nil)  # Append data, returns AppendResult
