@@ -31,7 +31,8 @@ module DurableStreams
   # Sequence conflict (409 with Stream-Seq)
   class SeqConflictError < Error
     def initialize(url: nil, **opts)
-      super("Sequence conflict", url: url, status: 409, code: "CONFLICT_SEQ", **opts)
+      message = url ? "Sequence conflict: #{url}" : "Sequence conflict"
+      super(message, url: url, status: 409, code: "CONFLICT_SEQ", **opts)
     end
   end
 
@@ -57,9 +58,10 @@ module DurableStreams
   class SequenceGapError < Error
     attr_reader :expected_seq, :received_seq
 
-    def initialize(expected_seq: nil, received_seq: nil, **opts)
-      super("Sequence gap: expected #{expected_seq}, got #{received_seq}",
-            status: 409, code: "SEQUENCE_GAP", **opts)
+    def initialize(expected_seq: nil, received_seq: nil, url: nil, **opts)
+      message = "Sequence gap: expected #{expected_seq}, got #{received_seq}"
+      message = "#{message} (#{url})" if url
+      super(message, url: url, status: 409, code: "SEQUENCE_GAP", **opts)
       @expected_seq = expected_seq
       @received_seq = received_seq
     end
@@ -68,7 +70,8 @@ module DurableStreams
   # Rate limited (429)
   class RateLimitedError < Error
     def initialize(url: nil, **opts)
-      super("Rate limited", url: url, status: 429, code: "RATE_LIMITED", **opts)
+      message = url ? "Rate limited: #{url}" : "Rate limited"
+      super(message, url: url, status: 429, code: "RATE_LIMITED", **opts)
     end
   end
 
@@ -97,6 +100,13 @@ module DurableStreams
   class AlreadyConsumedError < Error
     def initialize(**opts)
       super("Reader already consumed", code: "ALREADY_CONSUMED", **opts)
+    end
+  end
+
+  # Producer or stream has been closed
+  class ClosedError < Error
+    def initialize(message = "Producer is closed", **opts)
+      super(message, code: "CLOSED", **opts)
     end
   end
 

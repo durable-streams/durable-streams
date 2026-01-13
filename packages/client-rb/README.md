@@ -223,6 +223,7 @@ producer.append(data)      # Fire-and-forget (batched)
 producer.append_sync(data) # Wait for acknowledgment
 producer.flush             # Flush pending batches
 producer.close             # Flush and close
+producer.closed?           # Check if closed
 
 producer.epoch  # Current epoch
 producer.seq    # Current sequence number
@@ -255,6 +256,7 @@ TimeoutError             # Request timeout
 SSENotSupportedError     # SSE not supported for content type
 FetchError               # Other HTTP errors
 AlreadyConsumedError     # Reader already consumed
+ClosedError              # Producer has been closed
 ```
 
 ## Live Modes

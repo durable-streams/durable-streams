@@ -48,7 +48,7 @@ module DurableStreams
     # Append a message (fire-and-forget, batched)
     # @param data [Object] Data to append
     def append(data)
-      raise AlreadyConsumedError if @closed
+      raise ClosedError.new("Producer is closed", url: @url) if @closed
 
       batch_to_send = nil
       @mutex.synchronize do
@@ -115,6 +115,19 @@ module DurableStreams
       @closed = true
       cancel_linger_timer
       flush
+
+      # Signal sender thread to stop and wait for it
+      if @sender_thread&.alive?
+        @batch_queue << :shutdown
+        @sender_thread.join(5) # Wait up to 5 seconds
+        @sender_thread.kill if @sender_thread.alive? # Force kill if stuck
+      end
+    end
+
+    # Check if the producer has been closed
+    # @return [Boolean]
+    def closed?
+      @closed
     end
 
     private
