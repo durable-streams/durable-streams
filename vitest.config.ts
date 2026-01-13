@@ -78,6 +78,17 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      defineProject({
+        test: {
+          name: "server-conformance-tests",
+          include: [
+            "packages/server-conformance-tests/src/test-runner.ts",
+            "packages/server-conformance-tests/dist/test-runner.js",
+          ],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
     ],
     coverage: {
       provider: `v8`,
