@@ -204,6 +204,8 @@ The core read/write handle, following the Python client pattern:
 ```ruby
 module DurableStreams
   class Stream
+    include Enumerable
+
     attr_reader :url, :content_type
 
     # @param url [String] Stream URL (keyword for public API consistency)
@@ -284,12 +286,23 @@ module DurableStreams
     def append(data, seq: nil)
     end
 
-    # Append with streaming body
-    # @param source [IO, Enumerator] Streaming source
-    def append_stream(source, seq: nil)
+    # Shovel operator for append (Ruby idiom)
+    # @param data [Object] Data to append
+    # @return [self] Returns self for chaining
+    def <<(data)
+      append(data)
+      self
     end
 
     # --- Read Operations ---
+
+    # Iterate over messages (Enumerable interface)
+    # Uses auto-detected reader with live: false (catch-up only)
+    # @yield [Object] Each message
+    def each(&block)
+      return enum_for(:each) unless block_given?
+      read(live: false).each(&block)
+    end
 
     # Start a read session
     # @param offset [String] Starting offset (default: "-1" for beginning)
@@ -571,6 +584,19 @@ For exactly-once writes with batching. Takes a URL directly (standalone, doesn't
 ```ruby
 module DurableStreams
   class IdempotentProducer
+    # Block form for automatic cleanup (recommended)
+    # @yield [IdempotentProducer] The producer instance
+    # @return [Object] The block's return value
+    def self.open(**options, &block)
+      producer = new(**options)
+      return producer unless block_given?
+      begin
+        yield producer
+      ensure
+        producer.close
+      end
+    end
+
     # @param url [String] Stream URL
     # @param producer_id [String] Stable identifier for this producer
     # @param epoch [Integer] Starting epoch (increment on restart)
@@ -603,6 +629,14 @@ module DurableStreams
     def append(data)
     end
 
+    # Shovel operator for append (Ruby idiom)
+    # @param data [Object] Data to append
+    # @return [self] Returns self for chaining
+    def <<(data)
+      append(data)
+      self
+    end
+
     # Append and wait for acknowledgment
     # @param data [Object] Data to append
     # @return [IdempotentAppendResult]
@@ -629,6 +663,17 @@ end
 **Usage:**
 
 ```ruby
+# Block form (recommended - auto flush/close)
+DurableStreams::IdempotentProducer.open(
+  url: "https://streams.example.com/orders",
+  producer_id: "order-service-1",
+  epoch: load_epoch_from_disk || 0
+) do |producer|
+  # Shovel operator for append
+  producer << { order_id: 1, status: "created" }
+end
+
+# Manual form
 producer = DurableStreams::IdempotentProducer.new(
   url: "https://streams.example.com/orders",
   producer_id: "order-service-1",

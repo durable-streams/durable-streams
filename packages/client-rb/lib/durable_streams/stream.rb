@@ -5,6 +5,8 @@ require "json"
 module DurableStreams
   # Stream handle for read/write operations on a durable stream.
   class Stream
+    include Enumerable
+
     attr_reader :url, :content_type
 
     # @param url [String] Stream URL
@@ -165,7 +167,24 @@ module DurableStreams
       end
     end
 
+    # Shovel operator for append (Ruby idiom)
+    # @param data [Object] Data to append
+    # @return [self] Returns self for chaining
+    def <<(data)
+      append(data)
+      self
+    end
+
     # --- Read Operations ---
+
+    # Iterate over messages (Enumerable interface)
+    # Uses auto-detected reader with live: false (catch-up only)
+    # @yield [Object] Each message
+    def each(&block)
+      return enum_for(:each) unless block_given?
+
+      read(live: false).each(&block)
+    end
 
     # Read JSON messages
     # @param offset [String] Starting offset

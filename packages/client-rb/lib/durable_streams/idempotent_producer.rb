@@ -8,6 +8,24 @@ module DurableStreams
   class IdempotentProducer
     attr_reader :epoch, :seq
 
+    # Open a producer with block form for automatic cleanup
+    # @example
+    #   IdempotentProducer.open(url: "...", producer_id: "...") do |producer|
+    #     producer << data
+    #   end # auto flush/close
+    # @yield [IdempotentProducer] The producer instance
+    # @return [Object] The block's return value
+    def self.open(**options, &block)
+      producer = new(**options)
+      return producer unless block_given?
+
+      begin
+        yield producer
+      ensure
+        producer.close
+      end
+    end
+
     # @param url [String] Stream URL
     # @param producer_id [String] Stable identifier for this producer
     # @param epoch [Integer] Starting epoch (increment on restart)
@@ -68,6 +86,14 @@ module DurableStreams
 
       # Send outside the mutex to avoid blocking other appends
       queue_batch(batch_to_send) if batch_to_send
+    end
+
+    # Shovel operator for append (Ruby idiom)
+    # @param data [Object] Data to append
+    # @return [self] Returns self for chaining
+    def <<(data)
+      append(data)
+      self
     end
 
     # Append and wait for acknowledgment

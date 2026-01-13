@@ -58,24 +58,21 @@ messages = DurableStreams.read(
 ### Using a Client (recommended for multiple operations)
 
 ```ruby
-client = DurableStreams::Client.new(
+# Block form (recommended - auto-closes)
+DurableStreams::Client.open(
   base_url: "https://streams.example.com",
   headers: { "Authorization" => "Bearer #{token}" }
-)
+) do |client|
+  stream = client.stream("/events/orders")
+  stream.create_stream(content_type: "application/json")
 
-# Create a stream handle
-stream = client.stream("/events/orders")
-stream.create_stream(content_type: "application/json")
+  # Append with shovel operator (Ruby idiom)
+  stream << { order_id: 1, status: "created" }
+  stream << { order_id: 2, status: "created" }
 
-# Append events
-stream.append({ order_id: 1, status: "created" })
-stream.append({ order_id: 2, status: "created" })
-
-# Read all events
-events = stream.read_all
-puts "Found #{events.length} events"
-
-client.close
+  # Stream is Enumerable - iterate directly
+  stream.each { |event| puts event }
+end
 ```
 
 ### Live Streaming
@@ -117,21 +114,16 @@ end
 For high-throughput writes with exactly-once delivery guarantees:
 
 ```ruby
-producer = DurableStreams::IdempotentProducer.new(
+# Block form (recommended - auto flush/close)
+DurableStreams::IdempotentProducer.open(
   url: "https://streams.example.com/events",
   producer_id: "order-service-#{Process.pid}",
   epoch: 0,
   auto_claim: true  # Auto-recover from epoch conflicts
-)
-
-# Fire-and-forget writes (batched automatically)
-1000.times do |i|
-  producer.append({ order_id: i, status: "created" })
-end
-
-# Ensure all data is delivered
-producer.flush
-producer.close
+) do |producer|
+  # Fire-and-forget writes with shovel operator
+  1000.times { |i| producer << { order_id: i, status: "created" } }
+end  # auto flush/close
 ```
 
 **How it works:** The producer maintains `(producer_id, epoch, seq)` state. If another process claims the same producer_id with a higher epoch, your writes will be rejected with a 403—preventing duplicate writes during failover.
@@ -186,8 +178,10 @@ DurableStreams::Stream.exists?(url: "https://...")  # => true/false
 
 # Writing
 stream.append(data, seq: nil)  # Append data, returns AppendResult
+stream << data                 # Shovel operator (returns self for chaining)
 
-# Reading
+# Reading (Stream includes Enumerable)
+stream.each { |msg| ... }                  # Iterate messages (live: false)
 stream.read(offset: "-1", live: :auto)     # Returns JsonReader or ByteReader
 stream.read_json(offset: "-1", live: :sse) # Force JSON reader
 stream.read_bytes(offset: "-1")            # Force byte reader
@@ -220,6 +214,12 @@ reader.close         # Stop iteration
 ### IdempotentProducer
 
 ```ruby
+# Block form (recommended - auto-closes)
+DurableStreams::IdempotentProducer.open(url: "https://...", producer_id: "...") do |producer|
+  producer << data  # Shovel operator
+end
+
+# Manual form
 producer = DurableStreams::IdempotentProducer.new(
   url: "https://...",
   producer_id: "unique-id",
@@ -231,6 +231,7 @@ producer = DurableStreams::IdempotentProducer.new(
 )
 
 producer.append(data)      # Fire-and-forget (batched)
+producer << data           # Shovel operator (returns self for chaining)
 producer.append_sync(data) # Wait for acknowledgment
 producer.flush             # Flush pending batches
 producer.close             # Flush and close
