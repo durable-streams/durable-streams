@@ -247,18 +247,20 @@ defmodule DurableStreams.Stream do
     live = Keyword.get(opts, :live, false)
     timeout = Keyword.get(opts, :timeout, stream.client.timeout)
     extra_headers = Keyword.get(opts, :headers, %{})
+    halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
+    halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
 
     # Use Finch for true SSE streaming when available
     is_sse = live == :sse or live == "sse"
     if is_sse and DurableStreams.HTTP.Finch.available?() do
-      read_sse_finch(stream, offset, timeout, extra_headers)
+      read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate)
     else
       read_httpc(stream, offset, live, timeout, extra_headers)
     end
   end
 
   # SSE streaming using Finch (true incremental delivery)
-  defp read_sse_finch(stream, offset, timeout, extra_headers) do
+  defp read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate) do
     query_params = [{"offset", offset}, {"live", "sse"}]
     url_with_query = url(stream) <> "?" <> URI.encode_query(query_params)
 
@@ -277,7 +279,12 @@ defmodule DurableStreams.Stream do
         Process.put(events_ref, [{data, next_offset, up_to_date} | events])
     end
 
-    case DurableStreams.HTTP.Finch.stream_sse(url_with_query, headers, [timeout: timeout], on_event) do
+    sse_opts = [
+      timeout: timeout,
+      halt_on_up_to_date: halt_on_up_to_date,
+      halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
+    ]
+    case DurableStreams.HTTP.Finch.stream_sse(url_with_query, headers, sse_opts, on_event) do
       {:ok, %{next_offset: final_offset, up_to_date: up_to_date}} ->
         events = Process.get(events_ref) |> Enum.reverse()
         Process.delete(events_ref)

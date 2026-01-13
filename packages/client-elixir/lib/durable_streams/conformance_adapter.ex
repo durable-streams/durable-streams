@@ -528,6 +528,17 @@ defmodule DurableStreams.ConformanceAdapter do
   defp do_read_chunks(stream, opts, remaining, wait_for_up_to_date, live_mode, chunks, current_offset, _up_to_date, _status) do
     read_opts = Keyword.put(opts, :offset, current_offset)
 
+    # For SSE, halt when up_to_date to avoid waiting for timeout
+    # If waitForUpToDate is true, halt immediately even with 0 events
+    # Otherwise, only halt if we've received some data
+    read_opts = if live_mode == :sse do
+      read_opts
+      |> Keyword.put(:halt_on_up_to_date, true)
+      |> Keyword.put(:halt_on_up_to_date_immediate, wait_for_up_to_date)
+    else
+      read_opts
+    end
+
     case Stream.read(stream, read_opts) do
       {:ok, chunk} ->
         new_chunk =
@@ -560,9 +571,14 @@ defmodule DurableStreams.ConformanceAdapter do
           chunk.up_to_date and live_mode == false ->
             {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
 
-          # In live mode: if we got data and have remaining chunks, continue polling for more
+          # SSE: when up_to_date, stop - SSE collects all events in one connection
+          # Don't loop for more as that starts a new SSE connection and waits for timeout
+          chunk.up_to_date and live_mode == :sse ->
+            {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
+
+          # Long-poll: if we got data and have remaining chunks, continue polling for more
           # This handles the case where data arrives in batches (e.g., A then B then C)
-          chunk.up_to_date and live_mode != false and new_remaining > 0 and got_data ->
+          chunk.up_to_date and live_mode == :long_poll and new_remaining > 0 and got_data ->
             do_read_chunks(
               stream,
               opts,

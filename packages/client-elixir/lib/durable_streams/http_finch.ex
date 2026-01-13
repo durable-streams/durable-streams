@@ -59,6 +59,11 @@ defmodule DurableStreams.HTTP.Finch do
 
   - `:timeout` - Request timeout in milliseconds (default: 30000)
   - `:offset` - Starting offset for the stream
+  - `:halt_on_up_to_date` - Internal/testing only. Halt after receiving events
+    when stream reports up-to-date. Used by conformance tests to terminate
+    SSE connections that would otherwise block indefinitely.
+  - `:halt_on_up_to_date_immediate` - Internal/testing only. Halt immediately
+    when up-to-date, even with zero events. For tests verifying empty streams.
 
   ## Callback
 
@@ -74,6 +79,8 @@ defmodule DurableStreams.HTTP.Finch do
       {:error, :finch_not_available}
     else
       timeout = Keyword.get(opts, :timeout, 30_000)
+      halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
+      halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
       request = Finch.build(:get, url, headers)
 
       initial_acc = %{
@@ -83,7 +90,9 @@ defmodule DurableStreams.HTTP.Finch do
         next_offset: nil,
         up_to_date: false,
         events_delivered: 0,
-        on_event: on_event
+        on_event: on_event,
+        halt_on_up_to_date: halt_on_up_to_date,
+        halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
       }
 
       # Use Finch.stream_while for SSE - it supports {:cont, acc} / {:halt, acc} returns
@@ -168,7 +177,21 @@ defmodule DurableStreams.HTTP.Finch do
       deliver_event(event, acc)
     end)
 
-    {:cont, %{acc | buffer: remaining_buffer}}
+    new_acc = %{acc | buffer: remaining_buffer}
+
+    # Halt when up_to_date if configured
+    # - halt_on_up_to_date_immediate: halt as soon as up_to_date (even with 0 events)
+    # - halt_on_up_to_date: only halt if we've received some data
+    should_halt = new_acc.up_to_date and (
+      new_acc.halt_on_up_to_date_immediate or
+      (new_acc.halt_on_up_to_date and new_acc.events_delivered > 0)
+    )
+
+    if should_halt do
+      {:halt, new_acc}
+    else
+      {:cont, new_acc}
+    end
   end
 
   defp handle_stream_message({:trailers, _trailers}, acc) do
