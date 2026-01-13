@@ -378,15 +378,20 @@ export class DurableStreamTestServer {
       modified = modified.slice(0, fault.truncateBodyBytes)
     }
 
-    // Corrupt body if configured - inject invalid bytes to break JSON parsing
+    // Corrupt body if configured - deterministically break JSON structure
     if (fault.corruptBody && modified.length > 0) {
       modified = new Uint8Array(modified) // Make a copy to avoid mutating original
-      // Insert invalid UTF-8 bytes that will definitely break JSON parsing
-      // Corrupt ~10% of bytes with 0xFF (invalid UTF-8 continuation byte)
-      const numCorrupt = Math.max(3, Math.floor(modified.length * 0.1))
+      // Always corrupt the first byte (breaks JSON structure - the opening [ or {)
+      // and add some random corruption for good measure
+      modified[0] = 0x58 // 'X' - makes JSON syntactically invalid
+      if (modified.length > 1) {
+        modified[1] = 0x59 // 'Y'
+      }
+      // Also corrupt some bytes in the middle to catch edge cases
+      const numCorrupt = Math.max(1, Math.floor(modified.length * 0.1))
       for (let i = 0; i < numCorrupt; i++) {
         const pos = Math.floor(Math.random() * modified.length)
-        modified[pos] = 0xff // Invalid UTF-8 byte, guaranteed to break JSON
+        modified[pos] = 0x5a // 'Z' - valid UTF-8 but breaks JSON structure
       }
     }
 
