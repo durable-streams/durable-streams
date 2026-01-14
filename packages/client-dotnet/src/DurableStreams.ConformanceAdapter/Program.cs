@@ -725,7 +725,7 @@ object HandleValidate(JsonElement root)
 
                 // Try to create a producer - this will validate the options
                 var stream = client!.GetStream("/test-validate");
-                using var producer = stream.CreateProducer(producerId, options);
+                _ = stream.CreateProducer(producerId, options);
 
                 return new { type = "validate", success = true };
             }
