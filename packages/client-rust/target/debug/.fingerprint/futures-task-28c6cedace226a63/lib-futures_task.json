@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"alloc\", \"std\"]",
+  "declared_features": "[\"alloc\", \"cfg-target-has-atomic\", \"default\", \"std\", \"unstable\"]",
+  "target": 13518091470260541623,
+  "profile": 336243669335521001,
+  "path": 5330818351762492115,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/futures-task-28c6cedace226a63/dep-lib-futures_task",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

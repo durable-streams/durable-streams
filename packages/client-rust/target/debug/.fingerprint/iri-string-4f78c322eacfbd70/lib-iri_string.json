@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"alloc\", \"default\", \"std\"]",
+  "declared_features": "[\"alloc\", \"default\", \"memchr\", \"serde\", \"std\"]",
+  "target": 12413245532915438876,
+  "profile": 8276155916380437441,
+  "path": 483044927918553495,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/iri-string-4f78c322eacfbd70/dep-lib-iri_string",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

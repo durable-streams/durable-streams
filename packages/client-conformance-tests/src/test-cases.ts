@@ -450,6 +450,8 @@ interface BaseExpectation {
   status?: number
   /** Expected error code (if operation should fail) */
   errorCode?: string
+  /** Strings that should be present in error message (for context validation) */
+  messageContains?: Array<string>
   /** Store result in variable */
   storeAs?: string
 }

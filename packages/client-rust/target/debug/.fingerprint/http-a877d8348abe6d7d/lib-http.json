@@ -1,0 +1,23 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"default\", \"std\"]",
+  "declared_features": "[\"default\", \"std\"]",
+  "target": 4766512060560342653,
+  "profile": 8276155916380437441,
+  "path": 18019419469650021296,
+  "deps": [
+    [6355489020061627772, "bytes", false, 9586073891585731763],
+    [9938278000850417404, "itoa", false, 6832448117565643077]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/http-a877d8348abe6d7d/dep-lib-http",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

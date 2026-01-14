@@ -888,6 +888,21 @@ function validateExpectation(
     }
   }
 
+  // Check error message contains expected strings
+  if (expect.messageContains !== undefined) {
+    if (result.success) {
+      return `Expected error with message containing ${JSON.stringify(expect.messageContains)}, but operation succeeded`
+    }
+    if (isErrorResult(result)) {
+      const missing = (expect.messageContains as Array<string>).filter(
+        (s) => !result.message.toLowerCase().includes(s.toLowerCase())
+      )
+      if (missing.length > 0) {
+        return `Expected error message to contain [${(expect.messageContains as Array<string>).join(`, `)}], missing: [${missing.join(`, `)}]. Actual message: "${result.message}"`
+      }
+    }
+  }
+
   // Check data (for read results)
   if (expect.data !== undefined && isReadResult(result)) {
     const actualData = result.chunks.map((c) => c.data).join(``)
