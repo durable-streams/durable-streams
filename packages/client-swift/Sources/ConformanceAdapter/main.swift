@@ -819,7 +819,8 @@ func handleRead(_ cmd: Command) async -> Result {
             timeoutSeconds: timeoutSeconds,
             dynamicHeaders: dynamicHeaders,
             dynamicParams: dynamicParams,
-            headers: allHeaders
+            headers: allHeaders,
+            path: path
         )
     }
 
@@ -977,16 +978,25 @@ func handleSSERead(
     timeoutSeconds: Double,
     dynamicHeaders: [String: String],
     dynamicParams: [String: String],
-    headers: HeadersRecord
+    headers: HeadersRecord,
+    path: String
 ) async -> Result {
     let accumulator = SSEAccumulator(startOffset: offset)
     let deadline = Date().addingTimeInterval(timeoutSeconds)
 
     do {
-        let handle = try await DurableStream.connect(
-            url: url,
-            config: DurableStream.Configuration(headers: headers)
-        )
+        // Use cached handle if available to avoid extra HEAD request
+        // that could consume injected faults
+        let handle: DurableStream
+        if let cached = await state.getHandle(path: path) {
+            handle = cached
+        } else {
+            handle = try await DurableStream.connect(
+                url: url,
+                config: DurableStream.Configuration(headers: headers)
+            )
+            await state.cacheHandle(path: path, handle: handle)
+        }
 
         // Process SSE events directly (not in a separate task)
         // This allows errors to propagate naturally
