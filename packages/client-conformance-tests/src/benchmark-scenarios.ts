@@ -190,7 +190,7 @@ export const smallMessageThroughputScenario: BenchmarkScenario = {
   createOperation: (ctx) => ({
     op: `throughput_append`,
     path: `${ctx.basePath}/throughput-small`,
-    count: 10000,
+    count: 100000,
     size: 100,
     concurrency: 200,
   }),
@@ -239,9 +239,9 @@ export const readThroughputScenario: BenchmarkScenario = {
     expectedCount: ctx.setupData.expectedCount as number | undefined,
   }),
   setup: (ctx) => {
-    // Expecting 10000 JSON messages to be pre-populated
-    ctx.setupData.expectedCount = 10000
-    return Promise.resolve({ data: { expectedCount: 10000 } })
+    // Expecting 100000 JSON messages to be pre-populated
+    ctx.setupData.expectedCount = 100000
+    return Promise.resolve({ data: { expectedCount: 100000 } })
   },
 }
 
