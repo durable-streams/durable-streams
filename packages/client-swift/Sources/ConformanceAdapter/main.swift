@@ -927,6 +927,34 @@ func handleRead(_ cmd: Command) async -> Result {
 
 // MARK: - SSE Read (uses stream.sseEvents)
 
+// Helper actor to safely accumulate SSE results
+actor SSEAccumulator {
+    var chunks: [ReadChunk] = []
+    var currentOffset: Offset
+    var upToDate: Bool = false
+    var cursor: String?
+
+    init(startOffset: Offset) {
+        self.currentOffset = startOffset
+    }
+
+    func addChunk(_ chunk: ReadChunk) {
+        chunks.append(chunk)
+    }
+
+    func updateControl(offset: Offset, cursor: String?, upToDate: Bool) {
+        self.currentOffset = offset
+        self.cursor = cursor
+        self.upToDate = upToDate
+    }
+
+    func getResults() -> (chunks: [ReadChunk], offset: Offset, upToDate: Bool, cursor: String?) {
+        return (chunks, currentOffset, upToDate, cursor)
+    }
+
+    var chunkCount: Int { chunks.count }
+}
+
 func handleSSERead(
     _ cmd: Command,
     url: URL,
@@ -938,11 +966,7 @@ func handleSSERead(
     dynamicParams: [String: String],
     headers: HeadersRecord
 ) async -> Result {
-    var allChunks: [ReadChunk] = []
-    var currentOffset = offset
-    var lastUpToDate = false
-    var lastCursor: String?
-
+    let accumulator = SSEAccumulator(startOffset: offset)
     let deadline = Date().addingTimeInterval(timeoutSeconds)
 
     do {
@@ -951,33 +975,39 @@ func handleSSERead(
             config: DurableStream.Configuration(headers: headers)
         )
 
-        // Start a timeout task
+        // Start SSE task with timeout
         let sseTask = Task {
             for try await event in await handle.sseEvents(from: offset) {
                 if Task.isCancelled || Date() >= deadline {
                     break
                 }
 
+                let currentOffset = await accumulator.currentOffset
+
                 // Parse event data
                 if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
-                    allChunks.append(ReadChunk(data: event.data, offset: currentOffset.rawValue))
+                    await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
                 } else if event.effectiveEvent == "control" {
                     // Parse control event for metadata
                     if let jsonData = event.data.data(using: .utf8),
                        let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
-                        currentOffset = Offset(rawValue: control.streamNextOffset)
-                        lastCursor = control.streamCursor
-                        lastUpToDate = control.upToDate ?? false
+                        await accumulator.updateControl(
+                            offset: Offset(rawValue: control.streamNextOffset),
+                            cursor: control.streamCursor,
+                            upToDate: control.upToDate ?? false
+                        )
                     }
                 }
 
                 // Check exit conditions
-                if allChunks.count >= maxChunks {
+                let count = await accumulator.chunkCount
+                if count >= maxChunks {
                     break
                 }
 
-                let shouldReturnOnUpToDate = waitForUpToDate || !allChunks.isEmpty
-                if shouldReturnOnUpToDate && lastUpToDate {
+                let isUpToDate = await accumulator.upToDate
+                let shouldReturnOnUpToDate = waitForUpToDate || count > 0
+                if shouldReturnOnUpToDate && isUpToDate {
                     break
                 }
             }
@@ -998,18 +1028,24 @@ func handleSSERead(
         }
         return mapError(cmd.type, error)
     } catch {
-        // Timeout or cancellation - return what we have
-        lastUpToDate = true
+        // Timeout or cancellation - mark as up to date
+        await accumulator.updateControl(
+            offset: await accumulator.currentOffset,
+            cursor: await accumulator.cursor,
+            upToDate: true
+        )
     }
+
+    let results = await accumulator.getResults()
 
     return Result(
         type: "read",
         success: true,
         status: 200,
-        offset: currentOffset.rawValue,
-        chunks: allChunks,
-        upToDate: lastUpToDate,
-        cursor: lastCursor,
+        offset: results.offset.rawValue,
+        chunks: results.chunks,
+        upToDate: results.upToDate,
+        cursor: results.cursor,
         headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
         paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
     )
