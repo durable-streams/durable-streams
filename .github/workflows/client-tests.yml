@@ -66,6 +66,45 @@ jobs:
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../client-php/run-conformance-adapter.sh
 
+  elixir-conformance:
+    name: Elixir Conformance Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Build Elixir client adapter
+        run: |
+          cd packages/client-elixir
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix compile
+          mix escript.build
+
+      - name: Run Elixir client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-elixir/run-conformance-adapter.sh
+
   benchmarks:
     name: Client Benchmarks
     runs-on: ubuntu-latest
@@ -86,6 +125,12 @@ jobs:
         with:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
+
+      - name: Set up Elixir
+        uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -108,6 +153,15 @@ jobs:
         run: |
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Build Elixir client adapter
+        run: |
+          cd packages/client-elixir
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix compile
+          mix escript.build
 
       - name: Install Python client
         run: |
@@ -187,6 +241,23 @@ jobs:
           echo "php_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "php_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Elixir client benchmarks
+        id: elixir_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format json > benchmark-results-elixir.json
+          cat benchmark-results-elixir.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-elixir.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-elixir.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-elixir.json)
+
+          echo "elixir_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "elixir_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "elixir_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Upload benchmark results
         if: always()
         uses: actions/upload-artifact@v4
@@ -197,6 +268,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
             packages/client-conformance-tests/benchmark-results-php.json
+            packages/client-conformance-tests/benchmark-results-elixir.json
 
       - name: Generate benchmark report
         if: always() && github.event_name == 'pull_request'
@@ -216,6 +288,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format markdown >> benchmark-report.md
 
           cat benchmark-report.md
 
@@ -263,11 +338,12 @@ jobs:
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
           PHP_FAILED=${{ steps.php_benchmarks.outputs.php_failed }}
+          ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + PHP_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + PHP_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, PHP: $PHP_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, PHP: $PHP_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"

@@ -367,6 +367,7 @@ Offsets are opaque tokens that identify positions within a stream:
 - **Opaque strings** - Treat as black boxes; don't parse or construct them
 - **Lexicographically sortable** - You can compare offsets to determine ordering
 - **`"-1"` means start** - Use `offset: "-1"` to read from the beginning
+- **`"now"` means tail** - Use `offset: "now"` to skip existing data and read only new data
 - **Server-generated** - Always use the `offset` value returned in responses
 - **Unique** - Each offset is unique within a stream
 - **Monotonically increasing** - All offsets are monotonically increasing within a stream
@@ -387,7 +388,7 @@ const next = await stream({
 })
 ```
 
-The only special offset value is `"-1"` for stream start. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
+The special offset values are `"-1"` for stream start and `"now"` for the current tail. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
 
 ## Protocol
 
