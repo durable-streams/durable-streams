@@ -26,44 +26,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 ## Quick Start
 
-### Creating and Reading a Stream
-
-```rust
-use durable_streams::{Client, Offset, LiveMode};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Create a client
-    let client = Client::new();
-
-    // Get a handle to a stream (no network request yet)
-    let stream = client.stream("http://localhost:4437/v1/stream/my-stream");
-
-    // Create the stream
-    stream.create().await?;
-
-    // Append some data
-    stream.append(b"Hello, world!").await?;
-
-    // Read from the beginning
-    let mut reader = stream.read()
-        .offset(Offset::Beginning)
-        .build();
-
-    while let Some(chunk) = reader.next_chunk().await? {
-        println!("Received: {:?}", String::from_utf8_lossy(&chunk.data));
-
-        if chunk.up_to_date {
-            println!("Caught up to stream tail");
-            break;
-        }
-    }
-
-    Ok(())
-}
-```
-
-### Live Tailing with SSE
+### Reading a Stream
 
 ```rust
 use durable_streams::{Client, Offset, LiveMode};
@@ -80,9 +43,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     while let Some(chunk) = reader.next_chunk().await? {
-        if !chunk.data.is_empty() {
-            println!("Data: {:?}", String::from_utf8_lossy(&chunk.data));
-        }
+        println!("Data: {:?}", String::from_utf8_lossy(&chunk.data));
+
+        // Save offset for resumption after restarts
+        save_checkpoint(&chunk.next_offset.to_string());
 
         if chunk.up_to_date {
             println!("Caught up! Now tailing for new data...");
@@ -197,30 +161,32 @@ let client = Client::builder()
 ### DurableStream
 
 ```rust
+// Get a handle (no network request yet)
 let stream = client.stream("http://localhost:4437/v1/stream/my-stream");
 
-// Create
+// --- Producer operations (server-side) ---
+
 stream.create().await?;
 stream.create_with(CreateOptions::new()
     .content_type("application/json")
     .ttl(Duration::from_secs(3600))
 ).await?;
 
-// Append
 stream.append(b"data").await?;
 
-// Read
+// --- Consumer operations (client-side) ---
+
 let reader = stream.read()
     .offset(Offset::Beginning)
     .live(LiveMode::Auto)
     .build();
 
-// Metadata
+// --- Management operations ---
+
 let head = stream.head().await?;
 println!("Next offset: {:?}", head.next_offset);
 println!("Content-Type: {:?}", head.content_type);
 
-// Delete
 stream.delete().await?;
 ```
 
@@ -367,7 +333,9 @@ for token in llm.stream(&prompt) {
     producer.append(token.as_bytes());
 }
 producer.flush().await?;
+```
 
+```rust
 // Client: resume from last seen position
 let mut reader = stream.read()
     .offset(Offset::At(last_seen_offset))
@@ -393,7 +361,9 @@ producer.append_json(&serde_json::json!({
     "user_id": "123",
     "timestamp": chrono::Utc::now().to_rfc3339()
 }));
+```
 
+```rust
 // Consumer service
 let mut reader = stream.read()
     .offset(last_processed_offset)
@@ -412,7 +382,7 @@ while let Some(chunk) = reader.next_chunk().await? {
 ### Database Change Streaming
 
 ```rust
-// Stream Postgres changes to clients
+// Server: stream Postgres changes
 let producer = stream.producer("postgres-cdc")
     .auto_claim(true)
     .build();
@@ -420,8 +390,10 @@ let producer = stream.producer("postgres-cdc")
 for change in postgres_logical_replication.changes() {
     producer.append_json(&change);
 }
+```
 
-// Mobile/web client catches up and tails
+```rust
+// Mobile/web client: catch up and tail
 let mut reader = stream.read()
     .offset(local_sync_offset)
     .live(LiveMode::Auto)
