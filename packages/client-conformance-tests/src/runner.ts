@@ -80,6 +80,9 @@ interface ClientFeatures {
   auto?: boolean
   streaming?: boolean
   dynamicHeaders?: boolean
+  retryOptions?: boolean
+  batchItems?: boolean
+  strictZeroValidation?: boolean
 }
 
 interface ExecutionContext {
@@ -836,6 +839,25 @@ async function executeOperation(
       return { result }
     }
 
+    case `validate`: {
+      const result = await client.send(
+        {
+          type: `validate`,
+          target: op.target,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        const targetType = op.target.target
+        console.log(
+          `  validate ${targetType}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
     default:
       return { error: `Unknown operation: ${(op as TestOperation).action}` }
   }
@@ -1055,6 +1077,23 @@ function validateExpectation(
     }
   }
 
+  // Check valid (for validation operations)
+  if (expect.valid !== undefined) {
+    if (expect.valid === true && !result.success) {
+      return `Expected validation to pass, but it failed`
+    }
+    if (expect.valid === false && result.success) {
+      return `Expected validation to fail, but it passed`
+    }
+  }
+
+  // Check errorContains (for validation operations with error message substring)
+  if (expect.errorContains !== undefined && isErrorResult(result)) {
+    if (!result.message.includes(expect.errorContains as string)) {
+      return `Expected error message to contain "${expect.errorContains}", got "${result.message}"`
+    }
+  }
+
   return null
 }
 
@@ -1071,6 +1110,12 @@ function featureToProperty(feature: string): keyof ClientFeatures | undefined {
     streaming: `streaming`,
     dynamicHeaders: `dynamicHeaders`,
     "dynamic-headers": `dynamicHeaders`,
+    retryOptions: `retryOptions`,
+    "retry-options": `retryOptions`,
+    batchItems: `batchItems`,
+    "batch-items": `batchItems`,
+    strictZeroValidation: `strictZeroValidation`,
+    "strict-zero-validation": `strictZeroValidation`,
   }
   return map[feature]
 }

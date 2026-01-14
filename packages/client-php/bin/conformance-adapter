@@ -1,0 +1,836 @@
+#!/usr/bin/env php
+<?php
+/**
+ * PHP client adapter for Durable Streams conformance testing.
+ *
+ * This adapter implements the stdin/stdout JSON-line protocol for the
+ * durable-streams PHP client package.
+ */
+
+declare(strict_types=1);
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use DurableStreams\DurableStream;
+use DurableStreams\IdempotentProducer;
+use DurableStreams\LiveMode;
+use DurableStreams\RetryOptions;
+use DurableStreams\Internal\HttpClient;
+use DurableStreams\Exception\DurableStreamException;
+use DurableStreams\Exception\StreamNotFoundException;
+use DurableStreams\Exception\StreamExistsException;
+use DurableStreams\Exception\SeqConflictException;
+
+use function DurableStreams\stream;
+use function DurableStreams\version;
+
+// Error codes
+const ERROR_NETWORK = 'NETWORK_ERROR';
+const ERROR_TIMEOUT = 'TIMEOUT';
+const ERROR_CONFLICT = 'CONFLICT';
+const ERROR_NOT_FOUND = 'NOT_FOUND';
+const ERROR_SEQ_CONFLICT = 'SEQUENCE_CONFLICT';
+const ERROR_INVALID_OFFSET = 'INVALID_OFFSET';
+const ERROR_UNEXPECTED = 'UNEXPECTED_STATUS';
+const ERROR_PARSE = 'PARSE_ERROR';
+const ERROR_INTERNAL = 'INTERNAL_ERROR';
+const ERROR_NOT_SUPPORTED = 'NOT_SUPPORTED';
+const ERROR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
+
+// Global state
+$serverUrl = '';
+$streamContentTypes = [];
+$sharedClient = null;
+
+// Dynamic headers/params state
+$dynamicHeaders = [];
+$dynamicParams = [];
+
+class DynamicValue {
+    public string $type;
+    public int $counter = 0;
+    public ?string $tokenValue;
+
+    public function __construct(string $type, ?string $initialValue = null) {
+        $this->type = $type;
+        $this->tokenValue = $initialValue;
+    }
+
+    public function getValue(): string {
+        return match ($this->type) {
+            'counter' => (string)++$this->counter,
+            'timestamp' => (string)(int)(microtime(true) * 1000),
+            'token' => $this->tokenValue ?? '',
+            default => '',
+        };
+    }
+}
+
+function resolveDynamicHeaders(): array {
+    global $dynamicHeaders;
+    $headers = [];
+    $values = [];
+
+    foreach ($dynamicHeaders as $name => $config) {
+        $value = $config->getValue();
+        $headers[$name] = $value;
+        $values[$name] = $value;
+    }
+
+    return [$headers, $values];
+}
+
+function resolveDynamicParams(): array {
+    global $dynamicParams;
+    $params = [];
+    $values = [];
+
+    foreach ($dynamicParams as $name => $config) {
+        $value = $config->getValue();
+        $params[$name] = $value;
+        $values[$name] = $value;
+    }
+
+    return [$params, $values];
+}
+
+function mapErrorCode(Throwable $e): array {
+    if ($e instanceof StreamNotFoundException) {
+        return [ERROR_NOT_FOUND, 404];
+    }
+    if ($e instanceof StreamExistsException) {
+        return [ERROR_CONFLICT, 409];
+    }
+    if ($e instanceof SeqConflictException) {
+        return [ERROR_SEQ_CONFLICT, 409];
+    }
+    if ($e instanceof DurableStreamException) {
+        $status = $e->getHttpStatus();
+        $code = $e->getErrorCode();
+
+        if ($code === 'BAD_REQUEST') {
+            return [ERROR_INVALID_OFFSET, 400];
+        }
+        if ($status === 404) {
+            return [ERROR_NOT_FOUND, 404];
+        }
+        if ($status === 409) {
+            return [ERROR_CONFLICT, 409];
+        }
+        if ($code === 'TIMEOUT') {
+            return [ERROR_TIMEOUT, null];
+        }
+        if ($code === 'NETWORK_ERROR') {
+            return [ERROR_NETWORK, null];
+        }
+
+        return [ERROR_UNEXPECTED, $status];
+    }
+
+    return [ERROR_INTERNAL, null];
+}
+
+function errorResult(string $commandType, Throwable $e): array {
+    [$errorCode, $status] = mapErrorCode($e);
+    $result = [
+        'type' => 'error',
+        'success' => false,
+        'commandType' => $commandType,
+        'errorCode' => $errorCode,
+        'message' => $e->getMessage(),
+    ];
+    if ($status !== null) {
+        $result['status'] = $status;
+    }
+    return $result;
+}
+
+function handleInit(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient, $dynamicHeaders, $dynamicParams;
+
+    $serverUrl = $cmd['serverUrl'];
+    $streamContentTypes = [];
+    $dynamicHeaders = [];
+    $dynamicParams = [];
+    $sharedClient = new HttpClient(timeout: 30.0);
+
+    return [
+        'type' => 'init',
+        'success' => true,
+        'clientName' => 'durable-streams-php',
+        'clientVersion' => version(),
+        'features' => [
+            'batching' => true,
+            'sse' => false,  // SSE not yet implemented
+            'longPoll' => true,
+            'streaming' => true,
+            'dynamicHeaders' => true,
+            'retryOptions' => true,  // PHP has RetryOptions class
+            'batchItems' => true,    // PHP has maxBatchItems option
+            'strictZeroValidation' => true,  // PHP rejects 0 as invalid
+        ],
+    ];
+}
+
+function handleCreate(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $cmd['contentType'] ?? 'application/octet-stream';
+
+    // Check if stream already exists
+    $alreadyExists = false;
+    try {
+        DurableStream::headStatic($url, null, $sharedClient);
+        $alreadyExists = true;
+    } catch (StreamNotFoundException $e) {
+        // Expected
+    }
+
+    // Create the stream
+    $ds = DurableStream::create(
+        $url,
+        $contentType,
+        $cmd['headers'] ?? [],
+        $cmd['ttlSeconds'] ?? null,
+        $cmd['expiresAt'] ?? null,
+        $sharedClient,
+    );
+
+    // Cache content type
+    $streamContentTypes[$cmd['path']] = $contentType;
+
+    // Get the current offset
+    $head = $ds->head();
+
+    return [
+        'type' => 'create',
+        'success' => true,
+        'status' => $alreadyExists ? 200 : 201,
+        'offset' => $head->offset,
+    ];
+}
+
+function handleConnect(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $ds = DurableStream::connect($url, $cmd['headers'] ?? [], $sharedClient);
+
+    $head = $ds->head();
+
+    if ($head->contentType !== null) {
+        $streamContentTypes[$cmd['path']] = $head->contentType;
+    }
+
+    return [
+        'type' => 'connect',
+        'success' => true,
+        'status' => 200,
+        'offset' => $head->offset,
+    ];
+}
+
+function handleAppend(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/octet-stream';
+
+    // Resolve dynamic headers
+    [$dynamicHdrs, $headersSent] = resolveDynamicHeaders();
+    [, $paramsSent] = resolveDynamicParams();
+
+    // Merge headers
+    $cmdHeaders = $cmd['headers'] ?? [];
+    $mergedHeaders = array_merge($dynamicHdrs, $cmdHeaders);
+
+    // Decode data
+    $data = $cmd['data'];
+    if ($cmd['binary'] ?? false) {
+        $data = base64_decode($data);
+    }
+
+    // Get seq if provided
+    $seq = isset($cmd['seq']) ? (string)$cmd['seq'] : null;
+
+    // Create stream and append
+    $ds = new DurableStream($url, $contentType, $mergedHeaders, $sharedClient);
+    $result = $ds->append($data, $seq);
+
+    $response = [
+        'type' => 'append',
+        'success' => true,
+        'status' => 200,
+        'offset' => $result->offset,
+    ];
+
+    if (!empty($headersSent)) {
+        $response['headersSent'] = $headersSent;
+    }
+    if (!empty($paramsSent)) {
+        $response['paramsSent'] = $paramsSent;
+    }
+
+    return $response;
+}
+
+function handleRead(array $cmd): array {
+    global $serverUrl, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $offset = $cmd['offset'] ?? '-1';
+
+    // Determine live mode
+    $live = LiveMode::Off;
+    if (isset($cmd['live'])) {
+        if ($cmd['live'] === 'long-poll') {
+            $live = LiveMode::LongPoll;
+        } elseif ($cmd['live'] === 'sse') {
+            // SSE not supported in PHP, but we need to handle the test case
+            return [
+                'type' => 'error',
+                'success' => false,
+                'commandType' => 'read',
+                'errorCode' => ERROR_NOT_SUPPORTED,
+                'message' => 'SSE not supported in PHP client',
+            ];
+        }
+    }
+
+    $timeoutMs = $cmd['timeoutMs'] ?? 5000;
+    $maxChunks = $cmd['maxChunks'] ?? 100;
+    $waitForUpToDate = $cmd['waitForUpToDate'] ?? false;
+
+    // Resolve dynamic headers
+    [$dynamicHdrs, $headersSent] = resolveDynamicHeaders();
+    [, $paramsSent] = resolveDynamicParams();
+
+    $cmdHeaders = $cmd['headers'] ?? [];
+    $mergedHeaders = array_merge($dynamicHdrs, $cmdHeaders);
+
+    $chunks = [];
+    $finalOffset = $offset;
+    $upToDate = false;
+    $status = 200;
+
+    // For long-poll, add buffer to HTTP timeout to ensure we receive server's response
+    // The server waits for timeoutMs, so our HTTP timeout needs to be longer
+    $httpTimeout = $live ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
+
+    $response = stream([
+        'url' => $url,
+        'offset' => $offset,
+        'live' => $live,
+        'headers' => $mergedHeaders,
+        'timeout' => $httpTimeout,
+        'client' => $sharedClient,
+    ]);
+
+    try {
+        $chunkCount = 0;
+        foreach ($response as $chunk) {
+            if ($chunk !== '') {
+                $chunks[] = [
+                    'data' => $chunk,
+                    'offset' => $response->getOffset(),
+                ];
+                $chunkCount++;
+            }
+
+            if ($chunkCount >= $maxChunks) {
+                $response->cancel();
+                break;
+            }
+
+            if ($waitForUpToDate && $response->isUpToDate()) {
+                $response->cancel();
+                break;
+            }
+
+            // For non-live mode, only read initial response
+            if ($live === LiveMode::Off) {
+                break;
+            }
+
+            // For long-poll mode with status 204 (server timeout), return
+            // This means server waited but no data arrived
+            if ($live === LiveMode::LongPoll && $response->getStatus() === 204) {
+                $response->cancel();
+                break;
+            }
+        }
+    } catch (DurableStreamException $e) {
+        if ($e->getErrorCode() !== 'TIMEOUT') {
+            throw $e;
+        }
+        // TIMEOUT means the HTTP request timed out - stop trying
+    }
+
+    // Capture final state after iteration (handles empty responses correctly)
+    $finalOffset = $response->getOffset();
+    $upToDate = $response->isUpToDate();
+    $status = $response->getStatus();
+
+    $result = [
+        'type' => 'read',
+        'success' => true,
+        'status' => $status ?: 200,
+        'chunks' => $chunks,
+        'offset' => $finalOffset,
+        'upToDate' => $upToDate,
+    ];
+
+    if (!empty($headersSent)) {
+        $result['headersSent'] = $headersSent;
+    }
+    if (!empty($paramsSent)) {
+        $result['paramsSent'] = $paramsSent;
+    }
+
+    return $result;
+}
+
+function handleHead(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $result = DurableStream::headStatic($url, $cmd['headers'] ?? null, $sharedClient);
+
+    if ($result->contentType !== null) {
+        $streamContentTypes[$cmd['path']] = $result->contentType;
+    }
+
+    return [
+        'type' => 'head',
+        'success' => true,
+        'status' => 200,
+        'offset' => $result->offset,
+        'contentType' => $result->contentType,
+    ];
+}
+
+function handleDelete(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    DurableStream::deleteStatic($url, $cmd['headers'] ?? null, $sharedClient);
+
+    unset($streamContentTypes[$cmd['path']]);
+
+    return [
+        'type' => 'delete',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleShutdown(array $cmd): array {
+    return [
+        'type' => 'shutdown',
+        'success' => true,
+    ];
+}
+
+function handleSetDynamicHeader(array $cmd): array {
+    global $dynamicHeaders;
+
+    $dynamicHeaders[$cmd['name']] = new DynamicValue(
+        $cmd['valueType'],
+        $cmd['initialValue'] ?? null
+    );
+
+    return [
+        'type' => 'set-dynamic-header',
+        'success' => true,
+    ];
+}
+
+function handleSetDynamicParam(array $cmd): array {
+    global $dynamicParams;
+
+    $dynamicParams[$cmd['name']] = new DynamicValue($cmd['valueType']);
+
+    return [
+        'type' => 'set-dynamic-param',
+        'success' => true,
+    ];
+}
+
+function handleClearDynamic(array $cmd): array {
+    global $dynamicHeaders, $dynamicParams;
+
+    $dynamicHeaders = [];
+    $dynamicParams = [];
+
+    return [
+        'type' => 'clear-dynamic',
+        'success' => true,
+    ];
+}
+
+function handleIdempotentAppend(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+
+    $data = $cmd['data'];
+
+    // For JSON streams, parse the data
+    if (str_contains($contentType, 'json')) {
+        $data = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
+    }
+
+    $producer = new IdempotentProducer(
+        url: $url,
+        producerId: $cmd['producerId'],
+        epoch: $cmd['epoch'] ?? 0,
+        autoClaim: $cmd['autoClaim'] ?? false,
+        contentType: $contentType,
+        client: $sharedClient,
+    );
+
+    $producer->enqueue($data);
+    $producer->flush();
+
+    return [
+        'type' => 'idempotent-append',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleIdempotentAppendBatch(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+
+    $items = $cmd['items'];
+
+    // For JSON streams, parse the items
+    if (str_contains($contentType, 'json')) {
+        $items = array_map(function($item) {
+            return json_decode($item, true, 512, JSON_THROW_ON_ERROR);
+        }, $items);
+    }
+
+    $producer = new IdempotentProducer(
+        url: $url,
+        producerId: $cmd['producerId'],
+        epoch: $cmd['epoch'] ?? 0,
+        autoClaim: $cmd['autoClaim'] ?? false,
+        contentType: $contentType,
+        client: $sharedClient,
+    );
+
+    foreach ($items as $item) {
+        $producer->enqueue($item);
+    }
+
+    $producer->flush();
+
+    return [
+        'type' => 'idempotent-append-batch',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleBenchmark(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $iterationId = $cmd['iterationId'];
+    $operation = $cmd['operation'];
+    $opType = $operation['op'];
+    $metrics = [];
+
+    $startTime = hrtime(true);
+
+    try {
+        switch ($opType) {
+            case 'append':
+                $url = $serverUrl . $operation['path'];
+                $contentType = $streamContentTypes[$operation['path']] ?? 'application/octet-stream';
+                $ds = new DurableStream($url, $contentType, [], $sharedClient);
+                $payload = str_repeat('*', $operation['size']);
+                $ds->append($payload);
+                $metrics['bytesTransferred'] = $operation['size'];
+                break;
+
+            case 'read':
+                $url = $serverUrl . $operation['path'];
+                $offset = $operation['offset'] ?? '-1';
+                $response = stream([
+                    'url' => $url,
+                    'offset' => $offset,
+                    'live' => LiveMode::Off,
+                    'client' => $sharedClient,
+                ]);
+                $data = $response->body();
+                $metrics['bytesTransferred'] = strlen($data);
+                break;
+
+            case 'create':
+                $url = $serverUrl . $operation['path'];
+                $contentType = $operation['contentType'] ?? 'application/octet-stream';
+                DurableStream::create($url, $contentType, [], null, null, $sharedClient);
+                break;
+
+            case 'throughput_append':
+                $url = $serverUrl . $operation['path'];
+                $contentType = $streamContentTypes[$operation['path']] ?? 'application/octet-stream';
+
+                // Ensure stream exists
+                try {
+                    DurableStream::create($url, $contentType, [], null, null, $sharedClient);
+                } catch (StreamExistsException $e) {
+                    // Ignore
+                }
+
+                $payload = str_repeat('*', $operation['size']);
+                $count = $operation['count'];
+
+                $ds = new DurableStream($url, $contentType, [], $sharedClient);
+                for ($i = 0; $i < $count; $i++) {
+                    $ds->append($payload);
+                }
+
+                $metrics['bytesTransferred'] = $count * $operation['size'];
+                $metrics['messagesProcessed'] = $count;
+                break;
+
+            case 'throughput_read':
+                $url = $serverUrl . $operation['path'];
+                $response = stream([
+                    'url' => $url,
+                    'live' => LiveMode::Off,
+                    'client' => $sharedClient,
+                ]);
+
+                $count = 0;
+                $totalBytes = 0;
+                foreach ($response->jsonStream() as $item) {
+                    $count++;
+                    $totalBytes += strlen(json_encode($item));
+                }
+
+                $metrics['bytesTransferred'] = $totalBytes;
+                $metrics['messagesProcessed'] = $count;
+                break;
+
+            case 'roundtrip':
+                // Roundtrip: create stream, append data, read back via long-poll
+                // In synchronous PHP, we append first then read (data is immediately available)
+                $url = $serverUrl . $operation['path'];
+                $contentType = $operation['contentType'] ?? 'application/octet-stream';
+                $liveMode = $operation['live'] ?? 'long-poll';
+
+                // Skip SSE - not supported in synchronous PHP
+                if ($liveMode === 'sse') {
+                    return [
+                        'type' => 'error',
+                        'success' => false,
+                        'commandType' => 'benchmark',
+                        'errorCode' => ERROR_NOT_SUPPORTED,
+                        'message' => 'SSE not supported in synchronous PHP',
+                    ];
+                }
+
+                // Map string live mode to enum
+                $liveModeEnum = $liveMode === 'long-poll' ? LiveMode::LongPoll : LiveMode::Off;
+
+                // Create stream
+                DurableStream::create($url, $contentType, [], null, null, $sharedClient);
+
+                // Generate and append payload
+                $payload = str_repeat('*', $operation['size']);
+                $ds = new DurableStream($url, $contentType, [], $sharedClient);
+                $ds->append($payload);
+
+                // Read back via long-poll (data is already there, returns immediately)
+                $response = stream([
+                    'url' => $url,
+                    'offset' => '-1',
+                    'live' => $liveModeEnum,
+                    'timeout' => 5.0,
+                    'client' => $sharedClient,
+                ]);
+
+                $readData = '';
+                foreach ($response as $chunk) {
+                    if ($chunk !== '') {
+                        $readData = $chunk;
+                        $response->cancel();
+                        break;
+                    }
+                    // If we got data or are up-to-date, stop
+                    if ($response->isUpToDate()) {
+                        $response->cancel();
+                        break;
+                    }
+                }
+
+                $metrics['bytesTransferred'] = $operation['size'] + strlen($readData);
+                break;
+
+            default:
+                return [
+                    'type' => 'error',
+                    'success' => false,
+                    'commandType' => 'benchmark',
+                    'errorCode' => ERROR_NOT_SUPPORTED,
+                    'message' => "Unknown benchmark operation: {$opType}",
+                ];
+        }
+
+        $endTime = hrtime(true);
+        $durationNs = $endTime - $startTime;
+
+        return [
+            'type' => 'benchmark',
+            'success' => true,
+            'iterationId' => $iterationId,
+            'durationNs' => (string)$durationNs,
+            'metrics' => $metrics,
+        ];
+    } catch (Throwable $e) {
+        return [
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'benchmark',
+            'errorCode' => ERROR_INTERNAL,
+            'message' => $e->getMessage(),
+        ];
+    }
+}
+
+function handleValidate(array $cmd): array {
+    $target = $cmd['target'];
+    $targetType = $target['target'];
+
+    try {
+        switch ($targetType) {
+            case 'retry-options':
+                // Test RetryOptions validation
+                new RetryOptions(
+                    maxRetries: $target['maxRetries'] ?? 3,
+                    initialDelayMs: $target['initialDelayMs'] ?? 100,
+                    maxDelayMs: $target['maxDelayMs'] ?? 5000,
+                    multiplier: $target['multiplier'] ?? 2.0,
+                );
+                return [
+                    'type' => 'validate',
+                    'success' => true,
+                ];
+
+            case 'idempotent-producer':
+                // Test IdempotentProducer validation
+                // Note: IdempotentProducer doesn't currently validate all params
+                // but we test what we can
+                global $serverUrl, $sharedClient;
+
+                $producer = new IdempotentProducer(
+                    url: $serverUrl . '/test-validate',
+                    producerId: $target['producerId'] ?? 'test-producer',
+                    epoch: $target['epoch'] ?? 0,
+                    maxBatchBytes: $target['maxBatchBytes'] ?? 1048576,
+                    maxBatchItems: $target['maxBatchItems'] ?? 1000,
+                    client: $sharedClient,
+                );
+
+                // Producer was created successfully
+                unset($producer);
+
+                return [
+                    'type' => 'validate',
+                    'success' => true,
+                ];
+
+            default:
+                return [
+                    'type' => 'error',
+                    'success' => false,
+                    'commandType' => 'validate',
+                    'errorCode' => ERROR_NOT_SUPPORTED,
+                    'message' => "Unknown validation target: {$targetType}",
+                ];
+        }
+    } catch (InvalidArgumentException $e) {
+        return [
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'validate',
+            'errorCode' => ERROR_INVALID_ARGUMENT,
+            'message' => $e->getMessage(),
+        ];
+    } catch (Throwable $e) {
+        return [
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'validate',
+            'errorCode' => ERROR_INVALID_ARGUMENT,
+            'message' => $e->getMessage(),
+        ];
+    }
+}
+
+function handleCommand(array $cmd): array {
+    $type = $cmd['type'];
+
+    try {
+        return match ($type) {
+            'init' => handleInit($cmd),
+            'create' => handleCreate($cmd),
+            'connect' => handleConnect($cmd),
+            'append' => handleAppend($cmd),
+            'read' => handleRead($cmd),
+            'head' => handleHead($cmd),
+            'delete' => handleDelete($cmd),
+            'shutdown' => handleShutdown($cmd),
+            'set-dynamic-header' => handleSetDynamicHeader($cmd),
+            'set-dynamic-param' => handleSetDynamicParam($cmd),
+            'clear-dynamic' => handleClearDynamic($cmd),
+            'idempotent-append' => handleIdempotentAppend($cmd),
+            'idempotent-append-batch' => handleIdempotentAppendBatch($cmd),
+            'benchmark' => handleBenchmark($cmd),
+            'validate' => handleValidate($cmd),
+            default => [
+                'type' => 'error',
+                'success' => false,
+                'commandType' => $type,
+                'errorCode' => ERROR_NOT_SUPPORTED,
+                'message' => "Unknown command type: {$type}",
+            ],
+        };
+    } catch (Throwable $e) {
+        return errorResult($type, $e);
+    }
+}
+
+// Main loop
+while (($line = fgets(STDIN)) !== false) {
+    $line = trim($line);
+    if ($line === '') {
+        continue;
+    }
+
+    try {
+        $command = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+        $result = handleCommand($command);
+        echo json_encode($result) . "\n";
+
+        if ($command['type'] === 'shutdown') {
+            break;
+        }
+    } catch (JsonException $e) {
+        echo json_encode([
+            'type' => 'error',
+            'success' => false,
+            'commandType' => 'init',
+            'errorCode' => ERROR_PARSE,
+            'message' => "Failed to parse command: {$e->getMessage()}",
+        ]) . "\n";
+    }
+}

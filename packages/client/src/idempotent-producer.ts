@@ -173,18 +173,37 @@ export class IdempotentProducer {
     producerId: string,
     opts?: IdempotentProducerOptions
   ) {
+    // Validate inputs
+    const epoch = opts?.epoch ?? 0
+    const maxBatchBytes = opts?.maxBatchBytes ?? 1024 * 1024 // 1MB
+    const maxInFlight = opts?.maxInFlight ?? 5
+    const lingerMs = opts?.lingerMs ?? 5
+
+    if (epoch < 0) {
+      throw new Error(`epoch must be >= 0`)
+    }
+    if (maxBatchBytes <= 0) {
+      throw new Error(`maxBatchBytes must be > 0`)
+    }
+    if (maxInFlight <= 0) {
+      throw new Error(`maxInFlight must be > 0`)
+    }
+    if (lingerMs < 0) {
+      throw new Error(`lingerMs must be >= 0`)
+    }
+
     this.#stream = stream
     this.#producerId = producerId
-    this.#epoch = opts?.epoch ?? 0
+    this.#epoch = epoch
     this.#autoClaim = opts?.autoClaim ?? false
-    this.#maxBatchBytes = opts?.maxBatchBytes ?? 1024 * 1024 // 1MB
-    this.#lingerMs = opts?.lingerMs ?? 5
+    this.#maxBatchBytes = maxBatchBytes
+    this.#lingerMs = lingerMs
     this.#signal = opts?.signal
     this.#onError = opts?.onError
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
-    this.#maxInFlight = opts?.maxInFlight ?? 5
+    this.#maxInFlight = maxInFlight
 
     // When autoClaim is true, epoch is not yet known until first batch completes
     // We block pipelining until then to avoid racing with the claim

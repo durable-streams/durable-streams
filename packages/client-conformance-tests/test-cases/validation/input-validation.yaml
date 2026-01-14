@@ -1,0 +1,192 @@
+id: input-validation
+name: Client Input Validation
+description: Tests for client-side input parameter validation
+category: lifecycle
+tags:
+  - validation
+  - core
+
+tests:
+  # RetryOptions validation tests (PHP-specific - TS uses BackoffOptions)
+  - id: retry-options-valid
+    name: Valid RetryOptions passes validation
+    description: Default retry options should be accepted
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          maxRetries: 3
+          initialDelayMs: 100
+          maxDelayMs: 5000
+          multiplier: 2.0
+        expect:
+          valid: true
+
+  - id: retry-options-negative-max-retries
+    name: Negative maxRetries rejected
+    description: Client should reject negative maxRetries
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          maxRetries: -1
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxRetries
+
+  - id: retry-options-zero-initial-delay
+    name: Zero initialDelayMs rejected
+    description: Client should reject zero or negative initialDelayMs
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          initialDelayMs: 0
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: initialDelayMs
+
+  - id: retry-options-negative-initial-delay
+    name: Negative initialDelayMs rejected
+    description: Client should reject negative initialDelayMs
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          initialDelayMs: -100
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: initialDelayMs
+
+  - id: retry-options-max-less-than-initial
+    name: maxDelayMs less than initialDelayMs rejected
+    description: Client should reject maxDelayMs < initialDelayMs
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          initialDelayMs: 1000
+          maxDelayMs: 500
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxDelayMs
+
+  - id: retry-options-multiplier-less-than-one
+    name: Multiplier less than 1.0 rejected
+    description: Client should reject multiplier < 1.0
+    requires:
+      - retryOptions
+    operations:
+      - action: validate
+        target:
+          target: retry-options
+          multiplier: 0.5
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: multiplier
+
+  # IdempotentProducer validation tests (shared across clients)
+  - id: producer-valid
+    name: Valid IdempotentProducer passes validation
+    description: Default producer options should be accepted
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          epoch: 0
+          maxBatchBytes: 1048576
+        expect:
+          valid: true
+
+  - id: producer-negative-epoch
+    name: Negative epoch rejected
+    description: Client should reject negative epoch
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          epoch: -1
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: epoch
+
+  - id: producer-zero-max-batch-bytes
+    name: Zero maxBatchBytes rejected
+    description: Client should reject zero maxBatchBytes (Go treats 0 as default)
+    requires:
+      - strictZeroValidation
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          maxBatchBytes: 0
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxBatchBytes
+
+  - id: producer-negative-max-batch-bytes
+    name: Negative maxBatchBytes rejected
+    description: Client should reject negative maxBatchBytes
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          maxBatchBytes: -1
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxBatchBytes
+
+  # maxBatchItems validation (PHP-specific - TS doesn't have this option)
+  - id: producer-zero-max-batch-items
+    name: Zero maxBatchItems rejected
+    description: Client should reject zero maxBatchItems
+    requires:
+      - batchItems
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          maxBatchItems: 0
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxBatchItems
+
+  - id: producer-negative-max-batch-items
+    name: Negative maxBatchItems rejected
+    description: Client should reject negative maxBatchItems
+    requires:
+      - batchItems
+    operations:
+      - action: validate
+        target:
+          target: idempotent-producer
+          producerId: test-producer
+          maxBatchItems: -1
+        expect:
+          valid: false
+          errorCode: INVALID_ARGUMENT
+          errorContains: maxBatchItems

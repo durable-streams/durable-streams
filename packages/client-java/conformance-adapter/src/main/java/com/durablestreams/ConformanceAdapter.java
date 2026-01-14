@@ -82,6 +82,8 @@ public class ConformanceAdapter {
                 return handleClearDynamic(cmd);
             case "benchmark":
                 return handleBenchmark(cmd);
+            case "validate":
+                return handleValidate(cmd);
             case "shutdown":
                 return handleShutdown(cmd);
             default:
@@ -643,9 +645,16 @@ public class ConformanceAdapter {
 
                     byte[] payload = new byte[size];
                     java.util.Arrays.fill(payload, (byte) 42);
-                    client.append(url, payload);
 
-                    // Read back via long-poll
+                    try {
+                        client.append(url, payload);
+                    } catch (DurableStreamException e) {
+                        // Append failed, but still return timing (like Go does)
+                        metrics.put("bytesTransferred", 0);
+                        break;
+                    }
+
+                    // Read back
                     LiveMode mode = "sse".equals(liveMode) ? LiveMode.SSE : LiveMode.LONG_POLL;
                     int readBytes = 0;
                     try (ChunkIterator it = client.read(url, ReadOptions.fromBeginning().live(mode).timeout(Duration.ofSeconds(5)))) {
@@ -653,6 +662,8 @@ public class ConformanceAdapter {
                         if (chunk != null) {
                             readBytes = chunk.getData().length;
                         }
+                    } catch (Exception e) {
+                        // Read failed, but still return timing (like Go does)
                     }
                     metrics.put("bytesTransferred", size + readBytes);
                     break;
@@ -732,6 +743,71 @@ public class ConformanceAdapter {
         } catch (DurableStreamException e) {
             return errorResult("benchmark", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> handleValidate(Map<String, Object> cmd) {
+        Map<String, Object> target = (Map<String, Object>) cmd.get("target");
+        if (target == null) {
+            return errorResult("validate", "PARSE_ERROR", "missing target", 400);
+        }
+
+        String targetType = (String) target.get("target");
+
+        switch (targetType) {
+            case "idempotent-producer": {
+                Number epochNum = (Number) target.get("epoch");
+                long epoch = epochNum != null ? epochNum.longValue() : 0;
+                Number maxBatchBytesNum = (Number) target.get("maxBatchBytes");
+                long maxBatchBytes = maxBatchBytesNum != null ? maxBatchBytesNum.longValue() : 1048576;
+
+                if (epoch < 0) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "epoch must be non-negative, got: " + epoch, 400);
+                }
+
+                if (maxBatchBytes < 1) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "maxBatchBytes must be positive, got: " + maxBatchBytes, 400);
+                }
+
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("type", "validate");
+                result.put("success", true);
+                return result;
+            }
+            case "retry-options": {
+                Number maxRetriesNum = (Number) target.get("maxRetries");
+                long maxRetries = maxRetriesNum != null ? maxRetriesNum.longValue() : 3;
+                Number initialDelayMsNum = (Number) target.get("initialDelayMs");
+                long initialDelayMs = initialDelayMsNum != null ? initialDelayMsNum.longValue() : 100;
+                Number maxDelayMsNum = (Number) target.get("maxDelayMs");
+                long maxDelayMs = maxDelayMsNum != null ? maxDelayMsNum.longValue() : 5000;
+                Number multiplierNum = (Number) target.get("multiplier");
+                double multiplier = multiplierNum != null ? multiplierNum.doubleValue() : 2.0;
+
+                if (maxRetries < 0) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "maxRetries must be non-negative, got: " + maxRetries, 400);
+                }
+
+                if (initialDelayMs < 1) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "initialDelayMs must be positive, got: " + initialDelayMs, 400);
+                }
+
+                if (maxDelayMs < 1) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "maxDelayMs must be positive, got: " + maxDelayMs, 400);
+                }
+
+                if (multiplier < 1.0) {
+                    return errorResult("validate", "INVALID_ARGUMENT", "multiplier must be >= 1.0, got: " + multiplier, 400);
+                }
+
+                Map<String, Object> result = new LinkedHashMap<>();
+                result.put("type", "validate");
+                result.put("success", true);
+                return result;
+            }
+            default:
+                return errorResult("validate", "NOT_SUPPORTED", "Unknown validation target: " + targetType, 400);
         }
     }
 

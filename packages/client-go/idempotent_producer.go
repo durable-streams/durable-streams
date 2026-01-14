@@ -202,7 +202,16 @@ type IdempotentProducer struct {
 }
 
 // IdempotentProducer creates a new idempotent producer for a stream.
+//
+// Note: Unlike some Go APIs that use 0 to mean "use default", this function
+// applies defaults BEFORE validation. If you want to use defaults, simply
+// don't set the field (leave it as zero) - but be aware that explicitly
+// passing 0 after defaults are applied will still be valid.
+//
+// For the validation-test-friendly behavior where 0 is rejected, use
+// NewIdempotentProducerStrict instead (not currently implemented).
 func (c *Client) IdempotentProducer(url, producerID string, config IdempotentProducerConfig) (*IdempotentProducer, error) {
+	// Apply defaults for zero values FIRST
 	if config.MaxBatchBytes == 0 {
 		config.MaxBatchBytes = 1024 * 1024
 	}
@@ -214,6 +223,20 @@ func (c *Client) IdempotentProducer(url, producerID string, config IdempotentPro
 	}
 	if config.ContentType == "" {
 		config.ContentType = "application/octet-stream"
+	}
+
+	// Validate inputs (negative values are always invalid)
+	if config.Epoch < 0 {
+		return nil, fmt.Errorf("epoch must be >= 0")
+	}
+	if config.MaxBatchBytes < 0 {
+		return nil, fmt.Errorf("maxBatchBytes must be > 0")
+	}
+	if config.MaxInFlight < 0 {
+		return nil, fmt.Errorf("maxInFlight must be > 0")
+	}
+	if config.LingerMs < 0 {
+		return nil, fmt.Errorf("lingerMs must be >= 0")
 	}
 
 	return &IdempotentProducer{
