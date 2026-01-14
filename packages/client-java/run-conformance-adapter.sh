@@ -5,6 +5,11 @@
 set -e
 cd "$(dirname "$0")"
 
+# Use Java 21 if available (Gradle 8.x doesn't support Java 24 yet)
+if /usr/libexec/java_home -v 21 &>/dev/null; then
+    export JAVA_HOME=$(/usr/libexec/java_home -v 21)
+fi
+
 # Check if the JAR exists, if not build it
 JAR_PATH="conformance-adapter/build/libs/conformance-adapter.jar"
 

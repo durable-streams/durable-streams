@@ -58,6 +58,11 @@ public final class IdempotentProducer implements AutoCloseable {
 
     private final BlockingQueue<DurableStreamException> errors;
 
+    // Track sequence completions for 409 retry coordination
+    // When HTTP requests arrive out of order, we get 409 errors.
+    // Maps epoch -> (seq -> CompletableFuture that completes when seq is done)
+    private final ConcurrentHashMap<Long, ConcurrentHashMap<Long, CompletableFuture<Void>>> seqState;
+
     public IdempotentProducer(DurableStream client, String url, String producerId, Config config) {
         this.client = client;
         this.url = url;
@@ -83,6 +88,9 @@ public final class IdempotentProducer implements AutoCloseable {
         this.inFlightFutures = new ConcurrentLinkedQueue<>();
 
         this.errors = new LinkedBlockingQueue<>();
+
+        // Track sequence completions for 409 retry
+        this.seqState = new ConcurrentHashMap<>();
     }
 
     /**
@@ -283,7 +291,48 @@ public final class IdempotentProducer implements AutoCloseable {
         }
     }
 
+    /**
+     * Get or create the future for tracking a sequence completion.
+     */
+    private CompletableFuture<Void> getSeqFuture(long epochVal, long seq) {
+        return seqState
+            .computeIfAbsent(epochVal, k -> new ConcurrentHashMap<>())
+            .computeIfAbsent(seq, k -> new CompletableFuture<>());
+    }
+
+    /**
+     * Signal that a sequence has completed (success or failure).
+     */
+    private void signalSeqComplete(long epochVal, long seq, Throwable error) {
+        ConcurrentHashMap<Long, CompletableFuture<Void>> epochMap = seqState.get(epochVal);
+        if (epochMap == null) return;
+
+        CompletableFuture<Void> future = epochMap.get(seq);
+        if (future != null) {
+            if (error != null) {
+                future.completeExceptionally(error);
+            } else {
+                future.complete(null);
+            }
+        }
+
+        // Clean up old entries to prevent unbounded memory growth
+        long cleanupThreshold = seq - config.maxInFlight * 3;
+        if (cleanupThreshold > 0) {
+            epochMap.keySet().removeIf(oldSeq -> oldSeq < cleanupThreshold);
+        }
+    }
+
+    /**
+     * Wait for a specific sequence to complete.
+     */
+    private CompletableFuture<Void> waitForSeq(long epochVal, long seq) {
+        return getSeqFuture(epochVal, seq);
+    }
+
     private CompletableFuture<Void> sendBatchFireAndForget(List<byte[]> batch, long batchEpoch, long seq) {
+        // Register this sequence before sending
+        getSeqFuture(batchEpoch, seq);
         return sendBatchWithRetry(batch, batchEpoch, seq, false);
     }
 
@@ -316,6 +365,7 @@ public final class IdempotentProducer implements AutoCloseable {
 
                     if (status == 200 || status == 201 || status == 204) {
                         // Success or duplicate (idempotent)
+                        signalSeqComplete(batchEpoch, seq, null);
                         return CompletableFuture.completedFuture(null);
                     } else if (status == 403) {
                         // Stale epoch
@@ -342,13 +392,36 @@ public final class IdempotentProducer implements AutoCloseable {
                         }
 
                         StaleEpochException err = new StaleEpochException(serverEpoch);
+                        signalSeqComplete(batchEpoch, seq, err);
                         errors.offer(err);
                         if (config.onError != null) {
                             config.onError.accept(err);
                         }
                         return CompletableFuture.failedFuture(err);
                     } else if (status == 409) {
+                        // Parse expected sequence from response header
+                        long expectedSeq = response.headers()
+                            .firstValue("Producer-Expected-Seq")
+                            .map(Long::parseLong)
+                            .orElse(-1L);
+
+                        // If expectedSeq < seq, it means earlier sequences haven't completed yet
+                        // Wait for them, then retry with the same seq (server expects this seq)
+                        if (expectedSeq >= 0 && expectedSeq < seq) {
+                            // Build list of futures to wait for
+                            List<CompletableFuture<Void>> waitFutures = new ArrayList<>();
+                            for (long s = expectedSeq; s < seq; s++) {
+                                waitFutures.add(waitForSeq(batchEpoch, s));
+                            }
+
+                            // Wait for all earlier sequences, then retry
+                            return CompletableFuture.allOf(waitFutures.toArray(new CompletableFuture[0]))
+                                .thenCompose(v -> sendBatchWithRetry(batch, batchEpoch, seq, false));
+                        }
+
+                        // Can't retry - permanent conflict
                         SequenceConflictException err = handleSequenceConflict(seq, response);
+                        signalSeqComplete(batchEpoch, seq, err);
                         errors.offer(err);
                         if (config.onError != null) {
                             config.onError.accept(err);
@@ -356,6 +429,7 @@ public final class IdempotentProducer implements AutoCloseable {
                         return CompletableFuture.failedFuture(err);
                     } else {
                         DurableStreamException err = new DurableStreamException("Batch failed with status: " + status, status);
+                        signalSeqComplete(batchEpoch, seq, err);
                         errors.offer(err);
                         if (config.onError != null) {
                             config.onError.accept(err);
@@ -366,6 +440,7 @@ public final class IdempotentProducer implements AutoCloseable {
                 .exceptionally(ex -> {
                     Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
                     DurableStreamException err = new DurableStreamException("Batch send failed: " + cause.getMessage(), cause);
+                    signalSeqComplete(batchEpoch, seq, err);
                     errors.offer(err);
                     if (config.onError != null) {
                         config.onError.accept(err);
