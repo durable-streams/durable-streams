@@ -13,6 +13,7 @@ require_once __DIR__ . '/../vendor/autoload.php';
 
 use DurableStreams\DurableStream;
 use DurableStreams\IdempotentProducer;
+use DurableStreams\LiveMode;
 use DurableStreams\RetryOptions;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Exception\DurableStreamException;
@@ -281,12 +282,19 @@ function handleRead(array $cmd): array {
     $offset = $cmd['offset'] ?? '-1';
 
     // Determine live mode
-    $live = false;
+    $live = LiveMode::Off;
     if (isset($cmd['live'])) {
         if ($cmd['live'] === 'long-poll') {
-            $live = 'long-poll';
+            $live = LiveMode::LongPoll;
         } elseif ($cmd['live'] === 'sse') {
-            $live = 'sse';
+            // SSE not supported in PHP, but we need to handle the test case
+            return [
+                'type' => 'error',
+                'success' => false,
+                'commandType' => 'read',
+                'errorCode' => ERROR_NOT_SUPPORTED,
+                'message' => 'SSE not supported in PHP client',
+            ];
         }
     }
 
@@ -341,13 +349,13 @@ function handleRead(array $cmd): array {
             }
 
             // For non-live mode, only read initial response
-            if ($live === false) {
+            if ($live === LiveMode::Off) {
                 break;
             }
 
             // For long-poll mode with status 204 (server timeout), return
             // This means server waited but no data arrived
-            if ($live === 'long-poll' && $response->getStatus() === 204) {
+            if ($live === LiveMode::LongPoll && $response->getStatus() === 204) {
                 $response->cancel();
                 break;
             }
@@ -557,7 +565,7 @@ function handleBenchmark(array $cmd): array {
                 $response = stream([
                     'url' => $url,
                     'offset' => $offset,
-                    'live' => false,
+                    'live' => LiveMode::Off,
                     'client' => $sharedClient,
                 ]);
                 $data = $response->body();
@@ -597,7 +605,7 @@ function handleBenchmark(array $cmd): array {
                 $url = $serverUrl . $operation['path'];
                 $response = stream([
                     'url' => $url,
-                    'live' => false,
+                    'live' => LiveMode::Off,
                     'client' => $sharedClient,
                 ]);
 
@@ -630,6 +638,9 @@ function handleBenchmark(array $cmd): array {
                     ];
                 }
 
+                // Map string live mode to enum
+                $liveModeEnum = $liveMode === 'long-poll' ? LiveMode::LongPoll : LiveMode::Off;
+
                 // Create stream
                 DurableStream::create($url, $contentType, [], null, null, $sharedClient);
 
@@ -642,7 +653,7 @@ function handleBenchmark(array $cmd): array {
                 $response = stream([
                     'url' => $url,
                     'offset' => '-1',
-                    'live' => $liveMode,
+                    'live' => $liveModeEnum,
                     'timeout' => 5.0,
                     'client' => $sharedClient,
                 ]);
