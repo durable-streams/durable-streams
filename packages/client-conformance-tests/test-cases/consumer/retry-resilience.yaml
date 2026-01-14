@@ -158,3 +158,31 @@ tests:
           data: "retry-data"
     cleanup:
       - action: clear-errors
+
+  - id: retry-exhaustion-fails
+    name: Client fails after retry limit exhaustion
+    description: |
+      Client should eventually fail when transient errors persist beyond
+      the retry limit. This prevents infinite retry loops and ensures
+      clients surface errors to callers rather than hanging forever.
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject many 500 errors - more than any reasonable retry limit
+      - action: inject-error
+        path: ${streamPath}
+        status: 500
+        count: 20
+      # Client should eventually give up and return an error
+      - action: read
+        path: ${streamPath}
+        expect:
+          error: true
+          # The error could be 500 (last failed attempt) or a client-specific
+          # retry exhaustion error - either is acceptable
+    cleanup:
+      - action: clear-errors

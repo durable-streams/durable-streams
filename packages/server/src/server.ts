@@ -42,12 +42,16 @@ const CURSOR_QUERY_PARAM = `cursor`
  * Line terminators in the payload (CR, LF, or CRLF) become separate data: lines.
  * This prevents CRLF injection attacks where malicious payloads could inject
  * fake SSE events using CR-only line terminators.
+ *
+ * Note: We don't add a space after "data:" because clients strip exactly one
+ * leading space per the SSE spec. Adding one would cause data starting with
+ * spaces to lose an extra space character.
  */
 function encodeSSEData(payload: string): string {
   // Split on all SSE-valid line terminators: CRLF, CR, or LF
   // Order matters: \r\n must be matched before \r alone
   const lines = payload.split(/\r\n|\r|\n/)
-  return lines.map((line) => `data: ${line}`).join(`\n`) + `\n\n`
+  return lines.map((line) => `data:${line}`).join(`\n`) + `\n\n`
 }
 
 /**

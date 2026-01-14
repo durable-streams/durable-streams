@@ -1,0 +1,820 @@
+client:
+  name: basic
+  file-system: device-agnostic
+tools: {}
+targets:
+  "ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module":
+    ["<ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module>"]
+  "DurableStreams-aarch64-unknown-linux-gnu-debug.module":
+    ["<DurableStreams-aarch64-unknown-linux-gnu-debug.module>"]
+  "DurableStreamsPackageDiscoveredTests-aarch64-unknown-linux-gnu-debug.module":
+    [
+      "<DurableStreamsPackageDiscoveredTests-aarch64-unknown-linux-gnu-debug.module>",
+    ]
+  "DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.module":
+    ["<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.module>"]
+  "DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test":
+    ["<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test>"]
+  "DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module":
+    ["<DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module>"]
+  "PackageStructure": ["<PackageStructure>"]
+  "conformance-adapter-aarch64-unknown-linux-gnu-debug.exe":
+    ["<conformance-adapter-aarch64-unknown-linux-gnu-debug.exe>"]
+  "main":
+    [
+      "<ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module>",
+      "<DurableStreams-aarch64-unknown-linux-gnu-debug.module>",
+      "<conformance-adapter-aarch64-unknown-linux-gnu-debug.exe>",
+    ]
+  "test":
+    [
+      "<ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module>",
+      "<DurableStreams-aarch64-unknown-linux-gnu-debug.module>",
+      "<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test>",
+      "<DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module>",
+      "<conformance-adapter-aarch64-unknown-linux-gnu-debug.exe>",
+    ]
+default: "main"
+nodes:
+  "/workspace/Sources/ConformanceAdapter/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git", ".build"]
+  "/workspace/Sources/DurableStreams/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git", ".build"]
+  "/workspace/Tests/DurableStreamsTests/":
+    is-directory-structure: true
+    content-exclusion-patterns: [".git", ".build"]
+commands:
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/ConformanceAdapter.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o",
+      ]
+    description: "Wrapping AST for ConformanceAdapter for debugging"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-modulewrap",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/ConformanceAdapter.swiftmodule",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/sources":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<sources-file-list>",
+        "/workspace/Sources/ConformanceAdapter/main.swift",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/sources",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/sources"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+      ]
+    description: "Wrapping AST for DurableStreams for debugging"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-modulewrap",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/sources":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<sources-file-list>",
+        "/workspace/Sources/DurableStreams/Configuration.swift",
+        "/workspace/Sources/DurableStreams/Constants.swift",
+        "/workspace/Sources/DurableStreams/DurableStream.swift",
+        "/workspace/Sources/DurableStreams/DurableStreams.swift",
+        "/workspace/Sources/DurableStreams/Errors.swift",
+        "/workspace/Sources/DurableStreams/HTTPClient.swift",
+        "/workspace/Sources/DurableStreams/IdempotentProducer.swift",
+        "/workspace/Sources/DurableStreams/Lifecycle.swift",
+        "/workspace/Sources/DurableStreams/SSEParser.swift",
+        "/workspace/Sources/DurableStreams/StreamAPI.swift",
+        "/workspace/Sources/DurableStreams/Types.swift",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/sources",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/sources"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsPackageDiscoveredTests.swiftmodule.o":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsPackageDiscoveredTests.swiftmodule.o",
+      ]
+    description: "Wrapping AST for DurableStreamsPackageDiscoveredTests for debugging"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-modulewrap",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsPackageDiscoveredTests.swiftmodule.o",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/sources":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<sources-file-list>",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/DurableStreamsTests.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/all-discovered-tests.swift",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/sources",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/sources"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/all-discovered-tests.swift":
+    tool: test-discovery-tool
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/DurableStreamsTests.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/all-discovered-tests.swift",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/DurableStreamsPackageTests.swiftmodule.o":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageTests.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/DurableStreamsPackageTests.swiftmodule.o",
+      ]
+    description: "Wrapping AST for DurableStreamsPackageTests for debugging"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-modulewrap",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageTests.swiftmodule",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/DurableStreamsPackageTests.swiftmodule.o",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/sources":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<sources-file-list>",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.derived/runner.swift",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/sources",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/sources"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.derived/runner.swift":
+    tool: test-entry-point-tool
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.derived/runner.swift",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<link-file-list>",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsPackageDiscoveredTests.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/DurableStreamsPackageTests.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/runner.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftmodule.o",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.product/Objects.LinkFileList",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.product/Objects.LinkFileList"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftmodule.o":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftmodule.o",
+      ]
+    description: "Wrapping AST for DurableStreamsTests for debugging"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-modulewrap",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftmodule.o",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+      ]
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/sources":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<sources-file-list>",
+        "/workspace/Tests/DurableStreamsTests/DurableStreamsTests.swift",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/sources",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/sources"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter.product/Objects.LinkFileList":
+    tool: write-auxiliary-file
+    inputs:
+      [
+        "<link-file-list>",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter.product/Objects.LinkFileList",
+      ]
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter.product/Objects.LinkFileList"
+
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt":
+    tool: write-auxiliary-file
+    inputs: ["<swift-get-version>", "/usr/bin/swiftc"]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+      ]
+    always-out-of-date: "true"
+    description: "Write auxiliary file /workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt"
+
+  "<ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/ConformanceAdapter.swiftmodule",
+      ]
+    outputs: ["<ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module>"]
+
+  "<DurableStreams-aarch64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+      ]
+    outputs: ["<DurableStreams-aarch64-unknown-linux-gnu-debug.module>"]
+
+  "<DurableStreamsPackageDiscoveredTests-aarch64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+      ]
+    outputs:
+      [
+        "<DurableStreamsPackageDiscoveredTests-aarch64-unknown-linux-gnu-debug.module>",
+      ]
+
+  "<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/runner.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageTests.swiftmodule",
+      ]
+    outputs:
+      ["<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.module>"]
+
+  "<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.xctest",
+      ]
+    outputs:
+      ["<DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test>"]
+
+  "<DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module>":
+    tool: phony
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+      ]
+    outputs: ["<DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module>"]
+
+  "<conformance-adapter-aarch64-unknown-linux-gnu-debug.exe>":
+    tool: phony
+    inputs:
+      ["/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter"]
+    outputs: ["<conformance-adapter-aarch64-unknown-linux-gnu-debug.exe>"]
+
+  "C.ConformanceAdapter-aarch64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs:
+      [
+        "/workspace/Sources/ConformanceAdapter/main.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/sources",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/ConformanceAdapter.swiftmodule",
+      ]
+    description: "Compiling Swift Module 'ConformanceAdapter' (1 sources)"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-module-name",
+        "ConformanceAdapter",
+        "-emit-dependencies",
+        "-emit-module",
+        "-emit-module-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/ConformanceAdapter.swiftmodule",
+        "-output-file-map",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/output-file-map.json",
+        "-incremental",
+        "-c",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/sources",
+        "-I",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-Xfrontend",
+        "-entry-point-function-name",
+        "-Xfrontend",
+        "ConformanceAdapter_main",
+        "-swift-version",
+        "6",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "workspace",
+        "-Xcc",
+        "-fno-omit-frame-pointer",
+      ]
+
+  "C.DurableStreams-aarch64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs:
+      [
+        "/workspace/Sources/DurableStreams/Configuration.swift",
+        "/workspace/Sources/DurableStreams/Constants.swift",
+        "/workspace/Sources/DurableStreams/DurableStream.swift",
+        "/workspace/Sources/DurableStreams/DurableStreams.swift",
+        "/workspace/Sources/DurableStreams/Errors.swift",
+        "/workspace/Sources/DurableStreams/HTTPClient.swift",
+        "/workspace/Sources/DurableStreams/IdempotentProducer.swift",
+        "/workspace/Sources/DurableStreams/Lifecycle.swift",
+        "/workspace/Sources/DurableStreams/SSEParser.swift",
+        "/workspace/Sources/DurableStreams/StreamAPI.swift",
+        "/workspace/Sources/DurableStreams/Types.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/sources",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+      ]
+    description: "Compiling Swift Module 'DurableStreams' (11 sources)"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-module-name",
+        "DurableStreams",
+        "-emit-dependencies",
+        "-emit-module",
+        "-emit-module-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+        "-output-file-map",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/output-file-map.json",
+        "-parse-as-library",
+        "-incremental",
+        "-c",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/sources",
+        "-I",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "workspace",
+        "-Xcc",
+        "-fno-omit-frame-pointer",
+      ]
+
+  "C.DurableStreamsPackageDiscoveredTests-aarch64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/DurableStreamsTests.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/all-discovered-tests.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/sources",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+      ]
+    description: "Compiling Swift Module 'DurableStreamsPackageDiscoveredTests' (2 sources)"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-module-name",
+        "DurableStreamsPackageDiscoveredTests",
+        "-emit-dependencies",
+        "-emit-module",
+        "-emit-module-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+        "-output-file-map",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/output-file-map.json",
+        "-parse-as-library",
+        "-incremental",
+        "-c",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/sources",
+        "-I",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "workspace",
+        "-Xcc",
+        "-fno-omit-frame-pointer",
+      ]
+
+  "C.DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.derived/runner.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageDiscoveredTests.swiftmodule",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/sources",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/runner.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageTests.swiftmodule",
+      ]
+    description: "Compiling Swift Module 'DurableStreamsPackageTests' (1 sources)"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-module-name",
+        "DurableStreamsPackageTests",
+        "-emit-dependencies",
+        "-emit-module",
+        "-emit-module-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsPackageTests.swiftmodule",
+        "-output-file-map",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/output-file-map.json",
+        "-parse-as-library",
+        "-incremental",
+        "-c",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/sources",
+        "-I",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "workspace",
+        "-Xcc",
+        "-fno-omit-frame-pointer",
+      ]
+
+  "C.DurableStreamsPackageTests-aarch64-unknown-linux-gnu-debug.test":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsPackageDiscoveredTests.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/DurableStreamsPackageTests.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.build/runner.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.product/Objects.LinkFileList",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.xctest",
+      ]
+    description: "Linking ./.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.xctest"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-L",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.xctest",
+        "-module-name",
+        "DurableStreamsPackageTests",
+        "-emit-executable",
+        "-Xlinker",
+        "-rpath=$ORIGIN",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageTests.product/Objects.LinkFileList",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-g",
+      ]
+
+  "C.DurableStreamsTests-aarch64-unknown-linux-gnu-debug.module":
+    tool: shell
+    inputs:
+      [
+        "/workspace/Tests/DurableStreamsTests/DurableStreamsTests.swift",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/swift-version-24593BA9C3E375BF.txt",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreams.swiftmodule",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/sources",
+      ]
+    outputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+      ]
+    description: "Compiling Swift Module 'DurableStreamsTests' (1 sources)"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-module-name",
+        "DurableStreamsTests",
+        "-emit-dependencies",
+        "-emit-module",
+        "-emit-module-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules/DurableStreamsTests.swiftmodule",
+        "-output-file-map",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/output-file-map.json",
+        "-parse-as-library",
+        "-incremental",
+        "-c",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/sources",
+        "-I",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/Modules",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-enable-batch-mode",
+        "-index-store-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/index/store",
+        "-Onone",
+        "-enable-testing",
+        "-j10",
+        "-DSWIFT_PACKAGE",
+        "-DDEBUG",
+        "-module-cache-path",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ModuleCache",
+        "-parseable-output",
+        "-parse-as-library",
+        "-swift-version",
+        "6",
+        "-g",
+        "-Xcc",
+        "-fPIC",
+        "-Xcc",
+        "-g",
+        "-package-name",
+        "workspace",
+        "-Xcc",
+        "-fno-omit-frame-pointer",
+      ]
+
+  "C.conformance-adapter-aarch64-unknown-linux-gnu-debug.exe":
+    tool: shell
+    inputs:
+      [
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter.product/Objects.LinkFileList",
+      ]
+    outputs:
+      ["/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter"]
+    description: "Linking ./.build/aarch64-unknown-linux-gnu/debug/conformance-adapter"
+    args:
+      [
+        "/usr/bin/swiftc",
+        "-L",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug",
+        "-o",
+        "/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter",
+        "-module-name",
+        "conformance_adapter",
+        "-emit-executable",
+        "-Xlinker",
+        "--defsym",
+        "-Xlinker",
+        "main=ConformanceAdapter_main",
+        "-Xlinker",
+        "-rpath=$ORIGIN",
+        "@/workspace/.build/aarch64-unknown-linux-gnu/debug/conformance-adapter.product/Objects.LinkFileList",
+        "-target",
+        "aarch64-unknown-linux-gnu",
+        "-g",
+      ]
+
+  "PackageStructure":
+    tool: package-structure-tool
+    inputs:
+      [
+        "/workspace/Sources/ConformanceAdapter/",
+        "/workspace/Sources/DurableStreams/",
+        "/workspace/Tests/DurableStreamsTests/",
+        "/workspace/Package.swift",
+        "/workspace/Package.resolved",
+      ]
+    outputs: ["<PackageStructure>"]
+    description: "Planning build"
+    allow-missing-inputs: true
