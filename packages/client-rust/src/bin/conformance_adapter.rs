@@ -55,6 +55,20 @@ struct Command {
     name: Option<String>,
     value_type: Option<String>,
     initial_value: Option<String>,
+    // Validation fields
+    target: Option<ValidationTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ValidationTarget {
+    target: String,
+    epoch: Option<i64>,
+    max_batch_bytes: Option<i64>,
+    max_retries: Option<i64>,
+    initial_delay_ms: Option<i64>,
+    max_delay_ms: Option<i64>,
+    multiplier: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,6 +229,7 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
         "clear-dynamic" => handle_clear_dynamic(state, cmd).await,
         "idempotent-append" => handle_idempotent_append(state, cmd).await,
         "idempotent-append-batch" => handle_idempotent_append_batch(state, cmd).await,
+        "validate" => handle_validate(cmd),
         "shutdown" => Result {
             result_type: "shutdown".to_string(),
             success: true,
@@ -751,6 +766,65 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
         success: true,
         status: Some(200),
         ..Default::default()
+    }
+}
+
+fn handle_validate(cmd: Command) -> Result {
+    let target = match cmd.target {
+        Some(t) => t,
+        None => {
+            return error_result("validate", "PARSE_ERROR", "missing target");
+        }
+    };
+
+    match target.target.as_str() {
+        "idempotent-producer" => {
+            let epoch = target.epoch.unwrap_or(0);
+            let max_batch_bytes = target.max_batch_bytes.unwrap_or(1_048_576);
+
+            if epoch < 0 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("epoch must be non-negative, got: {}", epoch));
+            }
+
+            if max_batch_bytes < 1 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("maxBatchBytes must be positive, got: {}", max_batch_bytes));
+            }
+
+            Result {
+                result_type: "validate".to_string(),
+                success: true,
+                ..Default::default()
+            }
+        }
+        "retry-options" => {
+            let max_retries = target.max_retries.unwrap_or(3);
+            let initial_delay_ms = target.initial_delay_ms.unwrap_or(100);
+            let max_delay_ms = target.max_delay_ms.unwrap_or(5000);
+            let multiplier = target.multiplier.unwrap_or(2.0);
+
+            if max_retries < 0 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("maxRetries must be non-negative, got: {}", max_retries));
+            }
+
+            if initial_delay_ms < 1 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("initialDelayMs must be positive, got: {}", initial_delay_ms));
+            }
+
+            if max_delay_ms < 1 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("maxDelayMs must be positive, got: {}", max_delay_ms));
+            }
+
+            if multiplier < 1.0 {
+                return error_result("validate", "INVALID_ARGUMENT", &format!("multiplier must be >= 1.0, got: {}", multiplier));
+            }
+
+            Result {
+                result_type: "validate".to_string(),
+                success: true,
+                ..Default::default()
+            }
+        }
+        _ => error_result("validate", "NOT_SUPPORTED", &format!("unknown validation target: {}", target.target)),
     }
 }
 
