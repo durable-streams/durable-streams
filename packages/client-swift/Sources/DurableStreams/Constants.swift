@@ -70,7 +70,7 @@ enum Defaults {
 }
 
 /// Client version information.
-enum ClientInfo {
-    static let name = "swift"
-    static let version = "0.1.0"
+public enum ClientInfo {
+    public static let name = "swift"
+    public static let version = "0.1.0"
 }
