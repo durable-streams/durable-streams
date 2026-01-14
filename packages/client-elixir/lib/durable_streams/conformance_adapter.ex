@@ -207,6 +207,9 @@ defmodule DurableStreams.ConformanceAdapter do
 
         {result, state}
 
+      {:error, :not_found} ->
+        {map_error("connect", :not_found, path), state}
+
       {:error, reason} ->
         {map_error("connect", reason), state}
     end
@@ -257,6 +260,9 @@ defmodule DurableStreams.ConformanceAdapter do
           |> maybe_add_params_sent(resolved_params)
 
         {result, new_state}
+
+      {:error, :not_found} ->
+        {map_error("append", :not_found, path), new_state}
 
       {:error, reason} ->
         {map_error("append", reason), new_state}
@@ -316,6 +322,9 @@ defmodule DurableStreams.ConformanceAdapter do
 
         {result, new_state}
 
+      {:error, :not_found} ->
+        {map_error("read", :not_found, path), new_state}
+
       {:error, reason} ->
         {map_error("read", reason), new_state}
     end
@@ -339,6 +348,9 @@ defmodule DurableStreams.ConformanceAdapter do
 
         {result, state}
 
+      {:error, :not_found} ->
+        {map_error("head", :not_found, path), state}
+
       {:error, reason} ->
         {map_error("head", reason), state}
     end
@@ -361,6 +373,9 @@ defmodule DurableStreams.ConformanceAdapter do
         }
 
         {result, new_state}
+
+      {:error, :not_found} ->
+        {map_error("delete", :not_found, path), state}
 
       {:error, reason} ->
         {map_error("delete", reason), state}
@@ -966,7 +981,12 @@ defmodule DurableStreams.ConformanceAdapter do
     end
   end
 
-  # Error mapping
+  # Error mapping - with path for context
+  defp map_error(cmd_type, :not_found, path) when is_binary(path) do
+    error_result(cmd_type, "NOT_FOUND", "Stream not found: #{path}", 404)
+  end
+
+  # Error mapping - without path (fallback)
   defp map_error(cmd_type, :not_found) do
     error_result(cmd_type, "NOT_FOUND", "Stream not found", 404)
   end
