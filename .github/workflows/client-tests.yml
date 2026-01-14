@@ -29,6 +29,12 @@ jobs:
         with:
           swift-version: "6.0"
 
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: packages/client-rb
+
       - name: Install dependencies
         run: pnpm install
 
@@ -59,6 +65,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../client-swift/run-conformance-adapter.sh
+
+      - name: Run Ruby client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-rb/run-conformance-adapter.sh
 
   elixir-conformance:
     name: Elixir Conformance Tests
@@ -135,6 +146,12 @@ jobs:
 
       - name: Set up Python
         run: uv python install 3.12
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: packages/client-rb
 
       - name: Install dependencies
         run: pnpm install
@@ -234,6 +251,23 @@ jobs:
           echo "swift_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "swift_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Ruby client benchmarks
+        id: rb_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format json > benchmark-results-rb.json
+          cat benchmark-results-rb.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-rb.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-rb.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rb.json)
+
+          echo "rb_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "rb_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "rb_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Run Elixir client benchmarks
         id: elixir_benchmarks
         continue-on-error: true
@@ -261,6 +295,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
             packages/client-conformance-tests/benchmark-results-swift.json
+            packages/client-conformance-tests/benchmark-results-rb.json
             packages/client-conformance-tests/benchmark-results-elixir.json
 
       - name: Generate benchmark report
@@ -281,6 +316,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format markdown >> benchmark-report.md
@@ -331,12 +369,13 @@ jobs:
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
           SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
+          RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
           ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED + ELIXIR_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED + RB_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED, Elixir: $ELIXIR_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
