@@ -291,8 +291,8 @@ public class ConformanceAdapter {
             boolean upToDate = false;
             int status = 200;
 
-            // Check if this is a JSON stream
-            boolean jsonStream = isJsonStream(url);
+            // Track if this is a JSON stream (determined from first chunk's content-type)
+            Boolean jsonStream = null;
 
             // SSE mode now uses true streaming
             LiveMode effectiveMode = liveMode;
@@ -333,8 +333,13 @@ public class ConformanceAdapter {
                     if (chunk.getData() != null && chunk.getData().length > 0) {
                         String dataStr = chunk.getDataAsString();
 
+                        // Determine if JSON stream from first chunk's content-type header
+                        if (jsonStream == null) {
+                            jsonStream = isJsonContentType(chunk);
+                        }
+
                         // Validate JSON for JSON streams
-                        if (jsonStream && !isValidJson(dataStr)) {
+                        if (Boolean.TRUE.equals(jsonStream) && !isValidJson(dataStr)) {
                             throw new ParseErrorException("Invalid JSON in stream response: " + dataStr);
                         }
 
@@ -817,14 +822,16 @@ public class ConformanceAdapter {
         }
     }
 
-    private static boolean isJsonStream(String url) {
-        try {
-            Metadata meta = client.head(url);
-            String contentType = meta.getContentType();
-            return contentType != null && contentType.toLowerCase().contains("application/json");
-        } catch (Exception e) {
+    private static boolean isJsonContentType(Chunk chunk) {
+        if (chunk == null) {
             return false;
         }
+        Map<String, String> headers = chunk.getHeaders();
+        if (headers == null) {
+            return false;
+        }
+        String contentType = headers.get("content-type");
+        return contentType != null && contentType.toLowerCase().contains("application/json");
     }
 
     private static Map<String, Object> errorResult(String commandType, String errorCode, String message, int status) {

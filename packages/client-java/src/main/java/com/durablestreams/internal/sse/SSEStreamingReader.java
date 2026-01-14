@@ -94,11 +94,9 @@ public final class SSEStreamingReader implements AutoCloseable {
      * Returns null if no chunk is available within the timeout.
      */
     public Chunk poll(long timeoutMs) throws DurableStreamException {
-        if (closed.get()) {
-            return null;
-        }
-
         try {
+            // Poll the queue first to ensure any queued errors are thrown
+            // even after the reader is closed (errors are queued before close)
             ChunkOrError result = chunkQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
             if (result == null) {
                 return null;
