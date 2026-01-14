@@ -832,6 +832,10 @@ func handleRead(_ cmd: Command) async -> Result {
     var retryCount = 0
     let maxRetries = 5
 
+    // Check if stream content type is JSON
+    let contentType = await state.getContentType(path: path)
+    let isJSON = contentType?.normalizedContentType() == "application/json"
+
     // Retry loop with timeout
     let deadline = Date().addingTimeInterval(timeoutSeconds)
 
@@ -864,6 +868,15 @@ func handleRead(_ cmd: Command) async -> Result {
 
             // Collect chunk if there's data
             if !result.data.isEmpty {
+                // For JSON streams, validate JSON to detect parse errors
+                if isJSON {
+                    do {
+                        _ = try JSONSerialization.jsonObject(with: result.data, options: [])
+                    } catch {
+                        throw DurableStreamError.parseError("Invalid JSON: \(error.localizedDescription)")
+                    }
+                }
+
                 if let text = String(data: result.data, encoding: .utf8) {
                     allChunks.append(ReadChunk(data: text, offset: result.offset.rawValue))
                 } else {
@@ -988,14 +1001,20 @@ func handleSSERead(
                 if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
                     await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
                 } else if event.effectiveEvent == "control" {
-                    // Parse control event for metadata
-                    if let jsonData = event.data.data(using: .utf8),
-                       let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
+                    // Parse control event for metadata - throw PARSE_ERROR if malformed
+                    guard let jsonData = event.data.data(using: .utf8), !event.data.trimmingCharacters(in: .whitespaces).isEmpty else {
+                        throw DurableStreamError.parseError("Empty control event data")
+                    }
+
+                    do {
+                        let control = try JSONDecoder().decode(SSEControlEvent.self, from: jsonData)
                         await accumulator.updateControl(
                             offset: Offset(rawValue: control.streamNextOffset),
                             cursor: control.streamCursor,
                             upToDate: control.upToDate ?? false
                         )
+                    } catch {
+                        throw DurableStreamError.parseError("Malformed control event JSON: \(error.localizedDescription)")
                     }
                 }
 
@@ -1019,21 +1038,32 @@ func handleSSERead(
             sseTask.cancel()
         }
 
-        _ = await sseTask.result
+        // Wait for the SSE task and handle errors
+        do {
+            try await sseTask.value
+        } catch let error as DurableStreamError {
+            timeoutTask.cancel()
+            return mapError(cmd.type, error)
+        } catch is CancellationError {
+            // Timeout - this is expected, continue to return results
+        } catch {
+            timeoutTask.cancel()
+            return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+        }
         timeoutTask.cancel()
 
     } catch let error as DurableStreamError {
-        if error.code == .notFound {
-            return errorResult(cmd.type, "NOT_FOUND", error.message, status: 404)
-        }
         return mapError(cmd.type, error)
-    } catch {
+    } catch is CancellationError {
         // Timeout or cancellation - mark as up to date
         await accumulator.updateControl(
             offset: await accumulator.currentOffset,
             cursor: await accumulator.cursor,
             upToDate: true
         )
+    } catch {
+        // Unknown error - wrap as parse error or network error
+        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 
     let results = await accumulator.getResults()
@@ -1497,6 +1527,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "TIMEOUT"
     case .networkError:
         errorCode = "NETWORK_ERROR"
+    case .parseError:
+        errorCode = "PARSE_ERROR"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }
