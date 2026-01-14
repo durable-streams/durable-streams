@@ -128,9 +128,11 @@ public struct DurableStreamError: Error, Sendable, Equatable {
     }
 
     public static func fromHTTPStatus(_ status: Int, body: String? = nil, url: URL? = nil) -> DurableStreamError {
-        let baseMessage = body ?? httpStatusMessage(status)
-        // Include URL in message for context when available
-        let message = if let url = url, body == nil {
+        // Use body if provided and not empty, otherwise use HTTP status message
+        let hasBody = body != nil && !body!.isEmpty
+        let baseMessage = hasBody ? body! : httpStatusMessage(status)
+        // Include URL in message for context when no custom body provided
+        let message = if let url = url, !hasBody {
             "\(baseMessage): \(url.path)"
         } else {
             baseMessage

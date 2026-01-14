@@ -358,8 +358,8 @@ func handleInit(_ cmd: Command) async -> Result {
     return Result(
         type: "init",
         success: true,
-        clientName: ClientInfo.name,
-        clientVersion: ClientInfo.version,
+        clientName: "swift",
+        clientVersion: "0.1.0",
         features: Features(
             batching: true,
             sse: true,
@@ -881,11 +881,11 @@ func handleRead(_ cmd: Command) async -> Result {
 
             // Handle specific non-retryable errors
             if error.code == .badRequest {
-                return errorResult(cmd.type, "INVALID_OFFSET", "Invalid offset", status: 400)
+                return errorResult(cmd.type, "INVALID_OFFSET", error.message, status: 400)
             } else if error.code == .notFound {
-                return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
+                return errorResult(cmd.type, "NOT_FOUND", error.message, status: 404)
             } else if error.code == .retentionExpired {
-                return errorResult(cmd.type, "RETENTION_EXPIRED", "Data expired", status: 410)
+                return errorResult(cmd.type, "RETENTION_EXPIRED", error.message, status: 410)
             } else if error.code == .timeout || error.code == .serverBusy {
                 // Timeout in long-poll - return what we have
                 lastUpToDate = true
@@ -979,7 +979,7 @@ func handleSSERead(
 
     } catch let error as DurableStreamError {
         if error.code == .notFound {
-            return errorResult(cmd.type, "NOT_FOUND", "Stream not found", status: 404)
+            return errorResult(cmd.type, "NOT_FOUND", error.message, status: 404)
         }
         return mapError(cmd.type, error)
     } catch {
