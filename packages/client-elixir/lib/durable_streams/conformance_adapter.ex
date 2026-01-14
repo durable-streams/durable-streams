@@ -305,8 +305,12 @@ defmodule DurableStreams.ConformanceAdapter do
       headers: merged_headers
     ]
 
+    # Determine if this is a JSON stream for response validation
+    content_type = new_state.stream_content_types[path] || ""
+    is_json_stream = String.starts_with?(String.downcase(content_type), "application/json")
+
     # Read chunks - first try to catch initial errors
-    case read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode) do
+    case read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode, is_json_stream) do
       {:ok, chunks, final_offset, up_to_date, status} ->
         result =
           %{
@@ -551,15 +555,15 @@ defmodule DurableStreams.ConformanceAdapter do
   end
 
   # Read multiple chunks
-  defp read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode) do
-    do_read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode, [], opts[:offset], false, 200)
+  defp read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode, is_json_stream) do
+    do_read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode, [], opts[:offset], false, 200, is_json_stream)
   end
 
-  defp do_read_chunks(_stream, _opts, 0, _wait, _live, chunks, offset, up_to_date, status) do
+  defp do_read_chunks(_stream, _opts, 0, _wait, _live, chunks, offset, up_to_date, status, _is_json_stream) do
     {:ok, Enum.reverse(chunks), offset, up_to_date, status}
   end
 
-  defp do_read_chunks(stream, opts, remaining, wait_for_up_to_date, live_mode, chunks, current_offset, _up_to_date, _status) do
+  defp do_read_chunks(stream, opts, remaining, wait_for_up_to_date, live_mode, chunks, current_offset, _up_to_date, _status, is_json_stream) do
     read_opts = Keyword.put(opts, :offset, current_offset)
 
     # For SSE, halt when up_to_date to avoid waiting for timeout
@@ -575,73 +579,84 @@ defmodule DurableStreams.ConformanceAdapter do
 
     case Stream.read(stream, read_opts) do
       {:ok, chunk} ->
-        new_chunk =
-          if byte_size(chunk.data) > 0 do
-            # Check if data is binary (not valid UTF-8 or contains replacement characters)
-            # U+FFFD (0xEF 0xBF 0xBD) is inserted by text decoders for invalid bytes
-            is_binary = not String.valid?(chunk.data) or
-                        :binary.match(chunk.data, <<0xEF, 0xBF, 0xBD>>) != :nomatch
+        # For JSON streams (non-SSE), validate JSON before processing
+        json_valid = not is_json_stream or live_mode == :sse or
+                     byte_size(chunk.data) == 0 or
+                     validate_json(chunk.data)
 
-            if is_binary do
-              [%{"data" => Base.encode64(chunk.data), "offset" => chunk.next_offset, "binary" => true}]
+        if not json_valid do
+          {:error, {:parse_error, "Invalid JSON in response"}}
+        else
+          new_chunk =
+            if byte_size(chunk.data) > 0 do
+              # Check if data is binary (not valid UTF-8 or contains replacement characters)
+              # U+FFFD (0xEF 0xBF 0xBD) is inserted by text decoders for invalid bytes
+              is_binary = not String.valid?(chunk.data) or
+                          :binary.match(chunk.data, <<0xEF, 0xBF, 0xBD>>) != :nomatch
+
+              if is_binary do
+                [%{"data" => Base.encode64(chunk.data), "offset" => chunk.next_offset, "binary" => true}]
+              else
+                [%{"data" => chunk.data, "offset" => chunk.next_offset}]
+              end
             else
-              [%{"data" => chunk.data, "offset" => chunk.next_offset}]
+              []
             end
-          else
-            []
+
+          new_chunks = new_chunk ++ chunks
+          chunk_status = Map.get(chunk, :status, 200)
+          got_data = byte_size(chunk.data) > 0
+          new_remaining = if got_data, do: remaining - 1, else: remaining
+
+          cond do
+            # If up to date and we're waiting for it, stop
+            chunk.up_to_date and wait_for_up_to_date ->
+              {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
+
+            # If up to date and not in live mode, stop
+            chunk.up_to_date and live_mode == false ->
+              {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
+
+            # SSE: when up_to_date, stop - SSE collects all events in one connection
+            # Don't loop for more as that starts a new SSE connection and waits for timeout
+            chunk.up_to_date and live_mode == :sse ->
+              {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
+
+            # Long-poll: if we got data and have remaining chunks, continue polling for more
+            # This handles the case where data arrives in batches (e.g., A then B then C)
+            chunk.up_to_date and live_mode == :long_poll and new_remaining > 0 and got_data ->
+              do_read_chunks(
+                stream,
+                opts,
+                new_remaining,
+                wait_for_up_to_date,
+                live_mode,
+                new_chunks,
+                chunk.next_offset,
+                chunk.up_to_date,
+                chunk_status,
+                is_json_stream
+              )
+
+            # If up to date (timeout in live mode with no new data or remaining = 0), stop
+            chunk.up_to_date ->
+              {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
+
+            # Continue reading
+            true ->
+              do_read_chunks(
+                stream,
+                opts,
+                new_remaining,
+                wait_for_up_to_date,
+                live_mode,
+                new_chunks,
+                chunk.next_offset,
+                chunk.up_to_date,
+                chunk_status,
+                is_json_stream
+              )
           end
-
-        new_chunks = new_chunk ++ chunks
-        chunk_status = Map.get(chunk, :status, 200)
-        got_data = byte_size(chunk.data) > 0
-        new_remaining = if got_data, do: remaining - 1, else: remaining
-
-        cond do
-          # If up to date and we're waiting for it, stop
-          chunk.up_to_date and wait_for_up_to_date ->
-            {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
-
-          # If up to date and not in live mode, stop
-          chunk.up_to_date and live_mode == false ->
-            {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
-
-          # SSE: when up_to_date, stop - SSE collects all events in one connection
-          # Don't loop for more as that starts a new SSE connection and waits for timeout
-          chunk.up_to_date and live_mode == :sse ->
-            {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
-
-          # Long-poll: if we got data and have remaining chunks, continue polling for more
-          # This handles the case where data arrives in batches (e.g., A then B then C)
-          chunk.up_to_date and live_mode == :long_poll and new_remaining > 0 and got_data ->
-            do_read_chunks(
-              stream,
-              opts,
-              new_remaining,
-              wait_for_up_to_date,
-              live_mode,
-              new_chunks,
-              chunk.next_offset,
-              chunk.up_to_date,
-              chunk_status
-            )
-
-          # If up to date (timeout in live mode with no new data or remaining = 0), stop
-          chunk.up_to_date ->
-            {:ok, Enum.reverse(new_chunks), chunk.next_offset, true, chunk_status}
-
-          # Continue reading
-          true ->
-            do_read_chunks(
-              stream,
-              opts,
-              new_remaining,
-              wait_for_up_to_date,
-              live_mode,
-              new_chunks,
-              chunk.next_offset,
-              chunk.up_to_date,
-              chunk_status
-            )
         end
 
       {:error, :timeout} ->
@@ -1036,6 +1051,10 @@ defmodule DurableStreams.ConformanceAdapter do
     error_result(cmd_type, "UNEXPECTED_STATUS", "Status #{status}: #{body}", status)
   end
 
+  defp map_error(cmd_type, {:parse_error, message}) do
+    error_result(cmd_type, "PARSE_ERROR", message)
+  end
+
   defp map_error(cmd_type, reason) do
     error_result(cmd_type, "INTERNAL_ERROR", inspect(reason))
   end
@@ -1116,6 +1135,13 @@ defmodule DurableStreams.ConformanceAdapter do
 
   defp maybe_add_metrics(result, nil), do: result
   defp maybe_add_metrics(result, metrics), do: Map.put(result, "metrics", metrics)
+
+  defp validate_json(data) when is_binary(data) do
+    case JSON.decode(data) do
+      {:ok, _} -> true
+      {:error, _} -> false
+    end
+  end
 
   defp parse_int(nil), do: nil
 

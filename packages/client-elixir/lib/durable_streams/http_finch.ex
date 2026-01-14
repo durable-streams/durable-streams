@@ -73,6 +73,7 @@ defmodule DurableStreams.HTTP.Finch do
         next_offset: nil,
         up_to_date: false,
         events_delivered: 0,
+        error: nil,
         on_event: on_event,
         halt_on_up_to_date: halt_on_up_to_date,
         halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
@@ -110,14 +111,23 @@ defmodule DurableStreams.HTTP.Finch do
             acc.status != nil and acc.status >= 400 ->
               {:error, {:unexpected_status, acc.status, ""}}
 
+            acc.error != nil ->
+              # Parse error encountered during SSE processing
+              {:error, acc.error}
+
             true ->
               # Success - flush any remaining buffer
               acc = flush_buffer(acc)
-              {:ok, %{
-                next_offset: acc.next_offset,
-                up_to_date: acc.up_to_date,
-                events_delivered: acc.events_delivered
-              }}
+              # Check for errors after flushing
+              if acc.error != nil do
+                {:error, acc.error}
+              else
+                {:ok, %{
+                  next_offset: acc.next_offset,
+                  up_to_date: acc.up_to_date,
+                  events_delivered: acc.events_delivered
+                }}
+              end
           end
 
         {:error, %Finch.Error{reason: :request_timeout}} ->
@@ -193,22 +203,42 @@ defmodule DurableStreams.HTTP.Finch do
   defp deliver_event(%{type: "control", data: data}, acc) do
     # Control events update stream metadata
     # Format: {"streamNextOffset": "...", "upToDate": true/false}
-    case parse_control_data(data) do
-      {:ok, control} ->
-        next_offset = control["streamNextOffset"] || acc.next_offset
-        up_to_date = control["upToDate"] || acc.up_to_date
-        %{acc | next_offset: next_offset, up_to_date: up_to_date}
+    # Empty or malformed control events are parse errors
+    if data == "" or data == nil do
+      %{acc | error: {:parse_error, "Empty control event data"}}
+    else
+      case parse_control_data(data) do
+        {:ok, control} when is_map(control) ->
+          next_offset = control["streamNextOffset"] || acc.next_offset
+          up_to_date = control["upToDate"] || acc.up_to_date
+          %{acc | next_offset: next_offset, up_to_date: up_to_date}
 
-      _ ->
-        acc
+        {:ok, _non_map} ->
+          %{acc | error: {:parse_error, "Control event data is not a JSON object"}}
+
+        {:error, _reason} ->
+          %{acc | error: {:parse_error, "Malformed control event JSON: #{data}"}}
+      end
     end
   end
 
-  defp deliver_event(%{type: _type, data: data, id: id}, acc) do
+  defp deliver_event(%{type: "data", data: data, id: id}, acc) do
     # Data event - deliver to callback
     next_offset = id || acc.next_offset
     acc.on_event.({:event, data, next_offset, acc.up_to_date})
     %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
+  end
+
+  defp deliver_event(%{type: "message", data: data, id: id}, acc) do
+    # Default SSE event type is "message" - treat as data
+    next_offset = id || acc.next_offset
+    acc.on_event.({:event, data, next_offset, acc.up_to_date})
+    %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
+  end
+
+  defp deliver_event(%{type: _unknown_type, data: _data, id: _id}, acc) do
+    # Ignore unknown event types (as per SSE spec, forward compatibility)
+    acc
   end
 
   # Parse SSE events from buffer, returning {complete_events, remaining_buffer}
