@@ -119,13 +119,14 @@ async Task<object> HandleCreate(JsonElement root)
     try
     {
         var stream = client.GetStream(path);
-        var statusCode = await stream.CreateAsync(new CreateStreamOptions
+        var result = await stream.CreateAsync(new CreateStreamOptions
         {
             ContentType = contentType,
-            TtlSeconds = ttlSeconds,
-            ExpiresAt = expiresAt,
+            Ttl = ttlSeconds.HasValue ? TimeSpan.FromSeconds(ttlSeconds.Value) : null,
+            ExpiresAt = expiresAt != null ? DateTimeOffset.Parse(expiresAt) : null,
             Headers = headers
         });
+        var statusCode = result == CreateStreamResult.Created ? 201 : 200;
 
         if (contentType != null)
         {
@@ -403,8 +404,8 @@ async Task<object> HandleHead(JsonElement root)
             status = 200,
             offset = metadata.Offset?.ToString(),
             contentType = metadata.ContentType,
-            ttlSeconds = metadata.TtlSeconds,
-            expiresAt = metadata.ExpiresAt
+            ttlSeconds = metadata.Ttl.HasValue ? (int)metadata.Ttl.Value.TotalSeconds : null,
+            expiresAt = metadata.ExpiresAt?.ToString("o")
         };
     }
     catch (Exception ex)
@@ -473,7 +474,7 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
             Epoch = epoch,
             AutoClaim = autoClaim,
             MaxInFlight = 1, // Sequential for single append
-            LingerMs = 0
+            Linger = TimeSpan.Zero
         });
 
         await using (producer)
@@ -555,7 +556,7 @@ async Task<object> HandleIdempotentAppendBatch(JsonElement root)
             Epoch = epoch,
             AutoClaim = autoClaim,
             MaxInFlight = maxInFlight,
-            LingerMs = 0
+            Linger = TimeSpan.Zero
         });
 
         Exception? lastError = null;
@@ -873,7 +874,7 @@ async Task<object> BenchmarkThroughputAppend(JsonElement op)
     stream.ContentType = ct;
     await using var producer = stream.CreateProducer("bench-producer", new IdempotentProducerOptions
     {
-        LingerMs = 0, // Batch by size, not time (matches Go)
+        Linger = TimeSpan.Zero, // Batch by size, not time (matches Go)
         ContentType = ct,
         MaxInFlight = 5 // Match Go default
     });
