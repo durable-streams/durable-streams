@@ -436,44 +436,66 @@ impl ChunkIterator {
 
                         match event_type.as_deref() {
                             Some("control") => {
+                                // Validate control event data
+                                if data.trim().is_empty() {
+                                    return Err(StreamError::ParseError(
+                                        "Empty control event data".to_string(),
+                                    ));
+                                }
+
                                 // Parse control event JSON
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
-                                    let stream_next_offset = json
-                                        .get("streamNextOffset")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("")
-                                        .to_string();
+                                match serde_json::from_str::<serde_json::Value>(&data) {
+                                    Ok(json) => {
+                                        // Must be a JSON object
+                                        if !json.is_object() {
+                                            return Err(StreamError::ParseError(
+                                                "Control event data is not a JSON object".to_string(),
+                                            ));
+                                        }
 
-                                    let stream_cursor = json
-                                        .get("streamCursor")
-                                        .and_then(|v| v.as_str())
-                                        .map(|s| s.to_string());
+                                        let stream_next_offset = json
+                                            .get("streamNextOffset")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
 
-                                    let up_to_date = json
-                                        .get("upToDate")
-                                        .and_then(|v| v.as_bool())
-                                        .unwrap_or(false);
+                                        let stream_cursor = json
+                                            .get("streamCursor")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string());
 
-                                    // Update state
-                                    self.offset = Offset::parse(&stream_next_offset);
-                                    if let Some(cursor) = stream_cursor {
-                                        self.cursor = Some(cursor);
+                                        let up_to_date = json
+                                            .get("upToDate")
+                                            .and_then(|v| v.as_bool())
+                                            .unwrap_or(false);
+
+                                        // Update state
+                                        self.offset = Offset::parse(&stream_next_offset);
+                                        if let Some(cursor) = stream_cursor {
+                                            self.cursor = Some(cursor);
+                                        }
+                                        self.up_to_date = up_to_date;
+
+                                        // Control-only event (no data)
+                                        if up_to_date {
+                                            return Ok(Some(Chunk {
+                                                data: Bytes::new(),
+                                                next_offset: self.offset.clone(),
+                                                up_to_date: true,
+                                                cursor: self.cursor.clone(),
+                                                status_code: Some(200),
+                                            }));
+                                        }
                                     }
-                                    self.up_to_date = up_to_date;
-
-                                    // Control-only event (no data)
-                                    if up_to_date {
-                                        return Ok(Some(Chunk {
-                                            data: Bytes::new(),
-                                            next_offset: self.offset.clone(),
-                                            up_to_date: true,
-                                            cursor: self.cursor.clone(),
-                                            status_code: Some(200),
-                                        }));
+                                    Err(e) => {
+                                        return Err(StreamError::ParseError(format!(
+                                            "Malformed control event JSON: {}",
+                                            e
+                                        )));
                                     }
                                 }
                             }
-                            _ => {
+                            Some("data") | Some("message") | None => {
                                 // Data event - return immediately
                                 return Ok(Some(Chunk {
                                     data: Bytes::from(data),
@@ -482,6 +504,9 @@ impl ChunkIterator {
                                     cursor: self.cursor.clone(),
                                     status_code: Some(200),
                                 }));
+                            }
+                            Some(_) => {
+                                // Unknown event type - ignore per SSE spec (forward compatibility)
                             }
                         }
                     }
