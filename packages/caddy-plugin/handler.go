@@ -493,8 +493,11 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				body, _ := h.formatResponse(path, messages, meta.ContentType)
 				fmt.Fprintf(w, "event: data\n")
 				// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+				// Note: Per SSE spec, we don't add a space after "data:" because clients
+				// strip exactly one leading space. Adding one would cause data starting
+				// with spaces to lose an extra space character.
 				for _, line := range sseLineTerminators.Split(string(body), -1) {
-					fmt.Fprintf(w, "data: %s\n", line)
+					fmt.Fprintf(w, "data:%s\n", line)
 				}
 				fmt.Fprintf(w, "\n")
 
@@ -514,7 +517,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				}
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
+				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
@@ -533,7 +536,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				}
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
+				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
