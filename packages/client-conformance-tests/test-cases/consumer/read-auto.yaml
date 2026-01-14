@@ -1,0 +1,155 @@
+id: consumer-auto
+name: Auto Live Mode
+description: Tests for auto live mode that catches up first then transitions to live tailing
+category: consumer
+tags:
+  - core
+  - read
+  - auto
+  - live
+requires:
+  - auto
+
+tests:
+  - id: auto-catches-up-with-existing-data
+    name: Auto mode catches up with existing data first
+    description: Auto mode should read all existing data before entering live mode
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data1"
+      - action: append
+        path: ${streamPath}
+        data: "data2"
+      - action: append
+        path: ${streamPath}
+        data: "data3"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: auto
+        timeoutMs: 2000
+        waitForUpToDate: true
+        expect:
+          data: "data1data2data3"
+          upToDate: true
+
+  - id: auto-waits-for-new-data
+    name: Auto mode waits for new data after catching up
+    description: After catching up, auto mode should wait for new data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: initialOffset
+    operations:
+      # Start auto read in background (will catch up then wait)
+      - action: read
+        path: ${streamPath}
+        offset: ${initialOffset}
+        live: auto
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      # Wait for the read to start and catch up
+      - action: wait
+        ms: 300
+      # Append new data
+      - action: server-append
+        path: ${streamPath}
+        data: "new-data"
+      # Wait for the background read to receive the data
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: "new-data"
+
+  - id: auto-returns-immediately-on-existing-data
+    name: Auto mode returns immediately with existing data
+    description: Auto mode should not delay when there's data to return
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "existing"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: auto
+        timeoutMs: 1000
+        waitForUpToDate: true
+        expect:
+          data: "existing"
+          upToDate: true
+
+  - id: auto-resumes-from-offset
+    name: Auto mode resumes from provided offset
+    description: Auto mode should start from the given offset, not beginning
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "old-data"
+        expect:
+          storeOffsetAs: offset
+      - action: append
+        path: ${streamPath}
+        data: "new-data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: auto
+        timeoutMs: 1000
+        waitForUpToDate: true
+        expect:
+          data: "new-data"
+          upToDate: true
+
+  - id: auto-empty-stream
+    name: Auto mode handles empty stream
+    description: Auto mode should handle empty streams gracefully
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: auto
+        timeoutMs: 500
+        waitForUpToDate: true
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: auto-multiple-chunks
+    name: Auto mode collects multiple chunks
+    description: Auto mode should receive multiple data chunks
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "chunk1"
+      - action: append
+        path: ${streamPath}
+        data: "chunk2"
+      - action: append
+        path: ${streamPath}
+        data: "chunk3"
+      - action: read
+        path: ${streamPath}
+        live: auto
+        timeoutMs: 2000
+        waitForUpToDate: true
+        expect:
+          data: "chunk1chunk2chunk3"
+          upToDate: true

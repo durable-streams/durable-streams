@@ -1,0 +1,49 @@
+[package]
+name = "durable-streams"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Rust client for Durable Streams - persistent, resumable event streams over HTTP"
+repository = "https://github.com/durable-streams/durable-streams"
+keywords = ["streaming", "events", "http", "append-only-log"]
+categories = ["network-programming", "web-programming"]
+
+[features]
+default = ["json", "rustls"]
+json = []
+native-tls = ["reqwest/native-tls"]
+rustls = ["reqwest/rustls-tls"]
+tracing = ["dep:tracing"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+
+# HTTP client
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
+
+# Bytes handling
+bytes = "1"
+
+# Fast mutex
+parking_lot = "0.12"
+
+# Error handling
+thiserror = "2"
+
+# JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Base64 encoding (for conformance adapter)
+base64 = "0.22"
+
+# Tracing (optional)
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[[bin]]
+name = "conformance-adapter"
+path = "src/bin/conformance_adapter.rs"

@@ -181,6 +181,9 @@ htmlcov/
 # uv
 .uv/
 
+# Rust
+target/
+
 # Claude local settings
 .claude/settings.local.json
 .beads
