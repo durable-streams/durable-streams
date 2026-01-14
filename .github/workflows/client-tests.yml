@@ -29,6 +29,12 @@ jobs:
         with:
           swift-version: "6.0"
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/client-rust
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -51,6 +57,11 @@ jobs:
           cd packages/client-swift
           swift build -c release
 
+      - name: Build Rust client adapter
+        run: |
+          cd packages/client-rust
+          cargo build --release
+
       - name: Run TypeScript client conformance tests
         run: |
           cd packages/client-conformance-tests
@@ -65,6 +76,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../client-swift/run-conformance-adapter.sh
+
+      - name: Run Rust client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-rust/run-conformance-adapter.sh
 
       - name: Run Ruby client conformance tests
         run: |
@@ -135,6 +151,12 @@ jobs:
         with:
           swift-version: "6.0"
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/client-rust
+
       - name: Set up Elixir
         uses: erlef/setup-beam@v1
         with:
@@ -163,6 +185,11 @@ jobs:
         run: |
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
+
+      - name: Build Rust client adapter
+        run: |
+          cd packages/client-rust
+          cargo build --release
 
       - name: Build Elixir client adapter
         run: |
@@ -251,6 +278,23 @@ jobs:
           echo "swift_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "swift_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
+      - name: Run Rust client benchmarks
+        id: rust_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format json > benchmark-results-rust.json
+          cat benchmark-results-rust.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-rust.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-rust.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rust.json)
+
+          echo "rust_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "rust_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "rust_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
       - name: Run Ruby client benchmarks
         id: rb_benchmarks
         continue-on-error: true
@@ -295,6 +339,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
             packages/client-conformance-tests/benchmark-results-swift.json
+            packages/client-conformance-tests/benchmark-results-rust.json
             packages/client-conformance-tests/benchmark-results-rb.json
             packages/client-conformance-tests/benchmark-results-elixir.json
 
@@ -316,6 +361,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format markdown >> benchmark-report.md
@@ -369,13 +417,14 @@ jobs:
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
           SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
+          RUST_FAILED=${{ steps.rust_benchmarks.outputs.rust_failed }}
           RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
           ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED + RB_FAILED + ELIXIR_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
