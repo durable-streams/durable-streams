@@ -45,6 +45,7 @@ while ((line = await reader.ReadLineAsync()) != null)
             "delete" => await HandleDelete(root),
             "idempotent-append" => await HandleIdempotentAppend(root),
             "idempotent-append-batch" => await HandleIdempotentAppendBatch(root),
+            "validate" => HandleValidate(root),
             "set-dynamic-header" => HandleSetDynamicHeader(root),
             "set-dynamic-param" => HandleSetDynamicParam(root),
             "clear-dynamic" => HandleClearDynamic(),
@@ -686,6 +687,74 @@ object HandleClearDynamic()
     dynamicCounters.Clear();
 
     return new { type = "clear-dynamic", success = true };
+}
+
+object HandleValidate(JsonElement root)
+{
+    if (!root.TryGetProperty("target", out var target))
+    {
+        return CreateError("validate", "PARSE_ERROR", "missing target");
+    }
+
+    var targetType = target.GetProperty("target").GetString();
+
+    switch (targetType)
+    {
+        case "retry-options":
+            // C# client doesn't have a separate RetryOptions class with validation
+            return CreateError("validate", "NOT_SUPPORTED", "C# client does not have RetryOptions class");
+
+        case "idempotent-producer":
+            try
+            {
+                var producerId = target.TryGetProperty("producerId", out var pidProp)
+                    ? pidProp.GetString() ?? "test-producer"
+                    : "test-producer";
+
+                var options = new IdempotentProducerOptions();
+
+                if (target.TryGetProperty("epoch", out var epochProp))
+                {
+                    options.Epoch = epochProp.GetInt32();
+                }
+
+                if (target.TryGetProperty("maxBatchBytes", out var maxBatchBytesProp))
+                {
+                    options.MaxBatchBytes = maxBatchBytesProp.GetInt32();
+                }
+
+                // Try to create a producer - this will validate the options
+                var stream = client!.GetStream("/test-validate");
+                using var producer = stream.CreateProducer(producerId, options);
+
+                return new { type = "validate", success = true };
+            }
+            catch (ArgumentOutOfRangeException ex)
+            {
+                return new
+                {
+                    type = "error",
+                    success = false,
+                    commandType = "validate",
+                    errorCode = "INVALID_ARGUMENT",
+                    message = ex.Message
+                };
+            }
+            catch (ArgumentException ex)
+            {
+                return new
+                {
+                    type = "error",
+                    success = false,
+                    commandType = "validate",
+                    errorCode = "INVALID_ARGUMENT",
+                    message = ex.Message
+                };
+            }
+
+        default:
+            return CreateError("validate", "NOT_SUPPORTED", $"Unknown validation target: {targetType}");
+    }
 }
 
 async Task<object> HandleBenchmark(JsonElement root)

@@ -71,6 +71,16 @@ public sealed class IdempotentProducer : IAsyncDisposable
         _producerId = producerId ?? throw new ArgumentNullException(nameof(producerId));
         _options = options ?? throw new ArgumentNullException(nameof(options));
 
+        // Validate options
+        if (options.Epoch < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "epoch must be non-negative");
+        }
+        if (options.MaxBatchBytes <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "maxBatchBytes must be positive");
+        }
+
         _epoch = options.Epoch;
         _nextSeq = 0;
 
