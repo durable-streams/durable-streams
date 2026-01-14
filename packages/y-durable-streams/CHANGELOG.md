@@ -1,5 +1,11 @@
 # @durable-streams/y-durable-streams
 
+## 0.1.3
+
+### Patch Changes
+
+- Use offset=now in presence stream ([#150](https://github.com/durable-streams/durable-streams/pull/150))
+
 ## 0.1.2
 
 ### Patch Changes

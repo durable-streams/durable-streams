@@ -149,8 +149,6 @@ build/
 develop-eggs/
 eggs/
 .eggs/
-lib/
-lib64/
 parts/
 sdist/
 var/
@@ -193,3 +191,4 @@ examples/yjs-demo/.tanstack
 
 # Local Netlify folder
 .netlify
+.claude/
