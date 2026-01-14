@@ -352,9 +352,9 @@ async Task<object> HandleRead(JsonElement root)
         }
         catch (OperationCanceledException)
         {
-            // Timeout is ok for long-poll - use response state
+            // Timeout is ok for long-poll - timeout means we're up-to-date
             finalOffset = response.Offset.ToString();
-            upToDate = response.UpToDate;
+            upToDate = true;  // Timeout = caught up with stream
             timedOut = true;
         }
 
