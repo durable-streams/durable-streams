@@ -55,23 +55,30 @@ messages = DurableStreams.read(
 )
 ```
 
-### Using a Client (recommended for multiple operations)
+### Writing (Producer)
 
 ```ruby
-# Block form (recommended - auto-closes)
-DurableStreams::Client.open(
-  base_url: "https://streams.example.com",
-  headers: { "Authorization" => "Bearer #{token}" }
-) do |client|
-  stream = client.stream("/events/orders")
-  stream.create_stream(content_type: "application/json")
+DurableStreams::Client.open(base_url: "https://streams.example.com") do |client|
+  stream = client.create("/events/orders", content_type: "application/json")
 
-  # Append with shovel operator (Ruby idiom)
+  # Shovel operator for appends
   stream << { order_id: 1, status: "created" }
-  stream << { order_id: 2, status: "created" }
+  stream << { order_id: 2, status: "shipped" }
+end
+```
 
-  # Stream is Enumerable - iterate directly
-  stream.each { |event| puts event }
+### Reading (Consumer)
+
+```ruby
+stream = DurableStreams.connect(url: "https://streams.example.com/events/orders")
+
+# Catch-up: read all existing messages
+stream.each { |event| process(event) }
+
+# Or with checkpointing
+stream.read_json(offset: saved_offset).each_batch do |batch|
+  batch.items.each { |event| process(event) }
+  save_offset(batch.next_offset)
 end
 ```
 
