@@ -1,0 +1,67 @@
+id: consumer-error-context
+name: Consumer Error Context
+description: |
+  Tests that error messages include helpful context (URL, status, etc.).
+  Catching bugs where errors lose context or provide unhelpful messages.
+category: consumer
+tags:
+  - errors
+  - context
+  - messages
+
+tests:
+  - id: not-found-includes-path
+    name: 404 error includes stream path in message
+    description: Error message should include the stream path for debugging
+    operations:
+      - action: read
+        path: /error-context-nonexistent-stream
+        live: false
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+          messageContains:
+            - "error-context-nonexistent-stream"
+
+  - id: not-found-on-append-includes-path
+    name: 404 on append includes stream path in message
+    description: Append to non-existent stream should report the path
+    operations:
+      - action: append
+        path: /error-context-append-nonexistent
+        data: "test"
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+          messageContains:
+            - "error-context-append-nonexistent"
+
+  - id: invalid-offset-includes-context
+    name: Invalid offset error includes helpful context
+    description: Error for invalid offset should indicate the nature of the error
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "not-a-valid-offset-format"
+        live: false
+        expect:
+          status: 400
+          errorCode: INVALID_OFFSET
+
+  - id: head-not-found-includes-path
+    name: HEAD 404 error includes stream path
+    description: HEAD request to non-existent stream should include path in error
+    operations:
+      - action: head
+        path: /error-context-head-nonexistent
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+          messageContains:
+            - "error-context-head-nonexistent"
