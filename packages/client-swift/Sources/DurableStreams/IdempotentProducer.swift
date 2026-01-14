@@ -73,9 +73,9 @@ public actor IdempotentProducer {
 
         public init(
             autoClaim: Bool = false,
-            maxBatchBytes: Int = Defaults.maxBatchBytes,
-            lingerMs: Int = Defaults.lingerMs,
-            maxInFlight: Int = Defaults.maxInFlight,
+            maxBatchBytes: Int = 1_048_576,  // 1MB
+            lingerMs: Int = 5,
+            maxInFlight: Int = 5,
             maxSequenceGapRetries: Int = 10,
             contentType: String? = nil,
             onError: (@Sendable (Error) -> Void)? = nil

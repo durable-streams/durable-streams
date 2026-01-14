@@ -55,7 +55,14 @@ public enum LiveMode: Sendable, Equatable, CaseIterable {
 }
 
 /// A batch of JSON messages from the stream.
-public struct JsonBatch<T: Sendable>: Sendable {
+///
+/// Conforms to `Sequence` so you can iterate directly:
+/// ```swift
+/// for item in batch {
+///     process(item)
+/// }
+/// ```
+public struct JsonBatch<T: Sendable>: Sendable, Sequence {
     /// The decoded messages
     public let items: [T]
 
@@ -74,6 +81,24 @@ public struct JsonBatch<T: Sendable>: Sendable {
         self.upToDate = upToDate
         self.cursor = cursor
     }
+
+    // MARK: - Sequence Conformance
+
+    public func makeIterator() -> IndexingIterator<[T]> {
+        items.makeIterator()
+    }
+
+    /// Number of items in the batch
+    public var count: Int { items.count }
+
+    /// Whether the batch is empty
+    public var isEmpty: Bool { items.isEmpty }
+
+    /// First item in the batch, if any
+    public var first: T? { items.first }
+
+    /// Last item in the batch, if any
+    public var last: T? { items.last }
 }
 
 /// A chunk of bytes from the stream.
@@ -166,6 +191,15 @@ public struct StreamInfo: Sendable {
         self.etag = etag
         self.cacheControl = cacheControl
     }
+
+    /// Whether the stream exists (has an offset)
+    public var exists: Bool { offset != nil }
+
+    /// Whether the stream is empty (exists but has no data)
+    public var isEmpty: Bool { offset == .start }
+
+    /// Whether the stream has data
+    public var hasData: Bool { exists && !isEmpty }
 }
 
 /// Result of an append operation.

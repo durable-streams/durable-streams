@@ -127,8 +127,14 @@ public struct DurableStreamError: Error, Sendable, Equatable {
         DurableStreamError(code: .parseError, message: "Parse error: \(message)")
     }
 
-    public static func fromHTTPStatus(_ status: Int, body: String? = nil) -> DurableStreamError {
-        let message = body ?? httpStatusMessage(status)
+    public static func fromHTTPStatus(_ status: Int, body: String? = nil, url: URL? = nil) -> DurableStreamError {
+        let baseMessage = body ?? httpStatusMessage(status)
+        // Include URL in message for context when available
+        let message = if let url = url, body == nil {
+            "\(baseMessage): \(url.path)"
+        } else {
+            baseMessage
+        }
         switch status {
         case 400:
             return .badRequest(message: message)

@@ -36,7 +36,7 @@ public struct StreamOptions: Sendable {
         headers: HeadersRecord = [:],
         params: ParamsRecord = [:],
         session: URLSession = .shared,
-        timeout: TimeInterval = Defaults.timeout
+        timeout: TimeInterval = 30
     ) {
         self.url = url
         self.offset = offset
@@ -92,7 +92,7 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
     }
 
     let requestURL = try await httpClient.buildURL(base: options.url, params: queryParams)
-    let request = await httpClient.buildRequest(url: requestURL)
+    let request = await httpClient.buildRequest(url: requestURL, timeout: options.timeout)
 
     let (data, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
 
@@ -242,7 +242,7 @@ public struct StreamResponse: Sendable {
         decoder: JSONDecoder = JSONDecoder()
     ) -> AsyncThrowingStream<JsonBatch<T>, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runLongPollLoop(
                     continuation: continuation,
                     transform: { data, offset, upToDate, cursor in
@@ -254,6 +254,7 @@ public struct StreamResponse: Sendable {
                     }
                 )
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
@@ -270,10 +271,11 @@ public struct StreamResponse: Sendable {
         decoder: JSONDecoder = JSONDecoder()
     ) -> AsyncThrowingStream<T, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     for try await batch in self.jsonStream(as: type, decoder: decoder) {
-                        for item in batch.items {
+                        if Task.isCancelled { break }
+                        for item in batch {
                             continuation.yield(item)
                         }
                     }
@@ -282,13 +284,14 @@ public struct StreamResponse: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
     /// Stream byte chunks as they arrive.
     public func byteStream() -> AsyncThrowingStream<ByteChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runLongPollLoop(
                     continuation: continuation,
                     transform: { data, offset, upToDate, cursor in
@@ -296,13 +299,14 @@ public struct StreamResponse: Sendable {
                     }
                 )
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
     /// Stream text chunks as they arrive.
     public func textStream() -> AsyncThrowingStream<TextChunk, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 await self.runLongPollLoop(
                     continuation: continuation,
                     transform: { data, offset, upToDate, cursor in
@@ -311,6 +315,7 @@ public struct StreamResponse: Sendable {
                     }
                 )
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
@@ -377,7 +382,7 @@ public struct StreamResponse: Sendable {
                 }
 
                 let requestURL = try await httpClient.buildURL(base: ctx.url, params: queryParams)
-                let request = await httpClient.buildRequest(url: requestURL)
+                let request = await httpClient.buildRequest(url: requestURL, timeout: ctx.timeout)
 
                 let (responseData, metadata) = try await httpClient.perform(request)
 
@@ -408,7 +413,7 @@ public struct StreamResponse: Sendable {
 
                 default:
                     let body = String(data: responseData, encoding: .utf8)
-                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body))
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: requestURL))
                     return
                 }
             } catch let error as DurableStreamError {

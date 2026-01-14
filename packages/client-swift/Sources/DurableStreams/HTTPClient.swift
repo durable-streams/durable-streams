@@ -7,38 +7,38 @@ import FoundationNetworking
 #endif
 
 /// Response metadata extracted from HTTP response headers.
-public struct ResponseMetadata: Sendable {
+struct ResponseMetadata: Sendable {
     /// Next offset to read from
-    public let offset: Offset?
+    let offset: Offset?
 
     /// Cursor for CDN collapsing
-    public let cursor: String?
+    let cursor: String?
 
     /// Whether stream is up-to-date
-    public let upToDate: Bool
+    let upToDate: Bool
 
     /// ETag for caching
-    public let etag: String?
+    let etag: String?
 
     /// Content type
-    public let contentType: String?
+    let contentType: String?
 
     /// HTTP status code
-    public let status: Int
+    let status: Int
 
     /// Producer epoch from server
-    public let producerEpoch: Int?
+    let producerEpoch: Int?
 
     /// Producer sequence from server
-    public let producerSeq: Int?
+    let producerSeq: Int?
 
     /// Expected sequence on 409
-    public let producerExpectedSeq: Int?
+    let producerExpectedSeq: Int?
 
     /// Received sequence on 409
-    public let producerReceivedSeq: Int?
+    let producerReceivedSeq: Int?
 
-    public init(from response: HTTPURLResponse) {
+    init(from response: HTTPURLResponse) {
         self.status = response.statusCode
         self.offset = response.value(forHTTPHeaderField: Headers.streamNextOffset).map { Offset(rawValue: $0) }
         self.cursor = response.value(forHTTPHeaderField: Headers.streamCursor)
@@ -114,10 +114,16 @@ internal actor HTTPClient {
         headers: [String: String] = [:],
         additionalHeaders: HeadersRecord = [:],
         body: Data? = nil,
-        contentType: String? = nil
+        contentType: String? = nil,
+        timeout: TimeInterval? = nil
     ) async -> URLRequest {
         var request = URLRequest(url: url)
         request.httpMethod = method
+
+        // Set timeout if provided
+        if let timeout = timeout {
+            request.timeoutInterval = timeout
+        }
 
         // Add static headers
         for (key, value) in headers {
@@ -176,7 +182,7 @@ internal actor HTTPClient {
 
         guard expectedStatus.contains(metadata.status) else {
             let body = String(data: data, encoding: .utf8)
-            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body)
+            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: request.url)
         }
 
         return (data, metadata)

@@ -123,9 +123,9 @@ public struct BatchingConfig: Sendable {
 
     /// Default: 1MB max, 5ms linger, 5 in-flight
     public static let `default` = BatchingConfig(
-        maxBytes: Defaults.maxBatchBytes,
-        lingerMs: Defaults.lingerMs,
-        maxInFlight: Defaults.maxInFlight
+        maxBytes: 1_048_576,  // 1MB
+        lingerMs: 5,
+        maxInFlight: 5
     )
 
     /// High-throughput: larger batches, more concurrency
@@ -143,9 +143,9 @@ public struct BatchingConfig: Sendable {
     )
 
     public init(
-        maxBytes: Int = Defaults.maxBatchBytes,
-        lingerMs: Int = Defaults.lingerMs,
-        maxInFlight: Int = Defaults.maxInFlight
+        maxBytes: Int = 1_048_576,  // 1MB
+        lingerMs: Int = 5,
+        maxInFlight: Int = 5
     ) {
         self.maxBytes = maxBytes
         self.lingerMs = lingerMs
@@ -168,13 +168,13 @@ public struct HTTPConfig: Sendable {
 
     /// Default HTTP configuration
     public static let `default` = HTTPConfig(
-        timeout: Defaults.timeout,
-        longPollTimeout: Defaults.longPollTimeout
+        timeout: 30,
+        longPollTimeout: 55
     )
 
     public init(
-        timeout: TimeInterval = Defaults.timeout,
-        longPollTimeout: TimeInterval = Defaults.longPollTimeout,
+        timeout: TimeInterval = 30,
+        longPollTimeout: TimeInterval = 55,
         session: URLSession? = nil
     ) {
         self.timeout = timeout
@@ -274,10 +274,8 @@ extension DurableStream.Configuration {
         self.init(
             headers: handle.headers,
             params: handle.params,
-            batching: handle.batching.maxBytes > 0,
-            maxBatchBytes: handle.batching.maxBytes,
-            lingerMs: handle.batching.lingerMs,
             timeout: handle.http.timeout,
+            longPollTimeout: handle.http.longPollTimeout,
             session: handle.http.resolvedSession
         )
     }
@@ -334,9 +332,9 @@ extension BatchingConfig {
 
     /// Create a batching configuration using Swift Duration.
     public init(
-        maxBytes: Int = Defaults.maxBatchBytes,
+        maxBytes: Int = 1_048_576,  // 1MB
         linger: Duration,
-        maxInFlight: Int = Defaults.maxInFlight
+        maxInFlight: Int = 5
     ) {
         self.init(
             maxBytes: maxBytes,

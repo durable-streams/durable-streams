@@ -42,12 +42,12 @@ public struct SSEEvent: Sendable, Equatable {
 /// - "id:" sets the event ID
 /// - "retry:" sets the reconnection time
 /// - Empty line dispatches the event
-public struct SSEParser: Sendable {
+struct SSEParser: Sendable {
 
     /// Parse SSE events from data.
     /// Returns parsed events and any remaining incomplete data.
     /// Handles CR, LF, and CRLF line endings per the EventSource spec.
-    public static func parse(data: Data, pendingData: Data = Data()) -> (events: [SSEEvent], remaining: Data) {
+    static func parse(data: Data, pendingData: Data = Data()) -> (events: [SSEEvent], remaining: Data) {
         var combined = pendingData
         combined.append(data)
 

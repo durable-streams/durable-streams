@@ -33,17 +33,11 @@ public actor DurableStream {
         /// Custom params for all requests
         public var params: ParamsRecord
 
-        /// Whether to enable automatic batching for appends
-        public var batching: Bool
-
-        /// Maximum bytes before sending a batch
-        public var maxBatchBytes: Int
-
-        /// Time to wait for more items before sending (milliseconds)
-        public var lingerMs: Int
-
-        /// Request timeout
+        /// Request timeout for normal operations
         public var timeout: TimeInterval
+
+        /// Timeout for long-poll and SSE operations (should be longer than server-side timeout)
+        public var longPollTimeout: TimeInterval
 
         /// URLSession to use
         public var session: URLSession
@@ -51,18 +45,14 @@ public actor DurableStream {
         public init(
             headers: HeadersRecord = [:],
             params: ParamsRecord = [:],
-            batching: Bool = true,
-            maxBatchBytes: Int = Defaults.maxBatchBytes,
-            lingerMs: Int = Defaults.lingerMs,
-            timeout: TimeInterval = Defaults.timeout,
+            timeout: TimeInterval = 30,
+            longPollTimeout: TimeInterval = 65,  // Server typically uses 55s, add buffer
             session: URLSession = .shared
         ) {
             self.headers = headers
             self.params = params
-            self.batching = batching
-            self.maxBatchBytes = maxBatchBytes
-            self.lingerMs = lingerMs
             self.timeout = timeout
+            self.longPollTimeout = longPollTimeout
             self.session = session
         }
 
@@ -111,7 +101,8 @@ public actor DurableStream {
         let request = await httpClient.buildRequest(
             url: url,
             method: "PUT",
-            headers: headers
+            headers: headers,
+            timeout: config.timeout
         )
 
         _ = try await httpClient.performChecked(request, expectedStatus: [201])
@@ -131,7 +122,7 @@ public actor DurableStream {
             params: config.params
         )
 
-        let request = await httpClient.buildRequest(url: url, method: "HEAD")
+        let request = await httpClient.buildRequest(url: url, method: "HEAD", timeout: config.timeout)
         let (_, metadata) = try await httpClient.performChecked(request)
 
         return DurableStream(url: url, contentType: metadata.contentType, config: config)
@@ -212,7 +203,7 @@ public actor DurableStream {
             params: config.params
         )
 
-        let request = await httpClient.buildRequest(url: url, method: "HEAD")
+        let request = await httpClient.buildRequest(url: url, method: "HEAD", timeout: config.timeout)
         let (_, metadata) = try await httpClient.performChecked(request)
 
         return StreamInfo(
@@ -230,7 +221,7 @@ public actor DurableStream {
             params: config.params
         )
 
-        let request = await httpClient.buildRequest(url: url, method: "DELETE")
+        let request = await httpClient.buildRequest(url: url, method: "DELETE", timeout: config.timeout)
         _ = try await httpClient.performChecked(request)
     }
 
@@ -241,7 +232,7 @@ public actor DurableStream {
         offset: Offset = .start,
         live: LiveMode = .catchUp,
         headers: HeadersRecord = [:]
-    ) async throws -> StreamReadResult {
+    ) async throws -> StreamResponse {
         var params: [String: String] = [
             QueryParams.offset: offset.rawValue
         ]
@@ -250,15 +241,19 @@ public actor DurableStream {
             params[QueryParams.live] = liveValue
         }
 
+        // Use longer timeout for long-poll/SSE modes
+        let timeout = live == .catchUp ? config.timeout : config.longPollTimeout
+
         let requestURL = try await httpClient.buildURL(base: url, params: params)
         let request = await httpClient.buildRequest(
             url: requestURL,
-            additionalHeaders: headers
+            additionalHeaders: headers,
+            timeout: timeout
         )
 
         let (data, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
 
-        return StreamReadResult(
+        return StreamResponse(
             data: data,
             offset: metadata.offset ?? offset,
             upToDate: metadata.upToDate,
@@ -440,7 +435,7 @@ public actor DurableStream {
                 }
 
                 let requestURL = try await httpClient.buildURL(base: url, params: params)
-                let request = await httpClient.buildRequest(url: requestURL)
+                let request = await httpClient.buildRequest(url: requestURL, timeout: config.longPollTimeout)
 
                 let (data, metadata) = try await httpClient.perform(request)
 
@@ -464,7 +459,7 @@ public actor DurableStream {
 
                 default:
                     let body = String(data: data, encoding: .utf8)
-                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body))
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: requestURL))
                     return
                 }
             } catch let error as DurableStreamError {
@@ -506,7 +501,8 @@ public actor DurableStream {
             method: "POST",
             headers: headers,
             body: data,
-            contentType: ct
+            contentType: ct,
+            timeout: config.timeout
         )
 
         let (responseData, metadata) = try await httpClient.perform(request)
@@ -523,7 +519,7 @@ public actor DurableStream {
 
         default:
             let body = String(data: responseData, encoding: .utf8)
-            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body)
+            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: url)
         }
     }
 
@@ -569,7 +565,8 @@ public actor DurableStream {
             method: "POST",
             headers: headers,
             body: data,
-            contentType: ct
+            contentType: ct,
+            timeout: config.timeout
         )
 
         let (responseData, metadata) = try await httpClient.perform(request)
@@ -597,7 +594,7 @@ public actor DurableStream {
 
         default:
             let body = String(data: responseData, encoding: .utf8)
-            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body)
+            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: url)
         }
     }
 
@@ -702,7 +699,7 @@ public actor DurableStream {
                 ]
 
                 let requestURL = try await httpClient.buildURL(base: url, params: queryParams)
-                var request = await httpClient.buildRequest(url: requestURL)
+                var request = await httpClient.buildRequest(url: requestURL, timeout: config.longPollTimeout)
                 request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
                 // Use streaming to receive bytes as they arrive
@@ -765,7 +762,7 @@ public actor DurableStream {
                     return
 
                 default:
-                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: nil))
+                    continuation.finish(throwing: DurableStreamError.fromHTTPStatus(metadata.status, body: nil, url: requestURL))
                     return
                 }
             } catch let error as DurableStreamError {
@@ -838,21 +835,93 @@ private struct SSEControlPayload: Codable {
     var upToDate: Bool?
 }
 
-/// Result of a stream read operation.
-public struct StreamReadResult: Sendable {
-    public let data: Data
-    public let offset: Offset
-    public let upToDate: Bool
-    public let cursor: String?
-    public let contentType: String?
-    public let status: Int
+// MARK: - URL String Convenience Extensions
 
-    public init(data: Data, offset: Offset, upToDate: Bool, cursor: String? = nil, contentType: String? = nil, status: Int = 200) {
-        self.data = data
-        self.offset = offset
-        self.upToDate = upToDate
-        self.cursor = cursor
-        self.contentType = contentType
-        self.status = status
+extension DurableStream {
+    /// Create a new stream from a URL string.
+    /// - Note: Crashes with `fatalError` if the URL string is invalid. Use `create(urlString:)` for throwing version.
+    public static func create(
+        _ urlString: String,
+        contentType: String = "application/json",
+        ttlSeconds: Int? = nil,
+        expiresAt: String? = nil,
+        config: Configuration = .default
+    ) async throws -> DurableStream {
+        guard let url = URL(string: urlString) else {
+            fatalError("Invalid URL string: \(urlString)")
+        }
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, config: config)
+    }
+
+    /// Create a new stream from a URL string (throwing version).
+    /// - Throws: `DurableStreamError.badRequest` if URL string is invalid
+    public static func create(
+        urlString: String,
+        contentType: String = "application/json",
+        ttlSeconds: Int? = nil,
+        expiresAt: String? = nil,
+        config: Configuration = .default
+    ) async throws -> DurableStream {
+        guard let url = URL(string: urlString) else {
+            throw DurableStreamError.badRequest(message: "Invalid URL string: \(urlString)")
+        }
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, config: config)
+    }
+
+    /// Connect to an existing stream from a URL string.
+    /// - Note: Crashes with `fatalError` if the URL string is invalid.
+    public static func connect(
+        _ urlString: String,
+        config: Configuration = .default
+    ) async throws -> DurableStream {
+        guard let url = URL(string: urlString) else {
+            fatalError("Invalid URL string: \(urlString)")
+        }
+        return try await connect(url: url, config: config)
+    }
+
+    /// Connect to an existing stream from a URL string (throwing version).
+    /// - Throws: `DurableStreamError.badRequest` if URL string is invalid
+    public static func connect(
+        urlString: String,
+        config: Configuration = .default
+    ) async throws -> DurableStream {
+        guard let url = URL(string: urlString) else {
+            throw DurableStreamError.badRequest(message: "Invalid URL string: \(urlString)")
+        }
+        return try await connect(url: url, config: config)
+    }
+
+    /// Create or connect from a URL string.
+    /// - Note: Crashes with `fatalError` if the URL string is invalid.
+    public static func createOrConnect(
+        _ urlString: String,
+        contentType: String = "application/json",
+        ttlSeconds: Int? = nil,
+        expiresAt: String? = nil,
+        config: Configuration = .default
+    ) async throws -> DurableStream {
+        guard let url = URL(string: urlString) else {
+            fatalError("Invalid URL string: \(urlString)")
+        }
+        return try await createOrConnect(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, config: config)
+    }
+
+    /// Get stream metadata from a URL string.
+    /// - Note: Crashes with `fatalError` if the URL string is invalid.
+    public static func head(_ urlString: String, config: Configuration = .default) async throws -> StreamInfo {
+        guard let url = URL(string: urlString) else {
+            fatalError("Invalid URL string: \(urlString)")
+        }
+        return try await head(url: url, config: config)
+    }
+
+    /// Delete a stream from a URL string.
+    /// - Note: Crashes with `fatalError` if the URL string is invalid.
+    public static func delete(_ urlString: String, config: Configuration = .default) async throws {
+        guard let url = URL(string: urlString) else {
+            fatalError("Invalid URL string: \(urlString)")
+        }
+        try await delete(url: url, config: config)
     }
 }
