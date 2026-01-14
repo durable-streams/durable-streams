@@ -1,0 +1,52 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+}
+
+group = 'com.durablestreams'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+    withSourcesJar()
+    withJavadocJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // No external dependencies - zero-dependency like Go client
+}
+
+
+jar {
+    manifest {
+        attributes(
+            'Implementation-Title': 'Durable Streams Java Client',
+            'Implementation-Version': version,
+            'Automatic-Module-Name': 'com.durablestreams'
+        )
+    }
+}
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+            pom {
+                name = 'Durable Streams Java Client'
+                description = 'Java client library for the Durable Streams protocol'
+                url = 'https://github.com/durable-streams/durable-streams'
+                licenses {
+                    license {
+                        name = 'MIT License'
+                        url = 'https://opensource.org/licenses/MIT'
+                    }
+                }
+            }
+        }
+    }
+}
