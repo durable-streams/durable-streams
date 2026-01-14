@@ -178,7 +178,7 @@ public final class DurableStream implements AutoCloseable {
      */
     public void delete(String url) throws DurableStreamException {
         HttpRequest request = buildDeleteRequest(url);
-        executeWithRetry(request, "delete", this::parseDeleteResponse);
+        executeWithRetry(request, "delete", response -> parseDeleteResponse(response, url));
     }
 
     // ==================== Read ====================
@@ -556,12 +556,12 @@ public final class DurableStream implements AutoCloseable {
         }
     }
 
-    private Void parseDeleteResponse(HttpResponse<byte[]> response) throws DurableStreamException {
+    private Void parseDeleteResponse(HttpResponse<byte[]> response, String url) throws DurableStreamException {
         int status = response.statusCode();
         if (status == 200 || status == 204) {
             return null;
         } else if (status == 404) {
-            throw new StreamNotFoundException("Stream not found");
+            throw new StreamNotFoundException(url);
         } else {
             throw new DurableStreamException("Delete failed with status: " + status, status);
         }

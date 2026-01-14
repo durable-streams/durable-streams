@@ -188,7 +188,7 @@ public class ConformanceAdapter {
                     client.head(url);  // Will throw 404 if not found
                     return errorResult("append", "INVALID_REQUEST", "Cannot append empty data", 400);
                 } catch (StreamNotFoundException e) {
-                    return errorResult("append", "NOT_FOUND", "Stream not found", 404);
+                    return errorResult("append", "NOT_FOUND", e.getMessage(), 404);
                 }
             }
 
@@ -249,7 +249,7 @@ public class ConformanceAdapter {
                 }
             }
         } catch (StreamNotFoundException e) {
-            return errorResult("append", "NOT_FOUND", "Stream not found", 404);
+            return errorResult("append", "NOT_FOUND", e.getMessage(), 404);
         } catch (SequenceConflictException e) {
             return errorResult("append", "SEQUENCE_CONFLICT", e.getMessage(), 409);
         } catch (DurableStreamException e) {
@@ -388,7 +388,7 @@ public class ConformanceAdapter {
             }
             return result;
         } catch (StreamNotFoundException e) {
-            return errorResult("read", "NOT_FOUND", "Stream not found", 404);
+            return errorResult("read", "NOT_FOUND", e.getMessage(), 404);
         } catch (OffsetGoneException e) {
             return errorResult("read", "INVALID_OFFSET", e.getMessage(), 410);
         } catch (DurableStreamException e) {
@@ -433,7 +433,7 @@ public class ConformanceAdapter {
             }
             return result;
         } catch (StreamNotFoundException e) {
-            return errorResult("head", "NOT_FOUND", "Stream not found", 404);
+            return errorResult("head", "NOT_FOUND", e.getMessage(), 404);
         } catch (DurableStreamException e) {
             return errorResult("head", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
@@ -453,7 +453,7 @@ public class ConformanceAdapter {
             result.put("status", 200);
             return result;
         } catch (StreamNotFoundException e) {
-            return errorResult("delete", "NOT_FOUND", "Stream not found", 404);
+            return errorResult("delete", "NOT_FOUND", e.getMessage(), 404);
         } catch (DurableStreamException e) {
             return errorResult("delete", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
@@ -476,7 +476,7 @@ public class ConformanceAdapter {
             }
             return result;
         } catch (StreamNotFoundException e) {
-            return errorResult("connect", "NOT_FOUND", "Stream not found", 404);
+            return errorResult("connect", "NOT_FOUND", e.getMessage(), 404);
         } catch (DurableStreamException e) {
             return errorResult("connect", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));

@@ -68,7 +68,7 @@ public final class SSEStreamingReader implements AutoCloseable {
             int status = response.statusCode();
 
             if (status == 404) {
-                throw new StreamNotFoundException("Stream not found");
+                throw new StreamNotFoundException(request.uri().toString());
             } else if (status != 200) {
                 throw new DurableStreamException("SSE connection failed with status: " + status, status);
             }
