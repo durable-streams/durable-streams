@@ -526,6 +526,25 @@ defmodule DurableStreams.ConformanceAdapter do
     {result, state}
   end
 
+  defp handle_command(%{"type" => "validate"} = cmd, state) do
+    target = cmd["target"]
+    target_type = target["target"]
+
+    result =
+      case target_type do
+        "idempotent-producer" ->
+          validate_idempotent_producer(target)
+
+        "retry-options" ->
+          validate_retry_options(target)
+
+        _ ->
+          error_result("validate", "NOT_SUPPORTED", "Unknown validation target: #{target_type}")
+      end
+
+    {result, state}
+  end
+
   defp handle_command(%{"type" => type}, state) do
     result = error_result(type, "NOT_SUPPORTED", "Unknown command type: #{type}")
     {result, state}
@@ -1031,6 +1050,53 @@ defmodule DurableStreams.ConformanceAdapter do
     }
 
     if status, do: Map.put(result, "status", status), else: result
+  end
+
+  # Validation helpers
+  defp validate_idempotent_producer(target) do
+    epoch = target["epoch"] || 0
+    max_batch_bytes = target["maxBatchBytes"] || 1_048_576
+
+    cond do
+      epoch < 0 ->
+        error_result("validate", "INVALID_ARGUMENT", "epoch must be non-negative, got: #{epoch}")
+
+      max_batch_bytes < 1 ->
+        error_result("validate", "INVALID_ARGUMENT", "maxBatchBytes must be positive, got: #{max_batch_bytes}")
+
+      true ->
+        %{
+          "type" => "validate",
+          "success" => true
+        }
+    end
+  end
+
+  defp validate_retry_options(target) do
+    max_retries = target["maxRetries"] || 3
+    initial_delay_ms = target["initialDelayMs"] || 100
+    max_delay_ms = target["maxDelayMs"] || 5000
+    multiplier = target["multiplier"] || 2.0
+
+    cond do
+      max_retries < 0 ->
+        error_result("validate", "INVALID_ARGUMENT", "maxRetries must be non-negative, got: #{max_retries}")
+
+      initial_delay_ms < 1 ->
+        error_result("validate", "INVALID_ARGUMENT", "initialDelayMs must be positive, got: #{initial_delay_ms}")
+
+      max_delay_ms < 1 ->
+        error_result("validate", "INVALID_ARGUMENT", "maxDelayMs must be positive, got: #{max_delay_ms}")
+
+      multiplier < 1.0 ->
+        error_result("validate", "INVALID_ARGUMENT", "multiplier must be >= 1.0, got: #{multiplier}")
+
+      true ->
+        %{
+          "type" => "validate",
+          "success" => true
+        }
+    end
   end
 
   defp maybe_add_opt(opts, _key, nil), do: opts
