@@ -118,6 +118,13 @@ module DurableStreams
     end
   end
 
+  # Parse error (malformed JSON, SSE, etc.)
+  class ParseError < Error
+    def initialize(message = "Parse error", **opts)
+      super(message, code: "PARSE_ERROR", **opts)
+    end
+  end
+
   # Generic fetch error for unexpected statuses
   class FetchError < Error
     def initialize(message = "Fetch error", url: nil, status: nil, **opts)

@@ -146,10 +146,8 @@ module DurableStreams
                 begin
                   JSON.parse(response.body)
                 rescue JSON::ParserError => e
-                  raise FetchError.new(
-                    "Invalid JSON response from server: #{e.message}",
-                    url: @stream.url,
-                    status: response.status
+                  raise ParseError.new(
+                    "Invalid JSON response from server: #{e.message}"
                   )
                 end
               else
@@ -187,10 +185,8 @@ module DurableStreams
           begin
             items = JSON.parse(event[:data])
           rescue JSON::ParserError => e
-            raise FetchError.new(
-              "Invalid JSON in SSE event: #{e.message}",
-              url: @stream.url,
-              status: 200
+            raise ParseError.new(
+              "Invalid JSON in SSE event: #{e.message}"
             )
           end
           items = [items] unless items.is_a?(Array)
