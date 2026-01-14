@@ -29,6 +29,11 @@ jobs:
         with:
           dotnet-version: "8.0"
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -62,6 +67,16 @@ jobs:
           cd packages/client-dotnet
           dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
 
+      - name: Install PHP client
+        run: |
+          cd packages/client-php
+          composer install --no-interaction
+
+      - name: Run PHPStan
+        run: |
+          cd packages/client-php
+          composer analyse
+
       - name: Build Java client adapter
         run: |
           cd packages/client-java
@@ -86,6 +101,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-dotnet/adapter/conformance-adapter
+
+      - name: Run PHP client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-php/run-conformance-adapter.sh
 
       - name: Run Java client conformance tests
         run: |
@@ -189,6 +209,11 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
@@ -234,6 +259,11 @@ jobs:
         run: |
           cd packages/client-dotnet
           dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+
+      - name: Install PHP client
+        run: |
+          cd packages/client-php
+          composer install --no-interaction
 
       - name: Run TypeScript client benchmarks
         id: ts_benchmarks
@@ -302,6 +332,23 @@ jobs:
           echo "dotnet_passed=$PASSED" >> $GITHUB_OUTPUT
           echo "dotnet_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "dotnet_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Run PHP client benchmarks
+        id: php_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format json > benchmark-results-php.json
+          cat benchmark-results-php.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-php.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-php.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-php.json)
+
+          echo "php_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "php_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "php_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
       - name: Run Java client benchmarks
         id: java_benchmarks
@@ -381,6 +428,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
             packages/client-conformance-tests/benchmark-results-dotnet.json
+            packages/client-conformance-tests/benchmark-results-php.json
             packages/client-conformance-tests/benchmark-results-java.json
             packages/client-conformance-tests/benchmark-results-rust.json
             packages/client-conformance-tests/benchmark-results-rb.json
@@ -404,6 +452,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-java/run-conformance-adapter.sh --format markdown >> benchmark-report.md
@@ -463,15 +514,16 @@ jobs:
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
           DOTNET_FAILED=${{ steps.dotnet_benchmarks.outputs.dotnet_failed }}
+          PHP_FAILED=${{ steps.php_benchmarks.outputs.php_failed }}
           JAVA_FAILED=${{ steps.java_benchmarks.outputs.java_failed }}
           RUST_FAILED=${{ steps.rust_benchmarks.outputs.rust_failed }}
           RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
           ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"

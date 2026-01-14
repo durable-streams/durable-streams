@@ -8,4 +8,5 @@ pnpm-lock.yaml
 examples/test-ui/src/routeTree.gen.ts
 examples/yjs-demo/src/routeTree.gen.ts
 packages/client-py
+packages/client-php/vendor
 scripts

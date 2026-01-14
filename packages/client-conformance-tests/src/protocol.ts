@@ -197,6 +197,59 @@ export interface ClearDynamicCommand {
 }
 
 // =============================================================================
+// Validation Commands
+// =============================================================================
+
+/**
+ * Test client-side input validation.
+ *
+ * This command tests that the client properly validates input parameters
+ * before making any network requests. The adapter should attempt to create
+ * the specified object with the given parameters and report whether
+ * validation passed or failed.
+ */
+export interface ValidateCommand {
+  type: `validate`
+  /** What to validate */
+  target: ValidateTarget
+}
+
+/**
+ * Validation targets - what client-side validation to test.
+ */
+export type ValidateTarget = ValidateRetryOptions | ValidateIdempotentProducer
+
+/**
+ * Validate RetryOptions construction.
+ */
+export interface ValidateRetryOptions {
+  target: `retry-options`
+  /** Max retries (should reject < 0) */
+  maxRetries?: number
+  /** Initial delay in ms (should reject <= 0) */
+  initialDelayMs?: number
+  /** Max delay in ms (should reject < initialDelayMs) */
+  maxDelayMs?: number
+  /** Backoff multiplier (should reject < 1.0) */
+  multiplier?: number
+}
+
+/**
+ * Validate IdempotentProducer construction.
+ */
+export interface ValidateIdempotentProducer {
+  target: `idempotent-producer`
+  /** Producer ID (required, non-empty) */
+  producerId?: string
+  /** Starting epoch (should reject < 0) */
+  epoch?: number
+  /** Max batch bytes (should reject <= 0) */
+  maxBatchBytes?: number
+  /** Max batch items (should reject <= 0) */
+  maxBatchItems?: number
+}
+
+// =============================================================================
 // Benchmark Commands
 // =============================================================================
 
@@ -289,6 +342,7 @@ export type TestCommand =
   | SetDynamicParamCommand
   | ClearDynamicCommand
   | BenchmarkCommand
+  | ValidateCommand
 
 // =============================================================================
 // Results (sent from client adapter to test runner via stdout)
@@ -318,6 +372,12 @@ export interface InitResult {
     streaming?: boolean
     /** Supports dynamic headers/params (functions evaluated per-request) */
     dynamicHeaders?: boolean
+    /** Supports RetryOptions validation (PHP-specific) */
+    retryOptions?: boolean
+    /** Supports maxBatchItems option (PHP-specific) */
+    batchItems?: boolean
+    /** Rejects zero values as invalid (vs treating 0 as "use default" like Go) */
+    strictZeroValidation?: boolean
   }
 }
 
@@ -495,6 +555,14 @@ export interface ClearDynamicResult {
 }
 
 /**
+ * Successful validate result (validation passed).
+ */
+export interface ValidateResult {
+  type: `validate`
+  success: true
+}
+
+/**
  * Successful benchmark result with timing.
  */
 export interface BenchmarkResult {
@@ -551,6 +619,7 @@ export type TestResult =
   | SetDynamicHeaderResult
   | SetDynamicParamResult
   | ClearDynamicResult
+  | ValidateResult
   | BenchmarkResult
   | ErrorResult
 
@@ -624,6 +693,8 @@ export const ErrorCodes = {
   INTERNAL_ERROR: `INTERNAL_ERROR`,
   /** Operation not supported by this client */
   NOT_SUPPORTED: `NOT_SUPPORTED`,
+  /** Invalid argument passed to client API */
+  INVALID_ARGUMENT: `INVALID_ARGUMENT`,
 } as const
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes]

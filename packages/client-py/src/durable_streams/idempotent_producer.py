@@ -154,7 +154,20 @@ class IdempotentProducer:
             max_in_flight: Maximum concurrent batches
             content_type: Content type for appends
             on_error: Callback for batch errors
+
+        Raises:
+            ValueError: If epoch < 0 or max_batch_bytes <= 0
         """
+        # Validate inputs
+        if epoch < 0:
+            raise ValueError("epoch must be >= 0")
+        if max_batch_bytes <= 0:
+            raise ValueError("maxBatchBytes must be > 0")
+        if max_in_flight <= 0:
+            raise ValueError("max_in_flight must be > 0")
+        if linger_ms < 0:
+            raise ValueError("linger_ms must be >= 0")
+
         self._url = url
         self._producer_id = producer_id
         self._epoch = epoch
