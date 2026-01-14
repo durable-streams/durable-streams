@@ -120,8 +120,8 @@ export interface ReadCommand {
   path: string
   /** Starting offset (opaque string from previous reads) */
   offset?: string
-  /** Live mode: false for catch-up only, "long-poll" or "sse" for live */
-  live?: false | `long-poll` | `sse`
+  /** Live mode: false for catch-up only, "auto", "long-poll" or "sse" for live */
+  live?: false | `auto` | `long-poll` | `sse`
   /** Timeout for long-poll in milliseconds */
   timeoutMs?: number
   /** Maximum number of chunks to read (for testing) */
@@ -312,6 +312,8 @@ export interface InitResult {
     sse?: boolean
     /** Supports long-poll mode */
     longPoll?: boolean
+    /** Supports auto mode (catch-up then auto-select SSE or long-poll) */
+    auto?: boolean
     /** Supports streaming reads */
     streaming?: boolean
     /** Supports dynamic headers/params (functions evaluated per-request) */
