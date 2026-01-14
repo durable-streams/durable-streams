@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/master.swiftdeps"
+  },
+  "/workspace/Sources/ConformanceAdapter/main.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swiftdeps"
+  }
+}

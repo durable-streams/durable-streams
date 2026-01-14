@@ -285,7 +285,7 @@ let config = HandleConfiguration(
         autoClaimOnStaleEpoch: true
     ),
     batching: .highThroughput,  // Or .lowLatency, .default, .disabled
-    http: .init(timeout: 30, longPollTimeout: 60),
+    http: .init(timeout: 30, longPollTimeout: 65),
     retry: .aggressive,
     headers: ["Authorization": .provider { await getToken() }]
 )
@@ -294,6 +294,16 @@ let handle = try await DurableStream.create(
     url: streamURL,
     contentType: "application/json",
     handleConfig: config
+)
+
+// Simpler per-stream configuration (no batching fields - use HandleConfiguration for producers)
+let stream = try await DurableStream.connect(
+    url: streamURL,
+    config: .init(
+        timeout: 30,
+        longPollTimeout: 65,
+        headers: ["Authorization": .provider { await getToken() }]
+    )
 )
 ```
 
@@ -457,6 +467,20 @@ let serviceGroup = ServiceGroup(
 
 try await serviceGroup.run()
 ```
+
+## Swift Idioms
+
+This client is designed to feel native to Swift developers:
+
+| Feature                       | Benefit                                                     |
+| ----------------------------- | ----------------------------------------------------------- |
+| `Offset: Codable`             | Persist positions to UserDefaults/Keychain with JSONEncoder |
+| `JsonBatch: Sequence`         | Iterate batches directly with `for item in batch { }`       |
+| `Duration` convenience APIs   | Configure with `.milliseconds(100)` instead of `100`        |
+| URL string convenience        | `DurableStream.connect(url: "https://...")` accepts strings |
+| `StreamInfo.hasData`          | Check stream state with `.exists`, `.isEmpty`, `.hasData`   |
+| Proper cancellation           | All streaming helpers propagate Task cancellation           |
+| `@discardableResult` on flush | Call without capturing result when not needed               |
 
 ## Protocol Compatibility
 

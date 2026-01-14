@@ -1,0 +1,17 @@
+{
+  "": {
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/master.swiftdeps"
+  },
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/DurableStreamsTests.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/DurableStreamsTests.swiftdeps"
+  },
+  "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.derived/all-discovered-tests.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsPackageDiscoveredTests.build/all-discovered-tests.swiftdeps"
+  }
+}

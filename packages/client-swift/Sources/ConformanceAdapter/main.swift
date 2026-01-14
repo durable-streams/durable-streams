@@ -43,6 +43,19 @@ struct Command: Codable {
     var initialValue: String?
     var background: Bool?
     var operationId: String?
+    var target: ValidationTarget?
+    var maxBatchBytes: Int?
+}
+
+struct ValidationTarget: Codable {
+    let target: String
+    var producerId: String?
+    var epoch: Int?
+    var maxBatchBytes: Int?
+    var maxRetries: Int?
+    var initialDelayMs: Int?
+    var maxDelayMs: Int?
+    var multiplier: Double?
 }
 
 enum LiveValue: Codable {
@@ -330,6 +343,8 @@ func handleCommand(_ cmd: Command) async -> Result {
         return await handleClearDynamic(cmd)
     case "benchmark":
         return await handleBenchmark(cmd)
+    case "validate":
+        return await handleValidate(cmd)
     default:
         return Result(
             type: "error",
@@ -1109,6 +1124,115 @@ func handleSetDynamicParam(_ cmd: Command) async -> Result {
 func handleClearDynamic(_ cmd: Command) async -> Result {
     await state.clearDynamic()
     return Result(type: "clear-dynamic", success: true)
+}
+
+// MARK: - Validate (client-side input validation)
+
+func handleValidate(_ cmd: Command) async -> Result {
+    guard let target = cmd.target else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Missing target")
+    }
+
+    switch target.target {
+    case "idempotent-producer":
+        // Validate IdempotentProducer configuration
+        let producerId = target.producerId ?? "test-producer"
+        let epoch = target.epoch ?? 0
+        let maxBatchBytes = target.maxBatchBytes ?? 1_048_576
+
+        // Validate epoch (must be non-negative)
+        if epoch < 0 {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "epoch must be non-negative"
+            )
+        }
+
+        // Validate maxBatchBytes (must be positive)
+        if maxBatchBytes < 0 {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "maxBatchBytes must be positive"
+            )
+        }
+
+        // Validate producerId (must not be empty)
+        if producerId.isEmpty {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "producerId must not be empty"
+            )
+        }
+
+        return Result(type: "validate", success: true)
+
+    case "retry-options":
+        // Validate RetryOptions configuration
+        let maxRetries = target.maxRetries ?? 3
+        let initialDelayMs = target.initialDelayMs ?? 100
+        let maxDelayMs = target.maxDelayMs ?? 5000
+        let multiplier = target.multiplier ?? 2.0
+
+        if maxRetries < 0 {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "maxRetries must be non-negative"
+            )
+        }
+
+        if initialDelayMs <= 0 {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "initialDelayMs must be positive"
+            )
+        }
+
+        if maxDelayMs < initialDelayMs {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "maxDelayMs must be >= initialDelayMs"
+            )
+        }
+
+        if multiplier < 1.0 {
+            return Result(
+                type: "error",
+                success: false,
+                commandType: "validate",
+                errorCode: "INVALID_ARGUMENT",
+                message: "multiplier must be >= 1.0"
+            )
+        }
+
+        return Result(type: "validate", success: true)
+
+    default:
+        return Result(
+            type: "error",
+            success: false,
+            commandType: "validate",
+            errorCode: "NOT_SUPPORTED",
+            message: "Unknown validation target: \(target.target)"
+        )
+    }
 }
 
 // MARK: - Benchmark (already uses library)

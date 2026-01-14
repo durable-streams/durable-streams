@@ -166,7 +166,8 @@ public enum LiveMode: Sendable, Equatable, CaseIterable {
 
 ```swift
 /// A batch of JSON messages from the stream.
-public struct JsonBatch<T: Decodable & Sendable>: Sendable {
+/// Conforms to Sequence for direct iteration: `for item in batch { ... }`
+public struct JsonBatch<T: Decodable & Sendable>: Sendable, Sequence {
     /// The decoded messages
     public let items: [T]
 
@@ -178,6 +179,11 @@ public struct JsonBatch<T: Decodable & Sendable>: Sendable {
 
     /// Cursor for CDN cache collapsing (internal use)
     internal let cursor: String?
+
+    /// Sequence conformance - iterate items directly
+    public func makeIterator() -> IndexingIterator<[T]> {
+        items.makeIterator()
+    }
 }
 
 /// A chunk of bytes from the stream.
@@ -224,6 +230,17 @@ public struct StreamInfo: Sendable {
 
     /// ETag for conditional requests
     public let etag: String?
+
+    // MARK: - Convenience Properties
+
+    /// Whether the stream exists (based on HTTP response)
+    public var exists: Bool
+
+    /// Whether the stream is empty (offset == .start or "-1")
+    public var isEmpty: Bool { offset == .start }
+
+    /// Whether the stream has data (exists and not empty)
+    public var hasData: Bool { exists && !isEmpty }
 }
 ```
 
@@ -290,23 +307,31 @@ public struct StreamResponse<T: Sendable>: Sendable {
     public func bytes() async throws -> ByteResult
 
     // MARK: - Streams (AsyncSequence)
+    //
+    // All streaming methods properly propagate Task cancellation via
+    // `continuation.onTermination`. Cancelling the consuming Task will
+    // stop the underlying long-poll loop.
 
     /// Stream JSON batches as they arrive.
     /// Uses `.longPoll` live mode for live updates.
+    /// Cancellation-safe: cancelling the Task stops the stream.
     public func jsonStream<U: Decodable>(
         as type: U.Type
     ) -> AsyncThrowingStream<JsonBatch<U>, Error>
 
     /// Stream individual JSON items (flattens batches).
     /// Note: Use jsonStream() if you need per-batch offset tracking.
+    /// Cancellation-safe: cancelling the Task stops the stream.
     public func jsonItems<U: Decodable>(
         as type: U.Type
     ) -> AsyncThrowingStream<U, Error>
 
     /// Stream byte chunks as they arrive.
+    /// Cancellation-safe: cancelling the Task stops the stream.
     public func byteStream() -> AsyncThrowingStream<ByteChunk, Error>
 
     /// Stream text chunks as they arrive.
+    /// Cancellation-safe: cancelling the Task stops the stream.
     public func textStream() -> AsyncThrowingStream<TextChunk, Error>
 
     // MARK: - Subscribers (with backpressure)
@@ -994,11 +1019,13 @@ public struct BatchingConfiguration: Sendable {
 }
 
 /// HTTP client configuration.
+/// Note: Timeouts are properly applied to URLRequest.timeoutInterval.
 public struct HTTPConfiguration: Sendable {
-    /// Request timeout
+    /// Request timeout (applied to URLRequest.timeoutInterval)
     public var timeout: Duration
 
-    /// Long-poll timeout (server-side)
+    /// Long-poll timeout (used for streaming requests)
+    /// Should be slightly longer than server-side timeout (typically 55s)
     public var longPollTimeout: Duration
 
     /// Retry policy for read operations (GET/HEAD)
@@ -1014,9 +1041,36 @@ public struct HTTPConfiguration: Sendable {
 
     public static let `default` = HTTPConfiguration(
         timeout: .seconds(30),
-        longPollTimeout: .seconds(55),
+        longPollTimeout: .seconds(65),  // Server uses 55s, add buffer
         readRetryPolicy: .readDefault,
         writeRetryPolicy: .writeDefault
+    )
+}
+
+/// Simplified configuration for DurableStream (reader-focused).
+/// For producer-specific settings, use HandleConfiguration.
+public struct DurableStreamConfiguration: Sendable {
+    /// Custom headers (can be dynamic for auth refresh)
+    public var headers: HeadersRecord
+
+    /// Custom query parameters
+    public var params: ParamsRecord
+
+    /// Request timeout (applied to URLRequest.timeoutInterval)
+    public var timeout: TimeInterval
+
+    /// Long-poll timeout for streaming
+    public var longPollTimeout: TimeInterval
+
+    /// URLSession to use
+    public var session: URLSession
+
+    public init(
+        headers: HeadersRecord = [:],
+        params: ParamsRecord = [:],
+        timeout: TimeInterval = 30,
+        longPollTimeout: TimeInterval = 65,
+        session: URLSession = .shared
     )
 }
 ```
