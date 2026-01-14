@@ -29,6 +29,10 @@ jobs:
         with:
           dotnet-version: "8.0"
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
@@ -67,6 +71,11 @@ jobs:
           cd packages/client-dotnet
           dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
 
+      - name: Build Swift client adapter
+        run: |
+          cd packages/client-swift
+          swift build -c release
+
       - name: Install PHP client
         run: |
           cd packages/client-php
@@ -101,6 +110,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-dotnet/adapter/conformance-adapter
+
+      - name: Run Swift client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../client-swift/run-conformance-adapter.sh
 
       - name: Run PHP client conformance tests
         run: |
@@ -186,6 +200,10 @@ jobs:
         with:
           dotnet-version: "8.0"
 
+      - uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -260,6 +278,11 @@ jobs:
           cd packages/client-dotnet
           dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
 
+      - name: Build Swift client adapter
+        run: |
+          cd packages/client-swift
+          swift build -c release
+
       - name: Install PHP client
         run: |
           cd packages/client-php
@@ -332,6 +355,23 @@ jobs:
           echo "dotnet_passed=$PASSED" >> $GITHUB_OUTPUT
           echo "dotnet_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "dotnet_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Run Swift client benchmarks
+        id: swift_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format json > benchmark-results-swift.json
+          cat benchmark-results-swift.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-swift.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-swift.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-swift.json)
+
+          echo "swift_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "swift_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "swift_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
       - name: Run PHP client benchmarks
         id: php_benchmarks
@@ -428,6 +468,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
             packages/client-conformance-tests/benchmark-results-dotnet.json
+            packages/client-conformance-tests/benchmark-results-swift.json
             packages/client-conformance-tests/benchmark-results-php.json
             packages/client-conformance-tests/benchmark-results-java.json
             packages/client-conformance-tests/benchmark-results-rust.json
@@ -452,6 +493,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format markdown >> benchmark-report.md
@@ -514,16 +558,17 @@ jobs:
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
           DOTNET_FAILED=${{ steps.dotnet_benchmarks.outputs.dotnet_failed }}
+          SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
           PHP_FAILED=${{ steps.php_benchmarks.outputs.php_failed }}
           JAVA_FAILED=${{ steps.java_benchmarks.outputs.java_failed }}
           RUST_FAILED=${{ steps.rust_benchmarks.outputs.rust_failed }}
           RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
           ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + SWIFT_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, Swift: $SWIFT_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"

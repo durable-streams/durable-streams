@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/master.swiftdeps"
+  },
+  "/workspace/Tests/DurableStreamsTests/DurableStreamsTests.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreamsTests.build/DurableStreamsTests.swiftdeps"
+  }
+}

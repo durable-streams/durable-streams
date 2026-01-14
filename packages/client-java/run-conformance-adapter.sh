@@ -10,10 +10,13 @@ JAR_PATH="conformance-adapter/build/libs/conformance-adapter.jar"
 
 if [ ! -f "$JAR_PATH" ]; then
     echo "Building Java conformance adapter..." >&2
+    # Pass native access flag to avoid JVM warnings on Java 22+ that corrupt stdout
+    GRADLE_OPTS="${GRADLE_OPTS:-} --enable-native-access=ALL-UNNAMED"
+    export GRADLE_OPTS
     if command -v gradle &> /dev/null; then
-        gradle :conformance-adapter:jar --quiet 2>&1 >&2
+        gradle :conformance-adapter:jar --quiet >&2 2>&1
     elif [ -f "./gradlew" ]; then
-        ./gradlew :conformance-adapter:jar --quiet 2>&1 >&2
+        ./gradlew :conformance-adapter:jar --quiet >&2 2>&1
     else
         echo "Error: Gradle not found. Please install Gradle or run ./build.sh first." >&2
         exit 1
@@ -21,4 +24,6 @@ if [ ! -f "$JAR_PATH" ]; then
 fi
 
 # Run the adapter
-exec java -jar "$JAR_PATH"
+# --enable-native-access=ALL-UNNAMED suppresses warnings about restricted native methods
+# that would otherwise be printed to stdout and break the JSON-lines protocol
+exec java --enable-native-access=ALL-UNNAMED -jar "$JAR_PATH"

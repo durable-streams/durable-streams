@@ -1,0 +1,11 @@
+/workspace/Sources/DurableStreams/Configuration.swift
+/workspace/Sources/DurableStreams/Constants.swift
+/workspace/Sources/DurableStreams/DurableStream.swift
+/workspace/Sources/DurableStreams/DurableStreams.swift
+/workspace/Sources/DurableStreams/Errors.swift
+/workspace/Sources/DurableStreams/HTTPClient.swift
+/workspace/Sources/DurableStreams/IdempotentProducer.swift
+/workspace/Sources/DurableStreams/Lifecycle.swift
+/workspace/Sources/DurableStreams/SSEParser.swift
+/workspace/Sources/DurableStreams/StreamAPI.swift
+/workspace/Sources/DurableStreams/Types.swift

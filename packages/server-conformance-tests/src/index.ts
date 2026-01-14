@@ -1616,7 +1616,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Should have control event with upToDate:true and streamNextOffset
       const controlMatch = received.match(
-        /event: control\s*\n\s*data: ({[^}]+})/
+        /event: control\s*\n\s*data:({[^}]+})/
       )
       expect(controlMatch).toBeDefined()
       if (controlMatch && controlMatch[1]) {
@@ -1714,7 +1714,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Should have control event with upToDate:true and streamNextOffset
       const controlMatch = received.match(
-        /event: control\s*\n\s*data: ({[^}]+})/
+        /event: control\s*\n\s*data:({[^}]+})/
       )
       expect(controlMatch).toBeDefined()
       if (controlMatch && controlMatch[1]) {
@@ -3209,7 +3209,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(200)
 
       // Parse control event to find streamCursor
-      const controlMatch = received.match(/event: control\s*\ndata: ({[^}]+})/)
+      const controlMatch = received.match(/event: control\s*\ndata:({[^}]+})/)
       expect(controlMatch).toBeDefined()
 
       const controlData = JSON.parse(controlMatch![1] as string)
@@ -3234,9 +3234,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         { untilContent: `streamCursor` }
       )
 
-      const controlMatch1 = received1.match(
-        /event: control\s*\ndata: ({[^}]+})/
-      )
+      const controlMatch1 = received1.match(/event: control\s*\ndata:({[^}]+})/)
       expect(controlMatch1).toBeDefined()
       const cursor1 = JSON.parse(controlMatch1![1] as string).streamCursor
 
@@ -3246,9 +3244,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         { untilContent: `streamCursor` }
       )
 
-      const controlMatch2 = received2.match(
-        /event: control\s*\ndata: ({[^}]+})/
-      )
+      const controlMatch2 = received2.match(/event: control\s*\ndata:({[^}]+})/)
       expect(controlMatch2).toBeDefined()
       const cursor2 = JSON.parse(controlMatch2![1] as string).streamCursor
 
@@ -3317,10 +3313,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Parse the control event and verify offset matches HTTP GET
       const controlLine = received
         .split(`\n`)
-        .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
+        .find((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
       expect(controlLine).toBeDefined()
 
-      const controlPayload = controlLine!.slice(`data: `.length)
+      const controlPayload = controlLine!.slice(`data:`.length)
       const controlData = JSON.parse(controlPayload)
 
       // SSE control offset should match HTTP GET offset (not -1)
@@ -3348,10 +3344,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Parse the control event
       const controlLine = received
         .split(`\n`)
-        .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
+        .find((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
       expect(controlLine).toBeDefined()
 
-      const controlPayload = controlLine!.slice(`data: `.length)
+      const controlPayload = controlLine!.slice(`data:`.length)
       const controlData = JSON.parse(controlPayload)
 
       // When client has read all data, server MUST include upToDate: true
@@ -3408,9 +3404,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Per SSE spec, multiline data must use multiple "data:" lines
       // Each line should have its own data: prefix
-      expect(received).toContain(`data: line1`)
-      expect(received).toContain(`data: line2`)
-      expect(received).toContain(`data: line3`)
+      expect(received).toContain(`data:line1`)
+      expect(received).toContain(`data:line2`)
+      expect(received).toContain(`data:line3`)
     })
 
     test(`should prevent CRLF injection in payloads - embedded event boundaries become literal data`, async () => {
@@ -3590,11 +3586,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Extract all control event offsets
       const controlLines = received
         .split(`\n`)
-        .filter((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
+        .filter((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
 
       const offsets: Array<string> = []
       for (const line of controlLines) {
-        const payload = line.slice(`data: `.length)
+        const payload = line.slice(`data:`.length)
         const data = JSON.parse(payload)
         offsets.push(data[`streamNextOffset`])
       }
@@ -3633,8 +3629,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Extract offset from control event
       const controlLine = received1
         .split(`\n`)
-        .find((l) => l.startsWith(`data: `) && l.includes(`streamNextOffset`))
-      const controlPayload = controlLine!.slice(`data: `.length)
+        .find((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
+      const controlPayload = controlLine!.slice(`data:`.length)
       lastOffset = JSON.parse(controlPayload)[`streamNextOffset`]
 
       expect(lastOffset).toBeDefined()

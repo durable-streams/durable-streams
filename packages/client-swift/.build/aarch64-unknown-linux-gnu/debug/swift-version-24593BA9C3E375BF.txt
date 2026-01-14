@@ -1,0 +1,2 @@
+Swift version 6.0.3 (swift-6.0.3-RELEASE)
+Target: aarch64-unknown-linux-gnu

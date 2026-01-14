@@ -517,7 +517,9 @@ impl ChunkIterator {
                 if let Some(rest) = line.strip_prefix("event:") {
                     state.current_event_type = Some(rest.trim_start().to_string());
                 } else if let Some(rest) = line.strip_prefix("data:") {
-                    state.pending_data.push(rest.trim_start().to_string());
+                    // Per SSE spec, strip exactly ONE leading space if present
+                    let value = rest.strip_prefix(' ').unwrap_or(rest);
+                    state.pending_data.push(value.to_string());
                 }
                 // Ignore other fields (id:, retry:, comments starting with :)
             }
