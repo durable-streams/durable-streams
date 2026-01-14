@@ -1,0 +1,44 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation project(':')
+    // No external dependencies - use built-in JSON parser
+}
+
+application {
+    mainClass = 'com.durablestreams.ConformanceAdapter'
+}
+
+jar {
+    dependsOn ':jar'  // Explicit dependency on parent project's jar
+    manifest {
+        attributes(
+            'Main-Class': 'com.durablestreams.ConformanceAdapter'
+        )
+    }
+    // Create fat JAR with all dependencies
+    from {
+        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// Create a convenient task for building the adapter
+tasks.register('buildAdapter') {
+    dependsOn jar
+    doLast {
+        println "Adapter JAR built: ${jar.archiveFile.get().asFile}"
+    }
+}
