@@ -645,9 +645,16 @@ public class ConformanceAdapter {
 
                     byte[] payload = new byte[size];
                     java.util.Arrays.fill(payload, (byte) 42);
-                    client.append(url, payload);
 
-                    // Read back via long-poll
+                    try {
+                        client.append(url, payload);
+                    } catch (DurableStreamException e) {
+                        // Append failed, but still return timing (like Go does)
+                        metrics.put("bytesTransferred", 0);
+                        break;
+                    }
+
+                    // Read back
                     LiveMode mode = "sse".equals(liveMode) ? LiveMode.SSE : LiveMode.LONG_POLL;
                     int readBytes = 0;
                     try (ChunkIterator it = client.read(url, ReadOptions.fromBeginning().live(mode).timeout(Duration.ofSeconds(5)))) {
@@ -655,6 +662,8 @@ public class ConformanceAdapter {
                         if (chunk != null) {
                             readBytes = chunk.getData().length;
                         }
+                    } catch (Exception e) {
+                        // Read failed, but still return timing (like Go does)
                     }
                     metrics.put("bytesTransferred", size + readBytes);
                     break;
