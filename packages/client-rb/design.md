@@ -58,7 +58,7 @@ This document proposes a unified design for a Ruby client library for the Durabl
           ┌───────────────────┼───────────────────┐
           ▼                   ▼                   ▼
 ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│     Client      │  │     Stream      │  │  IdempotentProducer
+│     Client      │  │     Stream      │  │  Producer
 │  (Connection    │  │  (Read/Write    │  │  (Exactly-once   │
 │   pooling)      │  │   handle)       │  │   producer)      │
 └─────────────────┘  └─────────────────┘  └─────────────────┘
@@ -580,16 +580,16 @@ stream.read(offset: "now", live: :sse) do |reader|
 end  # reader automatically closed
 ```
 
-### 5. IdempotentProducer Class
+### 5. Producer Class
 
 For exactly-once writes with batching. Takes a URL directly (standalone, doesn't require a Stream object):
 
 ```ruby
 module DurableStreams
-  class IdempotentProducer
+  class Producer
     # Block form for automatic cleanup (recommended)
     # Preserves original exception if close also raises
-    # @yield [IdempotentProducer] The producer instance
+    # @yield [Producer] The producer instance
     # @return [Object] The block's return value
     def self.open(**options, &block)
       producer = new(**options)
@@ -650,7 +650,7 @@ module DurableStreams
 
     # Append and wait for acknowledgment
     # @param data [Object] Data to append
-    # @return [IdempotentAppendResult] With epoch and seq
+    # @return [ProducerResult] With epoch and seq
     def append_sync(data)
     end
 
@@ -675,7 +675,7 @@ end
 
 ```ruby
 # Block form (recommended - auto flush/close)
-DurableStreams::IdempotentProducer.open(
+DurableStreams::Producer.open(
   url: "https://streams.example.com/orders",
   producer_id: "order-service-1",
   epoch: load_epoch_from_disk || 0
@@ -685,7 +685,7 @@ DurableStreams::IdempotentProducer.open(
 end
 
 # Manual form
-producer = DurableStreams::IdempotentProducer.new(
+producer = DurableStreams::Producer.new(
   url: "https://streams.example.com/orders",
   producer_id: "order-service-1",
   epoch: load_epoch_from_disk || 0
@@ -747,7 +747,7 @@ module DurableStreams
 
   # Result from idempotent producer append
   # Includes epoch and seq for tracking producer state
-  IdempotentAppendResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
+  ProducerResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
     def duplicate? = duplicate || false
   end
 
@@ -1163,7 +1163,7 @@ packages/client-rb/
 │       ├── stream.rb
 │       ├── json_reader.rb       # JSON stream reader
 │       ├── byte_reader.rb       # Byte stream reader
-│       ├── idempotent_producer.rb
+│       ├── producer.rb
 │       ├── sse_reader.rb
 │       ├── http/
 │       │   └── transport.rb     # net/http-based transport
@@ -1220,7 +1220,7 @@ client = DurableStreams::Client.new(
 stream = client.create("/events/orders", content_type: "application/json")
 
 # Write with idempotent producer (takes URL directly)
-producer = DurableStreams::IdempotentProducer.new(
+producer = DurableStreams::Producer.new(
   url: "https://streams.example.com/events/orders",
   producer_id: "order-service-#{Process.pid}",
   epoch: 0

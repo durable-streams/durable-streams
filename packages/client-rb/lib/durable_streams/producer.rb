@@ -3,17 +3,17 @@
 require "json"
 
 module DurableStreams
-  # Idempotent producer for exactly-once writes with batching.
+  # Producer for exactly-once writes with batching.
   # Uses producer_id, epoch, and sequence numbers to ensure exactly-once delivery.
-  class IdempotentProducer
+  class Producer
     attr_reader :epoch, :seq
 
     # Open a producer with block form for automatic cleanup
     # @example
-    #   IdempotentProducer.open(url: "...", producer_id: "...") do |producer|
+    #   Producer.open(url: "...", producer_id: "...") do |producer|
     #     producer << data
     #   end # auto flush/close
-    # @yield [IdempotentProducer] The producer instance
+    # @yield [Producer] The producer instance
     # @return [Object] The block's return value
     def self.open(**options, &block)
       producer = new(**options)
@@ -107,11 +107,11 @@ module DurableStreams
 
     # Append and wait for acknowledgment
     # @param data [Object] Data to append
-    # @return [IdempotentAppendResult]
+    # @return [ProducerResult]
     def append_sync(data)
       append(data)
       flush
-      IdempotentAppendResult.new(
+      ProducerResult.new(
         next_offset: nil, # We don't track individual message offsets in batched mode
         duplicate: false,
         epoch: @epoch,

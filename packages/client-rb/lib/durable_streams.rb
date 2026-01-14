@@ -9,7 +9,7 @@ require_relative "durable_streams/stream"
 require_relative "durable_streams/json_reader"
 require_relative "durable_streams/byte_reader"
 require_relative "durable_streams/sse_reader"
-require_relative "durable_streams/idempotent_producer"
+require_relative "durable_streams/producer"
 
 module DurableStreams
   class << self

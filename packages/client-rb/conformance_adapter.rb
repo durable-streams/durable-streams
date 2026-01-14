@@ -668,7 +668,7 @@ def handle_idempotent_append(cmd)
   is_json = DurableStreams.json_content_type?(content_type)
   data = JSON.parse(data) if is_json && data.is_a?(String)
 
-  producer = DurableStreams::IdempotentProducer.new(
+  producer = DurableStreams::Producer.new(
     url: url,
     producer_id: producer_id,
     epoch: epoch,
@@ -707,7 +707,7 @@ def handle_idempotent_append_batch(cmd)
   # When testing concurrency, use small batches
   testing_concurrency = max_in_flight > 1
 
-  producer = DurableStreams::IdempotentProducer.new(
+  producer = DurableStreams::Producer.new(
     url: url,
     producer_id: producer_id,
     epoch: epoch,

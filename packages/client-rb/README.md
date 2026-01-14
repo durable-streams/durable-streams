@@ -116,13 +116,13 @@ stream.read_json(offset: load_checkpoint, live: :long_poll).each_batch do |batch
 end
 ```
 
-### Exactly-Once Writes with IdempotentProducer
+### Exactly-Once Writes with Producer
 
 For high-throughput writes with exactly-once delivery guarantees:
 
 ```ruby
 # Block form (recommended - auto flush/close)
-DurableStreams::IdempotentProducer.open(
+DurableStreams::Producer.open(
   url: "https://streams.example.com/events",
   producer_id: "order-service-#{Process.pid}",
   epoch: 0,
@@ -218,16 +218,16 @@ reader.up_to_date?   # Whether caught up to head
 reader.close         # Stop iteration
 ```
 
-### IdempotentProducer
+### Producer
 
 ```ruby
 # Block form (recommended - auto-closes)
-DurableStreams::IdempotentProducer.open(url: "https://...", producer_id: "...") do |producer|
+DurableStreams::Producer.open(url: "https://...", producer_id: "...") do |producer|
   producer << data  # Shovel operator
 end
 
 # Manual form
-producer = DurableStreams::IdempotentProducer.new(
+producer = DurableStreams::Producer.new(
   url: "https://...",
   producer_id: "unique-id",
   epoch: 0,                    # Increment on restart to reclaim
@@ -239,7 +239,7 @@ producer = DurableStreams::IdempotentProducer.new(
 
 producer.append(data)      # Fire-and-forget (batched)
 producer << data           # Same as append (returns self, no ack - use append_sync if you need it)
-producer.append_sync(data) # Wait for acknowledgment, returns IdempotentAppendResult
+producer.append_sync(data) # Wait for acknowledgment, returns ProducerResult
 producer.flush             # Flush pending batches
 producer.close             # Flush and close
 producer.closed?           # Check if closed
@@ -293,7 +293,7 @@ The `live` parameter controls how reads behave when caught up:
 
 - **Client**: Thread-safe, uses thread-local connection pools
 - **Stream**: Create one per thread for concurrent reads
-- **IdempotentProducer**: Thread-safe, uses mutex for state management
+- **Producer**: Thread-safe, uses mutex for state management
 - **Readers**: Single-threaded (create new reader per thread)
 
 ## Configuration
@@ -318,7 +318,7 @@ Stream LLM tokens with resume capability:
 
 ```ruby
 # Server: stream tokens (continues even if client disconnects)
-producer = DurableStreams::IdempotentProducer.new(
+producer = DurableStreams::Producer.new(
   url: "https://streams.example.com/generation/#{id}",
   producer_id: id,
   auto_claim: true

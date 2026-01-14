@@ -80,8 +80,8 @@ module DurableStreams
     end
   end
 
-  # Idempotent append result
-  IdempotentAppendResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
+  # Producer append result (includes epoch/seq for exactly-once tracking)
+  ProducerResult = Struct.new(:next_offset, :duplicate, :epoch, :seq, keyword_init: true) do
     def initialize(**)
       super
       freeze
