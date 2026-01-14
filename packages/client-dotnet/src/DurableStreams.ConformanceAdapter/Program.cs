@@ -404,7 +404,7 @@ async Task<object> HandleHead(JsonElement root)
             status = 200,
             offset = metadata.Offset?.ToString(),
             contentType = metadata.ContentType,
-            ttlSeconds = metadata.Ttl.HasValue ? (int)metadata.Ttl.Value.TotalSeconds : null,
+            ttlSeconds = metadata.Ttl.HasValue ? (int?)metadata.Ttl.Value.TotalSeconds : null,
             expiresAt = metadata.ExpiresAt?.ToString("o")
         };
     }
