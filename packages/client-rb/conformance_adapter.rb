@@ -729,6 +729,102 @@ def handle_idempotent_append_batch(cmd)
   }
 end
 
+def handle_validate(cmd)
+  target = cmd["target"]
+  target_type = target["target"]
+
+  case target_type
+  when "idempotent-producer"
+    epoch = target["epoch"] || 0
+    max_batch_bytes = target["maxBatchBytes"] || 1_048_576
+
+    if epoch < 0
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "epoch must be non-negative, got: #{epoch}"
+      }
+    end
+
+    if max_batch_bytes < 1
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "maxBatchBytes must be positive, got: #{max_batch_bytes}"
+      }
+    end
+
+    {
+      "type" => "validate",
+      "success" => true
+    }
+
+  when "retry-options"
+    max_retries = target["maxRetries"] || 3
+    initial_delay_ms = target["initialDelayMs"] || 100
+    max_delay_ms = target["maxDelayMs"] || 5000
+    multiplier = target["multiplier"] || 2.0
+
+    if max_retries < 0
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "maxRetries must be non-negative, got: #{max_retries}"
+      }
+    end
+
+    if initial_delay_ms < 1
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "initialDelayMs must be positive, got: #{initial_delay_ms}"
+      }
+    end
+
+    if max_delay_ms < 1
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "maxDelayMs must be positive, got: #{max_delay_ms}"
+      }
+    end
+
+    if multiplier < 1.0
+      return {
+        "type" => "error",
+        "success" => false,
+        "commandType" => "validate",
+        "errorCode" => "INVALID_ARGUMENT",
+        "message" => "multiplier must be >= 1.0, got: #{multiplier}"
+      }
+    end
+
+    {
+      "type" => "validate",
+      "success" => true
+    }
+
+  else
+    {
+      "type" => "error",
+      "success" => false,
+      "commandType" => "validate",
+      "errorCode" => ERROR_CODES["NOT_SUPPORTED"],
+      "message" => "Unknown validation target: #{target_type}"
+    }
+  end
+end
+
 def handle_command(cmd)
   cmd_type = cmd["type"]
 
@@ -748,6 +844,7 @@ def handle_command(cmd)
     when "clear-dynamic" then handle_clear_dynamic(cmd)
     when "idempotent-append" then handle_idempotent_append(cmd)
     when "idempotent-append-batch" then handle_idempotent_append_batch(cmd)
+    when "validate" then handle_validate(cmd)
     else
       {
         "type" => "error",
