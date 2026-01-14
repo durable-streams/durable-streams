@@ -2,6 +2,8 @@ id: consumer-sse-parsing-errors
 name: SSE Parsing Error Handling
 description: Tests that clients properly handle malformed SSE events instead of silently failing
 category: consumer
+requires:
+  - sse
 tags:
   - sse
   - error-handling
