@@ -1,75 +1,22 @@
 # frozen_string_literal: true
 
-require "net/http"
+require "net/http/persistent"
 require "uri"
 require "json"
 
 module DurableStreams
   module HTTP
-    # HTTP transport layer with connection pooling and retry logic
+    # HTTP transport layer using net-http-persistent for connection pooling
     class Transport
-      # Use thread-local connection pools to avoid concurrency issues
-      # Each thread gets its own set of connections
-      class << self
-        # Get or create a persistent connection for the given URI (thread-local)
-        def connection_for(uri)
-          # Thread-local connection pool
-          Thread.current[:durable_streams_connections] ||= {}
-          pool = Thread.current[:durable_streams_connections]
-
-          key = "#{uri.host}:#{uri.port}"
-          conn = pool[key]
-
-          if conn.nil? || !conn.started?
-            conn = Net::HTTP.new(uri.host, uri.port)
-            conn.use_ssl = uri.scheme == "https"
-            conn.open_timeout = 10
-            conn.read_timeout = 30
-            conn.keep_alive_timeout = 30
-            conn.start
-            pool[key] = conn
-          end
-          conn
-        end
-
-        # Close all connections in current thread
-        def close_all
-          pool = Thread.current[:durable_streams_connections]
-          return unless pool
-
-          pool.each_value do |conn|
-            next unless conn.started?
-            begin
-              conn.finish
-            rescue StandardError => e
-              DurableStreams.logger&.debug("Connection close error: #{e.class}: #{e.message}")
-            end
-          end
-          pool.clear
-        end
-
-        # Reset connection for a URI in current thread
-        def reset_connection(uri)
-          pool = Thread.current[:durable_streams_connections]
-          return unless pool
-
-          key = "#{uri.host}:#{uri.port}"
-          conn = pool.delete(key)
-          return unless conn
-
-          begin
-            conn.finish
-          rescue StandardError => e
-            DurableStreams.logger&.debug("Connection reset error: #{e.class}: #{e.message}")
-          end
-        end
-      end
-
       attr_reader :retry_policy, :timeout
 
-      def initialize(retry_policy: nil, timeout: 30)
+      def initialize(retry_policy: nil, timeout: 30, name: "durable_streams")
         @retry_policy = retry_policy || RetryPolicy.default
         @timeout = timeout
+        @http = Net::HTTP::Persistent.new(name: name)
+        @http.open_timeout = 10
+        @http.read_timeout = timeout
+        @http.idle_timeout = 30
       end
 
       # Make a request with retry logic
@@ -77,7 +24,8 @@ module DurableStreams
       # @param url [String] Full URL
       # @param headers [Hash] HTTP headers
       # @param body [String, nil] Request body
-      # @param stream [Boolean] Whether to stream the response
+      # @param stream [Boolean] Whether to stream the response (ignored, use stream_request instead)
+      # @param timeout [Integer, nil] Request-specific timeout
       # @return [Response]
       def request(method, url, headers: {}, body: nil, stream: false, timeout: nil)
         uri = URI.parse(url)
@@ -89,7 +37,7 @@ module DurableStreams
         loop do
           attempts += 1
           begin
-            response = execute_request(method, uri, headers, body, stream, request_timeout)
+            response = execute_request(method, uri, headers, body, request_timeout)
 
             # Check if we should retry based on status
             if @retry_policy.retryable_statuses.include?(response.status) && attempts <= @retry_policy.max_retries
@@ -100,28 +48,72 @@ module DurableStreams
 
             return response
           rescue Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EPIPE,
-                 Net::OpenTimeout, Net::ReadTimeout, IOError => e
+                 Net::OpenTimeout, Net::ReadTimeout, IOError,
+                 Net::HTTP::Persistent::Error => e
             last_error = e
             if attempts <= @retry_policy.max_retries
               delay = calculate_delay(attempts)
               sleep(delay)
-              # Force new connection on retry
-              Transport.reset_connection(uri)
               next
             end
-            raise ConnectionError.new(e.message)
+            raise ConnectionError.new(
+              "Failed to connect to #{uri} after #{attempts} attempts: #{e.class}: #{e.message}"
+            )
           end
         end
       end
 
-      # Execute a single request without retry
-      def execute_request(method, uri, headers, body, stream, request_timeout)
-        conn = Transport.connection_for(uri)
-        conn.read_timeout = request_timeout
+      # Stream a request, yielding the response for chunk-by-chunk reading
+      # @param method [Symbol] HTTP method
+      # @param url [String] Full URL
+      # @param headers [Hash] HTTP headers
+      # @param timeout [Integer, nil] Request-specific timeout
+      # @yield [StreamingResponse] The streaming response
+      def stream_request(method, url, headers: {}, timeout: nil, &block)
+        uri = URI.parse(url)
+        request_timeout = timeout || @timeout
 
-        path = uri.path
-        path = "/" if path.empty?
-        path = "#{path}?#{uri.query}" if uri.query
+        # Temporarily adjust read timeout for streaming
+        original_timeout = @http.read_timeout
+        @http.read_timeout = request_timeout
+
+        req = build_request(method, uri, headers, nil)
+
+        begin
+          @http.request(uri, req) do |http_response|
+            yield StreamingResponse.new(http_response)
+          end
+        rescue Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EPIPE,
+               Net::OpenTimeout, Net::ReadTimeout, IOError,
+               Net::HTTP::Persistent::Error => e
+          raise ConnectionError.new("Streaming request to #{uri} failed: #{e.class}: #{e.message}")
+        end
+      ensure
+        @http.read_timeout = original_timeout if original_timeout
+      end
+
+      # Shutdown the persistent connection pool
+      def shutdown
+        @http.shutdown
+      end
+
+      private
+
+      def execute_request(method, uri, headers, body, request_timeout)
+        # Temporarily adjust read timeout if different from default
+        original_timeout = @http.read_timeout
+        @http.read_timeout = request_timeout if request_timeout != original_timeout
+
+        req = build_request(method, uri, headers, body)
+        http_response = @http.request(uri, req)
+
+        Response.new(http_response, http_response.body)
+      ensure
+        @http.read_timeout = original_timeout if request_timeout != original_timeout
+      end
+
+      def build_request(method, uri, headers, body)
+        path = uri.request_uri
 
         req = case method
               when :get then Net::HTTP::Get.new(path)
@@ -135,48 +127,8 @@ module DurableStreams
         headers.each { |k, v| req[k] = v }
         req.body = body if body
 
-        if stream
-          # For streaming, we need to handle the response body differently
-          response_body = +""
-          http_response = conn.request(req) do |res|
-            res.read_body { |chunk| response_body << chunk }
-          end
-          Response.new(http_response, response_body)
-        else
-          http_response = conn.request(req)
-          Response.new(http_response, http_response.body)
-        end
+        req
       end
-
-      # Stream a request, yielding chunks as they arrive
-      # @param method [Symbol] HTTP method
-      # @param url [String] Full URL
-      # @param headers [Hash] HTTP headers
-      # @yield [String] Each chunk of data
-      def stream_request(method, url, headers: {}, timeout: nil, &block)
-        uri = URI.parse(url)
-        request_timeout = timeout || @timeout
-
-        conn = Transport.connection_for(uri)
-        conn.read_timeout = request_timeout
-
-        path = uri.path
-        path = "/" if path.empty?
-        path = "#{path}?#{uri.query}" if uri.query
-
-        req = case method
-              when :get then Net::HTTP::Get.new(path)
-              else raise ArgumentError, "Streaming only supported for GET"
-              end
-
-        headers.each { |k, v| req[k] = v }
-
-        conn.request(req) do |response|
-          yield StreamingResponse.new(response)
-        end
-      end
-
-      private
 
       def calculate_delay(attempt)
         delay = @retry_policy.initial_delay * (@retry_policy.multiplier**(attempt - 1))

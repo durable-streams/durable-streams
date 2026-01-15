@@ -5,8 +5,6 @@ require "json"
 module DurableStreams
   # Reader for JSON streams - yields parsed Ruby objects
   class JsonReader
-    include Enumerable
-
     attr_reader :next_offset, :cursor, :up_to_date, :status
 
     # @param stream [Stream] Parent stream handle
@@ -112,7 +110,7 @@ module DurableStreams
         # No live param for catch-up only
       end
 
-      request_url = HTTP.build_url(@stream.url, @stream.resolved_params(params))
+      request_url = HTTP.build_url(@stream.url, params)
       headers = @stream.resolved_headers("accept" => "application/json")
 
       response = @stream.transport.request(:get, request_url, headers: headers)

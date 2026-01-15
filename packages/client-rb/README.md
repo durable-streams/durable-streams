@@ -31,52 +31,52 @@ gem install durable_streams
 
 ## Quick Start
 
-### One-shot operations
-
 ```ruby
 require 'durable_streams'
 
+# Configure once at startup
+DurableStreams.configure do |config|
+  config.base_url = "https://streams.example.com"
+  config.timeout = 30
+  config.default_headers = {
+    "Authorization" => -> { "Bearer #{current_token}" }  # Dynamic headers supported
+  }
+end
+
 # Create a stream
-stream = DurableStreams.create(
-  url: "https://streams.example.com/my-stream",
-  content_type: "application/json"
-)
+stream = DurableStreams.create("/my-stream", content_type: :json)
 
 # Append data
-DurableStreams.append(
-  url: "https://streams.example.com/my-stream",
-  data: { event: "user.created", user_id: 123 }
-)
+stream.append({ event: "user.created", user_id: 123 })
+stream << { event: "user.updated", user_id: 123 }  # Shovel operator works too
 
 # Read all data
-messages = DurableStreams.read(
-  url: "https://streams.example.com/my-stream",
-  offset: "-1"  # from beginning
-)
+stream.read.each { |msg| puts msg }
 ```
 
-### Writing (Producer)
+### Writing
 
 ```ruby
-DurableStreams::Client.open(base_url: "https://streams.example.com") do |client|
-  stream = client.create("/events/orders", content_type: "application/json")
+stream = DurableStreams.create("/events/orders", content_type: :json)
 
-  # Shovel operator for appends
-  stream << { order_id: 1, status: "created" }
-  stream << { order_id: 2, status: "shipped" }
-end
+# Shovel operator for appends
+stream << { order_id: 1, status: "created" }
+stream << { order_id: 2, status: "shipped" }
+
+# With sequence numbers for ordering
+stream.append({ order_id: 3 }, seq: "123")
 ```
 
-### Reading (Consumer)
+### Reading
 
 ```ruby
-stream = DurableStreams.connect(url: "https://streams.example.com/events/orders")
+stream = DurableStreams.stream("/events/orders")
 
 # Catch-up: read all existing messages
 stream.each { |event| process(event) }
 
-# Or with checkpointing
-stream.read_json(offset: saved_offset).each_batch do |batch|
+# With checkpointing
+stream.read(offset: saved_offset).each_batch do |batch|
   batch.items.each { |event| process(event) }
   save_offset(batch.next_offset)
 end
@@ -84,23 +84,28 @@ end
 
 ### Live Streaming
 
-Subscribe to real-time updates with familiar Ruby iteration:
+Subscribe to real-time updates:
 
 ```ruby
-stream = DurableStreams::Stream.connect(url: "https://streams.example.com/events")
+stream = DurableStreams.stream("/events")
 
-# Block-based iteration (recommended)
-stream.subscribe(offset: "now", live: :sse) do |message|
-  puts "Received: #{message}"
-end
-
-# Or use Enumerable methods
+# Long-poll mode
 stream.read(live: :long_poll).each do |msg|
   process(msg)
 end
 
-# Lazy enumeration
-stream.read(live: :sse).lazy.take(10).each { |m| puts m }
+# SSE mode (for JSON/text streams)
+stream.read(live: :sse).each do |msg|
+  puts msg
+end
+
+# Auto-detect best mode
+stream.read(live: :auto).each do |msg|
+  handle(msg)
+end
+
+# Lazy enumeration works with Enumerator
+stream.read(live: :sse).each.lazy.take(10).to_a
 ```
 
 ### Batch Processing with Checkpoints
@@ -108,10 +113,10 @@ stream.read(live: :sse).lazy.take(10).each { |m| puts m }
 For reliable processing with resume capability:
 
 ```ruby
-stream.read_json(offset: load_checkpoint, live: :long_poll).each_batch do |batch|
+stream.read(offset: load_checkpoint, live: :long_poll, format: :json).each_batch do |batch|
   ActiveRecord::Base.transaction do
     batch.items.each { |item| Order.process(item) }
-    save_checkpoint(batch.next_offset)  # Save position for resume
+    save_checkpoint(batch.next_offset)
   end
 end
 ```
@@ -135,44 +140,73 @@ end  # auto flush/close
 
 **How it works:** The producer maintains `(producer_id, epoch, seq)` state. If another process claims the same producer_id with a higher epoch, your writes will be rejected with a 403—preventing duplicate writes during failover.
 
+## Configuration
+
+### Global Configuration
+
+```ruby
+DurableStreams.configure do |config|
+  config.base_url = ENV["DURABLE_STREAMS_URL"]
+  config.default_content_type = :json
+  config.timeout = 30
+  config.retry_policy = DurableStreams::RetryPolicy.new(
+    max_retries: 5,
+    initial_delay: 0.1,
+    max_delay: 30.0
+  )
+  config.default_headers = {
+    "Authorization" => -> { "Bearer #{refresh_token}" }  # Callable for dynamic values
+  }
+end
+
+# Reset to defaults (useful in tests)
+DurableStreams.reset_configuration!
+
+# Optional logger
+DurableStreams.logger = Logger.new($stdout)
+```
+
+### Isolated Contexts
+
+For multi-tenant or testing scenarios:
+
+```ruby
+# Create an isolated context with different settings
+staging = DurableStreams.new_context do |config|
+  config.base_url = "https://staging.example.com"
+end
+
+# Use the context explicitly
+stream = DurableStreams::Stream.new("/events", context: staging)
+```
+
 ## API Reference
 
 ### Module Methods
 
 ```ruby
-DurableStreams.create(url:, content_type:, headers: {})  # Create stream
-DurableStreams.connect(url:, headers: {})                 # Connect to existing
-DurableStreams.append(url:, data:, headers: {})           # One-shot append
-DurableStreams.read(url:, offset: "-1", headers: {})      # One-shot read
-```
+DurableStreams.configure { |config| ... }           # Configure globally
+DurableStreams.reset_configuration!                  # Reset to defaults
+DurableStreams.new_context { |config| ... }         # Create isolated context
 
-### Client
-
-```ruby
-# Block form (recommended - auto-closes)
-DurableStreams::Client.open(base_url: "https://...") do |client|
-  stream = client.stream("/events")
-  # ...
-end # auto-closes
-
-# Manual form
-client = DurableStreams::Client.new(
-  base_url: "https://...",   # Optional base URL
-  headers: {},               # Default headers (can be Proc for dynamic values)
-  params: {},                # Default query params
-  timeout: 30                # Request timeout in seconds
-)
-
-client.stream(url)           # Get a Stream handle
-client.connect(url)          # Get handle and verify exists
-client.create(url, **opts)   # Create stream and return handle
-client.close                 # Close connections
+DurableStreams.stream("/path")                       # Get Stream handle
+DurableStreams.create("/path", content_type: :json)  # Create stream on server
+DurableStreams.append("/path", data)                 # One-shot append
+DurableStreams.read("/path", offset: "-1")           # One-shot read
 ```
 
 ### Stream
 
 ```ruby
-stream = DurableStreams::Stream.connect(url: "https://...")
+# Create stream handle
+stream = DurableStreams.stream("/events")
+stream = DurableStreams::Stream.new("/events")
+stream = DurableStreams::Stream.new("https://full-url.com/events")  # Full URL works too
+
+# Factory methods
+stream = DurableStreams::Stream.create("/events", content_type: :json)  # Create on server
+stream = DurableStreams::Stream.connect("/events")                       # Verify exists
+DurableStreams::Stream.exists?("/events")                                # => true/false
 
 # Metadata
 stream.head                  # => HeadResult (exists, content_type, next_offset, ...)
@@ -180,41 +214,62 @@ stream.exists?               # Check if stream exists (no exception)
 stream.json?                 # Check if JSON content type
 stream.content_type          # Content type from last head/read
 
-# Class method for existence check
-DurableStreams::Stream.exists?(url: "https://...")  # => true/false
-
 # Writing
 stream.append(data, seq: nil)  # Append data, returns AppendResult with next_offset
-stream << data                 # Fire-and-forget (returns self, no offset - use append if you need it)
+stream.append!(data)           # Same as append (explicit sync name)
+stream << data                 # Shovel operator (returns self for chaining)
 
-# Reading (Stream includes Enumerable)
-stream.each { |msg| ... }                  # Catch-up iteration (offset: "-1", live: false)
-stream.read(offset: "-1", live: :auto)     # Returns JsonReader or ByteReader
-stream.read_json(offset: "-1", live: :sse) # Force JSON reader
-stream.read_bytes(offset: "-1")            # Force byte reader
-stream.read_all(offset: "-1")              # Read all and return array
-stream.subscribe(offset:, live:) { |msg| } # Live streaming with full control
+# Reading
+stream.each { |msg| ... }                           # Catch-up iteration (live: false)
+stream.read(offset: "-1", live: false, format: :auto)  # Returns Reader
+stream.read_all(offset: "-1")                       # Read all and return array
 
 # Lifecycle
 stream.create_stream(content_type:, ttl_seconds: nil, expires_at: nil)
 stream.delete
+stream.close  # Shutdown transport
 ```
+
+### Read Options
+
+```ruby
+stream.read(
+  offset: "-1",      # Starting position ("-1" = beginning)
+  live: false,       # false, :auto, :long_poll, :sse
+  format: :auto,     # :auto, :json, :bytes
+  cursor: nil        # Server-provided cursor for continuation
+)
+```
+
+| `live` Mode  | Behavior                                              |
+| ------------ | ----------------------------------------------------- |
+| `false`      | Return immediately when caught up (catch-up only)     |
+| `:long_poll` | Wait for new data, return when available or timeout   |
+| `:sse`       | Server-Sent Events stream with automatic reconnection |
+| `:auto`      | SSE for JSON/text streams, long-poll otherwise        |
+
+| `format` | Behavior                                |
+| -------- | --------------------------------------- |
+| `:auto`  | Detect from Content-Type header         |
+| `:json`  | Force JSON parsing (returns JsonReader) |
+| `:bytes` | Force raw bytes (returns ByteReader)    |
 
 ### Readers
 
-Both `JsonReader` and `ByteReader` include `Enumerable`:
-
 ```ruby
-reader = stream.read_json(live: :long_poll)
+reader = stream.read(format: :json)
 
 reader.each { |msg| ... }           # Iterate individual messages
 reader.each_batch { |batch| ... }   # Iterate batches with metadata
 reader.to_a                         # Collect all messages
-reader.lazy.take(5)                 # Lazy enumeration
+
+# Enumerator support (each returns Enumerator when no block given)
+reader.each.lazy.take(5).to_a
 
 reader.next_offset   # Current position (for checkpointing)
 reader.cursor        # Server-provided cursor
 reader.up_to_date?   # Whether caught up to head
+reader.status        # HTTP status of last response
 reader.close         # Stop iteration
 ```
 
@@ -238,14 +293,34 @@ producer = DurableStreams::Producer.new(
 )
 
 producer.append(data)      # Fire-and-forget (batched)
-producer << data           # Same as append (returns self, no ack - use append_sync if you need it)
-producer.append_sync(data) # Wait for acknowledgment, returns ProducerResult
+producer << data           # Same as append (returns self for chaining)
+producer.append!(data)     # Wait for acknowledgment, returns ProducerResult
 producer.flush             # Flush pending batches
 producer.close             # Flush and close
 producer.closed?           # Check if closed
 
 producer.epoch  # Current epoch
 producer.seq    # Current sequence number
+```
+
+### Client (Optional)
+
+For cases where you need explicit connection management:
+
+```ruby
+# Block form (auto-closes)
+DurableStreams::Client.open(base_url: "https://...") do |client|
+  stream = client.stream("/events")
+  # ...
+end
+
+# Manual form
+client = DurableStreams::Client.new(
+  base_url: "https://...",
+  headers: {},
+  timeout: 30
+)
+client.close  # Shutdown connections
 ```
 
 ### Data Types
@@ -278,37 +353,43 @@ AlreadyConsumedError     # Reader already consumed
 ClosedError              # Producer has been closed
 ```
 
-## Live Modes
+## Testing
 
-The `live` parameter controls how reads behave when caught up:
+The gem provides testing utilities for mocking in tests:
 
-| Mode         | Behavior                                              |
-| ------------ | ----------------------------------------------------- |
-| `false`      | Return immediately when caught up (catch-up only)     |
-| `:long_poll` | Wait for new data, return when available or timeout   |
-| `:sse`       | Server-Sent Events stream with automatic reconnection |
-| `:auto`      | SSE for JSON/text streams, long-poll otherwise        |
+```ruby
+require 'durable_streams/testing'
+
+RSpec.describe "My feature" do
+  before do
+    DurableStreams::Testing.install!
+    DurableStreams::Testing.clear!
+  end
+
+  after do
+    DurableStreams::Testing.reset!
+  end
+
+  it "appends to stream" do
+    # Use the mock transport
+    DurableStreams::Testing.mock_transport.seed_stream("/events", [])
+
+    stream = DurableStreams.create("/events", content_type: :json)
+    stream.append({ event: "test" })
+
+    # Verify
+    messages = DurableStreams::Testing.messages_for("/events")
+    expect(messages).to include({ "event" => "test" })
+  end
+end
+```
 
 ## Thread Safety
 
-- **Client**: Thread-safe, uses thread-local connection pools
+- **Configuration**: Thread-safe after freeze (configure at startup)
 - **Stream**: Create one per thread for concurrent reads
 - **Producer**: Thread-safe, uses mutex for state management
 - **Readers**: Single-threaded (create new reader per thread)
-
-## Configuration
-
-```ruby
-# Global logger (optional)
-DurableStreams.logger = Logger.new($stdout)
-DurableStreams.logger = Rails.logger
-
-# Per-client configuration via constructor options
-client = DurableStreams::Client.new(
-  timeout: 60,
-  headers: { "Authorization" => -> { "Bearer #{refresh_token}" } }
-)
-```
 
 ## Use Cases
 
@@ -331,9 +412,9 @@ producer.flush
 producer.close
 
 # Client: resume from last position
+stream = DurableStreams.stream("https://streams.example.com/generation/#{id}")
 stream.read(offset: saved_offset, live: :sse).each do |token|
   render_token(token)
-  save_offset(stream.next_offset)
 end
 ```
 
@@ -348,7 +429,7 @@ db.changes.each do |change|
 end
 
 # Client
-stream.read_json(offset: Checkpoint.last, live: :sse).each_batch do |batch|
+stream.read(offset: Checkpoint.last, live: :sse, format: :json).each_batch do |batch|
   ActiveRecord::Base.transaction do
     batch.items.each { |change| apply_change(change) }
     Checkpoint.update!(offset: batch.next_offset)

@@ -92,12 +92,12 @@ module DurableStreams
     end
   end
 
-  # Check if content type is JSON
+  # Check if content type is JSON (supports vendor types like application/vnd.foo+json)
   def self.json_content_type?(content_type)
     return false if content_type.nil?
 
     normalized = content_type.split(";").first&.strip&.downcase
-    normalized == "application/json"
+    normalized == "application/json" || normalized&.end_with?("+json")
   end
 
   # Check if content type supports SSE
