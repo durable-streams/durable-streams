@@ -1,6 +1,7 @@
 package com.durablestreams.internal.sse;
 
 import com.durablestreams.exception.DurableStreamException;
+import com.durablestreams.exception.ParseErrorException;
 import com.durablestreams.exception.StreamNotFoundException;
 import com.durablestreams.model.Chunk;
 import com.durablestreams.model.Offset;
@@ -93,11 +94,9 @@ public final class SSEStreamingReader implements AutoCloseable {
      * Returns null if no chunk is available within the timeout.
      */
     public Chunk poll(long timeoutMs) throws DurableStreamException {
-        if (closed.get()) {
-            return null;
-        }
-
         try {
+            // Poll the queue first to ensure any queued errors are thrown
+            // even after the reader is closed (errors are queued before close)
             ChunkOrError result = chunkQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
             if (result == null) {
                 return null;
@@ -180,19 +179,24 @@ public final class SSEStreamingReader implements AutoCloseable {
                 } else if ("control".equals(event.getEvent())) {
                     // Combine all accumulated data and create chunk
                     String allData = String.join("", pendingDataList);
-                    Chunk chunk = createChunkFromControl(
-                        allData.isEmpty() ? null : allData,
-                        event.getData()
-                    );
-                    if (chunk != null) {
-                        chunkQueue.offer(new ChunkOrError(chunk));
+                    try {
+                        Chunk chunk = createChunkFromControl(
+                            allData.isEmpty() ? null : allData,
+                            event.getData()
+                        );
+                        if (chunk != null) {
+                            chunkQueue.offer(new ChunkOrError(chunk));
 
-                        // Update state
-                        if (chunk.getNextOffset() != null) {
-                            currentOffset = chunk.getNextOffset();
+                            // Update state
+                            if (chunk.getNextOffset() != null) {
+                                currentOffset = chunk.getNextOffset();
+                            }
+                            currentCursor = chunk.getCursor().orElse(null);
+                            upToDate = chunk.isUpToDate();
                         }
-                        currentCursor = chunk.getCursor().orElse(null);
-                        upToDate = chunk.isUpToDate();
+                    } catch (ParseErrorException e) {
+                        chunkQueue.offer(new ChunkOrError(e));
+                        break;
                     }
                     pendingDataList.clear();
                 }
@@ -211,18 +215,27 @@ public final class SSEStreamingReader implements AutoCloseable {
         }
     }
 
-    private Chunk createChunkFromControl(String data, String controlJson) {
+    private Chunk createChunkFromControl(String data, String controlJson) throws ParseErrorException {
         // Parse control JSON: {"streamNextOffset":"...", "streamCursor":"...", "upToDate":...}
+        // Validate control JSON - must not be null/empty and must be valid JSON
+        if (controlJson == null || controlJson.trim().isEmpty()) {
+            throw new ParseErrorException("Empty control event data");
+        }
+
+        // Validate it's a JSON object (starts with { after trimming)
+        String trimmed = controlJson.trim();
+        if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
+            throw new ParseErrorException("Malformed control event JSON: " + controlJson);
+        }
+
         String nextOffset = null;
         String cursor = null;
         boolean isUpToDate = false;
 
         // Simple JSON parsing (avoid external dependencies)
-        if (controlJson != null) {
-            nextOffset = extractJsonString(controlJson, "streamNextOffset");
-            cursor = extractJsonString(controlJson, "streamCursor");
-            isUpToDate = extractJsonBoolean(controlJson, "upToDate");
-        }
+        nextOffset = extractJsonString(controlJson, "streamNextOffset");
+        cursor = extractJsonString(controlJson, "streamCursor");
+        isUpToDate = extractJsonBoolean(controlJson, "upToDate");
 
         byte[] dataBytes = data != null ? data.getBytes(StandardCharsets.UTF_8) : new byte[0];
 

@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[]",
+  "declared_features": "[\"no-panic\"]",
+  "target": 5408242616063297496,
+  "profile": 3033921117576893,
+  "path": 8966358633285871119,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/zmij-c5ec0d54c56be9ea/dep-build-script-build-script-build",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

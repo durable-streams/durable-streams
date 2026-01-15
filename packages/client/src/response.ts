@@ -887,7 +887,17 @@ export class StreamResponseImpl<
         // Get response text first (handles empty responses gracefully)
         const text = await result.value.text()
         const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        const parsed = JSON.parse(content) as T | Array<T>
+        let parsed: T | Array<T>
+        try {
+          parsed = JSON.parse(content) as T | Array<T>
+        } catch (err) {
+          const preview =
+            content.length > 100 ? content.slice(0, 100) + `...` : content
+          throw new DurableStreamError(
+            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
+        }
         if (Array.isArray(parsed)) {
           items.push(...parsed)
         } else {
@@ -1021,7 +1031,17 @@ export class StreamResponseImpl<
         // Parse JSON and flatten arrays (handle empty responses gracefully)
         const text = await response.text()
         const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        const parsed = JSON.parse(content) as TJson | Array<TJson>
+        let parsed: TJson | Array<TJson>
+        try {
+          parsed = JSON.parse(content) as TJson | Array<TJson>
+        } catch (err) {
+          const preview =
+            content.length > 100 ? content.slice(0, 100) + `...` : content
+          throw new DurableStreamError(
+            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
+        }
         pendingItems = Array.isArray(parsed) ? parsed : [parsed]
 
         // Enqueue first item
@@ -1086,7 +1106,17 @@ export class StreamResponseImpl<
           // Get response text first (handles empty responses gracefully)
           const text = await response.text()
           const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-          const parsed = JSON.parse(content) as T | Array<T>
+          let parsed: T | Array<T>
+          try {
+            parsed = JSON.parse(content) as T | Array<T>
+          } catch (err) {
+            const preview =
+              content.length > 100 ? content.slice(0, 100) + `...` : content
+            throw new DurableStreamError(
+              `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+              `PARSE_ERROR`
+            )
+          }
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
           await subscriber({

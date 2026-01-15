@@ -518,6 +518,7 @@ export type DurableStreamErrorCode =
   | `RATE_LIMITED`
   | `ALREADY_CONSUMED`
   | `ALREADY_CLOSED`
+  | `PARSE_ERROR`
   | `UNKNOWN`
 
 /**

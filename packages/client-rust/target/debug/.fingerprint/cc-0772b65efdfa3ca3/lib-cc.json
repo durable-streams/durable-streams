@@ -1,0 +1,23 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[]",
+  "declared_features": "[\"jobserver\", \"parallel\"]",
+  "target": 11042037588551934598,
+  "profile": 9003321226815314314,
+  "path": 18046804631357647033,
+  "deps": [
+    [8410525223747752176, "shlex", false, 4427822004129217887],
+    [11758535118346829598, "find_msvc_tools", false, 8503806044654727290]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/cc-0772b65efdfa3ca3/dep-lib-cc",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

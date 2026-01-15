@@ -819,7 +819,8 @@ func handleRead(_ cmd: Command) async -> Result {
             timeoutSeconds: timeoutSeconds,
             dynamicHeaders: dynamicHeaders,
             dynamicParams: dynamicParams,
-            headers: allHeaders
+            headers: allHeaders,
+            path: path
         )
     }
 
@@ -831,6 +832,10 @@ func handleRead(_ cmd: Command) async -> Result {
     var lastStatus = 200
     var retryCount = 0
     let maxRetries = 5
+
+    // Check if stream content type is JSON
+    let contentType = await state.getContentType(path: path)
+    let isJSON = contentType?.normalizedContentType() == "application/json"
 
     // Retry loop with timeout
     let deadline = Date().addingTimeInterval(timeoutSeconds)
@@ -864,6 +869,15 @@ func handleRead(_ cmd: Command) async -> Result {
 
             // Collect chunk if there's data
             if !result.data.isEmpty {
+                // For JSON streams, validate JSON to detect parse errors
+                if isJSON {
+                    do {
+                        _ = try JSONSerialization.jsonObject(with: result.data, options: [])
+                    } catch {
+                        throw DurableStreamError.parseError("Invalid JSON: \(error.localizedDescription)")
+                    }
+                }
+
                 if let text = String(data: result.data, encoding: .utf8) {
                     allChunks.append(ReadChunk(data: text, offset: result.offset.rawValue))
                 } else {
@@ -964,76 +978,84 @@ func handleSSERead(
     timeoutSeconds: Double,
     dynamicHeaders: [String: String],
     dynamicParams: [String: String],
-    headers: HeadersRecord
+    headers: HeadersRecord,
+    path: String
 ) async -> Result {
     let accumulator = SSEAccumulator(startOffset: offset)
     let deadline = Date().addingTimeInterval(timeoutSeconds)
 
     do {
-        let handle = try await DurableStream.connect(
-            url: url,
-            config: DurableStream.Configuration(headers: headers)
-        )
+        // Use cached handle if available to avoid extra HEAD request
+        // that could consume injected faults
+        let handle: DurableStream
+        if let cached = await state.getHandle(path: path) {
+            handle = cached
+        } else {
+            handle = try await DurableStream.connect(
+                url: url,
+                config: DurableStream.Configuration(headers: headers)
+            )
+            await state.cacheHandle(path: path, handle: handle)
+        }
 
-        // Start SSE task with timeout
-        let sseTask = Task {
-            for try await event in await handle.sseEvents(from: offset) {
-                if Task.isCancelled || Date() >= deadline {
-                    break
+        // Process SSE events directly (not in a separate task)
+        // This allows errors to propagate naturally
+        for try await event in await handle.sseEvents(from: offset) {
+            if Task.isCancelled || Date() >= deadline {
+                break
+            }
+
+            let currentOffset = await accumulator.currentOffset
+
+            // Parse control events FIRST to catch errors early
+            if event.effectiveEvent == "control" {
+                // Parse control event for metadata - throw PARSE_ERROR if malformed
+                guard let jsonData = event.data.data(using: .utf8), !event.data.trimmingCharacters(in: .whitespaces).isEmpty else {
+                    throw DurableStreamError.parseError("Empty control event data")
                 }
 
-                let currentOffset = await accumulator.currentOffset
-
-                // Parse event data
-                if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
-                    await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
-                } else if event.effectiveEvent == "control" {
-                    // Parse control event for metadata
-                    if let jsonData = event.data.data(using: .utf8),
-                       let control = try? JSONDecoder().decode(SSEControlEvent.self, from: jsonData) {
-                        await accumulator.updateControl(
-                            offset: Offset(rawValue: control.streamNextOffset),
-                            cursor: control.streamCursor,
-                            upToDate: control.upToDate ?? false
-                        )
-                    }
+                let control: SSEControlEvent
+                do {
+                    control = try JSONDecoder().decode(SSEControlEvent.self, from: jsonData)
+                } catch {
+                    throw DurableStreamError.parseError("Malformed control event JSON: \(error.localizedDescription)")
                 }
 
-                // Check exit conditions
-                let count = await accumulator.chunkCount
-                if count >= maxChunks {
-                    break
-                }
+                await accumulator.updateControl(
+                    offset: Offset(rawValue: control.streamNextOffset),
+                    cursor: control.streamCursor,
+                    upToDate: control.upToDate ?? false
+                )
+            } else if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
+                await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
+            }
+            // Unknown event types are ignored per SSE spec
 
-                let isUpToDate = await accumulator.upToDate
-                let shouldReturnOnUpToDate = waitForUpToDate || count > 0
-                if shouldReturnOnUpToDate && isUpToDate {
-                    break
-                }
+            // Check exit conditions
+            let count = await accumulator.chunkCount
+            if count >= maxChunks {
+                break
+            }
+
+            let isUpToDate = await accumulator.upToDate
+            let shouldReturnOnUpToDate = waitForUpToDate || count > 0
+            if shouldReturnOnUpToDate && isUpToDate {
+                break
             }
         }
 
-        // Wait with timeout
-        let timeoutTask = Task {
-            try? await Task.sleep(for: .seconds(timeoutSeconds))
-            sseTask.cancel()
-        }
-
-        _ = await sseTask.result
-        timeoutTask.cancel()
-
     } catch let error as DurableStreamError {
-        if error.code == .notFound {
-            return errorResult(cmd.type, "NOT_FOUND", error.message, status: 404)
-        }
         return mapError(cmd.type, error)
-    } catch {
+    } catch is CancellationError {
         // Timeout or cancellation - mark as up to date
         await accumulator.updateControl(
             offset: await accumulator.currentOffset,
             cursor: await accumulator.cursor,
             upToDate: true
         )
+    } catch {
+        // Unknown error - wrap as parse error or network error
+        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
     }
 
     let results = await accumulator.getResults()
@@ -1497,6 +1519,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "TIMEOUT"
     case .networkError:
         errorCode = "NETWORK_ERROR"
+    case .parseError:
+        errorCode = "PARSE_ERROR"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }

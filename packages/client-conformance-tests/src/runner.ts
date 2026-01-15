@@ -304,7 +304,13 @@ async function executeOperation(
 
     case `append`: {
       const path = resolveVariables(op.path, variables)
-      const data = op.data ? resolveVariables(op.data, variables) : ``
+      // Handle json property (YAML object) by stringifying, or use data string directly
+      const data =
+        op.json !== undefined
+          ? JSON.stringify(op.json)
+          : op.data
+            ? resolveVariables(op.data, variables)
+            : ``
 
       const result = await client.send(
         {
@@ -733,6 +739,7 @@ async function executeOperation(
             method: op.method,
             corruptBody: op.corruptBody,
             jitterMs: op.jitterMs,
+            injectSseEvent: op.injectSseEvent,
           }),
         })
 
@@ -746,6 +753,8 @@ async function executeOperation(
           faultTypes.push(`truncate=${op.truncateBodyBytes}b`)
         if (op.corruptBody) faultTypes.push(`corrupt`)
         if (op.probability != null) faultTypes.push(`p=${op.probability}`)
+        if (op.injectSseEvent)
+          faultTypes.push(`sse:${op.injectSseEvent.eventType}`)
         const faultDesc = faultTypes.join(`,`) || `unknown`
 
         if (verbose) {

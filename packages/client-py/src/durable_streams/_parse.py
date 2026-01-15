@@ -8,6 +8,7 @@ import json
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
+from durable_streams._errors import DurableStreamError
 from durable_streams._types import (
     STREAM_CURSOR_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
@@ -112,10 +113,22 @@ def parse_json_response(data: bytes | str) -> Any:
 
     Returns:
         Parsed JSON value
+
+    Raises:
+        DurableStreamError: If JSON is malformed (code="PARSE_ERROR")
     """
-    if isinstance(data, bytes):
-        return json.loads(data.decode("utf-8"))
-    return json.loads(data)
+    try:
+        if isinstance(data, bytes):
+            return json.loads(data.decode("utf-8"))
+        return json.loads(data)
+    except json.JSONDecodeError as e:
+        # Convert to string for preview
+        data_str = data.decode("utf-8") if isinstance(data, bytes) else data
+        preview = data_str[:100] + "..." if len(data_str) > 100 else data_str
+        raise DurableStreamError(
+            f"Failed to parse JSON response: {e}. Data: {preview}",
+            code="PARSE_ERROR",
+        ) from e
 
 
 def decode_json_items(

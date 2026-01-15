@@ -11,6 +11,7 @@ import json
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
+from durable_streams._errors import DurableStreamError
 from durable_streams._types import Offset
 
 
@@ -116,9 +117,13 @@ class SSEParser:
                     stream_cursor=control.get("streamCursor"),
                     up_to_date=control.get("upToDate", False),
                 )
-            except json.JSONDecodeError:
-                # Invalid control event, skip
-                return None
+            except json.JSONDecodeError as e:
+                # Control events contain critical offset data - don't silently ignore
+                preview = data_str[:100] + "..." if len(data_str) > 100 else data_str
+                raise DurableStreamError(
+                    f"Failed to parse SSE control event: {e}. Data: {preview}",
+                    code="PARSE_ERROR",
+                ) from e
 
         return None
 

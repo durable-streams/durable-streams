@@ -1,0 +1,31 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"follow-redirect\", \"futures-util\", \"iri-string\", \"tower\"]",
+  "declared_features": "[\"add-extension\", \"async-compression\", \"auth\", \"base64\", \"catch-panic\", \"compression-br\", \"compression-deflate\", \"compression-full\", \"compression-gzip\", \"compression-zstd\", \"cors\", \"decompression-br\", \"decompression-deflate\", \"decompression-full\", \"decompression-gzip\", \"decompression-zstd\", \"default\", \"follow-redirect\", \"fs\", \"full\", \"futures-core\", \"futures-util\", \"httpdate\", \"iri-string\", \"limit\", \"map-request-body\", \"map-response-body\", \"metrics\", \"mime\", \"mime_guess\", \"normalize-path\", \"percent-encoding\", \"propagate-header\", \"redirect\", \"request-id\", \"sensitive-headers\", \"set-header\", \"set-status\", \"timeout\", \"tokio\", \"tokio-util\", \"tower\", \"trace\", \"tracing\", \"util\", \"uuid\", \"validate-request\"]",
+  "target": 17577061573142048237,
+  "profile": 8276155916380437441,
+  "path": 7803743875783737439,
+  "deps": [
+    [784494742817713399, "tower_service", false, 14569044705130981024],
+    [1906322745568073236, "pin_project_lite", false, 1380021454030540106],
+    [2620434475832828286, "http", false, 2728766307341271524],
+    [5695049318159433696, "tower", false, 8146435755960384831],
+    [6355489020061627772, "bytes", false, 9586073891585731763],
+    [7712452662827335977, "tower_layer", false, 5301190528779999250],
+    [9001817693037665195, "bitflags", false, 8127328674752565178],
+    [10629569228670356391, "futures_util", false, 1144530285312120495],
+    [10678500899971835392, "iri_string", false, 6297685535137875352],
+    [14084095096285906100, "http_body", false, 17021423386916453457]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/tower-http-5949e08f1f47fe91/dep-lib-tower_http",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

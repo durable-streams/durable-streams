@@ -125,6 +125,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
     if isinstance(err, DurableStreamError):
         status = err.status
         code = err.code
+        if code == "PARSE_ERROR":
+            return ERROR_CODES["PARSE_ERROR"], None
         if code == "BAD_REQUEST":
             return ERROR_CODES["INVALID_OFFSET"], 400
         if status == 404:
@@ -143,6 +145,9 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
         return ERROR_CODES["TIMEOUT"], None
     if isinstance(err, httpx.ConnectError):
         return ERROR_CODES["NETWORK_ERROR"], None
+    # JSON/UTF-8 parsing errors
+    if isinstance(err, (json.JSONDecodeError, UnicodeDecodeError)):
+        return ERROR_CODES["PARSE_ERROR"], None
     return ERROR_CODES["INTERNAL_ERROR"], None
 
 
@@ -362,22 +367,41 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         final_offset = response.offset
         up_to_date = response.up_to_date
 
+        # Check if JSON content type
+        content_type = stream_content_types.get(cmd["path"])
+        is_json_content = content_type and "application/json" in content_type
+
         if live is False:
             # For non-live mode, get all available data
-            try:
-                data = await response.read_bytes()
-                if data:
+            if is_json_content:
+                # Use JSON parsing to trigger PARSE_ERROR on malformed JSON
+                import json as json_module
+                items = await response.read_json()
+                if items:
+                    # Serialize items array as compact JSON (no spaces)
                     chunks.append(
                         {
-                            "data": data.decode("utf-8", errors="replace"),
+                            "data": json_module.dumps(items, separators=(",", ":")),
                             "offset": response.offset,
                         }
                     )
                 final_offset = response.offset
                 up_to_date = response.up_to_date
-            except Exception:
-                # Stream might be empty
-                pass
+            else:
+                try:
+                    data = await response.read_bytes()
+                    if data:
+                        chunks.append(
+                            {
+                                "data": data.decode("utf-8", errors="replace"),
+                                "offset": response.offset,
+                            }
+                        )
+                    final_offset = response.offset
+                    up_to_date = response.up_to_date
+                except Exception:
+                    # Stream might be empty
+                    pass
         elif is_sse:
             # For SSE mode, use iter_events() which yields StreamEvent objects for each
             # SSE data event, with metadata updated after control events.

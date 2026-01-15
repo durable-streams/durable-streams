@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[]",
+  "declared_features": "[]",
+  "target": 4262671303997282168,
+  "profile": 8276155916380437441,
+  "path": 17768033223800437713,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/tower-service-4e909a6a7d999e21/dep-lib-tower_service",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

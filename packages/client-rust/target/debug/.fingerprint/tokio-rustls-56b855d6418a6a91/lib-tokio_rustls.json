@@ -1,0 +1,23 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"ring\", \"tls12\"]",
+  "declared_features": "[\"aws-lc-rs\", \"aws_lc_rs\", \"brotli\", \"default\", \"early-data\", \"fips\", \"logging\", \"ring\", \"tls12\", \"zlib\"]",
+  "target": 15311367294574989260,
+  "profile": 8276155916380437441,
+  "path": 9610034283024046082,
+  "deps": [
+    [3236792770635956517, "rustls", false, 17200493576497747656],
+    [12891030758458664808, "tokio", false, 15421362334108124911]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/tokio-rustls-56b855d6418a6a91/dep-lib-tokio_rustls",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

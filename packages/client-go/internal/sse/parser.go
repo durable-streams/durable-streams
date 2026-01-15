@@ -8,9 +8,14 @@ package sse
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 )
+
+// ErrInvalidControlEvent is returned when a control event cannot be parsed as JSON.
+var ErrInvalidControlEvent = errors.New("sse: invalid control event JSON")
 
 // Event represents a parsed SSE event.
 type Event interface {
@@ -51,13 +56,18 @@ func NewParser(r io.Reader) *Parser {
 
 // Next returns the next SSE event.
 // Returns io.EOF when the stream is exhausted.
+// Returns ErrInvalidControlEvent if a control event cannot be parsed.
 func (p *Parser) Next() (Event, error) {
 	for {
 		line, err := p.reader.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
 				// Try to flush any remaining event
-				if event := p.flushEvent(); event != nil {
+				event, flushErr := p.flushEvent()
+				if flushErr != nil {
+					return nil, flushErr
+				}
+				if event != nil {
 					return event, nil
 				}
 			}
@@ -70,7 +80,11 @@ func (p *Parser) Next() (Event, error) {
 
 		if line == "" {
 			// Empty line signals end of event
-			if event := p.flushEvent(); event != nil {
+			event, flushErr := p.flushEvent()
+			if flushErr != nil {
+				return nil, flushErr
+			}
+			if event != nil {
 				return event, nil
 			}
 			continue
@@ -91,15 +105,25 @@ func (p *Parser) Next() (Event, error) {
 }
 
 // flushEvent returns the current event if valid, and resets state.
-func (p *Parser) flushEvent() Event {
-	if p.current.eventType == "" || len(p.current.dataLines) == 0 {
+// Returns an error if a control event cannot be parsed as JSON.
+func (p *Parser) flushEvent() (Event, error) {
+	eventType := p.current.eventType
+
+	// For non-control events, require data
+	if eventType == "" {
 		p.current.eventType = ""
 		p.current.dataLines = nil
-		return nil
+		return nil, nil
+	}
+
+	// For data events, skip if no data
+	if eventType == "data" && len(p.current.dataLines) == 0 {
+		p.current.eventType = ""
+		p.current.dataLines = nil
+		return nil, nil
 	}
 
 	dataStr := strings.Join(p.current.dataLines, "\n")
-	eventType := p.current.eventType
 
 	// Reset state
 	p.current.eventType = ""
@@ -107,16 +131,20 @@ func (p *Parser) flushEvent() Event {
 
 	switch eventType {
 	case "data":
-		return DataEvent{Data: dataStr}
+		return DataEvent{Data: dataStr}, nil
 	case "control":
+		// Control events must be valid JSON - return error if not
 		var control ControlEvent
 		if err := json.Unmarshal([]byte(dataStr), &control); err != nil {
-			// Invalid control event, skip
-			return nil
+			preview := dataStr
+			if len(preview) > 100 {
+				preview = preview[:100] + "..."
+			}
+			return nil, fmt.Errorf("%w: %v. Data: %s", ErrInvalidControlEvent, err, preview)
 		}
-		return control
+		return control, nil
 	default:
-		// Unknown event type, skip
-		return nil
+		// Unknown event type, skip (per protocol spec)
+		return nil, nil
 	}
 }

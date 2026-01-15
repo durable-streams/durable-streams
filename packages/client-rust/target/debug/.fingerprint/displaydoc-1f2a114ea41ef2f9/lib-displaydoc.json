@@ -1,0 +1,24 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[]",
+  "declared_features": "[\"default\", \"std\"]",
+  "target": 9331843185013996172,
+  "profile": 3033921117576893,
+  "path": 2323560771867713620,
+  "deps": [
+    [6490058671768129134, "syn", false, 1829907105065760638],
+    [8265977775676642988, "proc_macro2", false, 5563754936304581803],
+    [8518574257822997924, "quote", false, 11489368098174504522]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/displaydoc-1f2a114ea41ef2f9/dep-lib-displaydoc",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

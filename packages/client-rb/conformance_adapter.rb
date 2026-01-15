@@ -84,6 +84,8 @@ end
 
 def map_error_code(err)
   case err
+  when DurableStreams::ParseError
+    [ERROR_CODES["PARSE_ERROR"], nil]
   when DurableStreams::StreamNotFoundError
     [ErrorCode::NOT_FOUND, 404]
   when DurableStreams::StreamExistsError

@@ -169,8 +169,17 @@ module DurableStreams
 
       # Parse control events for metadata
       if event_type == "control"
+        # Validate control event data
+        if data.nil? || data.strip.empty?
+          raise ParseError.new("Empty control event data")
+        end
+
         begin
           control = JSON.parse(data)
+          # Must be a JSON object
+          unless control.is_a?(Hash)
+            raise ParseError.new("Control event data is not a JSON object")
+          end
           @next_offset = control["streamNextOffset"] if control["streamNextOffset"]
           @cursor = control["streamCursor"] if control["streamCursor"]
           @up_to_date = control["upToDate"] == true || control["streamUpToDate"] == true
@@ -182,11 +191,14 @@ module DurableStreams
             up_to_date: @up_to_date
           }
         rescue JSON::ParserError => e
-          DurableStreams.logger&.warn(
-            "Malformed SSE control event ignored: #{e.message} (data: #{data.slice(0, 200)})"
-          )
-          return nil
+          raise ParseError.new("Malformed control event JSON: #{e.message}")
         end
+      end
+
+      # Only process known event types: "data", "message", or nil (default)
+      # Ignore unknown event types per SSE spec (forward compatibility)
+      unless event_type.nil? || event_type == "data" || event_type == "message"
+        return nil
       end
 
       {

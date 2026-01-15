@@ -522,6 +522,10 @@ func handleRead(cmd Command) Result {
 	upToDate := false
 	status := 200 // Default status
 
+	// Check if this is a JSON stream
+	contentType := streamContentTypes[cmd.Path]
+	isJSON := normalizeContentType(contentType) == "application/json"
+
 	for len(chunks) < maxChunks {
 		chunk, err := it.Next()
 		if err != nil {
@@ -546,10 +550,24 @@ func handleRead(cmd Command) Result {
 		}
 
 		if len(chunk.Data) > 0 {
-			chunks = append(chunks, ReadChunk{
-				Data:   string(chunk.Data),
-				Offset: string(chunk.NextOffset),
-			})
+			// For JSON content, validate the JSON to trigger PARSE_ERROR on malformed data
+			if isJSON {
+				var parsed any
+				if err := json.Unmarshal(chunk.Data, &parsed); err != nil {
+					return errorResult("read", fmt.Errorf("failed to parse JSON response: %w", err))
+				}
+				// Re-serialize with compact formatting to match TypeScript/Python
+				compactJSON, _ := json.Marshal(parsed)
+				chunks = append(chunks, ReadChunk{
+					Data:   string(compactJSON),
+					Offset: string(chunk.NextOffset),
+				})
+			} else {
+				chunks = append(chunks, ReadChunk{
+					Data:   string(chunk.Data),
+					Offset: string(chunk.NextOffset),
+				})
+			}
 		}
 
 		finalOffset = string(chunk.NextOffset)
@@ -866,6 +884,32 @@ func errorResult(cmdType string, err error) Result {
 		}
 	}
 
+	// Check for JSON/parsing errors
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return Result{
+			Type:        "error",
+			Success:     false,
+			CommandType: cmdType,
+			ErrorCode:   "PARSE_ERROR",
+			Message:     err.Error(),
+		}
+	}
+
+	// Check if error message indicates parse error
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "parse") ||
+		strings.Contains(errMsg, "JSON") || strings.Contains(errMsg, "SSE") ||
+		strings.Contains(errMsg, "control event") {
+		return Result{
+			Type:        "error",
+			Success:     false,
+			CommandType: cmdType,
+			ErrorCode:   "PARSE_ERROR",
+			Message:     errMsg,
+		}
+	}
+
 	return Result{
 		Type:        "error",
 		Success:     false,
@@ -900,6 +944,14 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 	}
 	if errors.Is(err.Err, durablestreams.ErrRateLimited) {
 		return "UNEXPECTED_STATUS"
+	}
+
+	// Check for SSE/JSON parse errors in the underlying error
+	errMsg := err.Err.Error()
+	if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "parse") ||
+		strings.Contains(errMsg, "JSON") || strings.Contains(errMsg, "SSE") ||
+		strings.Contains(errMsg, "control event") {
+		return "PARSE_ERROR"
 	}
 
 	switch err.StatusCode {

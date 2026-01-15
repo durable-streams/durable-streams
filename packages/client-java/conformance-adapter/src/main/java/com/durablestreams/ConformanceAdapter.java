@@ -1,6 +1,7 @@
 package com.durablestreams;
 
 import com.durablestreams.exception.*;
+import com.durablestreams.exception.ParseErrorException;
 import com.durablestreams.model.*;
 
 import java.io.*;
@@ -292,6 +293,9 @@ public class ConformanceAdapter {
             boolean upToDate = false;
             int status = 200;
 
+            // Track if this is a JSON stream (determined from first chunk's content-type)
+            Boolean jsonStream = null;
+
             // SSE mode now uses true streaming
             LiveMode effectiveMode = liveMode;
 
@@ -329,8 +333,20 @@ public class ConformanceAdapter {
                     upToDate = chunk.isUpToDate();
 
                     if (chunk.getData() != null && chunk.getData().length > 0) {
+                        String dataStr = chunk.getDataAsString();
+
+                        // Determine if JSON stream from first chunk's content-type header
+                        if (jsonStream == null) {
+                            jsonStream = isJsonContentType(chunk);
+                        }
+
+                        // Validate JSON for JSON streams
+                        if (Boolean.TRUE.equals(jsonStream) && !isValidJson(dataStr)) {
+                            throw new ParseErrorException("Invalid JSON in stream response: " + dataStr);
+                        }
+
                         Map<String, Object> chunkObj = new LinkedHashMap<>();
-                        chunkObj.put("data", chunk.getDataAsString());
+                        chunkObj.put("data", dataStr);
                         if (chunk.getNextOffset() != null) {
                             chunkObj.put("offset", chunk.getNextOffset().getValue());
                         }
@@ -389,6 +405,8 @@ public class ConformanceAdapter {
                 result.put("paramsSent", paramsSent);
             }
             return result;
+        } catch (ParseErrorException e) {
+            return errorResult("read", "PARSE_ERROR", e.getMessage(), 500);
         } catch (StreamNotFoundException e) {
             return errorResult("read", "NOT_FOUND", e.getMessage(), 404);
         } catch (OffsetGoneException e) {
@@ -402,6 +420,10 @@ public class ConformanceAdapter {
             }
             return errorResult("read", errorCode, e.getMessage(), statusCode);
         } catch (RuntimeException e) {
+            if (e.getCause() instanceof ParseErrorException) {
+                ParseErrorException pe = (ParseErrorException) e.getCause();
+                return errorResult("read", "PARSE_ERROR", pe.getMessage(), 500);
+            }
             if (e.getCause() instanceof DurableStreamException) {
                 DurableStreamException de = (DurableStreamException) e.getCause();
                 int statusCode = de.getStatusCode().orElse(500);
@@ -860,7 +882,32 @@ public class ConformanceAdapter {
         if (e instanceof SequenceConflictException) return "SEQUENCE_CONFLICT";
         if (e instanceof StaleEpochException) return "STALE_EPOCH";
         if (e instanceof OffsetGoneException) return "INVALID_OFFSET";
+        if (e instanceof ParseErrorException) return "PARSE_ERROR";
         return "UNEXPECTED_STATUS";
+    }
+
+    private static boolean isValidJson(String data) {
+        if (data == null || data.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            Json.parse(data);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static boolean isJsonContentType(Chunk chunk) {
+        if (chunk == null) {
+            return false;
+        }
+        Map<String, String> headers = chunk.getHeaders();
+        if (headers == null) {
+            return false;
+        }
+        String contentType = headers.get("content-type");
+        return contentType != null && contentType.toLowerCase().contains("application/json");
     }
 
     private static Map<String, Object> errorResult(String commandType, String errorCode, String message, int status) {

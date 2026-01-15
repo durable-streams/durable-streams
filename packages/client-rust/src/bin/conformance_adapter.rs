@@ -418,6 +418,13 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let path = cmd.path.unwrap_or_default();
     let stream = app_state.client.stream(&path);
 
+    // Check if this is a JSON stream from cached content type
+    let is_json_stream = app_state
+        .stream_content_types
+        .get(&path)
+        .map(|ct| ct.to_lowercase().contains("application/json"))
+        .unwrap_or(false);
+
     let timeout_ms = cmd.timeout_ms.unwrap_or(5000);
 
     // Resolve dynamic headers/params
@@ -488,8 +495,21 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                         }
 
                         if !chunk.data.is_empty() {
+                            let data_str = String::from_utf8_lossy(&chunk.data).to_string();
+
+                            // Validate JSON for JSON streams
+                            if is_json_stream {
+                                if let Err(e) = serde_json::from_str::<Value>(&data_str) {
+                                    return error_result(
+                                        "read",
+                                        "PARSE_ERROR",
+                                        &format!("Invalid JSON in stream response: {}", e),
+                                    );
+                                }
+                            }
+
                             chunks_result.push(ReadChunk {
-                                data: String::from_utf8_lossy(&chunk.data).to_string(),
+                                data: data_str,
                                 binary: None,
                                 offset: Some(chunk.next_offset.to_string()),
                             });

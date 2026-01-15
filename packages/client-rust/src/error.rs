@@ -51,6 +51,9 @@ pub enum StreamError {
     #[error("json error: {0}")]
     Json(String),
 
+    #[error("parse error: {0}")]
+    ParseError(String),
+
     #[error("empty append not allowed")]
     EmptyAppend,
 
@@ -123,6 +126,7 @@ impl StreamError {
             StreamError::BadRequest { .. } => "INVALID_OFFSET",
             StreamError::Unauthorized => "UNAUTHORIZED",
             StreamError::Forbidden => "FORBIDDEN",
+            StreamError::ParseError(_) => "PARSE_ERROR",
             _ => "UNEXPECTED_STATUS",
         }
     }

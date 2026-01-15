@@ -131,6 +131,13 @@ interface InjectedFault {
   corruptBody?: boolean
   /** Add jitter to delay (random 0-jitterMs added to delayMs) */
   jitterMs?: number
+  /** Inject an SSE event with custom type and data (for testing SSE parsing) */
+  injectSseEvent?: {
+    /** Event type (e.g., "unknown", "control", "data") */
+    eventType: string
+    /** Event data (will be sent as-is) */
+    data: string
+  }
 }
 
 export class DurableStreamTestServer {
@@ -375,14 +382,20 @@ export class DurableStreamTestServer {
       modified = modified.slice(0, fault.truncateBodyBytes)
     }
 
-    // Corrupt body if configured (flip random bits)
+    // Corrupt body if configured - deterministically break JSON structure
     if (fault.corruptBody && modified.length > 0) {
       modified = new Uint8Array(modified) // Make a copy to avoid mutating original
-      // Flip 1-5% of bytes
-      const numCorrupt = Math.max(1, Math.floor(modified.length * 0.03))
+      // Always corrupt the first byte (breaks JSON structure - the opening [ or {)
+      // and add some random corruption for good measure
+      modified[0] = 0x58 // 'X' - makes JSON syntactically invalid
+      if (modified.length > 1) {
+        modified[1] = 0x59 // 'Y'
+      }
+      // Also corrupt some bytes in the middle to catch edge cases
+      const numCorrupt = Math.max(1, Math.floor(modified.length * 0.1))
       for (let i = 0; i < numCorrupt; i++) {
         const pos = Math.floor(Math.random() * modified.length)
-        modified[pos] = modified[pos]! ^ (1 << Math.floor(Math.random() * 8))
+        modified[pos] = 0x5a // 'Z' - valid UTF-8 but breaks JSON structure
       }
     }
 
@@ -458,8 +471,12 @@ export class DurableStreamTestServer {
         return
       }
 
-      // Store fault for response modification (truncation, corruption)
-      if (fault.truncateBodyBytes !== undefined || fault.corruptBody) {
+      // Store fault for response modification (truncation, corruption, SSE injection)
+      if (
+        fault.truncateBodyBytes !== undefined ||
+        fault.corruptBody ||
+        fault.injectSseEvent
+      ) {
         ;(
           res as ServerResponse & { _injectedFault?: InjectedFault }
         )._injectedFault = fault
@@ -872,6 +889,15 @@ export class DurableStreamTestServer {
       "cross-origin-resource-policy": `cross-origin`,
     })
 
+    // Check for injected SSE event (for testing SSE parsing)
+    const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
+      ._injectedFault
+    if (fault?.injectSseEvent) {
+      // Send the injected SSE event before normal stream
+      res.write(`event: ${fault.injectSseEvent.eventType}\n`)
+      res.write(`data: ${fault.injectSseEvent.data}\n\n`)
+    }
+
     let currentOffset = initialOffset
     let isConnected = true
     const decoder = new TextDecoder()
@@ -1212,6 +1238,11 @@ export class DurableStreamTestServer {
           method?: string
           corruptBody?: boolean
           jitterMs?: number
+          // SSE event injection (for testing SSE parsing)
+          injectSseEvent?: {
+            eventType: string
+            data: string
+          }
         }
 
         if (!config.path) {
@@ -1226,11 +1257,12 @@ export class DurableStreamTestServer {
           config.delayMs !== undefined ||
           config.dropConnection ||
           config.truncateBodyBytes !== undefined ||
-          config.corruptBody
+          config.corruptBody ||
+          config.injectSseEvent !== undefined
         if (!hasFaultType) {
           res.writeHead(400, { "content-type": `text/plain` })
           res.end(
-            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, or corruptBody`
+            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, corruptBody, or injectSseEvent`
           )
           return
         }
@@ -1246,6 +1278,7 @@ export class DurableStreamTestServer {
           method: config.method,
           corruptBody: config.corruptBody,
           jitterMs: config.jitterMs,
+          injectSseEvent: config.injectSseEvent,
         })
 
         res.writeHead(200, { "content-type": `application/json` })

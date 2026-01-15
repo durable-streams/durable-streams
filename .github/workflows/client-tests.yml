@@ -25,6 +25,10 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0"
+
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.0"
@@ -62,6 +66,11 @@ jobs:
           cd packages/client-go
           go build -o conformance-adapter ./cmd/conformance-adapter
 
+      - name: Build C# client adapter
+        run: |
+          cd packages/client-dotnet
+          dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+
       - name: Build Swift client adapter
         run: |
           cd packages/client-swift
@@ -96,6 +105,11 @@ jobs:
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
+
+      - name: Run C# client conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ../../packages/client-dotnet/adapter/conformance-adapter
 
       - name: Run Swift client conformance tests
         run: |
@@ -182,6 +196,10 @@ jobs:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0"
+
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.0"
@@ -255,6 +273,11 @@ jobs:
           cd packages/client-py
           uv sync
 
+      - name: Build C# client adapter
+        run: |
+          cd packages/client-dotnet
+          dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+
       - name: Build Swift client adapter
         run: |
           cd packages/client-swift
@@ -315,6 +338,23 @@ jobs:
           echo "py_passed=$PASSED" >> $GITHUB_OUTPUT
           echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
           echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
+
+      - name: Run C# client benchmarks
+        id: dotnet_benchmarks
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format json > benchmark-results-dotnet.json
+          cat benchmark-results-dotnet.json
+
+          # Extract summary for PR comment
+          PASSED=$(jq -r '.passed // 0' benchmark-results-dotnet.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results-dotnet.json)
+          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-dotnet.json)
+
+          echo "dotnet_passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "dotnet_failed=$FAILED" >> $GITHUB_OUTPUT
+          echo "dotnet_skipped=$SKIPPED" >> $GITHUB_OUTPUT
 
       - name: Run Swift client benchmarks
         id: swift_benchmarks
@@ -427,6 +467,7 @@ jobs:
             packages/client-conformance-tests/benchmark-results-ts.json
             packages/client-conformance-tests/benchmark-results-go.json
             packages/client-conformance-tests/benchmark-results-py.json
+            packages/client-conformance-tests/benchmark-results-dotnet.json
             packages/client-conformance-tests/benchmark-results-swift.json
             packages/client-conformance-tests/benchmark-results-php.json
             packages/client-conformance-tests/benchmark-results-java.json
@@ -449,6 +490,9 @@ jobs:
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
+          echo "" >> benchmark-report.md
+
+          pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format markdown >> benchmark-report.md
           echo "" >> benchmark-report.md
 
           pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
@@ -513,6 +557,7 @@ jobs:
           TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
           GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
           PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
+          DOTNET_FAILED=${{ steps.dotnet_benchmarks.outputs.dotnet_failed }}
           SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
           PHP_FAILED=${{ steps.php_benchmarks.outputs.php_failed }}
           JAVA_FAILED=${{ steps.java_benchmarks.outputs.java_failed }}
@@ -520,10 +565,10 @@ jobs:
           RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
           ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
 
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + SWIFT_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
+          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + SWIFT_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
 
           if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, Swift: $SWIFT_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
+            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, Swift: $SWIFT_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
             exit 1
           fi
           echo "All benchmarks passed!"
