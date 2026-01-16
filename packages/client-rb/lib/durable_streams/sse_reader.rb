@@ -55,12 +55,12 @@ module DurableStreams
       begin
         @http_response&.instance_variable_get(:@socket)&.close
       rescue StandardError => e
-        DurableStreams.logger&.debug("SSE socket close error (expected during cleanup): #{e.class}: #{e.message}")
+        DurableStreams.logger&.warn("SSE socket close error (expected during cleanup): #{e.class}: #{e.message}")
       end
       begin
         @connection&.finish
       rescue StandardError => e
-        DurableStreams.logger&.debug("SSE connection finish error (expected during cleanup): #{e.class}: #{e.message}")
+        DurableStreams.logger&.warn("SSE connection finish error (expected during cleanup): #{e.class}: #{e.message}")
       end
     end
 
@@ -96,7 +96,7 @@ module DurableStreams
       params = { offset: @next_offset, live: "sse" }
       params[:cursor] = @cursor if @cursor
 
-      request_url = HTTP.build_url(@stream.url, @stream.resolved_params(params))
+      request_url = HTTP.build_url(@stream.url, params)
       uri = URI.parse(request_url)
 
       @connection = Net::HTTP.new(uri.host, uri.port)
@@ -128,7 +128,7 @@ module DurableStreams
       begin
         @connection&.finish
       rescue StandardError => e
-        DurableStreams.logger&.debug("SSE connection cleanup error: #{e.class}: #{e.message}")
+        DurableStreams.logger&.warn("SSE connection cleanup error: #{e.class}: #{e.message}")
       end
     end
 

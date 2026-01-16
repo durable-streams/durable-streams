@@ -20,18 +20,19 @@ $LOAD_PATH.unshift(File.expand_path("lib", __dir__))
 require "durable_streams"
 
 # Error code constants matching the TypeScript protocol
-ERROR_CODES = {
-  "NETWORK_ERROR" => "NETWORK_ERROR",
-  "TIMEOUT" => "TIMEOUT",
-  "CONFLICT" => "CONFLICT",
-  "NOT_FOUND" => "NOT_FOUND",
-  "SEQUENCE_CONFLICT" => "SEQUENCE_CONFLICT",
-  "INVALID_OFFSET" => "INVALID_OFFSET",
-  "UNEXPECTED_STATUS" => "UNEXPECTED_STATUS",
-  "PARSE_ERROR" => "PARSE_ERROR",
-  "INTERNAL_ERROR" => "INTERNAL_ERROR",
-  "NOT_SUPPORTED" => "NOT_SUPPORTED"
-}.freeze
+module ErrorCode
+  NETWORK_ERROR = "NETWORK_ERROR"
+  TIMEOUT = "TIMEOUT"
+  CONFLICT = "CONFLICT"
+  NOT_FOUND = "NOT_FOUND"
+  SEQUENCE_CONFLICT = "SEQUENCE_CONFLICT"
+  INVALID_OFFSET = "INVALID_OFFSET"
+  INVALID_ARGUMENT = "INVALID_ARGUMENT"
+  UNEXPECTED_STATUS = "UNEXPECTED_STATUS"
+  PARSE_ERROR = "PARSE_ERROR"
+  INTERNAL_ERROR = "INTERNAL_ERROR"
+  NOT_SUPPORTED = "NOT_SUPPORTED"
+end
 
 # Global state
 $server_url = ""
@@ -65,60 +66,50 @@ end
 $dynamic_headers = {}
 $dynamic_params = {}
 
-def resolve_dynamic_headers
-  headers = {}
-  values = {}
-
-  $dynamic_headers.each do |name, config|
-    value = config.get_value
-    values[name] = value
-    headers[name] = value
+def resolve_dynamic_values(dynamic_map)
+  resolved = {}
+  dynamic_map.each do |name, config|
+    resolved[name] = config.get_value
   end
+  [resolved.dup, resolved]
+end
 
-  [headers, values]
+def resolve_dynamic_headers
+  resolve_dynamic_values($dynamic_headers)
 end
 
 def resolve_dynamic_params
-  params = {}
-  values = {}
-
-  $dynamic_params.each do |name, config|
-    value = config.get_value
-    values[name] = value
-    params[name] = value
-  end
-
-  [params, values]
+  resolve_dynamic_values($dynamic_params)
 end
 
 def map_error_code(err)
   case err
   when DurableStreams::ParseError
-    [ERROR_CODES["PARSE_ERROR"], nil]
+    [ErrorCode::PARSE_ERROR, nil]
   when DurableStreams::StreamNotFoundError
-    [ERROR_CODES["NOT_FOUND"], 404]
+    [ErrorCode::NOT_FOUND, 404]
   when DurableStreams::StreamExistsError
-    [ERROR_CODES["CONFLICT"], 409]
+    [ErrorCode::CONFLICT, 409]
   when DurableStreams::SeqConflictError
-    [ERROR_CODES["SEQUENCE_CONFLICT"], 409]
+    [ErrorCode::SEQUENCE_CONFLICT, 409]
   when DurableStreams::BadRequestError
-    [ERROR_CODES["INVALID_OFFSET"], 400]
+    [ErrorCode::INVALID_OFFSET, 400]
   when DurableStreams::TimeoutError
-    [ERROR_CODES["TIMEOUT"], nil]
+    [ErrorCode::TIMEOUT, nil]
   when DurableStreams::ConnectionError
-    [ERROR_CODES["NETWORK_ERROR"], nil]
+    [ErrorCode::NETWORK_ERROR, nil]
   when DurableStreams::FetchError
     status = err.status
     case status
-    when 404 then [ERROR_CODES["NOT_FOUND"], 404]
-    when 409 then [ERROR_CODES["CONFLICT"], 409]
-    else [ERROR_CODES["UNEXPECTED_STATUS"], status]
+    when 404 then [ErrorCode::NOT_FOUND, 404]
+    when 409 then [ErrorCode::CONFLICT, 409]
+    else [ErrorCode::UNEXPECTED_STATUS, status]
     end
   when DurableStreams::Error
     status = err.status
-    [ERROR_CODES["UNEXPECTED_STATUS"], status]
+    [ErrorCode::UNEXPECTED_STATUS, status]
   else
-    [ERROR_CODES["INTERNAL_ERROR"], nil]
+    [ErrorCode::INTERNAL_ERROR, nil]
   end
 end
 
@@ -163,7 +154,7 @@ def handle_create(cmd)
   # Check if stream already exists
   already_exists = false
   begin
-    stream = DurableStreams::Stream.new(url: url)
+    stream = DurableStreams::Stream.new(url)
     stream.head
     already_exists = true
   rescue DurableStreams::StreamNotFoundError
@@ -173,7 +164,7 @@ def handle_create(cmd)
   # Create the stream
   headers = cmd["headers"] || {}
   stream = DurableStreams::Stream.create(
-    url: url,
+    url,
     content_type: content_type,
     ttl_seconds: cmd["ttlSeconds"],
     expires_at: cmd["expiresAt"],
@@ -198,7 +189,7 @@ def handle_connect(cmd)
   url = "#{$server_url}#{cmd["path"]}"
 
   headers = cmd["headers"] || {}
-  stream = DurableStreams::Stream.connect(url: url, headers: headers)
+  stream = DurableStreams::Stream.connect(url, headers: headers)
 
   head = stream.head
 
@@ -239,7 +230,7 @@ def handle_append(cmd)
 
   # Create stream and append
   stream = DurableStreams::Stream.new(
-    url: url,
+    url,
     content_type: content_type,
     headers: merged_headers,
     batching: false
@@ -289,9 +280,10 @@ def handle_read(cmd)
 
   content_type = $stream_content_types[cmd["path"]]
   is_json = DurableStreams.json_content_type?(content_type)
+  format = is_json ? :json : :bytes
 
   stream = DurableStreams::Stream.new(
-    url: url,
+    url,
     content_type: content_type,
     headers: merged_headers
   )
@@ -299,7 +291,7 @@ def handle_read(cmd)
   begin
     if live == false
       # Catch-up mode
-      reader = is_json ? stream.read_json(offset: offset, live: false) : stream.read_bytes(offset: offset, live: false)
+      reader = stream.read(offset: offset, live: false, format: format)
 
       if is_json
         reader.each_batch do |batch|
@@ -319,7 +311,7 @@ def handle_read(cmd)
       reader.close
     elsif live == :sse
       # SSE mode with timeout
-      reader = stream.read_json(offset: offset, live: :sse)
+      reader = stream.read(offset: offset, live: :sse, format: :json)
       chunk_count = 0
 
       begin
@@ -347,7 +339,7 @@ def handle_read(cmd)
       reader.close
     else
       # Long-poll mode
-      reader = is_json ? stream.read_json(offset: offset, live: :long_poll) : stream.read_bytes(offset: offset, live: :long_poll)
+      reader = stream.read(offset: offset, live: :long_poll, format: format)
       chunk_count = 0
 
       Timeout.timeout(timeout_ms / 1000.0) do
@@ -406,7 +398,7 @@ def handle_head(cmd)
   url = "#{$server_url}#{cmd["path"]}"
 
   headers = cmd["headers"] || {}
-  stream = DurableStreams::Stream.new(url: url, headers: headers)
+  stream = DurableStreams::Stream.new(url, headers: headers)
   result = stream.head
 
   # Cache content type
@@ -425,7 +417,7 @@ def handle_delete(cmd)
   url = "#{$server_url}#{cmd["path"]}"
 
   headers = cmd["headers"] || {}
-  stream = DurableStreams::Stream.new(url: url, headers: headers)
+  stream = DurableStreams::Stream.new(url, headers: headers)
   stream.delete
 
   # Remove from cache
@@ -462,7 +454,7 @@ def handle_benchmark(cmd)
       url = "#{$server_url}#{operation["path"]}"
       content_type = $stream_content_types[operation["path"]] || "application/octet-stream"
 
-      stream = DurableStreams::Stream.new(url: url, content_type: content_type, batching: false)
+      stream = DurableStreams::Stream.new(url, content_type: content_type, batching: false)
       payload = "*" * operation["size"]
       stream.append(payload)
       metrics["bytesTransferred"] = operation["size"]
@@ -471,8 +463,8 @@ def handle_benchmark(cmd)
       url = "#{$server_url}#{operation["path"]}"
       offset = operation["offset"]
 
-      stream = DurableStreams::Stream.new(url: url)
-      reader = stream.read_bytes(offset: offset, live: false)
+      stream = DurableStreams::Stream.new(url)
+      reader = stream.read(offset: offset, live: false, format: :bytes)
       data = reader.body
       reader.close
       metrics["bytesTransferred"] = data.bytesize
@@ -480,7 +472,7 @@ def handle_benchmark(cmd)
     when "create"
       url = "#{$server_url}#{operation["path"]}"
       content_type = operation["contentType"] || "application/octet-stream"
-      DurableStreams::Stream.create(url: url, content_type: content_type)
+      DurableStreams::Stream.create(url, content_type: content_type)
 
     when "throughput_append"
       url = "#{$server_url}#{operation["path"]}"
@@ -488,7 +480,7 @@ def handle_benchmark(cmd)
 
       # Ensure stream exists
       begin
-        DurableStreams::Stream.create(url: url, content_type: content_type)
+        DurableStreams::Stream.create(url, content_type: content_type)
       rescue DurableStreams::StreamExistsError
         # OK
       end
@@ -505,7 +497,7 @@ def handle_benchmark(cmd)
       concurrency.times do |i|
         thread_count = count_per_thread + (i < remainder ? 1 : 0)
         threads << Thread.new do
-          stream = DurableStreams::Stream.new(url: url, content_type: content_type, batching: true)
+          stream = DurableStreams::Stream.new(url, content_type: content_type, batching: true)
           thread_count.times { stream.append(payload) }
         end
       end
@@ -518,8 +510,8 @@ def handle_benchmark(cmd)
     when "throughput_read"
       url = "#{$server_url}#{operation["path"]}"
 
-      stream = DurableStreams::Stream.new(url: url)
-      reader = stream.read_json(offset: "-1", live: false)
+      stream = DurableStreams::Stream.new(url)
+      reader = stream.read(offset: "-1", live: false, format: :json)
 
       count = 0
       total_bytes = 0
@@ -538,7 +530,7 @@ def handle_benchmark(cmd)
       live_mode = operation["live"] || "long-poll"
       is_json = content_type.include?("json")
 
-      stream = DurableStreams::Stream.create(url: url, content_type: content_type)
+      stream = DurableStreams::Stream.create(url, content_type: content_type)
 
       # Generate payload
       payload = if is_json
@@ -554,21 +546,21 @@ def handle_benchmark(cmd)
       reader_thread = Thread.new do
         begin
           live_sym = live_mode == "sse" ? :sse : :long_poll
+          format = is_json ? :json : :bytes
+          reader = stream.read(offset: "-1", live: live_sym, format: format)
+
           if is_json
-            reader = stream.read_json(offset: "-1", live: live_sym)
             reader.each do |item|
               read_data = item
               break
             end
-            reader.close
           else
-            reader = stream.read_bytes(offset: "-1", live: live_sym)
             reader.each do |chunk|
               read_data = chunk.data
               break
             end
-            reader.close
           end
+          reader.close
         rescue StandardError => e
           read_error = e
         end
@@ -595,7 +587,7 @@ def handle_benchmark(cmd)
         "type" => "error",
         "success" => false,
         "commandType" => "benchmark",
-        "errorCode" => ERROR_CODES["NOT_SUPPORTED"],
+        "errorCode" => ErrorCode::NOT_SUPPORTED,
         "message" => "Unknown benchmark operation: #{op_type}"
       }
     end
@@ -617,7 +609,7 @@ def handle_benchmark(cmd)
       "type" => "error",
       "success" => false,
       "commandType" => "benchmark",
-      "errorCode" => ERROR_CODES["INTERNAL_ERROR"],
+      "errorCode" => ErrorCode::INTERNAL_ERROR,
       "message" => e.message
     }
   end
@@ -731,6 +723,20 @@ def handle_idempotent_append_batch(cmd)
   }
 end
 
+def validation_error(message)
+  {
+    "type" => "error",
+    "success" => false,
+    "commandType" => "validate",
+    "errorCode" => ErrorCode::INVALID_ARGUMENT,
+    "message" => message
+  }
+end
+
+def validation_success
+  { "type" => "validate", "success" => true }
+end
+
 def handle_validate(cmd)
   target = cmd["target"]
   target_type = target["target"]
@@ -740,30 +746,10 @@ def handle_validate(cmd)
     epoch = target["epoch"] || 0
     max_batch_bytes = target["maxBatchBytes"] || 1_048_576
 
-    if epoch < 0
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "epoch must be non-negative, got: #{epoch}"
-      }
-    end
+    return validation_error("epoch must be non-negative, got: #{epoch}") if epoch < 0
+    return validation_error("maxBatchBytes must be positive, got: #{max_batch_bytes}") if max_batch_bytes < 1
 
-    if max_batch_bytes < 1
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "maxBatchBytes must be positive, got: #{max_batch_bytes}"
-      }
-    end
-
-    {
-      "type" => "validate",
-      "success" => true
-    }
+    validation_success
 
   when "retry-options"
     max_retries = target["maxRetries"] || 3
@@ -771,57 +757,19 @@ def handle_validate(cmd)
     max_delay_ms = target["maxDelayMs"] || 5000
     multiplier = target["multiplier"] || 2.0
 
-    if max_retries < 0
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "maxRetries must be non-negative, got: #{max_retries}"
-      }
-    end
+    return validation_error("maxRetries must be non-negative, got: #{max_retries}") if max_retries < 0
+    return validation_error("initialDelayMs must be positive, got: #{initial_delay_ms}") if initial_delay_ms < 1
+    return validation_error("maxDelayMs must be positive, got: #{max_delay_ms}") if max_delay_ms < 1
+    return validation_error("multiplier must be >= 1.0, got: #{multiplier}") if multiplier < 1.0
 
-    if initial_delay_ms < 1
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "initialDelayMs must be positive, got: #{initial_delay_ms}"
-      }
-    end
-
-    if max_delay_ms < 1
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "maxDelayMs must be positive, got: #{max_delay_ms}"
-      }
-    end
-
-    if multiplier < 1.0
-      return {
-        "type" => "error",
-        "success" => false,
-        "commandType" => "validate",
-        "errorCode" => "INVALID_ARGUMENT",
-        "message" => "multiplier must be >= 1.0, got: #{multiplier}"
-      }
-    end
-
-    {
-      "type" => "validate",
-      "success" => true
-    }
+    validation_success
 
   else
     {
       "type" => "error",
       "success" => false,
       "commandType" => "validate",
-      "errorCode" => ERROR_CODES["NOT_SUPPORTED"],
+      "errorCode" => ErrorCode::NOT_SUPPORTED,
       "message" => "Unknown validation target: #{target_type}"
     }
   end
@@ -852,7 +800,7 @@ def handle_command(cmd)
         "type" => "error",
         "success" => false,
         "commandType" => cmd_type,
-        "errorCode" => ERROR_CODES["NOT_SUPPORTED"],
+        "errorCode" => ErrorCode::NOT_SUPPORTED,
         "message" => "Unknown command type: #{cmd_type}"
       }
     end
@@ -884,7 +832,7 @@ def main
                            "type" => "error",
                            "success" => false,
                            "commandType" => "init",
-                           "errorCode" => ERROR_CODES["PARSE_ERROR"],
+                           "errorCode" => ErrorCode::PARSE_ERROR,
                            "message" => "Failed to parse command: #{e.message}"
                          })
       $stdout.flush

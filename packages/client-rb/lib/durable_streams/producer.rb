@@ -105,10 +105,10 @@ module DurableStreams
       self
     end
 
-    # Append and wait for acknowledgment
+    # Append and wait for acknowledgment (sync/blocking)
     # @param data [Object] Data to append
     # @return [ProducerResult]
-    def append_sync(data)
+    def append!(data)
       append(data)
       flush
       ProducerResult.new(
@@ -203,6 +203,7 @@ module DurableStreams
 
     def cancel_linger_timer
       @linger_cancelled = true
+      @linger_timer&.kill
       @linger_timer = nil
     end
 
