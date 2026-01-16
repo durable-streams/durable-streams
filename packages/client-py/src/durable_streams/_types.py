@@ -20,7 +20,11 @@ Offset = str
 T = TypeVar("T")
 
 # Live mode options
-LiveMode = Literal["auto", "long-poll", "sse"] | bool
+# - False: Catch-up only, stop at first `up_to_date`
+# - True: Auto-select best mode (SSE for JSON streams, long-poll for binary)
+# - "long-poll": Explicit long-poll mode for live updates
+# - "sse": Explicit server-sent events for live updates
+LiveMode = Literal["long-poll", "sse"] | bool
 
 
 @dataclass(frozen=True, slots=True)

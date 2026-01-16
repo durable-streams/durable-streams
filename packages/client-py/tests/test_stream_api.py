@@ -107,7 +107,7 @@ class TestStreamBasicFunctionality:
         mock_client.send.assert_called_once()
         assert res.url == "https://example.com/stream"
         assert res.content_type == "application/json"
-        assert res.live == "auto"
+        assert res.live is True
 
     def test_stream_throws_on_404(self):
         """Should throw StreamNotFoundError on 404."""

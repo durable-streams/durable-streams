@@ -31,6 +31,10 @@ public struct Offset: Sendable, Hashable, Comparable, Codable, CustomStringConve
 }
 
 /// Specifies how the client should handle real-time updates.
+///
+/// - `catchUp`: Read existing data only, stop at end of stream
+/// - `longPoll`: HTTP long-polling for updates (CDN-friendly)
+/// - `sse`: Server-Sent Events for persistent connection
 public enum LiveMode: Sendable, Equatable, CaseIterable {
     /// Read existing data only, stop at end of stream
     case catchUp
@@ -38,18 +42,14 @@ public enum LiveMode: Sendable, Equatable, CaseIterable {
     /// HTTP long-polling for updates (CDN-friendly)
     case longPoll
 
-    /// Server-Sent Events for persistent connection (explicit opt-in)
+    /// Server-Sent Events for persistent connection
     case sse
-
-    /// Auto-select based on consumption method
-    case auto
 
     var queryValue: String? {
         switch self {
         case .catchUp: return nil
         case .longPoll: return "long-poll"
         case .sse: return "sse"
-        case .auto: return "long-poll"
         }
     }
 }

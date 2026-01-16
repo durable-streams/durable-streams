@@ -1,6 +1,6 @@
 /**
  * Test to verify the automatic transition from catch-up to live polling.
- * This specifically tests the stream() with live: "auto" behavior.
+ * This specifically tests the stream() with live: true behavior.
  *
  * Default mode always uses long-poll after catch-up (SSE is only used when
  * explicitly requested with live: "sse") because SSE is harder to scale
@@ -35,11 +35,11 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start reading with live: "auto" mode (auto transition to long-poll)
+      // Start reading with live: true mode (auto transition to long-poll)
       const readPromise = (async () => {
         const response = await handle.stream({
           signal: aborter.signal,
-          live: `auto`,
+          live: true,
         })
 
         // Use subscribeBytes for backpressure-aware consumption with metadata
@@ -106,11 +106,11 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start reading with live: "auto" mode
+      // Start reading with live: true mode
       const readPromise = (async () => {
         const response = await handle.stream({
           signal: aborter.signal,
-          live: `auto`,
+          live: true,
         })
 
         // Use subscribeBytes for backpressure-aware consumption with metadata

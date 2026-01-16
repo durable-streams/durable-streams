@@ -270,13 +270,13 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         }
 
         // Determine live mode
-        let live: `auto` | `long-poll` | `sse` | false
+        let live: true | `long-poll` | `sse` | false
         if (command.live === `long-poll`) {
           live = `long-poll`
         } else if (command.live === `sse`) {
           live = `sse`
-        } else if (command.live === `auto`) {
-          live = `auto`
+        } else if (command.live === true) {
+          live = true
         } else {
           live = false
         }

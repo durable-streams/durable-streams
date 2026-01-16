@@ -41,7 +41,7 @@ const res = await stream<{ message: string }>({
     Authorization: `Bearer ${process.env.DS_TOKEN!}`,
   },
   offset: savedOffset, // optional: resume from offset
-  live: "auto", // default: behavior driven by consumption method
+  live: true, // default: auto-select best live mode
 })
 
 // Accumulate all JSON items until up-to-date
@@ -207,7 +207,7 @@ const res = await stream<TJson>({
   fetch?: typeof fetch,           // Custom fetch implementation
   backoffOptions?: BackoffOptions,// Retry backoff configuration
   offset?: Offset,                // Starting offset (default: start of stream)
-  live?: LiveMode,                // Live mode (default: "auto")
+  live?: LiveMode,                // Live mode (default: true)
   json?: boolean,                 // Force JSON mode
   onError?: StreamErrorHandler,   // Error handler
 })
@@ -249,9 +249,10 @@ class DurableStream {
 ### Live Modes
 
 ```typescript
-// "auto" (default): behavior driven by consumption method
+// true (default): auto-select best live mode
+// - SSE for JSON streams, long-poll for binary
 // - Promise helpers (body/json/text): stop after upToDate
-// - Streams/subscribers: continue with long-poll
+// - Streams/subscribers: continue with live updates
 
 // false: catch-up only, stop at first upToDate
 const res = await stream({ url, live: false })
@@ -514,7 +515,7 @@ Subscribers provide callback-based consumption with backpressure. The next chunk
 Subscribe to JSON batches with metadata. Provides backpressure-aware consumption.
 
 ```typescript
-const res = await stream<{ event: string }>({ url, live: "auto" })
+const res = await stream<{ event: string }>({ url, live: true })
 
 const unsubscribe = res.subscribeJson(async (batch) => {
   // Process items - next batch waits until this resolves
@@ -535,7 +536,7 @@ setTimeout(() => {
 Subscribe to byte chunks with metadata.
 
 ```typescript
-const res = await stream({ url, live: "auto" })
+const res = await stream({ url, live: true })
 
 const unsubscribe = res.subscribeBytes(async (chunk) => {
   console.log("Received bytes:", chunk.data.length)
@@ -552,7 +553,7 @@ const unsubscribe = res.subscribeBytes(async (chunk) => {
 Subscribe to text chunks with metadata.
 
 ```typescript
-const res = await stream({ url, live: "auto" })
+const res = await stream({ url, live: true })
 
 const unsubscribe = res.subscribeText(async (chunk) => {
   console.log("Text:", chunk.text)
@@ -569,7 +570,7 @@ const unsubscribe = res.subscribeText(async (chunk) => {
 Cancel the stream session. Aborts any pending requests.
 
 ```typescript
-const res = await stream({ url, live: "auto" })
+const res = await stream({ url, live: true })
 
 // Start consuming
 res.subscribeBytes(async (chunk) => {
@@ -604,7 +605,7 @@ const res = await stream({ url })
 
 res.url // The stream URL
 res.contentType // Content-Type from response headers
-res.live // The live mode ("auto", "long-poll", "sse", or false)
+res.live // The live mode (true, "long-poll", "sse", or false)
 res.startOffset // The starting offset passed to stream()
 res.offset // Current offset (updates as data is consumed)
 res.cursor // Cursor for collapsing (if provided by server)
@@ -825,7 +826,7 @@ const handle = await DurableStream.connect({
 
 const res = await handle.stream<{ message: string }>({
   offset: savedOffset,
-  live: "auto",
+  live: true,
 })
 
 res.subscribeJson(async (batch) => {

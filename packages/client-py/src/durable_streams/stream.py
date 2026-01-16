@@ -38,7 +38,7 @@ def stream(
     url: str,
     *,
     offset: Offset | None = None,
-    live: LiveMode = "auto",
+    live: LiveMode = True,
     cursor: str | None = None,
     headers: HeadersLike | None = None,
     params: ParamsLike | None = None,
@@ -58,7 +58,7 @@ def stream(
         offset: Starting offset (None means start of stream)
         live: Live mode behavior:
             - False: Catch-up only, stop at first up-to-date
-            - "auto" (default): Behavior driven by consumption method
+            - True (default): Auto-select best mode (SSE for JSON, long-poll for binary)
             - "long-poll": Explicit long-poll mode for live updates
             - "sse": Explicit SSE mode for live updates
         cursor: Echo of last Stream-Cursor for CDN collapsing
@@ -230,8 +230,8 @@ def _stream_internal(
         next_params: dict[str, str] = {}
         next_params[OFFSET_QUERY_PARAM] = next_offset
 
-        # For auto mode, use long-poll for subsequent requests
-        if live == "auto" or live == "long-poll":
+        # For auto mode (True), use long-poll for subsequent requests
+        if live is True or live == "long-poll":
             next_params[LIVE_QUERY_PARAM] = "long-poll"
         elif live == "sse":
             next_params[LIVE_QUERY_PARAM] = "sse"

@@ -188,14 +188,6 @@ impl ChunkIterator {
         // Determine which mode to use
         match self.live {
             LiveMode::Sse => self.establish_sse_and_read().await,
-            LiveMode::Auto => {
-                if self.up_to_date {
-                    // After catching up, try SSE
-                    self.establish_sse_and_read().await
-                } else {
-                    self.next_http(None).await
-                }
-            }
             LiveMode::LongPoll => self.next_http(Some("long-poll")).await,
             LiveMode::Off => self.next_http(None).await,
         }

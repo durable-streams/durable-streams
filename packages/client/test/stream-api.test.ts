@@ -36,7 +36,7 @@ describe(`stream() function`, () => {
       expect(mockFetch).toHaveBeenCalledTimes(1)
       expect(res.url).toBe(`https://example.com/stream`)
       expect(res.contentType).toBe(`application/json`)
-      expect(res.live).toBe(`auto`)
+      expect(res.live).toBe(true)
       expect(res.startOffset).toBe(`-1`)
     })
 

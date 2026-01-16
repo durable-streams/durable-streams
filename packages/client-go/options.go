@@ -20,10 +20,6 @@ const (
 	// LiveModeSSE uses Server-Sent Events for live updates.
 	// Only valid for text/* and application/json content types.
 	LiveModeSSE LiveMode = "sse"
-
-	// LiveModeAuto selects the best mode based on content type.
-	// Uses SSE for text/* and application/json, long-poll otherwise.
-	LiveModeAuto LiveMode = "auto"
 )
 
 // =============================================================================
