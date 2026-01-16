@@ -141,8 +141,8 @@ async function readStream(streamId: string) {
     const stream = new DurableStream({ url })
 
     // Read from the stream and write to stdout
-    // Using live: "auto" for catch-up first, then auto-select live mode
-    const res = await stream.stream({ live: `auto` })
+    // Using live: true for catch-up first, then auto-select live mode
+    const res = await stream.stream({ live: true })
 
     // Stream bytes to stdout
     for await (const chunk of res.bodyStream()) {

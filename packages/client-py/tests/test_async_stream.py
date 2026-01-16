@@ -107,7 +107,7 @@ class TestAstreamBasicFunctionality:
         mock_client.send.assert_called_once()
         assert res.url == "https://example.com/stream"
         assert res.content_type == "application/json"
-        assert res.live == "auto"
+        assert res.live is True
         await res.aclose()
 
     @pytest.mark.anyio
