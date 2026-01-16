@@ -11,7 +11,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param live [Symbol, false] Live mode (:long_poll, :sse, false)
     # @param cursor [String, nil] Initial cursor
-    def initialize(stream, offset: "-1", live: :auto, cursor: nil)
+    def initialize(stream, offset: "-1", live: false, cursor: nil)
       @stream = stream
       @offset = DurableStreams.normalize_offset(offset)
       @live = live
@@ -93,9 +93,6 @@ module DurableStreams
         params[:live] = "long-poll"
       when :sse
         raise SSENotSupportedError.new(content_type: @stream.content_type)
-      when :auto
-        # Auto mode: long-poll when up-to-date to wait for new data
-        params[:live] = "long-poll" if @up_to_date
       when false
         # No live param for catch-up only
       end

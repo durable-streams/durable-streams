@@ -16,7 +16,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -45,7 +44,6 @@ public final class DurableStream implements AutoCloseable {
     private final Map<String, Supplier<String>> dynamicHeaders;
     private final Map<String, String> defaultParams;
     private final Map<String, Supplier<String>> dynamicParams;
-    private final Map<String, String> contentTypeCache;
 
     private DurableStream(Builder builder) {
         if (builder.httpClient != null) {
@@ -61,10 +59,9 @@ public final class DurableStream implements AutoCloseable {
         }
         this.retryPolicy = builder.retryPolicy != null ? builder.retryPolicy : RetryPolicy.defaults();
         this.defaultHeaders = new HashMap<>(builder.defaultHeaders);
-        this.dynamicHeaders = new ConcurrentHashMap<>(builder.dynamicHeaders);
+        this.dynamicHeaders = new HashMap<>(builder.dynamicHeaders);
         this.defaultParams = new HashMap<>(builder.defaultParams);
-        this.dynamicParams = new ConcurrentHashMap<>(builder.dynamicParams);
-        this.contentTypeCache = new ConcurrentHashMap<>();
+        this.dynamicParams = new HashMap<>(builder.dynamicParams);
     }
 
     /**
@@ -314,16 +311,6 @@ public final class DurableStream implements AutoCloseable {
         return params;
     }
 
-    String getCachedContentType(String url) {
-        return contentTypeCache.get(url);
-    }
-
-    void cacheContentType(String url, String contentType) {
-        if (contentType != null) {
-            contentTypeCache.put(url, contentType);
-        }
-    }
-
     @Override
     public void close() {
         if (ownedExecutor != null) {
@@ -381,8 +368,7 @@ public final class DurableStream implements AutoCloseable {
 
         resolveHeaders().forEach(builder::header);
 
-        String contentType = getCachedContentType(url);
-        builder.header("Content-Type", contentType != null ? contentType : "application/octet-stream");
+        builder.header("Content-Type", "application/octet-stream");
         if (seq != null) {
             builder.header("Stream-Seq", String.valueOf(seq));
         }
@@ -489,8 +475,6 @@ public final class DurableStream implements AutoCloseable {
     private Void parseCreateResponse(HttpResponse<byte[]> response, String url) throws DurableStreamException {
         int status = response.statusCode();
         if (status == 201 || status == 200) {
-            response.headers().firstValue("Content-Type")
-                    .ifPresent(ct -> cacheContentType(url, ct));
             return null;
         } else if (status == 409) {
             throw new StreamExistsException(url);
@@ -504,9 +488,6 @@ public final class DurableStream implements AutoCloseable {
         int status = response.statusCode();
         String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse(null);
         String etag = response.headers().firstValue("ETag").orElse(null);
-
-        response.headers().firstValue("Content-Type")
-                .ifPresent(ct -> cacheContentType(url, ct));
 
         if (status == 200 || status == 201) {
             return new AppendResult(
@@ -536,8 +517,6 @@ public final class DurableStream implements AutoCloseable {
             String ttlStr = response.headers().firstValue("Stream-TTL").orElse(null);
             String expiresStr = response.headers().firstValue("Stream-Expires-At").orElse(null);
             String etag = response.headers().firstValue("ETag").orElse(null);
-
-            cacheContentType(url, contentType);
 
             Duration ttl = ttlStr != null ? Duration.ofSeconds(Long.parseLong(ttlStr)) : null;
             Instant expiresAt = expiresStr != null ? Instant.parse(expiresStr) : null;
@@ -576,9 +555,6 @@ public final class DurableStream implements AutoCloseable {
             String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse(null);
             String upToDateStr = response.headers().firstValue("Stream-Up-To-Date").orElse(null);
             String newCursor = response.headers().firstValue("Stream-Cursor").orElse(null);
-
-            response.headers().firstValue("Content-Type")
-                    .ifPresent(ct -> cacheContentType(url, ct));
 
             boolean upToDate = "true".equalsIgnoreCase(upToDateStr);
 

@@ -140,7 +140,7 @@ class StreamResponse(Generic[T]):
 
         The key insight is:
         - live=False: Stop at first up-to-date (catch-up only)
-        - live="auto"/"long-poll"/"sse": Continue tailing even after up-to-date
+        - live=True/"long-poll"/"sse": Continue tailing even after up-to-date
         """
         if self._closed:
             return False
@@ -928,7 +928,7 @@ class AsyncStreamResponse(Generic[T]):
 
         The key insight is:
         - live=False: Stop at first up-to-date (catch-up only)
-        - live="auto"/"long-poll"/"sse": Continue tailing even after up-to-date
+        - live=True/"long-poll"/"sse": Continue tailing even after up-to-date
         """
         if self._closed:
             return False

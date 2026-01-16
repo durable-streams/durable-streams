@@ -190,7 +190,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
     # @return [JsonReader]
-    def read_json(offset: "-1", live: :auto, cursor: nil, &block)
+    def read_json(offset: "-1", live: false, cursor: nil, &block)
       reader = JsonReader.new(self, offset: offset, live: live, cursor: cursor)
       if block_given?
         begin
@@ -207,7 +207,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
     # @return [ByteReader]
-    def read_bytes(offset: "-1", live: :auto, cursor: nil, &block)
+    def read_bytes(offset: "-1", live: false, cursor: nil, &block)
       reader = ByteReader.new(self, offset: offset, live: live, cursor: cursor)
       if block_given?
         begin
@@ -224,7 +224,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param live [Symbol, false] Live mode
     # @return [JsonReader, ByteReader]
-    def read(offset: "-1", live: :auto, cursor: nil, &block)
+    def read(offset: "-1", live: false, cursor: nil, &block)
       # If we don't know content type yet, do a HEAD
       head if @content_type.nil?
 
@@ -244,7 +244,7 @@ module DurableStreams
 
     # Convenience: Subscribe to live updates with a block
     # @yield [message] Each message as it arrives
-    def subscribe(offset: "-1", live: :auto, &block)
+    def subscribe(offset: "-1", live: false, &block)
       read(offset: offset, live: live).each(&block)
     end
 

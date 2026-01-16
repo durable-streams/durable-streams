@@ -112,22 +112,16 @@ impl PartialOrd for Offset {
 
 /// Live tailing mode for stream consumption.
 ///
-/// ## `LiveMode::Auto` Fallback Behavior
+/// Live mode for reading from a stream.
 ///
-/// When `Auto` is selected:
-///
-/// 1. **Catch-up first**: Regular HTTP reads until `up_to_date`
-/// 2. **SSE after catch-up**: Attempts SSE connection for live tailing
-/// 3. **Fallback to long-poll**: If SSE fails (400 or wrong content type)
-///
-/// The fallback is transparent to the user - iteration continues seamlessly.
+/// - `Off`: Catch-up only, stop at first `up_to_date`
+/// - `LongPoll`: Explicit long-poll mode for live updates
+/// - `Sse`: Explicit server-sent events for live updates
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum LiveMode {
     /// No live tailing - stop after catching up (first `up_to_date`)
     #[default]
     Off,
-    /// Automatic selection: SSE preferred, falls back to long-poll on failure.
-    Auto,
     /// Explicit long-polling for live updates
     LongPoll,
     /// Explicit Server-Sent Events for live updates.
@@ -139,7 +133,6 @@ impl LiveMode {
     pub fn to_query_value(&self) -> Option<&str> {
         match self {
             LiveMode::Off => None,
-            LiveMode::Auto => Some("sse"), // Try SSE first
             LiveMode::LongPoll => Some("long-poll"),
             LiveMode::Sse => Some("sse"),
         }

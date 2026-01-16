@@ -62,11 +62,13 @@ export type ParamsRecord = {
 /**
  * Live mode for reading from a stream.
  * - false: Catch-up only, stop at first `upToDate`
- * - "auto": Behavior driven by consumption method (default)
+ * - true: Auto-select best mode (SSE for JSON streams, long-poll for binary)
  * - "long-poll": Explicit long-poll mode for live updates
  * - "sse": Explicit server-sent events for live updates
+ *
+ * Note: "auto" is supported for backward compatibility but `true` is preferred.
  */
-export type LiveMode = false | `auto` | `long-poll` | `sse`
+export type LiveMode = boolean | `auto` | `long-poll` | `sse`
 
 // ============================================================================
 // Stream Options (Read API)
@@ -136,7 +138,7 @@ export interface StreamOptions {
   /**
    * Live mode behavior:
    * - false: Catch-up only, stop at first `upToDate`
-   * - "auto" (default): Behavior driven by consumption method
+   * - true (default): Auto-select best mode (SSE for JSON, long-poll for binary)
    * - "long-poll": Explicit long-poll mode for live updates
    * - "sse": Explicit server-sent events for live updates
    */
@@ -683,20 +685,20 @@ export interface StreamResponse<TJson = unknown> {
 
   /**
    * Accumulate raw bytes until first `upToDate` batch, then resolve.
-   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   * When used with `live: true`, signals the session to stop after upToDate.
    */
   body: () => Promise<Uint8Array>
 
   /**
    * Accumulate JSON *items* across batches into a single array, resolve at `upToDate`.
    * Only valid in JSON-mode; throws otherwise.
-   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   * When used with `live: true`, signals the session to stop after upToDate.
    */
   json: <T = TJson>() => Promise<Array<T>>
 
   /**
    * Accumulate text chunks into a single string, resolve at `upToDate`.
-   * When used with `live: "auto"`, signals the session to stop after upToDate.
+   * When used with `live: true`, signals the session to stop after upToDate.
    */
   text: () => Promise<string>
 
