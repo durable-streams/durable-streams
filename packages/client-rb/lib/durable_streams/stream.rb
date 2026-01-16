@@ -188,7 +188,7 @@ module DurableStreams
 
     # Read JSON messages
     # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
+    # @param live [Symbol, false] Live mode (:long_poll, :sse, false)
     # @return [JsonReader]
     def read_json(offset: "-1", live: false, cursor: nil, &block)
       reader = JsonReader.new(self, offset: offset, live: live, cursor: cursor)
@@ -205,7 +205,7 @@ module DurableStreams
 
     # Read raw bytes
     # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
+    # @param live [Symbol, false] Live mode (:long_poll, :sse, false)
     # @return [ByteReader]
     def read_bytes(offset: "-1", live: false, cursor: nil, &block)
       reader = ByteReader.new(self, offset: offset, live: live, cursor: cursor)
