@@ -349,8 +349,9 @@ public final class IdempotentProducer implements AutoCloseable {
                 .header("Producer-Epoch", String.valueOf(batchEpoch))
                 .header("Producer-Seq", String.valueOf(seq));
 
-        if (config.contentType != null) {
-            builder.header("Content-Type", config.contentType);
+        String contentType = client.getCachedContentType(url);
+        if (contentType != null) {
+            builder.header("Content-Type", contentType);
         }
 
         Map<String, String> headers = client.resolveHeaders();
@@ -479,7 +480,8 @@ public final class IdempotentProducer implements AutoCloseable {
         }
 
         // Check if this is a JSON stream
-        boolean isJson = config.contentType != null && config.contentType.contains("json");
+        String contentType = client.getCachedContentType(url);
+        boolean isJson = contentType != null && contentType.contains("json");
 
         if (isJson) {
             // Wrap in JSON array
