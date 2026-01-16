@@ -14,7 +14,12 @@ import {
 import { DurableStreamError, FetchBackoffAbortError } from "./error"
 import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
 import { StreamResponseImpl } from "./response"
-import { handleErrorResponse, resolveHeaders, resolveParams } from "./utils"
+import {
+  handleErrorResponse,
+  resolveHeaders,
+  resolveParams,
+  warnIfUsingHttpInBrowser,
+} from "./utils"
 import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
 
 /**
@@ -118,6 +123,9 @@ async function streamInternal<TJson = unknown>(
 ): Promise<StreamResponse<TJson>> {
   // Normalize URL
   const url = options.url instanceof URL ? options.url.toString() : options.url
+
+  // Warn if using HTTP in browser (can cause connection limit issues)
+  warnIfUsingHttpInBrowser(url, options.warnOnHttp)
 
   // Build the first request
   const fetchUrl = new URL(url)

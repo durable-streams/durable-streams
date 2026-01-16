@@ -660,21 +660,21 @@ export interface StreamResponse<TJson = unknown> {
    *
    * Use this for resuming reads after a disconnect or saving checkpoints.
    */
-  offset: Offset
+  readonly offset: Offset
 
   /**
    * Stream cursor for CDN collapsing (stream-cursor header).
    *
    * Updated after each chunk is delivered to the consumer.
    */
-  cursor?: string
+  readonly cursor?: string
 
   /**
    * Whether we've reached the current end of the stream (stream-up-to-date header).
    *
    * Updated after each chunk is delivered to the consumer.
    */
-  upToDate: boolean
+  readonly upToDate: boolean
 
   // =================================
   // 1) Accumulating helpers (Promise)
@@ -738,24 +738,35 @@ export interface StreamResponse<TJson = unknown> {
   /**
    * Subscribe to JSON batches as they arrive.
    * Returns unsubscribe function.
+   *
+   * The subscriber can be sync or async. If async, backpressure is applied
+   * (the next batch waits for the previous callback to complete).
    */
   subscribeJson: <T = TJson>(
-    subscriber: (batch: JsonBatch<T>) => Promise<void>
+    subscriber: (batch: JsonBatch<T>) => void | Promise<void>
   ) => () => void
 
   /**
    * Subscribe to raw byte chunks as they arrive.
    * Returns unsubscribe function.
+   *
+   * The subscriber can be sync or async. If async, backpressure is applied
+   * (the next chunk waits for the previous callback to complete).
    */
   subscribeBytes: (
-    subscriber: (chunk: ByteChunk) => Promise<void>
+    subscriber: (chunk: ByteChunk) => void | Promise<void>
   ) => () => void
 
   /**
    * Subscribe to text chunks as they arrive.
    * Returns unsubscribe function.
+   *
+   * The subscriber can be sync or async. If async, backpressure is applied
+   * (the next chunk waits for the previous callback to complete).
    */
-  subscribeText: (subscriber: (chunk: TextChunk) => Promise<void>) => () => void
+  subscribeText: (
+    subscriber: (chunk: TextChunk) => void | Promise<void>
+  ) => () => void
 
   // =====================
   // 4) Lifecycle
