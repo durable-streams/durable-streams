@@ -1,0 +1,148 @@
+id: producer-sequence
+name: Sequence Ordering
+description: Tests for sequence number handling in append operations
+category: producer
+tags:
+  - core
+  - sequence
+  - ordering
+
+tests:
+  - id: seq-basic-ordering
+    name: Basic sequence ordering
+    description: Client should send sequence numbers that enforce ordering
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        seq: 1
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "second"
+        seq: 2
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "firstsecond"
+          upToDate: true
+
+  - id: seq-conflict-detection
+    name: Sequence conflict detection
+    description: Client should receive 409 when sequence number is too low
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        seq: 1
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "second"
+        seq: 2
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "out-of-order"
+        seq: 1
+        expect:
+          status: 409
+          errorCode: SEQUENCE_CONFLICT
+
+  - id: seq-skip-numbers
+    name: Sequence numbers can skip
+    description: Sequence numbers don't need to be consecutive, just monotonically increasing
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        seq: 10
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "second"
+        seq: 100
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "third"
+        seq: 1000
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "firstsecondthird"
+
+  - id: seq-same-number-conflict
+    name: Same sequence number causes conflict
+    description: Using the same sequence number twice should fail
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        seq: 5
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "duplicate"
+        seq: 5
+        expect:
+          status: 409
+          errorCode: SEQUENCE_CONFLICT
+
+  - id: seq-large-numbers
+    name: Large sequence numbers
+    description: Client should handle large sequence numbers
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "large-seq"
+        seq: 9007199254740991 # Number.MAX_SAFE_INTEGER
+        expect:
+          status: 200
+
+  - id: seq-without-seq
+    name: Append without sequence number
+    description: Client should allow appends without sequence numbers
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "no-seq-1"
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: "no-seq-2"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "no-seq-1no-seq-2"

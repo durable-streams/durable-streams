@@ -1,0 +1,214 @@
+id: idempotent-autoclaim
+name: Idempotent Producer - AutoClaim
+description: |
+  Tests for the autoClaim feature that enables ephemeral producers.
+  When autoClaim=true, the client automatically claims the next epoch
+  when fenced (403) and blocks pipelining until epoch is known.
+category: producer
+tags:
+  - idempotent
+  - autoclaim
+  - ephemeral
+
+tests:
+  - id: autoclaim-with-pipelining
+    name: autoClaim works with maxInFlight > 1
+    description: |
+      When autoClaim is true, the client should block pipelining until the first batch
+      completes and the epoch is known. After that, full pipelining should be enabled.
+      This test verifies that autoClaim + maxInFlight > 1 works correctly.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send 20 messages with autoClaim=true and maxInFlight=5
+      # The first batch should block until epoch is claimed, then pipelining kicks in
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: autoclaim-producer
+        autoClaim: true
+        maxInFlight: 5
+        items:
+          - data: "ac-00"
+          - data: "ac-01"
+          - data: "ac-02"
+          - data: "ac-03"
+          - data: "ac-04"
+          - data: "ac-05"
+          - data: "ac-06"
+          - data: "ac-07"
+          - data: "ac-08"
+          - data: "ac-09"
+          - data: "ac-10"
+          - data: "ac-11"
+          - data: "ac-12"
+          - data: "ac-13"
+          - data: "ac-14"
+          - data: "ac-15"
+          - data: "ac-16"
+          - data: "ac-17"
+          - data: "ac-18"
+          - data: "ac-19"
+        expect:
+          allSucceed: true
+      # Verify all messages are in the stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "ac-00"
+            - "ac-05"
+            - "ac-10"
+            - "ac-15"
+            - "ac-19"
+          upToDate: true
+
+  - id: autoclaim-with-pipelining-json
+    name: autoClaim with pipelining works for JSON streams
+    description: Same test with JSON content type
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: autoclaim-json-producer
+        autoClaim: true
+        maxInFlight: 5
+        items:
+          - data: '{"msg": 0}'
+          - data: '{"msg": 1}'
+          - data: '{"msg": 2}'
+          - data: '{"msg": 3}'
+          - data: '{"msg": 4}'
+          - data: '{"msg": 5}'
+          - data: '{"msg": 6}'
+          - data: '{"msg": 7}'
+          - data: '{"msg": 8}'
+          - data: '{"msg": 9}'
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - '"msg":0'
+            - '"msg":5'
+            - '"msg":9'
+          upToDate: true
+
+  - id: autoclaim-recovers-from-stale-epoch
+    name: autoClaim recovers when fenced by newer epoch
+    description: |
+      If a producer with autoClaim gets 403 (stale epoch) because another instance
+      claimed a higher epoch, it should automatically bump its epoch and retry.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=5 via raw server-append (simulating another producer instance)
+      - action: server-append
+        path: ${streamPath}
+        data: "from-epoch-5"
+        producerId: recovery-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Client with autoClaim starts at epoch=0, should get 403 then recover with epoch=6
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: recovery-producer
+        epoch: 0
+        autoClaim: true
+        data: "recovered"
+        expect:
+          success: true
+      # Verify both messages are in the stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "from-epoch-5"
+            - "recovered"
+          upToDate: true
+
+  - id: autoclaim-recovers-from-403
+    name: Client with autoClaim recovers from 403 fencing
+    description: |
+      When a producer with autoClaim=true gets fenced (403), it should
+      automatically claim the next epoch and retry successfully.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=5
+      - action: server-append
+        path: ${streamPath}
+        data: "fencer"
+        producerId: autoclaim-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Now use idempotent-append with autoClaim starting at epoch=0
+      # It should get 403, then retry with epoch=6
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: autoclaim-producer
+        epoch: 0
+        autoClaim: true
+        data: "recovered"
+        expect:
+          success: true
+      # Verify both messages are in stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "fencer"
+            - "recovered"
+          upToDate: true
+
+  - id: autoclaim-batch-recovers-from-403
+    name: Batch with autoClaim recovers from 403 fencing
+    description: Same test for batch operations
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Another producer claims epoch=3
+      - action: server-append
+        path: ${streamPath}
+        data: "blocker"
+        producerId: batch-autoclaim
+        producerEpoch: 3
+        producerSeq: 0
+        expect:
+          status: 200
+      # Batch with autoClaim should recover
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: batch-autoclaim
+        autoClaim: true
+        maxInFlight: 1
+        items:
+          - data: "batch-msg-0"
+          - data: "batch-msg-1"
+          - data: "batch-msg-2"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "blocker"
+            - "batch-msg-0"
+            - "batch-msg-1"
+            - "batch-msg-2"
+          upToDate: true

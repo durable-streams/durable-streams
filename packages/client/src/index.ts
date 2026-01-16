@@ -20,6 +20,20 @@ export { stream } from "./stream-api"
 // DurableStream class for read/write operations
 export { DurableStream, type DurableStreamOptions } from "./stream"
 
+// HTTP warning utility
+export { warnIfUsingHttpInBrowser, _resetHttpWarningForTesting } from "./utils"
+
+// ============================================================================
+// Idempotent Producer
+// ============================================================================
+
+// IdempotentProducer for exactly-once writes
+export {
+  IdempotentProducer,
+  StaleEpochError,
+  SequenceGapError,
+} from "./idempotent-producer"
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -35,6 +49,7 @@ export type {
   StreamOptions,
   StreamHandleOptions,
   LiveMode,
+  SSEResilienceOptions,
 
   // Chunk & batch types (new API)
   JsonBatchMeta,
@@ -50,11 +65,19 @@ export type {
   HeadResult,
   LegacyLiveMode,
 
+  // Idempotent producer types
+  IdempotentProducerOptions,
+  IdempotentAppendResult,
+
   // Error handling
   DurableStreamErrorCode,
   RetryOpts,
   StreamErrorHandler,
 } from "./types"
+
+// Re-export async iterable helper type and function
+export type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
+export { asAsyncIterableReadableStream } from "./asyncIterableReadableStream"
 
 // ============================================================================
 // Errors
@@ -95,4 +118,10 @@ export {
   CURSOR_QUERY_PARAM,
   SSE_COMPATIBLE_CONTENT_TYPES,
   DURABLE_STREAM_PROTOCOL_QUERY_PARAMS,
+  // Idempotent producer headers
+  PRODUCER_ID_HEADER,
+  PRODUCER_EPOCH_HEADER,
+  PRODUCER_SEQ_HEADER,
+  PRODUCER_EXPECTED_SEQ_HEADER,
+  PRODUCER_RECEIVED_SEQ_HEADER,
 } from "./constants"

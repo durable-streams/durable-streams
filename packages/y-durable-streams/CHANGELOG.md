@@ -1,0 +1,23 @@
+# @durable-streams/y-durable-streams
+
+## 0.1.3
+
+### Patch Changes
+
+- Use offset=now in presence stream ([#150](https://github.com/durable-streams/durable-streams/pull/150))
+
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`a5ce923`](https://github.com/durable-streams/durable-streams/commit/a5ce923bf849bdde47a651be8200b560053f4997)]:
+  - @durable-streams/client@0.1.5
+
+## 0.1.1
+
+### Patch Changes
+
+- added y-durable-streams ([#81](https://github.com/durable-streams/durable-streams/pull/81))
+
+- Updated dependencies [[`67b5a4d`](https://github.com/durable-streams/durable-streams/commit/67b5a4dcaae69dbe651dc6ede3cac72d3390567f)]:
+  - @durable-streams/client@0.1.4

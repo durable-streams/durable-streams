@@ -1,0 +1,12 @@
+{
+	admin off
+}
+
+:4437 {
+	route /v1/stream/* {
+		durable_streams {
+			data_dir ./data
+			long_poll_timeout 500ms
+		}
+	}
+}

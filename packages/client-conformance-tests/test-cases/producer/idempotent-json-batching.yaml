@@ -1,0 +1,174 @@
+id: idempotent-json-batching
+name: Idempotent Producer JSON Batching
+description: Tests for client-side JSON batching in IdempotentProducer
+category: producer
+tags:
+  - idempotent
+  - json
+  - batching
+
+tests:
+  - id: json-batch-single-item
+    name: Single JSON item via IdempotentProducer
+    description: A single JSON value should be wrapped in array and stored correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        data: '{"message": "hello"}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # JSON streams return data as array
+          data: '[{"message":"hello"}]'
+          upToDate: true
+
+  - id: json-batch-multiple-items
+    name: Multiple JSON items batched via IdempotentProducer
+    description: Multiple JSON values should be batched into single request and stored as separate entries
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        items:
+          - data: '{"id": 1}'
+          - data: '{"id": 2}'
+          - data: '{"id": 3}'
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          # Each item should be stored separately, read back as JSON array
+          dataContainsAll:
+            - '"id":1'
+            - '"id":2'
+            - '"id":3'
+          upToDate: true
+
+  - id: json-batch-nested-arrays
+    name: JSON arrays batched correctly
+    description: Batched JSON arrays should each be stored as single entries, not flattened further
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        items:
+          - data: "[1, 2, 3]"
+          - data: "[4, 5, 6]"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          # Each array should be stored as a single entry (JSON normalized without spaces)
+          dataContainsAll:
+            - "[1,2,3]"
+            - "[4,5,6]"
+          upToDate: true
+
+  - id: json-batch-mixed-types
+    name: Mixed JSON types batched correctly
+    description: Batched values of different JSON types should each be stored correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        items:
+          - data: "42"
+          - data: '"string"'
+          - data: "null"
+          - data: "true"
+          - data: '{"obj": 1}'
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          upToDate: true
+
+  - id: bytes-batch-concatenates
+    name: Byte stream batching concatenates data
+    description: For non-JSON streams, batched items should be concatenated
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        items:
+          - data: "Hello"
+          - data: " "
+          - data: "World"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "Hello World"
+          upToDate: true
+
+  - id: client-deduplication-works
+    name: Client IdempotentProducer correctly deduplicates
+    description: |
+      This test verifies that the CLIENT's IdempotentProducer implementation
+      correctly sends Producer-Id/Epoch/Seq headers so server-side deduplication
+      actually works. Without correct headers, retries would create duplicates.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      # Send a batch of items - this creates epoch=0, seq=0
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: dedup-test-producer
+        epoch: 0
+        items:
+          - data: '{"msg": "first"}'
+          - data: '{"msg": "second"}'
+        expect:
+          allSucceed: true
+      # Send the SAME batch again with a NEW producer instance at epoch=0
+      # If client sends correct headers, server should deduplicate
+      # If client sends wrong headers, this would create duplicate data
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: dedup-test-producer
+        epoch: 0
+        items:
+          - data: '{"msg": "first"}'
+          - data: '{"msg": "second"}'
+        expect:
+          allSucceed: true
+      # Verify NO duplicates - should only have 2 messages, not 4
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '[{"msg":"first"},{"msg":"second"}]'
+          upToDate: true

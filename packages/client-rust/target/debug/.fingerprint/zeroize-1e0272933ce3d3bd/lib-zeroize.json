@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"alloc\", \"default\"]",
+  "declared_features": "[\"aarch64\", \"alloc\", \"default\", \"derive\", \"serde\", \"simd\", \"std\", \"zeroize_derive\"]",
+  "target": 12859466896652407160,
+  "profile": 8276155916380437441,
+  "path": 8488566281972439877,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/zeroize-1e0272933ce3d3bd/dep-lib-zeroize",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

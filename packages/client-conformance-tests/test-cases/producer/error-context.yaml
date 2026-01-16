@@ -1,0 +1,72 @@
+id: producer-error-context
+name: Producer Error Context
+description: |
+  Tests that producer error messages include helpful context.
+  Ensures errors provide enough information for debugging.
+  Note: These tests validate server-level responses (status codes).
+  Client-level error message validation requires idempotent-append tests.
+category: producer
+tags:
+  - errors
+  - context
+  - messages
+
+tests:
+  - id: sequence-conflict-returns-expected-seq
+    name: Sequence conflict returns expected sequence info
+    description: 409 sequence conflict should return expected/received seq headers
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # First append succeeds
+      - action: server-append
+        path: ${streamPath}
+        data: "msg0"
+        producerId: error-context-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Skip seq=1, try seq=2 -> 409 gap
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: error-context-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 409
+          # Server returns expected/received seq in headers
+          producerExpectedSeq: 1
+          producerReceivedSeq: 2
+
+  - id: stale-epoch-returns-current-epoch
+    name: Stale epoch returns current epoch info
+    description: 403 stale epoch should return current epoch in header
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch 1
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch1"
+        producerId: epoch-context-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try with stale epoch 0
+      - action: server-append
+        path: ${streamPath}
+        data: "stale"
+        producerId: epoch-context-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 403
+          # Server returns current epoch in header
+          producerEpoch: 1

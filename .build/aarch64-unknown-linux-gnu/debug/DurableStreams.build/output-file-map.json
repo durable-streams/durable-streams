@@ -1,0 +1,71 @@
+{
+  "": {
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/master.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/Configuration.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/Constants.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/DurableStream.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/DurableStreams.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/Errors.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/HTTPClient.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/IdempotentProducer.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/Lifecycle.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/SSEParser.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/StreamAPI.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swiftdeps"
+  },
+  "/workspace/packages/client-swift/Sources/DurableStreams/Types.swift": {
+    "dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.d",
+    "object": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o",
+    "swiftmodule": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types~partial.swiftmodule",
+    "swift-dependencies": "/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swiftdeps"
+  }
+}

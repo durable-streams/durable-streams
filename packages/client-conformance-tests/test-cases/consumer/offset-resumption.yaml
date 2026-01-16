@@ -1,0 +1,197 @@
+id: consumer-offset
+name: Offset Resumption
+description: Tests for offset handling and stream resumption
+category: consumer
+tags:
+  - core
+  - offset
+  - resumption
+
+tests:
+  - id: offset-monotonic
+    name: Offsets are monotonically increasing
+    description: Each read should return an offset greater than the previous
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "AAA"
+        expect:
+          storeOffsetAs: afterA
+      - action: append
+        path: ${streamPath}
+        data: "BBB"
+        expect:
+          storeOffsetAs: afterB
+      - action: append
+        path: ${streamPath}
+        data: "CCC"
+        expect:
+          storeOffsetAs: afterC
+    operations:
+      # Read from afterA should get BBB and CCC
+      - action: read
+        path: ${streamPath}
+        offset: ${afterA}
+        live: false
+        expect:
+          data: "BBBCCC"
+          storeOffsetAs: readOffset1
+      # Read from afterB should get only CCC
+      - action: read
+        path: ${streamPath}
+        offset: ${afterB}
+        live: false
+        expect:
+          data: "CCC"
+          storeOffsetAs: readOffset2
+      # Read from afterC should get nothing (up-to-date)
+      - action: read
+        path: ${streamPath}
+        offset: ${afterC}
+        live: false
+        expect:
+          upToDate: true
+
+  - id: offset-exact-resumption
+    name: Exact resumption from offset
+    description: Reading from an offset should not skip or duplicate data
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "AAAA"
+        expect:
+          storeOffsetAs: afterA
+      - action: append
+        path: ${streamPath}
+        data: "BBBB"
+        expect:
+          storeOffsetAs: afterB
+      - action: append
+        path: ${streamPath}
+        data: "CCCC"
+    operations:
+      # Read from beginning, should get all
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "AAAABBBBCCCC"
+      # Read from after A, should get B and C
+      - action: read
+        path: ${streamPath}
+        offset: ${afterA}
+        live: false
+        expect:
+          data: "BBBBCCCC"
+      # Read from after B, should get only C
+      - action: read
+        path: ${streamPath}
+        offset: ${afterB}
+        live: false
+        expect:
+          data: "CCCC"
+
+  - id: offset-persists-across-sessions
+    name: Offset works across client sessions
+    description: An offset obtained in one session should work in another
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "session1-data"
+        expect:
+          storeOffsetAs: savedOffset
+      - action: append
+        path: ${streamPath}
+        data: "session2-data"
+    operations:
+      # Simulate new session by just using the saved offset
+      - action: read
+        path: ${streamPath}
+        offset: ${savedOffset}
+        live: false
+        expect:
+          data: "session2-data"
+          upToDate: true
+
+  - id: offset-from-head
+    name: Offset from HEAD request
+    description: Offset from HEAD should be usable for reading
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "before-head"
+    operations:
+      - action: head
+        path: ${streamPath}
+        expect:
+          storeAs: headResult
+      - action: append
+        path: ${streamPath}
+        data: "after-head"
+      - action: read
+        path: ${streamPath}
+        offset: ${headResult.offset}
+        live: false
+        expect:
+          data: "after-head"
+
+  - id: offset-zero-start
+    name: Read from offset zero
+    description: Reading from offset 0 or empty should start from beginning
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "from-the-start"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "0"
+        live: false
+        expect:
+          data: "from-the-start"
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "from-the-start"
+
+  - id: offset-byte-exactness
+    name: Byte-exact offset resumption
+    description: Resuming from offset should not lose or duplicate any bytes
+    tags:
+      - property
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "0123456789"
+        expect:
+          storeOffsetAs: mid
+      - action: append
+        path: ${streamPath}
+        data: "abcdefghij"
+    operations:
+      # Full read should have all data
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "0123456789abcdefghij"
+      # Partial read from mid offset should have only second half
+      - action: read
+        path: ${streamPath}
+        offset: ${mid}
+        live: false
+        expect:
+          data: "abcdefghij"

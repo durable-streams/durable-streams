@@ -1,0 +1,20 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"std\"]",
+  "declared_features": "[\"default\", \"std\", \"unstable\"]",
+  "target": 5742820543410686210,
+  "profile": 336243669335521001,
+  "path": 7981420620222488515,
+  "deps": [],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/futures-io-136c74b697ab7c37/dep-lib-futures_io",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

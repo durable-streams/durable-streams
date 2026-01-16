@@ -4,30 +4,37 @@ A command-line tool for interacting with durable streams.
 
 ## Installation
 
-### Local Development
+### From npm
 
 ```bash
+# Global installation
+npm install -g @durable-streams/cli
+
+# Or run directly with npx
+npx @durable-streams/cli create my-stream
+npx @durable-streams/cli read my-stream
+```
+
+### From source (for development)
+
+```bash
+# Clone the repository
+git clone https://github.com/durable-streams/durable-streams.git
+cd durable-streams
+
 # Install dependencies
 pnpm install
 
-# Build the CLI (for production bin)
+# Build the CLI
 pnpm build
-```
 
-### Global Installation for Development
-
-For development, you can link the CLI globally with live TypeScript execution (no rebuild needed):
-
-```bash
-# From the CLI package directory
+# Link globally for development (uses tsx, no rebuild needed)
+cd packages/cli
 pnpm link:dev
 
 # Now you can use durable-stream-dev anywhere
-# Changes to src/index.ts are immediately available
 durable-stream-dev create my-stream
 ```
-
-This uses `tsx` to run the TypeScript source directly, so you see changes immediately without rebuilding.
 
 ## Quick Start
 
@@ -63,6 +70,11 @@ durable-stream-dev read my-stream
 
 - `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437`)
 
+### Write Options
+
+- `--content-type <type>` - Content-Type for the message (default: `application/octet-stream`)
+- `--json` - Shorthand for `--content-type application/json`
+
 ### Commands
 
 #### Create a stream
@@ -80,7 +92,25 @@ durable-stream-dev write <stream_id> "Hello, world!"
 # Pipe content from stdin
 echo "Hello from stdin" | durable-stream-dev write <stream_id>
 cat file.txt | durable-stream-dev write <stream_id>
+
+# Specify content type
+durable-stream-dev write <stream_id> '{"key": "value"}' --content-type application/json
+
+# Shorthand for JSON
+durable-stream-dev write <stream_id> '{"key": "value"}' --json
 ```
+
+##### JSON Mode Array Flattening
+
+In JSON mode (`--json` or `--content-type application/json`), top-level arrays are flattened into individual messages:
+
+| Input        | Messages stored        |
+| ------------ | ---------------------- |
+| `{}`         | 1 message: `{}`        |
+| `[{}, {}]`   | 2 messages: `{}`, `{}` |
+| `[[{}, {}]]` | 1 message: `[{}, {}]`  |
+
+This matches the protocol's batch semantics.
 
 #### Read from a stream
 

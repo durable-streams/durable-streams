@@ -3,11 +3,20 @@ import path from "node:path"
 
 const alias = {
   "@durable-streams/client": path.resolve(__dirname, "./packages/client/src"),
+  "@durable-streams/cli": path.resolve(__dirname, "./packages/cli/src"),
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
-  "@durable-streams/conformance-tests": path.resolve(
+  "@durable-streams/server-conformance-tests": path.resolve(
     __dirname,
-    "./packages/conformance-tests/src"
+    "./packages/server-conformance-tests/src"
+  ),
+  "@durable-streams/yjs-demo": path.resolve(
+    __dirname,
+    "./examples/yjs-demo/src"
+  ),
+  "y-durable-streams": path.resolve(
+    __dirname,
+    "./packages/y-durable-streams/src"
   ),
 }
 
@@ -41,6 +50,30 @@ export default defineConfig({
         test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "cli",
+          include: ["packages/cli/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "yjs-demo",
+          include: ["examples/yjs-demo/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "y-durable-streams",
+          include: ["packages/y-durable-streams/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
         },
         resolve: { alias },

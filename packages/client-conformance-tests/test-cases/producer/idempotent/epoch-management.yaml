@@ -1,0 +1,333 @@
+id: idempotent-epoch-management
+name: Idempotent Producer - Epoch Management
+description: |
+  Tests for producer epoch validation and zombie fencing.
+  Epochs enable split-brain protection - only the latest instance can write.
+category: producer
+tags:
+  - idempotent
+  - epoch
+  - fencing
+
+tests:
+  - id: epoch-upgrade-accepted
+    name: Epoch upgrade resets sequence to 0
+    description: New epoch must start at seq=0 and should be accepted
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-msg0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-msg1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Upgrade to epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch1-msg0"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+          producerEpoch: 1
+
+  - id: stale-epoch-rejected
+    name: Stale epoch returns 403 (zombie fencing)
+    description: Old epoch should be rejected with 403 and current epoch in response
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try to write with stale epoch=0
+      - action: server-append
+        path: ${streamPath}
+        data: "zombie"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 1
+
+  - id: epoch-rollback-rejected
+    name: Epoch rollback is rejected
+    description: Cannot go back to a lower epoch
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=2
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 2
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try epoch=1 (rollback)
+      - action: server-append
+        path: ${streamPath}
+        data: "rollback"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 403
+
+  - id: epoch-increase-requires-seq-zero
+    name: Epoch increase with seq != 0 is rejected
+    description: New epoch must start at seq=0
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Try epoch=1 with seq=5
+      - action: server-append
+        path: ${streamPath}
+        data: "bad"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 5
+        expect:
+          status: 400
+
+  - id: epoch-gap-allowed
+    name: Epoch can skip values (gap allowed)
+    description: |
+      Epochs don't need to be sequential. Jumping from epoch=0 to epoch=10
+      should be allowed (unlike sequences which must be sequential).
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Jump to epoch=10 (skipping 1-9)
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch10"
+        producerId: test-producer
+        producerEpoch: 10
+        producerSeq: 0
+        expect:
+          status: 200
+      # Previous epochs now fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch5"
+        producerId: test-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 10
+
+  - id: epoch-zero-after-higher-epoch
+    name: Epoch 0 rejected after higher epoch established
+    description: |
+      Once a higher epoch is established, epoch=0 should be rejected.
+      This is critical for zombie fencing.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch=5
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch5"
+        producerId: test-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # Epoch 0 should be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch0-zombie"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 5
+      # Epoch 4 should also be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch4-zombie"
+        producerId: test-producer
+        producerEpoch: 4
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 5
+
+  - id: split-brain-fencing
+    name: Split-brain fencing scenario
+    description: Old producer instance (zombie) should be fenced when new instance claims higher epoch
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Producer A (original): epoch=0
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer B (new instance): claims epoch=1
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: shared-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer A (zombie): tries epoch=0, seq=1 - should be fenced
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 403
+          producerEpoch: 1
+
+  - id: large-epoch-numbers
+    name: Large epoch numbers handled correctly
+    description: Test that large epoch values work correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "large-epoch"
+        producerId: test-producer
+        producerEpoch: 2147483640
+        producerSeq: 0
+        expect:
+          status: 200
+      # Stale epoch should still be rejected
+      - action: server-append
+        path: ${streamPath}
+        data: "stale"
+        producerId: test-producer
+        producerEpoch: 100
+        producerSeq: 0
+        expect:
+          status: 403
+          producerEpoch: 2147483640
+
+  - id: sequence-resets-on-epoch-upgrade
+    name: Each epoch has independent sequence space
+    description: |
+      Sequence numbers reset to 0 with each epoch upgrade.
+      The old epoch's sequences don't affect the new epoch.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Epoch 0: sequences 0, 1, 2
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s0"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s1"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e0s2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Epoch 1: starts fresh at seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "e1s0"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "e1s1"
+        producerId: test-producer
+        producerEpoch: 1
+        producerSeq: 1
+        expect:
+          status: 200
+      # Verify all 5 messages present
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "e0s0"
+            - "e0s1"
+            - "e0s2"
+            - "e1s0"
+            - "e1s1"
+          upToDate: true

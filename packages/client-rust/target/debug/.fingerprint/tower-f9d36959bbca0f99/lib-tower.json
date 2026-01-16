@@ -1,0 +1,28 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"__common\", \"futures-core\", \"futures-util\", \"pin-project-lite\", \"retry\", \"sync_wrapper\", \"timeout\", \"tokio\", \"util\"]",
+  "declared_features": "[\"__common\", \"balance\", \"buffer\", \"discover\", \"filter\", \"full\", \"futures-core\", \"futures-util\", \"hdrhistogram\", \"hedge\", \"indexmap\", \"limit\", \"load\", \"load-shed\", \"log\", \"make\", \"pin-project-lite\", \"ready-cache\", \"reconnect\", \"retry\", \"slab\", \"spawn-ready\", \"steer\", \"sync_wrapper\", \"timeout\", \"tokio\", \"tokio-stream\", \"tokio-util\", \"tracing\", \"util\"]",
+  "target": 12249542225364378818,
+  "profile": 8276155916380437441,
+  "path": 13615165426376694155,
+  "deps": [
+    [784494742817713399, "tower_service", false, 14569044705130981024],
+    [1906322745568073236, "pin_project_lite", false, 1380021454030540106],
+    [2517136641825875337, "sync_wrapper", false, 3219685722761738541],
+    [7620660491849607393, "futures_core", false, 17103419657604959783],
+    [7712452662827335977, "tower_layer", false, 5301190528779999250],
+    [10629569228670356391, "futures_util", false, 1144530285312120495],
+    [12891030758458664808, "tokio", false, 15421362334108124911]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/tower-f9d36959bbca0f99/dep-lib-tower",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

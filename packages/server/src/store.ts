@@ -2,7 +2,17 @@
  * In-memory stream storage.
  */
 
-import type { PendingLongPoll, Stream, StreamMessage } from "./types"
+import type {
+  PendingLongPoll,
+  ProducerValidationResult,
+  Stream,
+  StreamMessage,
+} from "./types"
+
+/**
+ * TTL for in-memory producer state cleanup (7 days).
+ */
+const PRODUCER_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
 /**
  * Normalize content-type by extracting the media type (before any semicolon).
@@ -79,9 +89,76 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 /**
  * In-memory store for durable streams.
  */
+/**
+ * Options for append operations.
+ */
+export interface AppendOptions {
+  seq?: string
+  contentType?: string
+  producerId?: string
+  producerEpoch?: number
+  producerSeq?: number
+}
+
+/**
+ * Result of an append operation.
+ */
+export interface AppendResult {
+  message: StreamMessage | null
+  producerResult?: ProducerValidationResult
+}
+
 export class StreamStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
+  /**
+   * Per-producer locks for serializing validation+append operations.
+   * Key: "{streamPath}:{producerId}"
+   */
+  private producerLocks = new Map<string, Promise<unknown>>()
+
+  /**
+   * Check if a stream is expired based on TTL or Expires-At.
+   */
+  private isExpired(stream: Stream): boolean {
+    const now = Date.now()
+
+    // Check absolute expiry time
+    if (stream.expiresAt) {
+      const expiryTime = new Date(stream.expiresAt).getTime()
+      // Treat invalid dates (NaN) as expired (fail closed)
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+        return true
+      }
+    }
+
+    // Check TTL (relative to creation time)
+    if (stream.ttlSeconds !== undefined) {
+      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
+      if (now >= expiryTime) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  /**
+   * Get a stream, deleting it if expired.
+   * Returns undefined if stream doesn't exist or is expired.
+   */
+  private getIfNotExpired(path: string): Stream | undefined {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      return undefined
+    }
+    if (this.isExpired(stream)) {
+      // Delete expired stream
+      this.delete(path)
+      return undefined
+    }
+    return stream
+  }
 
   /**
    * Create a new stream.
@@ -97,7 +174,8 @@ export class StreamStore {
       initialData?: Uint8Array
     } = {}
   ): Stream {
-    const existing = this.streams.get(path)
+    // Use getIfNotExpired to treat expired streams as non-existent
+    const existing = this.getIfNotExpired(path)
     if (existing) {
       // Check if config matches (idempotent create)
       const contentTypeMatches =
@@ -140,16 +218,17 @@ export class StreamStore {
 
   /**
    * Get a stream by path.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   get(path: string): Stream | undefined {
-    return this.streams.get(path)
+    return this.getIfNotExpired(path)
   }
 
   /**
-   * Check if a stream exists.
+   * Check if a stream exists (and is not expired).
    */
   has(path: string): boolean {
-    return this.streams.has(path)
+    return this.getIfNotExpired(path) !== undefined
   }
 
   /**
@@ -162,17 +241,158 @@ export class StreamStore {
   }
 
   /**
+   * Validate producer state WITHOUT mutating.
+   * Returns proposed state to commit after successful append.
+   * Implements Kafka-style idempotent producer validation.
+   *
+   * IMPORTANT: This function does NOT mutate producer state. The caller must
+   * call commitProducerState() after successful append to apply the mutation.
+   * This ensures atomicity: if append fails (e.g., JSON validation), producer
+   * state is not incorrectly advanced.
+   */
+  private validateProducer(
+    stream: Stream,
+    producerId: string,
+    epoch: number,
+    seq: number
+  ): ProducerValidationResult {
+    // Initialize producers map if needed (safe - just ensures map exists)
+    if (!stream.producers) {
+      stream.producers = new Map()
+    }
+
+    // Clean up expired producer states on access
+    this.cleanupExpiredProducers(stream)
+
+    const state = stream.producers.get(producerId)
+    const now = Date.now()
+
+    // New producer - accept if seq is 0
+    if (!state) {
+      if (seq !== 0) {
+        return {
+          status: `sequence_gap`,
+          expectedSeq: 0,
+          receivedSeq: seq,
+        }
+      }
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+      }
+    }
+
+    // Epoch validation (client-declared, server-validated)
+    if (epoch < state.epoch) {
+      return { status: `stale_epoch`, currentEpoch: state.epoch }
+    }
+
+    if (epoch > state.epoch) {
+      // New epoch must start at seq=0
+      if (seq !== 0) {
+        return { status: `invalid_epoch_seq` }
+      }
+      // Return proposed state for new epoch, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: true,
+        producerId,
+        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
+      }
+    }
+
+    // Same epoch: sequence validation
+    if (seq <= state.lastSeq) {
+      return { status: `duplicate`, lastSeq: state.lastSeq }
+    }
+
+    if (seq === state.lastSeq + 1) {
+      // Return proposed state, don't mutate yet
+      return {
+        status: `accepted`,
+        isNew: false,
+        producerId,
+        proposedState: { epoch, lastSeq: seq, lastUpdated: now },
+      }
+    }
+
+    // Sequence gap
+    return {
+      status: `sequence_gap`,
+      expectedSeq: state.lastSeq + 1,
+      receivedSeq: seq,
+    }
+  }
+
+  /**
+   * Commit producer state after successful append.
+   * This is the only place where producer state is mutated.
+   */
+  private commitProducerState(
+    stream: Stream,
+    result: ProducerValidationResult
+  ): void {
+    if (result.status !== `accepted`) return
+    stream.producers!.set(result.producerId, result.proposedState)
+  }
+
+  /**
+   * Clean up expired producer states from a stream.
+   */
+  private cleanupExpiredProducers(stream: Stream): void {
+    if (!stream.producers) return
+
+    const now = Date.now()
+    for (const [id, state] of stream.producers) {
+      if (now - state.lastUpdated > PRODUCER_STATE_TTL_MS) {
+        stream.producers.delete(id)
+      }
+    }
+  }
+
+  /**
+   * Acquire a lock for serialized producer operations.
+   * Returns a release function.
+   */
+  private async acquireProducerLock(
+    path: string,
+    producerId: string
+  ): Promise<() => void> {
+    const lockKey = `${path}:${producerId}`
+
+    // Wait for any existing lock
+    while (this.producerLocks.has(lockKey)) {
+      await this.producerLocks.get(lockKey)
+    }
+
+    // Create our lock
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.producerLocks.set(lockKey, lockPromise)
+
+    return () => {
+      this.producerLocks.delete(lockKey)
+      releaseLock!()
+    }
+  }
+
+  /**
    * Append data to a stream.
-   * @throws Error if stream doesn't exist
+   * @throws Error if stream doesn't exist or is expired
    * @throws Error if seq is lower than lastSeq
    * @throws Error if JSON mode and array is empty
    */
   append(
     path: string,
     data: Uint8Array,
-    options: { seq?: string; contentType?: string } = {}
-  ): StreamMessage {
-    const stream = this.streams.get(path)
+    options: AppendOptions = {}
+  ): StreamMessage | AppendResult {
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -188,34 +408,125 @@ export class StreamStore {
       }
     }
 
-    // Check sequence for writer coordination
+    // Handle producer validation FIRST if producer headers are present
+    // This must happen before Stream-Seq check so that retries with both
+    // producer headers AND Stream-Seq can return 204 (duplicate) instead of
+    // failing the Stream-Seq conflict check.
+    // NOTE: validateProducer does NOT mutate state - it returns proposed state
+    // that we commit AFTER successful append (for atomicity)
+    let producerResult: ProducerValidationResult | undefined
+    if (
+      options.producerId !== undefined &&
+      options.producerEpoch !== undefined &&
+      options.producerSeq !== undefined
+    ) {
+      producerResult = this.validateProducer(
+        stream,
+        options.producerId,
+        options.producerEpoch,
+        options.producerSeq
+      )
+
+      // Return early for non-accepted results (duplicate, stale epoch, gap)
+      // IMPORTANT: Return 204 for duplicate BEFORE Stream-Seq check
+      if (producerResult.status !== `accepted`) {
+        return { message: null, producerResult }
+      }
+    }
+
+    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
+    // This happens AFTER producer validation so retries can be deduplicated
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
         throw new Error(
           `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
         )
       }
+    }
+
+    // appendToStream can throw (e.g., for JSON validation errors)
+    // This is done BEFORE committing any state changes for atomicity
+    const message = this.appendToStream(stream, data)!
+
+    // === STATE MUTATION HAPPENS HERE (only after successful append) ===
+
+    // Commit producer state after successful append
+    if (producerResult) {
+      this.commitProducerState(stream, producerResult)
+    }
+
+    // Update Stream-Seq after append succeeds
+    if (options.seq !== undefined) {
       stream.lastSeq = options.seq
     }
 
-    // appendToStream returns null only for empty arrays in create mode,
-    // but public append() never sets isInitialCreate, so empty arrays throw before this
-    const message = this.appendToStream(stream, data)!
-
     // Notify any pending long-polls
     this.notifyLongPolls(path)
+
+    // Return AppendResult if producer headers were used
+    if (producerResult) {
+      return {
+        message,
+        producerResult,
+      }
+    }
 
     return message
   }
 
   /**
+   * Append with producer serialization for concurrent request handling.
+   * This ensures that validation+append is atomic per producer.
+   */
+  async appendWithProducer(
+    path: string,
+    data: Uint8Array,
+    options: AppendOptions
+  ): Promise<AppendResult> {
+    if (!options.producerId) {
+      // No producer - just do a normal append
+      const result = this.append(path, data, options)
+      if (`message` in result) {
+        return result
+      }
+      return { message: result }
+    }
+
+    // Acquire lock for this producer
+    const releaseLock = await this.acquireProducerLock(path, options.producerId)
+
+    try {
+      const result = this.append(path, data, options)
+      if (`message` in result) {
+        return result
+      }
+      return { message: result }
+    } finally {
+      releaseLock()
+    }
+  }
+
+  /**
+   * Get the current epoch for a producer on a stream.
+   * Returns undefined if the producer doesn't exist or stream not found.
+   */
+  getProducerEpoch(path: string, producerId: string): number | undefined {
+    const stream = this.getIfNotExpired(path)
+    if (!stream?.producers) {
+      return undefined
+    }
+    return stream.producers.get(producerId)?.epoch
+  }
+
+  /**
    * Read messages from a stream starting at the given offset.
+   * @throws Error if stream doesn't exist or is expired
    */
   read(
     path: string,
     offset?: string
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -247,9 +558,10 @@ export class StreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
+   * @throws Error if stream doesn't exist or is expired
    */
   formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -273,13 +585,14 @@ export class StreamStore {
 
   /**
    * Wait for new messages (long-poll).
+   * @throws Error if stream doesn't exist or is expired
    */
   async waitForMessages(
     path: string,
     offset: string,
     timeoutMs: number
   ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
-    const stream = this.streams.get(path)
+    const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
     }
@@ -315,9 +628,10 @@ export class StreamStore {
 
   /**
    * Get the current offset for a stream.
+   * Returns undefined if stream doesn't exist or is expired.
    */
   getCurrentOffset(path: string): string | undefined {
-    return this.streams.get(path)?.currentOffset
+    return this.getIfNotExpired(path)?.currentOffset
   }
 
   /**

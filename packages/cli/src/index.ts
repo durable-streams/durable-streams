@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 
+import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
+import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
+import { flattenJsonForAppend, isJsonContentType } from "./jsonUtils.js"
+import { parseWriteArgs } from "./parseWriteArgs.js"
+import type { ParsedWriteArgs } from "./parseWriteArgs.js"
+
+export type { ParsedWriteArgs }
+export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 
@@ -13,6 +21,11 @@ Usage:
   cat file.txt | durable-stream write <stream_id>    Write stdin to a stream
   durable-stream read <stream_id>                Follow a stream and write to stdout
   durable-stream delete <stream_id>              Delete a stream
+
+Write Options:
+  --content-type <type>   Content-Type for the message (default: application/octet-stream)
+  --json                  Write as JSON (input stored as single message)
+  --batch-json            Write as JSON array of messages (each array element stored separately)
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
@@ -36,11 +49,32 @@ async function createStream(streamId: string) {
   }
 }
 
-async function writeStream(streamId: string, content?: string) {
+/**
+ * Append JSON data to a stream with one-level array flattening.
+ */
+async function appendJson(
+  stream: DurableStream,
+  parsed: unknown
+): Promise<number> {
+  let count = 0
+  for (const item of flattenJsonForAppend(parsed)) {
+    await stream.append(item)
+    count++
+  }
+  return count
+}
+
+async function writeStream(
+  streamId: string,
+  contentType: string,
+  batchJson: boolean,
+  content?: string
+) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
+  const isJson = isJsonContentType(contentType)
 
   try {
-    const stream = new DurableStream({ url })
+    const stream = new DurableStream({ url, contentType })
 
     if (content) {
       // Write provided content, interpreting escape sequences
@@ -49,8 +83,20 @@ async function writeStream(streamId: string, content?: string) {
         .replace(/\\t/g, `\t`)
         .replace(/\\r/g, `\r`)
         .replace(/\\\\/g, `\\`)
-      await stream.append(processedContent)
-      console.log(`Wrote ${processedContent.length} bytes to ${streamId}`)
+
+      if (isJson) {
+        const parsed = JSON.parse(processedContent)
+        if (batchJson) {
+          const count = await appendJson(stream, parsed)
+          console.log(`Wrote ${count} message(s) to ${streamId}`)
+        } else {
+          await stream.append(parsed)
+          console.log(`Wrote 1 message to ${streamId}`)
+        }
+      } else {
+        await stream.append(processedContent)
+        console.log(`Wrote ${processedContent.length} bytes to ${streamId}`)
+      }
     } else {
       // Read from stdin
       const chunks: Array<Buffer> = []
@@ -65,8 +111,20 @@ async function writeStream(streamId: string, content?: string) {
       })
 
       const data = Buffer.concat(chunks)
-      await stream.append(data)
-      console.log(`Wrote ${data.length} bytes to ${streamId}`)
+
+      if (isJson) {
+        const parsed = JSON.parse(data.toString(`utf8`))
+        if (batchJson) {
+          const count = await appendJson(stream, parsed)
+          console.log(`Wrote ${count} message(s) to ${streamId}`)
+        } else {
+          await stream.append(parsed)
+          console.log(`Wrote 1 message to ${streamId}`)
+        }
+      } else {
+        await stream.append(data)
+        console.log(`Wrote ${data.length} bytes to ${streamId}`)
+      }
     }
   } catch (error) {
     if (error instanceof Error) {
@@ -143,15 +201,29 @@ async function main() {
         process.exit(1)
       }
       const streamId = args[1]!
-      const content = args.slice(2).join(` `)
+
+      let parsed: ParsedWriteArgs
+      try {
+        parsed = parseWriteArgs(args.slice(2))
+      } catch (error) {
+        if (error instanceof Error) {
+          stderr.write(`Error: ${error.message}\n`)
+        }
+        process.exit(1)
+      }
 
       // Check if stdin is being piped
       if (!stdin.isTTY) {
         // Reading from stdin
-        await writeStream(streamId)
-      } else if (content) {
+        await writeStream(streamId, parsed.contentType, parsed.batchJson)
+      } else if (parsed.content) {
         // Content provided as argument
-        await writeStream(streamId, content)
+        await writeStream(
+          streamId,
+          parsed.contentType,
+          parsed.batchJson,
+          parsed.content
+        )
       } else {
         stderr.write(
           `Error: content required (provide as argument or pipe to stdin)\n`
@@ -189,7 +261,17 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  stderr.write(`Fatal error: ${error.message}\n`)
-  process.exit(1)
-})
+// Only run when executed directly, not when imported as a module
+function isMainModule(): boolean {
+  if (!process.argv[1]) return false
+  const scriptPath = resolvePath(process.argv[1])
+  const modulePath = fileURLToPath(import.meta.url)
+  return scriptPath === modulePath
+}
+
+if (isMainModule()) {
+  main().catch((error) => {
+    stderr.write(`Fatal error: ${error.message}\n`)
+    process.exit(1)
+  })
+}

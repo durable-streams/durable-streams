@@ -1,0 +1,115 @@
+id: consumer-json-parsing-errors
+name: JSON Parsing Error Handling
+description: Tests that clients properly handle malformed JSON responses instead of silently failing
+category: consumer
+tags:
+  - json
+  - error-handling
+  - resilience
+  - fault-injection
+
+tests:
+  - id: truncated-json-response
+    name: Client throws on truncated JSON response
+    description: Client should throw PARSE_ERROR for incomplete JSON, not return empty array
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: { "key": "some long value that will be truncated" }
+    operations:
+      # Truncate the response mid-JSON (10 bytes is mid-object)
+      - action: inject-error
+        path: ${streamPath}
+        truncateBodyBytes: 10
+        method: GET
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          errorCode: PARSE_ERROR
+    cleanup:
+      - action: clear-errors
+
+  - id: corrupted-json-response
+    name: Client throws on corrupted JSON response
+    description: Client should throw PARSE_ERROR for invalid JSON, not return empty array
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: { "valid": "json data here" }
+    operations:
+      # Corrupt the JSON by flipping bits
+      - action: inject-error
+        path: ${streamPath}
+        corruptBody: true
+        method: GET
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          errorCode: PARSE_ERROR
+    cleanup:
+      - action: clear-errors
+
+  - id: truncated-json-array
+    name: Client throws on truncated JSON array
+    description: Client should throw when JSON array is truncated mid-element
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: [{ "item": 1 }, { "item": 2 }, { "item": 3 }]
+    operations:
+      # Truncate mid-array
+      - action: inject-error
+        path: ${streamPath}
+        truncateBodyBytes: 15
+        method: GET
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          errorCode: PARSE_ERROR
+    cleanup:
+      - action: clear-errors
+
+  - id: recovery-after-parse-error
+    name: Client recovers after parse error
+    description: After a parse error, subsequent requests should succeed
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: { "data": "valid" }
+    operations:
+      # First request fails with truncated body
+      - action: inject-error
+        path: ${streamPath}
+        truncateBodyBytes: 5
+        method: GET
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          errorCode: PARSE_ERROR
+      # Second request should succeed (no more faults)
+      - action: read
+        path: ${streamPath}
+        expect:
+          status: 200
+    cleanup:
+      - action: clear-errors

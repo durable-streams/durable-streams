@@ -1,7 +1,10 @@
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+
 packages:
   - packages/*
-  - packages/*/examples
-  - packages/*/examples/*
+  - examples/*
+  - examples/**/*
 
 ignoredBuiltDependencies:
   - "@parcel/watcher"

@@ -191,16 +191,22 @@ async function streamInternal<TJson = unknown>(
   const fetchNext = async (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    resumingFromPause?: boolean
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
     // For subsequent requests in auto mode, use long-poll
-    if (live === `auto` || live === `long-poll`) {
-      nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
-    } else if (live === `sse`) {
-      nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
+    // BUT: if we're resuming from a paused state, don't set live mode
+    // to avoid a long-poll that holds for 20sec - we want an immediate response
+    // so the UI can show "connected" status quickly
+    if (!resumingFromPause) {
+      if (live === `auto` || live === `long-poll`) {
+        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
+      } else if (live === `sse`) {
+        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
+      }
     }
 
     if (cursor) {
@@ -279,5 +285,6 @@ async function streamInternal<TJson = unknown>(
     abortController,
     fetchNext,
     startSSE,
+    sseResilience: options.sseResilience,
   })
 }

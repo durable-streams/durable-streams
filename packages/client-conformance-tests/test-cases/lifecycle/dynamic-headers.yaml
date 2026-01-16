@@ -1,0 +1,147 @@
+id: lifecycle-dynamic-headers
+name: Dynamic Headers and Parameters
+description: |
+  Tests for dynamic header and parameter handling.
+  Production clients need to support headers/params that are computed per-request
+  (e.g., OAuth token refresh, request timestamps, correlation IDs).
+category: lifecycle
+tags:
+  - headers
+  - params
+  - auth
+  - dynamic
+requires:
+  - dynamicHeaders
+
+tests:
+  - id: dynamic-header-per-request
+    name: Dynamic headers evaluated per request
+    description: |
+      Headers provided as functions should be evaluated on each request,
+      not cached. This is critical for token refresh scenarios.
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Configure adapter to use a counter-based dynamic header
+      - action: set-dynamic-header
+        name: X-Request-Counter
+        valueType: counter
+      # First append - should have counter=1
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        expect:
+          status: 200
+          headersSent:
+            X-Request-Counter: "1"
+      # Second append - should have counter=2 (not cached)
+      - action: append
+        path: ${streamPath}
+        data: "second"
+        expect:
+          status: 200
+          headersSent:
+            X-Request-Counter: "2"
+      # Third append - should have counter=3
+      - action: append
+        path: ${streamPath}
+        data: "third"
+        expect:
+          status: 200
+          headersSent:
+            X-Request-Counter: "3"
+
+  - id: dynamic-header-on-read
+    name: Dynamic headers on repeated reads
+    description: Headers should be freshly evaluated on each read request
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      - action: set-dynamic-header
+        name: X-Request-Counter
+        valueType: counter
+      # First read
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          headersSent:
+            X-Request-Counter: "1"
+      # Second read from same offset - counter should increment
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          headersSent:
+            X-Request-Counter: "2"
+
+  - id: dynamic-param-per-request
+    name: Dynamic params evaluated per request
+    description: |
+      URL parameters provided as functions should be evaluated on each request.
+      Useful for signed URLs, dynamic routing, etc.
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: set-dynamic-param
+        name: request_id
+        valueType: counter
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          paramsSent:
+            request_id: "1"
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          status: 200
+          paramsSent:
+            request_id: "2"
+
+  - id: token-refresh-simulation
+    name: Token refresh simulation
+    description: |
+      Simulates OAuth token refresh by changing the Authorization header value
+      between requests. The client must use the new value, not cache the old one.
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Set initial token
+      - action: set-dynamic-header
+        name: Authorization
+        valueType: token
+        initialValue: "Bearer token-v1"
+      - action: append
+        path: ${streamPath}
+        data: "first"
+        expect:
+          status: 200
+          headersSent:
+            Authorization: "Bearer token-v1"
+      # Simulate token refresh
+      - action: set-dynamic-header
+        name: Authorization
+        valueType: token
+        initialValue: "Bearer token-v2"
+      - action: append
+        path: ${streamPath}
+        data: "second"
+        expect:
+          status: 200
+          headersSent:
+            Authorization: "Bearer token-v2"

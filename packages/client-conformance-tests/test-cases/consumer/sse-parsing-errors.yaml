@@ -1,0 +1,121 @@
+id: consumer-sse-parsing-errors
+name: SSE Parsing Error Handling
+description: Tests that clients properly handle malformed SSE events instead of silently failing
+category: consumer
+requires:
+  - sse
+tags:
+  - sse
+  - error-handling
+  - resilience
+  - fault-injection
+
+tests:
+  - id: unknown-sse-event-type
+    name: Client gracefully handles unknown SSE event type
+    description: Client should ignore unknown event types and continue processing
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject an unknown SSE event type before the stream starts
+      - action: inject-error
+        path: ${streamPath}
+        injectSseEvent:
+          eventType: "unknown-future-type"
+          data: '{"some":"future-data"}'
+        count: 1
+      # Client should skip the unknown event and still read the actual data
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 1
+        expect:
+          data: "test-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: malformed-control-event-json
+    name: Client throws on malformed control event JSON
+    description: Control events contain critical offset data - malformed JSON should throw
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data-before-error"
+    operations:
+      # Inject a control event with invalid JSON
+      - action: inject-error
+        path: ${streamPath}
+        injectSseEvent:
+          eventType: "control"
+          data: "{invalid json here"
+        count: 1
+      # Client should throw a parse error
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 1
+        expect:
+          errorCode: PARSE_ERROR
+    cleanup:
+      - action: clear-errors
+
+  - id: empty-control-event-data
+    name: Client handles empty control event data
+    description: Empty control event should be handled gracefully
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "actual-data"
+    operations:
+      # Inject a control event with empty data
+      - action: inject-error
+        path: ${streamPath}
+        injectSseEvent:
+          eventType: "control"
+          data: ""
+        count: 1
+      # Client should throw because empty is not valid JSON
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 1
+        expect:
+          errorCode: PARSE_ERROR
+    cleanup:
+      - action: clear-errors
+
+  - id: multiple-unknown-events
+    name: Client handles multiple unknown event types
+    description: Client should skip all unknown events and process valid ones
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "expected-data"
+    operations:
+      # Inject first unknown event
+      - action: inject-error
+        path: ${streamPath}
+        injectSseEvent:
+          eventType: "future-event-v2"
+          data: '{"version":2}'
+        count: 1
+      # Note: Only one injection per fault, so this tests single unknown event
+      # Client should still read the actual data
+      - action: read
+        path: ${streamPath}
+        live: sse
+        maxChunks: 1
+        expect:
+          data: "expected-data"
+    cleanup:
+      - action: clear-errors

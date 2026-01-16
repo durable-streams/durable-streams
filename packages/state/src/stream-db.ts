@@ -823,7 +823,7 @@ export function createStreamDB<
     let lastBatchTime = Date.now()
 
     // Process events as they come in
-    streamResponse.subscribeJson(async (batch) => {
+    streamResponse.subscribeJson((batch) => {
       try {
         batchCount++
         lastBatchTime = Date.now()
@@ -863,6 +863,7 @@ export function createStreamDB<
         abortController.abort()
         // Don't rethrow - we've already rejected the promise
       }
+      return Promise.resolve()
     })
 
     // Health check to detect silent stalls

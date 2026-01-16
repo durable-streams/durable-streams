@@ -25,15 +25,30 @@ const (
 	HeaderStreamSeq        = "Stream-Seq"
 	HeaderStreamTTL        = "Stream-TTL"
 	HeaderStreamExpiresAt  = "Stream-Expires-At"
+
+	// Idempotent producer headers
+	HeaderProducerId          = "Producer-Id"
+	HeaderProducerEpoch       = "Producer-Epoch"
+	HeaderProducerSeq         = "Producer-Seq"
+	HeaderProducerExpectedSeq = "Producer-Expected-Seq"
+	HeaderProducerReceivedSeq = "Producer-Received-Seq"
 )
+
+// sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
+// Per SSE spec, these are all valid line terminators that could be used for injection attacks
+var sseLineTerminators = regexp.MustCompile(`\r\n|\r|\n`)
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
+
+	// Browser security headers (Protocol Section 10.7)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cross-Origin-Resource-Policy", "cross-origin")
 
 	// Handle preflight
 	if r.Method == http.MethodOptions {
@@ -143,7 +158,12 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
 			scheme = proto
 		}
-		fullURL := fmt.Sprintf("%s://%s%s", scheme, r.Host, r.URL.Path)
+		// Get the host from the request, preferring X-Forwarded-Host for proxies
+		host := r.Host
+		if fwdHost := r.Header.Get("X-Forwarded-Host"); fwdHost != "" {
+			host = fwdHost
+		}
+		fullURL := fmt.Sprintf("%s://%s%s", scheme, host, r.URL.Path)
 		w.Header().Set("Location", fullURL)
 		w.WriteHeader(http.StatusCreated)
 	} else {
@@ -226,17 +246,53 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
-		return h.handleSSE(w, r, path, offset, cursor)
+		// For SSE with offset=now, convert to actual tail offset
+		sseOffset := offset
+		if offset.IsNow() {
+			sseOffset = meta.CurrentOffset
+		}
+		return h.handleSSE(w, r, path, sseOffset, cursor)
+	}
+
+	// For offset=now, convert to actual tail offset
+	// This allows long-poll to immediately start waiting for new data
+	effectiveOffset := offset
+	isNowOffset := offset.IsNow()
+	if isNowOffset {
+		effectiveOffset = meta.CurrentOffset
+	}
+
+	// Handle catch-up mode offset=now: return empty response with tail offset
+	// For long-poll mode, we fall through to wait for new data instead
+	if isNowOffset && liveMode != "long-poll" {
+		w.Header().Set("Content-Type", meta.ContentType)
+		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+		w.Header().Set(HeaderStreamUpToDate, "true")
+
+		// Prevent caching - tail offset changes with each append
+		w.Header().Set("Cache-Control", "no-store")
+
+		// No ETag for offset=now responses - Cache-Control: no-store makes ETag unnecessary
+		// and some CDNs may behave unexpectedly with both headers
+
+		// For JSON mode, return empty array; otherwise empty body
+		if store.IsJSONContentType(meta.ContentType) {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("[]"))
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		return nil
 	}
 
 	// Read messages
-	messages, _, err := h.store.Read(path, offset)
+	messages, _, err := h.store.Read(path, effectiveOffset)
 	if err != nil {
 		return err
 	}
 
 	// Calculate next offset
-	nextOffset := offset
+	nextOffset := effectiveOffset
 	if len(messages) > 0 {
 		nextOffset = messages[len(messages)-1].Offset
 	} else {
@@ -244,21 +300,25 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		nextOffset = meta.CurrentOffset
 	}
 
-	// Handle long-poll mode
-	if liveMode == "long-poll" && len(messages) == 0 {
+	// Handle long-poll mode - wait if no messages and either:
+	// 1. Client used offset=now (wants to wait for future data)
+	// 2. Client is caught up (at the tail)
+	shouldWait := liveMode == "long-poll" && len(messages) == 0 && (isNowOffset || effectiveOffset.Equal(meta.CurrentOffset))
+	if shouldWait {
 		// Client is caught up, wait for new data
 		timeout := time.Duration(h.LongPollTimeout)
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
 		var timedOut bool
-		messages, timedOut, err = h.store.WaitForMessages(ctx, path, offset, timeout)
+		messages, timedOut, err = h.store.WaitForMessages(ctx, path, effectiveOffset, timeout)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				// Timeout or client disconnect - return 204 with current offset
 				w.Header().Set("Content-Type", meta.ContentType)
-				w.Header().Set(HeaderStreamNextOffset, offset.String())
+				w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 				w.Header().Set(HeaderStreamUpToDate, "true")
+				w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
 				w.WriteHeader(http.StatusNoContent)
 				return nil
 			}
@@ -268,8 +328,9 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		if timedOut {
 			// Timeout - return 204 with current offset
 			w.Header().Set("Content-Type", meta.ContentType)
-			w.Header().Set(HeaderStreamNextOffset, offset.String())
+			w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 			w.Header().Set(HeaderStreamUpToDate, "true")
+			w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
 			w.WriteHeader(http.StatusNoContent)
 			return nil
 		}
@@ -422,7 +483,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 			return nil
 		default:
 			// Read any available messages
-			messages, _, err := h.store.Read(path, currentOffset)
+			messages, upToDate, err := h.store.Read(path, currentOffset)
 			if err != nil {
 				return err
 			}
@@ -431,8 +492,12 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				// Send data event
 				body, _ := h.formatResponse(path, messages, meta.ContentType)
 				fmt.Fprintf(w, "event: data\n")
-				for _, line := range strings.Split(string(body), "\n") {
-					fmt.Fprintf(w, "data: %s\n", line)
+				// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+				// Note: Per SSE spec, we don't add a space after "data:" because clients
+				// strip exactly one leading space. Adding one would cause data starting
+				// with spaces to lose an extra space character.
+				for _, line := range sseLineTerminators.Split(string(body), -1) {
+					fmt.Fprintf(w, "data:%s\n", line)
 				}
 				fmt.Fprintf(w, "\n")
 
@@ -442,14 +507,17 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				// Generate cursor with collision handling
 				responseCursor := generateResponseCursor(cursor)
 
-				// Send control event
-				control := map[string]string{
+				// Send control event with upToDate flag when caught up
+				control := map[string]interface{}{
 					"streamNextOffset": currentOffset.String(),
 					"streamCursor":     responseCursor,
 				}
+				if upToDate {
+					control["upToDate"] = true
+				}
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
+				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
@@ -460,13 +528,15 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				// Generate cursor with collision handling
 				responseCursor := generateResponseCursor(cursor)
 
-				control := map[string]string{
+				// For initial control without messages, we're at the current offset (up to date)
+				control := map[string]interface{}{
 					"streamNextOffset": currentMeta.CurrentOffset.String(),
 					"streamCursor":     responseCursor,
+					"upToDate":         true,
 				}
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data: %s\n\n", controlJSON)
+				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
@@ -519,7 +589,41 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		ContentType: contentType,
 	}
 
-	newOffset, err := h.store.Append(path, body, opts)
+	// Extract producer headers
+	producerId := r.Header.Get(HeaderProducerId)
+	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
+	producerSeqStr := r.Header.Get(HeaderProducerSeq)
+
+	// Parse producer headers if any are present
+	if producerId != "" || producerEpochStr != "" || producerSeqStr != "" {
+		opts.ProducerId = producerId
+
+		if producerEpochStr != "" {
+			// Validate format: must be a valid integer (no floats, no trailing chars)
+			if !isValidIntegerString(producerEpochStr) {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+			}
+			epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
+			if err != nil {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+			}
+			opts.ProducerEpoch = &epoch
+		}
+
+		if producerSeqStr != "" {
+			// Validate format: must be a valid integer (no floats, no trailing chars)
+			if !isValidIntegerString(producerSeqStr) {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+			}
+			seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
+			if err != nil {
+				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+			}
+			opts.ProducerSeq = &seq
+		}
+	}
+
+	result, err := h.store.Append(path, body, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrSequenceConflict) {
 			return newHTTPError(http.StatusConflict, "sequence number conflict")
@@ -533,11 +637,52 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		if errors.Is(err, store.ErrEmptyJSONArray) {
 			return newHTTPError(http.StatusBadRequest, "empty JSON array not allowed")
 		}
+		if errors.Is(err, store.ErrPartialProducer) {
+			return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
+		}
+		if errors.Is(err, store.ErrStaleEpoch) {
+			// 403 Forbidden - stale epoch (zombie fencing)
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+			w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(result.CurrentEpoch, 10))
+			http.Error(w, "producer epoch is stale", http.StatusForbidden)
+			return nil
+		}
+		if errors.Is(err, store.ErrInvalidEpochSeq) {
+			return newHTTPError(http.StatusBadRequest, "new epoch must start at sequence 0")
+		}
+		if errors.Is(err, store.ErrProducerSeqGap) {
+			// 409 Conflict - sequence gap
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+			w.Header().Set(HeaderProducerExpectedSeq, strconv.FormatInt(result.ExpectedSeq, 10))
+			w.Header().Set(HeaderProducerReceivedSeq, strconv.FormatInt(result.ReceivedSeq, 10))
+			http.Error(w, "producer sequence gap detected", http.StatusConflict)
+			return nil
+		}
 		return err
 	}
 
-	w.Header().Set(HeaderStreamNextOffset, newOffset.String())
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+
+	// Echo Producer-Epoch and Producer-Seq on success when producer headers were provided
+	if opts.ProducerEpoch != nil {
+		w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(*opts.ProducerEpoch, 10))
+		// Return highest accepted seq (per PROTOCOL.md)
+		w.Header().Set(HeaderProducerSeq, strconv.FormatInt(result.LastSeq, 10))
+	}
+
+	// Handle duplicate detection (204 No Content)
+	if result.ProducerResult == store.ProducerResultDuplicate {
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	// For non-producer appends, return 204 No Content
+	// For producer appends (new writes), return 200 OK to distinguish from duplicates
+	if opts.ProducerId != "" {
+		w.WriteHeader(http.StatusOK)
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 	return nil
 }
 
@@ -596,6 +741,14 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 
 	h.logger.Error("internal error", zap.Error(err))
 	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// nonNegativeIntegerRegex matches valid non-negative integer strings (no floats, no negatives)
+var nonNegativeIntegerRegex = regexp.MustCompile(`^[0-9]+$`)
+
+// isValidNonNegativeInteger checks if a string is a valid non-negative integer
+func isValidIntegerString(s string) bool {
+	return nonNegativeIntegerRegex.MatchString(s)
 }
 
 // parseTTL parses and validates a TTL string according to the protocol

@@ -24,7 +24,12 @@ import {
   createFetchWithConsumedBody,
 } from "./fetch"
 import { stream as streamFn } from "./stream-api"
-import { handleErrorResponse, resolveHeaders, resolveParams } from "./utils"
+import {
+  handleErrorResponse,
+  resolveHeaders,
+  resolveParams,
+  warnIfUsingHttpInBrowser,
+} from "./utils"
 import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
 import type {
@@ -157,6 +162,11 @@ export class DurableStream {
     this.url = urlStr
     this.#options = { ...opts, url: urlStr }
     this.#onError = opts.onError
+
+    // Set contentType from options if provided (for IdempotentProducer and other use cases)
+    if (opts.contentType) {
+      this.contentType = opts.contentType
+    }
 
     // Batching is enabled by default
     this.#batchingEnabled = opts.batching !== false
@@ -742,6 +752,7 @@ export class DurableStream {
       live: options?.live,
       json: options?.json,
       onError: options?.onError ?? this.#onError,
+      warnOnHttp: options?.warnOnHttp ?? this.#options.warnOnHttp,
     })
   }
 
@@ -864,4 +875,5 @@ function validateOptions(options: Partial<DurableStreamOptions>): void {
   if (options.signal && !(options.signal instanceof AbortSignal)) {
     throw new InvalidSignalError()
   }
+  warnIfUsingHttpInBrowser(options.url, options.warnOnHttp)
 }

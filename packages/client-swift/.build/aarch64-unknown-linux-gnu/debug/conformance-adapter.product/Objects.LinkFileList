@@ -1,0 +1,14 @@
+/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/ConformanceAdapter.swiftmodule.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/ConformanceAdapter.build/main.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Configuration.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Constants.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStream.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/DurableStreams.swiftmodule.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Errors.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/HTTPClient.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/IdempotentProducer.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Lifecycle.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/SSEParser.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/StreamAPI.swift.o
+/workspace/.build/aarch64-unknown-linux-gnu/debug/DurableStreams.build/Types.swift.o

@@ -36,8 +36,20 @@ func (o Offset) Add(bytes uint64) Offset {
 	}
 }
 
+// NowOffset is a sentinel value indicating "current tail position".
+// Uses max uint64 values which are guaranteed never to be valid stream offsets.
+var NowOffset = Offset{ReadSeq: ^uint64(0), ByteOffset: ^uint64(0)}
+
+// IsNow returns true if this is the "now" sentinel offset.
+func (o Offset) IsNow() bool {
+	return o.ReadSeq == ^uint64(0) && o.ByteOffset == ^uint64(0)
+}
+
 // ParseOffset parses an offset string.
-// Special case: "-1" returns ZeroOffset (meaning "start from beginning")
+// Special cases:
+//   - "-1" returns ZeroOffset (meaning "start from beginning")
+//   - "now" returns NowOffset (meaning "current tail position, skip historical data")
+//
 // Returns error for invalid formats.
 func ParseOffset(s string) (Offset, error) {
 	// Handle empty string as zero offset
@@ -48,6 +60,11 @@ func ParseOffset(s string) (Offset, error) {
 	// Handle "-1" as "start from beginning"
 	if s == "-1" {
 		return ZeroOffset, nil
+	}
+
+	// Handle "now" as "current tail position"
+	if s == "now" {
+		return NowOffset, nil
 	}
 
 	// Strict validation: offset must only contain digits and exactly one underscore

@@ -1,0 +1,226 @@
+id: consumer-streaming-equivalence
+name: Streaming Mode Equivalence
+description: Tests that SSE and Long-poll modes produce identical results
+category: consumer
+tags:
+  - core
+  - equivalence
+  - sse
+  - longpoll
+
+tests:
+  - id: equivalence-existing-data
+    name: Both modes return same existing data
+    description: SSE and long-poll should return identical data for existing content
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "chunk1"
+      - action: append
+        path: ${streamPath}
+        data: "chunk2"
+      - action: append
+        path: ${streamPath}
+        data: "chunk3"
+    operations:
+      # Read with long-poll
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          data: "chunk1chunk2chunk3"
+          upToDate: true
+          storeDataAs: longpollData
+      # Read same stream with SSE
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "chunk1chunk2chunk3"
+          upToDate: true
+      # Verify both got same data
+      - action: assert
+        equals:
+          left: ${longpollData}
+          right: "chunk1chunk2chunk3"
+        message: "Long-poll and SSE should return identical data"
+
+  - id: equivalence-from-offset
+    name: Both modes resume from same offset correctly
+    description: SSE and long-poll should resume from offset identically
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "before"
+        expect:
+          storeOffsetAs: midOffset
+      - action: append
+        path: ${streamPath}
+        data: "after"
+    operations:
+      # Read from offset with long-poll
+      - action: read
+        path: ${streamPath}
+        offset: ${midOffset}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          data: "after"
+          upToDate: true
+      # Read from same offset with SSE
+      - action: read
+        path: ${streamPath}
+        offset: ${midOffset}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "after"
+          upToDate: true
+
+  - id: equivalence-empty-stream
+    name: Both modes handle empty stream identically
+    description: SSE and long-poll should both report up-to-date on empty stream
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Read empty stream with long-poll
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          chunkCount: 0
+          upToDate: true
+      # Read empty stream with SSE
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          chunkCount: 0
+          upToDate: true
+
+  - id: equivalence-live-new-data
+    name: Both modes receive live data
+    description: SSE and long-poll should both receive newly appended data
+    requires:
+      - sse
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: initialOffset
+    operations:
+      # Test long-poll receives new data
+      - action: read
+        path: ${streamPath}
+        offset: ${initialOffset}
+        live: long-poll
+        timeoutMs: 5000
+        background: true
+        as: longpollRead
+      - action: wait
+        ms: 100
+      - action: server-append
+        path: ${streamPath}
+        data: "live-data-lp"
+      - action: await
+        ref: longpollRead
+        expect:
+          dataContains: "live-data-lp"
+
+  - id: equivalence-sse-live-new-data
+    name: SSE receives live data
+    description: SSE should receive newly appended data in live mode
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: initialOffset
+    operations:
+      # Test SSE receives new data
+      - action: read
+        path: ${streamPath}
+        offset: ${initialOffset}
+        live: sse
+        timeoutMs: 5000
+        background: true
+        as: sseRead
+      - action: wait
+        ms: 100
+      - action: server-append
+        path: ${streamPath}
+        data: "live-data-sse"
+      - action: await
+        ref: sseRead
+        expect:
+          dataContains: "live-data-sse"
+
+  - id: equivalence-offset-semantics
+    name: Offset semantics identical between modes
+    description: Reading from specific offsets should work identically
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "a"
+        expect:
+          storeOffsetAs: offset1
+      - action: append
+        path: ${streamPath}
+        data: "b"
+        expect:
+          storeOffsetAs: offset2
+      - action: append
+        path: ${streamPath}
+        data: "c"
+    operations:
+      # Long-poll from offset1 should get "bc"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset1}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          data: "bc"
+      # SSE from offset1 should also get "bc"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset1}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "bc"
+      # Long-poll from offset2 should get "c"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset2}
+        live: long-poll
+        waitForUpToDate: true
+        expect:
+          data: "c"
+      # SSE from offset2 should also get "c"
+      - action: read
+        path: ${streamPath}
+        offset: ${offset2}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          data: "c"

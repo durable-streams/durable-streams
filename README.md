@@ -52,7 +52,7 @@ AI products make this painfully visible. Token streaming is the UI for chat and 
 - **Multi-tab** - Works seamlessly across browser tabs without duplicating connections or missing data
 - **Massive fan-out** - CDN-friendly design means one origin can serve millions of concurrent viewers
 
-The protocol provides:
+The protocol is:
 
 - 🌐 **Universal** - Works anywhere HTTP works: web browsers, mobile apps, native clients, IoT devices, edge workers
 - 📦 **Simple** - Built on standard HTTP with no custom protocols
@@ -62,6 +62,37 @@ The protocol provides:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
+## Installation
+
+### npm packages
+
+```bash
+npm install @durable-streams/client   # TypeScript client
+npm install @durable-streams/server   # Reference Node.js server
+npm install @durable-streams/state    # State Protocol primitives
+npm install @durable-streams/cli      # Development & testing CLI
+```
+
+### Other languages
+
+```bash
+# Go
+go get github.com/durable-streams/durable-streams/packages/client-go
+
+# Python
+pip install durable-streams
+```
+
+### Server binary
+
+For production use, download the Caddy-based server binary from [GitHub releases](https://github.com/durable-streams/durable-streams/releases). Available for macOS (Intel & ARM), Linux (AMD64 & ARM64), and Windows.
+
+```bash
+# Start the server
+./durable-streams-server dev
+# Server runs on http://localhost:4437
+```
+
 ## Packages
 
 This monorepo contains:
@@ -69,8 +100,9 @@ This monorepo contains:
 - **[@durable-streams/client](./packages/client)** - TypeScript client with full read/write support and automatic batching
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
-- **[@durable-streams/test-ui](./packages/test-ui)** - Visual web interface for testing and exploring streams
-- **[@durable-streams/conformance-tests](./packages/conformance-tests)** - Protocol compliance test suite
+- **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
+- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (124 tests)
+- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (110 tests)
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
@@ -93,7 +125,7 @@ pnpm build
 pnpm start:dev
 
 # Terminal 2: Launch the Test UI
-cd packages/test-ui
+cd examples/test-ui
 pnpm dev
 ```
 
@@ -105,7 +137,7 @@ Open `http://localhost:3000` to:
 - View the stream registry to see all active streams
 - Inspect stream metadata and content-type rendering
 
-See the [Test UI README](./packages/test-ui/README.md) for details.
+See the [Test UI README](./examples/test-ui/README.md) for details.
 
 ### Option 2: CLI
 
@@ -146,23 +178,34 @@ The Test UI and CLI share the same `__registry__` system stream, so streams crea
 
 ### Full read/write client
 
-The `@durable-streams/client` package provides full read/write support with automatic batching for high-throughput writes:
+The `@durable-streams/client` package provides full read/write support. For high-throughput writes with exactly-once delivery, use `IdempotentProducer`:
 
 ```typescript
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, IdempotentProducer } from "@durable-streams/client"
 
-// Create a new stream
-const handle = await DurableStream.create({
+// Create a stream
+const stream = await DurableStream.create({
   url: "https://your-server.com/v1/stream/my-stream",
   contentType: "application/json",
 })
 
-// Append data (automatically batched for high throughput)
-await handle.append({ event: "user.created", userId: "123" })
-await handle.append({ event: "user.updated", userId: "123" })
+// Create an idempotent producer for reliable writes
+const producer = new IdempotentProducer(stream, "my-service-1", {
+  autoClaim: true, // Auto-recover from epoch conflicts
+  onError: (err) => console.error("Batch failed:", err),
+})
+
+// High-throughput writes - fire-and-forget, automatically batched & pipelined
+for (const event of events) {
+  producer.append(event) // Don't await - errors go to onError callback
+}
+
+// Ensure all messages are delivered before shutdown
+await producer.flush()
+await producer.close()
 
 // Read with the streaming API
-const res = await handle.stream<{ event: string; userId: string }>({
+const res = await stream.stream<{ event: string; userId: string }>({
   live: false,
 })
 const items = await res.json()
@@ -324,6 +367,7 @@ Offsets are opaque tokens that identify positions within a stream:
 - **Opaque strings** - Treat as black boxes; don't parse or construct them
 - **Lexicographically sortable** - You can compare offsets to determine ordering
 - **`"-1"` means start** - Use `offset: "-1"` to read from the beginning
+- **`"now"` means tail** - Use `offset: "now"` to skip existing data and read only new data
 - **Server-generated** - Always use the `offset` value returned in responses
 - **Unique** - Each offset is unique within a stream
 - **Monotonically increasing** - All offsets are monotonically increasing within a stream
@@ -344,7 +388,7 @@ const next = await stream({
 })
 ```
 
-The only special offset value is `"-1"` for stream start. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
+The special offset values are `"-1"` for stream start and `"now"` for the current tail. All other offsets are opaque strings returned by the server—never construct or parse them yourself.
 
 ## Protocol
 
@@ -470,7 +514,7 @@ Client implementations need only support standard HTTP requests and offset track
 We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:4437",
@@ -480,15 +524,15 @@ runConformanceTests({
 ### Node.js Reference Server
 
 ```typescript
-import { createDurableStreamServer } from "@durable-streams/server"
+import { DurableStreamTestServer } from "@durable-streams/server"
 
-const server = createDurableStreamServer({
+const server = new DurableStreamTestServer({
   port: 4437,
-  // In-memory storage (for development)
-  // Add file-backed storage for production
+  host: "127.0.0.1",
 })
 
 await server.start()
+console.log(`Server running on ${server.baseUrl}`)
 ```
 
 See [@durable-streams/server](./packages/server) for more details.
@@ -497,7 +541,11 @@ See [@durable-streams/server](./packages/server) for more details.
 
 **Go**
 
-- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation that has full coverage of the conformance test suite.
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
+
+**Java**
+
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformance test coverage.
 
 ## CLI Tool
 
@@ -565,18 +613,40 @@ const state = events.reduce(applyEvent, initialState)
 LLM inference is expensive. When a user's tab gets suspended, their network flaps, or they refresh the page, you don't want to re-run the generation—you want them to pick up exactly where they left off.
 
 ```typescript
+import {
+  DurableStream,
+  IdempotentProducer,
+  StaleEpochError,
+} from "@durable-streams/client"
+
 // Server: stream tokens to a durable stream (continues even if client disconnects)
-const handle = await DurableStream.create({
+const stream = await DurableStream.create({
   url: `https://your-server.com/v1/stream/generation/${generationId}`,
   contentType: "text/plain",
 })
 
+// Use IdempotentProducer for reliable, exactly-once token delivery
+let fenced = false
+const producer = new IdempotentProducer(stream, generationId, {
+  autoClaim: true, // Auto-recover if another worker took over
+  lingerMs: 10, // Send batches every 10ms for low latency
+  onError: (error) => {
+    if (error instanceof StaleEpochError) {
+      fenced = true
+      console.log("Another worker took over, stopping gracefully")
+    }
+  },
+})
+
 for await (const token of llm.stream(prompt)) {
-  await handle.append(token) // Persisted immediately
+  if (fenced) break
+  producer.append(token) // Batched & deduplicated automatically
 }
+await producer.flush() // Ensure all tokens are delivered
+await producer.close()
 
 // Client: resume from last seen position (refresh-safe)
-const res = await handle.stream({ offset: lastSeenOffset, live: "auto" })
+const res = await stream.stream({ offset: lastSeenOffset, live: "auto" })
 res.subscribe((chunk) => {
   renderTokens(chunk.data)
   saveOffset(chunk.offset) // Persist for next resume
@@ -589,6 +659,7 @@ res.subscribe((chunk) => {
 - **Page refresh?** Continues from last token, not from the beginning
 - **Share the generation?** Multiple viewers watch the same stream in real-time
 - **Switch devices?** Start on mobile, continue on desktop, same stream
+- **Worker failover?** Another worker can take over with a new epoch—no duplicate tokens
 
 ## Testing Your Implementation
 
@@ -600,10 +671,10 @@ The easiest way to run conformance tests against your server:
 
 ```bash
 # Run tests once (for CI)
-npx @durable-streams/conformance-tests --run http://localhost:4437
+npx @durable-streams/server-conformance-tests --run http://localhost:4437
 
 # Watch mode - reruns tests when source files change (for development)
-npx @durable-streams/conformance-tests --watch src http://localhost:4437
+npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
 ```
 
 ### Programmatic Usage
@@ -611,7 +682,7 @@ npx @durable-streams/conformance-tests --watch src http://localhost:4437
 You can also run the tests programmatically in your own test suite:
 
 ```typescript
-import { runConformanceTests } from "@durable-streams/conformance-tests"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 
 runConformanceTests({
   baseUrl: "http://localhost:4437",

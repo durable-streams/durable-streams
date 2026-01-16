@@ -113,7 +113,7 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` (or `204 No Content`) if the existing stream's configuration (content type, TTL/expiry) matches the request, or
+- return `200 OK` if the existing stream's configuration (content type, TTL/expiry) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
@@ -137,7 +137,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 #### Response Codes
 
 - `201 Created`: Stream created successfully
-- `200 OK` or `204 No Content`: Stream already exists with matching configuration (idempotent success)
+- `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
 - `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
 - `429 Too Many Requests`: Rate limit exceeded
@@ -181,7 +181,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 
 #### Response Codes
 
-- `204 No Content` (recommended) or `200 OK`: Append successful
+- `204 No Content`: Append successful
 - `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
@@ -192,6 +192,130 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+
+### 5.2.1. Idempotent Producers
+
+Durable Streams supports Kafka-style idempotent producers for exactly-once write semantics. This enables fire-and-forget writes with server-side deduplication, eliminating duplicates from client retries.
+
+#### Design
+
+- **Client-provided producer IDs**: Zero RTT overhead, no handshake required
+- **Client-declared epochs, server-validated fencing**: Client increments epoch on restart; server validates monotonicity and fences stale epochs
+- **Per-batch sequence numbers**: Separate from `Stream-Seq`, used for retry safety
+- **Two-layer sequence design**:
+  - Transport layer: `Producer-Id` + `Producer-Epoch` + `Producer-Seq` (retry safety)
+  - Application layer: `Stream-Seq` (cross-restart ordering, lexicographic)
+
+#### Request Headers
+
+All three producer headers **MUST** be provided together or none at all. If only some headers are provided, servers **MUST** return `400 Bad Request`.
+
+- `Producer-Id: <string>`
+  - Client-supplied stable identifier (e.g., "order-service-1", UUID)
+  - **MUST** be a non-empty string; empty values result in `400 Bad Request`
+  - Identifies the logical producer across restarts
+
+- `Producer-Epoch: <integer>`
+  - Client-declared epoch, starting at 0
+  - Increment on producer restart to establish a new session
+  - Server validates that epoch is monotonically non-decreasing
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+
+- `Producer-Seq: <integer>`
+  - Monotonically increasing sequence number per epoch
+  - Starts at 0 for each new epoch
+  - Applies per-batch (per HTTP request), not per-message
+  - **MUST** be a non-negative integer ≤ 2^53-1 (for JavaScript interoperability)
+
+#### Response Headers
+
+- `Producer-Epoch: <integer>`: Echoed back on success (200/204), or current server epoch on stale epoch (403)
+- `Producer-Seq: <integer>`: On success (200/204), the highest accepted sequence number for this `(stream, producerId, epoch)` tuple. Enables clients to confirm pipelined requests and recover state after crashes.
+- `Producer-Expected-Seq: <integer>`: On 409 Conflict (sequence gap), the expected sequence
+- `Producer-Received-Seq: <integer>`: On 409 Conflict (sequence gap), the received sequence
+
+#### Validation Logic
+
+```
+# Epoch validation (client-declared, server-validated)
+if epoch < state.epoch:
+  → 403 Forbidden
+  → Headers: Producer-Epoch: <current epoch>
+
+if epoch > state.epoch:
+  if seq != 0:
+    → 400 Bad Request (new epoch must start at seq=0)
+  → Accept: update state.epoch = epoch, state.lastSeq = 0
+  → 200 OK (new epoch established)
+
+# Same epoch: sequence validation
+if seq <= state.lastSeq:
+  → 204 No Content (duplicate, idempotent success)
+
+if seq == state.lastSeq + 1:
+  → Accept, update state.lastSeq = seq
+  → 200 OK
+
+if seq > state.lastSeq + 1:
+  → 409 Conflict
+  → Headers: Producer-Expected-Seq: <lastSeq + 1>, Producer-Received-Seq: <seq>
+```
+
+#### Response Codes (with Producer Headers)
+
+- `200 OK`: Append successful (new data)
+- `204 No Content`: Duplicate append (idempotent success, data already exists)
+- `400 Bad Request`: Invalid producer headers (e.g., non-integer values, epoch increase with seq != 0)
+- `403 Forbidden`: Stale producer epoch (zombie fencing). Response includes `Producer-Epoch` header with current server epoch.
+- `409 Conflict`: Sequence gap detected. Response includes `Producer-Expected-Seq` and `Producer-Received-Seq` headers.
+
+#### Bootstrap and Restart Flow
+
+1. **Initial start (epoch=0)**:
+   - Producer sends `(epoch=0, seq=0)`
+   - Server accepts, establishes producer state
+
+2. **Producer restart**:
+   - Producer increments local epoch (0 → 1), resets seq to 0
+   - Sends `(epoch=1, seq=0)`
+   - Server sees epoch > state.epoch, accepts, updates state
+
+3. **Zombie fencing**:
+   - Old producer (zombie) still sending `(epoch=0, seq=N)` gets 403 Forbidden
+   - Response includes `Producer-Epoch: 1` header
+
+#### Auto-claim Flow (for ephemeral producers)
+
+For serverless or ephemeral producers without persisted epoch:
+
+1. Producer starts fresh with `(epoch=0, seq=0)`
+2. If server has `state.epoch=5`, returns 403 with `Producer-Epoch: 5`
+3. Client can retry with `(epoch=6, seq=0)` to claim the producer ID
+
+This is opt-in client behavior and should be used with caution.
+
+#### Concurrency Requirements
+
+Servers **MUST** serialize validation + append operations per `(stream, producerId)` pair. HTTP requests can arrive out-of-order; without serialization, seq=1 arriving before seq=0 would cause false sequence gaps.
+
+#### Atomicity Requirements
+
+For persistent storage, servers **SHOULD** commit producer state updates and log appends atomically (e.g., in a single database transaction). Non-atomic implementations have a crash window where:
+
+1. Data is appended to the log
+2. Crash occurs before producer state is updated
+3. On recovery, a retry may be re-accepted, causing duplicate data
+
+**Recovery for non-atomic stores**: Clients can bump their epoch after a crash to establish a clean session. This trades "exactly once within epoch" for "at least once across crashes" which is acceptable for many use cases. Stores **SHOULD** document their atomicity guarantees clearly.
+
+#### Producer State Cleanup
+
+Servers **MAY** implement TTL-based cleanup for producer state:
+
+- **In-memory stores**: 7 days TTL recommended, clean up on stream access
+- **Persistent stores**: Retain as long as stream data exists (stronger guarantee)
+
+After state expiry, the producer is treated as new. A zombie alive past TTL expiry can write again, which is acceptable for testing but persistent stores should use longer retention.
 
 ### 5.3. Delete Stream
 
@@ -252,7 +376,7 @@ Where `{stream-url}` is the URL of the stream. Returns bytes starting from the s
 #### Query Parameters
 
 - `offset` (optional)
-  - Start offset token. If omitted, defaults to the stream start (offset 0).
+  - Start offset token. If omitted, defaults to the stream start (offset -1).
 
 #### Response Codes
 
@@ -269,7 +393,7 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
-- `Stream-Cursor: <cursor>` (optional)
+- `Stream-Cursor: <cursor>`
   - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
@@ -314,12 +438,14 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 200)
 
-- Same as catch-up reads (Section 5.5)
+- Same as catch-up reads (Section 5.5), except:
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Body (on 200)
 
@@ -364,8 +490,8 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Each line prefixed with `data:`
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset` and **MAY** include `streamCursor`
-  - Format: JSON object with offset and optional cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
+  - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
 
 **Example:**
 
@@ -397,7 +523,36 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
 **Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters. Servers **SHOULD** keep offsets reasonably short (under 256 characters) since they appear in every request URL.
 
-**Sentinel Value**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
+**Sentinel Values**: The protocol defines two special offset sentinel values:
+
+- **`-1` (Stream Beginning)**: The special offset value `-1` represents the beginning of the stream. Clients **MAY** use `offset=-1` as an explicit way to request data from the start. This is semantically equivalent to omitting the offset parameter. Servers **MUST** recognize `-1` as a valid offset that returns data from the beginning of the stream.
+
+- **`now` (Current Tail Position)**: The special offset value `now` allows clients to skip all existing data and begin reading from the current tail position. This is useful for applications that only care about future data (e.g., presence tracking, live monitoring, late joiners to a conversation). The behavior varies by read mode:
+
+  **Catch-up mode** (`offset=now` without `live` parameter):
+  - Servers **MUST** return `200 OK` with an empty response body appropriate to the stream's content type:
+    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 7.1
+    - For all other content types: the body **MUST** be 0 bytes (empty)
+  - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
+  - Servers **MUST** include `Stream-Up-To-Date: true` header
+  - Servers **SHOULD** return `Cache-Control: no-store` to prevent caching of the tail offset
+  - The response **MUST** contain no data messages, regardless of stream content
+
+  **Long-poll mode** (`offset=now&live=long-poll`):
+  - Servers **MUST** immediately begin waiting for new data (no initial empty response)
+  - This eliminates a round-trip: clients can subscribe to future data in a single request
+  - If new data arrives during the wait, servers return `200 OK` with the new data
+  - If the timeout expires, servers return `204 No Content` with `Stream-Up-To-Date: true`
+  - The `Stream-Next-Offset` header **MUST** be set to the tail position
+
+  **SSE mode** (`offset=now&live=sse`):
+  - Servers **MUST** immediately begin the SSE stream from the tail position
+  - The first control event **MUST** include the tail offset in `streamNextOffset`
+  - If no data has arrived, the first control event **MUST** include `upToDate: true`
+  - If data arrives before the first control event, `upToDate` reflects the current state
+  - No historical data is sent; only future data events are streamed
+
+**Reserved Values**: The sentinel values `-1` and `now` are reserved by the protocol. Server implementations **MUST NOT** generate these strings as actual stream offsets (in `Stream-Next-Offset` headers or SSE control events). This ensures clients can always distinguish between sentinel requests and real offset values.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
@@ -483,7 +638,7 @@ This enables CDN/proxy caching while allowing stale content to be served during 
 
 **ETag Usage:**
 
-Servers **MUST** generate `ETag` headers for GET responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
+Servers **MUST** generate `ETag` headers for GET responses, except for `offset=now` responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
 
 **Query Parameter Ordering:**
 
@@ -579,6 +734,24 @@ Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many R
 ### 10.6. Sequence Validation
 
 The optional `Stream-Seq` header provides protection against out-of-order writes in multi-writer scenarios. Servers **MUST** reject sequence regressions to maintain stream integrity.
+
+### 10.7. Browser Security Headers
+
+When serving streams to browser clients, servers **SHOULD** include the following headers to prevent MIME-sniffing attacks, cross-origin embedding exploits, and cache-related vulnerabilities:
+
+- `X-Content-Type-Options: nosniff`
+  - Servers **SHOULD** include this header on all responses. This prevents browsers from MIME-sniffing the response content and potentially executing it as a different content type (e.g., interpreting binary data as HTML/JavaScript).
+
+- `Cross-Origin-Resource-Policy: cross-origin` (or `same-origin`/`same-site`)
+  - Servers **SHOULD** include this header to explicitly control cross-origin embedding. Use `cross-origin` to allow cross-origin access via `fetch()`, `same-site` to restrict to the same registrable domain, or `same-origin` for strict same-origin only. This prevents Cross-Origin Read Blocking (CORB) issues and protects against Spectre-like side-channel attacks.
+
+- `Cache-Control: no-store`
+  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 8.
+
+- `Content-Disposition: attachment` (optional)
+  - Servers **MAY** include this header for `application/octet-stream` responses to prevent inline rendering if a user navigates directly to the stream URL.
+
+These headers provide defense-in-depth for scenarios where stream URLs might be accessed outside the intended programmatic fetch context (e.g., direct navigation, malicious cross-origin embedding via `<script>` or `<img>` tags).
 
 ### 10.8. TLS
 

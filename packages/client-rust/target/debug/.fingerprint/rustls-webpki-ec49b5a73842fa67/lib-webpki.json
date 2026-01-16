@@ -1,0 +1,24 @@
+{
+  "rustc": 15619732123699539844,
+  "features": "[\"alloc\", \"ring\", \"std\"]",
+  "declared_features": "[\"alloc\", \"aws-lc-rs\", \"aws-lc-rs-fips\", \"aws-lc-rs-unstable\", \"default\", \"ring\", \"std\"]",
+  "target": 5054897795206437336,
+  "profile": 17362319207054989486,
+  "path": 14782942346557366276,
+  "deps": [
+    [64645024058175247, "pki_types", false, 12629816667419668364],
+    [5491919304041016563, "ring", false, 16097262089499107521],
+    [8995469080876806959, "untrusted", false, 3186238740809631574]
+  ],
+  "local": [
+    {
+      "CheckDepInfo": {
+        "dep_info": "debug/.fingerprint/rustls-webpki-ec49b5a73842fa67/dep-lib-webpki",
+        "checksum": false
+      }
+    }
+  ],
+  "rustflags": [],
+  "config": 2069994364910194474,
+  "compile_kind": 0
+}

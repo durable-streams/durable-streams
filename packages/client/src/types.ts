@@ -4,6 +4,7 @@
  * Following the Electric Durable Stream Protocol specification.
  */
 
+import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { BackoffOptions } from "./fetch"
 
 /**
@@ -150,6 +151,59 @@ export interface StreamOptions {
    * Error handler for recoverable errors (following Electric client pattern).
    */
   onError?: StreamErrorHandler
+
+  /**
+   * SSE resilience options.
+   * When SSE connections fail repeatedly, the client can automatically
+   * fall back to long-polling mode.
+   */
+  sseResilience?: SSEResilienceOptions
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
+}
+
+/**
+ * Options for SSE connection resilience.
+ */
+export interface SSEResilienceOptions {
+  /**
+   * Minimum expected SSE connection duration in milliseconds.
+   * Connections shorter than this are considered "short" and may indicate
+   * proxy buffering or server misconfiguration.
+   * @default 1000
+   */
+  minConnectionDuration?: number
+
+  /**
+   * Maximum number of consecutive short connections before falling back to long-poll.
+   * @default 3
+   */
+  maxShortConnections?: number
+
+  /**
+   * Base delay for exponential backoff between short connection retries (ms).
+   * @default 100
+   */
+  backoffBaseDelay?: number
+
+  /**
+   * Maximum delay cap for exponential backoff (ms).
+   * @default 5000
+   */
+  backoffMaxDelay?: number
+
+  /**
+   * Whether to log warnings when falling back to long-poll.
+   * @default true
+   */
+  logWarnings?: boolean
 }
 
 // ============================================================================
@@ -265,6 +319,15 @@ export interface StreamHandleOptions {
    * @default true
    */
   batching?: boolean
+
+  /**
+   * Whether to warn when using HTTP (not HTTPS) URLs in browser environments.
+   * HTTP limits browsers to 6 concurrent connections (HTTP/1.1), which can
+   * cause slow streams and app freezes with multiple active streams.
+   *
+   * @default true
+   */
+  warnOnHttp?: boolean
 }
 
 /**
@@ -318,6 +381,26 @@ export interface AppendOptions {
    * AbortSignal for this operation.
    */
   signal?: AbortSignal
+
+  /**
+   * Producer ID for idempotent writes.
+   * Client-supplied stable identifier (e.g., "order-service-1").
+   * Must be provided together with producerEpoch and producerSeq.
+   */
+  producerId?: string
+
+  /**
+   * Producer epoch for idempotent writes.
+   * Client-declared, server-validated monotonically increasing.
+   * Increment on producer restart.
+   */
+  producerEpoch?: number
+
+  /**
+   * Producer sequence for idempotent writes.
+   * Monotonically increasing per epoch, per-batch.
+   */
+  producerSeq?: number
 }
 
 /**
@@ -435,6 +518,7 @@ export type DurableStreamErrorCode =
   | `RATE_LIMITED`
   | `ALREADY_CONSUMED`
   | `ALREADY_CLOSED`
+  | `PARSE_ERROR`
   | `UNKNOWN`
 
 /**
@@ -622,19 +706,28 @@ export interface StreamResponse<TJson = unknown> {
 
   /**
    * Raw bytes as a ReadableStream<Uint8Array>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  bodyStream: () => ReadableStream<Uint8Array>
+  bodyStream: () => ReadableStreamAsyncIterable<Uint8Array>
 
   /**
    * Individual JSON items (flattened) as a ReadableStream<TJson>.
    * Built on jsonBatches().
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  jsonStream: () => ReadableStream<TJson>
+  jsonStream: () => ReadableStreamAsyncIterable<TJson>
 
   /**
    * Text chunks as ReadableStream<string>.
+   *
+   * The returned stream is guaranteed to be async-iterable, so you can use
+   * `for await...of` syntax even on Safari/iOS which may lack native support.
    */
-  textStream: () => ReadableStream<string>
+  textStream: () => ReadableStreamAsyncIterable<string>
 
   // =====================
   // 3) Subscriber APIs
@@ -680,4 +773,77 @@ export interface StreamResponse<TJson = unknown> {
    * - terminal error.
    */
   readonly closed: Promise<void>
+}
+
+// ============================================================================
+// Idempotent Producer Types
+// ============================================================================
+
+/**
+ * Options for creating an IdempotentProducer.
+ */
+export interface IdempotentProducerOptions {
+  /**
+   * Starting epoch (default: 0).
+   * Increment this on producer restart.
+   */
+  epoch?: number
+
+  /**
+   * On 403 Forbidden (stale epoch), automatically retry with epoch+1.
+   * Useful for serverless/ephemeral producers.
+   * @default false
+   */
+  autoClaim?: boolean
+
+  /**
+   * Maximum bytes before sending a batch.
+   * @default 1048576 (1MB)
+   */
+  maxBatchBytes?: number
+
+  /**
+   * Maximum time to wait for more messages before sending batch (ms).
+   * @default 5
+   */
+  lingerMs?: number
+
+  /**
+   * Maximum number of concurrent batches in flight.
+   * Higher values improve throughput at the cost of more memory.
+   * @default 5
+   */
+  maxInFlight?: number
+
+  /**
+   * Custom fetch implementation.
+   */
+  fetch?: typeof globalThis.fetch
+
+  /**
+   * AbortSignal for the producer lifecycle.
+   */
+  signal?: AbortSignal
+
+  /**
+   * Callback for batch errors in fire-and-forget mode.
+   * Since append() returns immediately, errors are reported via this callback.
+   * @param error - The error that occurred
+   */
+  onError?: (error: Error) => void
+}
+
+/**
+ * Result of an append operation from IdempotentProducer.
+ */
+export interface IdempotentAppendResult {
+  /**
+   * The offset after this message was appended.
+   */
+  offset: Offset
+
+  /**
+   * Whether this was a duplicate (idempotent success).
+   */
+  duplicate: boolean
 }

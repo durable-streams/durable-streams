@@ -122,11 +122,11 @@ func TestFileStore_AppendAndRead(t *testing.T) {
 
 	// Append
 	data := []byte("hello world")
-	offset, err := store.Append("/test", data, AppendOptions{})
+	result, err := store.Append("/test", data, AppendOptions{})
 	if err != nil {
 		t.Fatalf("Append failed: %v", err)
 	}
-	if offset.ByteOffset == 0 {
+	if result.Offset.ByteOffset == 0 {
 		t.Error("offset should be non-zero after append")
 	}
 
@@ -146,7 +146,7 @@ func TestFileStore_AppendAndRead(t *testing.T) {
 	}
 
 	// Read from tail (should be empty)
-	messages, upToDate, err = store.Read("/test", offset)
+	messages, upToDate, err = store.Read("/test", result.Offset)
 	if err != nil {
 		t.Fatalf("Read from tail failed: %v", err)
 	}

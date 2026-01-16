@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { parseSSEStream } from "../src/sse"
+import { DurableStreamError } from "../src/error"
 
 describe(`SSE parsing`, () => {
   /**
@@ -226,7 +227,7 @@ data: {"streamNextOffset":"300"}
       expect(events).toHaveLength(1)
     })
 
-    it(`should ignore invalid control event JSON`, async () => {
+    it(`should throw on invalid control event JSON`, async () => {
       const sseText = `event: control
 data: not-valid-json
 
@@ -235,18 +236,24 @@ data: {"valid":"data"}
 
 `
       const stream = createSSEStream(sseText)
-      const events = []
 
-      for await (const event of parseSSEStream(stream)) {
-        events.push(event)
+      // Invalid control event should throw PARSE_ERROR
+      await expect(async () => {
+        for await (const _event of parseSSEStream(stream)) {
+          // Should not reach here
+        }
+      }).rejects.toThrow(DurableStreamError)
+
+      // Verify it's specifically a PARSE_ERROR
+      try {
+        const retryStream = createSSEStream(sseText)
+        for await (const _event of parseSSEStream(retryStream)) {
+          // Should not reach here
+        }
+      } catch (err) {
+        expect(err).toBeInstanceOf(DurableStreamError)
+        expect((err as DurableStreamError).code).toBe(`PARSE_ERROR`)
       }
-
-      // Invalid control event should be skipped
-      expect(events).toHaveLength(1)
-      expect(events[0]).toEqual({
-        type: `data`,
-        data: `{"valid":"data"}`,
-      })
     })
 
     it(`should ignore unknown event types`, async () => {
@@ -635,12 +642,6 @@ data: {"id":1}
       startSSE,
     })
 
-    // Attach error handler to closed promise BEFORE consuming
-    let caughtError: Error | null = null
-    streamResponse.closed.catch((err) => {
-      caughtError = err
-    })
-
     // Start consuming with subscriber (triggers live mode)
     const items: Array<{ id: number }> = []
     streamResponse.subscribeJson((batch) => {
@@ -648,12 +649,8 @@ data: {"id":1}
       return Promise.resolve()
     })
 
-    // Wait a bit for the stream to process and error
-    await new Promise((resolve) => setTimeout(resolve, 100))
-
-    // Error should have been caught
-    expect(caughtError).toBeInstanceOf(Error)
-    expect((caughtError as unknown as Error).message).toBe(`Network error`)
+    // The closed promise should reject with the reconnection error
+    await expect(streamResponse.closed).rejects.toThrow(`Network error`)
 
     // startSSE should have been called for reconnection
     expect(startSSE).toHaveBeenCalled()

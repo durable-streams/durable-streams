@@ -1,0 +1,100 @@
+id: idempotent-concurrent-requests
+name: Idempotent Producer - Concurrent Requests
+description: |
+  Tests for client handling of concurrent HTTP requests (pipelining).
+  When maxInFlight > 1, requests may arrive out of order causing 409 errors.
+  The client must retry and ensure all messages are delivered.
+category: producer
+tags:
+  - idempotent
+  - concurrent
+  - pipelining
+  - retry
+
+tests:
+  - id: concurrent-batches-all-delivered
+    name: All messages delivered with high concurrency
+    description: |
+      When using maxInFlight > 1, HTTP requests may arrive out of order causing 409 errors.
+      The client should retry and ensure all messages are delivered.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Send 20 messages with maxInFlight=5
+      # This forces concurrent batches that may arrive out of order
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        maxInFlight: 5
+        items:
+          - data: "msg-00"
+          - data: "msg-01"
+          - data: "msg-02"
+          - data: "msg-03"
+          - data: "msg-04"
+          - data: "msg-05"
+          - data: "msg-06"
+          - data: "msg-07"
+          - data: "msg-08"
+          - data: "msg-09"
+          - data: "msg-10"
+          - data: "msg-11"
+          - data: "msg-12"
+          - data: "msg-13"
+          - data: "msg-14"
+          - data: "msg-15"
+          - data: "msg-16"
+          - data: "msg-17"
+          - data: "msg-18"
+          - data: "msg-19"
+        expect:
+          allSucceed: true
+      # Verify all messages are in the stream
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "msg-00"
+            - "msg-05"
+            - "msg-10"
+            - "msg-15"
+            - "msg-19"
+          upToDate: true
+
+  - id: concurrent-json-batches-all-delivered
+    name: All JSON messages delivered with high concurrency
+    description: Same test with JSON content type to verify JSON batching works with concurrency
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: test-producer
+        epoch: 0
+        maxInFlight: 5
+        items:
+          - data: '{"id": 0}'
+          - data: '{"id": 1}'
+          - data: '{"id": 2}'
+          - data: '{"id": 3}'
+          - data: '{"id": 4}'
+          - data: '{"id": 5}'
+          - data: '{"id": 6}'
+          - data: '{"id": 7}'
+          - data: '{"id": 8}'
+          - data: '{"id": 9}'
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - '"id":0'
+            - '"id":5'
+            - '"id":9'
+          upToDate: true

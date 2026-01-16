@@ -1,0 +1,188 @@
+id: consumer-retry-resilience
+name: Retry and Resilience
+description: Tests for client retry behavior on transient errors
+category: consumer
+tags:
+  - core
+  - retry
+  - resilience
+  - error-handling
+
+tests:
+  - id: retry-on-500
+    name: Client retries on 500 Internal Server Error
+    description: Client should automatically retry when server returns 500
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject a 500 error for the first request
+      - action: inject-error
+        path: ${streamPath}
+        status: 500
+        count: 1
+      # Client should retry and eventually succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "test-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: retry-on-503
+    name: Client retries on 503 Service Unavailable
+    description: Client should automatically retry when server returns 503
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject a 503 error for the first request
+      - action: inject-error
+        path: ${streamPath}
+        status: 503
+        count: 1
+      # Client should retry and eventually succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "test-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: retry-on-429
+    name: Client retries on 429 Too Many Requests
+    description: Client should retry after rate limiting with backoff
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject a 429 error with Retry-After header
+      - action: inject-error
+        path: ${streamPath}
+        status: 429
+        count: 1
+        retryAfter: 1
+      # Client should wait and retry, eventually succeeding
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "test-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: retry-multiple-failures
+    name: Client retries through multiple transient failures
+    description: Client should retry through several consecutive 500 errors
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "persisted-data"
+    operations:
+      # Inject 2 consecutive 500 errors
+      - action: inject-error
+        path: ${streamPath}
+        status: 500
+        count: 2
+      # Client should retry multiple times and eventually succeed
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "persisted-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: no-retry-on-404
+    name: Client does not retry on 404 Not Found
+    description: 404 is a permanent error and should not be retried
+    operations:
+      # Try to read from non-existent stream (will get 404)
+      - action: read
+        path: /non-existent-stream-${randomUUID}
+        expect:
+          status: 404
+
+  - id: no-retry-on-400
+    name: Client does not retry on 400 Bad Request
+    description: 400 is a client error and should not be retried
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      # Inject a 400 error
+      - action: inject-error
+        path: ${streamPath}
+        status: 400
+        count: 1
+      # Client should not retry, should fail immediately
+      - action: read
+        path: ${streamPath}
+        expect:
+          status: 400
+    cleanup:
+      - action: clear-errors
+
+  - id: append-retry-on-500
+    name: Append retries on 500 Internal Server Error
+    description: Append should automatically retry when server returns 500
+    setup:
+      - action: create
+        as: streamPath
+    operations:
+      # Inject a 500 error for the first append
+      - action: inject-error
+        path: ${streamPath}
+        status: 500
+        count: 1
+      # Client should retry and eventually succeed
+      - action: append
+        path: ${streamPath}
+        data: "retry-data"
+      # Verify data was appended
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "retry-data"
+    cleanup:
+      - action: clear-errors
+
+  - id: retry-exhaustion-fails
+    name: Client fails after retry limit exhaustion
+    description: |
+      Client should eventually fail when transient errors persist beyond
+      the retry limit. This prevents infinite retry loops and ensures
+      clients surface errors to callers rather than hanging forever.
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      # Inject many 500 errors - more than any reasonable retry limit
+      - action: inject-error
+        path: ${streamPath}
+        status: 500
+        count: 20
+      # Client should eventually give up and return an error
+      - action: read
+        path: ${streamPath}
+        expect:
+          error: true
+          # The error could be 500 (last failed attempt) or a client-specific
+          # retry exhaustion error - either is acceptable
+    cleanup:
+      - action: clear-errors

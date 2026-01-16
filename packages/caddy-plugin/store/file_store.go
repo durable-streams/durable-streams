@@ -25,6 +25,11 @@ type FileStore struct {
 	dirCache    map[string]string // path -> directory name
 	metaCacheMu sync.RWMutex
 
+	// Per-producer locks for serializing validation+append
+	// Key: "{streamPath}:{producerId}"
+	producerLocks   map[string]*sync.Mutex
+	producerLocksMu sync.Mutex
+
 	// Background cleanup
 	cleanupStop chan struct{}
 	cleanupDone chan struct{}
@@ -67,10 +72,11 @@ func NewFileStore(cfg FileStoreConfig) (*FileStore, error) {
 		longPoll: &longPollManager{
 			waiters: make(map[string][]chan struct{}),
 		},
-		metaCache:   make(map[string]*StreamMetadata),
-		dirCache:    make(map[string]string),
-		cleanupStop: make(chan struct{}),
-		cleanupDone: make(chan struct{}),
+		metaCache:     make(map[string]*StreamMetadata),
+		dirCache:      make(map[string]string),
+		producerLocks: make(map[string]*sync.Mutex),
+		cleanupStop:   make(chan struct{}),
+		cleanupDone:   make(chan struct{}),
 	}
 
 	// Load existing streams into cache
@@ -103,12 +109,18 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	s.metaCacheMu.Lock()
 	defer s.metaCacheMu.Unlock()
 
-	// Check if stream already exists
+	// Check if stream already exists (and is not expired)
 	if existing, ok := s.metaCache[path]; ok {
-		if existing.ConfigMatches(opts) {
+		// If expired, delete it and allow recreation
+		if existing.IsExpired() {
+			if dirName, hasDirName := s.dirCache[path]; hasDirName {
+				s.deleteStreamUnlocked(path, dirName)
+			}
+		} else if existing.ConfigMatches(opts) {
 			return existing, false, nil
+		} else {
+			return nil, false, ErrConfigMismatch
 		}
-		return nil, false, ErrConfigMismatch
 	}
 
 	// Generate unique directory name
@@ -210,14 +222,18 @@ func (s *FileStore) Delete(path string) error {
 		return ErrStreamNotFound
 	}
 
+	s.deleteStreamUnlocked(path, dirName)
+	return nil
+}
+
+// deleteStreamUnlocked removes a stream without acquiring the lock (caller must hold metaCacheMu)
+func (s *FileStore) deleteStreamUnlocked(path string, dirName string) {
 	// Remove from writer pool
 	segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
 	s.writerPool.Remove(segPath)
 
-	// Delete from bbolt
-	if err := s.metaStore.Delete(path); err != nil {
-		return err
-	}
+	// Delete from bbolt (ignore errors on expired stream cleanup)
+	s.metaStore.Delete(path)
 
 	// Remove from cache
 	delete(s.metaCache, path)
@@ -228,61 +244,221 @@ func (s *FileStore) Delete(path string) error {
 	deletedDir := filepath.Join(s.dataDir, "streams", ".deleted~"+dirName+"~"+fmt.Sprintf("%d", time.Now().UnixNano()))
 	os.Rename(streamDir, deletedDir)
 	go os.RemoveAll(deletedDir)
+}
 
-	return nil
+// getProducerLock returns a per-producer mutex for serializing validation+append.
+// This prevents race conditions when HTTP requests arrive out-of-order.
+func (s *FileStore) getProducerLock(streamPath, producerId string) *sync.Mutex {
+	key := streamPath + ":" + producerId
+	s.producerLocksMu.Lock()
+	defer s.producerLocksMu.Unlock()
+
+	if mu, ok := s.producerLocks[key]; ok {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	s.producerLocks[key] = mu
+	return mu
+}
+
+// validateProducer validates producer headers and returns the result.
+// It also updates the producer state in the metadata if the append is accepted.
+// Returns (result, updatedState, error) where updatedState is nil if no update needed.
+func (s *FileStore) validateProducer(meta *StreamMetadata, opts AppendOptions) (AppendResult, *ProducerState, error) {
+	epoch := *opts.ProducerEpoch
+	seq := *opts.ProducerSeq
+
+	// Get current producer state (may not exist)
+	var state *ProducerState
+	if meta.Producers != nil {
+		state = meta.Producers[opts.ProducerId]
+	}
+
+	// No existing state - accept as new producer
+	if state == nil {
+		if seq != 0 {
+			// First message from producer must be seq=0
+			return AppendResult{
+				ProducerResult: ProducerResultNone,
+				ExpectedSeq:    0,
+				ReceivedSeq:    seq,
+			}, nil, ErrProducerSeqGap
+		}
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     0,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
+		}, newState, nil
+	}
+
+	// Epoch validation (client-declared, server-validated)
+	if epoch < state.Epoch {
+		// Stale epoch - zombie fencing
+		return AppendResult{
+			ProducerResult: ProducerResultNone,
+			CurrentEpoch:   state.Epoch,
+		}, nil, ErrStaleEpoch
+	}
+
+	if epoch > state.Epoch {
+		// New epoch - must start at seq=0
+		if seq != 0 {
+			return AppendResult{
+				ProducerResult: ProducerResultNone,
+			}, nil, ErrInvalidEpochSeq
+		}
+		// Accept new epoch
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     0,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+			LastSeq:        0,
+		}, newState, nil
+	}
+
+	// Same epoch - sequence validation
+	if seq <= state.LastSeq {
+		// Duplicate - idempotent success
+		return AppendResult{
+			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        state.LastSeq,
+		}, nil, nil
+	}
+
+	if seq == state.LastSeq+1 {
+		// Accept - update state
+		newState := &ProducerState{
+			Epoch:       epoch,
+			LastSeq:     seq,
+			LastUpdated: time.Now().Unix(),
+		}
+		return AppendResult{
+			ProducerResult: ProducerResultAccepted,
+			LastSeq:        seq,
+		}, newState, nil
+	}
+
+	// seq > lastSeq + 1 - gap detected
+	return AppendResult{
+		ProducerResult: ProducerResultNone,
+		ExpectedSeq:    state.LastSeq + 1,
+		ReceivedSeq:    seq,
+	}, nil, ErrProducerSeqGap
 }
 
 // Append adds data to a stream
-func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Offset, error) {
+func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (AppendResult, error) {
+	// Validate producer headers - must be all or none
+	if opts.HasProducerHeaders() && !opts.HasAllProducerHeaders() {
+		return AppendResult{}, ErrPartialProducer
+	}
+
+	// If producer headers provided, acquire per-producer lock for serialization
+	if opts.HasAllProducerHeaders() {
+		producerLock := s.getProducerLock(path, opts.ProducerId)
+		producerLock.Lock()
+		defer producerLock.Unlock()
+	}
+
 	s.metaCacheMu.Lock()
 	defer s.metaCacheMu.Unlock()
 
 	meta, ok := s.metaCache[path]
 	if !ok {
-		return Offset{}, ErrStreamNotFound
+		return AppendResult{}, ErrStreamNotFound
 	}
 
 	// Check if stream has expired
 	if meta.IsExpired() {
-		return Offset{}, ErrStreamNotFound
+		return AppendResult{}, ErrStreamNotFound
 	}
 
 	dirName := s.dirCache[path]
 
 	// Validate content type
 	if opts.ContentType != "" && !ContentTypeMatches(meta.ContentType, opts.ContentType) {
-		return Offset{}, ErrContentTypeMismatch
+		return AppendResult{}, ErrContentTypeMismatch
 	}
 
-	// Validate sequence number
+	// Validate producer FIRST (if headers provided)
+	// This must happen before Stream-Seq validation so that retries
+	// are deduplicated at the transport layer even if Stream-Seq would conflict.
+	var producerState *ProducerState
+	var producerResult ProducerResult = ProducerResultNone
+	var producerLastSeq int64
+	if opts.HasAllProducerHeaders() {
+		result, newState, err := s.validateProducer(meta, opts)
+		if err != nil {
+			result.Offset = meta.CurrentOffset
+			return result, err
+		}
+		if result.ProducerResult == ProducerResultDuplicate {
+			// Duplicate - return current offset, no append needed
+			return AppendResult{
+				Offset:         meta.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        result.LastSeq,
+			}, nil
+		}
+		producerState = newState
+		producerResult = result.ProducerResult
+		producerLastSeq = result.LastSeq
+	}
+
+	// Validate sequence number (Stream-Seq - application layer)
+	// Only checked for non-duplicate appends.
 	if opts.Seq != "" {
 		if meta.LastSeq != "" && opts.Seq <= meta.LastSeq {
-			return Offset{}, ErrSequenceConflict
+			return AppendResult{}, ErrSequenceConflict
 		}
 	}
 
 	// Append to segment
 	newOffset, err := s.appendToStream(meta, dirName, data, opts, false) // Don't allow empty arrays on append
 	if err != nil {
-		return Offset{}, err
+		return AppendResult{}, err
 	}
 
-	// Update metadata
+	// Update in-memory metadata
 	meta.CurrentOffset = newOffset
 	if opts.Seq != "" {
 		meta.LastSeq = opts.Seq
 	}
+	if producerState != nil {
+		if meta.Producers == nil {
+			meta.Producers = make(map[string]*ProducerState)
+		}
+		meta.Producers[opts.ProducerId] = producerState
+	}
 
-	// Persist to bbolt
-	if err := s.metaStore.UpdateOffset(path, newOffset, opts.Seq); err != nil {
-		// Log error but don't fail - the file is the source of truth
-		// On recovery, we'll reconcile
+	// Persist to bbolt atomically
+	if producerState != nil {
+		if err := s.metaStore.UpdateAppendState(path, newOffset, opts.Seq, opts.ProducerId, producerState); err != nil {
+			// Log error but don't fail - the file is the source of truth
+			// On recovery, we'll reconcile
+		}
+	} else {
+		if err := s.metaStore.UpdateOffset(path, newOffset, opts.Seq); err != nil {
+			// Log error but don't fail - the file is the source of truth
+			// On recovery, we'll reconcile
+		}
 	}
 
 	// Notify long-poll waiters
 	s.longPoll.notify(path)
 
-	return newOffset, nil
+	return AppendResult{
+		Offset:         newOffset,
+		ProducerResult: producerResult,
+		LastSeq:        producerLastSeq,
+	}, nil
 }
 
 // appendToStream appends data to the stream's segment file

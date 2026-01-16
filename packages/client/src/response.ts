@@ -5,13 +5,15 @@
  * Supports multiple consumption styles: Promise helpers, ReadableStreams, and Subscribers.
  */
 
-import { DurableStreamError } from "./error"
+import { asAsyncIterableReadableStream } from "./asyncIterableReadableStream"
 import {
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
+import { DurableStreamError } from "./error"
 import { parseSSEStream } from "./sse"
+import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEControlEvent, SSEEvent } from "./sse"
 import type {
   ByteChunk,
@@ -19,8 +21,19 @@ import type {
   JsonBatch,
   LiveMode,
   Offset,
+  SSEResilienceOptions,
   TextChunk,
 } from "./types"
+
+/**
+ * Constant used as abort reason when pausing the stream due to visibility change.
+ */
+const PAUSE_STREAM = `PAUSE_STREAM`
+
+/**
+ * State machine for visibility-based pause/resume.
+ */
+type StreamState = `active` | `pause-requested` | `paused`
 
 /**
  * Internal configuration for creating a StreamResponse.
@@ -50,7 +63,8 @@ export interface StreamResponseConfig {
   fetchNext: (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    resumingFromPause?: boolean
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -58,6 +72,8 @@ export interface StreamResponseConfig {
     cursor: string | undefined,
     signal: AbortSignal
   ) => Promise<Response>
+  /** SSE resilience options */
+  sseResilience?: SSEResilienceOptions
 }
 
 /**
@@ -95,6 +111,20 @@ export class StreamResponseImpl<
   #stopAfterUpToDate = false
   #consumptionMethod: string | null = null
 
+  // --- Visibility/Pause State ---
+  #state: StreamState = `active`
+  #requestAbortController?: AbortController
+  #unsubscribeFromVisibilityChanges?: () => void
+  #pausePromise?: Promise<void>
+  #pauseResolve?: () => void
+  #justResumedFromPause = false
+
+  // --- SSE Resilience State ---
+  #sseResilience: Required<SSEResilienceOptions>
+  #lastSSEConnectionStartTime?: number
+  #consecutiveShortSSEConnections = 0
+  #sseFallbackToLongPoll = false
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -122,6 +152,16 @@ export class StreamResponseImpl<
     this.#fetchNext = config.fetchNext
     this.#startSSE = config.startSSE
 
+    // Initialize SSE resilience options with defaults
+    this.#sseResilience = {
+      minConnectionDuration:
+        config.sseResilience?.minConnectionDuration ?? 1000,
+      maxShortConnections: config.sseResilience?.maxShortConnections ?? 3,
+      backoffBaseDelay: config.sseResilience?.backoffBaseDelay ?? 100,
+      backoffMaxDelay: config.sseResilience?.backoffMaxDelay ?? 5000,
+      logWarnings: config.sseResilience?.logWarnings ?? true,
+    }
+
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
       this.#closedReject = reject
@@ -129,6 +169,97 @@ export class StreamResponseImpl<
 
     // Create the core response stream
     this.#responseStream = this.#createResponseStream(config.firstResponse)
+
+    // Install single abort listener that propagates to current request controller
+    // and unblocks any paused pull() (avoids accumulating one listener per request)
+    this.#abortController.signal.addEventListener(
+      `abort`,
+      () => {
+        this.#requestAbortController?.abort(this.#abortController.signal.reason)
+        // Unblock pull() if paused, so it can see the abort and close
+        this.#pauseResolve?.()
+        this.#pausePromise = undefined
+        this.#pauseResolve = undefined
+      },
+      { once: true }
+    )
+
+    // Subscribe to visibility changes for pause/resume (browser only)
+    this.#subscribeToVisibilityChanges()
+  }
+
+  /**
+   * Subscribe to document visibility changes to pause/resume syncing.
+   * When the page is hidden, we pause to save battery and bandwidth.
+   * When visible again, we resume syncing.
+   */
+  #subscribeToVisibilityChanges(): void {
+    // Only subscribe in browser environments
+    if (
+      typeof document === `object` &&
+      typeof document.hidden === `boolean` &&
+      typeof document.addEventListener === `function`
+    ) {
+      const visibilityHandler = (): void => {
+        if (document.hidden) {
+          this.#pause()
+        } else {
+          this.#resume()
+        }
+      }
+
+      document.addEventListener(`visibilitychange`, visibilityHandler)
+
+      // Store cleanup function to remove the event listener
+      // Check document still exists (may be undefined in tests after cleanup)
+      this.#unsubscribeFromVisibilityChanges = () => {
+        if (typeof document === `object`) {
+          document.removeEventListener(`visibilitychange`, visibilityHandler)
+        }
+      }
+
+      // Check initial state - page might already be hidden when stream starts
+      if (document.hidden) {
+        this.#pause()
+      }
+    }
+  }
+
+  /**
+   * Pause the stream when page becomes hidden.
+   * Aborts any in-flight request to free resources.
+   * Creates a promise that pull() will await while paused.
+   */
+  #pause(): void {
+    if (this.#state === `active`) {
+      this.#state = `pause-requested`
+      // Create promise that pull() will await
+      this.#pausePromise = new Promise((resolve) => {
+        this.#pauseResolve = resolve
+      })
+      // Abort current request if any
+      this.#requestAbortController?.abort(PAUSE_STREAM)
+    }
+  }
+
+  /**
+   * Resume the stream when page becomes visible.
+   * Resolves the pause promise to unblock pull().
+   */
+  #resume(): void {
+    if (this.#state === `paused` || this.#state === `pause-requested`) {
+      // Don't resume if the user's signal is already aborted
+      if (this.#abortController.signal.aborted) {
+        return
+      }
+
+      // Transition to active and resolve the pause promise
+      this.#state = `active`
+      this.#justResumedFromPause = true // Flag for single-shot skip of live param
+      this.#pauseResolve?.()
+      this.#pausePromise = undefined
+      this.#pauseResolve = undefined
+    }
   }
 
   // --- Response metadata getters ---
@@ -168,10 +299,12 @@ export class StreamResponseImpl<
   }
 
   #markClosed(): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedResolve()
   }
 
   #markError(err: Error): void {
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#closedReject(err)
   }
 
@@ -277,6 +410,70 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Mark the start of an SSE connection for duration tracking.
+   */
+  #markSSEConnectionStart(): void {
+    this.#lastSSEConnectionStartTime = Date.now()
+  }
+
+  /**
+   * Handle SSE connection end - check duration and manage fallback state.
+   * Returns a delay to wait before reconnecting, or null if should not reconnect.
+   */
+  async #handleSSEConnectionEnd(): Promise<number | null> {
+    if (this.#lastSSEConnectionStartTime === undefined) {
+      return 0 // No tracking, allow immediate reconnect
+    }
+
+    const connectionDuration = Date.now() - this.#lastSSEConnectionStartTime
+    const wasAborted = this.#abortController.signal.aborted
+
+    if (
+      connectionDuration < this.#sseResilience.minConnectionDuration &&
+      !wasAborted
+    ) {
+      // Connection was too short - likely proxy buffering or misconfiguration
+      this.#consecutiveShortSSEConnections++
+
+      if (
+        this.#consecutiveShortSSEConnections >=
+        this.#sseResilience.maxShortConnections
+      ) {
+        // Too many short connections - fall back to long polling
+        this.#sseFallbackToLongPoll = true
+
+        if (this.#sseResilience.logWarnings) {
+          console.warn(
+            `[Durable Streams] SSE connections are closing immediately (possibly due to proxy buffering or misconfiguration). ` +
+              `Falling back to long polling. ` +
+              `Your proxy must support streaming SSE responses (not buffer the complete response). ` +
+              `Configuration: Nginx add 'X-Accel-Buffering: no', Caddy add 'flush_interval -1' to reverse_proxy.`
+          )
+        }
+        return null // Signal to not reconnect SSE
+      } else {
+        // Add exponential backoff with full jitter to prevent tight infinite loop
+        // Formula: random(0, min(cap, base * 2^attempt))
+        const maxDelay = Math.min(
+          this.#sseResilience.backoffMaxDelay,
+          this.#sseResilience.backoffBaseDelay *
+            Math.pow(2, this.#consecutiveShortSSEConnections)
+        )
+        const delayMs = Math.floor(Math.random() * maxDelay)
+        await new Promise((resolve) => setTimeout(resolve, delayMs))
+        return delayMs
+      }
+    } else if (
+      connectionDuration >= this.#sseResilience.minConnectionDuration
+    ) {
+      // Connection was healthy - reset counter
+      this.#consecutiveShortSSEConnections = 0
+    }
+
+    return 0 // Allow immediate reconnect
+  }
+
+  /**
    * Try to reconnect SSE and return the new iterator, or null if reconnection
    * is not possible or fails.
    */
@@ -285,16 +482,37 @@ export class StreamResponseImpl<
     void,
     undefined
   > | null> {
+    // Check if we should fall back to long-poll due to repeated short connections
+    if (this.#sseFallbackToLongPoll) {
+      return null // Will cause fallback to long-poll
+    }
+
     if (!this.#shouldContinueLive() || !this.#startSSE) {
       return null
     }
+
+    // Handle short connection detection and backoff
+    const delayOrNull = await this.#handleSSEConnectionEnd()
+    if (delayOrNull === null) {
+      return null // Fallback to long-poll was triggered
+    }
+
+    // Track new connection start
+    this.#markSSEConnectionStart()
+
+    // Create new per-request abort controller for this SSE connection
+    this.#requestAbortController = new AbortController()
+
     const newSSEResponse = await this.#startSSE(
       this.offset,
       this.cursor,
-      this.#abortController.signal
+      this.#requestAbortController.signal
     )
     if (newSSEResponse.body) {
-      return parseSSEStream(newSSEResponse.body, this.#abortController.signal)
+      return parseSSEStream(
+        newSSEResponse.body,
+        this.#requestAbortController.signal
+      )
     }
     return null
   }
@@ -354,6 +572,7 @@ export class StreamResponseImpl<
   /**
    * Process an SSE data event by waiting for its corresponding control event.
    * In SSE protocol, control events come AFTER data events.
+   * Multiple data events may arrive before a single control event - we buffer them.
    */
   async #processSSEDataEvent(
     pendingData: string,
@@ -366,15 +585,18 @@ export class StreamResponseImpl<
       }
     | { type: `error`; error: Error }
   > {
+    // Buffer to accumulate data from multiple consecutive data events
+    let bufferedData = pendingData
+
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     while (true) {
       const { done: controlDone, value: controlEvent } =
         await sseEventIterator.next()
 
       if (controlDone) {
-        // Stream ended without control event - yield data with current state
+        // Stream ended without control event - yield buffered data with current state
         const response = this.#createSSESyntheticResponse(
-          pendingData,
+          bufferedData,
           this.offset,
           this.cursor,
           this.upToDate
@@ -401,7 +623,7 @@ export class StreamResponseImpl<
         // Update state and create response with correct metadata
         this.#updateStateFromSSEControl(controlEvent)
         const response = this.#createSSESyntheticResponse(
-          pendingData,
+          bufferedData,
           controlEvent.streamNextOffset,
           controlEvent.streamCursor,
           controlEvent.upToDate ?? false
@@ -409,15 +631,9 @@ export class StreamResponseImpl<
         return { type: `response`, response }
       }
 
-      // Got another data event before control - yield current data with current state
-      // (This is unexpected but we handle it gracefully)
-      const response = this.#createSSESyntheticResponse(
-        pendingData,
-        this.offset,
-        this.cursor,
-        this.upToDate
-      )
-      return { type: `response`, response }
+      // Got another data event before control - buffer it
+      // Server sends multiple data events followed by one control event
+      bufferedData += controlEvent.data
     }
   }
 
@@ -448,10 +664,14 @@ export class StreamResponseImpl<
                 ?.includes(`text/event-stream`) ?? false
 
             if (isSSE && firstResponse.body) {
+              // Track SSE connection start for resilience monitoring
+              this.#markSSEConnectionStart()
+              // Create per-request abort controller for SSE connection
+              this.#requestAbortController = new AbortController()
               // Start parsing SSE events
               sseEventIterator = parseSSEStream(
                 firstResponse.body,
-                this.#abortController.signal
+                this.#requestAbortController.signal
               )
               // Fall through to SSE processing below
             } else {
@@ -470,6 +690,30 @@ export class StreamResponseImpl<
 
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
+            // Check for pause state before processing SSE events
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+              // Reconnect SSE after resume
+              const newIterator = await this.#trySSEReconnect()
+              if (newIterator) {
+                sseEventIterator = newIterator
+              } else {
+                // Could not reconnect - close the stream
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             // Keep reading events until we get data or stream ends
             // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
             while (true) {
@@ -504,16 +748,39 @@ export class StreamResponseImpl<
 
           // Long-poll mode: continue with live updates if needed
           if (this.#shouldContinueLive()) {
+            // If paused or pause-requested, await the pause promise
+            // This blocks pull() until resume() is called, avoiding deadlock
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              // After resume, check if we should still continue
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
             if (this.#abortController.signal.aborted) {
               this.#markClosed()
               controller.close()
               return
             }
 
+            // Consume the single-shot resume flag (only first fetch after resume skips live param)
+            const resumingFromPause = this.#justResumedFromPause
+            this.#justResumedFromPause = false
+
+            // Create a new AbortController for this request (so we can abort on pause)
+            this.#requestAbortController = new AbortController()
+
             const response = await this.#fetchNext(
               this.offset,
               this.cursor,
-              this.#abortController.signal
+              this.#requestAbortController.signal,
+              resumingFromPause
             )
 
             this.#updateStateFromResponse(response)
@@ -526,6 +793,21 @@ export class StreamResponseImpl<
           this.#markClosed()
           controller.close()
         } catch (err) {
+          // Check if this was a pause-triggered abort
+          // Treat PAUSE_STREAM aborts as benign regardless of current state
+          // (handles race where resume() was called before abort completed)
+          if (
+            this.#requestAbortController?.signal.aborted &&
+            this.#requestAbortController.signal.reason === PAUSE_STREAM
+          ) {
+            // Only transition to paused if we're still in pause-requested state
+            if (this.#state === `pause-requested`) {
+              this.#state = `paused`
+            }
+            // Return - either we're paused, or already resumed and next pull will proceed
+            return
+          }
+
           if (this.#abortController.signal.aborted) {
             this.#markClosed()
             controller.close()
@@ -538,6 +820,7 @@ export class StreamResponseImpl<
 
       cancel: () => {
         this.#abortController.abort()
+        this.#unsubscribeFromVisibilityChanges?.()
         this.#markClosed()
       },
     })
@@ -604,7 +887,17 @@ export class StreamResponseImpl<
         // Get response text first (handles empty responses gracefully)
         const text = await result.value.text()
         const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        const parsed = JSON.parse(content) as T | Array<T>
+        let parsed: T | Array<T>
+        try {
+          parsed = JSON.parse(content) as T | Array<T>
+        } catch (err) {
+          const preview =
+            content.length > 100 ? content.slice(0, 100) + `...` : content
+          throw new DurableStreamError(
+            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
+        }
         if (Array.isArray(parsed)) {
           items.push(...parsed)
         } else {
@@ -708,18 +1001,18 @@ export class StreamResponseImpl<
     return readable
   }
 
-  bodyStream(): ReadableStream<Uint8Array> {
+  bodyStream(): ReadableStreamAsyncIterable<Uint8Array> {
     this.#ensureNoConsumption(`bodyStream`)
-    return this.#createBodyStreamInternal()
+    return asAsyncIterableReadableStream(this.#createBodyStreamInternal())
   }
 
-  jsonStream(): ReadableStream<TJson> {
+  jsonStream(): ReadableStreamAsyncIterable<TJson> {
     this.#ensureNoConsumption(`jsonStream`)
     this.#ensureJsonMode()
     const reader = this.#getResponseReader()
     let pendingItems: Array<TJson> = []
 
-    return new ReadableStream<TJson>({
+    const stream = new ReadableStream<TJson>({
       pull: async (controller) => {
         // Drain pending items first
         if (pendingItems.length > 0) {
@@ -738,7 +1031,17 @@ export class StreamResponseImpl<
         // Parse JSON and flatten arrays (handle empty responses gracefully)
         const text = await response.text()
         const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        const parsed = JSON.parse(content) as TJson | Array<TJson>
+        let parsed: TJson | Array<TJson>
+        try {
+          parsed = JSON.parse(content) as TJson | Array<TJson>
+        } catch (err) {
+          const preview =
+            content.length > 100 ? content.slice(0, 100) + `...` : content
+          throw new DurableStreamError(
+            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
+        }
         pendingItems = Array.isArray(parsed) ? parsed : [parsed]
 
         // Enqueue first item
@@ -752,13 +1055,15 @@ export class StreamResponseImpl<
         this.cancel()
       },
     })
+
+    return asAsyncIterableReadableStream(stream)
   }
 
-  textStream(): ReadableStream<string> {
+  textStream(): ReadableStreamAsyncIterable<string> {
     this.#ensureNoConsumption(`textStream`)
     const decoder = new TextDecoder()
 
-    return this.#createBodyStreamInternal().pipeThrough(
+    const stream = this.#createBodyStreamInternal().pipeThrough(
       new TransformStream<Uint8Array, string>({
         transform(chunk, controller) {
           controller.enqueue(decoder.decode(chunk, { stream: true }))
@@ -771,6 +1076,8 @@ export class StreamResponseImpl<
         },
       })
     )
+
+    return asAsyncIterableReadableStream(stream)
   }
 
   // =====================
@@ -799,7 +1106,17 @@ export class StreamResponseImpl<
           // Get response text first (handles empty responses gracefully)
           const text = await response.text()
           const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-          const parsed = JSON.parse(content) as T | Array<T>
+          let parsed: T | Array<T>
+          try {
+            parsed = JSON.parse(content) as T | Array<T>
+          } catch (err) {
+            const preview =
+              content.length > 100 ? content.slice(0, 100) + `...` : content
+            throw new DurableStreamError(
+              `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+              `PARSE_ERROR`
+            )
+          }
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
           await subscriber({
@@ -940,6 +1257,7 @@ export class StreamResponseImpl<
 
   cancel(reason?: unknown): void {
     this.#abortController.abort(reason)
+    this.#unsubscribeFromVisibilityChanges?.()
     this.#markClosed()
   }
 

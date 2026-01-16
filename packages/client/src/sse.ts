@@ -6,6 +6,7 @@
  * - `event: control` events contain `streamNextOffset` and optional `streamCursor` and `upToDate`
  */
 
+import { DurableStreamError } from "./error"
 import type { Offset } from "./types"
 
 /**
@@ -50,6 +51,9 @@ export async function* parseSSEStream(
 
       buffer += decoder.decode(value, { stream: true })
 
+      // Normalize line endings: CRLF → LF, lone CR → LF (per SSE spec)
+      buffer = buffer.replace(/\r\n/g, `\n`).replace(/\r/g, `\n`)
+
       // Process complete lines
       const lines = buffer.split(`\n`)
       // Keep the last incomplete line in the buffer
@@ -76,10 +80,17 @@ export async function* parseSSEStream(
                   streamCursor: control.streamCursor,
                   upToDate: control.upToDate,
                 }
-              } catch {
-                // Invalid control event, skip
+              } catch (err) {
+                // Control events contain critical offset data - don't silently ignore
+                const preview =
+                  dataStr.length > 100 ? dataStr.slice(0, 100) + `...` : dataStr
+                throw new DurableStreamError(
+                  `Failed to parse SSE control event: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+                  `PARSE_ERROR`
+                )
               }
             }
+            // Unknown event types are silently skipped per protocol
           }
           currentEvent = { data: [] }
         } else if (line.startsWith(`event:`)) {
@@ -119,8 +130,13 @@ export async function* parseSSEStream(
             streamCursor: control.streamCursor,
             upToDate: control.upToDate,
           }
-        } catch {
-          // Invalid control event, skip
+        } catch (err) {
+          const preview =
+            dataStr.length > 100 ? dataStr.slice(0, 100) + `...` : dataStr
+          throw new DurableStreamError(
+            `Failed to parse SSE control event: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+            `PARSE_ERROR`
+          )
         }
       }
     }

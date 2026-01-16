@@ -1,0 +1,322 @@
+id: idempotent-multi-producer
+name: Idempotent Producer - Multi-Producer Scenarios
+description: |
+  Tests for multiple producers on the same stream and producer isolation.
+  Each (stream, producerId) has independent epoch/sequence state.
+category: producer
+tags:
+  - idempotent
+  - multi-producer
+  - isolation
+
+tests:
+  - id: multiple-producers-independent
+    name: Multiple producers have independent state
+    description: Different producer IDs should have separate epoch/seq tracking
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Producer A: seq=0
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer B: seq=0 (independent)
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Producer A: seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Producer B: seq=1
+      - action: server-append
+        path: ${streamPath}
+        data: "B1"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+
+  - id: producer-scope-per-stream
+    name: Same producer ID works independently on different streams
+    description: |
+      Producer state must be scoped per (stream, producerId), not globally
+      by producerId alone. A common implementation bug is to key producer
+      state only by producer ID, causing cross-stream interference.
+    setup:
+      - action: create
+        as: streamA
+        contentType: text/plain
+      - action: create
+        as: streamB
+        contentType: text/plain
+    operations:
+      # Same producer, epoch=0, seq=0 on stream A
+      - action: server-append
+        path: ${streamA}
+        data: "streamA-msg"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Same producer, epoch=0, seq=0 on stream B - must be 200, not 204/403
+      - action: server-append
+        path: ${streamB}
+        data: "streamB-msg"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Verify each stream has its own message
+      - action: read
+        path: ${streamA}
+        expect:
+          data: "streamA-msg"
+          upToDate: true
+      - action: read
+        path: ${streamB}
+        expect:
+          data: "streamB-msg"
+          upToDate: true
+
+  - id: producer-epoch-per-stream
+    name: Producer epochs are independent per stream
+    description: |
+      Epoch fencing on one stream must not affect the same producer on
+      another stream. Each (stream, producerId) has independent epoch state.
+    setup:
+      - action: create
+        as: streamA
+        contentType: text/plain
+      - action: create
+        as: streamB
+        contentType: text/plain
+    operations:
+      # Establish epoch=5 on stream A
+      - action: server-append
+        path: ${streamA}
+        data: "A-epoch5"
+        producerId: shared-producer
+        producerEpoch: 5
+        producerSeq: 0
+        expect:
+          status: 200
+      # epoch=0 on stream B should still work (different stream)
+      - action: server-append
+        path: ${streamB}
+        data: "B-epoch0"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # epoch=0 on stream A should be fenced
+      - action: server-append
+        path: ${streamA}
+        data: "A-epoch0-zombie"
+        producerId: shared-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 403
+          producerEpoch: 5
+
+  - id: interleaved-producers-ordering
+    name: Interleaved producers maintain per-producer ordering
+    description: |
+      When multiple producers write interleaved, each producer's messages
+      should appear in their sequence order relative to each other.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Interleave writes from two producers
+      - action: server-append
+        path: ${streamPath}
+        data: "A0"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "B0"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "A1"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "B1"
+        producerId: producer-B
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "A2"
+        producerId: producer-A
+        producerEpoch: 0
+        producerSeq: 2
+        expect:
+          status: 200
+      # Read and verify A0 comes before A1 comes before A2
+      # and B0 comes before B1
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - "A0"
+            - "A1"
+            - "A2"
+            - "B0"
+            - "B1"
+          upToDate: true
+
+  - id: delete-recreate-resets-producer-state
+    name: Deleting and recreating stream resets producer state
+    description: |
+      When a stream is deleted and recreated, producer state must be reset.
+      The new stream is a fresh log, so (epoch=0, seq=0) must be accepted
+      even if the same producer previously wrote to the old stream.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Write to original stream
+      - action: server-append
+        path: ${streamPath}
+        data: "original-msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Advance sequence
+      - action: server-append
+        path: ${streamPath}
+        data: "original-msg2"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 1
+        expect:
+          status: 200
+      # Delete the stream
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      # Recreate at same path
+      - action: create
+        path: ${streamPath}
+        contentType: text/plain
+      # Same producer, epoch=0, seq=0 must work (new stream)
+      - action: server-append
+        path: ${streamPath}
+        data: "recreated-msg"
+        producerId: test-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Verify only the new message exists
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "recreated-msg"
+          upToDate: true
+
+  - id: producer-id-long
+    name: Long producer ID works
+    description: Very long producer IDs should be accepted
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: server-append
+        path: ${streamPath}
+        data: "long-id"
+        producerId: "very-long-producer-id-that-goes-on-for-quite-a-while-to-test-string-handling-in-the-server-implementation-and-make-sure-it-doesnt-truncate"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Duplicate detection works with long ID
+      - action: server-append
+        path: ${streamPath}
+        data: "long-id"
+        producerId: "very-long-producer-id-that-goes-on-for-quite-a-while-to-test-string-handling-in-the-server-implementation-and-make-sure-it-doesnt-truncate"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 204
+
+  - id: producer-id-with-special-chars
+    name: Producer ID with special characters works
+    description: Producer IDs can contain colons, slashes, and other special chars
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Colon-separated ID (common pattern)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg1"
+        producerId: "service:instance:123"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # Slash-separated ID (path-like)
+      - action: server-append
+        path: ${streamPath}
+        data: "msg2"
+        producerId: "region/zone/host"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+      # UUID format
+      - action: server-append
+        path: ${streamPath}
+        data: "msg3"
+        producerId: "550e8400-e29b-41d4-a716-446655440000"
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
