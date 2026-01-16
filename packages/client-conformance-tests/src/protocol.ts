@@ -120,8 +120,8 @@ export interface ReadCommand {
   path: string
   /** Starting offset (opaque string from previous reads) */
   offset?: string
-  /** Live mode: false for catch-up only, "auto", "long-poll" or "sse" for live */
-  live?: false | `auto` | `long-poll` | `sse`
+  /** Live mode: false for catch-up only, true for auto-select, "long-poll" or "sse" for explicit */
+  live?: false | true | `long-poll` | `sse`
   /** Timeout for long-poll in milliseconds */
   timeoutMs?: number
   /** Maximum number of chunks to read (for testing) */

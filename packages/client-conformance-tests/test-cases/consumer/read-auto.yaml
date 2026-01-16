@@ -29,7 +29,7 @@ tests:
     operations:
       - action: read
         path: ${streamPath}
-        live: auto
+        live: true
         timeoutMs: 2000
         waitForUpToDate: true
         expect:
@@ -52,7 +52,7 @@ tests:
       - action: read
         path: ${streamPath}
         offset: ${initialOffset}
-        live: auto
+        live: true
         timeoutMs: 10000
         background: true
         as: readOp
@@ -81,7 +81,7 @@ tests:
     operations:
       - action: read
         path: ${streamPath}
-        live: auto
+        live: true
         timeoutMs: 1000
         waitForUpToDate: true
         expect:
@@ -106,7 +106,7 @@ tests:
       - action: read
         path: ${streamPath}
         offset: ${offset}
-        live: auto
+        live: true
         timeoutMs: 1000
         waitForUpToDate: true
         expect:
@@ -122,7 +122,7 @@ tests:
     operations:
       - action: read
         path: ${streamPath}
-        live: auto
+        live: true
         timeoutMs: 500
         waitForUpToDate: true
         expect:
@@ -147,7 +147,7 @@ tests:
         data: "chunk3"
       - action: read
         path: ${streamPath}
-        live: auto
+        live: true
         timeoutMs: 2000
         waitForUpToDate: true
         expect:

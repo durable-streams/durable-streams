@@ -127,7 +127,7 @@ async function streamInternal<TJson = unknown>(
   fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, startOffset)
 
   // Set live query param for explicit modes
-  // true and "auto" both mean auto-select (no query param, handled by consumption method)
+  // true means auto-select (no query param, handled by consumption method)
   const live: LiveMode = options.live ?? true
   if (live === `long-poll` || live === `sse`) {
     fetchUrl.searchParams.set(LIVE_QUERY_PARAM, live)
@@ -203,7 +203,7 @@ async function streamInternal<TJson = unknown>(
     if (!resumingFromPause) {
       if (live === `sse`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
-      } else if (live === true || live === `auto` || live === `long-poll`) {
+      } else if (live === true || live === `long-poll`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }

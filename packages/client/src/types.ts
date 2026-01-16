@@ -65,10 +65,8 @@ export type ParamsRecord = {
  * - true: Auto-select best mode (SSE for JSON streams, long-poll for binary)
  * - "long-poll": Explicit long-poll mode for live updates
  * - "sse": Explicit server-sent events for live updates
- *
- * Note: "auto" is supported for backward compatibility but `true` is preferred.
  */
-export type LiveMode = boolean | `auto` | `long-poll` | `sse`
+export type LiveMode = boolean | `long-poll` | `sse`
 
 // ============================================================================
 // Stream Options (Read API)
