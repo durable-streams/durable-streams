@@ -14,7 +14,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Build job - creates artifacts for parallel test jobs
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,20 +41,22 @@ jobs:
           tsc --build --clean
           pnpm typecheck
 
-      - name: Test
-        run: pnpm test:run
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: |
+            packages/*/dist
+            node_modules/.pnpm
+          retention-days: 1
 
-  caddy-conformance:
+  # Unit tests - runs in parallel with conformance tests
+  test:
     runs-on: ubuntu-latest
+    needs: build
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-          cache-dependency-path: packages/caddy-plugin/go.sum
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -67,12 +70,93 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build TypeScript packages
-        run: pnpm build
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Test
+        run: pnpm test:run --project client --project server --project state
+
+  # Build Caddy binary - runs in parallel with other jobs
+  build-caddy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: packages/caddy-plugin/go.sum
 
       - name: Build Caddy binary
         working-directory: packages/caddy-plugin
         run: go build -o caddy ./cmd/caddy
 
-      - name: Run Caddy conformance tests
-        run: pnpm --filter @durable-streams-internal/caddy-plugin test:run
+      - name: Upload Caddy binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-binary
+          path: packages/caddy-plugin/caddy
+          retention-days: 1
+
+  # Parallel conformance test shards
+  caddy-conformance:
+    runs-on: ubuntu-latest
+    needs: [build, build-caddy]
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: "basic"
+            pattern: "Basic Stream Operations|Append Operations|Read Operations"
+          - name: "http-protocol"
+            pattern: "HTTP Protocol|Case-Insensitivity|Content-Type Validation"
+          - name: "long-poll"
+            pattern: "Long-Poll Operations|Long-Poll Edge Cases"
+          - name: "ttl-expiry"
+            pattern: "TTL and Expiry Validation|TTL and Expiry Edge Cases"
+          - name: "metadata"
+            pattern: "HEAD Metadata|Caching and ETag"
+          - name: "advanced"
+            pattern: "Offset Validation and Resumability|Protocol Edge Cases|Chunking and Large Payloads"
+          - name: "streaming"
+            pattern: "SSE Mode|JSON Mode"
+          - name: "consistency"
+            pattern: "Read-Your-Writes Consistency|Property-Based Tests"
+    name: conformance (${{ matrix.shard.name }})
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+
+      - name: Download Caddy binary
+        uses: actions/download-artifact@v4
+        with:
+          name: caddy-binary
+          path: packages/caddy-plugin
+
+      - name: Make Caddy executable
+        run: chmod +x packages/caddy-plugin/caddy
+
+      - name: Run conformance tests (${{ matrix.shard.name }})
+        run: |
+          pnpm vitest run --project caddy --testNamePattern "${{ matrix.shard.pattern }}"
