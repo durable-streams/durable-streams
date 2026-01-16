@@ -221,9 +221,16 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
       const encoder = encoding.createEncoder()
       encoding.writeVarUint8Array(encoder, encoded)
       // Fire and forget - we're disconnecting anyway
-      this.awarenessStream.append(encoding.toUint8Array(encoder)).catch(() => {
-        // Ignore errors on disconnect
-      })
+      this.awarenessStream
+        .append(encoding.toUint8Array(encoder))
+        .catch((err) => {
+          if (this.debug) {
+            console.debug(
+              `[y-durable-streams] Failed to broadcast disconnect:`,
+              err
+            )
+          }
+        })
     } else if (this.awarenessStreamConfig) {
       // Clean up awareness state locally even if we can't broadcast
       awarenessProtocol.removeAwarenessStates(
@@ -330,6 +337,9 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
                 err
               )
             }
+            this.emit(`error`, [
+              err instanceof Error ? err : new Error(String(err)),
+            ])
             break
           }
         }
@@ -415,6 +425,9 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
                 err
               )
             }
+            this.emit(`error`, [
+              err instanceof Error ? err : new Error(String(err)),
+            ])
             break
           }
         }
@@ -489,8 +502,10 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
       this.synced = true
     } catch (err) {
       console.error(`[y-durable-streams] Failed to send document changes:`, err)
-      // Re-batch the failed update (lastSending is always set when catch is reached)
-      this.batchDocumentUpdate(lastSending!)
+      // Re-batch the failed update if we have one
+      if (lastSending) {
+        this.batchDocumentUpdate(lastSending)
+      }
       this.emit(`error`, [err instanceof Error ? err : new Error(String(err))])
       // Disconnect and reconnect to recover - this will retry pending changes
       this.sendingDocumentChanges = false
@@ -571,6 +586,7 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
       }
     } catch (err) {
       console.error(`[y-durable-streams] Failed to send awareness:`, err)
+      this.emit(`error`, [err instanceof Error ? err : new Error(String(err))])
     } finally {
       this.sendingAwarenessUpdate = false
     }
