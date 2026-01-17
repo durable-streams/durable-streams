@@ -156,13 +156,15 @@ export async function streamUpstreamToStorage(
   let idleTimer: ReturnType<typeof setTimeout> | null = null
   let lastOffset = ``
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+  let idleTimedOut = false
 
   const resetIdleTimer = () => {
     if (idleTimer) {
       clearTimeout(idleTimer)
     }
     idleTimer = setTimeout(() => {
-      // Actually abort the connection by cancelling the reader
+      idleTimedOut = true
+      // Cancel the reader to exit the read loop
       if (activeReader) {
         activeReader.cancel(`Idle timeout exceeded`).catch(() => {
           // Ignore cancel errors
@@ -275,6 +277,14 @@ export async function streamUpstreamToStorage(
         contentType,
         createAbortMessage()
       )
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- set by setTimeout callback
+    } else if (idleTimedOut) {
+      // Idle timeout - append error control message (not complete)
+      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
+        type: `close`,
+        reason: `error`,
+        error: { code: `IDLE_TIMEOUT`, message: `Idle timeout exceeded` },
+      })
     } else {
       await appendControlMessage(
         durableStreamsUrl,

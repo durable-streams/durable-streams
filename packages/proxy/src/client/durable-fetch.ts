@@ -27,6 +27,28 @@ import type {
 const DEFAULT_PREFIX = `durable-streams:`
 
 /**
+ * Extract the service name from a proxy URL.
+ * Expected format: .../v1/proxy/{service}
+ */
+function getServiceName(proxyUrlObj: URL): string {
+  const match = proxyUrlObj.pathname.match(/\/v1\/proxy\/([^/]+)\/?$/)
+  if (!match) {
+    throw new Error(
+      `Invalid proxy URL: expected format /v1/proxy/{service}, got ${proxyUrlObj.pathname}`
+    )
+  }
+  return match[1]!
+}
+
+/**
+ * Get the prefix before /v1/proxy (for deployments mounted under a subpath).
+ * e.g., /api/durable/v1/proxy/chat -> /api/durable
+ */
+function getProxyPrefix(proxyUrlObj: URL): string {
+  return proxyUrlObj.pathname.replace(/\/v1\/proxy\/[^/]+\/?$/, ``)
+}
+
+/**
  * Create a durable fetch wrapper.
  *
  * This wrapper:
@@ -68,14 +90,10 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     autoResume = true,
   } = options
 
-  // Parse the proxy URL to extract service name
+  // Parse and validate the proxy URL
   const proxyUrlObj = new URL(proxyUrl)
-  const serviceMatch = proxyUrlObj.pathname.match(/\/v1\/proxy\/([^/]+)/)
-  if (!serviceMatch) {
-    throw new Error(
-      `Invalid proxy URL: expected format /v1/proxy/{service}, got ${proxyUrlObj.pathname}`
-    )
-  }
+  const serviceName = getServiceName(proxyUrlObj)
+  const proxyPrefix = getProxyPrefix(proxyUrlObj)
 
   return async (
     input: RequestInfo | URL,
@@ -105,7 +123,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       try {
         return await readFromStream(
           fetchFn,
-          proxyUrl,
+          proxyUrlObj,
+          proxyPrefix,
+          serviceName,
           existingCredentials,
           stream_key,
           storage,
@@ -155,7 +175,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     // Now read from the stream
     return readFromStream(
       fetchFn,
-      proxyUrl,
+      proxyUrlObj,
+      proxyPrefix,
+      serviceName,
       credentials,
       stream_key,
       storage,
@@ -170,18 +192,20 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
  */
 async function readFromStream(
   fetchFn: typeof fetch,
-  proxyUrl: string,
+  proxyUrlObj: URL,
+  proxyPrefix: string,
+  serviceName: string,
   credentials: StreamCredentials,
   streamKey: string,
   storage: ReturnType<typeof getDefaultStorage>,
   storagePrefix: string,
   wasResumed: boolean
 ): Promise<DurableResponse> {
-  // Build the read URL
-  const proxyUrlObj = new URL(proxyUrl)
-  const basePath = proxyUrlObj.pathname.replace(/\/[^/]+$/, ``) // Remove service name
-  const readPath = `${basePath}${credentials.path.replace(`/v1/streams`, `/v1/proxy`)}`
-  const readUrl = new URL(readPath, proxyUrlObj.origin)
+  // Build the read URL: {prefix}/v1/proxy/{service}/streams/{key}
+  const readUrl = new URL(
+    `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}`,
+    proxyUrlObj.origin
+  )
   readUrl.searchParams.set(`offset`, credentials.offset)
   readUrl.searchParams.set(`live`, `sse`)
 
@@ -226,6 +250,9 @@ async function readFromStream(
 
 /**
  * Create a transform stream that tracks offset updates from SSE events.
+ *
+ * SSE format includes an optional `id:` field that contains the offset.
+ * We parse this to track our position for resume capability.
  */
 function trackOffsetUpdates(
   body: ReadableStream<Uint8Array>,
@@ -252,7 +279,7 @@ function trackOffsetUpdates(
           // Pass through the data
           controller.enqueue(value)
 
-          // Parse SSE events to track offset
+          // Parse SSE events to track offset from id: field
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split(`\n`)
 
@@ -260,21 +287,11 @@ function trackOffsetUpdates(
           buffer = lines.pop() ?? ``
 
           for (const line of lines) {
-            // Look for control events with offset
-            if (line.startsWith(`data:`)) {
-              const data = line.slice(5).trim()
-              try {
-                const parsed = JSON.parse(data)
-                if (parsed.streamNextOffset) {
-                  updateOffset(
-                    storage,
-                    storagePrefix,
-                    streamKey,
-                    parsed.streamNextOffset
-                  )
-                }
-              } catch {
-                // Not JSON, ignore
+            // SSE id: field contains the offset
+            if (line.startsWith(`id:`)) {
+              const offset = line.slice(3).trim()
+              if (offset) {
+                updateOffset(storage, storagePrefix, streamKey, offset)
               }
             }
           }
@@ -288,18 +305,28 @@ function trackOffsetUpdates(
 
 /**
  * Create an abort function for a stream.
+ *
+ * @param proxyUrl - The proxy URL (e.g., https://api.example.com/v1/proxy/chat)
+ * @param streamKey - The stream key
+ * @param readToken - The read token for authorization
+ * @param fetchFn - Optional fetch implementation
  */
 export function createAbortFn(
   proxyUrl: string,
-  streamPath: string,
+  streamKey: string,
   readToken: string,
   fetchFn: typeof fetch = fetch
 ): () => Promise<void> {
   return async () => {
     const proxyUrlObj = new URL(proxyUrl)
-    const basePath = proxyUrlObj.pathname.replace(/\/[^/]+$/, ``)
-    const abortPath = `${basePath}${streamPath.replace(`/v1/streams`, `/v1/proxy`)}/abort`
-    const abortUrl = new URL(abortPath, proxyUrlObj.origin)
+    const serviceName = getServiceName(proxyUrlObj)
+    const proxyPrefix = getProxyPrefix(proxyUrlObj)
+
+    // Build abort URL: {prefix}/v1/proxy/{service}/streams/{key}/abort
+    const abortUrl = new URL(
+      `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}/abort`,
+      proxyUrlObj.origin
+    )
 
     const response = await fetchFn(abortUrl.toString(), {
       method: `POST`,

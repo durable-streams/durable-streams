@@ -32,8 +32,8 @@ import type {
  * import { useChat } from 'ai/react'
  *
  * const transport = createDurableChatTransport({
- *   proxyUrl: 'https://api.example.com/v1/proxy/chat',
- *   api: 'https://api.openai.com/v1/chat/completions',
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
+ *   api: 'https://api.example.com/api/chat', // Your backend API (must be absolute URL)
  * })
  *
  * function Chat() {
@@ -52,12 +52,27 @@ export function createDurableChatTransport(
 ): ChatTransport {
   const {
     proxyUrl,
-    api = `/api/chat`,
+    api,
     storage = getDefaultStorage(),
     getStreamKey = (msgs: Array<unknown>) => generateStreamKey(`chat`, msgs),
     headers: configHeaders,
     fetch: fetchFn = fetch,
   } = options
+
+  // Validate that api is an absolute URL
+  if (!api) {
+    throw new Error(
+      `api option is required and must be an absolute URL (e.g., https://api.example.com/api/chat)`
+    )
+  }
+  try {
+    new URL(api)
+  } catch {
+    throw new Error(
+      `api must be an absolute URL (got "${api}"). ` +
+        `The proxy server needs the full URL to forward requests to your backend.`
+    )
+  }
 
   // Create the durable fetch wrapper
   const durableFetch: DurableFetch = createDurableFetch({
@@ -99,17 +114,8 @@ export function createDurableChatTransport(
         stream: true,
       }
 
-      // Determine the upstream URL
-      // If api is a relative path, we need to construct the full URL
-      let upstreamUrl = api
-      if (api.startsWith(`/`)) {
-        // For relative paths, the caller should handle URL resolution
-        // We'll use a placeholder that the server-side can resolve
-        upstreamUrl = api
-      }
-
       // Make the durable fetch request
-      const response = await durableFetch(upstreamUrl, {
+      const response = await durableFetch(api, {
         method: `POST`,
         headers: mergedHeaders,
         body: JSON.stringify(body),

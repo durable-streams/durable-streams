@@ -162,6 +162,8 @@ export async function handleCreateStream(
     })
 
     // Start streaming upstream to storage (non-blocking)
+    // Use .finally() to ensure connection is always unregistered,
+    // regardless of how the streaming ends (complete, error, abort, early return)
     streamUpstreamToStorage({
       upstreamUrl: upstream,
       method: req.method ?? `POST`,
@@ -173,13 +175,7 @@ export async function handleCreateStream(
       idleTimeoutMs: options.idleTimeoutMs,
       maxResponseBytes: options.maxResponseBytes,
       signal: abortController.signal,
-      onComplete: () => {
-        unregisterConnection(streamPath)
-      },
-      onError: () => {
-        unregisterConnection(streamPath)
-      },
-    }).catch(() => {
+    }).finally(() => {
       unregisterConnection(streamPath)
     })
 

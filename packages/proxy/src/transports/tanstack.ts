@@ -28,7 +28,7 @@ import type {
  * - Resume from last known position
  * - Abort support for canceling streams
  *
- * @param apiPath - The API path for chat completions
+ * @param apiUrl - The absolute URL of your backend API for chat completions
  * @param options - Adapter configuration options
  * @returns A connection adapter instance
  *
@@ -36,14 +36,13 @@ import type {
  * ```typescript
  * import { createDurableAdapter } from '@durable-streams/proxy/transports'
  *
- * const adapter = createDurableAdapter('/api/chat', {
- *   proxyUrl: 'https://api.example.com/v1/proxy/chat',
+ * const adapter = createDurableAdapter('https://api.example.com/api/chat', {
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
  *   getStreamKey: (messages, data) => data?.conversationId ?? 'default',
  * })
  *
  * // Use with TanStack AI
  * const connection = await adapter.connect({
- *   url: '/api/chat',
  *   body: { messages },
  * })
  *
@@ -56,9 +55,19 @@ import type {
  * ```
  */
 export function createDurableAdapter(
-  apiPath: string,
+  apiUrl: string,
   options: DurableAdapterOptions
 ): ConnectionAdapter {
+  // Validate that apiUrl is an absolute URL
+  try {
+    new URL(apiUrl)
+  } catch {
+    throw new Error(
+      `apiUrl must be an absolute URL (got "${apiUrl}"). ` +
+        `The proxy server needs the full URL to forward requests to your backend.`
+    )
+  }
+
   const {
     proxyUrl,
     storage = getDefaultStorage(),
@@ -83,7 +92,6 @@ export function createDurableAdapter(
       connectOptions: ConnectionAdapterOptions
     ): Promise<ConnectionAdapterResponse> {
       const {
-        url,
         method = `POST`,
         body,
         headers: requestHeaders,
@@ -115,11 +123,8 @@ export function createDurableAdapter(
         stream: true,
       }
 
-      // Determine upstream URL
-      const upstreamUrl = url.startsWith(`http`) ? url : apiPath
-
       // Make the durable fetch request
-      const response = await durableFetch(upstreamUrl, {
+      const response = await durableFetch(apiUrl, {
         method,
         headers: mergedHeaders,
         body: JSON.stringify(requestBody),
@@ -145,7 +150,7 @@ export function createDurableAdapter(
         if (credentials) {
           abortFn = createAbortFn(
             proxyUrl,
-            credentials.path,
+            streamKey,
             credentials.readToken,
             fetchFn
           )
