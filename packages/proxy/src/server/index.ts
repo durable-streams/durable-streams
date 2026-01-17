@@ -10,6 +10,7 @@
 import { createServer } from "node:http"
 import { createProxyHandler } from "./proxy-handler"
 import type { Server } from "node:http"
+import type { Socket } from "node:net"
 import type { ProxyServer, ProxyServerOptions } from "./types"
 
 /**
@@ -52,6 +53,16 @@ export async function createProxyServer(
   // Create the HTTP server
   const server: Server = createServer(handler)
 
+  // Track active connections for graceful shutdown
+  const activeSockets = new Set<Socket>()
+
+  server.on(`connection`, (socket: Socket) => {
+    activeSockets.add(socket)
+    socket.on(`close`, () => {
+      activeSockets.delete(socket)
+    })
+  })
+
   // Start listening
   await new Promise<void>((resolve, reject) => {
     server.on(`error`, reject)
@@ -66,6 +77,12 @@ export async function createProxyServer(
   return {
     url,
     stop: async () => {
+      // Destroy all active connections (needed for SSE streams that stay open)
+      for (const socket of activeSockets) {
+        socket.destroy()
+      }
+      activeSockets.clear()
+
       return new Promise<void>((resolve, reject) => {
         server.close((err) => {
           if (err) {
