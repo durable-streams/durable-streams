@@ -6,6 +6,7 @@ const alias = {
   "@durable-streams/cli": path.resolve(__dirname, "./packages/cli/src"),
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
+  "@durable-streams/proxy": path.resolve(__dirname, "./packages/proxy/src"),
   "@durable-streams/server-conformance-tests": path.resolve(
     __dirname,
     "./packages/server-conformance-tests/src"
@@ -75,6 +76,16 @@ export default defineConfig({
           name: "y-durable-streams",
           include: ["packages/y-durable-streams/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "proxy",
+          include: ["packages/proxy/src/__tests__/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+          testTimeout: 30000,
+          hookTimeout: 30000,
         },
         resolve: { alias },
       }),

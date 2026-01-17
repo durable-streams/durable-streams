@@ -1,0 +1,84 @@
+{
+  "name": "@durable-streams/proxy",
+  "version": "0.0.1",
+  "description": "Durable proxy for persistent, resumable AI streaming responses",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/proxy"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "proxy",
+    "ai",
+    "streaming",
+    "resumable",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/server/index.cjs",
+  "module": "./dist/server/index.js",
+  "types": "./dist/server/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/server/index.d.ts",
+        "default": "./dist/server/index.js"
+      },
+      "require": {
+        "types": "./dist/server/index.d.cts",
+        "default": "./dist/server/index.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/client/index.d.ts",
+        "default": "./dist/client/index.js"
+      },
+      "require": {
+        "types": "./dist/client/index.d.cts",
+        "default": "./dist/client/index.cjs"
+      }
+    },
+    "./transports": {
+      "import": {
+        "types": "./dist/transports/index.d.ts",
+        "default": "./dist/transports/index.js"
+      },
+      "require": {
+        "types": "./dist/transports/index.d.cts",
+        "default": "./dist/transports/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.9.0",
+    "typescript": "^5.0.0",
+    "vitest": "^4.0.0"
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
