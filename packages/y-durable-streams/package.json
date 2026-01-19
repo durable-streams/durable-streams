@@ -36,6 +36,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./server": {
+      "import": {
+        "types": "./dist/server/index.d.ts",
+        "default": "./dist/server/index.js"
+      },
+      "require": {
+        "types": "./dist/server/index.d.cts",
+        "default": "./dist/server/index.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
@@ -44,14 +54,14 @@
     "src"
   ],
   "dependencies": {
-    "@durable-streams/client": "workspace:*"
+    "@durable-streams/client": "workspace:*",
+    "lib0": "^0.2.99",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.24"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
-    "lib0": "^0.2.99",
-    "tsdown": "^0.9.0",
-    "y-protocols": "^1.0.6",
-    "yjs": "^13.6.24"
+    "tsdown": "^0.9.0"
   },
   "scripts": {
     "build": "tsdown",
