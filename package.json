@@ -9,7 +9,8 @@
   "scripts": {
     "start:dev": "pnpm --filter @durable-streams/cli start:dev",
     "link:dev": "pnpm --filter @durable-streams/cli link:dev",
-    "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' build",
+    "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' --filter '!@durable-streams-internal/client-dotnet' build",
+    "build:all": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' build",
     "dev": "pnpm -r --parallel dev",
     "test": "vitest",
     "test:run": "vitest run --project client --project server --project state",
