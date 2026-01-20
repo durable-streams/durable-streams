@@ -1389,6 +1389,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(text).toBe(``)
       expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
       expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+      // Cache-Control: no-store prevents caching of the tail offset
+      const cacheControl = response.headers.get(`cache-control`)
+      expect(cacheControl).toContain(`no-store`)
     })
 
     test(`should return correct tail offset for offset=now`, async () => {
