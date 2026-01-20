@@ -177,33 +177,49 @@ async function appendWithSync(
   }
 }
 
+/**
+ * To run against an external Yjs server, set the YJS_CONFORMANCE_URL env var:
+ *   YJS_CONFORMANCE_URL=http://localhost:4438/v1/yjs/test pnpm vitest run
+ *
+ * If not set, local test servers will be started automatically.
+ */
+const externalServerUrl = process.env.YJS_CONFORMANCE_URL
+
 describe(`Yjs Durable Streams Protocol`, () => {
-  let dsServer: DurableStreamTestServer
-  let yjsServer: YjsServer
+  let dsServer: DurableStreamTestServer | null = null
+  let yjsServer: YjsServer | null = null
   let baseUrl: string
 
   beforeAll(async () => {
-    // Start durable streams server
-    dsServer = new DurableStreamTestServer({ port: 0 })
-    await dsServer.start()
+    if (externalServerUrl) {
+      // Use external server - skip local server startup
+      baseUrl = externalServerUrl
+      console.log(`Using external Yjs server: ${baseUrl}`)
+    } else {
+      // Start local servers for testing
+      dsServer = new DurableStreamTestServer({ port: 0 })
+      await dsServer.start()
 
-    // Start Yjs server connected to DS server
-    yjsServer = new YjsServer({
-      port: 0,
-      dsServerUrl: dsServer.url,
-      compactionThreshold: 1500, // Threshold for testing (~7 updates)
-      minUpdatesBeforeCompaction: 5, // Min count for testing
-    })
-    await yjsServer.start()
+      yjsServer = new YjsServer({
+        port: 0,
+        dsServerUrl: dsServer.url,
+        compactionThreshold: 1500, // Threshold for testing (~7 updates)
+        minUpdatesBeforeCompaction: 5, // Min count for testing
+      })
+      await yjsServer.start()
 
-    baseUrl = `${yjsServer.url}/v1/yjs/test`
+      baseUrl = `${yjsServer.url}/v1/yjs/test`
+    }
   })
 
   afterAll(async () => {
-    // Stop both servers - don't wait for graceful shutdown
-    // (long-poll connections may keep them busy)
-    yjsServer.stop().catch(() => {})
-    dsServer.stop().catch(() => {})
+    // Stop local servers if we started them
+    if (yjsServer) {
+      yjsServer.stop().catch(() => {})
+    }
+    if (dsServer) {
+      dsServer.stop().catch(() => {})
+    }
     // Give a moment for cleanup
     await new Promise((r) => setTimeout(r, 200))
   }, 5000)
@@ -778,14 +794,15 @@ describe(`Yjs Durable Streams Protocol`, () => {
     })
   })
 
-  describe(`Server Restart`, () => {
+  // Server restart test requires local servers - skip when using external URL
+  describe.skipIf(!!externalServerUrl)(`Server Restart`, () => {
     it(`should preserve updates stream across restarts`, async () => {
       const docId = `restart-${Date.now()}`
       const service = `restart`
 
       const serverA = new YjsServer({
         port: 0,
-        dsServerUrl: dsServer.url,
+        dsServerUrl: dsServer!.url,
         compactionThreshold: 1500,
         minUpdatesBeforeCompaction: 5,
       })
@@ -817,7 +834,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
 
       const serverB = new YjsServer({
         port: 0,
-        dsServerUrl: dsServer.url,
+        dsServerUrl: dsServer!.url,
         compactionThreshold: 1500,
         minUpdatesBeforeCompaction: 5,
       })
