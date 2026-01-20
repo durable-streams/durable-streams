@@ -231,6 +231,8 @@ interface YjsIndex {
 
 **Default for new documents**: Return `{ snapshot_stream: null, updates_stream: "updates-001", update_offset: "-1" }` or 404 (provider handles both).
 
+**Implementation note**: Each compaction appends a new index entry to this stream. The provider fetches from offset `-1` and uses the last entry. Since index entries are small (~100 bytes), this overhead is typically acceptable even for frequently-compacted documents.
+
 #### Updates Stream
 
 ```
