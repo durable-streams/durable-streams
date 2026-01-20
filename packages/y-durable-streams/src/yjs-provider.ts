@@ -183,21 +183,27 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     if (this.connected || this._connecting) return
 
     this._connecting = true
-    this.abortController = new AbortController()
+    const controller = new AbortController()
+    this.abortController = controller
     this.emit(`status`, [`connecting`])
+
+    // Helper to check if disconnect() was called during an await
+    const wasDisconnected = () =>
+      this.abortController !== controller || controller.signal.aborted
 
     try {
       // Step 1: Fetch the index
       this.currentIndex = await this.fetchIndex()
-      if (this.abortController.signal.aborted) return
+      if (wasDisconnected()) return
 
       // Step 2: Create idempotent producer for sending updates
       this.createUpdatesProducer()
 
       // Step 3: Fetch snapshot and start updates stream
       await this.initialSync()
+      if (wasDisconnected()) return
 
-      // Step 3: Start awareness if configured
+      // Step 4: Start awareness if configured
       if (this.awareness) {
         this.startAwareness()
       }
@@ -333,7 +339,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     })
 
     try {
-      const response = await stream.stream({ offset: `-1` })
+      const response = await stream.stream({
+        offset: `-1`,
+        signal: this.abortController?.signal,
+      })
       const items = await response.json<YjsIndex>()
 
       if (items.length === 0) {
@@ -408,7 +417,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     })
 
     try {
-      const response = await stream.stream({ offset: `-1` })
+      const response = await stream.stream({
+        offset: `-1`,
+        signal: this.abortController?.signal,
+      })
       const data = await response.body()
       return { found: true, data }
     } catch (err) {
@@ -784,6 +796,12 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
             // Ignore invalid awareness updates - they're ephemeral
           }
         }
+      }
+
+      // Stream ended cleanly (EOF) - resubscribe if still connected
+      if (this.connected && !signal?.aborted) {
+        await new Promise((r) => setTimeout(r, 250))
+        this.subscribeAwareness()
       }
     } catch (err) {
       if (signal?.aborted || (!this.connected && !this._connecting)) return

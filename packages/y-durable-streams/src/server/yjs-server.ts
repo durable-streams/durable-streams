@@ -168,7 +168,7 @@ export class YjsServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, stream-offset, stream-live, stream-producer-id, stream-producer-epoch, stream-producer-seq`
+      `authorization, content-type, stream-offset, stream-live, stream-producer-id, stream-producer-epoch, stream-producer-seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -363,8 +363,10 @@ export class YjsServer {
       return
     }
 
-    // Create index stream if needed
+    // Create index stream if needed, or load existing index
     const indexUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/index`
+    let loadedIndex: YjsIndex | null = null
+
     try {
       await DurableStream.create({
         url: indexUrl,
@@ -389,6 +391,8 @@ export class YjsServer {
       if (!isConflictExistsError(err)) {
         throw err
       }
+      // Index stream already exists - load the latest index
+      loadedIndex = await this.loadLatestIndex(service, docId)
     }
 
     // Create updates stream if needed
@@ -405,13 +409,14 @@ export class YjsServer {
       }
     }
 
-    // Initialize document state
+    // Initialize document state with loaded or default index
+    const index = loadedIndex ?? {
+      snapshot_stream: null,
+      updates_stream: updatesStreamId,
+      update_offset: `-1`,
+    }
     this.documentStates.set(stateKey, {
-      index: {
-        snapshot_stream: null,
-        updates_stream: updatesStreamId,
-        update_offset: `-1`,
-      },
+      index,
       updatesSizeBytes: 0,
       updatesCount: 0,
       compacting: false,
@@ -509,6 +514,44 @@ export class YjsServer {
   }
 
   // ---- Helpers ----
+
+  /**
+   * Load the latest index entry from the index stream.
+   */
+  private async loadLatestIndex(
+    service: string,
+    docId: string
+  ): Promise<YjsIndex | null> {
+    const indexUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/index`
+    const stream = new DurableStream({
+      url: indexUrl,
+      headers: this.dsServerHeaders,
+      contentType: `application/json`,
+    })
+
+    try {
+      const response = await stream.stream({ offset: `-1` })
+      const body = await response.body()
+      if (body.length === 0) {
+        return null
+      }
+      // Parse as JSON - the index stream contains JSON entries
+      const text = new TextDecoder().decode(body)
+      // Get the last complete JSON object (index entries are appended)
+      const lines = text.trim().split(`\n`).filter(Boolean)
+      if (lines.length === 0) {
+        return null
+      }
+      const lastLine = lines[lines.length - 1]!
+      return JSON.parse(lastLine) as YjsIndex
+    } catch (err) {
+      console.error(
+        `[YjsServer] Error loading index for ${service}/${docId}:`,
+        err
+      )
+      return null
+    }
+  }
 
   private readBody(req: IncomingMessage): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {
