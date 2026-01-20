@@ -75,6 +75,10 @@ export class YjsServer {
   private readonly compactor: Compactor
   private readonly documentStates = new Map<string, YjsDocumentState>()
 
+  private stateKey(service: string, docId: string): string {
+    return `${service}/${docId}`
+  }
+
   private server: Server | null = null
   private _url: string | null = null
 
@@ -305,7 +309,7 @@ export class YjsServer {
     route: RouteMatch,
     dsUrl: URL
   ): Promise<void> {
-    const stateKey = `${route.service}/${route.docId}`
+    const stateKey = this.stateKey(route.service, route.docId)
 
     // Ensure streams exist
     await this.ensureStreamsExist(route.service, route.docId, route.streamId!)
@@ -353,7 +357,7 @@ export class YjsServer {
     docId: string,
     updatesStreamId: string
   ): Promise<void> {
-    const stateKey = `${service}/${docId}`
+    const stateKey = this.stateKey(service, docId)
 
     if (this.documentStates.has(stateKey)) {
       return
@@ -446,7 +450,7 @@ export class YjsServer {
     service: string,
     docId: string
   ): YjsDocumentState | undefined {
-    return this.documentStates.get(`${service}/${docId}`)
+    return this.documentStates.get(this.stateKey(service, docId))
   }
 
   /**
@@ -454,7 +458,7 @@ export class YjsServer {
    * Returns true if compaction was started, false if already compacting or state not found.
    */
   tryStartCompaction(service: string, docId: string): boolean {
-    const state = this.documentStates.get(`${service}/${docId}`)
+    const state = this.documentStates.get(this.stateKey(service, docId))
     if (!state || state.compacting) {
       return false
     }
@@ -463,14 +467,14 @@ export class YjsServer {
   }
 
   setCompacting(service: string, docId: string, compacting: boolean): void {
-    const state = this.documentStates.get(`${service}/${docId}`)
+    const state = this.documentStates.get(this.stateKey(service, docId))
     if (state) {
       state.compacting = compacting
     }
   }
 
   resetUpdateCounters(service: string, docId: string): void {
-    const state = this.documentStates.get(`${service}/${docId}`)
+    const state = this.documentStates.get(this.stateKey(service, docId))
     if (state) {
       state.updatesSizeBytes = 0
       state.updatesCount = 0
@@ -498,7 +502,7 @@ export class YjsServer {
     })
     await stream.append(index, { contentType: `application/json` })
 
-    const state = this.documentStates.get(`${service}/${docId}`)
+    const state = this.documentStates.get(this.stateKey(service, docId))
     if (state) {
       state.index = index
     }

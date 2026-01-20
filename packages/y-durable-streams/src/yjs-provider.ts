@@ -25,6 +25,12 @@ import {
 import type { HeadersRecord } from "@durable-streams/client"
 import type { YjsIndex } from "./server/types"
 
+const DEFAULT_INDEX: YjsIndex = {
+  snapshot_stream: null,
+  updates_stream: `updates-001`,
+  update_offset: `-1`,
+}
+
 /**
  * Connection status of the provider.
  */
@@ -295,15 +301,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       const items = await response.json<YjsIndex>()
 
       if (items.length === 0) {
-        // New document - return default index
         if (this.debug) {
           console.debug(`[YjsProvider] fetchIndex: empty, returning default`)
         }
-        return {
-          snapshot_stream: null,
-          updates_stream: `updates-001`,
-          update_offset: `-1`,
-        }
+        return DEFAULT_INDEX
       }
 
       const result = items[items.length - 1]!
@@ -316,12 +317,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       return result
     } catch (err) {
       if (this.isNotFoundError(err)) {
-        // Stream doesn't exist - return default index
-        return {
-          snapshot_stream: null,
-          updates_stream: `updates-001`,
-          update_offset: `-1`,
-        }
+        return DEFAULT_INDEX
       }
       throw err
     }
@@ -445,8 +441,9 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   // ---- Live updates streaming ----
 
   private startUpdatesStream(offset: string): Promise<void> {
-    if (!this.currentIndex) return Promise.resolve()
-    if (this.abortController?.signal.aborted) return Promise.resolve()
+    if (!this.currentIndex || this.abortController?.signal.aborted) {
+      return Promise.resolve()
+    }
 
     this.updatesStreamGeneration += 1
     const generation = this.updatesStreamGeneration
@@ -454,20 +451,20 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     this.updatesSubscription?.()
     this.updatesSubscription = null
 
-    let initialResolved = false
+    let settled = false
     let resolveInitial: () => void
     let rejectInitial: (error: Error) => void
 
     const initialPromise = new Promise<void>((resolve, reject) => {
       resolveInitial = () => {
-        if (!initialResolved) {
-          initialResolved = true
+        if (!settled) {
+          settled = true
           resolve()
         }
       }
       rejectInitial = (error: Error) => {
-        if (!initialResolved) {
-          initialResolved = true
+        if (!settled) {
+          settled = true
           reject(error)
         }
       }
@@ -496,9 +493,23 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     let currentOffset = offset
     let initialSyncPending = true
 
+    const markSynced = (): void => {
+      if (!initialSyncPending) return
+      initialSyncPending = false
+      if (!this.connected) {
+        this.connected = true
+      }
+      this.synced = true
+      resolveInitialSync()
+    }
+
+    const isStale = (): boolean =>
+      this.abortController?.signal.aborted === true ||
+      this.updatesStreamGeneration !== generation
+
     while (this.updatesStreamGeneration === generation) {
       if (this.abortController?.signal.aborted) {
-        resolveInitialSync()
+        markSynced()
         return
       }
 
@@ -518,8 +529,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.updatesSubscription?.()
         // eslint-disable-next-line @typescript-eslint/require-await
         this.updatesSubscription = response.subscribeBytes(async (chunk) => {
-          if (this.abortController?.signal.aborted) return
-          if (this.updatesStreamGeneration !== generation) return
+          if (isStale()) return
 
           currentOffset = chunk.offset
 
@@ -533,49 +543,30 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           }
 
           if (initialSyncPending && chunk.upToDate) {
-            initialSyncPending = false
-            if (!this.connected) {
-              this.connected = true
-            }
-            this.synced = true
-            resolveInitialSync()
+            markSynced()
           } else if (chunk.data.length > 0) {
             this.synced = true
           }
         })
 
         await response.closed
-        if (initialSyncPending) {
-          initialSyncPending = false
-          if (!this.connected) {
-            this.connected = true
-          }
-          this.synced = true
-          resolveInitialSync()
-        }
+        markSynced()
         return
       } catch (err) {
-        if (this.abortController?.signal.aborted) {
-          resolveInitialSync()
-          return
-        }
-        if (this.updatesStreamGeneration !== generation) {
-          resolveInitialSync()
+        if (isStale()) {
+          markSynced()
           return
         }
 
         if (this.isNotFoundError(err)) {
-          // Stream doesn't exist yet (new document) - retry quickly.
-          // The stream will be created when the first update is written.
+          // Stream doesn't exist yet (new document) - retry quickly
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- markSynced mutates this
           if (initialSyncPending) {
             if (currentOffset === `-1`) {
-              initialSyncPending = false
-              if (!this.connected) {
-                this.connected = true
-              }
-              this.synced = true
-              resolveInitialSync()
+              // New doc with no updates yet - mark synced and keep polling
+              markSynced()
             } else {
+              // Expected stream doesn't exist - fail
               rejectInitialSync(
                 err instanceof Error ? err : new Error(String(err))
               )
@@ -589,6 +580,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           continue
         }
 
+        // Non-404 error during initial sync - fail
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- markSynced mutates this
         if (initialSyncPending) {
           rejectInitialSync(err instanceof Error ? err : new Error(String(err)))
           return
@@ -883,40 +876,26 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   // ---- Helpers ----
 
   private isNotFoundError(err: unknown): boolean {
-    if (err instanceof DurableStreamError && err.code === `NOT_FOUND`) {
-      return true
-    }
-    if (err instanceof FetchError && err.status === 404) {
-      return true
-    }
-    // Don't use loose string matching - connection errors should NOT match
-    return false
+    return (
+      (err instanceof DurableStreamError && err.code === `NOT_FOUND`) ||
+      (err instanceof FetchError && err.status === 404)
+    )
   }
 
   private isAuthError(err: unknown): boolean {
-    if (err instanceof DurableStreamError) {
-      return err.code === `UNAUTHORIZED` || err.code === `FORBIDDEN`
-    }
-    if (err instanceof FetchError) {
-      return err.status === 401 || err.status === 403
-    }
-    return false
+    return (
+      (err instanceof DurableStreamError &&
+        (err.code === `UNAUTHORIZED` || err.code === `FORBIDDEN`)) ||
+      (err instanceof FetchError && (err.status === 401 || err.status === 403))
+    )
   }
 
   private uint8ArrayToBase64(bytes: Uint8Array): string {
-    let binary = ``
-    for (const byte of bytes) {
-      binary += String.fromCharCode(byte)
-    }
-    return btoa(binary)
+    return btoa(String.fromCharCode(...bytes))
   }
 
   private base64ToUint8Array(base64: string): Uint8Array {
     const binary = atob(base64)
-    const bytes = new Uint8Array(binary.length)
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i)
-    }
-    return bytes
+    return Uint8Array.from(binary, (char) => char.charCodeAt(0))
   }
 }

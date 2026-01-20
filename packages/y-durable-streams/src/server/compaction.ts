@@ -186,8 +186,6 @@ export class Compactor {
       // Delete old snapshot only (not updates stream)
       if (currentIndex.snapshot_stream) {
         this.deleteOldSnapshot(
-          dsServerUrl,
-          dsHeaders,
           service,
           docId,
           currentIndex.snapshot_stream
@@ -223,12 +221,12 @@ export class Compactor {
    * Delete old snapshot stream.
    */
   private async deleteOldSnapshot(
-    dsServerUrl: string,
-    dsHeaders: Record<string, string>,
     service: string,
     docId: string,
     snapshotStream: string
   ): Promise<void> {
+    const dsServerUrl = this.server.getDsServerUrl()
+    const dsHeaders = this.server.getDsServerHeaders()
     const snapshotUrl = `${dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/snapshots/${snapshotStream}`
     try {
       await DurableStream.delete({ url: snapshotUrl, headers: dsHeaders })
