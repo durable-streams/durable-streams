@@ -175,6 +175,20 @@ await server.start()
 console.log(`Yjs server running at ${server.url}`)
 ```
 
+## Conformance Tests
+
+The package includes conformance tests to verify Yjs server implementations. By default, tests run against local test servers. To test against an external server:
+
+```bash
+# Run tests against an external Yjs server
+YJS_CONFORMANCE_URL=http://localhost:4438/v1/yjs/test pnpm vitest run --project y-durable-streams
+
+# Run tests with local test servers (default)
+pnpm vitest run --project y-durable-streams
+```
+
+Note: The "Server Restart" test is skipped when using an external URL since it requires starting/stopping local servers.
+
 ## How It Works
 
 The provider connects to a Yjs server which manages document storage using durable streams:
