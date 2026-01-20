@@ -234,7 +234,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         docId,
         awareness: options?.awareness,
         connect: options?.connect,
-        debug: true,
       })
 
       providers.push(provider)
@@ -567,7 +566,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         doc,
         baseUrl,
         docId,
-        debug: true,
       })
 
       providers.push(provider)

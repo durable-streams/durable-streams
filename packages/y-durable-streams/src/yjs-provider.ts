@@ -21,6 +21,7 @@ import {
   DurableStream,
   DurableStreamError,
   FetchError,
+  IdempotentProducer,
 } from "@durable-streams/client"
 import type { HeadersRecord } from "@durable-streams/client"
 import type { YjsIndex } from "./server/types"
@@ -71,12 +72,6 @@ export interface YjsProviderOptions {
    * @default true
    */
   connect?: boolean
-
-  /**
-   * Enable debug logging.
-   * @default false
-   */
-  debug?: boolean
 }
 
 /**
@@ -112,7 +107,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private readonly baseUrl: string
   private readonly docId: string
   private readonly headers: HeadersRecord
-  private readonly debug: boolean
 
   private _connected = false
   private _synced = false
@@ -122,8 +116,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private updatesStreamGeneration = 0
   private updatesSubscription: (() => void) | null = null
 
-  private sendingChanges = false
-  private pendingChanges: Uint8Array | null = null
+  private updatesProducer: IdempotentProducer | null = null
 
   private sendingAwareness = false
   private pendingAwareness: AwarenessUpdate | null = null
@@ -144,7 +137,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     this.baseUrl = options.baseUrl.replace(/\/$/, ``)
     this.docId = options.docId
     this.headers = options.headers ?? {}
-    this.debug = options.debug ?? false
 
     this.doc.on(`update`, this.handleDocumentUpdate)
 
@@ -199,7 +191,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       this.currentIndex = await this.fetchIndex()
       if (this.abortController.signal.aborted) return
 
-      // Step 2: Fetch snapshot and start updates stream
+      // Step 2: Create idempotent producer for sending updates
+      this.createUpdatesProducer()
+
+      // Step 3: Fetch snapshot and start updates stream
       await this.initialSync()
 
       // Step 3: Start awareness if configured
@@ -221,10 +216,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
-  disconnect(): void {
-    if (!this.abortController) return
+  async disconnect(): Promise<void> {
+    // Guard against concurrent disconnect calls
+    const controller = this.abortController
+    if (!controller) return
+    this.abortController = null // Clear immediately to prevent races
 
     this._connecting = false
+    this.connected = false
+    this.synced = false
 
     if (this.awarenessHeartbeat) {
       clearInterval(this.awarenessHeartbeat)
@@ -241,23 +241,67 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       this.updatesSubscription = null
     }
 
-    this.abortController.abort()
-    this.abortController = null
+    // Flush and close producer before aborting
+    await this.closeUpdatesProducer()
+
+    controller.abort()
 
     this.currentIndex = null
     this.pendingAwareness = null
-
-    this.connected = false
-    this.synced = false
   }
 
   destroy(): void {
-    this.disconnect()
+    // Fire-and-forget disconnect - we're destroying anyway
+    this.disconnect().catch(() => {})
     this.doc.off(`update`, this.handleDocumentUpdate)
     if (this.awareness) {
       this.awareness.off(`update`, this.handleAwarenessUpdate)
     }
     super.destroy()
+  }
+
+  // ---- Updates Producer ----
+
+  private createUpdatesProducer(): void {
+    if (!this.currentIndex) return
+
+    const stream = new DurableStream({
+      url: this.updatesUrl(this.currentIndex.updates_stream),
+      headers: this.headers,
+      contentType: `application/octet-stream`,
+    })
+
+    // Use doc clientID for unique producer ID per client
+    const producerId = `${this.docId}-${this.doc.clientID}`
+
+    this.updatesProducer = new IdempotentProducer(stream, producerId, {
+      autoClaim: true,
+      signal: this.abortController?.signal,
+      onError: (err) => {
+        // Ignore AbortError - this happens during intentional disconnect
+        if (err instanceof Error && err.name === `AbortError`) {
+          return
+        }
+        console.error(`[YjsProvider] Producer error:`, err)
+        this.emit(`error`, [err])
+        // Disconnect and reconnect on producer errors (unless auth error)
+        if (!this.isAuthError(err)) {
+          this.disconnect()
+          this.connect()
+        }
+      },
+    })
+  }
+
+  private async closeUpdatesProducer(): Promise<void> {
+    if (!this.updatesProducer) return
+
+    try {
+      await this.updatesProducer.close()
+    } catch {
+      // Ignore errors during close
+    }
+    this.updatesProducer = null
   }
 
   // ---- Stream URL builders ----
@@ -281,40 +325,22 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   // ---- Index management ----
 
   private async fetchIndex(): Promise<YjsIndex> {
-    const url = this.indexUrl()
-    if (this.debug) {
-      console.debug(`[YjsProvider] fetchIndex URL: ${url}`)
-    }
-
     const stream = new DurableStream({
-      url,
+      url: this.indexUrl(),
       headers: this.headers,
       contentType: `application/json`,
       backoffOptions: this.connectBackoffOptions,
     })
 
     try {
-      if (this.debug) {
-        console.debug(`[YjsProvider] fetchIndex calling stream.stream()`)
-      }
       const response = await stream.stream({ offset: `-1` })
       const items = await response.json<YjsIndex>()
 
       if (items.length === 0) {
-        if (this.debug) {
-          console.debug(`[YjsProvider] fetchIndex: empty, returning default`)
-        }
         return DEFAULT_INDEX
       }
 
-      const result = items[items.length - 1]!
-      if (this.debug) {
-        console.debug(
-          `[YjsProvider] fetchIndex: got ${items.length} items, using:`,
-          JSON.stringify(result)
-        )
-      }
-      return result
+      return items[items.length - 1]!
     } catch (err) {
       if (this.isNotFoundError(err)) {
         return DEFAULT_INDEX
@@ -534,11 +560,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           currentOffset = chunk.offset
 
           if (chunk.data.length > 0) {
-            if (this.debug) {
-              console.debug(
-                `[YjsProvider] Received live update: ${chunk.data.length} bytes`
-              )
-            }
             this.applyUpdates(chunk.data)
           }
 
@@ -573,9 +594,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
               return
             }
           }
-          if (this.debug) {
-            console.debug(`[YjsProvider] Updates stream not found, retrying...`)
-          }
           await new Promise((resolve) => setTimeout(resolve, 100))
           continue
         }
@@ -585,10 +603,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         if (initialSyncPending) {
           rejectInitialSync(err instanceof Error ? err : new Error(String(err)))
           return
-        }
-
-        if (this.debug) {
-          console.debug(`[YjsProvider] Updates stream error:`, err)
         }
 
         await new Promise((resolve) => setTimeout(resolve, 1000))
@@ -608,66 +622,18 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     origin: unknown
   ): void => {
     if (origin === `server`) return
+    if (!this.updatesProducer || !this.connected) return
 
-    this.batchUpdate(update)
-    this.sendChanges()
-  }
-
-  private batchUpdate(update: Uint8Array): void {
-    this.pendingChanges = this.pendingChanges
-      ? Y.mergeUpdates([this.pendingChanges, update])
-      : update
-  }
-
-  private async sendChanges(): Promise<void> {
-    if (!this.connected || this.sendingChanges || !this.currentIndex) return
-
-    this.sendingChanges = true
+    // Mark as unsynced - will become true when our write echoes back
     this.synced = false
 
-    try {
-      while (this.pendingChanges && this.pendingChanges.length > 0) {
-        const toSend = this.pendingChanges
-        this.pendingChanges = null
+    // Frame the update with lib0 VarUint8Array encoding
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint8Array(encoder, update)
+    const framedUpdate = encoding.toUint8Array(encoder)
 
-        const url = this.updatesUrl(this.currentIndex.updates_stream)
-        if (this.debug) {
-          console.debug(
-            `[YjsProvider] sendChanges to ${url}, ${toSend.length} bytes`
-          )
-        }
-
-        const stream = new DurableStream({
-          url,
-          headers: this.headers,
-          contentType: `application/octet-stream`,
-        })
-
-        // Frame the update with lib0 VarUint8Array encoding
-        const encoder = encoding.createEncoder()
-        encoding.writeVarUint8Array(encoder, toSend)
-        const framedUpdate = encoding.toUint8Array(encoder)
-
-        await stream.append(framedUpdate, {
-          contentType: `application/octet-stream`,
-        })
-
-        if (this.debug) {
-          console.debug(`[YjsProvider] sendChanges succeeded`)
-        }
-      }
-      this.synced = true
-    } catch (err) {
-      const error = err instanceof Error ? err : new Error(String(err))
-      console.error(`[YjsProvider] Failed to send changes:`, error)
-      this.emit(`error`, [error])
-      this.disconnect()
-      if (!this.isAuthError(err)) {
-        this.connect()
-      }
-    } finally {
-      this.sendingChanges = false
-    }
+    // Fire-and-forget: producer handles batching, retries, and error reporting
+    this.updatesProducer.append(framedUpdate)
   }
 
   // ---- Awareness ----
@@ -760,15 +726,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         // Encode to base64 for text/plain stream
         const base64 = this.uint8ArrayToBase64(encoded)
 
-        if (this.debug) {
-          console.debug(
-            `[YjsProvider] Sending awareness for clients:`,
-            changedClients,
-            `base64 length:`,
-            base64.length
-          )
-        }
-
         const stream = new DurableStream({
           url: this.awarenessUrl(),
           headers: this.headers,
@@ -817,24 +774,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           const base64 = new TextDecoder().decode(value)
           const binary = this.base64ToUint8Array(base64)
 
-          if (this.debug) {
-            console.debug(
-              `[YjsProvider] Awareness SSE received:`,
-              binary.length,
-              `bytes`
-            )
-          }
-
           try {
             awarenessProtocol.applyAwarenessUpdate(
               this.awareness,
               binary,
               `server`
             )
-          } catch (err) {
-            if (this.debug) {
-              console.debug(`[YjsProvider] Invalid awareness update:`, err)
-            }
+          } catch {
+            // Ignore invalid awareness updates - they're ephemeral
           }
         }
       }
