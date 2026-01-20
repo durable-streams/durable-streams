@@ -11,6 +11,8 @@
 import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
 import { randomUUID } from "node:crypto"
+import { readFile, readdir } from "node:fs/promises"
+import { join } from "node:path"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
 import {
@@ -858,3 +860,75 @@ export async function runBenchmarks(
 }
 
 export { allScenarios, getScenarioById }
+
+// =============================================================================
+// Aggregate Benchmark Results from JSON Files
+// =============================================================================
+
+/**
+ * Reads benchmark JSON files from a directory and generates a combined markdown report.
+ * Each subdirectory should contain a benchmark-results.json file.
+ */
+export async function aggregateBenchmarkResults(
+  resultsDir: string
+): Promise<string> {
+  const entries = await readdir(resultsDir, { withFileTypes: true })
+  const summaries: Array<BenchmarkSummary> = []
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+
+    const jsonPath = join(resultsDir, entry.name, `benchmark-results.json`)
+    try {
+      const content = await readFile(jsonPath, `utf-8`)
+      const summary = JSON.parse(content) as BenchmarkSummary
+      // Reconstruct scenario objects from serialized data
+      summary.results = summary.results.map((r) => ({
+        ...r,
+        scenario: r.scenario,
+      }))
+      summaries.push(summary)
+    } catch {
+      // Skip directories without valid benchmark results
+      console.error(`Skipping ${entry.name}: no valid benchmark-results.json`)
+    }
+  }
+
+  if (summaries.length === 0) {
+    return `# Client Benchmark Results\n\nNo benchmark results found.\n`
+  }
+
+  // Sort summaries by adapter name for consistent output
+  summaries.sort((a, b) => a.adapter.localeCompare(b.adapter))
+
+  // Generate combined report
+  const lines: Array<string> = []
+  lines.push(`# Client Benchmark Results`)
+  lines.push(``)
+
+  // Summary table
+  const totalPassed = summaries.reduce((sum, s) => sum + s.passed, 0)
+  const totalFailed = summaries.reduce((sum, s) => sum + s.failed, 0)
+  const totalSkipped = summaries.reduce((sum, s) => sum + s.skipped, 0)
+
+  lines.push(`| Client | Passed | Failed | Skipped | Status |`)
+  lines.push(`|--------|--------|--------|---------|--------|`)
+  for (const summary of summaries) {
+    const status = summary.failed === 0 ? `✓` : `✗`
+    lines.push(
+      `| ${summary.adapter} | ${summary.passed} | ${summary.failed} | ${summary.skipped} | ${status} |`
+    )
+  }
+  lines.push(
+    `| **Total** | **${totalPassed}** | **${totalFailed}** | **${totalSkipped}** | ${totalFailed === 0 ? `✓` : `✗`} |`
+  )
+  lines.push(``)
+
+  // Individual client details
+  for (const summary of summaries) {
+    lines.push(generateMarkdownReport(summary))
+    lines.push(``)
+  }
+
+  return lines.join(`\n`)
+}
