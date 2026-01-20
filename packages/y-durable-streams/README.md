@@ -189,6 +189,134 @@ pnpm vitest run --project y-durable-streams
 
 Note: The "Server Restart" test is skipped when using an external URL since it requires starting/stopping local servers.
 
+## Server Protocol API
+
+To build a compatible Yjs server, implement the following endpoints. All streams use the [Durable Streams protocol](../README.md) for reads (offset-based, long-polling/SSE) and writes (append-only).
+
+### Base URL Structure
+
+```
+{baseUrl}/docs/{docId}/{streamType}[/{streamId}]
+```
+
+Where `baseUrl` is typically `http://host:port/v1/yjs/{service}`.
+
+### Endpoints
+
+#### Index Stream
+
+```
+GET {baseUrl}/docs/{docId}/index
+```
+
+Returns the document's current state pointer as JSON. The provider fetches this first to discover where to read data.
+
+**Response body** (`application/json`):
+
+```typescript
+interface YjsIndex {
+  // Snapshot stream ID, or null if no snapshot exists
+  // e.g., "snapshot-550e8400-e29b-41d4-a716-446655440000"
+  snapshot_stream: string | null
+
+  // Updates stream ID where updates are written
+  // e.g., "updates-001"
+  updates_stream: string
+
+  // Offset to start reading updates from
+  // "-1" means read from beginning, otherwise a padded offset string
+  update_offset: string
+}
+```
+
+**Default for new documents**: Return `{ snapshot_stream: null, updates_stream: "updates-001", update_offset: "-1" }` or 404 (provider handles both).
+
+#### Updates Stream
+
+```
+GET  {baseUrl}/docs/{docId}/updates/{streamId}
+POST {baseUrl}/docs/{docId}/updates/{streamId}
+```
+
+Binary stream of Yjs updates, framed using lib0 `VarUint8Array` encoding.
+
+**Content-Type**: `application/octet-stream`
+
+**Read (GET)**:
+
+- Query params: `offset`, `live` (supports `auto` for long-polling)
+- Returns lib0-framed updates: each update is prefixed with its length as a varint
+
+**Write (POST)**:
+
+- Body: lib0-framed Yjs update(s)
+- Supports idempotent producer headers for exactly-once delivery
+
+**Framing format**:
+
+```
+[varint length][update bytes][varint length][update bytes]...
+```
+
+#### Snapshots Stream
+
+```
+GET {baseUrl}/docs/{docId}/snapshots/{snapshotId}
+```
+
+Binary Yjs document state (result of `Y.encodeStateAsUpdate(doc)`).
+
+**Content-Type**: `application/octet-stream`
+
+**Read (GET)**:
+
+- Query param: `offset=-1` (read full snapshot)
+- Returns raw Yjs state vector, no framing
+
+Snapshots are created by the server during compaction. The `snapshotId` comes from the index's `snapshot_stream` field.
+
+#### Awareness Stream
+
+```
+GET  {baseUrl}/docs/{docId}/awareness
+POST {baseUrl}/docs/{docId}/awareness
+```
+
+Ephemeral presence data (cursors, selections, user info).
+
+**Content-Type**: `text/plain`
+
+**Read (GET)**:
+
+- Query params: `offset=now`, `live=sse` (Server-Sent Events)
+- Returns base64-encoded awareness updates
+
+**Write (POST)**:
+
+- Body: base64-encoded awareness update (from `y-protocols/awareness`)
+
+### Compaction
+
+Servers should periodically compact documents by:
+
+1. Reading current snapshot (if any) + all updates since `update_offset`
+2. Merging into a new Yjs document state
+3. Writing new snapshot to `snapshots/{new-uuid}`
+4. Updating index with new `snapshot_stream` and `update_offset`
+5. Deleting old snapshot (optional)
+
+The updates stream is **never rotated** - only the offset advances. This allows existing long-poll connections to continue uninterrupted.
+
+### Error Responses
+
+| Status | Meaning                   |
+| ------ | ------------------------- |
+| 404    | Stream/document not found |
+| 409    | Conflict (stream exists)  |
+| 401    | Unauthorized              |
+| 403    | Forbidden                 |
+| 500    | Server error              |
+
 ## How It Works
 
 The provider connects to a Yjs server which manages document storage using durable streams:
