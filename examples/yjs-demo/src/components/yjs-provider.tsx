@@ -1,10 +1,10 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
-import { DurableStreamsProvider } from "@durable-streams/y-durable-streams"
+import { YjsProvider } from "@durable-streams/y-durable-streams"
 import { useServerEndpoint } from "./server-endpoint-context"
 import type { ReactNode } from "react"
-import type { ProviderStatus } from "@durable-streams/y-durable-streams"
+import type { YjsProviderStatus } from "@durable-streams/y-durable-streams"
 
 // ============================================================================
 // User colors for presence
@@ -138,7 +138,7 @@ export function YjsRoomProvider({
   const [isLoading, setIsLoading] = useState(true)
   const [isSynced, setIsSynced] = useState(false)
   const [error, setError] = useState<Error | null>(null)
-  const providerRef = useRef<DurableStreamsProvider | null>(null)
+  const providerRef = useRef<YjsProvider | null>(null)
   const usernameRef = useRef(username)
   usernameRef.current = username
 
@@ -157,18 +157,15 @@ export function YjsRoomProvider({
   }
 
   useEffect(() => {
-    const documentStreamUrl = `${serverEndpoint}/v1/stream/rooms/${roomId}`
-    const presenceStreamUrl = `${serverEndpoint}/v1/stream/presence/${roomId}`
+    // The server endpoint should point to a Yjs server
+    // e.g., http://localhost:4438/v1/yjs/rooms
+    const baseUrl = `${serverEndpoint}/v1/yjs/rooms`
 
-    const provider = new DurableStreamsProvider({
+    const provider = new YjsProvider({
       doc,
-      documentStream: {
-        url: documentStreamUrl,
-      },
-      awarenessStream: {
-        url: presenceStreamUrl,
-        protocol: awareness,
-      },
+      baseUrl,
+      docId: roomId,
+      awareness,
       connect: false, // We'll connect manually after setting up listeners
     })
 
@@ -179,7 +176,7 @@ export function YjsRoomProvider({
       }
     })
 
-    provider.on(`status`, (status: ProviderStatus) => {
+    provider.on(`status`, (status: YjsProviderStatus) => {
       if (status === `connected`) {
         setIsLoading(false)
       }

@@ -1,29 +1,37 @@
 /**
- * YjsServer - HTTP server implementing the Yjs Durable Streams Protocol.
+ * YjsServer - DS-protocol-compatible proxy for Yjs documents.
  *
- * This server sits between Yjs clients and the durable streams server,
- * providing document abstraction with automatic compaction.
+ * This server proxies Durable Streams protocol requests to an underlying DS server,
+ * adding Yjs-specific logic:
+ * - Auto-creates streams when they don't exist
+ * - Maintains an index stream pointing to current snapshot/updates
+ * - Runs compaction in the background
  *
- * Endpoints:
- * - GET  /v1/yjs/:service/docs/:docId           - Get index JSON
- * - POST /v1/yjs/:service/docs/:docId           - Append update (binary)
- * - GET  /v1/yjs/:service/docs/:docId/updates/:streamId - Read updates
- * - GET  /v1/yjs/:service/docs/:docId/snapshots/:snapshotId - Read snapshot
- * - GET  /v1/yjs/:service/docs/:docId/presence  - Subscribe to presence
- * - POST /v1/yjs/:service/docs/:docId/presence  - Broadcast presence
+ * The client uses DurableStream client to talk to this server using standard DS protocol.
  */
 
 import { createServer } from "node:http"
-import { YjsStore } from "./yjs-store"
+import {
+  DurableStream,
+  DurableStreamError,
+  FetchError,
+} from "@durable-streams/client"
 import { Compactor } from "./compaction"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
-import type { YjsIndex, YjsServerOptions } from "./types"
-
-const STREAM_NEXT_OFFSET_HEADER = `Stream-Next-Offset`
-const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
+import type { YjsDocumentState, YjsIndex, YjsServerOptions } from "./types"
 
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
 const DEFAULT_MIN_UPDATES = 100
+
+/**
+ * Check if an error is a 409 Conflict (already exists) error.
+ */
+function isConflictExistsError(err: unknown): boolean {
+  return (
+    (err instanceof DurableStreamError && err.code === `CONFLICT_EXISTS`) ||
+    (err instanceof FetchError && err.status === 409)
+  )
+}
 
 /**
  * Route match result.
@@ -31,103 +39,58 @@ const DEFAULT_MIN_UPDATES = 100
 interface RouteMatch {
   service: string
   docId: string
+  streamType: `index` | `updates` | `snapshots` | `awareness`
   streamId?: string
-  snapshotId?: string
-  endpoint: `index` | `update` | `updates` | `snapshot` | `presence`
 }
-
-/**
- * Route patterns for the Yjs protocol endpoints.
- */
-const ROUTE_PATTERNS = {
-  updates: /^\/v1\/yjs\/([^/]+)\/docs\/([^/]+)\/updates\/([^/]+)$/,
-  snapshot: /^\/v1\/yjs\/([^/]+)\/docs\/([^/]+)\/snapshots\/([^/]+)$/,
-  presence: /^\/v1\/yjs\/([^/]+)\/docs\/([^/]+)\/presence$/,
-  index: /^\/v1\/yjs\/([^/]+)\/docs\/([^/]+)$/,
-} as const
 
 /**
  * Parse the URL path and extract route parameters.
+ * Expected format: /v1/yjs/:service/docs/:docId/:streamType[/:streamId]
  */
 function parseRoute(path: string): RouteMatch | null {
-  const updatesMatch = path.match(ROUTE_PATTERNS.updates)
-  if (updatesMatch) {
-    return {
-      service: updatesMatch[1]!,
-      docId: updatesMatch[2]!,
-      streamId: updatesMatch[3],
-      endpoint: `updates`,
-    }
-  }
+  const match = path.match(
+    /^\/v1\/yjs\/([^/]+)\/docs\/([^/]+)\/(index|updates|snapshots|awareness)(?:\/([^/]+))?$/
+  )
+  if (!match) return null
 
-  const snapshotMatch = path.match(ROUTE_PATTERNS.snapshot)
-  if (snapshotMatch) {
-    return {
-      service: snapshotMatch[1]!,
-      docId: snapshotMatch[2]!,
-      snapshotId: snapshotMatch[3],
-      endpoint: `snapshot`,
-    }
+  return {
+    service: match[1]!,
+    docId: match[2]!,
+    streamType: match[3] as RouteMatch[`streamType`],
+    streamId: match[4],
   }
-
-  const presenceMatch = path.match(ROUTE_PATTERNS.presence)
-  if (presenceMatch) {
-    return {
-      service: presenceMatch[1]!,
-      docId: presenceMatch[2]!,
-      endpoint: `presence`,
-    }
-  }
-
-  const indexMatch = path.match(ROUTE_PATTERNS.index)
-  if (indexMatch) {
-    return {
-      service: indexMatch[1]!,
-      docId: indexMatch[2]!,
-      endpoint: `index`,
-    }
-  }
-
-  return null
 }
 
 /**
- * HTTP server for the Yjs Durable Streams Protocol.
+ * HTTP server implementing DS-compatible proxy for Yjs documents.
  */
 export class YjsServer {
-  private readonly store: YjsStore
+  private readonly dsServerUrl: string
+  private readonly dsServerHeaders: Record<string, string>
+  private readonly compactionThreshold: number
+  private readonly minUpdatesBeforeCompaction: number
+  private readonly port: number
+  private readonly host: string
+
   private readonly compactor: Compactor
-  private readonly options: Required<
-    Omit<YjsServerOptions, `dsServerHeaders`>
-  > & {
-    dsServerHeaders?: Record<string, string>
-  }
+  private readonly documentStates = new Map<string, YjsDocumentState>()
+
   private server: Server | null = null
   private _url: string | null = null
 
   constructor(options: YjsServerOptions) {
-    this.options = {
-      port: options.port ?? 0,
-      host: options.host ?? `127.0.0.1`,
-      dsServerUrl: options.dsServerUrl,
-      dsServerHeaders: options.dsServerHeaders,
-      compactionThreshold:
-        options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD,
-      minUpdatesBeforeCompaction:
-        options.minUpdatesBeforeCompaction ?? DEFAULT_MIN_UPDATES,
-    }
+    this.dsServerUrl = options.dsServerUrl
+    this.dsServerHeaders = options.dsServerHeaders ?? {}
+    this.compactionThreshold =
+      options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD
+    this.minUpdatesBeforeCompaction =
+      options.minUpdatesBeforeCompaction ?? DEFAULT_MIN_UPDATES
+    this.port = options.port ?? 0
+    this.host = options.host ?? `127.0.0.1`
 
-    this.store = new YjsStore({
-      dsServerUrl: this.options.dsServerUrl,
-      dsServerHeaders: this.options.dsServerHeaders,
-    })
-
-    this.compactor = new Compactor(this.store)
+    this.compactor = new Compactor(this)
   }
 
-  /**
-   * Start the server.
-   */
   async start(): Promise<string> {
     if (this.server) {
       throw new Error(`Server already started`)
@@ -146,27 +109,21 @@ export class YjsServer {
 
       this.server.on(`error`, reject)
 
-      this.server.listen(this.options.port, this.options.host, () => {
+      this.server.listen(this.port, this.host, () => {
         const addr = this.server!.address()
         if (typeof addr === `string`) {
           this._url = addr
         } else if (addr) {
-          this._url = `http://${this.options.host}:${addr.port}`
+          this._url = `http://${this.host}:${addr.port}`
         }
         resolve(this._url!)
       })
     })
   }
 
-  /**
-   * Stop the server.
-   */
   async stop(): Promise<void> {
-    if (!this.server) {
-      return
-    }
+    if (!this.server) return
 
-    // Force-close all existing connections
     this.server.closeAllConnections()
 
     return new Promise((resolve, reject) => {
@@ -182,9 +139,6 @@ export class YjsServer {
     })
   }
 
-  /**
-   * Get the server URL.
-   */
   get url(): string {
     if (!this._url) {
       throw new Error(`Server not started`)
@@ -192,21 +146,8 @@ export class YjsServer {
     return this._url
   }
 
-  /**
-   * Send a standard error response.
-   */
-  private sendError(
-    res: ServerResponse,
-    status: number,
-    message: string
-  ): void {
-    res.writeHead(status, { "content-type": `text/plain` })
-    res.end(message)
-  }
+  // ---- Request handling ----
 
-  /**
-   * Handle an incoming HTTP request.
-   */
   private async handleRequest(
     req: IncomingMessage,
     res: ServerResponse
@@ -217,11 +158,17 @@ export class YjsServer {
 
     // CORS headers
     res.setHeader(`access-control-allow-origin`, `*`)
-    res.setHeader(`access-control-allow-methods`, `GET, POST, OPTIONS`)
-    res.setHeader(`access-control-allow-headers`, `content-type`)
+    res.setHeader(
+      `access-control-allow-methods`,
+      `GET, POST, PUT, DELETE, OPTIONS`
+    )
+    res.setHeader(
+      `access-control-allow-headers`,
+      `content-type, stream-offset, stream-live, stream-producer-id, stream-producer-epoch, stream-producer-seq`
+    )
     res.setHeader(
       `access-control-expose-headers`,
-      `${STREAM_NEXT_OFFSET_HEADER}, ${STREAM_UP_TO_DATE_HEADER}`
+      `stream-offset, stream-up-to-date, stream-cursor`
     )
 
     if (method === `OPTIONS`) {
@@ -232,256 +179,333 @@ export class YjsServer {
 
     const route = parseRoute(path)
     if (!route) {
-      this.sendError(res, 404, `Not found`)
+      res.writeHead(404, { "content-type": `text/plain` })
+      res.end(`Not found`)
       return
     }
 
     try {
-      switch (route.endpoint) {
-        case `index`:
-          if (method === `GET`) {
-            await this.handleGetIndex(route.service, route.docId, res)
-          } else if (method === `POST`) {
-            await this.handlePostUpdate(route.service, route.docId, req, res)
-          } else {
-            this.sendError(res, 405, `Method not allowed`)
-          }
-          break
+      // Build the DS server URL
+      const dsPath = this.buildDsPath(route)
+      const dsUrl = new URL(dsPath, this.dsServerUrl)
 
-        case `updates`:
-          if (method === `GET`) {
-            await this.handleGetUpdates(
-              route.service,
-              route.docId,
-              route.streamId!,
-              url,
-              res
-            )
-          } else {
-            this.sendError(res, 405, `Method not allowed`)
-          }
-          break
+      // Copy query params
+      url.searchParams.forEach((value, key) => {
+        dsUrl.searchParams.set(key, value)
+      })
 
-        case `snapshot`:
-          if (method === `GET`) {
-            await this.handleGetSnapshot(
-              route.service,
-              route.docId,
-              route.snapshotId!,
-              res
-            )
-          } else {
-            this.sendError(res, 405, `Method not allowed`)
-          }
-          break
-
-        case `presence`:
-          if (method === `GET`) {
-            await this.handleGetPresence(route.service, route.docId, url, res)
-          } else if (method === `POST`) {
-            await this.handlePostPresence(route.service, route.docId, req, res)
-          } else {
-            this.sendError(res, 405, `Method not allowed`)
-          }
-          break
-
-        default:
-          this.sendError(res, 404, `Not found`)
+      // Handle special cases
+      if (method === `POST` && route.streamType === `updates`) {
+        await this.handleUpdateAppend(req, res, route, dsUrl)
+        return
       }
+
+      if (method === `POST` && route.streamType === `awareness`) {
+        await this.handleAwarenessAppend(req, res, route, dsUrl)
+        return
+      }
+
+      // For all other requests, proxy directly
+      await this.proxyRequest(req, res, method!, dsUrl)
     } catch (err) {
       console.error(`[YjsServer] Error handling ${method} ${path}:`, err)
       if (!res.headersSent) {
-        this.sendError(res, 500, `Internal server error`)
+        res.writeHead(500, { "content-type": `text/plain` })
+        res.end(`Internal server error`)
       }
     }
   }
 
-  /**
-   * GET /v1/yjs/:service/docs/:docId - Return index JSON.
-   */
-  private async handleGetIndex(
+  private buildDsPath(route: RouteMatch): string {
+    const base = `/v1/stream/yjs/${route.service}/docs/${route.docId}`
+    if (route.streamId) {
+      return `${base}/${route.streamType}/${route.streamId}`
+    }
+    return `${base}/${route.streamType}`
+  }
+
+  // ---- Proxy logic ----
+
+  private async proxyRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    method: string,
+    dsUrl: URL
+  ): Promise<void> {
+    // Read request body if present
+    const body = await this.readBody(req)
+
+    // Build headers for DS request
+    const headers: Record<string, string> = {
+      ...this.dsServerHeaders,
+    }
+
+    // Copy relevant headers from client request
+    const headersToCopy = [
+      `content-type`,
+      `stream-offset`,
+      `stream-live`,
+      `stream-producer-id`,
+      `stream-producer-epoch`,
+      `stream-producer-seq`,
+    ]
+    for (const header of headersToCopy) {
+      const value = req.headers[header]
+      if (typeof value === `string`) {
+        headers[header] = value
+      }
+    }
+
+    // Make request to DS server
+    const dsResponse = await fetch(dsUrl.toString(), {
+      method,
+      headers,
+      body: body.length > 0 ? Buffer.from(body) : undefined,
+    })
+
+    // Copy response headers
+    const responseHeaders: Record<string, string> = {}
+    const headersToForward = [
+      `content-type`,
+      `stream-offset`,
+      `stream-up-to-date`,
+      `stream-cursor`,
+    ]
+    for (const header of headersToForward) {
+      const value = dsResponse.headers.get(header)
+      if (value) {
+        responseHeaders[header] = value
+      }
+    }
+
+    // Stream the response body
+    res.writeHead(dsResponse.status, responseHeaders)
+
+    if (dsResponse.body) {
+      const reader = dsResponse.body.getReader()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          res.write(value)
+        }
+      } finally {
+        reader.releaseLock()
+      }
+    }
+
+    res.end()
+  }
+
+  // ---- Update handling with index management ----
+
+  private async handleUpdateAppend(
+    req: IncomingMessage,
+    res: ServerResponse,
+    route: RouteMatch,
+    dsUrl: URL
+  ): Promise<void> {
+    const stateKey = `${route.service}/${route.docId}`
+
+    // Ensure streams exist
+    await this.ensureStreamsExist(route.service, route.docId, route.streamId!)
+
+    // Proxy the append request
+    await this.proxyRequest(req, res, `POST`, dsUrl)
+
+    // Track update size for compaction (approximate from request)
+    const contentLength = parseInt(req.headers[`content-length`] ?? `0`, 10)
+    const state = this.documentStates.get(stateKey)
+    if (state) {
+      state.updatesSizeBytes += contentLength
+      state.updatesCount += 1
+
+      // Check if compaction should be triggered
+      if (this.shouldTriggerCompaction(state)) {
+        this.compactor
+          .triggerCompaction(route.service, route.docId)
+          .catch((err) => {
+            console.error(`[YjsServer] Compaction error:`, err)
+          })
+      }
+    }
+  }
+
+  // ---- Awareness handling with base64 encoding ----
+
+  private async handleAwarenessAppend(
+    req: IncomingMessage,
+    res: ServerResponse,
+    route: RouteMatch,
+    dsUrl: URL
+  ): Promise<void> {
+    // Ensure awareness stream exists
+    await this.ensureAwarenessStream(route.service, route.docId)
+
+    // Proxy the append request
+    await this.proxyRequest(req, res, `POST`, dsUrl)
+  }
+
+  // ---- Stream management ----
+
+  private async ensureStreamsExist(
     service: string,
     docId: string,
-    res: ServerResponse
+    updatesStreamId: string
   ): Promise<void> {
-    const index = await this.store.getIndex(service, docId)
+    const stateKey = `${service}/${docId}`
 
-    if (!index) {
-      // New document - return default index
+    if (this.documentStates.has(stateKey)) {
+      return
+    }
+
+    // Create index stream if needed
+    const indexUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/index`
+    try {
+      await DurableStream.create({
+        url: indexUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/json`,
+      })
+
+      // Write initial index
+      const stream = new DurableStream({
+        url: indexUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/json`,
+      })
+
       const defaultIndex: YjsIndex = {
         snapshot_stream: null,
-        updates_stream: `updates-001`,
-        update_offset: -1,
+        updates_stream: updatesStreamId,
+        update_offset: `-1`,
       }
-      res.writeHead(200, { "content-type": `application/json` })
-      res.end(JSON.stringify(defaultIndex))
-      return
+      await stream.append(defaultIndex, { contentType: `application/json` })
+    } catch (err) {
+      if (!isConflictExistsError(err)) {
+        throw err
+      }
     }
 
-    res.writeHead(200, { "content-type": `application/json` })
-    res.end(JSON.stringify(index))
-  }
-
-  /**
-   * POST /v1/yjs/:service/docs/:docId - Append update (binary).
-   */
-  private async handlePostUpdate(
-    service: string,
-    docId: string,
-    req: IncomingMessage,
-    res: ServerResponse
-  ): Promise<void> {
-    const body = await this.readBody(req)
-
-    if (body.length === 0) {
-      this.sendError(res, 400, `Empty body`)
-      return
-    }
-
-    // Append the update
-    const result = await this.store.appendUpdate(service, docId, body)
-
-    // Check if compaction should be triggered
-    const state = await this.store.getDocumentState(service, docId)
-    if (
-      this.store.shouldTriggerCompaction(
-        state,
-        this.options.compactionThreshold,
-        this.options.minUpdatesBeforeCompaction
-      )
-    ) {
-      // Trigger compaction in the background
-      this.compactor.triggerCompaction(service, docId).catch((err) => {
-        console.error(
-          `[YjsServer] Compaction error for ${service}/${docId}:`,
-          err
-        )
+    // Create updates stream if needed
+    const updatesUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/updates/${updatesStreamId}`
+    try {
+      await DurableStream.create({
+        url: updatesUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/octet-stream`,
       })
+    } catch (err) {
+      if (!isConflictExistsError(err)) {
+        throw err
+      }
     }
 
-    res.writeHead(200, {
-      "content-type": `text/plain`,
-      [STREAM_NEXT_OFFSET_HEADER]: result.offset,
+    // Initialize document state
+    this.documentStates.set(stateKey, {
+      index: {
+        snapshot_stream: null,
+        updates_stream: updatesStreamId,
+        update_offset: `-1`,
+      },
+      updatesSizeBytes: 0,
+      updatesCount: 0,
+      compacting: false,
     })
-    res.end()
+  }
+
+  private async ensureAwarenessStream(
+    service: string,
+    docId: string
+  ): Promise<void> {
+    const awarenessUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/awareness`
+    try {
+      await DurableStream.create({
+        url: awarenessUrl,
+        headers: this.dsServerHeaders,
+        contentType: `text/plain`,
+      })
+    } catch (err) {
+      if (!isConflictExistsError(err)) {
+        throw err
+      }
+    }
+  }
+
+  // ---- Compaction support ----
+
+  shouldTriggerCompaction(state: YjsDocumentState): boolean {
+    return (
+      !state.compacting &&
+      state.updatesSizeBytes >= this.compactionThreshold &&
+      state.updatesCount >= this.minUpdatesBeforeCompaction
+    )
+  }
+
+  getDocumentState(
+    service: string,
+    docId: string
+  ): YjsDocumentState | undefined {
+    return this.documentStates.get(`${service}/${docId}`)
   }
 
   /**
-   * GET /v1/yjs/:service/docs/:docId/updates/:streamId - Read updates.
+   * Atomically check if compaction can start and set compacting=true if so.
+   * Returns true if compaction was started, false if already compacting or state not found.
    */
-  private async handleGetUpdates(
+  tryStartCompaction(service: string, docId: string): boolean {
+    const state = this.documentStates.get(`${service}/${docId}`)
+    if (!state || state.compacting) {
+      return false
+    }
+    state.compacting = true
+    return true
+  }
+
+  setCompacting(service: string, docId: string, compacting: boolean): void {
+    const state = this.documentStates.get(`${service}/${docId}`)
+    if (state) {
+      state.compacting = compacting
+    }
+  }
+
+  resetUpdateCounters(service: string, docId: string): void {
+    const state = this.documentStates.get(`${service}/${docId}`)
+    if (state) {
+      state.updatesSizeBytes = 0
+      state.updatesCount = 0
+    }
+  }
+
+  getDsServerUrl(): string {
+    return this.dsServerUrl
+  }
+
+  getDsServerHeaders(): Record<string, string> {
+    return this.dsServerHeaders
+  }
+
+  async saveIndex(
     service: string,
     docId: string,
-    streamId: string,
-    url: URL,
-    res: ServerResponse
+    index: YjsIndex
   ): Promise<void> {
-    const offset = url.searchParams.get(`offset`) ?? undefined
-    const live = url.searchParams.get(`live`)
-
-    // Verify this is the current updates stream
-    const state = await this.store.getDocumentState(service, docId)
-    if (state.index.updates_stream !== streamId) {
-      this.sendError(res, 404, `Stream not found`)
-      return
-    }
-
-    const result = await this.store.readUpdates(service, docId, {
-      offset,
-      live: live === `long-poll` ? `long-poll` : false,
+    const indexUrl = `${this.dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/index`
+    const stream = new DurableStream({
+      url: indexUrl,
+      headers: this.dsServerHeaders,
+      contentType: `application/json`,
     })
+    await stream.append(index, { contentType: `application/json` })
 
-    const headers: Record<string, string> = {
-      "content-type": `application/octet-stream`,
-      [STREAM_NEXT_OFFSET_HEADER]: result.nextOffset,
+    const state = this.documentStates.get(`${service}/${docId}`)
+    if (state) {
+      state.index = index
     }
-
-    if (result.upToDate) {
-      headers[STREAM_UP_TO_DATE_HEADER] = `true`
-    }
-
-    res.writeHead(200, headers)
-    res.end(Buffer.from(result.data))
   }
 
-  /**
-   * GET /v1/yjs/:service/docs/:docId/snapshots/:snapshotId - Read snapshot.
-   */
-  private async handleGetSnapshot(
-    service: string,
-    docId: string,
-    snapshotId: string,
-    res: ServerResponse
-  ): Promise<void> {
-    const snapshot = await this.store.readSnapshot(service, docId, snapshotId)
+  // ---- Helpers ----
 
-    if (!snapshot) {
-      this.sendError(res, 404, `Snapshot not found`)
-      return
-    }
-
-    res.writeHead(200, { "content-type": `application/octet-stream` })
-    res.end(Buffer.from(snapshot))
-  }
-
-  /**
-   * GET /v1/yjs/:service/docs/:docId/presence - Subscribe to presence.
-   */
-  private async handleGetPresence(
-    service: string,
-    docId: string,
-    url: URL,
-    res: ServerResponse
-  ): Promise<void> {
-    const offset = url.searchParams.get(`offset`) ?? `now`
-    const live = url.searchParams.get(`live`)
-
-    // Ensure presence stream exists before reading (for long-poll to work)
-    await this.store.ensurePresenceStream(service, docId)
-
-    const result = await this.store.readPresence(service, docId, {
-      offset,
-      live: live === `long-poll` ? `long-poll` : false,
-    })
-
-    const headers: Record<string, string> = {
-      "content-type": `application/octet-stream`,
-      [STREAM_NEXT_OFFSET_HEADER]: result.nextOffset,
-    }
-
-    if (result.upToDate) {
-      headers[STREAM_UP_TO_DATE_HEADER] = `true`
-    }
-
-    res.writeHead(200, headers)
-    res.end(Buffer.from(result.data))
-  }
-
-  /**
-   * POST /v1/yjs/:service/docs/:docId/presence - Broadcast presence.
-   */
-  private async handlePostPresence(
-    service: string,
-    docId: string,
-    req: IncomingMessage,
-    res: ServerResponse
-  ): Promise<void> {
-    const body = await this.readBody(req)
-
-    if (body.length === 0) {
-      this.sendError(res, 400, `Empty body`)
-      return
-    }
-
-    await this.store.appendPresence(service, docId, body)
-
-    res.writeHead(200, { "content-type": `text/plain` })
-    res.end()
-  }
-
-  /**
-   * Read request body as Uint8Array.
-   */
   private readBody(req: IncomingMessage): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {
       const chunks: Array<Buffer> = []

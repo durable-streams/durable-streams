@@ -1,53 +1,80 @@
 /**
  * Compactor - Handles Yjs document compaction.
  *
- * Compaction reduces storage by creating a new snapshot from the current
- * document state and starting a fresh updates stream. This is triggered
- * when the cumulative update size exceeds a threshold.
- *
- * The process is atomic from the client's perspective:
- * 1. Load current snapshot (if any) + all updates
- * 2. Apply updates to Y.Doc to get current state
- * 3. Encode state as new snapshot
- * 4. Create new snapshot stream
- * 5. Create new updates stream
- * 6. Update index atomically
- * 7. Delete old snapshot stream (if any)
+ * Compaction creates a snapshot from the current document state.
+ * The updates stream is NOT rotated - we just update the offset to mark
+ * where the snapshot covers up to. New clients load snapshot + updates
+ * after that offset.
  */
 
 import * as Y from "yjs"
 import * as decoding from "lib0/decoding"
-import { YjsStreamPaths } from "./types"
-import type { YjsStore } from "./yjs-store"
+import {
+  DurableStream,
+  DurableStreamError,
+  FetchError,
+} from "@durable-streams/client"
 import type { CompactionResult, YjsIndex } from "./types"
+
+/**
+ * Interface for the server that the Compactor works with.
+ */
+export interface CompactorServer {
+  getDsServerUrl: () => string
+  getDsServerHeaders: () => Record<string, string>
+  getDocumentState: (
+    service: string,
+    docId: string
+  ) => { index: YjsIndex; compacting: boolean } | undefined
+  /** Atomically check if compaction can start and set compacting=true if so */
+  tryStartCompaction: (service: string, docId: string) => boolean
+  setCompacting: (service: string, docId: string, compacting: boolean) => void
+  resetUpdateCounters: (service: string, docId: string) => void
+  saveIndex: (service: string, docId: string, index: YjsIndex) => Promise<void>
+}
+
+/**
+ * Check if an error is a 404 Not Found error.
+ */
+function isNotFoundError(err: unknown): boolean {
+  return (
+    (err instanceof DurableStreamError && err.code === `NOT_FOUND`) ||
+    (err instanceof FetchError && err.status === 404)
+  )
+}
+
+/**
+ * Generate a unique snapshot ID.
+ */
+function generateSnapshotId(): string {
+  return `snapshot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
 
 /**
  * Handles document compaction.
  */
 export class Compactor {
-  private readonly store: YjsStore
+  private readonly server: CompactorServer
 
-  constructor(store: YjsStore) {
-    this.store = store
+  constructor(server: CompactorServer) {
+    this.server = server
   }
 
   /**
    * Trigger compaction for a document.
-   * This runs in the background and should not block the request.
+   * Uses atomic check-and-set to prevent concurrent compactions.
    */
   async triggerCompaction(service: string, docId: string): Promise<void> {
-    const state = await this.store.getDocumentState(service, docId)
-
-    // Skip if already compacting
-    if (state.compacting) {
+    // Atomically check if we can start compaction
+    // This prevents race conditions where multiple triggers see compacting=false
+    if (!this.server.tryStartCompaction(service, docId)) {
       return
     }
 
     try {
-      this.store.setCompacting(service, docId, true)
       await this.performCompaction(service, docId)
     } finally {
-      this.store.setCompacting(service, docId, false)
+      this.server.setCompacting(service, docId, false)
     }
   }
 
@@ -58,8 +85,14 @@ export class Compactor {
     service: string,
     docId: string
   ): Promise<CompactionResult> {
-    const state = await this.store.getDocumentState(service, docId)
+    const state = this.server.getDocumentState(service, docId)
+    if (!state) {
+      throw new Error(`Document state not found for ${service}/${docId}`)
+    }
+
     const currentIndex = state.index
+    const dsServerUrl = this.server.getDsServerUrl()
+    const dsHeaders = this.server.getDsServerHeaders()
 
     // Create a Y.Doc and load current state
     const doc = new Y.Doc()
@@ -67,83 +100,117 @@ export class Compactor {
     try {
       // Load existing snapshot if any
       if (currentIndex.snapshot_stream) {
-        const snapshot = await this.store.readSnapshot(
-          service,
-          docId,
-          currentIndex.snapshot_stream
-        )
-        if (snapshot && snapshot.length > 0) {
-          Y.applyUpdate(doc, snapshot)
+        const snapshotUrl = `${dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/snapshots/${currentIndex.snapshot_stream}`
+        const stream = new DurableStream({
+          url: snapshotUrl,
+          headers: dsHeaders,
+          contentType: `application/octet-stream`,
+        })
+
+        try {
+          const response = await stream.stream({ offset: `-1` })
+          const snapshot = await response.body()
+          if (snapshot.length > 0) {
+            Y.applyUpdate(doc, snapshot)
+          }
+        } catch (err) {
+          if (!isNotFoundError(err)) {
+            throw err
+          }
         }
       }
 
-      // Load all updates
-      const updates = await this.store.readUpdates(service, docId, {
-        offset:
-          currentIndex.update_offset === -1
-            ? `-1`
-            : `${currentIndex.update_offset}_0`,
-        live: false,
+      // Load all updates and track the final offset
+      const updatesUrl = `${dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/updates/${currentIndex.updates_stream}`
+      const updatesStream = new DurableStream({
+        url: updatesUrl,
+        headers: dsHeaders,
+        contentType: `application/octet-stream`,
       })
 
-      if (updates.data.length > 0) {
-        // Parse and apply framed updates
-        const decoder = decoding.createDecoder(updates.data)
-        while (decoding.hasContent(decoder)) {
-          const update = decoding.readVarUint8Array(decoder)
-          Y.applyUpdate(doc, update)
+      let currentEndOffset = currentIndex.update_offset
+
+      try {
+        const response = await updatesStream.stream({
+          offset: currentIndex.update_offset,
+        })
+        const updatesData = await response.body()
+
+        if (updatesData.length > 0) {
+          const decoder = decoding.createDecoder(updatesData)
+          while (decoding.hasContent(decoder)) {
+            const update = decoding.readVarUint8Array(decoder)
+            Y.applyUpdate(doc, update)
+          }
         }
+
+        // Store the full padded offset string from the server
+        // This ensures lexicographic comparison works correctly
+        currentEndOffset = response.offset
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          console.error(
+            `[Compactor] Updates stream not found for ${service}/${docId} during compaction`
+          )
+        }
+        throw err
       }
 
       // Encode the current state as a snapshot
       const newSnapshot = Y.encodeStateAsUpdate(doc)
 
       // Create new snapshot stream
-      const newSnapshotId = await this.store.writeSnapshot(
-        service,
-        docId,
-        newSnapshot
-      )
+      const newSnapshotId = generateSnapshotId()
+      const newSnapshotUrl = `${dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/snapshots/${newSnapshotId}`
 
-      // Generate new updates stream ID
-      const newUpdatesStream = this.store.getNextUpdatesStreamId(
-        currentIndex.updates_stream
-      )
+      const snapshotStream = await DurableStream.create({
+        url: newSnapshotUrl,
+        headers: dsHeaders,
+        contentType: `application/octet-stream`,
+      })
+      await snapshotStream.append(newSnapshot, {
+        contentType: `application/octet-stream`,
+      })
 
-      // Create new updates stream
-      await this.store.ensureUpdatesStream(service, docId, newUpdatesStream)
-
-      // Update the index atomically
+      // Update the index - SAME updates stream, new offset
       const newIndex: YjsIndex = {
         snapshot_stream: newSnapshotId,
-        updates_stream: newUpdatesStream,
-        update_offset: -1, // Start fresh from beginning of new updates stream
+        updates_stream: currentIndex.updates_stream, // Keep same stream
+        update_offset: currentEndOffset, // Where snapshot covers up to
       }
-      await this.store.saveIndex(service, docId, newIndex)
+      await this.server.saveIndex(service, docId, newIndex)
 
       // Reset counters
-      this.store.resetUpdateCounters(service, docId)
+      this.server.resetUpdateCounters(service, docId)
 
-      // Delete old streams (in background, failures are logged but not thrown)
-      this.deleteOldStreams(service, docId, currentIndex).catch((err) => {
-        console.error(
-          `[Compactor] Error deleting old streams for ${service}/${docId}:`,
-          err
-        )
-      })
+      // Delete old snapshot only (not updates stream)
+      if (currentIndex.snapshot_stream) {
+        this.deleteOldSnapshot(
+          dsServerUrl,
+          dsHeaders,
+          service,
+          docId,
+          currentIndex.snapshot_stream
+        ).catch((err) => {
+          console.error(
+            `[Compactor] Error deleting old snapshot for ${service}/${docId}:`,
+            err
+          )
+        })
+      }
 
       const result: CompactionResult = {
         newSnapshotStream: newSnapshotId,
-        newUpdatesStream,
+        newUpdatesStream: currentIndex.updates_stream, // Same stream
         snapshotSizeBytes: newSnapshot.length,
         oldSnapshotStream: currentIndex.snapshot_stream,
-        oldUpdatesStream: currentIndex.updates_stream,
+        oldUpdatesStream: null, // Not deleted
       }
 
       console.log(
         `[Compactor] Compacted ${service}/${docId}: ` +
           `snapshot=${newSnapshot.length} bytes, ` +
-          `old updates stream=${currentIndex.updates_stream} -> ${newUpdatesStream}`
+          `update_offset=${currentEndOffset}`
       )
 
       return result
@@ -153,29 +220,22 @@ export class Compactor {
   }
 
   /**
-   * Delete old snapshot and updates streams.
+   * Delete old snapshot stream.
    */
-  private async deleteOldStreams(
+  private async deleteOldSnapshot(
+    dsServerUrl: string,
+    dsHeaders: Record<string, string>,
     service: string,
     docId: string,
-    oldIndex: YjsIndex
+    snapshotStream: string
   ): Promise<void> {
-    // Delete old snapshot if it exists
-    if (oldIndex.snapshot_stream) {
-      const snapshotPath = YjsStreamPaths.snapshot(
-        service,
-        docId,
-        oldIndex.snapshot_stream
-      )
-      await this.store.deleteStream(snapshotPath)
+    const snapshotUrl = `${dsServerUrl}/v1/stream/yjs/${service}/docs/${docId}/snapshots/${snapshotStream}`
+    try {
+      await DurableStream.delete({ url: snapshotUrl, headers: dsHeaders })
+    } catch (err) {
+      if (!isNotFoundError(err)) {
+        throw err
+      }
     }
-
-    // Delete old updates stream
-    const updatesPath = YjsStreamPaths.updates(
-      service,
-      docId,
-      oldIndex.updates_stream
-    )
-    await this.store.deleteStream(updatesPath)
   }
 }

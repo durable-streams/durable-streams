@@ -25,10 +25,10 @@ export interface YjsIndex {
 
   /**
    * The offset to start reading updates from.
-   * -1 means read from the beginning of the updates stream.
-   * After compaction, this points to the offset after the snapshot was created.
+   * "-1" means read from the beginning of the updates stream.
+   * After compaction, this is the full padded offset string from the server.
    */
-  update_offset: number
+  update_offset: string
 }
 
 /**
@@ -96,7 +96,7 @@ export interface CompactionResult {
   /** The new snapshot stream ID */
   newSnapshotStream: string
 
-  /** The new updates stream ID */
+  /** The updates stream ID (unchanged - we don't rotate streams) */
   newUpdatesStream: string
 
   /** Size of the new snapshot in bytes */
@@ -105,8 +105,8 @@ export interface CompactionResult {
   /** Old snapshot stream ID (to be deleted), or null if first compaction */
   oldSnapshotStream: string | null
 
-  /** Old updates stream ID (to be deleted) */
-  oldUpdatesStream: string
+  /** Old updates stream ID, or null (we don't delete the updates stream) */
+  oldUpdatesStream: string | null
 }
 
 /**
@@ -167,9 +167,12 @@ export const YjsStreamPaths = {
   },
 
   /**
-   * Get the path for the presence stream.
+   * Get the path for an awareness stream.
+   * Supports optional suffix for multiple awareness streams per document.
+   * @param suffix Optional suffix like "-admin" for /awareness-admin
    */
-  presence(service: string, docId: string): string {
-    return `${this.docBase(service, docId)}/presence`
+  awareness(service: string, docId: string, suffix?: string): string {
+    const base = `${this.docBase(service, docId)}/awareness`
+    return suffix ? `${base}${suffix}` : base
   },
 } as const

@@ -1,17 +1,17 @@
 # @durable-streams/y-durable-streams
 
-Yjs provider for Durable Streams - sync Yjs documents over append-only streams with optional awareness (presence) support.
+Yjs provider for Durable Streams - sync Yjs documents over HTTP with automatic server-side compaction and optional awareness (presence) support.
 
 ## Overview
 
-This package provides a Yjs provider that syncs documents using the Durable Streams protocol. Unlike WebSocket-based providers, it uses HTTP long-polling over append-only streams, making it simpler to deploy and scale.
+This package provides a Yjs provider that syncs documents using the Yjs Durable Streams Protocol. Unlike WebSocket-based providers, it uses HTTP long-polling with automatic server-side compaction, making it simpler to deploy and scale.
 
 Key benefits:
 
 - **No WebSocket infrastructure** - Works with standard HTTP load balancers and CDNs
-- **Built-in persistence** - Document history is stored in the stream itself
-- **Scalable** - Clients connect directly to streams, no central sync server needed
-- **Presence support** - Optional awareness stream for cursors, selections, and user status
+- **Automatic compaction** - Server manages document snapshots to keep sync fast
+- **Scalable** - Stateless server design, documents stored in durable streams
+- **Presence support** - Optional awareness for cursors, selections, and user status
 
 ## Installation
 
@@ -22,22 +22,18 @@ npm install @durable-streams/y-durable-streams yjs y-protocols lib0
 ## Quick Start
 
 ```typescript
-import { DurableStreamsProvider } from "@durable-streams/y-durable-streams"
+import { YjsProvider } from "@durable-streams/y-durable-streams"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 
 const doc = new Y.Doc()
 const awareness = new Awareness(doc)
 
-const provider = new DurableStreamsProvider({
+const provider = new YjsProvider({
   doc,
-  documentStream: {
-    url: "https://your-server.com/v1/stream/rooms/my-room",
-  },
-  awarenessStream: {
-    url: "https://your-server.com/v1/stream/presence/my-room",
-    protocol: awareness,
-  },
+  baseUrl: "http://localhost:4438/v1/yjs/my-service",
+  docId: "my-document",
+  awareness,
 })
 
 provider.on("synced", (synced) => {
@@ -50,31 +46,23 @@ provider.on("synced", (synced) => {
 ### Document Only (No Presence)
 
 ```typescript
-const provider = new DurableStreamsProvider({
+const provider = new YjsProvider({
   doc,
-  documentStream: {
-    url: "https://your-server.com/v1/stream/rooms/my-room",
-  },
+  baseUrl: "http://localhost:4438/v1/yjs/my-service",
+  docId: "my-document",
 })
 ```
 
 ### With Authentication
 
 ```typescript
-const provider = new DurableStreamsProvider({
+const provider = new YjsProvider({
   doc,
-  documentStream: {
-    url: "https://your-server.com/v1/stream/rooms/my-room",
-    headers: {
-      Authorization: "Bearer your-token",
-    },
-  },
-  awarenessStream: {
-    url: "https://your-server.com/v1/stream/presence/my-room",
-    protocol: awareness,
-    headers: {
-      Authorization: "Bearer your-token",
-    },
+  baseUrl: "http://localhost:4438/v1/yjs/my-service",
+  docId: "my-document",
+  awareness,
+  headers: {
+    Authorization: "Bearer your-token",
   },
 })
 ```
@@ -82,9 +70,10 @@ const provider = new DurableStreamsProvider({
 ### Manual Connection
 
 ```typescript
-const provider = new DurableStreamsProvider({
+const provider = new YjsProvider({
   doc,
-  documentStream: { url },
+  baseUrl,
+  docId,
   connect: false, // Don't connect automatically
 })
 
@@ -93,7 +82,7 @@ provider.on("synced", handleSync)
 provider.on("error", handleError)
 
 // Then connect
-provider.connect()
+await provider.connect()
 ```
 
 ### Event Handling
@@ -107,7 +96,7 @@ provider.on("synced", (synced: boolean) => {
 })
 
 // Connection status changes
-provider.on("status", (status: ProviderStatus) => {
+provider.on("status", (status: YjsProviderStatus) => {
   console.log("Status:", status) // "disconnected" | "connecting" | "connected"
 })
 
@@ -124,7 +113,7 @@ provider.on("error", (error: Error) => {
 provider.disconnect()
 
 // Reconnect
-provider.connect()
+await provider.connect()
 
 // Destroy permanently
 provider.destroy()
@@ -132,27 +121,26 @@ provider.destroy()
 
 ## API
 
-### DurableStreamsProvider
+### YjsProvider
 
 ```typescript
-class DurableStreamsProvider {
-  constructor(options: DurableStreamsProviderOptions)
+class YjsProvider {
+  constructor(options: YjsProviderOptions)
 
   // Properties
   readonly doc: Y.Doc
   readonly synced: boolean
   readonly connected: boolean
   readonly connecting: boolean
-  readonly status: ProviderStatus
 
   // Methods
-  connect(): void
+  connect(): Promise<void>
   disconnect(): void
   destroy(): void
 
   // Events
   on(event: "synced", handler: (synced: boolean) => void): void
-  on(event: "status", handler: (status: ProviderStatus) => void): void
+  on(event: "status", handler: (status: YjsProviderStatus) => void): void
   on(event: "error", handler: (error: Error) => void): void
 }
 ```
@@ -160,33 +148,43 @@ class DurableStreamsProvider {
 ### Options
 
 ```typescript
-interface DurableStreamsProviderOptions {
+interface YjsProviderOptions {
   doc: Y.Doc
-  documentStream: StreamConfig
-  awarenessStream?: AwarenessConfig
-  connect?: boolean // default: true
-  debug?: boolean // default: false
+  baseUrl: string // Yjs server URL, e.g. "http://localhost:4438/v1/yjs/my-service"
+  docId: string // Document identifier
+  awareness?: Awareness // Optional awareness for presence
+  headers?: HeadersRecord // Optional auth headers
+  connect?: boolean // Auto-connect on construction (default: true)
+  debug?: boolean // Enable debug logging (default: false)
 }
+```
 
-interface StreamConfig {
-  url: string | URL
-  headers?: Record<string, string | (() => string)>
-}
+## Server
 
-interface AwarenessConfig extends StreamConfig {
-  protocol: Awareness
-}
+The package includes a Yjs server that implements the protocol. For development/testing:
+
+```typescript
+import { YjsServer } from "@durable-streams/y-durable-streams/server"
+
+const server = new YjsServer({
+  port: 4438,
+  dsServerUrl: "http://localhost:4437", // Durable streams server
+})
+
+await server.start()
+console.log(`Yjs server running at ${server.url}`)
 ```
 
 ## How It Works
 
-The provider uses two separate durable streams:
+The provider connects to a Yjs server which manages document storage using durable streams:
 
-1. **Document Stream** - Stores Yjs document updates. Reads from the beginning to replay full document history on connect.
+1. **Index** - Tracks current snapshot and updates stream locations
+2. **Snapshots** - Full document state at a point in time
+3. **Updates** - Incremental Yjs updates since last snapshot (long-polling)
+4. **Presence** - Ephemeral awareness data via SSE (cursors, selections, user info)
 
-2. **Awareness Stream** - Syncs presence data (cursors, selections, user info). Reads from current position since historical presence is not needed.
-
-Both streams use long-polling for real-time updates. Updates are encoded using lib0's VarUint8Array framing.
+The server automatically compacts documents by creating new snapshots when updates exceed a threshold. This keeps sync fast for new clients joining.
 
 ## License
 

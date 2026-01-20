@@ -1,18 +1,14 @@
 /**
- * YjsProvider - Yjs provider for the Yjs Durable Streams Protocol.
+ * YjsProvider - Yjs provider using Durable Streams client directly.
  *
- * This provider connects to a Yjs server (which manages document storage
- * and compaction) rather than directly to raw durable streams.
+ * This provider uses the DurableStream client to read/write:
+ * - Index stream: JSON metadata pointing to current snapshot/updates
+ * - Updates stream: Binary Yjs updates with lib0 framing
+ * - Snapshot stream: Binary Yjs snapshots
+ * - Awareness stream: Text/plain with base64-encoded awareness data (SSE for reads)
  *
- * Sync flow:
- * 1. GET /docs/{docId} → fetch index JSON
- * 2. Parallel:
- *    - GET /snapshots/{id} → fetch snapshot binary (if exists)
- *    - GET /updates/{id}?offset=N → fetch updates binary since snapshot
- * 3. Apply: snapshot first, then updates
- * 4. GET /updates/{id}?offset=M&live=long-poll → long-poll for live updates
- * 5. POST /docs/{docId} → write local updates (binary)
- * 6. Handle 404 on snapshot/updates → re-fetch index (compaction happened)
+ * The provider connects to a Yjs server which proxies to the DS server,
+ * handling stream creation and compaction.
  */
 
 import * as Y from "yjs"
@@ -20,6 +16,12 @@ import * as awarenessProtocol from "y-protocols/awareness"
 import { ObservableV2 } from "lib0/observable"
 import * as encoding from "lib0/encoding"
 import * as decoding from "lib0/decoding"
+import {
+  BackoffDefaults,
+  DurableStream,
+  DurableStreamError,
+  FetchError,
+} from "@durable-streams/client"
 import type { HeadersRecord } from "@durable-streams/client"
 import type { YjsIndex } from "./server/types"
 
@@ -75,19 +77,8 @@ export interface YjsProviderOptions {
  * Events emitted by the YjsProvider.
  */
 export interface YjsProviderEvents {
-  /**
-   * Emitted when the sync state changes.
-   */
   synced: (synced: boolean) => void
-
-  /**
-   * Emitted when the connection status changes.
-   */
   status: (status: YjsProviderStatus) => void
-
-  /**
-   * Emitted when an error occurs.
-   */
   error: (error: Error) => void
 }
 
@@ -122,7 +113,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private _connecting = false
 
   private currentIndex: YjsIndex | null = null
-  private currentOffset: string | null = null
+  private updatesStreamGeneration = 0
+  private updatesSubscription: (() => void) | null = null
 
   private sendingChanges = false
   private pendingChanges: Uint8Array | null = null
@@ -131,27 +123,29 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private pendingAwareness: AwarenessUpdate | null = null
 
   private abortController: AbortController | null = null
-  private pollAbortController: AbortController | null = null
   private awarenessHeartbeat: ReturnType<typeof setInterval> | null = null
+  private awarenessRetryCount = 0
+  private readonly MAX_AWARENESS_RETRIES = 30
+  private readonly connectBackoffOptions = {
+    ...BackoffDefaults,
+    maxRetries: 0,
+  }
 
   constructor(options: YjsProviderOptions) {
     super()
     this.doc = options.doc
     this.awareness = options.awareness
-    this.baseUrl = options.baseUrl.replace(/\/$/, ``) // Remove trailing slash
+    this.baseUrl = options.baseUrl.replace(/\/$/, ``)
     this.docId = options.docId
     this.headers = options.headers ?? {}
     this.debug = options.debug ?? false
 
-    // Listen for local document updates
     this.doc.on(`update`, this.handleDocumentUpdate)
 
-    // Listen for awareness updates if configured
     if (this.awareness) {
       this.awareness.on(`update`, this.handleAwarenessUpdate)
     }
 
-    // Auto-connect unless disabled
     if (options.connect !== false) {
       this.connect()
     }
@@ -181,6 +175,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
+  get connecting(): boolean {
+    return this._connecting
+  }
+
   // ---- Connection management ----
 
   async connect(): Promise<void> {
@@ -193,22 +191,18 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       // Step 1: Fetch the index
       this.currentIndex = await this.fetchIndex()
+      if (this.abortController.signal.aborted) return
 
-      // Step 2: Fetch snapshot and updates in parallel
+      // Step 2: Fetch snapshot and start updates stream
       await this.initialSync()
 
-      // Step 3: Start long-polling for live updates
-      this.startPolling()
-
-      // Step 4: Start awareness if configured
+      // Step 3: Start awareness if configured
       if (this.awareness) {
         this.startAwareness()
       }
 
       this.connected = true
-      this.synced = true
     } catch (err) {
-      // Don't emit errors for aborted operations (disconnect called during connect)
       const isAborted = err instanceof Error && err.name === `AbortError`
       if (!isAborted) {
         this.emit(`error`, [
@@ -226,26 +220,25 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
     this._connecting = false
 
-    // Clean up awareness
     if (this.awarenessHeartbeat) {
       clearInterval(this.awarenessHeartbeat)
       this.awarenessHeartbeat = null
     }
 
-    // Broadcast awareness removal
     if (this.awareness) {
       this.broadcastAwarenessRemoval()
     }
 
-    // Abort all pending requests
+    this.updatesStreamGeneration += 1
+    if (this.updatesSubscription) {
+      this.updatesSubscription()
+      this.updatesSubscription = null
+    }
+
     this.abortController.abort()
     this.abortController = null
-    this.pollAbortController?.abort()
-    this.pollAbortController = null
 
-    // Clear state
     this.currentIndex = null
-    this.currentOffset = null
     this.pendingAwareness = null
 
     this.connected = false
@@ -261,17 +254,77 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     super.destroy()
   }
 
+  // ---- Stream URL builders ----
+
+  private indexUrl(): string {
+    return `${this.baseUrl}/docs/${this.docId}/index`
+  }
+
+  private updatesUrl(streamId: string): string {
+    return `${this.baseUrl}/docs/${this.docId}/updates/${streamId}`
+  }
+
+  private snapshotUrl(snapshotId: string): string {
+    return `${this.baseUrl}/docs/${this.docId}/snapshots/${snapshotId}`
+  }
+
+  private awarenessUrl(): string {
+    return `${this.baseUrl}/docs/${this.docId}/awareness`
+  }
+
   // ---- Index management ----
 
   private async fetchIndex(): Promise<YjsIndex> {
-    const url = `${this.baseUrl}/docs/${this.docId}`
-    const response = await this.fetch(url)
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch index: ${response.status}`)
+    const url = this.indexUrl()
+    if (this.debug) {
+      console.debug(`[YjsProvider] fetchIndex URL: ${url}`)
     }
 
-    return await response.json()
+    const stream = new DurableStream({
+      url,
+      headers: this.headers,
+      contentType: `application/json`,
+      backoffOptions: this.connectBackoffOptions,
+    })
+
+    try {
+      if (this.debug) {
+        console.debug(`[YjsProvider] fetchIndex calling stream.stream()`)
+      }
+      const response = await stream.stream({ offset: `-1` })
+      const items = await response.json<YjsIndex>()
+
+      if (items.length === 0) {
+        // New document - return default index
+        if (this.debug) {
+          console.debug(`[YjsProvider] fetchIndex: empty, returning default`)
+        }
+        return {
+          snapshot_stream: null,
+          updates_stream: `updates-001`,
+          update_offset: `-1`,
+        }
+      }
+
+      const result = items[items.length - 1]!
+      if (this.debug) {
+        console.debug(
+          `[YjsProvider] fetchIndex: got ${items.length} items, using:`,
+          JSON.stringify(result)
+        )
+      }
+      return result
+    } catch (err) {
+      if (this.isNotFoundError(err)) {
+        // Stream doesn't exist - return default index
+        return {
+          snapshot_stream: null,
+          updates_stream: `updates-001`,
+          update_offset: `-1`,
+        }
+      }
+      throw err
+    }
   }
 
   // ---- Initial sync ----
@@ -279,84 +332,41 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private async initialSync(): Promise<void> {
     if (!this.currentIndex) return
 
-    const promises: Array<Promise<void>> = []
-
-    // Fetch snapshot if exists
-    if (this.currentIndex.snapshot_stream) {
-      promises.push(
-        this.fetchAndApplySnapshot(this.currentIndex.snapshot_stream)
+    // Fetch snapshot if exists. If it was deleted during compaction, re-fetch index.
+    while (this.currentIndex.snapshot_stream) {
+      const applied = await this.fetchAndApplySnapshot(
+        this.currentIndex.snapshot_stream
       )
+      if (applied) break
+      if (this.abortController?.signal.aborted) return
+      this.currentIndex = await this.fetchIndex()
+      if (this.abortController?.signal.aborted) return
     }
 
-    // Fetch updates
-    const offset =
-      this.currentIndex.update_offset === -1
-        ? `-1`
-        : `${this.currentIndex.update_offset}_0`
-    promises.push(this.fetchAndApplyUpdates(offset))
-
-    await Promise.all(promises)
+    // Single stream handles both catch-up and live polling.
+    await this.startUpdatesStream(this.currentIndex.update_offset)
   }
 
-  private async fetchAndApplySnapshot(snapshotId: string): Promise<void> {
-    const url = `${this.baseUrl}/docs/${this.docId}/snapshots/${snapshotId}`
+  private async fetchAndApplySnapshot(snapshotId: string): Promise<boolean> {
+    const stream = new DurableStream({
+      url: this.snapshotUrl(snapshotId),
+      headers: this.headers,
+      contentType: `application/octet-stream`,
+      backoffOptions: this.connectBackoffOptions,
+    })
 
     try {
-      const response = await this.fetch(url)
+      const response = await stream.stream({ offset: `-1` })
+      const data = await response.body()
 
-      if (response.status === 404) {
-        // Snapshot was deleted (compaction) - re-fetch index
-        await this.handleCompaction()
-        return
-      }
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch snapshot: ${response.status}`)
-      }
-
-      const data = new Uint8Array(await response.arrayBuffer())
       if (data.length > 0) {
         Y.applyUpdate(this.doc, data, `server`)
       }
+      return true
     } catch (err) {
       if (this.isNotFoundError(err)) {
-        await this.handleCompaction()
-        return
-      }
-      throw err
-    }
-  }
-
-  private async fetchAndApplyUpdates(offset: string): Promise<void> {
-    if (!this.currentIndex) return
-
-    const url = new URL(
-      `${this.baseUrl}/docs/${this.docId}/updates/${this.currentIndex.updates_stream}`
-    )
-    url.searchParams.set(`offset`, offset)
-
-    try {
-      const response = await this.fetch(url.toString())
-
-      if (response.status === 404) {
-        // Updates stream was deleted (compaction) - re-fetch index
-        await this.handleCompaction()
-        return
-      }
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch updates: ${response.status}`)
-      }
-
-      const data = new Uint8Array(await response.arrayBuffer())
-      this.applyUpdates(data)
-
-      // Update offset for next poll
-      this.currentOffset = response.headers.get(`Stream-Next-Offset`) ?? offset
-    } catch (err) {
-      if (this.isNotFoundError(err)) {
-        await this.handleCompaction()
-        return
+        // Snapshot deleted (compaction) - caller should re-fetch index
+        return false
       }
       throw err
     }
@@ -367,87 +377,174 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
     const decoder = decoding.createDecoder(data)
     while (decoding.hasContent(decoder)) {
-      try {
-        const update = decoding.readVarUint8Array(decoder)
-        Y.applyUpdate(this.doc, update, `server`)
-      } catch (err) {
-        if (this.debug) {
-          console.debug(`[YjsProvider] Invalid update, skipping:`, err)
-        }
-        break
-      }
+      const update = decoding.readVarUint8Array(decoder)
+      Y.applyUpdate(this.doc, update, `server`)
     }
   }
 
-  // ---- Long-polling ----
+  // ---- Live updates streaming ----
 
-  private startPolling(): void {
-    if (!this.currentIndex || !this.currentOffset) return
+  private startUpdatesStream(offset: string): Promise<void> {
+    if (!this.currentIndex) return Promise.resolve()
+    if (this.abortController?.signal.aborted) return Promise.resolve()
 
-    this.pollAbortController = new AbortController()
-    this.poll()
+    this.updatesStreamGeneration += 1
+    const generation = this.updatesStreamGeneration
+
+    this.updatesSubscription?.()
+    this.updatesSubscription = null
+
+    let initialResolved = false
+    let resolveInitial: () => void
+    let rejectInitial: (error: Error) => void
+
+    const initialPromise = new Promise<void>((resolve, reject) => {
+      resolveInitial = () => {
+        if (!initialResolved) {
+          initialResolved = true
+          resolve()
+        }
+      }
+      rejectInitial = (error: Error) => {
+        if (!initialResolved) {
+          initialResolved = true
+          reject(error)
+        }
+      }
+    })
+
+    this.runUpdatesStream(
+      offset,
+      generation,
+      resolveInitial!,
+      rejectInitial!
+    ).catch((err) => {
+      rejectInitial(err instanceof Error ? err : new Error(String(err)))
+    })
+
+    return initialPromise
   }
 
-  private async poll(): Promise<void> {
-    while (this.connected || this._connecting) {
-      if (!this.currentIndex || !this.currentOffset) break
-      if (this.pollAbortController?.signal.aborted) break
+  private async runUpdatesStream(
+    offset: string,
+    generation: number,
+    resolveInitialSync: () => void,
+    rejectInitialSync: (error: Error) => void
+  ): Promise<void> {
+    if (!this.currentIndex) return
+
+    let currentOffset = offset
+    let initialSyncPending = true
+
+    while (this.updatesStreamGeneration === generation) {
+      if (this.abortController?.signal.aborted) {
+        resolveInitialSync()
+        return
+      }
+
+      const stream = new DurableStream({
+        url: this.updatesUrl(this.currentIndex.updates_stream),
+        headers: this.headers,
+        contentType: `application/octet-stream`,
+      })
 
       try {
-        const url = new URL(
-          `${this.baseUrl}/docs/${this.docId}/updates/${this.currentIndex.updates_stream}`
-        )
-        url.searchParams.set(`offset`, this.currentOffset)
-        url.searchParams.set(`live`, `long-poll`)
-
-        const response = await this.fetch(url.toString(), {
-          signal: this.pollAbortController?.signal,
+        const response = await stream.stream({
+          offset: currentOffset,
+          live: `auto`,
+          signal: this.abortController?.signal,
         })
 
-        if (this.pollAbortController?.signal.aborted) break
+        this.updatesSubscription?.()
+        // eslint-disable-next-line @typescript-eslint/require-await
+        this.updatesSubscription = response.subscribeBytes(async (chunk) => {
+          if (this.abortController?.signal.aborted) return
+          if (this.updatesStreamGeneration !== generation) return
 
-        if (response.status === 404) {
-          // Compaction happened - re-fetch index and restart
-          await this.handleCompaction()
-          continue
+          currentOffset = chunk.offset
+
+          if (chunk.data.length > 0) {
+            if (this.debug) {
+              console.debug(
+                `[YjsProvider] Received live update: ${chunk.data.length} bytes`
+              )
+            }
+            this.applyUpdates(chunk.data)
+          }
+
+          if (initialSyncPending && chunk.upToDate) {
+            initialSyncPending = false
+            if (!this.connected) {
+              this.connected = true
+            }
+            this.synced = true
+            resolveInitialSync()
+          } else if (chunk.data.length > 0) {
+            this.synced = true
+          }
+        })
+
+        await response.closed
+        if (initialSyncPending) {
+          initialSyncPending = false
+          if (!this.connected) {
+            this.connected = true
+          }
+          this.synced = true
+          resolveInitialSync()
         }
-
-        if (!response.ok) {
-          throw new Error(`Poll failed: ${response.status}`)
-        }
-
-        const data = new Uint8Array(await response.arrayBuffer())
-        this.applyUpdates(data)
-
-        this.currentOffset =
-          response.headers.get(`Stream-Next-Offset`) ?? this.currentOffset
-        this.synced = true
+        return
       } catch (err) {
-        if (this.pollAbortController?.signal.aborted) break
+        if (this.abortController?.signal.aborted) {
+          resolveInitialSync()
+          return
+        }
+        if (this.updatesStreamGeneration !== generation) {
+          resolveInitialSync()
+          return
+        }
+
         if (this.isNotFoundError(err)) {
-          await this.handleCompaction()
+          // Stream doesn't exist yet (new document) - retry quickly.
+          // The stream will be created when the first update is written.
+          if (initialSyncPending) {
+            if (currentOffset === `-1`) {
+              initialSyncPending = false
+              if (!this.connected) {
+                this.connected = true
+              }
+              this.synced = true
+              resolveInitialSync()
+            } else {
+              rejectInitialSync(
+                err instanceof Error ? err : new Error(String(err))
+              )
+              return
+            }
+          }
+          if (this.debug) {
+            console.debug(`[YjsProvider] Updates stream not found, retrying...`)
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100))
           continue
         }
-        console.error(`[YjsProvider] Poll error:`, err)
-        // Wait before retrying
+
+        if (initialSyncPending) {
+          rejectInitialSync(err instanceof Error ? err : new Error(String(err)))
+          return
+        }
+
+        if (this.debug) {
+          console.debug(`[YjsProvider] Updates stream error:`, err)
+        }
+
         await new Promise((resolve) => setTimeout(resolve, 1000))
+      } finally {
+        if (this.updatesSubscription) {
+          this.updatesSubscription()
+          this.updatesSubscription = null
+        }
       }
-    }
-  }
-
-  // ---- Compaction handling ----
-
-  private async handleCompaction(): Promise<void> {
-    if (this.debug) {
-      console.debug(`[YjsProvider] Compaction detected, re-fetching index`)
-    }
-
-    try {
-      this.currentIndex = await this.fetchIndex()
-      await this.initialSync()
-    } catch (err) {
-      console.error(`[YjsProvider] Failed to handle compaction:`, err)
-      throw err
     }
   }
 
@@ -470,7 +567,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   }
 
   private async sendChanges(): Promise<void> {
-    if (!this.connected || this.sendingChanges) return
+    if (!this.connected || this.sendingChanges || !this.currentIndex) return
 
     this.sendingChanges = true
     this.synced = false
@@ -480,29 +577,41 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         const toSend = this.pendingChanges
         this.pendingChanges = null
 
-        const url = `${this.baseUrl}/docs/${this.docId}`
-        // Convert Uint8Array to ArrayBuffer for fetch body
-        const bodyBuffer = new ArrayBuffer(toSend.length)
-        new Uint8Array(bodyBuffer).set(toSend)
-        const response = await this.fetch(url, {
-          method: `POST`,
-          headers: { "content-type": `application/octet-stream` },
-          body: bodyBuffer,
+        const url = this.updatesUrl(this.currentIndex.updates_stream)
+        if (this.debug) {
+          console.debug(
+            `[YjsProvider] sendChanges to ${url}, ${toSend.length} bytes`
+          )
+        }
+
+        const stream = new DurableStream({
+          url,
+          headers: this.headers,
+          contentType: `application/octet-stream`,
         })
 
-        if (!response.ok) {
-          // Re-batch the failed update
-          this.batchUpdate(toSend)
-          throw new Error(`Failed to send update: ${response.status}`)
+        // Frame the update with lib0 VarUint8Array encoding
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint8Array(encoder, toSend)
+        const framedUpdate = encoding.toUint8Array(encoder)
+
+        await stream.append(framedUpdate, {
+          contentType: `application/octet-stream`,
+        })
+
+        if (this.debug) {
+          console.debug(`[YjsProvider] sendChanges succeeded`)
         }
       }
       this.synced = true
     } catch (err) {
-      console.error(`[YjsProvider] Failed to send changes:`, err)
-      this.emit(`error`, [err instanceof Error ? err : new Error(String(err))])
-      // Reconnect to recover
+      const error = err instanceof Error ? err : new Error(String(err))
+      console.error(`[YjsProvider] Failed to send changes:`, error)
+      this.emit(`error`, [error])
       this.disconnect()
-      this.connect()
+      if (!this.isAuthError(err)) {
+        this.connect()
+      }
     } finally {
       this.sendingChanges = false
     }
@@ -512,17 +621,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
   private startAwareness(): void {
     if (!this.awareness) return
+    if (this.abortController?.signal.aborted) return
 
-    // Broadcast initial presence
     this.broadcastAwareness()
 
-    // Start heartbeat
     this.awarenessHeartbeat = setInterval(() => {
       this.broadcastAwareness()
     }, AWARENESS_HEARTBEAT_INTERVAL)
 
-    // Start polling for presence updates
-    this.pollAwareness()
+    this.subscribeAwareness()
   }
 
   private handleAwarenessUpdate = (
@@ -558,25 +665,29 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       const encoded = awarenessProtocol.encodeAwarenessUpdate(this.awareness, [
         this.awareness.clientID,
       ])
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint8Array(encoder, encoded)
-      const presenceData = encoding.toUint8Array(encoder)
-      const bodyBuffer = new ArrayBuffer(presenceData.length)
-      new Uint8Array(bodyBuffer).set(presenceData)
 
-      const url = `${this.baseUrl}/docs/${this.docId}/presence`
-      this.fetch(url, {
-        method: `POST`,
-        headers: { "content-type": `application/octet-stream` },
-        body: bodyBuffer,
-      }).catch(() => {})
+      // Encode to base64 for text/plain stream
+      const base64 = this.uint8ArrayToBase64(encoded)
+
+      const stream = new DurableStream({
+        url: this.awarenessUrl(),
+        headers: this.headers,
+        contentType: `text/plain`,
+      })
+
+      stream.append(base64, { contentType: `text/plain` }).catch(() => {})
     } catch {
       // Ignore errors during disconnect
     }
   }
 
   private async sendAwareness(): Promise<void> {
-    if (!this.awareness || !this.connected || this.sendingAwareness) return
+    if (
+      !this.awareness ||
+      (!this.connected && !this._connecting) ||
+      this.sendingAwareness
+    )
+      return
 
     this.sendingAwareness = true
 
@@ -592,34 +703,26 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           this.awareness,
           changedClients
         )
-        const encoder = encoding.createEncoder()
-        encoding.writeVarUint8Array(encoder, encoded)
-        const awarenessData = encoding.toUint8Array(encoder)
-        const awarenessBuffer = new ArrayBuffer(awarenessData.length)
-        new Uint8Array(awarenessBuffer).set(awarenessData)
+
+        // Encode to base64 for text/plain stream
+        const base64 = this.uint8ArrayToBase64(encoded)
 
         if (this.debug) {
           console.debug(
             `[YjsProvider] Sending awareness for clients:`,
             changedClients,
-            `data size:`,
-            awarenessData.length
+            `base64 length:`,
+            base64.length
           )
         }
 
-        const url = `${this.baseUrl}/docs/${this.docId}/presence`
-        const response = await this.fetch(url, {
-          method: `POST`,
-          headers: { "content-type": `application/octet-stream` },
-          body: awarenessBuffer,
+        const stream = new DurableStream({
+          url: this.awarenessUrl(),
+          headers: this.headers,
+          contentType: `text/plain`,
         })
 
-        if (this.debug) {
-          console.debug(
-            `[YjsProvider] Awareness POST response:`,
-            response.status
-          )
-        }
+        await stream.append(base64, { contentType: `text/plain` })
       }
     } catch (err) {
       console.error(`[YjsProvider] Failed to send awareness:`, err)
@@ -628,119 +731,132 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
-  private async pollAwareness(): Promise<void> {
+  private async subscribeAwareness(): Promise<void> {
     if (!this.awareness) return
+    const signal = this.abortController?.signal
+    if (signal?.aborted) return
 
-    // Start polling from the beginning to not miss any presence updates
-    // Use regular polling with short interval (more reliable than long-poll for ephemeral data)
-    let offset = `-1`
-    const pollInterval = 200
+    const stream = new DurableStream({
+      url: this.awarenessUrl(),
+      headers: this.headers,
+      contentType: `text/plain`,
+    })
 
-    if (this.debug) {
-      console.debug(
-        `[YjsProvider] Starting awareness poll with offset:`,
-        offset
-      )
-    }
+    try {
+      const response = await stream.stream({
+        offset: `now`,
+        live: `sse`,
+        signal,
+      })
+      // Ensure closed promise is handled to avoid unhandled rejections.
+      void response.closed.catch(() => {})
 
-    while (this.connected || this._connecting) {
-      try {
-        const url = new URL(`${this.baseUrl}/docs/${this.docId}/presence`)
-        url.searchParams.set(`offset`, offset)
+      // Reset retry count on successful connection
+      this.awarenessRetryCount = 0
 
-        if (this.debug) {
-          console.debug(
-            `[YjsProvider] Awareness poll request: offset=${offset}`
-          )
-        }
+      const bodyStream = response.bodyStream()
 
-        const response = await this.fetch(url.toString(), {
-          signal: this.pollAbortController?.signal,
-        })
+      for await (const value of bodyStream) {
+        if (signal?.aborted) return
 
-        if (this.debug) {
-          console.debug(
-            `[YjsProvider] Awareness poll response: status=${response.status}`
-          )
-        }
+        if (value.length > 0) {
+          // value is Uint8Array of text/plain data (base64 string)
+          const base64 = new TextDecoder().decode(value)
+          const binary = this.base64ToUint8Array(base64)
 
-        if (this.pollAbortController?.signal.aborted) break
-
-        if (response.ok) {
-          const data = new Uint8Array(await response.arrayBuffer())
           if (this.debug) {
             console.debug(
-              `[YjsProvider] Awareness poll received:`,
-              data.length,
-              `bytes, next offset:`,
-              response.headers.get(`Stream-Next-Offset`)
+              `[YjsProvider] Awareness SSE received:`,
+              binary.length,
+              `bytes`
             )
           }
-          if (data.length > 0) {
-            const decoder = decoding.createDecoder(data)
-            while (decoding.hasContent(decoder)) {
-              try {
-                const update = decoding.readVarUint8Array(decoder)
-                if (this.debug) {
-                  console.debug(
-                    `[YjsProvider] Applying awareness update:`,
-                    update.length,
-                    `bytes`
-                  )
-                }
-                awarenessProtocol.applyAwarenessUpdate(
-                  this.awareness,
-                  update,
-                  `server`
-                )
-              } catch (err) {
-                if (this.debug) {
-                  console.debug(`[YjsProvider] Invalid awareness update:`, err)
-                }
-                break
-              }
+
+          try {
+            awarenessProtocol.applyAwarenessUpdate(
+              this.awareness,
+              binary,
+              `server`
+            )
+          } catch (err) {
+            if (this.debug) {
+              console.debug(`[YjsProvider] Invalid awareness update:`, err)
             }
           }
-          offset = response.headers.get(`Stream-Next-Offset`) ?? offset
+        }
+      }
+    } catch (err) {
+      if (signal?.aborted || (!this.connected && !this._connecting)) return
+
+      if (this.isNotFoundError(err)) {
+        // Awareness stream doesn't exist yet (created lazily on first write)
+        this.awarenessRetryCount++
+        if (this.awarenessRetryCount > this.MAX_AWARENESS_RETRIES) {
+          console.error(
+            `[YjsProvider] Awareness stream not found after ${this.MAX_AWARENESS_RETRIES} retries`
+          )
+          return // Don't disconnect - awareness is optional
         }
 
-        // Short polling interval for presence (ephemeral data)
-        await new Promise((resolve) => setTimeout(resolve, pollInterval))
-      } catch (err) {
-        if (this.pollAbortController?.signal.aborted) break
-        console.error(`[YjsProvider] Awareness poll error:`, err)
-        await new Promise((resolve) => setTimeout(resolve, 1000))
+        // Exponential backoff with cap
+        const delay = Math.min(
+          100 * Math.pow(1.5, this.awarenessRetryCount - 1),
+          2000
+        )
+        await new Promise((r) => setTimeout(r, delay))
+
+        if (this.connected) {
+          this.subscribeAwareness()
+        }
+        return
+      }
+
+      console.error(`[YjsProvider] Awareness stream error:`, err)
+      // Retry after delay for other errors
+      await new Promise((resolve) => setTimeout(resolve, 1000))
+      if (this.connected) {
+        this.subscribeAwareness()
       }
     }
   }
 
   // ---- Helpers ----
 
-  private async fetch(url: string, options?: RequestInit): Promise<Response> {
-    const headers: Record<string, string> = {}
-
-    // Copy headers from options if provided
-    if (options?.headers) {
-      Object.assign(headers, options.headers)
+  private isNotFoundError(err: unknown): boolean {
+    if (err instanceof DurableStreamError && err.code === `NOT_FOUND`) {
+      return true
     }
-
-    // Resolve dynamic headers
-    for (const [key, value] of Object.entries(this.headers)) {
-      if (typeof value === `function`) {
-        headers[key] = await value()
-      } else if (typeof value === `string`) {
-        headers[key] = value
-      }
+    if (err instanceof FetchError && err.status === 404) {
+      return true
     }
-
-    return fetch(url, {
-      ...options,
-      headers,
-      signal: options?.signal ?? this.abortController?.signal,
-    })
+    // Don't use loose string matching - connection errors should NOT match
+    return false
   }
 
-  private isNotFoundError(err: unknown): boolean {
-    return err instanceof Error && err.message.includes(`404`)
+  private isAuthError(err: unknown): boolean {
+    if (err instanceof DurableStreamError) {
+      return err.code === `UNAUTHORIZED` || err.code === `FORBIDDEN`
+    }
+    if (err instanceof FetchError) {
+      return err.status === 401 || err.status === 403
+    }
+    return false
+  }
+
+  private uint8ArrayToBase64(bytes: Uint8Array): string {
+    let binary = ``
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte)
+    }
+    return btoa(binary)
+  }
+
+  private base64ToUint8Array(base64: string): Uint8Array {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i)
+    }
+    return bytes
   }
 }

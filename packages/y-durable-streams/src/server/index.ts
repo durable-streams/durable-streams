@@ -5,7 +5,6 @@
  */
 
 export { YjsServer } from "./yjs-server"
-export { YjsStore } from "./yjs-store"
 export { Compactor } from "./compaction"
 
 export type {
