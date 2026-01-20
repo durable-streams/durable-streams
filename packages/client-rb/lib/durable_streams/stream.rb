@@ -5,24 +5,28 @@ require "json"
 module DurableStreams
   # Stream handle for read/write operations on a durable stream.
   class Stream
-    include Enumerable
-
     attr_reader :url, :content_type
 
-    # @param url [String] Stream URL
-    # @param headers [Hash] Request headers (values can be strings or callables)
-    # @param params [Hash] Query parameters (values can be strings or callables)
+    # @param url [String] Stream URL or path (resolved against context base_url)
+    # @param context [Context] Configuration context
     # @param content_type [String, nil] Content type for the stream
-    # @param client [Client, nil] Parent client (optional)
+    # @param headers [Hash] Additional headers (merged with context defaults)
     # @param batching [Boolean] Enable write batching (default: true)
-    def initialize(url:, headers: {}, params: {}, content_type: nil, client: nil, batching: true)
-      @url = url
-      @headers = headers || {}
-      @params = params || {}
+    def initialize(url, context: DurableStreams.default_context, content_type: nil, headers: {}, batching: true)
+      @url = context.resolve_url(url)
+      @context = context
       @content_type = content_type
-      @client = client
+      @instance_headers = headers || {}
       @batching = batching
-      @transport = client&.transport || HTTP::Transport.new
+      # Use mock transport if testing is installed, otherwise create real transport
+      @transport = if defined?(DurableStreams::Testing) && DurableStreams::Testing.transport_if_installed
+                     DurableStreams::Testing.transport_if_installed
+                   else
+                     HTTP::Transport.new(
+                       retry_policy: context.config.retry_policy,
+                       timeout: context.config.timeout
+                     )
+                   end
       @batch_mutex = Mutex.new
       @batch_cv = ConditionVariable.new
       @batch_queue = []
@@ -32,31 +36,47 @@ module DurableStreams
     # --- Factory Methods ---
 
     # Create and verify stream exists
-    # @param url [String] Stream URL
+    # @param url [String] Stream URL or path
+    # @param context [Context] Configuration context
+    # @param headers [Hash] Additional headers
     # @return [Stream]
-    def self.connect(url:, **options)
-      stream = new(url: url, **options)
-      stream.head # Validates existence and populates content_type
+    def self.connect(url, context: DurableStreams.default_context, headers: {}, **options)
+      stream = new(url, context: context, headers: headers, **options)
+      stream.head
       stream
     end
 
     # Create new stream on server
-    # @param url [String] Stream URL
-    # @param content_type [String] Content type for the stream
+    # @param url [String] Stream URL or path
+    # @param content_type [Symbol, String] Content type (:json, :bytes, or MIME type)
+    # @param context [Context] Configuration context
+    # @param headers [Hash] Additional headers
     # @return [Stream]
-    def self.create(url:, content_type: nil, ttl_seconds: nil, expires_at: nil, body: nil, **options)
-      stream = new(url: url, content_type: content_type, **options)
-      stream.create_stream(content_type: content_type, ttl_seconds: ttl_seconds,
-                           expires_at: expires_at, body: body)
+    def self.create(url, content_type:, context: DurableStreams.default_context, headers: {}, ttl_seconds: nil,
+                    expires_at: nil, body: nil, **options)
+      ct = normalize_content_type(content_type)
+      stream = new(url, context: context, content_type: ct, headers: headers, **options)
+      stream.create_stream(content_type: ct, ttl_seconds: ttl_seconds, expires_at: expires_at, body: body)
       stream
     end
 
     # Check if a stream exists without raising
-    # @param url [String] Stream URL
+    # @param url [String] Stream URL or path
+    # @param context [Context] Configuration context
+    # @param headers [Hash] Additional headers
     # @return [Boolean]
-    def self.exists?(url:, **options)
-      stream = new(url: url, **options)
+    def self.exists?(url, context: DurableStreams.default_context, headers: {}, **options)
+      stream = new(url, context: context, headers: headers, **options)
       stream.exists?
+    end
+
+    # Normalize content type symbol to MIME type
+    def self.normalize_content_type(ct)
+      case ct
+      when :json then "application/json"
+      when :bytes then "application/octet-stream"
+      else ct.to_s
+      end
     end
 
     # --- Metadata Operations ---
@@ -64,11 +84,10 @@ module DurableStreams
     # HEAD - Get stream metadata
     # @return [HeadResult]
     def head
-      resolved_headers = HTTP.resolve_headers(@headers)
-      resolved_params = HTTP.resolve_params(@params)
-      request_url = HTTP.build_url(@url, resolved_params)
+      headers = resolved_headers
+      request_url = @url
 
-      response = @transport.request(:head, request_url, headers: resolved_headers)
+      response = @transport.request(:head, request_url, headers: headers)
 
       if response.status == 404
         raise StreamNotFoundError.new(url: @url)
@@ -78,7 +97,6 @@ module DurableStreams
         raise DurableStreams.error_from_status(response.status, url: @url, headers: response.headers)
       end
 
-      # Update instance content type from response
       @content_type = response["content-type"] if response["content-type"]
 
       HeadResult.new(
@@ -112,16 +130,14 @@ module DurableStreams
     # @param expires_at [String, nil] Absolute expiry time (RFC3339)
     # @param body [String, nil] Optional initial body
     def create_stream(content_type: nil, ttl_seconds: nil, expires_at: nil, body: nil)
-      resolved_headers = HTTP.resolve_headers(@headers)
-      resolved_params = HTTP.resolve_params(@params)
-      request_url = HTTP.build_url(@url, resolved_params)
+      headers = resolved_headers
 
       ct = content_type || @content_type
-      resolved_headers["content-type"] = ct if ct
-      resolved_headers[STREAM_TTL_HEADER] = ttl_seconds.to_s if ttl_seconds
-      resolved_headers[STREAM_EXPIRES_AT_HEADER] = expires_at if expires_at
+      headers["content-type"] = ct if ct
+      headers[STREAM_TTL_HEADER] = ttl_seconds.to_s if ttl_seconds
+      headers[STREAM_EXPIRES_AT_HEADER] = expires_at if expires_at
 
-      response = @transport.request(:put, request_url, headers: resolved_headers, body: body)
+      response = @transport.request(:put, @url, headers: headers, body: body)
 
       if response.status == 409
         raise StreamExistsError.new(url: @url)
@@ -132,17 +148,14 @@ module DurableStreams
                                                headers: response.headers)
       end
 
-      # Update content type from response or request
       @content_type = response["content-type"] || ct
     end
 
     # Delete stream (DELETE)
     def delete
-      resolved_headers = HTTP.resolve_headers(@headers)
-      resolved_params = HTTP.resolve_params(@params)
-      request_url = HTTP.build_url(@url, resolved_params)
+      headers = resolved_headers
 
-      response = @transport.request(:delete, request_url, headers: resolved_headers)
+      response = @transport.request(:delete, @url, headers: headers)
 
       if response.status == 404
         raise StreamNotFoundError.new(url: @url)
@@ -156,7 +169,7 @@ module DurableStreams
     # --- Write Operations ---
 
     # Append data to stream
-    # @param data [Object] Data to append (bytes, string, or JSON-serializable for JSON streams)
+    # @param data [Object] Data to append
     # @param seq [String, nil] Optional sequence number for ordering
     # @return [AppendResult]
     def append(data, seq: nil)
@@ -167,7 +180,15 @@ module DurableStreams
       end
     end
 
-    # Shovel operator for append (Ruby idiom)
+    # Sync append (same as append, explicit name for clarity)
+    # @param data [Object] Data to append
+    # @param seq [String, nil] Optional sequence number
+    # @return [AppendResult]
+    def append!(data, seq: nil)
+      append(data, seq: seq)
+    end
+
+    # Shovel operator for append
     # @param data [Object] Data to append
     # @return [self] Returns self for chaining
     def <<(data)
@@ -177,90 +198,79 @@ module DurableStreams
 
     # --- Read Operations ---
 
-    # Iterate over messages (Enumerable interface)
-    # Uses auto-detected reader with live: false (catch-up only)
+    # Read from stream
+    # @param offset [String] Starting offset (default: "-1" for beginning)
+    # @param live [Boolean, Symbol] Live mode (false, :auto, :long_poll, :sse)
+    # @param format [Symbol] Format hint (:auto, :json, :bytes)
+    # @param cursor [String, nil] Optional cursor for continuation
+    # @yield [Reader] Optional block for automatic cleanup
+    # @return [JsonReader, ByteReader] Reader for iterating messages
+    def read(offset: "-1", live: false, format: :auto, cursor: nil, &block)
+      reader = create_reader(offset: offset, live: live, format: format, cursor: cursor)
+
+      if block_given?
+        begin
+          yield reader
+        ensure
+          reader.close
+        end
+      else
+        reader
+      end
+    end
+
+    # Iterate over messages (catch-up only)
     # @yield [Object] Each message
+    # @return [Enumerator] If no block given
     def each(&block)
       return enum_for(:each) unless block_given?
 
       read(live: false).each(&block)
     end
 
-    # Read JSON messages
-    # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
-    # @return [JsonReader]
-    def read_json(offset: "-1", live: :auto, cursor: nil, &block)
-      reader = JsonReader.new(self, offset: offset, live: live, cursor: cursor)
-      if block_given?
-        begin
-          yield reader
-        ensure
-          reader.close
-        end
-      else
-        reader
-      end
-    end
-
-    # Read raw bytes
-    # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
-    # @return [ByteReader]
-    def read_bytes(offset: "-1", live: :auto, cursor: nil, &block)
-      reader = ByteReader.new(self, offset: offset, live: live, cursor: cursor)
-      if block_given?
-        begin
-          yield reader
-        ensure
-          reader.close
-        end
-      else
-        reader
-      end
-    end
-
-    # Auto-select reader based on content_type
-    # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode
-    # @return [JsonReader, ByteReader]
-    def read(offset: "-1", live: :auto, cursor: nil, &block)
-      # If we don't know content type yet, do a HEAD
-      head if @content_type.nil?
-
-      if DurableStreams.json_content_type?(@content_type)
-        read_json(offset: offset, live: live, cursor: cursor, &block)
-      else
-        read_bytes(offset: offset, live: live, cursor: cursor, &block)
-      end
-    end
-
-    # Convenience: Read all current data (catch-up only)
+    # Convenience: Read all current data
     # @param offset [String] Starting offset
     # @return [Array] All messages from offset to current end
     def read_all(offset: "-1")
       read(offset: offset, live: false, &:to_a)
     end
 
-    # Convenience: Subscribe to live updates with a block
-    # @yield [message] Each message as it arrives
-    def subscribe(offset: "-1", live: :auto, &block)
-      read(offset: offset, live: live).each(&block)
+    # Shutdown the transport
+    def close
+      @transport.shutdown
     end
 
     # --- Internal Accessors ---
 
-    attr_reader :transport
+    attr_reader :transport, :context
 
+    # Resolve headers for requests (used by readers)
+    # @param extra [Hash] Additional headers to merge
+    # @return [Hash] Resolved headers
     def resolved_headers(extra = {})
-      HTTP.resolve_headers(@headers).merge(extra)
-    end
-
-    def resolved_params(extra = {})
-      HTTP.resolve_params(@params).merge(extra)
+      base = HTTP.resolve_headers(@context.config.default_headers)
+      base.merge(HTTP.resolve_headers(@instance_headers)).merge(extra)
     end
 
     private
+
+    def create_reader(offset:, live:, format:, cursor:)
+      effective_format = determine_format(format)
+
+      case effective_format
+      when :json
+        JsonReader.new(self, offset: offset, live: live, cursor: cursor)
+      else
+        ByteReader.new(self, offset: offset, live: live, cursor: cursor)
+      end
+    end
+
+    def determine_format(format)
+      return format if format != :auto
+
+      head if @content_type.nil?
+      DurableStreams.json_content_type?(@content_type) ? :json : :bytes
+    end
 
     def append_direct(data, seq)
       post_append([data], seq: seq)
@@ -278,11 +288,8 @@ module DurableStreams
         end
       end
 
-      if is_leader
-        flush_batch
-      end
+      flush_batch if is_leader
 
-      # Wait for result using ConditionVariable (efficient, no CPU spin)
       @batch_mutex.synchronize do
         @batch_cv.wait(@batch_mutex) until queue_entry[:done]
       end
@@ -319,8 +326,6 @@ module DurableStreams
               msg[:error] = e
               msg[:done] = true
             end
-            # Also fail any messages that arrived while we were sending
-            # to prevent them from waiting forever
             @batch_queue.each do |msg|
               msg[:error] = e
               msg[:done] = true
@@ -340,7 +345,7 @@ module DurableStreams
     end
 
     def post_append(data_items, seq: nil)
-      headers = HTTP.resolve_headers(@headers)
+      headers = resolved_headers
       headers["content-type"] = @content_type if @content_type
       headers[STREAM_SEQ_HEADER] = seq.to_s if seq
 
@@ -350,8 +355,7 @@ module DurableStreams
                data_items.map { |d| d.is_a?(String) ? d : d.to_s }.join
              end
 
-      request_url = HTTP.build_url(@url, HTTP.resolve_params(@params))
-      response = @transport.request(:post, request_url, headers: headers, body: body)
+      response = @transport.request(:post, @url, headers: headers, body: body)
 
       if response.status == 409
         raise SeqConflictError.new(url: @url)

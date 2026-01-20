@@ -31,5 +31,6 @@ Gem::Specification.new do |spec|
   spec.executables = spec.files.grep(%r{\Aexe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  # No runtime dependencies - uses stdlib net/http
+  # Runtime dependencies
+  spec.add_dependency "net-http-persistent", "~> 4.0"
 end

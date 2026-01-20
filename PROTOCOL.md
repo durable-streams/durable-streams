@@ -521,7 +521,7 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 4. **Unique**: Each offset identifies exactly one position in the stream. No two positions **MAY** share the same offset.
 5. **Strictly Increasing**: Offsets assigned to appended data **MUST** be lexicographically greater than all previously assigned offsets. Server implementations **MUST NOT** use schemes (such as raw UTC timestamps) that can produce duplicate or non-monotonic offsets. Time-based identifiers like ULIDs, which combine timestamps with random components to guarantee uniqueness and monotonicity, are acceptable.
 
-**Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain commas, ampersands, equals signs, or question marks (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters. Servers **SHOULD** keep offsets reasonably short (under 256 characters) since they appear in every request URL.
+**Format**: Offset tokens are opaque, case-sensitive strings. Their internal structure is implementation-defined. Offsets are single tokens and **MUST NOT** contain `,`, `&`, `=`, `?`, or `/` (to avoid conflict with URL query parameter syntax). Servers **SHOULD** use URL-safe characters to avoid encoding issues, but clients **MUST** properly URL-encode offset values when including them in query parameters. Servers **SHOULD** keep offsets reasonably short (under 256 characters) since they appear in every request URL.
 
 **Sentinel Values**: The protocol defines two special offset sentinel values:
 

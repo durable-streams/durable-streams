@@ -359,8 +359,14 @@ async Task<object> HandleRead(JsonElement root)
             timedOut = true;
         }
 
-        // Return 204 for long-poll timeout with no data
-        var status = (live == LiveMode.LongPoll && timedOut && chunks.Count == 0) ? 204 : 200;
+        // For long-poll with no data, we're effectively up to date (either server 204 or client timeout)
+        if (live == LiveMode.LongPoll && chunks.Count == 0)
+        {
+            upToDate = true;
+        }
+
+        // Return 204 for long-poll with no data
+        var status = (live == LiveMode.LongPoll && chunks.Count == 0) ? 204 : 200;
 
         return new
         {
