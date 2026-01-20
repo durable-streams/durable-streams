@@ -394,13 +394,8 @@ jobs:
       - name: Generate benchmark report
         run: |
           cd packages/client-conformance-tests
-          echo "# Client Benchmark Results" > benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          # Generate report for each client
-          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md 2>/dev/null || echo "TypeScript: No results" >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
+          # Aggregate all benchmark results from downloaded artifacts
+          pnpm tsx src/cli.ts --report ../../benchmark-results > benchmark-report.md
           cat benchmark-report.md
 
       - name: Comment on PR with benchmark results
