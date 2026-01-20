@@ -5,8 +5,10 @@ Building blocks for transmitting structured state over Durable Streams. Use thes
 ## Installation
 
 ```bash
-pnpm add @durable-streams/state
+pnpm add @durable-streams/state @tanstack/db
 ```
+
+> **Note:** `@tanstack/db` is a peer dependency that must be installed alongside this package. This ensures type compatibility when using StreamDB collections with TanStack DB's query utilities like `useLiveQuery` from `@tanstack/react-db`.
 
 ## Overview
 
