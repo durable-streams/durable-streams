@@ -32,6 +32,41 @@ const DEFAULT_INDEX: YjsIndex = {
   update_offset: `-1`,
 }
 
+// ---- State Machine ----
+
+/**
+ * Primary connection states for the provider.
+ */
+type ConnectionState = `disconnected` | `connecting` | `connected`
+
+/**
+ * Valid state transitions - documents the state machine at a glance.
+ * disconnected -> connecting (connect() called)
+ * connecting -> connected (initial sync complete)
+ * connecting -> disconnected (error or disconnect() called)
+ * connected -> disconnected (disconnect() or error)
+ */
+const VALID_TRANSITIONS: Record<ConnectionState, Array<ConnectionState>> = {
+  disconnected: [`connecting`],
+  connecting: [`connected`, `disconnected`],
+  connected: [`disconnected`],
+}
+
+/**
+ * Connection context bundles all state for a single connection attempt.
+ * Each connect() creates a new context with a unique ID.
+ */
+interface ConnectionContext {
+  /** Unique ID for this connection attempt */
+  readonly id: number
+  /** Abort signal for this connection */
+  readonly controller: AbortController
+  /** Current index (set during connect) */
+  index: YjsIndex | null
+  /** Idempotent producer for sending updates */
+  producer: IdempotentProducer | null
+}
+
 /**
  * Connection status of the provider.
  */
@@ -108,20 +143,19 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private readonly docId: string
   private readonly headers: HeadersRecord
 
-  private _connected = false
+  // ---- State Machine ----
+  private _state: ConnectionState = `disconnected`
+  private _connectionId = 0
+  private _ctx: ConnectionContext | null = null
   private _synced = false
-  private _connecting = false
 
-  private currentIndex: YjsIndex | null = null
+  // ---- Connection-related state ----
   private updatesStreamGeneration = 0
   private updatesSubscription: (() => void) | null = null
-
-  private updatesProducer: IdempotentProducer | null = null
 
   private sendingAwareness = false
   private pendingAwareness: AwarenessUpdate | null = null
 
-  private abortController: AbortController | null = null
   private awarenessHeartbeat: ReturnType<typeof setInterval> | null = null
   private awarenessRetryCount = 0
   private readonly MAX_AWARENESS_RETRIES = 30
@@ -162,74 +196,106 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
+  /** True when connected to the server */
   get connected(): boolean {
-    return this._connected
+    return this._state === `connected`
   }
 
-  private set connected(state: boolean) {
-    if (this._connected !== state) {
-      this._connected = state
-      this.emit(`status`, [state ? `connected` : `disconnected`])
-    }
-  }
-
+  /** True when connection is in progress */
   get connecting(): boolean {
-    return this._connecting
+    return this._state === `connecting`
+  }
+
+  // ---- State Machine Methods ----
+
+  /**
+   * Transition to a new connection state.
+   * Returns false if the transition is invalid (logs a warning).
+   */
+  private transition(to: ConnectionState): boolean {
+    const allowed = VALID_TRANSITIONS[this._state]
+    if (!allowed.includes(to)) {
+      console.warn(`[YjsProvider] Invalid transition: ${this._state} -> ${to}`)
+      return false
+    }
+
+    this._state = to
+    // Emit status for all transitions
+    this.emit(`status`, [to])
+    return true
+  }
+
+  /**
+   * Create a new connection context with a unique ID.
+   */
+  private createConnectionContext(): ConnectionContext {
+    this._connectionId += 1
+    const ctx: ConnectionContext = {
+      id: this._connectionId,
+      controller: new AbortController(),
+      index: null,
+      producer: null,
+    }
+    this._ctx = ctx
+    return ctx
+  }
+
+  /**
+   * Check if a connection context is stale (disconnected or replaced).
+   * Use this after every await to detect race conditions.
+   */
+  private isStale(ctx: ConnectionContext): boolean {
+    return this._ctx !== ctx || ctx.controller.signal.aborted
   }
 
   // ---- Connection management ----
 
   async connect(): Promise<void> {
-    if (this.connected || this._connecting) return
+    // Only allow connecting from disconnected state
+    if (this._state !== `disconnected`) return
 
-    this._connecting = true
-    const controller = new AbortController()
-    this.abortController = controller
-    this.emit(`status`, [`connecting`])
+    if (!this.transition(`connecting`)) return
 
-    // Helper to check if disconnect() was called during an await
-    const wasDisconnected = () =>
-      this.abortController !== controller || controller.signal.aborted
+    const ctx = this.createConnectionContext()
 
     try {
       // Step 1: Fetch the index
-      this.currentIndex = await this.fetchIndex()
-      if (wasDisconnected()) return
+      ctx.index = await this.fetchIndex(ctx)
+      if (this.isStale(ctx)) return
 
       // Step 2: Create idempotent producer for sending updates
-      this.createUpdatesProducer()
+      this.createUpdatesProducer(ctx)
 
       // Step 3: Fetch snapshot and start updates stream
-      await this.initialSync()
-      if (wasDisconnected()) return
+      await this.initialSync(ctx)
+      if (this.isStale(ctx)) return
 
       // Step 4: Start awareness if configured
       if (this.awareness) {
-        this.startAwareness()
+        this.startAwareness(ctx)
       }
 
-      this.connected = true
+      // Note: transition to 'connected' happens in runUpdatesStream.markSynced()
+      // so that connected=true before synced=true (tests depend on this ordering)
     } catch (err) {
       const isAborted = err instanceof Error && err.name === `AbortError`
-      if (!isAborted) {
+      if (!isAborted && !this.isStale(ctx)) {
         this.emit(`error`, [
           err instanceof Error ? err : new Error(String(err)),
         ])
         this.disconnect()
       }
-    } finally {
-      this._connecting = false
     }
   }
 
   async disconnect(): Promise<void> {
-    // Guard against concurrent disconnect calls
-    const controller = this.abortController
-    if (!controller) return
-    this.abortController = null // Clear immediately to prevent races
+    // Guard against concurrent disconnect calls or disconnecting when already disconnected
+    const ctx = this._ctx
+    if (!ctx || this._state === `disconnected`) return
 
-    this._connecting = false
-    this.connected = false
+    // Transition immediately to prevent races
+    this.transition(`disconnected`)
+    this._ctx = null
     this.synced = false
 
     if (this.awarenessHeartbeat) {
@@ -248,11 +314,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
 
     // Flush and close producer before aborting
-    await this.closeUpdatesProducer()
+    await this.closeUpdatesProducer(ctx)
 
-    controller.abort()
+    ctx.controller.abort()
 
-    this.currentIndex = null
     this.pendingAwareness = null
   }
 
@@ -268,11 +333,11 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
   // ---- Updates Producer ----
 
-  private createUpdatesProducer(): void {
-    if (!this.currentIndex) return
+  private createUpdatesProducer(ctx: ConnectionContext): void {
+    if (!ctx.index) return
 
     const stream = new DurableStream({
-      url: this.updatesUrl(this.currentIndex.updates_stream),
+      url: this.updatesUrl(ctx.index.updates_stream),
       headers: this.headers,
       contentType: `application/octet-stream`,
     })
@@ -280,9 +345,9 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     // Use doc clientID for unique producer ID per client
     const producerId = `${this.docId}-${this.doc.clientID}`
 
-    this.updatesProducer = new IdempotentProducer(stream, producerId, {
+    ctx.producer = new IdempotentProducer(stream, producerId, {
       autoClaim: true,
-      signal: this.abortController?.signal,
+      signal: ctx.controller.signal,
       onError: (err) => {
         // Ignore AbortError - this happens during intentional disconnect
         if (err instanceof Error && err.name === `AbortError`) {
@@ -299,15 +364,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     })
   }
 
-  private async closeUpdatesProducer(): Promise<void> {
-    if (!this.updatesProducer) return
+  private async closeUpdatesProducer(ctx: ConnectionContext): Promise<void> {
+    if (!ctx.producer) return
 
     try {
-      await this.updatesProducer.close()
+      await ctx.producer.close()
     } catch {
       // Ignore errors during close
     }
-    this.updatesProducer = null
+    ctx.producer = null
   }
 
   // ---- Stream URL builders ----
@@ -330,7 +395,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
   // ---- Index management ----
 
-  private async fetchIndex(): Promise<YjsIndex> {
+  private async fetchIndex(ctx: ConnectionContext): Promise<YjsIndex> {
     const stream = new DurableStream({
       url: this.indexUrl(),
       headers: this.headers,
@@ -341,7 +406,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       const response = await stream.stream({
         offset: `-1`,
-        signal: this.abortController?.signal,
+        signal: ctx.controller.signal,
       })
       const items = await response.json<YjsIndex>()
 
@@ -360,17 +425,16 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
   // ---- Initial sync ----
 
-  private async initialSync(): Promise<void> {
-    if (!this.currentIndex) return
+  private async initialSync(ctx: ConnectionContext): Promise<void> {
+    if (!ctx.index) return
 
     // Parallel fetch: start both snapshot and updates fetches simultaneously
     // This saves one full round-trip latency for documents with snapshots
-    if (this.currentIndex.snapshot_stream) {
-      const snapshotPromise = this.fetchSnapshot(
-        this.currentIndex.snapshot_stream
-      )
+    if (ctx.index.snapshot_stream) {
+      const snapshotPromise = this.fetchSnapshot(ctx, ctx.index.snapshot_stream)
       const updatesPromise = this.fetchInitialUpdates(
-        this.currentIndex.update_offset
+        ctx,
+        ctx.index.update_offset
       )
 
       const [snapshotResult, updatesResult] = await Promise.all([
@@ -378,14 +442,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         updatesPromise,
       ])
 
-      if (this.abortController?.signal.aborted) return
+      if (this.isStale(ctx)) return
 
       // Handle snapshot deleted during fetch (compaction race)
       if (!snapshotResult.found) {
         // Re-fetch index and retry with sequential approach
-        this.currentIndex = await this.fetchIndex()
-        if (this.abortController?.signal.aborted) return
-        return this.initialSync()
+        ctx.index = await this.fetchIndex(ctx)
+        if (this.isStale(ctx)) return
+        return this.initialSync(ctx)
       }
 
       // Apply in correct order: snapshot first, then updates
@@ -395,10 +459,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       this.applyUpdates(updatesResult.data)
 
       // Start live streaming from where we left off
-      await this.startUpdatesStream(updatesResult.endOffset)
+      await this.startUpdatesStream(ctx, updatesResult.endOffset)
     } else {
       // No snapshot - just start updates stream from the beginning
-      await this.startUpdatesStream(this.currentIndex.update_offset)
+      await this.startUpdatesStream(ctx, ctx.index.update_offset)
     }
   }
 
@@ -407,6 +471,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
    * Returns {found: false} if snapshot was deleted (compaction race).
    */
   private async fetchSnapshot(
+    ctx: ConnectionContext,
     snapshotId: string
   ): Promise<{ found: true; data: Uint8Array } | { found: false }> {
     const stream = new DurableStream({
@@ -419,7 +484,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       const response = await stream.stream({
         offset: `-1`,
-        signal: this.abortController?.signal,
+        signal: ctx.controller.signal,
       })
       const data = await response.body()
       return { found: true, data }
@@ -436,14 +501,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
    * Returns the data and the end offset for subsequent live streaming.
    */
   private async fetchInitialUpdates(
+    ctx: ConnectionContext,
     offset: string
   ): Promise<{ data: Uint8Array; endOffset: string }> {
-    if (!this.currentIndex) {
+    if (!ctx.index) {
       return { data: new Uint8Array(0), endOffset: offset }
     }
 
     const stream = new DurableStream({
-      url: this.updatesUrl(this.currentIndex.updates_stream),
+      url: this.updatesUrl(ctx.index.updates_stream),
       headers: this.headers,
       contentType: `application/octet-stream`,
     })
@@ -453,7 +519,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       const response = await stream.stream({
         offset,
         live: false,
-        signal: this.abortController?.signal,
+        signal: ctx.controller.signal,
       })
       const data = await response.body()
       return { data, endOffset: response.offset }
@@ -478,8 +544,11 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
   // ---- Live updates streaming ----
 
-  private startUpdatesStream(offset: string): Promise<void> {
-    if (!this.currentIndex || this.abortController?.signal.aborted) {
+  private startUpdatesStream(
+    ctx: ConnectionContext,
+    offset: string
+  ): Promise<void> {
+    if (!ctx.index || ctx.controller.signal.aborted) {
       return Promise.resolve()
     }
 
@@ -509,6 +578,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     })
 
     this.runUpdatesStream(
+      ctx,
       offset,
       generation,
       resolveInitial!,
@@ -521,12 +591,13 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   }
 
   private async runUpdatesStream(
+    ctx: ConnectionContext,
     offset: string,
     generation: number,
     resolveInitialSync: () => void,
     rejectInitialSync: (error: Error) => void
   ): Promise<void> {
-    if (!this.currentIndex) return
+    if (!ctx.index) return
 
     let currentOffset = offset
     let initialSyncPending = true
@@ -534,25 +605,26 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const markSynced = (): void => {
       if (!initialSyncPending) return
       initialSyncPending = false
-      if (!this.connected) {
-        this.connected = true
+      // Transition to connected BEFORE setting synced, so that when synced event
+      // fires, connected is already true (tests depend on this ordering)
+      if (this._state === `connecting`) {
+        this.transition(`connected`)
       }
       this.synced = true
       resolveInitialSync()
     }
 
     const isStale = (): boolean =>
-      this.abortController?.signal.aborted === true ||
-      this.updatesStreamGeneration !== generation
+      this.isStale(ctx) || this.updatesStreamGeneration !== generation
 
     while (this.updatesStreamGeneration === generation) {
-      if (this.abortController?.signal.aborted) {
+      if (ctx.controller.signal.aborted) {
         markSynced()
         return
       }
 
       const stream = new DurableStream({
-        url: this.updatesUrl(this.currentIndex.updates_stream),
+        url: this.updatesUrl(ctx.index.updates_stream),
         headers: this.headers,
         contentType: `application/octet-stream`,
       })
@@ -561,7 +633,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         const response = await stream.stream({
           offset: currentOffset,
           live: `auto`,
-          signal: this.abortController?.signal,
+          signal: ctx.controller.signal,
         })
 
         this.updatesSubscription?.()
@@ -634,7 +706,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     origin: unknown
   ): void => {
     if (origin === `server`) return
-    if (!this.updatesProducer || !this.connected) return
+    const producer = this._ctx?.producer
+    if (!producer || !this.connected) return
 
     // Mark as unsynced - will become true when our write echoes back
     this.synced = false
@@ -645,14 +718,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const framedUpdate = encoding.toUint8Array(encoder)
 
     // Fire-and-forget: producer handles batching, retries, and error reporting
-    this.updatesProducer.append(framedUpdate)
+    producer.append(framedUpdate)
   }
 
   // ---- Awareness ----
 
-  private startAwareness(): void {
+  private startAwareness(ctx: ConnectionContext): void {
     if (!this.awareness) return
-    if (this.abortController?.signal.aborted) return
+    if (ctx.controller.signal.aborted) return
 
     this.broadcastAwareness()
 
@@ -660,7 +733,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       this.broadcastAwareness()
     }, AWARENESS_HEARTBEAT_INTERVAL)
 
-    this.subscribeAwareness()
+    this.subscribeAwareness(ctx)
   }
 
   private handleAwarenessUpdate = (
@@ -715,7 +788,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private async sendAwareness(): Promise<void> {
     if (
       !this.awareness ||
-      (!this.connected && !this._connecting) ||
+      (!this.connected && !this.connecting) ||
       this.sendingAwareness
     )
       return
@@ -753,10 +826,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
-  private async subscribeAwareness(): Promise<void> {
+  private async subscribeAwareness(ctx: ConnectionContext): Promise<void> {
     if (!this.awareness) return
-    const signal = this.abortController?.signal
-    if (signal?.aborted) return
+    const signal = ctx.controller.signal
+    if (signal.aborted) return
 
     const stream = new DurableStream({
       url: this.awarenessUrl(),
@@ -779,7 +852,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       const bodyStream = response.bodyStream()
 
       for await (const value of bodyStream) {
-        if (signal?.aborted) return
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change asynchronously
+        if (signal.aborted) return
 
         if (value.length > 0) {
           // value is Uint8Array of text/plain data (base64 string)
@@ -799,12 +873,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       }
 
       // Stream ended cleanly (EOF) - resubscribe if still connected
-      if (this.connected && !signal?.aborted) {
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change asynchronously
+      if (this.connected && !signal.aborted) {
         await new Promise((r) => setTimeout(r, 250))
-        this.subscribeAwareness()
+        this.subscribeAwareness(ctx)
       }
     } catch (err) {
-      if (signal?.aborted || (!this.connected && !this._connecting)) return
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change asynchronously
+      if (signal.aborted || (!this.connected && !this.connecting)) return
 
       if (this.isNotFoundError(err)) {
         // Awareness stream doesn't exist yet (created lazily on first write)
@@ -824,7 +900,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         await new Promise((r) => setTimeout(r, delay))
 
         if (this.connected) {
-          this.subscribeAwareness()
+          this.subscribeAwareness(ctx)
         }
         return
       }
@@ -833,7 +909,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       // Retry after delay for other errors
       await new Promise((resolve) => setTimeout(resolve, 1000))
       if (this.connected) {
-        this.subscribeAwareness()
+        this.subscribeAwareness(ctx)
       }
     }
   }
