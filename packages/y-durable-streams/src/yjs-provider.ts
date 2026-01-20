@@ -332,22 +332,52 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private async initialSync(): Promise<void> {
     if (!this.currentIndex) return
 
-    // Fetch snapshot if exists. If it was deleted during compaction, re-fetch index.
-    while (this.currentIndex.snapshot_stream) {
-      const applied = await this.fetchAndApplySnapshot(
+    // Parallel fetch: start both snapshot and updates fetches simultaneously
+    // This saves one full round-trip latency for documents with snapshots
+    if (this.currentIndex.snapshot_stream) {
+      const snapshotPromise = this.fetchSnapshot(
         this.currentIndex.snapshot_stream
       )
-      if (applied) break
-      if (this.abortController?.signal.aborted) return
-      this.currentIndex = await this.fetchIndex()
-      if (this.abortController?.signal.aborted) return
-    }
+      const updatesPromise = this.fetchInitialUpdates(
+        this.currentIndex.update_offset
+      )
 
-    // Single stream handles both catch-up and live polling.
-    await this.startUpdatesStream(this.currentIndex.update_offset)
+      const [snapshotResult, updatesResult] = await Promise.all([
+        snapshotPromise,
+        updatesPromise,
+      ])
+
+      if (this.abortController?.signal.aborted) return
+
+      // Handle snapshot deleted during fetch (compaction race)
+      if (!snapshotResult.found) {
+        // Re-fetch index and retry with sequential approach
+        this.currentIndex = await this.fetchIndex()
+        if (this.abortController?.signal.aborted) return
+        return this.initialSync()
+      }
+
+      // Apply in correct order: snapshot first, then updates
+      if (snapshotResult.data.length > 0) {
+        Y.applyUpdate(this.doc, snapshotResult.data, `server`)
+      }
+      this.applyUpdates(updatesResult.data)
+
+      // Start live streaming from where we left off
+      await this.startUpdatesStream(updatesResult.endOffset)
+    } else {
+      // No snapshot - just start updates stream from the beginning
+      await this.startUpdatesStream(this.currentIndex.update_offset)
+    }
   }
 
-  private async fetchAndApplySnapshot(snapshotId: string): Promise<boolean> {
+  /**
+   * Fetch snapshot data without applying it.
+   * Returns {found: false} if snapshot was deleted (compaction race).
+   */
+  private async fetchSnapshot(
+    snapshotId: string
+  ): Promise<{ found: true; data: Uint8Array } | { found: false }> {
     const stream = new DurableStream({
       url: this.snapshotUrl(snapshotId),
       headers: this.headers,
@@ -358,15 +388,45 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       const response = await stream.stream({ offset: `-1` })
       const data = await response.body()
-
-      if (data.length > 0) {
-        Y.applyUpdate(this.doc, data, `server`)
-      }
-      return true
+      return { found: true, data }
     } catch (err) {
       if (this.isNotFoundError(err)) {
-        // Snapshot deleted (compaction) - caller should re-fetch index
-        return false
+        return { found: false }
+      }
+      throw err
+    }
+  }
+
+  /**
+   * Fetch initial updates in one shot (no live streaming).
+   * Returns the data and the end offset for subsequent live streaming.
+   */
+  private async fetchInitialUpdates(
+    offset: string
+  ): Promise<{ data: Uint8Array; endOffset: string }> {
+    if (!this.currentIndex) {
+      return { data: new Uint8Array(0), endOffset: offset }
+    }
+
+    const stream = new DurableStream({
+      url: this.updatesUrl(this.currentIndex.updates_stream),
+      headers: this.headers,
+      contentType: `application/octet-stream`,
+    })
+
+    try {
+      // Use false for one-shot fetch (no live polling)
+      const response = await stream.stream({
+        offset,
+        live: false,
+        signal: this.abortController?.signal,
+      })
+      const data = await response.body()
+      return { data, endOffset: response.offset }
+    } catch (err) {
+      if (this.isNotFoundError(err)) {
+        // Stream doesn't exist yet - return empty data, keep original offset
+        return { data: new Uint8Array(0), endOffset: offset }
       }
       throw err
     }
