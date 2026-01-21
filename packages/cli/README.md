@@ -69,6 +69,11 @@ durable-stream-dev read my-stream
 ### Environment Variables
 
 - `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437`)
+- `STREAM_AUTH` - Authorization header value (e.g., `Bearer my-token`)
+
+### Global Options
+
+- `--auth <value>` - Authorization header value (overrides `STREAM_AUTH` env var)
 
 ### Write Options
 
@@ -123,6 +128,23 @@ durable-stream-dev read <stream_id>
 
 ```bash
 durable-stream-dev delete <stream_id>
+```
+
+### Authentication
+
+Use the `--auth` flag or `STREAM_AUTH` environment variable to authenticate:
+
+```bash
+# Using environment variable
+export STREAM_AUTH="Bearer my-token"
+durable-stream-dev read my-stream
+
+# Using --auth flag (overrides env var)
+durable-stream-dev --auth "Bearer my-token" read my-stream
+
+# Works with any auth scheme
+durable-stream-dev --auth "Basic dXNlcjpwYXNz" read my-stream
+durable-stream-dev --auth "ApiKey abc123" read my-stream
 ```
 
 ## Complete Example Workflow

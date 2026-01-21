@@ -9,9 +9,66 @@ import { parseWriteArgs } from "./parseWriteArgs.js"
 import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 
 export type { ParsedWriteArgs }
+export type { GlobalOptions }
 export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
+export { parseGlobalOptions, buildHeaders }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
+const STREAM_AUTH = process.env.STREAM_AUTH
+
+interface GlobalOptions {
+  auth?: string
+}
+
+/**
+ * Parse global options (like --auth) from args.
+ * Falls back to STREAM_AUTH env var if --auth flag not provided.
+ * Returns the parsed options and remaining args.
+ */
+function parseGlobalOptions(args: Array<string>): {
+  options: GlobalOptions
+  remainingArgs: Array<string>
+} {
+  const options: GlobalOptions = {}
+  const remainingArgs: Array<string> = []
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+
+    if (arg === `--auth`) {
+      const value = args[i + 1]
+      if (!value || value.startsWith(`--`)) {
+        throw new Error(`--auth requires a value (e.g., --auth "Bearer token")`)
+      }
+      if (!value.trim()) {
+        throw new Error(`--auth value cannot be empty or whitespace`)
+      }
+      options.auth = value
+      i++
+    } else {
+      remainingArgs.push(arg)
+    }
+  }
+
+  // Fall back to STREAM_AUTH env var if no --auth flag provided
+  if (!options.auth && STREAM_AUTH) {
+    if (!STREAM_AUTH.trim()) {
+      throw new Error(
+        `STREAM_AUTH environment variable cannot be empty or whitespace`
+      )
+    }
+    options.auth = STREAM_AUTH
+  }
+
+  return { options, remainingArgs }
+}
+
+function buildHeaders(options: GlobalOptions): Record<string, string> {
+  if (options.auth) {
+    return { Authorization: options.auth }
+  }
+  return {}
+}
 
 function printUsage() {
   console.error(`
@@ -22,6 +79,9 @@ Usage:
   durable-stream read <stream_id>                Follow a stream and write to stdout
   durable-stream delete <stream_id>              Delete a stream
 
+Global Options:
+  --auth <value>          Authorization header value (e.g., "Bearer my-token")
+
 Write Options:
   --content-type <type>   Content-Type for the message (default: application/octet-stream)
   --json                  Write as JSON (input stored as single message)
@@ -29,22 +89,23 @@ Write Options:
 
 Environment Variables:
   STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
+  STREAM_AUTH   Authorization header value (overridden by --auth flag)
 `)
 }
 
-async function createStream(streamId: string) {
+async function createStream(streamId: string, headers: Record<string, string>) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
 
   try {
     await DurableStream.create({
       url,
+      headers,
       contentType: `application/octet-stream`,
     })
     console.log(`Created stream: ${streamId}`)
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error creating stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error creating stream: ${message}\n`)
     process.exit(1)
   }
 }
@@ -68,13 +129,14 @@ async function writeStream(
   streamId: string,
   contentType: string,
   batchJson: boolean,
+  headers: Record<string, string>,
   content?: string
 ) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
   const isJson = isJsonContentType(contentType)
 
   try {
-    const stream = new DurableStream({ url, contentType })
+    const stream = new DurableStream({ url, headers, contentType })
 
     if (content) {
       // Write provided content, interpreting escape sequences
@@ -127,18 +189,17 @@ async function writeStream(
       }
     }
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error writing to stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error writing to stream: ${message}\n`)
     process.exit(1)
   }
 }
 
-async function readStream(streamId: string) {
+async function readStream(streamId: string, headers: Record<string, string>) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
 
   try {
-    const stream = new DurableStream({ url })
+    const stream = new DurableStream({ url, headers })
 
     // Read from the stream and write to stdout
     // Using live: "auto" for catch-up first, then auto-select live mode
@@ -151,30 +212,41 @@ async function readStream(streamId: string) {
       }
     }
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error reading stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error reading stream: ${message}\n`)
     process.exit(1)
   }
 }
 
-async function deleteStream(streamId: string) {
+async function deleteStream(streamId: string, headers: Record<string, string>) {
   const url = `${STREAM_URL}/v1/stream/${streamId}`
 
   try {
-    const stream = new DurableStream({ url })
+    const stream = new DurableStream({ url, headers })
     await stream.delete()
     console.log(`Deleted stream: ${streamId}`)
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error deleting stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error deleting stream: ${message}\n`)
     process.exit(1)
   }
 }
 
 async function main() {
-  const args = process.argv.slice(2)
+  let options: GlobalOptions
+  let args: Array<string>
+
+  try {
+    const parsed = parseGlobalOptions(process.argv.slice(2))
+    options = parsed.options
+    args = parsed.remainingArgs
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error: ${message}\n`)
+    process.exit(1)
+  }
+
+  const headers = buildHeaders(options)
 
   if (args.length < 1) {
     printUsage()
@@ -190,7 +262,7 @@ async function main() {
         printUsage()
         process.exit(1)
       }
-      await createStream(args[1]!)
+      await createStream(args[1]!, headers)
       break
     }
 
@@ -206,22 +278,27 @@ async function main() {
       try {
         parsed = parseWriteArgs(args.slice(2))
       } catch (error) {
-        if (error instanceof Error) {
-          stderr.write(`Error: ${error.message}\n`)
-        }
+        const message = error instanceof Error ? error.message : String(error)
+        stderr.write(`Error: ${message}\n`)
         process.exit(1)
       }
 
       // Check if stdin is being piped
       if (!stdin.isTTY) {
         // Reading from stdin
-        await writeStream(streamId, parsed.contentType, parsed.batchJson)
+        await writeStream(
+          streamId,
+          parsed.contentType,
+          parsed.batchJson,
+          headers
+        )
       } else if (parsed.content) {
         // Content provided as argument
         await writeStream(
           streamId,
           parsed.contentType,
           parsed.batchJson,
+          headers,
           parsed.content
         )
       } else {
@@ -240,7 +317,7 @@ async function main() {
         printUsage()
         process.exit(1)
       }
-      await readStream(args[1]!)
+      await readStream(args[1]!, headers)
       break
     }
 
@@ -250,7 +327,7 @@ async function main() {
         printUsage()
         process.exit(1)
       }
-      await deleteStream(args[1]!)
+      await deleteStream(args[1]!, headers)
       break
     }
 
@@ -271,7 +348,8 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   main().catch((error) => {
-    stderr.write(`Fatal error: ${error.message}\n`)
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Fatal error: ${message}\n`)
     process.exit(1)
   })
 }
