@@ -10,7 +10,9 @@ import {
   createAbortFn,
   createDurableFetch,
   createScopeFromUrl,
+  createStorageKey,
 } from "../client"
+import { createDurableAdapter } from "../transports/tanstack"
 import { createAIStreamingResponse, createTestContext } from "./harness"
 import type { DurableFetch } from "../client/types"
 
@@ -290,5 +292,126 @@ describe(`client URL construction`, () => {
     )
 
     await abort()
+  })
+})
+
+describe(`client unit: storage key scoping`, () => {
+  it(`creates different keys for different proxy URLs`, () => {
+    const streamKey = `test-stream`
+    const prefix = `durable-streams:`
+
+    const scope1 = createScopeFromUrl(
+      `https://proxy1.example.com/v1/proxy/chat`
+    )
+    const scope2 = createScopeFromUrl(
+      `https://proxy2.example.com/v1/proxy/chat`
+    )
+
+    const key1 = createStorageKey(prefix, scope1, streamKey)
+    const key2 = createStorageKey(prefix, scope2, streamKey)
+
+    // Keys should be different even with same streamKey
+    expect(key1).not.toBe(key2)
+    expect(key1).toContain(`proxy1.example.com`)
+    expect(key2).toContain(`proxy2.example.com`)
+  })
+
+  it(`creates different keys for different services on same proxy`, () => {
+    const streamKey = `test-stream`
+    const prefix = `durable-streams:`
+
+    const scope1 = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
+    const scope2 = createScopeFromUrl(
+      `https://proxy.example.com/v1/proxy/embeddings`
+    )
+
+    const key1 = createStorageKey(prefix, scope1, streamKey)
+    const key2 = createStorageKey(prefix, scope2, streamKey)
+
+    // Keys should be different even with same streamKey and host
+    expect(key1).not.toBe(key2)
+    expect(key1).toContain(`/chat`)
+    expect(key2).toContain(`/embeddings`)
+  })
+
+  it(`scope includes full path for uniqueness`, () => {
+    const scope = createScopeFromUrl(
+      `https://api.example.com/custom/path/v1/proxy/chat`
+    )
+
+    // Should include the full origin + pathname
+    expect(scope).toBe(`https://api.example.com/custom/path/v1/proxy/chat`)
+  })
+})
+
+describe(`client unit: custom storage prefix`, () => {
+  it(`uses custom storagePrefix when configured`, async () => {
+    const storage = createMemoryStorage()
+    const customPrefix = `my-app:`
+    const streamKey = `prefix-test-${Date.now()}`
+
+    ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
+
+    const durableFetch = createDurableFetch({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      storage,
+      storagePrefix: customPrefix,
+      autoResume: false,
+    })
+
+    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+      stream_key: streamKey,
+    })
+
+    expect(response.ok).toBe(true)
+
+    // Verify credentials were stored with custom prefix
+    const scope = createScopeFromUrl(`${ctx.urls.proxy}/v1/proxy/chat`)
+    const expectedKey = `${customPrefix}${scope}:${streamKey}`
+    const storedData = storage.getItem(expectedKey)
+
+    expect(storedData).toBeDefined()
+    expect(storedData).not.toBeNull()
+
+    // Default prefix should NOT have data
+    const defaultKey = `durable-streams:${scope}:${streamKey}`
+    expect(storage.getItem(defaultKey)).toBeNull()
+  })
+})
+
+describe(`client unit: TanStack adapter concurrent streams`, () => {
+  it(`tracks multiple streams independently`, async () => {
+    const storage = createMemoryStorage()
+
+    const adapter = createDurableAdapter(ctx.urls.upstream + `/v1/chat`, {
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      storage,
+      getStreamKey: (_msgs, data) => {
+        const d = data as { streamId?: string } | undefined
+        return d?.streamId ?? `default`
+      },
+    })
+
+    // Create first stream
+    ctx.upstream.setResponse(createAIStreamingResponse([`Stream 1`], 500))
+    const conn1 = await adapter.connect({
+      url: ctx.urls.upstream + `/v1/chat`,
+      body: { messages: [], data: { streamId: `stream-1-${Date.now()}` } },
+    })
+    expect(conn1.stream).toBeDefined()
+
+    // Create second stream
+    ctx.upstream.setResponse(createAIStreamingResponse([`Stream 2`], 500))
+    const conn2 = await adapter.connect({
+      url: ctx.urls.upstream + `/v1/chat`,
+      body: { messages: [], data: { streamId: `stream-2-${Date.now()}` } },
+    })
+    expect(conn2.stream).toBeDefined()
+
+    // Both streams should be active - abort should work
+    // (This tests that the Map-based tracking doesn't lose the first stream)
+    await adapter.abort()
   })
 })

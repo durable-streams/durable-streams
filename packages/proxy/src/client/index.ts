@@ -15,6 +15,7 @@ export {
   MemoryStorage,
   getDefaultStorage,
   createScopeFromUrl,
+  createStorageKey,
   saveCredentials,
   loadCredentials,
   removeCredentials,
