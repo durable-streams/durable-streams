@@ -4094,7 +4094,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         return new Uint8Array(accumulated)
       }
 
-      test(`arbitrary byte sequences are preserved exactly across ${NUM_CONCURRENT_READERS} concurrent readers`, async () => {
+      test(`concurrent readers see consistent data during writes`, async () => {
         await fc.assert(
           fc.asyncProperty(
             // Generate 1-10 chunks of arbitrary bytes (1-500 bytes each)
@@ -4115,34 +4115,56 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               )
               expect([200, 201, 204]).toContain(createResponse.status)
 
-              // Append each chunk
-              for (const chunk of chunks) {
-                const response = await fetch(`${getBaseUrl()}${streamPath}`, {
-                  method: `POST`,
-                  headers: { "Content-Type": `application/octet-stream` },
-                  body: chunk,
-                })
-                expect(response.status).toBe(204)
-              }
-
               const expected = Uint8Array.from(chunks.flatMap((c) => [...c]))
 
-              const results = await Promise.all(
-                Array.from({ length: NUM_CONCURRENT_READERS }, () =>
-                  readEntireStream(streamPath)
-                )
+              // Start readers and writer concurrently to catch race conditions
+              const readerPromises = Array.from(
+                { length: NUM_CONCURRENT_READERS },
+                async () => {
+                  // Random delay to interleave reads with writes
+                  await new Promise((r) => setTimeout(r, Math.random() * 10))
+                  const response: Response = await fetch(
+                    `${getBaseUrl()}${streamPath}`
+                  )
+                  return new Uint8Array(await response.arrayBuffer())
+                }
               )
 
-              for (const result of results) {
-                expect(result).toEqual(expected)
+              const writerPromise = (async () => {
+                for (const chunk of chunks) {
+                  const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+                    method: `POST`,
+                    headers: { "Content-Type": `application/octet-stream` },
+                    body: chunk,
+                  })
+                  expect(response.status).toBe(204)
+                }
+              })()
+
+              const [readerResults] = await Promise.all([
+                Promise.all(readerPromises),
+                writerPromise,
+              ])
+
+              // Each reader must see a valid prefix of expected data
+              // (they may see partial data if reading mid-write)
+              for (const result of readerResults) {
+                expect(result.length).toBeLessThanOrEqual(expected.length)
+                for (let i = 0; i < result.length; i++) {
+                  expect(result[i]).toBe(expected[i])
+                }
               }
+
+              // Final read after all writes complete must match expected exactly
+              const finalResult = await readEntireStream(streamPath)
+              expect(finalResult).toEqual(expected)
             }
           ),
           { numRuns: 20 } // Limit runs since each creates a stream
         )
       })
 
-      test(`single byte values cover full range (0-255) across ${NUM_CONCURRENT_READERS} concurrent readers`, async () => {
+      test(`single byte values cover full range (0-255) with concurrent readers during write`, async () => {
         await fc.assert(
           fc.asyncProperty(
             // Generate a byte value from 0-255
@@ -4155,23 +4177,42 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 headers: { "Content-Type": `application/octet-stream` },
               })
 
-              await fetch(`${getBaseUrl()}${streamPath}`, {
+              const expected = new Uint8Array([byteValue])
+
+              // Start readers and writer concurrently
+              const readerPromises = Array.from(
+                { length: NUM_CONCURRENT_READERS },
+                async () => {
+                  await new Promise((r) => setTimeout(r, Math.random() * 5))
+                  const response: Response = await fetch(
+                    `${getBaseUrl()}${streamPath}`
+                  )
+                  return new Uint8Array(await response.arrayBuffer())
+                }
+              )
+
+              const writerPromise = fetch(`${getBaseUrl()}${streamPath}`, {
                 method: `POST`,
                 headers: { "Content-Type": `application/octet-stream` },
                 body: new Uint8Array([byteValue]),
               })
 
-              const expected = new Uint8Array([byteValue])
+              const [readerResults] = await Promise.all([
+                Promise.all(readerPromises),
+                writerPromise,
+              ])
 
-              const results = await Promise.all(
-                Array.from({ length: NUM_CONCURRENT_READERS }, () =>
-                  readEntireStream(streamPath)
-                )
-              )
-
-              for (const result of results) {
-                expect(result).toEqual(expected)
+              // Each reader sees either empty (read before write) or the byte
+              for (const result of readerResults) {
+                expect(result.length).toBeLessThanOrEqual(1)
+                if (result.length === 1) {
+                  expect(result[0]).toBe(byteValue)
+                }
               }
+
+              // Final read must have the byte
+              const finalResult = await readEntireStream(streamPath)
+              expect(finalResult).toEqual(expected)
             }
           ),
           { numRuns: 50 } // Test a good sample of byte values
