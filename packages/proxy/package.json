@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/proxy",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Durable proxy for persistent, resumable AI streaming responses",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",

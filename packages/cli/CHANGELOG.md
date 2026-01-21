@@ -1,5 +1,14 @@
 # @durable-streams/cli
 
+## 0.1.8
+
+### Patch Changes
+
+- Add `--url` flag to override STREAM_URL environment variable and `--help`/`-h` flags for usage information. Improve validation with helpful error messages for URLs, auth headers, and stream IDs. Enhance success/error messages with better formatting including byte counts and HTTP status codes. ([#192](https://github.com/durable-streams/durable-streams/pull/192))
+
+- Updated dependencies [[`447e102`](https://github.com/durable-streams/durable-streams/commit/447e10235a1732ec24e1d906487d6b2750a16063), [`095944a`](https://github.com/durable-streams/durable-streams/commit/095944a5fefdef0cbc87eef532c871cdd46ee7d8), [`e47081e`](https://github.com/durable-streams/durable-streams/commit/e47081e553e1e98466bca25faf929ac346816e6b)]:
+  - @durable-streams/client@0.2.0
+
 ## 0.1.7
 
 ### Patch Changes
