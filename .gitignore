@@ -185,6 +185,11 @@ htmlcov/
 # Rust
 target/
 
+# .NET / C# build outputs
+**/client-dotnet/**/bin/
+**/client-dotnet/**/obj/
+*.nupkg
+
 # Claude local settings
 .claude/settings.local.json
 .beads

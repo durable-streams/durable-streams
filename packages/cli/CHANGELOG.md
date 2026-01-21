@@ -1,5 +1,11 @@
 # @durable-streams/cli
 
+## 0.1.7
+
+### Patch Changes
+
+- Add authentication support via `--auth` flag and `STREAM_AUTH` environment variable ([#189](https://github.com/durable-streams/durable-streams/pull/189))
+
 ## 0.1.6
 
 ### Patch Changes
