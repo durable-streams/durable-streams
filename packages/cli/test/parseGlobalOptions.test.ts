@@ -2,10 +2,65 @@ import { describe, expect, it } from "vitest"
 import { buildHeaders, parseGlobalOptions } from "../src/index"
 
 describe(`parseGlobalOptions`, () => {
-  it(`returns empty options when no flags provided`, () => {
+  it(`returns default url when no flags provided`, () => {
     const result = parseGlobalOptions([`create`, `my-stream`])
+    expect(result.options.url).toBe(`http://localhost:4437`)
     expect(result.options.auth).toBeUndefined()
     expect(result.remainingArgs).toEqual([`create`, `my-stream`])
+  })
+
+  it(`parses --url flag`, () => {
+    const result = parseGlobalOptions([
+      `--url`,
+      `http://example.com:8080`,
+      `read`,
+      `my-stream`,
+    ])
+    expect(result.options.url).toBe(`http://example.com:8080`)
+    expect(result.remainingArgs).toEqual([`read`, `my-stream`])
+  })
+
+  it(`parses --url flag after command`, () => {
+    const result = parseGlobalOptions([
+      `read`,
+      `my-stream`,
+      `--url`,
+      `https://api.example.com`,
+    ])
+    expect(result.options.url).toBe(`https://api.example.com`)
+    expect(result.remainingArgs).toEqual([`read`, `my-stream`])
+  })
+
+  it(`throws when --url has no value`, () => {
+    expect(() => parseGlobalOptions([`--url`])).toThrow(
+      `--url requires a value`
+    )
+  })
+
+  it(`throws when --url is followed by another flag`, () => {
+    expect(() => parseGlobalOptions([`--url`, `--auth`])).toThrow(
+      `--url requires a value`
+    )
+  })
+
+  it(`throws when --url value is whitespace only`, () => {
+    expect(() => parseGlobalOptions([`--url`, `   `])).toThrow(
+      `URL cannot be empty`
+    )
+  })
+
+  it(`parses both --url and --auth together`, () => {
+    const result = parseGlobalOptions([
+      `--url`,
+      `http://example.com`,
+      `--auth`,
+      `Bearer token`,
+      `read`,
+      `my-stream`,
+    ])
+    expect(result.options.url).toBe(`http://example.com`)
+    expect(result.options.auth).toBe(`Bearer token`)
+    expect(result.remainingArgs).toEqual([`read`, `my-stream`])
   })
 
   it(`parses --auth flag before command`, () => {
@@ -111,7 +166,7 @@ describe(`parseGlobalOptions`, () => {
 
   it(`throws when --auth value is whitespace only`, () => {
     expect(() => parseGlobalOptions([`--auth`, `   `])).toThrow(
-      `--auth value cannot be empty or whitespace`
+      `Authorization value cannot be empty`
     )
   })
 
