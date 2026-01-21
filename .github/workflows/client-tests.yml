@@ -7,159 +7,158 @@ on:
     branches: [main]
 
 jobs:
-  conformance:
-    name: Client Conformance Tests
+  # Build shared TypeScript packages once
+  build-ts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ts-build
+          path: |
+            packages/*/dist
+            node_modules/.pnpm
+          retention-days: 1
 
+  # Parallel conformance tests by client
+  conformance:
+    needs: build-ts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        client:
+          - name: typescript
+            cmd: ts
+            setup: ""
+          - name: go
+            cmd: ../../packages/client-go/conformance-adapter
+            setup: |
+              cd packages/client-go
+              go build -o conformance-adapter ./cmd/conformance-adapter
+          - name: dotnet
+            cmd: ../../packages/client-dotnet/adapter/conformance-adapter
+            setup: |
+              cd packages/client-dotnet
+              dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+          - name: swift
+            cmd: ../client-swift/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-swift
+              swift build -c release
+          - name: php
+            cmd: ../client-php/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-php
+              composer install --no-interaction
+              composer analyse
+          - name: java
+            cmd: ../client-java/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-java
+              ./gradlew build
+          - name: rust
+            cmd: ../client-rust/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-rust
+              cargo build --release
+          - name: ruby
+            cmd: ../client-rb/run-conformance-adapter.sh
+            setup: ""
+    name: conformance (${{ matrix.client.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: actions/setup-go@v5
+      # Language-specific setup
+      - if: matrix.client.name == 'go'
+        uses: actions/setup-go@v5
         with:
           go-version: "1.25"
           cache-dependency-path: packages/client-go/go.mod
 
-      - uses: actions/setup-dotnet@v4
+      - if: matrix.client.name == 'dotnet'
+        uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0"
 
-      - uses: swift-actions/setup-swift@v2
+      - if: matrix.client.name == 'swift'
+        uses: swift-actions/setup-swift@v2
         with:
           swift-version: "6.0"
 
-      - name: Set up PHP
+      - if: matrix.client.name == 'php'
         uses: shivammathur/setup-php@v2
         with:
           php-version: "8.2"
 
-      - uses: actions/setup-java@v4
+      - if: matrix.client.name == 'java'
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
+      - if: matrix.client.name == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+      - if: matrix.client.name == 'rust'
+        uses: Swatinem/rust-cache@v2
         with:
           workspaces: packages/client-rust
 
-      - uses: ruby/setup-ruby@v1
+      - if: matrix.client.name == 'ruby'
+        uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
           bundler-cache: true
           working-directory: packages/client-rb
 
-      - name: Install dependencies
-        run: pnpm install
+      - run: pnpm install
+      - uses: actions/download-artifact@v4
+        with:
+          name: ts-build
 
-      - name: Build packages
-        run: pnpm build
+      # Build client adapter
+      - if: matrix.client.setup != ''
+        run: ${{ matrix.client.setup }}
 
-      - name: Build Go client adapter
-        run: |
-          cd packages/client-go
-          go build -o conformance-adapter ./cmd/conformance-adapter
-
-      - name: Build C# client adapter
-        run: |
-          cd packages/client-dotnet
-          dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
-
-      - name: Build Swift client adapter
-        run: |
-          cd packages/client-swift
-          swift build -c release
-
-      - name: Install PHP client
-        run: |
-          cd packages/client-php
-          composer install --no-interaction
-
-      - name: Run PHPStan
-        run: |
-          cd packages/client-php
-          composer analyse
-
-      - name: Build Java client adapter
-        run: |
-          cd packages/client-java
-          ./gradlew build
-
-      - name: Build Rust client adapter
-        run: |
-          cd packages/client-rust
-          cargo build --release
-
-      - name: Run TypeScript client conformance tests
+      # Run conformance tests
+      - name: Run ${{ matrix.client.name }} conformance tests
         run: |
           cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ts
+          pnpm tsx src/cli.ts --run ${{ matrix.client.cmd }}
 
-      - name: Run Go client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../../packages/client-go/conformance-adapter
-
-      - name: Run C# client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../../packages/client-dotnet/adapter/conformance-adapter
-
-      - name: Run Swift client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../client-swift/run-conformance-adapter.sh
-
-      - name: Run PHP client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../client-php/run-conformance-adapter.sh
-
-      - name: Run Java client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../client-java/run-conformance-adapter.sh
-
-      - name: Run Rust client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../client-rust/run-conformance-adapter.sh
-
-      - name: Run Ruby client conformance tests
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --run ../client-rb/run-conformance-adapter.sh
-
-  elixir-conformance:
-    name: Elixir Conformance Tests
+  # Elixir conformance (separate due to Erlang/OTP setup)
+  conformance-elixir:
+    needs: build-ts
     runs-on: ubuntu-latest
+    name: conformance (elixir)
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
+      - uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.18"
           otp-version: "27"
 
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Build packages
-        run: pnpm build
+      - run: pnpm install
+      - uses: actions/download-artifact@v4
+        with:
+          name: ts-build
 
       - name: Build Elixir client adapter
         run: |
@@ -170,359 +169,244 @@ jobs:
           mix compile
           mix escript.build
 
-      - name: Run Elixir client conformance tests
+      - name: Run Elixir conformance tests
         run: |
           cd packages/client-conformance-tests
           pnpm tsx src/cli.ts --run ../client-elixir/run-conformance-adapter.sh
 
-  benchmarks:
-    name: Client Benchmarks
+  # Parallel benchmarks by client
+  benchmark:
+    needs: build-ts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        client:
+          - name: typescript
+            id: ts
+            cmd: ts
+            setup: ""
+          - name: go
+            id: go
+            cmd: ../../packages/client-go/conformance-adapter
+            setup: |
+              cd packages/client-go
+              go build -o conformance-adapter ./cmd/conformance-adapter
+          - name: python
+            id: py
+            cmd: ../client-py/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-py
+              uv sync
+          - name: dotnet
+            id: dotnet
+            cmd: ../../packages/client-dotnet/adapter/conformance-adapter
+            setup: |
+              cd packages/client-dotnet
+              dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+          - name: swift
+            id: swift
+            cmd: ../client-swift/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-swift
+              swift build -c release
+          - name: php
+            id: php
+            cmd: ../client-php/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-php
+              composer install --no-interaction
+          - name: java
+            id: java
+            cmd: ../client-java/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-java
+              ./gradlew build
+          - name: rust
+            id: rust
+            cmd: ../client-rust/run-conformance-adapter.sh
+            setup: |
+              cd packages/client-rust
+              cargo build --release
+          - name: ruby
+            id: rb
+            cmd: ../client-rb/run-conformance-adapter.sh
+            setup: ""
+    name: benchmark (${{ matrix.client.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # Language-specific setup
+      - if: matrix.client.name == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: packages/client-go/go.mod
+
+      - if: matrix.client.name == 'python'
+        uses: astral-sh/setup-uv@v4
+      - if: matrix.client.name == 'python'
+        run: uv python install 3.12
+
+      - if: matrix.client.name == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0"
+
+      - if: matrix.client.name == 'swift'
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "6.0"
+
+      - if: matrix.client.name == 'php'
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.2"
+
+      - if: matrix.client.name == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - if: matrix.client.name == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+      - if: matrix.client.name == 'rust'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packages/client-rust
+
+      - if: matrix.client.name == 'ruby'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+          bundler-cache: true
+          working-directory: packages/client-rb
+
+      - run: pnpm install
+      - uses: actions/download-artifact@v4
+        with:
+          name: ts-build
+
+      # Build client adapter
+      - if: matrix.client.setup != ''
+        run: ${{ matrix.client.setup }}
+
+      # Run benchmarks
+      - name: Run ${{ matrix.client.name }} benchmarks
+        id: bench
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ${{ matrix.client.cmd }} --format json > benchmark-results.json
+          cat benchmark-results.json
+
+          PASSED=$(jq -r '.passed // 0' benchmark-results.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results.json)
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-${{ matrix.client.id }}
+          path: packages/client-conformance-tests/benchmark-results.json
+
+  # Elixir benchmark (separate due to Erlang/OTP setup)
+  benchmark-elixir:
+    needs: build-ts
+    runs-on: ubuntu-latest
+    name: benchmark (elixir)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.18"
+          otp-version: "27"
+
+      - run: pnpm install
+      - uses: actions/download-artifact@v4
+        with:
+          name: ts-build
+
+      - name: Build Elixir client adapter
+        run: |
+          cd packages/client-elixir
+          mix local.hex --force
+          mix local.rebar --force
+          mix deps.get
+          mix compile
+          mix escript.build
+
+      - name: Run Elixir benchmarks
+        id: bench
+        continue-on-error: true
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format json > benchmark-results.json
+          cat benchmark-results.json
+
+          PASSED=$(jq -r '.passed // 0' benchmark-results.json)
+          FAILED=$(jq -r '.failed // 0' benchmark-results.json)
+          echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          echo "failed=$FAILED" >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-elixir
+          path: packages/client-conformance-tests/benchmark-results.json
+
+  # Aggregate benchmark results and post PR comment
+  benchmark-report:
+    needs: [benchmark, benchmark-elixir]
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
-
       - uses: pnpm/action-setup@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
+      - run: pnpm install
+      - run: pnpm build
 
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version: "1.25"
-          cache-dependency-path: packages/client-go/go.mod
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0"
-
-      - uses: swift-actions/setup-swift@v2
-        with:
-          swift-version: "6.0"
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 21
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: packages/client-rust
-
-      - name: Set up Elixir
-        uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.18"
-          otp-version: "27"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: "8.2"
-
-      - uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.3"
-          bundler-cache: true
-          working-directory: packages/client-rb
-
-      - name: Install dependencies
-        run: pnpm install
-
-      - name: Build packages
-        run: pnpm build
-
-      - name: Build Go client adapter
-        run: |
-          cd packages/client-go
-          go build -o conformance-adapter ./cmd/conformance-adapter
-
-      - name: Build Java client adapter
-        run: |
-          cd packages/client-java
-          ./gradlew build
-
-      - name: Build Rust client adapter
-        run: |
-          cd packages/client-rust
-          cargo build --release
-
-      - name: Build Elixir client adapter
-        run: |
-          cd packages/client-elixir
-          mix local.hex --force
-          mix local.rebar --force
-          mix deps.get
-          mix compile
-          mix escript.build
-
-      - name: Install Python client
-        run: |
-          cd packages/client-py
-          uv sync
-
-      - name: Build C# client adapter
-        run: |
-          cd packages/client-dotnet
-          dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
-
-      - name: Build Swift client adapter
-        run: |
-          cd packages/client-swift
-          swift build -c release
-
-      - name: Install PHP client
-        run: |
-          cd packages/client-php
-          composer install --no-interaction
-
-      - name: Run TypeScript client benchmarks
-        id: ts_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ts --format json > benchmark-results-ts.json
-          cat benchmark-results-ts.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-ts.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-ts.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-ts.json)
-
-          echo "ts_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "ts_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "ts_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Go client benchmarks
-        id: go_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format json > benchmark-results-go.json
-          cat benchmark-results-go.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-go.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-go.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-go.json)
-
-          echo "go_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "go_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "go_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Python client benchmarks
-        id: py_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format json > benchmark-results-py.json
-          cat benchmark-results-py.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-py.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-py.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-py.json)
-
-          echo "py_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "py_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "py_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run C# client benchmarks
-        id: dotnet_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format json > benchmark-results-dotnet.json
-          cat benchmark-results-dotnet.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-dotnet.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-dotnet.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-dotnet.json)
-
-          echo "dotnet_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "dotnet_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "dotnet_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Swift client benchmarks
-        id: swift_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format json > benchmark-results-swift.json
-          cat benchmark-results-swift.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-swift.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-swift.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-swift.json)
-
-          echo "swift_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "swift_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "swift_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run PHP client benchmarks
-        id: php_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format json > benchmark-results-php.json
-          cat benchmark-results-php.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-php.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-php.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-php.json)
-
-          echo "php_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "php_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "php_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Java client benchmarks
-        id: java_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-java/run-conformance-adapter.sh --format json > benchmark-results-java.json
-          cat benchmark-results-java.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-java.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-java.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-java.json)
-
-          echo "java_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "java_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "java_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Rust client benchmarks
-        id: rust_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format json > benchmark-results-rust.json
-          cat benchmark-results-rust.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-rust.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-rust.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rust.json)
-
-          echo "rust_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "rust_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "rust_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Ruby client benchmarks
-        id: rb_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format json > benchmark-results-rb.json
-          cat benchmark-results-rb.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-rb.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-rb.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-rb.json)
-
-          echo "rb_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "rb_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "rb_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Run Elixir client benchmarks
-        id: elixir_benchmarks
-        continue-on-error: true
-        run: |
-          cd packages/client-conformance-tests
-          pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format json > benchmark-results-elixir.json
-          cat benchmark-results-elixir.json
-
-          # Extract summary for PR comment
-          PASSED=$(jq -r '.passed // 0' benchmark-results-elixir.json)
-          FAILED=$(jq -r '.failed // 0' benchmark-results-elixir.json)
-          SKIPPED=$(jq -r '.skipped // 0' benchmark-results-elixir.json)
-
-          echo "elixir_passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "elixir_failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "elixir_skipped=$SKIPPED" >> $GITHUB_OUTPUT
-
-      - name: Upload benchmark results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: benchmark-results
-          path: |
-            packages/client-conformance-tests/benchmark-results-ts.json
-            packages/client-conformance-tests/benchmark-results-go.json
-            packages/client-conformance-tests/benchmark-results-py.json
-            packages/client-conformance-tests/benchmark-results-dotnet.json
-            packages/client-conformance-tests/benchmark-results-swift.json
-            packages/client-conformance-tests/benchmark-results-php.json
-            packages/client-conformance-tests/benchmark-results-java.json
-            packages/client-conformance-tests/benchmark-results-rust.json
-            packages/client-conformance-tests/benchmark-results-rb.json
-            packages/client-conformance-tests/benchmark-results-elixir.json
+          pattern: benchmark-*
+          path: benchmark-results
+          merge-multiple: false
 
       - name: Generate benchmark report
-        if: always() && github.event_name == 'pull_request'
         run: |
           cd packages/client-conformance-tests
-
-          echo "# Client Benchmark Results" > benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ts --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../../packages/client-go/conformance-adapter --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../../packages/client-dotnet/adapter/conformance-adapter --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-swift/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-php/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-java/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-rust/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-rb/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-          echo "" >> benchmark-report.md
-
-          pnpm tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh --format markdown >> benchmark-report.md
-
+          # Aggregate all benchmark results from downloaded artifacts
+          pnpm tsx src/cli.ts --report ../../benchmark-results > benchmark-report.md
           cat benchmark-report.md
 
       - name: Comment on PR with benchmark results
-        if: always() && github.event_name == 'pull_request'
+        # Skip for fork PRs - GITHUB_TOKEN doesn't have write access for security reasons
+        if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('packages/client-conformance-tests/benchmark-report.md', 'utf8');
 
-            // Find existing comment
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -534,41 +418,18 @@ jobs:
               comment.body.includes('Client Benchmark Results')
             );
 
-            const body = report;
-
             if (botComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: botComment.id,
-                body: body,
+                body: report,
               });
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: body,
+                body: report,
               });
             }
-
-      - name: Check benchmark criteria
-        run: |
-          TS_FAILED=${{ steps.ts_benchmarks.outputs.ts_failed }}
-          GO_FAILED=${{ steps.go_benchmarks.outputs.go_failed }}
-          PY_FAILED=${{ steps.py_benchmarks.outputs.py_failed }}
-          DOTNET_FAILED=${{ steps.dotnet_benchmarks.outputs.dotnet_failed }}
-          SWIFT_FAILED=${{ steps.swift_benchmarks.outputs.swift_failed }}
-          PHP_FAILED=${{ steps.php_benchmarks.outputs.php_failed }}
-          JAVA_FAILED=${{ steps.java_benchmarks.outputs.java_failed }}
-          RUST_FAILED=${{ steps.rust_benchmarks.outputs.rust_failed }}
-          RB_FAILED=${{ steps.rb_benchmarks.outputs.rb_failed }}
-          ELIXIR_FAILED=${{ steps.elixir_benchmarks.outputs.elixir_failed }}
-
-          TOTAL_FAILED=$((TS_FAILED + GO_FAILED + PY_FAILED + DOTNET_FAILED + SWIFT_FAILED + PHP_FAILED + JAVA_FAILED + RUST_FAILED + RB_FAILED + ELIXIR_FAILED))
-
-          if [ "$TOTAL_FAILED" -gt 0 ]; then
-            echo "::error::$TOTAL_FAILED benchmark(s) failed to meet performance criteria (TS: $TS_FAILED, Go: $GO_FAILED, Python: $PY_FAILED, C#: $DOTNET_FAILED, Swift: $SWIFT_FAILED, PHP: $PHP_FAILED, Java: $JAVA_FAILED, Rust: $RUST_FAILED, Ruby: $RB_FAILED, Elixir: $ELIXIR_FAILED)"
-            exit 1
-          fi
-          echo "All benchmarks passed!"

@@ -1389,6 +1389,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(text).toBe(``)
       expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
       expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+      // Cache-Control: no-store prevents caching of the tail offset
+      const cacheControl = response.headers.get(`cache-control`)
+      expect(cacheControl).toContain(`no-store`)
     })
 
     test(`should return correct tail offset for offset=now`, async () => {
@@ -2171,6 +2174,34 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // Cursor must be a numeric string (interval number)
       expect(/^\d+$/.test(cursor!)).toBe(true)
+    })
+
+    test(`should return immediately with Stream-Up-To-Date when data exists at offset`, async () => {
+      const streamPath = `/v1/stream/longpoll-immediate-uptodate-test-${Date.now()}`
+
+      // Create stream with data
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `existing data`,
+      })
+
+      // Long-poll at offset=-1 where data already exists - should return immediately
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll`,
+        {
+          method: `GET`,
+        }
+      )
+
+      // Should return 200 immediately with the data (not wait)
+      expect(response.status).toBe(200)
+      const text = await response.text()
+      expect(text).toBe(`existing data`)
+
+      // Stream-Up-To-Date MUST be set when returning all available data
+      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      expect(response.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
     })
 
     test(`should echo cursor and handle collision with jitter`, async () => {

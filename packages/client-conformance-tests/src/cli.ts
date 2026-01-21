@@ -10,7 +10,7 @@
  */
 
 import { runConformanceTests } from "./runner.js"
-import { runBenchmarks } from "./benchmark-runner.js"
+import { aggregateBenchmarkResults, runBenchmarks } from "./benchmark-runner.js"
 import type { RunnerOptions } from "./runner.js"
 import type { BenchmarkRunnerOptions } from "./benchmark-runner.js"
 
@@ -20,6 +20,7 @@ Durable Streams Client Conformance Test Suite
 Usage:
   npx @durable-streams/client-conformance-tests --run <adapter> [options]
   npx @durable-streams/client-conformance-tests --bench <adapter> [options]
+  npx @durable-streams/client-conformance-tests --report <dir>
 
 Arguments:
   <adapter>           Path to client adapter executable, or "ts" for built-in TypeScript adapter
@@ -40,6 +41,10 @@ Benchmark Options:
   --category <name>   Run only scenarios in category: latency, throughput, streaming
                       Can be specified multiple times
   --format <fmt>      Output format: console, json, markdown (default: console)
+
+Report Options:
+  --report <dir>      Aggregate benchmark results from JSON files in directory
+                      Each subdirectory should contain a benchmark-results.json file
 
 Common Options:
   --verbose           Show detailed output for each operation
@@ -72,6 +77,10 @@ Benchmark Examples:
   # Output as JSON for CI
   npx @durable-streams/client-conformance-tests --bench ts --format json
 
+Report Examples:
+  # Aggregate benchmark results from CI artifacts
+  npx @durable-streams/client-conformance-tests --report ./benchmark-results
+
 Implementing a Client Adapter:
   A client adapter is an executable that communicates via stdin/stdout using
   JSON-line protocol. See the documentation for the protocol specification
@@ -93,11 +102,13 @@ Implementing a Client Adapter:
 type ParsedOptions =
   | { mode: `conformance`; options: RunnerOptions }
   | { mode: `benchmark`; options: BenchmarkRunnerOptions }
+  | { mode: `report`; resultsDir: string }
   | null
 
 function parseArgs(args: Array<string>): ParsedOptions {
-  let mode: `conformance` | `benchmark` | null = null
+  let mode: `conformance` | `benchmark` | `report` | null = null
   let clientAdapter = ``
+  let resultsDir = ``
 
   // Conformance-specific options
   const suites: Array<`producer` | `consumer` | `lifecycle`> = []
@@ -139,6 +150,14 @@ function parseArgs(args: Array<string>): ParsedOptions {
         return null
       }
       clientAdapter = args[i]!
+    } else if (arg === `--report`) {
+      mode = `report`
+      i++
+      if (i >= args.length) {
+        console.error(`Error: --report requires a directory path`)
+        return null
+      }
+      resultsDir = args[i]!
     } else if (arg === `--suite`) {
       i++
       if (i >= args.length) {
@@ -230,8 +249,26 @@ function parseArgs(args: Array<string>): ParsedOptions {
   }
 
   // Validate required options
-  if (!mode || !clientAdapter) {
-    console.error(`Error: --run <adapter> or --bench <adapter> is required`)
+  if (!mode) {
+    console.error(
+      `Error: --run <adapter>, --bench <adapter>, or --report <dir> is required`
+    )
+    console.log(`\nRun with --help for usage information`)
+    return null
+  }
+
+  if (mode === `report`) {
+    if (!resultsDir) {
+      console.error(`Error: --report requires a directory path`)
+      return null
+    }
+    return { mode: `report`, resultsDir }
+  }
+
+  if (!clientAdapter) {
+    console.error(
+      `Error: --run <adapter> or --bench <adapter> requires an adapter path`
+    )
     console.log(`\nRun with --help for usage information`)
     return null
   }
@@ -279,11 +316,15 @@ async function main(): Promise<void> {
       if (summary.failed > 0) {
         process.exit(1)
       }
-    } else {
+    } else if (parsed.mode === `benchmark`) {
       const summary = await runBenchmarks(parsed.options)
       if (summary.failed > 0) {
         process.exit(1)
       }
+    } else {
+      // parsed.mode === `report`
+      const report = await aggregateBenchmarkResults(parsed.resultsDir)
+      console.log(report)
     }
   } catch (err) {
     console.error(`Error running ${parsed.mode}:`, err)
