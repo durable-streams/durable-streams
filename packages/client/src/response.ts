@@ -96,9 +96,9 @@ export class StreamResponseImpl<
   #isLoading: boolean
 
   // --- Evolving state ---
-  offset: Offset
-  cursor?: string
-  upToDate: boolean
+  #offset: Offset
+  #cursor?: string
+  #upToDate: boolean
 
   // --- Internal state ---
   #isJsonMode: boolean
@@ -133,9 +133,9 @@ export class StreamResponseImpl<
     this.contentType = config.contentType
     this.live = config.live
     this.startOffset = config.startOffset
-    this.offset = config.initialOffset
-    this.cursor = config.initialCursor
-    this.upToDate = config.initialUpToDate
+    this.#offset = config.initialOffset
+    this.#cursor = config.initialCursor
+    this.#upToDate = config.initialUpToDate
 
     // Initialize response metadata from first response
     this.#headers = config.firstResponse.headers
@@ -284,6 +284,20 @@ export class StreamResponseImpl<
     return this.#isLoading
   }
 
+  // --- Evolving state getters ---
+
+  get offset(): Offset {
+    return this.#offset
+  }
+
+  get cursor(): string | undefined {
+    return this.#cursor
+  }
+
+  get upToDate(): boolean {
+    return this.#upToDate
+  }
+
   // =================================
   // Internal helpers
   // =================================
@@ -340,10 +354,10 @@ export class StreamResponseImpl<
   #updateStateFromResponse(response: Response): void {
     // Update stream-specific state
     const offset = response.headers.get(STREAM_OFFSET_HEADER)
-    if (offset) this.offset = offset
+    if (offset) this.#offset = offset
     const cursor = response.headers.get(STREAM_CURSOR_HEADER)
-    if (cursor) this.cursor = cursor
-    this.upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
+    if (cursor) this.#cursor = cursor
+    this.#upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
 
     // Update response metadata to reflect latest server response
     this.#headers = response.headers
@@ -400,12 +414,12 @@ export class StreamResponseImpl<
    * Update instance state from an SSE control event.
    */
   #updateStateFromSSEControl(controlEvent: SSEControlEvent): void {
-    this.offset = controlEvent.streamNextOffset
+    this.#offset = controlEvent.streamNextOffset
     if (controlEvent.streamCursor) {
-      this.cursor = controlEvent.streamCursor
+      this.#cursor = controlEvent.streamCursor
     }
     if (controlEvent.upToDate !== undefined) {
-      this.upToDate = controlEvent.upToDate
+      this.#upToDate = controlEvent.upToDate
     }
   }
 
@@ -1085,7 +1099,7 @@ export class StreamResponseImpl<
   // =====================
 
   subscribeJson<T = TJson>(
-    subscriber: (batch: JsonBatch<T>) => Promise<void>
+    subscriber: (batch: JsonBatch<T>) => void | Promise<void>
   ): () => void {
     this.#ensureNoConsumption(`subscribeJson`)
     this.#ensureJsonMode()
@@ -1119,6 +1133,7 @@ export class StreamResponseImpl<
           }
           const items = Array.isArray(parsed) ? parsed : [parsed]
 
+          // Await callback (handles both sync and async)
           await subscriber({
             items,
             offset,
@@ -1151,7 +1166,9 @@ export class StreamResponseImpl<
     }
   }
 
-  subscribeBytes(subscriber: (chunk: ByteChunk) => Promise<void>): () => void {
+  subscribeBytes(
+    subscriber: (chunk: ByteChunk) => void | Promise<void>
+  ): () => void {
     this.#ensureNoConsumption(`subscribeBytes`)
     const abortController = new AbortController()
     const reader = this.#getResponseReader()
@@ -1169,6 +1186,7 @@ export class StreamResponseImpl<
 
           const buffer = await response.arrayBuffer()
 
+          // Await callback (handles both sync and async)
           await subscriber({
             data: new Uint8Array(buffer),
             offset,
@@ -1201,7 +1219,9 @@ export class StreamResponseImpl<
     }
   }
 
-  subscribeText(subscriber: (chunk: TextChunk) => Promise<void>): () => void {
+  subscribeText(
+    subscriber: (chunk: TextChunk) => void | Promise<void>
+  ): () => void {
     this.#ensureNoConsumption(`subscribeText`)
     const abortController = new AbortController()
     const reader = this.#getResponseReader()
@@ -1219,6 +1239,7 @@ export class StreamResponseImpl<
 
           const text = await response.text()
 
+          // Await callback (handles both sync and async)
           await subscriber({
             text,
             offset,

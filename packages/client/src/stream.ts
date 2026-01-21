@@ -11,6 +11,7 @@ import {
   InvalidSignalError,
   MissingStreamUrlError,
 } from "./error"
+import { IdempotentProducer } from "./idempotent-producer"
 import {
   SSE_COMPATIBLE_CONTENT_TYPES,
   STREAM_EXPIRES_AT_HEADER,
@@ -37,6 +38,7 @@ import type {
   CreateOptions,
   HeadResult,
   HeadersRecord,
+  IdempotentProducerOptions,
   MaybePromise,
   ParamsRecord,
   StreamErrorHandler,
@@ -71,10 +73,7 @@ function normalizeContentType(contentType: string | undefined): string {
  */
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
   return (
-    value !== null &&
-    typeof value === `object` &&
-    `then` in value &&
-    typeof (value as PromiseLike<unknown>).then === `function`
+    value != null && typeof (value as PromiseLike<unknown>).then === `function`
   )
 }
 
@@ -628,6 +627,11 @@ export class DurableStream {
    * Returns a WritableStream that can be used with `pipeTo()` or
    * `pipeThrough()` from any ReadableStream source.
    *
+   * Uses IdempotentProducer internally for:
+   * - Automatic batching (controlled by lingerMs, maxBatchBytes)
+   * - Exactly-once delivery semantics
+   * - Streaming writes (doesn't buffer entire content in memory)
+   *
    * @example
    * ```typescript
    * // Pipe from fetch response
@@ -637,32 +641,55 @@ export class DurableStream {
    * // Pipe through a transform
    * const readable = someStream.pipeThrough(new TextEncoderStream());
    * await readable.pipeTo(stream.writable());
+   *
+   * // With custom producer options
+   * await source.pipeTo(stream.writable({
+   *   producerId: "my-producer",
+   *   lingerMs: 10,
+   *   maxBatchBytes: 64 * 1024,
+   * }));
    * ```
    */
-  writable(opts?: AppendOptions): WritableStream<Uint8Array | string> {
-    const chunks: Array<Uint8Array | string> = []
-    const stream = this
+  writable(
+    opts?: Pick<
+      IdempotentProducerOptions,
+      `lingerMs` | `maxBatchBytes` | `onError`
+    > & {
+      producerId?: string
+      signal?: AbortSignal
+    }
+  ): WritableStream<Uint8Array | string> {
+    // Generate a random producer ID if not provided
+    const producerId =
+      opts?.producerId ?? `writable-${crypto.randomUUID().slice(0, 8)}`
+
+    // Track async errors to surface in close() so pipeTo() rejects on failure
+    let writeError: Error | null = null
+
+    const producer = new IdempotentProducer(this, producerId, {
+      autoClaim: true, // Ephemeral producer, auto-claim epoch
+      lingerMs: opts?.lingerMs,
+      maxBatchBytes: opts?.maxBatchBytes,
+      onError: (error) => {
+        if (!writeError) writeError = error // Capture first error
+        opts?.onError?.(error) // Still call user's handler
+      },
+      signal: opts?.signal ?? this.#options.signal,
+    })
 
     return new WritableStream<Uint8Array | string>({
       write(chunk) {
-        chunks.push(chunk)
+        producer.append(chunk)
       },
       async close() {
-        if (chunks.length > 0) {
-          // Create a ReadableStream from collected chunks
-          const readable = new ReadableStream<Uint8Array | string>({
-            start(controller) {
-              for (const chunk of chunks) {
-                controller.enqueue(chunk)
-              }
-              controller.close()
-            },
-          })
-          await stream.appendStream(readable, opts)
-        }
+        await producer.flush()
+        await producer.close()
+        if (writeError) throw writeError // Causes pipeTo() to reject
       },
-      abort(reason) {
-        console.error(`WritableStream aborted:`, reason)
+      abort(_reason) {
+        producer.close().catch((err) => {
+          opts?.onError?.(err) // Report instead of swallowing
+        })
       },
     })
   }
