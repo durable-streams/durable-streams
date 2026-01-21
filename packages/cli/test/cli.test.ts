@@ -55,7 +55,9 @@ describe(`CLI --help`, () => {
     })
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout + result.stderr).toContain(`Usage:`)
+    // --help should print to stdout, not stderr (POSIX convention)
+    expect(result.stdout).toContain(`Usage:`)
+    expect(result.stderr).toBe(``)
   })
 
   it(`exits with code 0 when -h flag is passed`, async () => {
@@ -85,7 +87,9 @@ describe(`CLI --help`, () => {
     })
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout + result.stderr).toContain(`Usage:`)
+    // -h should print to stdout, not stderr (POSIX convention)
+    expect(result.stdout).toContain(`Usage:`)
+    expect(result.stderr).toBe(``)
   })
 })
 
@@ -236,6 +240,14 @@ describe(`CLI commands with server`, () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain(`Error: Unknown command`)
+  })
+
+  it(`shows error for unknown option (not unknown command)`, async () => {
+    const result = await runCli([`--foobar`])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(`Error: Unknown option`)
+    expect(result.stderr).not.toContain(`Unknown command`)
   })
 
   it(`shows error when stream_id is missing`, async () => {
