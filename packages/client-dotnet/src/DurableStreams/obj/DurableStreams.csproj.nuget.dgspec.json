@@ -1,0 +1,68 @@
+{
+  "format": 1,
+  "restore": {
+    "/home/runner/work/durable-streams/durable-streams/packages/client-dotnet/src/DurableStreams/DurableStreams.csproj": {}
+  },
+  "projects": {
+    "/home/runner/work/durable-streams/durable-streams/packages/client-dotnet/src/DurableStreams/DurableStreams.csproj": {
+      "version": "0.0.1",
+      "restore": {
+        "projectUniqueName": "/home/runner/work/durable-streams/durable-streams/packages/client-dotnet/src/DurableStreams/DurableStreams.csproj",
+        "projectName": "DurableStreams",
+        "projectPath": "/home/runner/work/durable-streams/durable-streams/packages/client-dotnet/src/DurableStreams/DurableStreams.csproj",
+        "packagesPath": "/home/runner/.nuget/packages/",
+        "outputPath": "/home/runner/work/durable-streams/durable-streams/packages/client-dotnet/src/DurableStreams/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": ["/home/runner/.nuget/NuGet/NuGet.Config"],
+        "originalTargetFrameworks": ["net8.0"],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "allWarningsAsErrors": true,
+          "warnAsError": ["NU1605"]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.100"
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Microsoft.Extensions.Http": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/usr/share/dotnet/sdk/10.0.101/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}
