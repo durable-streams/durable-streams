@@ -6,6 +6,7 @@
  */
 
 import {
+  createScopeFromUrl,
   getDefaultStorage,
   isExpired,
   loadCredentials,
@@ -94,6 +95,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
   const proxyUrlObj = new URL(proxyUrl)
   const serviceName = getServiceName(proxyUrlObj)
   const proxyPrefix = getProxyPrefix(proxyUrlObj)
+  const storageScope = createScopeFromUrl(proxyUrl)
 
   return async (
     input: RequestInfo | URL,
@@ -110,6 +112,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     const existingCredentials = loadCredentials(
       storage,
       storagePrefix,
+      storageScope,
       stream_key
     )
 
@@ -130,11 +133,12 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
           stream_key,
           storage,
           storagePrefix,
+          storageScope,
           true
         )
       } catch {
         // Resume failed, fall through to create new stream
-        removeCredentials(storage, storagePrefix, stream_key)
+        removeCredentials(storage, storagePrefix, storageScope, stream_key)
       }
     }
 
@@ -170,7 +174,13 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       offset: `-1`,
       createdAt: Date.now(),
     }
-    saveCredentials(storage, storagePrefix, stream_key, credentials)
+    saveCredentials(
+      storage,
+      storagePrefix,
+      storageScope,
+      stream_key,
+      credentials
+    )
 
     // Now read from the stream
     return readFromStream(
@@ -182,6 +192,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       stream_key,
       storage,
       storagePrefix,
+      storageScope,
       false
     )
   }
@@ -199,6 +210,7 @@ async function readFromStream(
   streamKey: string,
   storage: ReturnType<typeof getDefaultStorage>,
   storagePrefix: string,
+  storageScope: string,
   wasResumed: boolean
 ): Promise<DurableResponse> {
   // Build the read URL: {prefix}/v1/proxy/{service}/streams/{key}
@@ -229,6 +241,7 @@ async function readFromStream(
       originalBody,
       storage,
       storagePrefix,
+      storageScope,
       streamKey
     )
   }
@@ -258,6 +271,7 @@ function trackOffsetUpdates(
   body: ReadableStream<Uint8Array>,
   storage: ReturnType<typeof getDefaultStorage>,
   storagePrefix: string,
+  storageScope: string,
   streamKey: string
 ): ReadableStream<Uint8Array> {
   const decoder = new TextDecoder()
@@ -291,7 +305,13 @@ function trackOffsetUpdates(
             if (line.startsWith(`id:`)) {
               const offset = line.slice(3).trim()
               if (offset) {
-                updateOffset(storage, storagePrefix, streamKey, offset)
+                updateOffset(
+                  storage,
+                  storagePrefix,
+                  storageScope,
+                  streamKey,
+                  offset
+                )
               }
             }
           }

@@ -170,3 +170,147 @@ describe(`stream creation`, () => {
     expect(body.readToken).toBe(result.readToken)
   })
 })
+
+describe(`security: path traversal prevention`, () => {
+  it(`rejects stream_key containing ..`, async () => {
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `../../../etc/passwd`,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe(
+      `INVALID_STREAM_KEY`
+    )
+  })
+
+  it(`rejects stream_key containing forward slash`, async () => {
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `foo/bar/baz`,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe(
+      `INVALID_STREAM_KEY`
+    )
+  })
+
+  it(`rejects stream_key with URL-encoded path traversal`, async () => {
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `%2e%2e%2f%2e%2e%2fadmin`, // URL-encoded ../..
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe(
+      `INVALID_STREAM_KEY`
+    )
+  })
+
+  it(`rejects stream_key containing backslash`, async () => {
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `foo\\bar`,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe(
+      `INVALID_STREAM_KEY`
+    )
+  })
+})
+
+describe(`security: SSRF redirect prevention`, () => {
+  it(`blocks upstream 302 redirects`, async () => {
+    ctx.upstream.setResponse({
+      status: 302,
+      headers: {
+        Location: `http://169.254.169.254/latest/meta-data/`,
+      },
+      body: ``,
+    })
+
+    const streamKey = `ssrf-redirect-test-${Date.now()}`
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    // Stream creation succeeds (201) but the upstream connection should fail
+    // The control message in the stream should indicate the error
+    expect(result.status).toBe(201)
+
+    // Wait for the stream to be written with error
+    await new Promise((r) => setTimeout(r, 100))
+
+    // Read the stream to verify the error control message
+    const readUrl = new URL(
+      `/v1/proxy/chat/streams/${streamKey}`,
+      ctx.urls.proxy
+    )
+    readUrl.searchParams.set(`offset`, `-1`)
+
+    const readResponse = await fetch(readUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${result.readToken}`,
+      },
+    })
+
+    const content = await readResponse.text()
+    expect(content).toContain(`REDIRECT_NOT_ALLOWED`)
+  })
+
+  it(`blocks upstream 307 redirects`, async () => {
+    ctx.upstream.setResponse({
+      status: 307,
+      headers: {
+        Location: `http://internal.service/admin`,
+      },
+      body: ``,
+    })
+
+    const streamKey = `ssrf-307-test-${Date.now()}`
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(201)
+
+    await new Promise((r) => setTimeout(r, 100))
+
+    const readUrl = new URL(
+      `/v1/proxy/chat/streams/${streamKey}`,
+      ctx.urls.proxy
+    )
+    readUrl.searchParams.set(`offset`, `-1`)
+
+    const readResponse = await fetch(readUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${result.readToken}`,
+      },
+    })
+
+    const content = await readResponse.text()
+    expect(content).toContain(`REDIRECT_NOT_ALLOWED`)
+  })
+})

@@ -155,3 +155,33 @@ describe(`allowlist pattern matching`, () => {
     expect(result.status).not.toBe(403)
   })
 })
+
+describe(`security: URL normalization`, () => {
+  it(`normalizes default HTTPS port (443)`, async () => {
+    // https://api.openai.com:443/** should match https://api.openai.com/**
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `norm-port-443-${Date.now()}`,
+      upstreamUrl: `https://api.openai.com:443/v1/chat`,
+      body: {},
+    })
+
+    // Should be allowed - :443 is default for HTTPS
+    expect(result.status).not.toBe(403)
+  })
+
+  it(`normalizes hostname case`, async () => {
+    // HTTPS://API.OPENAI.COM/** should match https://api.openai.com/**
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `norm-case-${Date.now()}`,
+      upstreamUrl: `https://API.OPENAI.COM/v1/chat`,
+      body: {},
+    })
+
+    // Should be allowed - hostname is case-insensitive
+    expect(result.status).not.toBe(403)
+  })
+})

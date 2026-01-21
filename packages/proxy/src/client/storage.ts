@@ -29,10 +29,36 @@ export class MemoryStorage implements DurableStorage {
 }
 
 /**
- * Create a storage key for a stream.
+ * Create a scoped storage key for a stream.
+ *
+ * Keys are scoped by proxy URL to prevent collisions between
+ * different services or proxy instances using the same stream key.
+ *
+ * @param prefix - Storage key prefix
+ * @param scope - Scope identifier (typically derived from proxyUrl)
+ * @param streamKey - The stream key
  */
-export function createStorageKey(prefix: string, streamKey: string): string {
-  return `${prefix}${streamKey}`
+export function createStorageKey(
+  prefix: string,
+  scope: string,
+  streamKey: string
+): string {
+  return `${prefix}${scope}:${streamKey}`
+}
+
+/**
+ * Create a scope identifier from a proxy URL.
+ * Uses origin + pathname to uniquely identify the proxy service.
+ */
+export function createScopeFromUrl(proxyUrl: string): string {
+  try {
+    const url = new URL(proxyUrl)
+    // Use origin + pathname for uniqueness (e.g., "https://proxy.example.com/v1/proxy/chat")
+    return `${url.origin}${url.pathname}`
+  } catch {
+    // Fallback to raw URL if parsing fails
+    return proxyUrl
+  }
 }
 
 /**
@@ -41,10 +67,11 @@ export function createStorageKey(prefix: string, streamKey: string): string {
 export function saveCredentials(
   storage: DurableStorage,
   prefix: string,
+  scope: string,
   streamKey: string,
   credentials: StreamCredentials
 ): void {
-  const key = createStorageKey(prefix, streamKey)
+  const key = createStorageKey(prefix, scope, streamKey)
   storage.setItem(key, JSON.stringify(credentials))
 }
 
@@ -54,9 +81,10 @@ export function saveCredentials(
 export function loadCredentials(
   storage: DurableStorage,
   prefix: string,
+  scope: string,
   streamKey: string
 ): StreamCredentials | null {
-  const key = createStorageKey(prefix, streamKey)
+  const key = createStorageKey(prefix, scope, streamKey)
   const data = storage.getItem(key)
 
   if (!data) {
@@ -76,9 +104,10 @@ export function loadCredentials(
 export function removeCredentials(
   storage: DurableStorage,
   prefix: string,
+  scope: string,
   streamKey: string
 ): void {
-  const key = createStorageKey(prefix, streamKey)
+  const key = createStorageKey(prefix, scope, streamKey)
   storage.removeItem(key)
 }
 
@@ -88,14 +117,15 @@ export function removeCredentials(
 export function updateOffset(
   storage: DurableStorage,
   prefix: string,
+  scope: string,
   streamKey: string,
   offset: string
 ): void {
-  const credentials = loadCredentials(storage, prefix, streamKey)
+  const credentials = loadCredentials(storage, prefix, scope, streamKey)
 
   if (credentials) {
     credentials.offset = offset
-    saveCredentials(storage, prefix, streamKey, credentials)
+    saveCredentials(storage, prefix, scope, streamKey, credentials)
   }
 }
 

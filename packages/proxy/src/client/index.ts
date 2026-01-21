@@ -14,6 +14,7 @@ export { createDurableFetch, createAbortFn } from "./durable-fetch"
 export {
   MemoryStorage,
   getDefaultStorage,
+  createScopeFromUrl,
   saveCredentials,
   loadCredentials,
   removeCredentials,

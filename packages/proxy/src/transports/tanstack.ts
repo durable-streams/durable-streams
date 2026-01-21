@@ -8,6 +8,7 @@
 import {
   createAbortFn,
   createDurableFetch,
+  createScopeFromUrl,
   getDefaultStorage,
   loadCredentials,
 } from "../client"
@@ -75,17 +76,23 @@ export function createDurableAdapter(
       generateStreamKey(`tanstack`, msgs),
     headers: configHeaders,
     fetch: fetchFn = fetch,
+    storagePrefix = `durable-streams:`,
   } = options
+
+  // Create scope for storage key namespacing
+  const storageScope = createScopeFromUrl(proxyUrl)
 
   // Create the durable fetch wrapper
   const durableFetch: DurableFetch = createDurableFetch({
     proxyUrl,
     storage,
+    storagePrefix,
     fetch: fetchFn,
   })
 
-  // Track abort function for current stream
-  let abortFn: (() => Promise<void>) | null = null
+  // Track abort functions for concurrent streams
+  const abortFns = new Map<string, () => Promise<void>>()
+  let currentStreamKey: string | null = null
 
   return {
     async connect(
@@ -140,20 +147,20 @@ export function createDurableAdapter(
         throw new Error(`No response body`)
       }
 
-      // Set up abort function
+      // Set up abort function for this stream
       if (response.durableStreamPath) {
         const credentials = loadCredentials(
           storage,
-          `durable-streams:`,
+          storagePrefix,
+          storageScope,
           streamKey
         )
         if (credentials) {
-          abortFn = createAbortFn(
-            proxyUrl,
+          abortFns.set(
             streamKey,
-            credentials.readToken,
-            fetchFn
+            createAbortFn(proxyUrl, streamKey, credentials.readToken, fetchFn)
           )
+          currentStreamKey = streamKey
         }
       }
 
@@ -165,9 +172,14 @@ export function createDurableAdapter(
     },
 
     async abort(): Promise<void> {
-      if (abortFn) {
-        await abortFn()
-        abortFn = null
+      // Abort the current stream
+      if (currentStreamKey) {
+        const abortFn = abortFns.get(currentStreamKey)
+        if (abortFn) {
+          await abortFn()
+          abortFns.delete(currentStreamKey)
+        }
+        currentStreamKey = null
       }
     },
   }

@@ -197,7 +197,22 @@ export async function streamUpstreamToStorage(
       headers,
       body: requestBody,
       signal,
+      redirect: `manual`,
     })
+
+    // Block redirects to prevent SSRF bypass - allowlist only validates initial URL
+    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
+        type: `close`,
+        reason: `error`,
+        error: {
+          code: `REDIRECT_NOT_ALLOWED`,
+          status: upstreamResponse.status,
+          message: `Upstream redirects are not allowed`,
+        },
+      })
+      return
+    }
 
     // Check for upstream errors
     if (!upstreamResponse.ok) {

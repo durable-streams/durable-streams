@@ -6,7 +6,11 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
-import { createAbortFn, createDurableFetch } from "../client"
+import {
+  createAbortFn,
+  createDurableFetch,
+  createScopeFromUrl,
+} from "../client"
 import { createAIStreamingResponse, createTestContext } from "./harness"
 import type { DurableFetch } from "../client/types"
 
@@ -87,7 +91,9 @@ describe(`createDurableFetch client integration`, () => {
     expect(response.ok).toBe(true)
 
     // Verify credentials were stored
-    const storedData = storage.getItem(`durable-streams:${streamKey}`)
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
+    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
+    const storedData = storage.getItem(storageKey)
     expect(storedData).toBeDefined()
 
     const credentials = JSON.parse(storedData!)
@@ -163,7 +169,9 @@ describe(`createAbortFn client integration`, () => {
     expect(response.ok).toBe(true)
 
     // Get credentials from storage
-    const storedData = storage.getItem(`durable-streams:${streamKey}`)
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
+    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
+    const storedData = storage.getItem(storageKey)
     expect(storedData).toBeDefined()
     const credentials = JSON.parse(storedData!)
 
@@ -202,7 +210,9 @@ describe(`createAbortFn client integration`, () => {
     await new Promise((r) => setTimeout(r, 200))
 
     // Get credentials
-    const storedData = storage.getItem(`durable-streams:${streamKey}`)
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
+    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
+    const storedData = storage.getItem(storageKey)
     const credentials = JSON.parse(storedData!)
 
     // Abort should succeed even though stream is complete (idempotent)
@@ -267,7 +277,9 @@ describe(`client URL construction`, () => {
 
     expect(response.ok).toBe(true)
 
-    const storedData = storage.getItem(`durable-streams:${streamKey}`)
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
+    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
+    const storedData = storage.getItem(storageKey)
     const credentials = JSON.parse(storedData!)
 
     // This would fail with 404 if abort URL is constructed wrong

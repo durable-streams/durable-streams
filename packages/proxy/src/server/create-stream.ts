@@ -7,7 +7,11 @@
  */
 
 import { generateReadToken } from "./tokens"
-import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
+import {
+  filterHeadersForUpstream,
+  isValidPathSegment,
+  validateUpstreamUrl,
+} from "./allowlist"
 import {
   registerConnection,
   streamUpstreamToStorage,
@@ -39,6 +43,17 @@ export async function handleCreateStream(
   const streamKey = url.searchParams.get(`stream_key`)
   const upstream = url.searchParams.get(`upstream`)
 
+  // Validate service name (from URL path)
+  if (!isValidPathSegment(serviceName)) {
+    sendError(
+      res,
+      400,
+      `INVALID_SERVICE_NAME`,
+      `service name contains invalid characters`
+    )
+    return
+  }
+
   // Validate required parameters
   if (!streamKey) {
     sendError(
@@ -46,6 +61,17 @@ export async function handleCreateStream(
       400,
       `MISSING_STREAM_KEY`,
       `stream_key query parameter is required`
+    )
+    return
+  }
+
+  // Validate stream key format
+  if (!isValidPathSegment(streamKey)) {
+    sendError(
+      res,
+      400,
+      `INVALID_STREAM_KEY`,
+      `stream_key contains invalid characters`
     )
     return
   }

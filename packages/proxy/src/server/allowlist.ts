@@ -104,10 +104,57 @@ export function createAllowlistValidator(
   const regexes = patterns.map(globToRegex)
 
   return (url: string): boolean => {
-    // Normalize URL - remove trailing slashes for consistent matching
-    const normalized = url.replace(/\/+$/, ``)
+    // Canonicalize URL to prevent bypass via alternate representations
+    const normalized = normalizeUrlForAllowlist(url)
+    if (!normalized) {
+      return false
+    }
 
     return regexes.some((regex) => regex.test(normalized))
+  }
+}
+
+/**
+ * Normalize a URL to canonical form for allowlist comparison.
+ *
+ * This prevents bypass via:
+ * - Default ports (https://example.com:443 vs https://example.com)
+ * - Case variations in hostname
+ * - Trailing slashes
+ * - URL encoding tricks
+ *
+ * @param url - The URL to normalize
+ * @returns Normalized URL string, or null if invalid
+ */
+function normalizeUrlForAllowlist(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+
+    // Build canonical URL:
+    // - Protocol is already lowercase from URL parser
+    // - Host is already lowercase from URL parser
+    // - Remove default ports (URL parser includes them in origin if explicit)
+    let normalized = `${parsed.protocol}//${parsed.hostname}`
+
+    // Only include port if non-default
+    if (parsed.port) {
+      const isDefaultPort =
+        (parsed.protocol === `https:` && parsed.port === `443`) ||
+        (parsed.protocol === `http:` && parsed.port === `80`)
+      if (!isDefaultPort) {
+        normalized += `:${parsed.port}`
+      }
+    }
+
+    // Add pathname (URL parser normalizes .. and other path components)
+    normalized += parsed.pathname
+
+    // Remove trailing slashes for consistent matching
+    normalized = normalized.replace(/\/+$/, ``)
+
+    return normalized
+  } catch {
+    return null
   }
 }
 
@@ -130,6 +177,38 @@ export function validateUpstreamUrl(url: string): URL | null {
   } catch {
     return null
   }
+}
+
+/**
+ * Validate a path segment (service name or stream key) for safety.
+ *
+ * Rejects values that could enable path traversal attacks:
+ * - Contains `/` or `\` (directory separators)
+ * - Contains `..` (parent directory reference)
+ * - Contains URL-encoded versions of the above
+ * - Is empty or only whitespace
+ *
+ * @param segment - The path segment to validate
+ * @returns True if safe, false if potentially malicious
+ */
+export function isValidPathSegment(segment: string): boolean {
+  if (!segment || segment.trim().length === 0) {
+    return false
+  }
+
+  // Decode any URL encoding to catch %2f, %2e%2e, etc.
+  let decoded: string
+  try {
+    decoded = decodeURIComponent(segment)
+  } catch {
+    // Invalid encoding - reject
+    return false
+  }
+
+  // Check for path traversal patterns in both original and decoded form
+  const dangerous = /[/\\]|\.\./.test(segment) || /[/\\]|\.\./.test(decoded)
+
+  return !dangerous
 }
 
 /**

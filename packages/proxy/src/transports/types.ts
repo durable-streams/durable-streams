@@ -12,6 +12,8 @@ export interface BaseDurableTransportOptions {
   proxyUrl: string
   /** Storage for persisting credentials */
   storage?: DurableStorage
+  /** Prefix for storage keys (default: 'durable-streams:') */
+  storagePrefix?: string
   /** Function to generate stream keys from messages */
   getStreamKey?: (messages: Array<unknown>, data?: unknown) => string
   /** Headers to include with requests */
