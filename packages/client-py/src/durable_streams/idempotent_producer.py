@@ -253,14 +253,9 @@ class IdempotentProducer:
 
         if isinstance(body, str):
             data_bytes = body.encode("utf-8")
-        elif isinstance(body, bytes):
-            data_bytes = body
         else:
-            raise DurableStreamError(
-                "append() requires bytes or str. For objects, use json.dumps().",
-                code="BAD_REQUEST",
-                status=400,
-            )
+            # body is bytes at this point (type narrowed)
+            data_bytes = body
 
         entry = _PendingEntry(body=data_bytes)
         self._pending_batch.append(entry)

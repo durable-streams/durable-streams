@@ -182,12 +182,8 @@ def encode_body(body: str | bytes) -> bytes:
     """
     if isinstance(body, bytes):
         return body
-    if isinstance(body, str):
-        return body.encode("utf-8")
-    raise TypeError(
-        f"encode_body() requires str or bytes, got {type(body).__name__}. "
-        "For objects, use json.dumps()."
-    )
+    # body is str at this point (type narrowed)
+    return body.encode("utf-8")
 
 
 def build_url_with_params(
