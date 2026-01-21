@@ -154,6 +154,34 @@ describe(`allowlist pattern matching`, () => {
 
     expect(result.status).not.toBe(403)
   })
+
+  it(`subdomain wildcards match correctly`, async () => {
+    // Should match https://*.example.com/api/**
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `pattern-subdomain-${Date.now()}`,
+      upstreamUrl: `https://sub.example.com/api/v1/test`,
+      body: {},
+    })
+
+    // Should be allowed - subdomain matches *.example.com
+    expect(result.status).not.toBe(403)
+  })
+
+  it(`subdomain wildcards don't match bare domain`, async () => {
+    // *.example.com should NOT match example.com (no subdomain)
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `pattern-no-subdomain-${Date.now()}`,
+      upstreamUrl: `https://example.com/api/v1/test`,
+      body: {},
+    })
+
+    // Should be blocked - no subdomain present
+    expect(result.status).toBe(403)
+  })
 })
 
 describe(`security: URL normalization`, () => {

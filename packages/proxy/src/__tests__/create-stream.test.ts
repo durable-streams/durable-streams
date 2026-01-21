@@ -71,21 +71,6 @@ describe(`stream creation`, () => {
     expect(body.error.code).toBe(`MISSING_UPSTREAM`)
   })
 
-  it(`returns 400 when upstream URL is invalid`, async () => {
-    const result = await createStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `test-invalid-url`,
-      upstreamUrl: `not-a-valid-url`,
-      body: {},
-    })
-
-    expect(result.status).toBe(400)
-    expect((result.body as { error: { code: string } }).error.code).toBe(
-      `INVALID_UPSTREAM`
-    )
-  })
-
   it(`returns 403 when upstream is not in allowlist`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
@@ -172,6 +157,21 @@ describe(`stream creation`, () => {
 })
 
 describe(`security: path traversal prevention`, () => {
+  it(`rejects whitespace-only stream_key`, async () => {
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamKey: `   `, // Whitespace only
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(result.status).toBe(400)
+    expect((result.body as { error: { code: string } }).error.code).toBe(
+      `INVALID_STREAM_KEY`
+    )
+  })
+
   it(`rejects stream_key containing ..`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,

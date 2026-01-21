@@ -11,6 +11,8 @@ import {
   createDurableFetch,
   createScopeFromUrl,
   createStorageKey,
+  isExpired,
+  loadCredentials,
 } from "../client"
 import { createDurableAdapter } from "../transports/tanstack"
 import { createAIStreamingResponse, createTestContext } from "./harness"
@@ -413,5 +415,105 @@ describe(`client unit: TanStack adapter concurrent streams`, () => {
     // Both streams should be active - abort should work
     // (This tests that the Map-based tracking doesn't lose the first stream)
     await adapter.abort()
+  })
+})
+
+describe(`client unit: token expiration`, () => {
+  it(`isExpired returns false for fresh credentials`, () => {
+    const credentials = {
+      path: `/v1/streams/chat/test`,
+      readToken: `token`,
+      offset: `-1`,
+      createdAt: Date.now(),
+    }
+
+    expect(isExpired(credentials)).toBe(false)
+  })
+
+  it(`isExpired returns true for old credentials`, () => {
+    const credentials = {
+      path: `/v1/streams/chat/test`,
+      readToken: `token`,
+      offset: `-1`,
+      createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago
+    }
+
+    expect(isExpired(credentials)).toBe(true)
+  })
+
+  it(`auto-resume skips expired credentials and creates new stream`, async () => {
+    const storage = createMemoryStorage()
+    const streamKey = `expired-test-${Date.now()}`
+
+    // Manually insert expired credentials
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
+    const scope = createScopeFromUrl(proxyUrl)
+    const storageKey = `durable-streams:${scope}:${streamKey}`
+
+    const expiredCredentials = {
+      path: `/v1/streams/chat/${streamKey}`,
+      readToken: `old-token`,
+      offset: `100`,
+      createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago (expired)
+    }
+    storage.setItem(storageKey, JSON.stringify(expiredCredentials))
+
+    // Set up fresh upstream response
+    ctx.upstream.setResponse(createAIStreamingResponse([`Fresh`]))
+
+    const durableFetch = createDurableFetch({
+      proxyUrl,
+      storage,
+      autoResume: true,
+    })
+
+    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+      stream_key: streamKey,
+    })
+
+    expect(response.ok).toBe(true)
+    // Should NOT be a resume - should have created new stream
+    expect(response.wasResumed).toBe(false)
+
+    // Credentials should be updated with fresh timestamp
+    const newCredentials = JSON.parse(storage.getItem(storageKey)!)
+    expect(newCredentials.createdAt).toBeGreaterThan(
+      expiredCredentials.createdAt
+    )
+  })
+})
+
+describe(`client unit: credentials persistence`, () => {
+  it(`loadCredentials returns null for non-existent key`, () => {
+    const storage = createMemoryStorage()
+    const scope = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
+
+    const credentials = loadCredentials(
+      storage,
+      `durable-streams:`,
+      scope,
+      `non-existent-key`
+    )
+
+    expect(credentials).toBeNull()
+  })
+
+  it(`loadCredentials returns null for malformed JSON`, () => {
+    const storage = createMemoryStorage()
+    const scope = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
+    const key = `durable-streams:${scope}:test-key`
+
+    storage.setItem(key, `not valid json`)
+
+    const credentials = loadCredentials(
+      storage,
+      `durable-streams:`,
+      scope,
+      `test-key`
+    )
+
+    expect(credentials).toBeNull()
   })
 })
