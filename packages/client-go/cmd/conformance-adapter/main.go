@@ -765,19 +765,9 @@ func handleIdempotentAppend(cmd Command) Result {
 	}
 	defer producer.Close()
 
-	// For JSON streams, parse the string data into a native object
-	// (IdempotentProducer now expects native objects for JSON streams)
-	var data any
-	if normalizeContentType(contentType) == "application/json" {
-		if err := json.Unmarshal([]byte(cmd.Data), &data); err != nil {
-			return sendError("idempotent-append", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
-		}
-	} else {
-		data = []byte(cmd.Data)
-	}
-
+	// Data is already pre-serialized, pass directly to Append()
 	// Append returns immediately (fire-and-forget)
-	if err := producer.Append(data); err != nil {
+	if err := producer.Append([]byte(cmd.Data)); err != nil {
 		return errorResult("idempotent-append", err)
 	}
 
@@ -836,24 +826,10 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	}
 	defer producer.Close()
 
-	// For JSON streams, parse the string items into native objects
-	// (IdempotentProducer now expects native objects for JSON streams)
-	isJSON := normalizeContentType(contentType) == "application/json"
-
 	// Queue all items using Append (non-blocking, no channels)
+	// Data is already pre-serialized, pass directly to Append()
 	for _, item := range cmd.Items {
-		var data any
-		if isJSON {
-			var parsed any
-			if err := json.Unmarshal([]byte(item), &parsed); err != nil {
-				return sendError("idempotent-append-batch", "PARSE_ERROR", fmt.Sprintf("invalid JSON: %v", err))
-			}
-			data = parsed
-		} else {
-			data = []byte(item)
-		}
-
-		if err := producer.Append(data); err != nil {
+		if err := producer.Append([]byte(item)); err != nil {
 			return errorResult("idempotent-append-batch", err)
 		}
 	}

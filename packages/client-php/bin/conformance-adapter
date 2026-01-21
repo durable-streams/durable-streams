@@ -490,12 +490,8 @@ function handleIdempotentAppend(array $cmd): array {
     $url = $serverUrl . $cmd['path'];
     $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
 
+    // Data is already pre-serialized, pass directly to enqueue()
     $data = $cmd['data'];
-
-    // For JSON streams, parse the data
-    if (str_contains($contentType, 'json')) {
-        $data = json_decode($data, true, 512, JSON_THROW_ON_ERROR);
-    }
 
     $producer = new IdempotentProducer(
         url: $url,
@@ -522,14 +518,8 @@ function handleIdempotentAppendBatch(array $cmd): array {
     $url = $serverUrl . $cmd['path'];
     $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
 
+    // Data is already pre-serialized, pass directly to enqueue()
     $items = $cmd['items'];
-
-    // For JSON streams, parse the items
-    if (str_contains($contentType, 'json')) {
-        $items = array_map(function($item) {
-            return json_decode($item, true, 512, JSON_THROW_ON_ERROR);
-        }, $items);
-    }
 
     $producer = new IdempotentProducer(
         url: $url,

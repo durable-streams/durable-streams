@@ -656,11 +656,8 @@ def handle_idempotent_append(cmd)
   producer_id = cmd["producerId"]
   epoch = cmd["epoch"] || 0
   auto_claim = cmd["autoClaim"] || false
+  # Data is already pre-serialized, pass directly to append()
   data = cmd["data"]
-
-  # For JSON streams, parse the string data
-  is_json = DurableStreams.json_content_type?(content_type)
-  data = JSON.parse(data) if is_json && data.is_a?(String)
 
   producer = DurableStreams::Producer.new(
     url: url,
@@ -691,12 +688,9 @@ def handle_idempotent_append_batch(cmd)
   producer_id = cmd["producerId"]
   epoch = cmd["epoch"] || 0
   auto_claim = cmd["autoClaim"] || false
+  # Data is already pre-serialized, pass directly to append()
   items = cmd["items"]
   max_in_flight = cmd["maxInFlight"] || 1
-
-  # For JSON streams, parse string items
-  is_json = DurableStreams.json_content_type?(content_type)
-  items = items.map { |item| is_json && item.is_a?(String) ? JSON.parse(item) : item }
 
   # When testing concurrency, use small batches
   testing_concurrency = max_in_flight > 1

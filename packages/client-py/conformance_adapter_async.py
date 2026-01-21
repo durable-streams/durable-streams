@@ -749,13 +749,8 @@ async def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
+    # Data is already pre-serialized, pass directly to append()
     data = cmd["data"]
-
-    # For JSON streams, parse the string data into a native object
-    # (IdempotentProducer now expects native objects for JSON streams)
-    is_json = _normalize_content_type(content_type) == "application/json"
-    if is_json and isinstance(data, str):
-        data = json.loads(data)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         producer = IdempotentProducer(
@@ -791,13 +786,8 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
+    # Data is already pre-serialized, pass directly to append()
     items = cmd["items"]
-
-    # For JSON streams, parse the string items into native objects
-    # (IdempotentProducer now expects native objects for JSON streams)
-    is_json = _normalize_content_type(content_type) == "application/json"
-    if is_json:
-        items = [json.loads(item) if isinstance(item, str) else item for item in items]
 
     # Use provided maxInFlight or default to 1 for compatibility
     max_in_flight = cmd.get("maxInFlight", 1)
