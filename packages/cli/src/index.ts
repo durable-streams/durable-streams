@@ -40,7 +40,7 @@ function parseGlobalOptions(args: Array<string>): {
         throw new Error(`--auth requires a value (e.g., --auth "Bearer token")`)
       }
       options.auth = value
-      i++ // Skip the value
+      i++
     } else {
       remainingArgs.push(arg)
     }
@@ -54,15 +54,11 @@ function parseGlobalOptions(args: Array<string>): {
   return { options, remainingArgs }
 }
 
-/**
- * Build headers object from global options.
- */
 function buildHeaders(options: GlobalOptions): Record<string, string> {
-  const headers: Record<string, string> = {}
   if (options.auth) {
-    headers[`Authorization`] = options.auth
+    return { Authorization: options.auth }
   }
-  return headers
+  return {}
 }
 
 function printUsage() {
@@ -232,14 +228,12 @@ async function deleteStream(streamId: string, headers: Record<string, string>) {
 }
 
 async function main() {
-  const rawArgs = process.argv.slice(2)
-
-  let globalOptions: GlobalOptions
+  let options: GlobalOptions
   let args: Array<string>
 
   try {
-    const parsed = parseGlobalOptions(rawArgs)
-    globalOptions = parsed.options
+    const parsed = parseGlobalOptions(process.argv.slice(2))
+    options = parsed.options
     args = parsed.remainingArgs
   } catch (error) {
     if (error instanceof Error) {
@@ -248,7 +242,7 @@ async function main() {
     process.exit(1)
   }
 
-  const headers = buildHeaders(globalOptions)
+  const headers = buildHeaders(options)
 
   if (args.length < 1) {
     printUsage()
