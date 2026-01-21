@@ -12,7 +12,6 @@
   "dependencies": {
     "@durable-streams/client": "workspace:*",
     "@durable-streams/state": "workspace:*",
-    "@tanstack/db": "latest",
     "@tanstack/solid-db": "latest",
     "solid-js": "^1.9.3",
     "zod": "^3.24.1"

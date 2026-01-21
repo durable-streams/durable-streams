@@ -1,7 +1,6 @@
 // @refresh skip
 import { For } from "solid-js"
-import { useLiveQuery } from "@tanstack/solid-db"
-import { and, eq, inArray } from "@tanstack/db"
+import { and, eq, inArray, useLiveQuery } from "@tanstack/solid-db"
 import { useWikipediaDB } from "../lib/stream-db"
 import { EventCard } from "./EventCard"
 import type { Filters } from "../lib/types"
