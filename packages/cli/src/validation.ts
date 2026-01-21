@@ -60,10 +60,10 @@ export function validateAuth(auth: string): ValidationResult {
 
   const trimmed = auth.trim()
 
-  // Check for common auth schemes
-  const commonSchemes = [`Bearer`, `Basic`, `ApiKey`, `Token`]
-  const hasScheme = commonSchemes.some((scheme) =>
-    trimmed.toLowerCase().startsWith(scheme.toLowerCase() + ` `)
+  // Check for common auth schemes (case-insensitive)
+  const lowerTrimmed = trimmed.toLowerCase()
+  const hasScheme = [`bearer `, `basic `, `apikey `, `token `].some((scheme) =>
+    lowerTrimmed.startsWith(scheme)
   )
 
   if (!hasScheme && !trimmed.includes(` `)) {
