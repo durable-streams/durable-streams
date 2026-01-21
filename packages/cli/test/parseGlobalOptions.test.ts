@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { parseGlobalOptions } from "../src/index"
+import { buildHeaders, parseGlobalOptions } from "../src/index"
 
 describe(`parseGlobalOptions`, () => {
   it(`returns empty options when no flags provided`, () => {
@@ -107,5 +107,34 @@ describe(`parseGlobalOptions`, () => {
       `my-stream`,
     ])
     expect(result.options.auth).toBe(`Bearer second`)
+  })
+
+  it(`throws when --auth value is whitespace only`, () => {
+    expect(() => parseGlobalOptions([`--auth`, `   `])).toThrow(
+      `--auth value cannot be empty or whitespace`
+    )
+  })
+
+  it(`throws when --auth value is empty string`, () => {
+    expect(() => parseGlobalOptions([`--auth`, ``])).toThrow(
+      `--auth requires a value`
+    )
+  })
+})
+
+describe(`buildHeaders`, () => {
+  it(`returns Authorization header when auth is provided`, () => {
+    const headers = buildHeaders({ auth: `Bearer my-token` })
+    expect(headers).toEqual({ Authorization: `Bearer my-token` })
+  })
+
+  it(`returns empty object when auth is undefined`, () => {
+    const headers = buildHeaders({})
+    expect(headers).toEqual({})
+  })
+
+  it(`returns empty object when auth is empty string`, () => {
+    const headers = buildHeaders({ auth: `` })
+    expect(headers).toEqual({})
   })
 })

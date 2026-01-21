@@ -11,7 +11,7 @@ import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 export type { ParsedWriteArgs }
 export type { GlobalOptions }
 export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
-export { parseGlobalOptions }
+export { parseGlobalOptions, buildHeaders }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 const STREAM_AUTH = process.env.STREAM_AUTH
@@ -22,6 +22,7 @@ interface GlobalOptions {
 
 /**
  * Parse global options (like --auth) from args.
+ * Falls back to STREAM_AUTH env var if --auth flag not provided.
  * Returns the parsed options and remaining args.
  */
 function parseGlobalOptions(args: Array<string>): {
@@ -39,6 +40,9 @@ function parseGlobalOptions(args: Array<string>): {
       if (!value || value.startsWith(`--`)) {
         throw new Error(`--auth requires a value (e.g., --auth "Bearer token")`)
       }
+      if (!value.trim()) {
+        throw new Error(`--auth value cannot be empty or whitespace`)
+      }
       options.auth = value
       i++
     } else {
@@ -46,8 +50,13 @@ function parseGlobalOptions(args: Array<string>): {
     }
   }
 
-  // Fall back to env var if no flag provided
+  // Fall back to STREAM_AUTH env var if no --auth flag provided
   if (!options.auth && STREAM_AUTH) {
+    if (!STREAM_AUTH.trim()) {
+      throw new Error(
+        `STREAM_AUTH environment variable cannot be empty or whitespace`
+      )
+    }
     options.auth = STREAM_AUTH
   }
 
@@ -95,9 +104,8 @@ async function createStream(streamId: string, headers: Record<string, string>) {
     })
     console.log(`Created stream: ${streamId}`)
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error creating stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error creating stream: ${message}\n`)
     process.exit(1)
   }
 }
@@ -181,9 +189,8 @@ async function writeStream(
       }
     }
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error writing to stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error writing to stream: ${message}\n`)
     process.exit(1)
   }
 }
@@ -205,9 +212,8 @@ async function readStream(streamId: string, headers: Record<string, string>) {
       }
     }
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error reading stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error reading stream: ${message}\n`)
     process.exit(1)
   }
 }
@@ -220,9 +226,8 @@ async function deleteStream(streamId: string, headers: Record<string, string>) {
     await stream.delete()
     console.log(`Deleted stream: ${streamId}`)
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error deleting stream: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error deleting stream: ${message}\n`)
     process.exit(1)
   }
 }
@@ -236,9 +241,8 @@ async function main() {
     options = parsed.options
     args = parsed.remainingArgs
   } catch (error) {
-    if (error instanceof Error) {
-      stderr.write(`Error: ${error.message}\n`)
-    }
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Error: ${message}\n`)
     process.exit(1)
   }
 
@@ -274,9 +278,8 @@ async function main() {
       try {
         parsed = parseWriteArgs(args.slice(2))
       } catch (error) {
-        if (error instanceof Error) {
-          stderr.write(`Error: ${error.message}\n`)
-        }
+        const message = error instanceof Error ? error.message : String(error)
+        stderr.write(`Error: ${message}\n`)
         process.exit(1)
       }
 
@@ -345,7 +348,8 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   main().catch((error) => {
-    stderr.write(`Fatal error: ${error.message}\n`)
+    const message = error instanceof Error ? error.message : String(error)
+    stderr.write(`Fatal error: ${message}\n`)
     process.exit(1)
   })
 }
