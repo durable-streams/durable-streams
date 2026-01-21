@@ -76,7 +76,7 @@ class AsyncDurableStream:
         ... )
         >>>
         >>> # Append data
-        >>> await handle.append({"message": "hello"})
+        >>> await handle.append(json.dumps({"message": "hello"}))
         >>>
         >>> # Read data
         >>> async with handle.stream() as res:

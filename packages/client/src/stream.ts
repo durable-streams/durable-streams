@@ -121,7 +121,7 @@ export interface DurableStreamOptions extends StreamHandleOptions {
  * });
  *
  * // Write data
- * await stream.append({ message: "hello" });
+ * await stream.append(JSON.stringify({ message: "hello" }));
  *
  * // Read with the new API
  * const res = await stream.stream<{ message: string }>();
