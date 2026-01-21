@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 
+import { STATUS_CODES } from "node:http"
 import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
 import { flattenJsonForAppend, isJsonContentType } from "./jsonUtils.js"
 import { parseWriteArgs } from "./parseWriteArgs.js"
-import { validateAuth, validateStreamId, validateUrl } from "./validation.js"
+import {
+  normalizeBaseUrl,
+  validateAuth,
+  validateStreamId,
+  validateUrl,
+} from "./validation.js"
 import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 
 export type { ParsedWriteArgs }
 export type { GlobalOptions }
 export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
 export { parseGlobalOptions, buildHeaders, getUsageText }
-export { validateUrl, validateAuth, validateStreamId }
+export { validateUrl, validateAuth, validateStreamId, normalizeBaseUrl }
 
 const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
 const STREAM_AUTH = process.env.STREAM_AUTH
@@ -51,7 +57,7 @@ function parseGlobalOptions(args: Array<string>): {
       if (!urlValidation.valid) {
         throw new Error(urlValidation.error)
       }
-      options.url = value
+      options.url = normalizeBaseUrl(value)
       i++
     } else if (arg === `--auth`) {
       const value = args[i + 1]
@@ -64,9 +70,8 @@ function parseGlobalOptions(args: Array<string>): {
       if (!authValidation.valid) {
         throw new Error(authValidation.error)
       }
-      if (authValidation.error) {
-        // It's a warning, not an error
-        warnings.push(authValidation.error)
+      if (authValidation.warning) {
+        warnings.push(authValidation.warning)
       }
       options.auth = value
       i++
@@ -83,7 +88,7 @@ function parseGlobalOptions(args: Array<string>): {
         `Invalid STREAM_URL environment variable: ${urlValidation.error}`
       )
     }
-    options.url = STREAM_URL
+    options.url = normalizeBaseUrl(STREAM_URL)
   }
 
   // Fall back to STREAM_AUTH env var if no --auth flag provided
@@ -94,8 +99,8 @@ function parseGlobalOptions(args: Array<string>): {
         `Invalid STREAM_AUTH environment variable: ${authValidation.error}`
       )
     }
-    if (authValidation.error) {
-      warnings.push(authValidation.error)
+    if (authValidation.warning) {
+      warnings.push(authValidation.warning)
     }
     options.auth = STREAM_AUTH
   }
@@ -136,8 +141,9 @@ Environment Variables:
 `
 }
 
-function printUsage() {
-  console.error(getUsageText())
+function printUsage({ to = `stderr` }: { to?: `stdout` | `stderr` } = {}) {
+  const out = to === `stderr` ? stderr : stdout
+  out.write(getUsageText())
 }
 
 async function createStream(
@@ -153,7 +159,7 @@ async function createStream(
       headers,
       contentType: `application/octet-stream`,
     })
-    console.log(`Stream created successfully: ${streamId}`)
+    console.log(`Stream created successfully: "${streamId}"`)
     console.log(`  URL: ${url}`)
   } catch (error) {
     stderr.write(`Failed to create stream "${streamId}"\n`)
@@ -178,17 +184,7 @@ function formatErrorMessage(message: string): string {
 }
 
 function getHttpStatusText(status: number): string {
-  const statusTexts: Record<number, string> = {
-    400: `Bad Request`,
-    401: `Unauthorized`,
-    403: `Forbidden`,
-    404: `Not Found`,
-    409: `Conflict`,
-    500: `Server Error`,
-    502: `Bad Gateway`,
-    503: `Service Unavailable`,
-  }
-  return statusTexts[status] || `HTTP Error`
+  return STATUS_CODES[status] ?? `HTTP Error`
 }
 
 /**
@@ -303,7 +299,9 @@ async function writeStream(
       }
     } else {
       await stream.append(data)
-      console.log(`Wrote ${formatBytes(data.length)} to stream "${streamId}"`)
+      const byteCount =
+        typeof data === `string` ? Buffer.byteLength(data, `utf8`) : data.length
+      console.log(`Wrote ${formatBytes(byteCount)} to stream "${streamId}"`)
     }
   } catch (error) {
     stderr.write(`Failed to write to stream "${streamId}"\n`)
@@ -356,7 +354,7 @@ async function deleteStream(
   try {
     const stream = new DurableStream({ url, headers })
     await stream.delete()
-    console.log(`Stream deleted successfully: ${streamId}`)
+    console.log(`Stream deleted successfully: "${streamId}"`)
   } catch (error) {
     stderr.write(`Failed to delete stream "${streamId}"\n`)
     stderr.write(`  ${formatErrorMessage(getErrorMessage(error))}\n`)
@@ -369,7 +367,7 @@ async function main() {
 
   // Handle --help / -h early, before other parsing
   if (rawArgs.includes(`--help`) || rawArgs.includes(`-h`)) {
-    printUsage()
+    printUsage({ to: `stdout` })
     process.exit(0)
   }
 
@@ -471,8 +469,12 @@ async function main() {
     }
 
     default:
-      stderr.write(`Error: Unknown command "${command}"\n`)
-      stderr.write(`  Available commands: create, write, read, delete\n`)
+      if (command?.startsWith(`-`)) {
+        stderr.write(`Error: Unknown option "${command}"\n`)
+      } else {
+        stderr.write(`Error: Unknown command "${command}"\n`)
+        stderr.write(`  Available commands: create, write, read, delete\n`)
+      }
       stderr.write(`  Run "durable-stream --help" for usage information\n`)
       process.exit(1)
   }

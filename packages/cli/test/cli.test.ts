@@ -165,7 +165,9 @@ describe(`CLI commands with server`, () => {
     const result = await runCli([`create`, streamId])
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain(`Stream created successfully: ${streamId}`)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
   })
 
   it(`writes to a stream with success message`, async () => {
@@ -199,7 +201,9 @@ describe(`CLI commands with server`, () => {
     const result = await runCli([`delete`, streamId])
 
     expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain(`Stream deleted successfully: ${streamId}`)
+    expect(result.stdout).toContain(
+      `Stream deleted successfully: "${streamId}"`
+    )
   })
 
   it(`allows idempotent stream creation`, async () => {

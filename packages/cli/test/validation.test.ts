@@ -1,5 +1,42 @@
 import { describe, expect, it } from "vitest"
-import { validateAuth, validateStreamId, validateUrl } from "../src/validation"
+import {
+  normalizeBaseUrl,
+  validateAuth,
+  validateStreamId,
+  validateUrl,
+} from "../src/validation"
+
+describe(`normalizeBaseUrl`, () => {
+  it(`removes trailing slash`, () => {
+    expect(normalizeBaseUrl(`http://localhost:4437/`)).toBe(
+      `http://localhost:4437`
+    )
+  })
+
+  it(`removes multiple trailing slashes`, () => {
+    expect(normalizeBaseUrl(`http://localhost:4437///`)).toBe(
+      `http://localhost:4437`
+    )
+  })
+
+  it(`leaves URL without trailing slash unchanged`, () => {
+    expect(normalizeBaseUrl(`http://localhost:4437`)).toBe(
+      `http://localhost:4437`
+    )
+  })
+
+  it(`preserves path without trailing slash`, () => {
+    expect(normalizeBaseUrl(`http://localhost:4437/api`)).toBe(
+      `http://localhost:4437/api`
+    )
+  })
+
+  it(`removes trailing slash from path`, () => {
+    expect(normalizeBaseUrl(`http://localhost:4437/api/`)).toBe(
+      `http://localhost:4437/api`
+    )
+  })
+})
 
 describe(`validateUrl`, () => {
   it(`returns valid for http URL`, () => {
@@ -98,14 +135,16 @@ describe(`validateAuth`, () => {
   it(`returns warning for raw token without scheme`, () => {
     const result = validateAuth(`rawtoken123`)
     expect(result.valid).toBe(true)
-    expect(result.error).toContain(`Warning`)
-    expect(result.error).toContain(`doesn't match common formats`)
+    expect(result.error).toBeUndefined()
+    expect(result.warning).toContain(`Warning`)
+    expect(result.warning).toContain(`doesn't match common formats`)
   })
 
   it(`returns valid without warning for unknown scheme with space`, () => {
     const result = validateAuth(`CustomScheme value`)
     expect(result.valid).toBe(true)
     expect(result.error).toBeUndefined()
+    expect(result.warning).toBeUndefined()
   })
 })
 

@@ -5,6 +5,7 @@
 export interface ValidationResult {
   valid: boolean
   error?: string
+  warning?: string
 }
 
 /**
@@ -47,6 +48,14 @@ export function validateUrl(url: string): ValidationResult {
 }
 
 /**
+ * Normalize a base URL by removing trailing slashes.
+ * This prevents double-slashes when appending paths (e.g., "http://host/" + "/v1/...").
+ */
+export function normalizeBaseUrl(url: string): string {
+  return url.replace(/\/+$/, ``)
+}
+
+/**
  * Validate an authorization header value.
  * Returns valid=true for any non-empty value, but includes a warning
  * if the value doesn't match common auth schemes (Bearer, Basic, ApiKey, Token).
@@ -71,7 +80,7 @@ export function validateAuth(auth: string): ValidationResult {
     // Warn but don't fail - might be a raw token
     return {
       valid: true,
-      error: `Warning: Authorization value doesn't match common formats.\n  Expected: "Bearer <token>", "Basic <credentials>", or "ApiKey <key>"`,
+      warning: `Warning: Authorization value doesn't match common formats.\n  Expected: "Bearer <token>", "Basic <credentials>", or "ApiKey <key>"`,
     }
   }
 
