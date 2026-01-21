@@ -41,7 +41,7 @@ import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
  *   url,
  *   auth,
  *   offset: savedOffset,
- *   live: "auto",
+ *   live: true,
  * })
  * live.subscribeJson(async (batch) => {
  *   for (const item of batch.items) {
@@ -127,7 +127,8 @@ async function streamInternal<TJson = unknown>(
   fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, startOffset)
 
   // Set live query param for explicit modes
-  const live: LiveMode = options.live ?? `auto`
+  // true means auto-select (no query param, handled by consumption method)
+  const live: LiveMode = options.live ?? true
   if (live === `long-poll` || live === `sse`) {
     fetchUrl.searchParams.set(LIVE_QUERY_PARAM, live)
   }
@@ -197,15 +198,13 @@ async function streamInternal<TJson = unknown>(
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
-    // For subsequent requests in auto mode, use long-poll
-    // BUT: if we're resuming from a paused state, don't set live mode
-    // to avoid a long-poll that holds for 20sec - we want an immediate response
-    // so the UI can show "connected" status quickly
+    // For subsequent requests, set live mode unless resuming from pause
+    // (resuming from pause needs immediate response for UI status)
     if (!resumingFromPause) {
-      if (live === `auto` || live === `long-poll`) {
-        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
-      } else if (live === `sse`) {
+      if (live === `sse`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
+      } else if (live === true || live === `long-poll`) {
+        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }
 

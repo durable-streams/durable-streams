@@ -32,7 +32,7 @@ public struct StreamOptions: Sendable {
     public init(
         url: URL,
         offset: Offset = .start,
-        live: LiveMode = .auto,
+        live: LiveMode = .catchUp,
         headers: HeadersRecord = [:],
         params: ParamsRecord = [:],
         session: URLSession = .shared,
@@ -55,7 +55,7 @@ public struct StreamOptions: Sendable {
 public func stream(
     url: URL,
     offset: Offset = .start,
-    live: LiveMode = .auto,
+    live: LiveMode = .catchUp,
     headers: HeadersRecord = [:],
     params: ParamsRecord = [:],
     session: URLSession = .shared
@@ -84,10 +84,7 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
         QueryParams.offset: options.offset.rawValue
     ]
 
-    // Determine effective live mode
-    let effectiveLive = options.live == .auto ? .catchUp : options.live
-
-    if let liveValue = effectiveLive.queryValue, effectiveLive != .catchUp {
+    if let liveValue = options.live.queryValue, options.live != .catchUp {
         queryParams[QueryParams.live] = liveValue
     }
 
@@ -164,7 +161,7 @@ public struct StreamResponse: Sendable {
         contentType: String? = nil,
         status: Int = 200,
         startOffset: Offset = .start,
-        live: LiveMode = .auto
+        live: LiveMode = .catchUp
     ) {
         self.data = data
         self.offset = offset
@@ -226,7 +223,7 @@ public struct StreamResponse: Sendable {
     // MARK: - Streaming (AsyncSequence)
 
     /// Stream JSON batches as they arrive.
-    /// Uses long-poll for live updates when `live` mode is `.longPoll` or `.auto`.
+    /// Uses long-poll for live updates when `live` mode is `.longPoll`.
     ///
     /// Each batch includes the offset for checkpointing:
     /// ```swift
@@ -347,11 +344,8 @@ public struct StreamResponse: Sendable {
             return
         }
 
-        // Determine effective live mode once
-        let effectiveLive = live == .auto ? .longPoll : live
-
         // If already up-to-date and in catch-up mode, we're done
-        if upToDate && effectiveLive == .catchUp {
+        if upToDate && live == .catchUp {
             continuation.finish()
             return
         }
@@ -396,7 +390,7 @@ public struct StreamResponse: Sendable {
                     retryAttempt = 0  // Reset retry count on success
 
                     // In catch-up mode, stop when we've caught up
-                    if metadata.upToDate && effectiveLive == .catchUp {
+                    if metadata.upToDate && live == .catchUp {
                         continuation.finish()
                         return
                     }

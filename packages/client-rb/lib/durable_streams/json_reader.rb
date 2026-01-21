@@ -9,9 +9,9 @@ module DurableStreams
 
     # @param stream [Stream] Parent stream handle
     # @param offset [String] Starting offset
-    # @param live [Symbol, false] Live mode (:long_poll, :sse, :auto, false)
+    # @param live [Symbol, false] Live mode (:long_poll, :sse, false)
     # @param cursor [String, nil] Initial cursor
-    def initialize(stream, offset: "-1", live: :auto, cursor: nil)
+    def initialize(stream, offset: "-1", live: false, cursor: nil)
       @stream = stream
       @offset = DurableStreams.normalize_offset(offset)
       @live = live
@@ -89,7 +89,7 @@ module DurableStreams
     private
 
     def use_sse?
-      @live == :sse || (@live == :auto && DurableStreams.sse_compatible?(@stream.content_type))
+      @live == :sse
     end
 
     def fetch_next_json_batch
@@ -103,9 +103,6 @@ module DurableStreams
       when :sse
         # SSE is handled separately
         return nil
-      when :auto
-        # Auto mode: long-poll when up-to-date to wait for new data
-        params[:live] = "long-poll" if @up_to_date
       when false
         # No live param for catch-up only
       end

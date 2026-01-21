@@ -436,9 +436,9 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         Some(Value::String(s)) => match s.as_str() {
             "long-poll" => LiveMode::LongPoll,
             "sse" => LiveMode::Sse,
-            "auto" => LiveMode::Auto,
             _ => LiveMode::Off,
         },
+        Some(Value::Bool(true)) => LiveMode::LongPoll, // true means live mode enabled
         Some(Value::Bool(false)) => LiveMode::Off,
         _ => LiveMode::Off,
     };

@@ -22,7 +22,6 @@ public actor DurableStream {
 
     /// Batch queue for appends when batching is enabled
     private var batchQueue: [Data] = []
-    private var batchTask: Task<Void, Never>?
     private var lastOffset: Offset?
 
     /// Configuration for DurableStream
@@ -584,22 +583,6 @@ public actor DurableStream {
             let body = String(data: responseData, encoding: .utf8)
             throw DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: url)
         }
-    }
-
-    // MARK: - Flush and Close
-
-    /// Flush any pending batched writes.
-    /// Note: DurableStream uses synchronous writes. For batched writes with
-    /// fire-and-forget semantics, use IdempotentProducer instead.
-    @discardableResult
-    public func flush() async throws -> FlushResult {
-        return FlushResult(offset: lastOffset ?? Offset(rawValue: "0"))
-    }
-
-    /// Close the handle.
-    public func close() async throws {
-        _ = try await flush()
-        batchTask?.cancel()
     }
 
     // MARK: - SSE Streaming

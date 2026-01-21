@@ -671,7 +671,7 @@ class DurableStream:
         self,
         *,
         offset: Offset | None = None,
-        live: LiveMode = "auto",
+        live: LiveMode = True,
         cursor: str | None = None,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
