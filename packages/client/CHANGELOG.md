@@ -1,5 +1,37 @@
 # @durable-streams/client
 
+## 0.2.0
+
+### Minor Changes
+
+- **BREAKING**: `append()` now requires pre-serialized JSON strings instead of auto-stringifying objects. ([#193](https://github.com/durable-streams/durable-streams/pull/193))
+
+  Before:
+
+  ```typescript
+  producer.append({ message: "hello" })
+  ```
+
+  After:
+
+  ```typescript
+  producer.append(JSON.stringify({ message: "hello" }))
+  ```
+
+  This aligns with how Kafka, SQS, and other streaming APIs work - they require pre-serialized data, giving users control over serialization. If you already have JSON from an API response, you can now pass it directly without parsing and re-stringifying.
+
+  This change affects the TypeScript, Python, Go, PHP, .NET, Ruby, and Swift clients.
+
+### Patch Changes
+
+- Improve client API safety and flexibility: ([#178](https://github.com/durable-streams/durable-streams/pull/178))
+  - Refactor `writable()` to use `IdempotentProducer` for streaming writes with exactly-once semantics and automatic batching. Errors during writes now cause `pipeTo()` to reject instead of being silently swallowed.
+  - Make `StreamResponse.offset`, `cursor`, and `upToDate` readonly via getters to prevent external mutation of internal state.
+  - Allow subscriber callbacks (`subscribeJson`, `subscribeBytes`, `subscribeText`) to be sync or async (`void | Promise<void>`).
+  - Fix `warnOnHttp` not being called in standalone `stream()` function.
+
+- Remove "auto" live mode from all clients in favor of explicit mode selection. TypeScript and Python now use `live: true` for auto-select behavior. Go, Rust, Swift, Java, PHP, and Ruby clients also updated. Fix Swift by removing stub flush/close methods from DurableStream. ([#177](https://github.com/durable-streams/durable-streams/pull/177))
+
 ## 0.1.5
 
 ### Patch Changes
