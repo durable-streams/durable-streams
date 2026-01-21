@@ -546,9 +546,9 @@ describe(`DurableStream`, () => {
         expect.anything(),
         expect.objectContaining({ method: `POST` })
       )
-      // Verify body was sent (encoded as Uint8Array)
+      // Verify body was sent as string
       const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
-      expect(callArgs.body).toBeInstanceOf(Uint8Array)
+      expect(callArgs.body).toBe(`hello world`)
     })
 
     it(`should include seq header when provided`, async () => {
@@ -625,10 +625,8 @@ describe(`DurableStream`, () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
-      expect(callArgs.body).toBeInstanceOf(Uint8Array)
-      // Verify the resolved value was sent
-      const decoder = new TextDecoder()
-      expect(decoder.decode(callArgs.body as Uint8Array)).toBe(`promised data`)
+      // Verify the resolved value was sent as string
+      expect(callArgs.body).toBe(`promised data`)
     })
 
     it(`should await delayed promise before sending`, async () => {
@@ -652,8 +650,8 @@ describe(`DurableStream`, () => {
 
       expect(mockFetch).toHaveBeenCalledTimes(1)
       const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
-      const decoder = new TextDecoder()
-      expect(decoder.decode(callArgs.body as Uint8Array)).toBe(`delayed data`)
+      // Verify the resolved value was sent as string
+      expect(callArgs.body).toBe(`delayed data`)
     })
 
     it(`should reject when promise body rejects`, async () => {
