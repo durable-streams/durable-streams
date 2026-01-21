@@ -4059,7 +4059,50 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
   describe(`Property-Based Tests (fast-check)`, () => {
     describe(`Byte-Exactness Property`, () => {
-      test(`arbitrary byte sequences are preserved exactly`, async () => {
+      const NUM_CONCURRENT_READERS = 7
+
+      // Helper to read entire stream with pagination
+      async function readEntireStream(streamPath: string): Promise<Uint8Array> {
+        const accumulated: Array<number> = []
+        let currentOffset: string | null = null
+        let iterations = 0
+
+        while (iterations < 100) {
+          iterations++
+
+          const url: string = currentOffset
+            ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
+            : `${getBaseUrl()}${streamPath}`
+
+          const response: Response = await fetch(url, { method: `GET` })
+          expect(response.status).toBe(200)
+
+          const buffer = await response.arrayBuffer()
+          const data = new Uint8Array(buffer)
+
+          if (data.length > 0) {
+            accumulated.push(...Array.from(data))
+          }
+
+          const nextOffset: string | null =
+            response.headers.get(STREAM_OFFSET_HEADER)
+          const upToDate = response.headers.get(STREAM_UP_TO_DATE_HEADER)
+
+          if (upToDate === `true` && data.length === 0) {
+            break
+          }
+
+          if (nextOffset === currentOffset) {
+            break
+          }
+
+          currentOffset = nextOffset
+        }
+
+        return new Uint8Array(accumulated)
+      }
+
+      test(`arbitrary byte sequences are preserved exactly across ${NUM_CONCURRENT_READERS} concurrent readers`, async () => {
         await fc.assert(
           fc.asyncProperty(
             // Generate 1-10 chunks of arbitrary bytes (1-500 bytes each)
@@ -4102,48 +4145,19 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 offset += chunk.length
               }
 
-              // Read back entire stream
-              const accumulated: Array<number> = []
-              let currentOffset: string | null = null
-              let iterations = 0
+              // Launch 7 concurrent readers to detect race conditions
+              const readerPromises = Array.from(
+                { length: NUM_CONCURRENT_READERS },
+                () => readEntireStream(streamPath)
+              )
+              const results = await Promise.all(readerPromises)
 
-              while (iterations < 100) {
-                iterations++
-
-                const url: string = currentOffset
-                  ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
-                  : `${getBaseUrl()}${streamPath}`
-
-                const response: Response = await fetch(url, { method: `GET` })
-                expect(response.status).toBe(200)
-
-                const buffer = await response.arrayBuffer()
-                const data = new Uint8Array(buffer)
-
-                if (data.length > 0) {
-                  accumulated.push(...Array.from(data))
+              // Verify all readers got identical bytes matching expected
+              for (const result of results) {
+                expect(result.length).toBe(expected.length)
+                for (let i = 0; i < expected.length; i++) {
+                  expect(result[i]).toBe(expected[i])
                 }
-
-                const nextOffset: string | null =
-                  response.headers.get(STREAM_OFFSET_HEADER)
-                const upToDate = response.headers.get(STREAM_UP_TO_DATE_HEADER)
-
-                if (upToDate === `true` && data.length === 0) {
-                  break
-                }
-
-                if (nextOffset === currentOffset) {
-                  break
-                }
-
-                currentOffset = nextOffset
-              }
-
-              // Verify byte-for-byte exactness
-              const result = new Uint8Array(accumulated)
-              expect(result.length).toBe(expected.length)
-              for (let i = 0; i < expected.length; i++) {
-                expect(result[i]).toBe(expected[i])
               }
 
               return true
@@ -4153,7 +4167,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         )
       })
 
-      test(`single byte values cover full range (0-255)`, async () => {
+      test(`single byte values cover full range (0-255) across ${NUM_CONCURRENT_READERS} concurrent readers`, async () => {
         await fc.assert(
           fc.asyncProperty(
             // Generate a byte value from 0-255
@@ -4174,13 +4188,22 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 body: chunk,
               })
 
-              // Read back
-              const response = await fetch(`${getBaseUrl()}${streamPath}`)
-              const buffer = await response.arrayBuffer()
-              const result = new Uint8Array(buffer)
+              // Launch 7 concurrent readers to detect race conditions
+              const readerPromises = Array.from(
+                { length: NUM_CONCURRENT_READERS },
+                async () => {
+                  const response = await fetch(`${getBaseUrl()}${streamPath}`)
+                  const buffer = await response.arrayBuffer()
+                  return new Uint8Array(buffer)
+                }
+              )
+              const results = await Promise.all(readerPromises)
 
-              expect(result.length).toBe(1)
-              expect(result[0]).toBe(byteValue)
+              // Verify all readers got the same single byte
+              for (const result of results) {
+                expect(result.length).toBe(1)
+                expect(result[0]).toBe(byteValue)
+              }
 
               return true
             }
