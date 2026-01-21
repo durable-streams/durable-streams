@@ -5,6 +5,16 @@
  * - Mock upstream server (simulates OpenAI, Anthropic, etc.)
  * - Durable streams reference server (stores stream data)
  * - Proxy server (the system under test)
+ *
+ * Running Against External Servers:
+ *
+ * Set the PROXY_CONFORMANCE_URL environment variable to run tests against
+ * an external proxy server instead of starting a local one.
+ *
+ * When using an external proxy:
+ * - The mock upstream server is still started locally (tests control responses)
+ * - Your external proxy must have "http://localhost:*\/**" in its allowlist
+ * - Your external proxy must be configured to use a durable streams backend
  */
 
 import { DurableStreamTestServer } from "@durable-streams/server"
@@ -17,14 +27,16 @@ import type { MockUpstreamServer } from "./mock-upstream"
  * Options for the test orchestrator.
  */
 export interface OrchestratorOptions {
-  /** Port for mock upstream (default: 4439) */
+  /** Port for mock upstream (default: random) */
   upstreamPort?: number
-  /** Port for durable streams server (default: 4438) */
+  /** Port for durable streams server (default: random) */
   durableStreamsPort?: number
-  /** Port for proxy server (default: 4437) */
+  /** Port for proxy server (default: random, ignored if PROXY_CONFORMANCE_URL is set) */
   proxyPort?: number
-  /** Allowlist patterns for the proxy */
+  /** Allowlist patterns for the proxy (ignored if PROXY_CONFORMANCE_URL is set) */
   allowlist?: Array<string>
+  /** Skip starting the proxy server (use PROXY_CONFORMANCE_URL instead) */
+  useExternalProxy?: boolean
 }
 
 /**
@@ -33,16 +45,18 @@ export interface OrchestratorOptions {
 export interface TestServers {
   /** Mock upstream server */
   upstream: MockUpstreamServer
-  /** Durable streams server */
-  durableStreams: DurableStreamTestServer
-  /** Proxy server */
-  proxy: ProxyServer
+  /** Durable streams server (null if using external proxy) */
+  durableStreams: DurableStreamTestServer | null
+  /** Proxy server (null if using external proxy) */
+  proxy: ProxyServer | null
   /** URLs for all servers */
   urls: {
     upstream: string
     durableStreams: string
     proxy: string
   }
+  /** Whether using an external proxy server */
+  usingExternalProxy: boolean
 }
 
 /**
@@ -57,19 +71,20 @@ function getRandomPort(): number {
  *
  * @param options - Configuration options
  * @returns All running servers
- *
- * @example
- * ```typescript
- * const servers = await startTestServers()
- *
- * // Run tests...
- *
- * await stopTestServers(servers)
- * ```
  */
 export async function startTestServers(
   options: OrchestratorOptions = {}
 ): Promise<TestServers> {
+  // Check for external proxy URL
+  const externalProxyUrl = process.env.PROXY_CONFORMANCE_URL
+  const useExternal = options.useExternalProxy ?? !!externalProxyUrl
+
+  if (useExternal && !externalProxyUrl) {
+    throw new Error(
+      `useExternalProxy is true but PROXY_CONFORMANCE_URL environment variable is not set`
+    )
+  }
+
   // Use random ports to avoid conflicts in parallel tests
   const basePort = getRandomPort()
   const {
@@ -83,11 +98,27 @@ export async function startTestServers(
     ],
   } = options
 
-  // Start mock upstream first
+  // Start mock upstream first (always needed - tests control responses)
   const upstream = await createMockUpstream({
     port: upstreamPort,
     host: `localhost`,
   })
+
+  if (useExternal) {
+    // Using external proxy - skip starting local servers
+    console.log(`Using external proxy at: ${externalProxyUrl}`)
+    return {
+      upstream,
+      durableStreams: null,
+      proxy: null,
+      urls: {
+        upstream: upstream.url,
+        durableStreams: ``, // External proxy has its own
+        proxy: externalProxyUrl!,
+      },
+      usingExternalProxy: true,
+    }
+  }
 
   // Start durable streams server
   const durableStreams = new DurableStreamTestServer({
@@ -115,6 +146,7 @@ export async function startTestServers(
       durableStreams: durableStreamsUrl,
       proxy: proxy.url,
     },
+    usingExternalProxy: false,
   }
 }
 
@@ -124,9 +156,13 @@ export async function startTestServers(
  * @param servers - The servers to stop
  */
 export async function stopTestServers(servers: TestServers): Promise<void> {
-  // Stop in reverse order
-  await servers.proxy.stop()
-  await servers.durableStreams.stop()
+  // Stop in reverse order (skip null servers when using external proxy)
+  if (servers.proxy) {
+    await servers.proxy.stop()
+  }
+  if (servers.durableStreams) {
+    await servers.durableStreams.stop()
+  }
   await servers.upstream.stop()
 }
 
@@ -137,33 +173,16 @@ export async function stopTestServers(servers: TestServers): Promise<void> {
  *
  * @param options - Configuration options
  * @returns An object with setup and teardown functions
- *
- * @example
- * ```typescript
- * const ctx = createTestContext()
- *
- * beforeAll(async () => {
- *   await ctx.setup()
- * })
- *
- * afterAll(async () => {
- *   await ctx.teardown()
- * })
- *
- * test('my test', async () => {
- *   ctx.upstream.setResponse({ body: 'Hello' })
- *   // Make request through ctx.urls.proxy...
- * })
- * ```
  */
 export function createTestContext(options: OrchestratorOptions = {}): {
   setup: () => Promise<void>
   teardown: () => Promise<void>
   servers: TestServers | null
   get upstream(): MockUpstreamServer
-  get durableStreams(): DurableStreamTestServer
-  get proxy(): ProxyServer
+  get durableStreams(): DurableStreamTestServer | null
+  get proxy(): ProxyServer | null
   get urls(): TestServers[`urls`]
+  get usingExternalProxy(): boolean
 } {
   let servers: TestServers | null = null
 
@@ -205,6 +224,12 @@ export function createTestContext(options: OrchestratorOptions = {}): {
       if (!servers)
         throw new Error(`Test context not initialized - call setup() first`)
       return servers.urls
+    },
+
+    get usingExternalProxy() {
+      if (!servers)
+        throw new Error(`Test context not initialized - call setup() first`)
+      return servers.usingExternalProxy
     },
   }
 }
