@@ -4,8 +4,6 @@ Shared utility functions for the Durable Streams client.
 This module provides common utilities used by both sync and async implementations.
 """
 
-from typing import Any
-
 from durable_streams._types import HeadersLike, ParamsLike
 
 
