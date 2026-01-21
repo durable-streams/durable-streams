@@ -678,17 +678,21 @@ describe(`Stream DB`, () => {
 
     // Append initial events (before StreamDB creation)
     await stream.append(
-      streamState.users.insert({
-        key: `1`,
-        value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          key: `1`,
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     await stream.append(
-      streamState.users.insert({
-        key: `2`,
-        value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          key: `2`,
+          value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
+        })
+      )
     )
 
     // Create StreamDB
@@ -724,11 +728,13 @@ describe(`Stream DB`, () => {
 
     // Append live update
     await stream.append(
-      streamState.users.update({
-        key: `1`,
-        value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
-        oldValue: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.update({
+          key: `1`,
+          value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
+          oldValue: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     // Wait for live update
@@ -746,9 +752,11 @@ describe(`Stream DB`, () => {
     // Test delete
     allChanges.length = 0
     await stream.append(
-      streamState.users.delete({
-        key: `2`,
-      })
+      JSON.stringify(
+        streamState.users.delete({
+          key: `2`,
+        })
+      )
     )
 
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -1365,9 +1373,11 @@ describe(`Upsert Operations`, () => {
 
     // Upsert a new user (should act as insert)
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1401,16 +1411,20 @@ describe(`Upsert Operations`, () => {
 
     // First insert
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `Kyle`, email: `kyle@old.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@old.com` },
+        })
+      )
     )
 
     // Then upsert the same key (should act as update)
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Kyle Updated`, email: `kyle@new.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Kyle Updated`, email: `kyle@new.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1444,19 +1458,25 @@ describe(`Upsert Operations`, () => {
 
     // Multiple upserts on the same key
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 1`, email: `v1@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 1`, email: `v1@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 2`, email: `v2@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 2`, email: `v2@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 3`, email: `v3@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 3`, email: `v3@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1491,14 +1511,18 @@ describe(`Upsert Operations`, () => {
 
     // Insert same key twice - upsert logic should convert second to update
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `First`, email: `first@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `First`, email: `first@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `Second`, email: `second@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Second`, email: `second@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1533,28 +1557,36 @@ describe(`Upsert Operations`, () => {
 
     // Mix of operations
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `User 1`, email: `user1@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `User 1`, email: `user1@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `2`, name: `User 2`, email: `user2@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `2`, name: `User 2`, email: `user2@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: {
-          id: `1`,
-          name: `User 1 Updated`,
-          email: `user1new@example.com`,
-        },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: {
+            id: `1`,
+            name: `User 1 Updated`,
+            email: `user1new@example.com`,
+          },
+        })
+      )
     )
     await stream.append(
-      streamState.users.insert({
-        value: { id: `3`, name: `User 3`, email: `user3@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `3`, name: `User 3`, email: `user3@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1624,13 +1656,15 @@ describe(`Stream DB Actions`, () => {
             mutationResults.push({ name, signal })
             // Persist via stream
             await stream.append(
-              streamState.users.insert({
-                value: {
-                  id: crypto.randomUUID(),
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  value: {
+                    id: crypto.randomUUID(),
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1695,14 +1729,16 @@ describe(`Stream DB Actions`, () => {
           },
           mutationFn: async (name: string) => {
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1716,10 +1752,12 @@ describe(`Stream DB Actions`, () => {
             const user = dbInstance.collections.users.get(id)
             if (user) {
               await stream.append(
-                streamState.users.update({
-                  key: id,
-                  value: { ...user, name },
-                })
+                JSON.stringify(
+                  streamState.users.update({
+                    key: id,
+                    value: { ...user, name },
+                  })
+                )
               )
             }
           },
@@ -1833,14 +1871,16 @@ describe(`Stream DB Actions`, () => {
           },
           mutationFn: async (name: string) => {
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1891,14 +1931,16 @@ describe(`Stream DB Actions`, () => {
               throw new Error(`mutationFn error`)
             }
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -2097,14 +2139,16 @@ describe(`Stream DB TxId Tracking`, () => {
 
             // Write to stream with txid
             await stream.append(
-              streamState.users.insert({
-                value: {
-                  id: crypto.randomUUID(),
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-                headers: { txid },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  value: {
+                    id: crypto.randomUUID(),
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                  headers: { txid },
+                })
+              )
             )
 
             // Wait for txid to be synced back

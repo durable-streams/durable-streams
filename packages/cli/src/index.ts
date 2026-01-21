@@ -294,7 +294,7 @@ async function writeStream(
           `Wrote ${count} message${count !== 1 ? `s` : ``} to stream "${streamId}"`
         )
       } else {
-        await stream.append(parsed)
+        await stream.append(JSON.stringify(parsed))
         console.log(`Wrote 1 JSON message to stream "${streamId}"`)
       }
     } else {

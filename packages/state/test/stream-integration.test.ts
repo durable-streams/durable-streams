@@ -27,28 +27,34 @@ describe(`Stream Integration`, () => {
       contentType: `application/json`,
     })
 
-    // Write change events (no manual serialization needed)
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `dark`,
-      headers: { operation: `insert` },
-    })
+    // Write change events (must serialize JSON before appending)
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `dark`,
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `config`,
-      key: `language`,
-      value: `en`,
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `language`,
+        value: `en`,
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `light`,
-      old_value: `dark`,
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `light`,
+        old_value: `dark`,
+        headers: { operation: `update` },
+      })
+    )
 
     // Read back and materialize
     const state = new MaterializedState()
@@ -73,19 +79,23 @@ describe(`Stream Integration`, () => {
     })
 
     // Write events
-    await stream.append({
-      type: `user`,
-      key: `123`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `123`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `user`,
-      key: `456`,
-      value: { name: `Alice`, email: `alice@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `456`,
+        value: { name: `Alice`, email: `alice@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     // Stream and materialize one at a time
     const state = new MaterializedState()
@@ -117,26 +127,32 @@ describe(`Stream Integration`, () => {
       contentType: `application/json`,
     })
 
-    await stream.append({
-      type: `user`,
-      key: `123`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `123`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `user`,
-      key: `456`,
-      value: { name: `Alice`, email: `alice@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `456`,
+        value: { name: `Alice`, email: `alice@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `dark`,
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `dark`,
+        headers: { operation: `insert` },
+      })
+    )
 
     // Read and materialize
     const state = new MaterializedState()
@@ -171,26 +187,32 @@ describe(`Stream Integration`, () => {
       contentType: `application/json`,
     })
 
-    await stream.append({
-      type: `user`,
-      key: `123`,
-      value: { name: `Kyle` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `123`,
+        value: { name: `Kyle` },
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `user`,
-      key: `456`,
-      value: { name: `Alice` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `456`,
+        value: { name: `Alice` },
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `user`,
-      key: `123`,
-      old_value: { name: `Kyle` },
-      headers: { operation: `delete` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `123`,
+        old_value: { name: `Kyle` },
+        headers: { operation: `delete` },
+      })
+    )
 
     // Read and materialize
     const state = new MaterializedState()
@@ -218,19 +240,23 @@ describe(`Stream Integration`, () => {
     })
 
     // Write initial events
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `dark`,
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `dark`,
+        headers: { operation: `insert` },
+      })
+    )
 
-    await stream.append({
-      type: `config`,
-      key: `language`,
-      value: `en`,
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `language`,
+        value: `en`,
+        headers: { operation: `insert` },
+      })
+    )
 
     // Read and materialize initial state
     const state = new MaterializedState()
@@ -248,20 +274,24 @@ describe(`Stream Integration`, () => {
     expect(state.get(`config`, `language`)).toBe(`en`)
 
     // Write more events
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `light`,
-      old_value: `dark`,
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `light`,
+        old_value: `dark`,
+        headers: { operation: `update` },
+      })
+    )
 
-    await stream.append({
-      type: `config`,
-      key: `fontSize`,
-      value: 14,
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `fontSize`,
+        value: 14,
+        headers: { operation: `insert` },
+      })
+    )
 
     // Resume from saved offset and materialize new events
     const resumeRes = await stream.stream<ChangeEvent>({
