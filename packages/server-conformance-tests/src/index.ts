@@ -3764,7 +3764,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({ message: `hello` })
+      await stream.append(JSON.stringify({ message: `hello` }))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3782,7 +3782,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Append array - should be stored as ONE message containing the array
-      await stream.append([{ id: 1 }, { id: 2 }, { id: 3 }])
+      await stream.append(JSON.stringify([{ id: 1 }, { id: 2 }, { id: 3 }]))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3799,9 +3799,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({ event: `first` })
-      await stream.append({ event: `second` })
-      await stream.append({ event: `third` })
+      await stream.append(JSON.stringify({ event: `first` }))
+      await stream.append(JSON.stringify({ event: `second` }))
+      await stream.append(JSON.stringify({ event: `third` }))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3822,12 +3822,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({ type: `single` })
-      await stream.append([
-        { type: `array`, id: 1 },
-        { type: `array`, id: 2 },
-      ])
-      await stream.append({ type: `single-again` })
+      await stream.append(JSON.stringify({ type: `single` }))
+      await stream.append(
+        JSON.stringify([
+          { type: `array`, id: 1 },
+          { type: `array`, id: 2 },
+        ])
+      )
+      await stream.append(JSON.stringify({ type: `single-again` }))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3870,12 +3872,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append(`string value`)
-      await stream.append(42)
-      await stream.append(true)
-      await stream.append(null)
-      await stream.append({ object: `value` })
-      await stream.append([1, 2, 3])
+      await stream.append(JSON.stringify(`string value`))
+      await stream.append(JSON.stringify(42))
+      await stream.append(JSON.stringify(true))
+      await stream.append(JSON.stringify(null))
+      await stream.append(JSON.stringify({ object: `value` }))
+      await stream.append(JSON.stringify([1, 2, 3]))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3898,14 +3900,16 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({
-        user: {
-          id: 123,
-          name: `Alice`,
-          tags: [`admin`, `verified`],
-        },
-        timestamp: `2024-01-01T00:00:00Z`,
-      })
+      await stream.append(
+        JSON.stringify({
+          user: {
+            id: 123,
+            name: `Alice`,
+            tags: [`admin`, `verified`],
+          },
+          timestamp: `2024-01-01T00:00:00Z`,
+        })
+      )
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3930,9 +3934,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({ id: 1 })
-      await stream.append({ id: 2 })
-      await stream.append({ id: 3 })
+      await stream.append(JSON.stringify({ id: 1 }))
+      await stream.append(JSON.stringify({ id: 2 }))
+      await stream.append(JSON.stringify({ id: 3 }))
 
       const res = await stream.stream<{ id: number }>({ live: false })
       const items = await res.json()
@@ -3969,10 +3973,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Append nested array - stored as ONE message
-      await stream.append([
-        [1, 2],
-        [3, 4],
-      ])
+      await stream.append(
+        JSON.stringify([
+          [1, 2],
+          [3, 4],
+        ])
+      )
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -3995,7 +4001,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Append double-wrapped array - stored as ONE message containing the array
-      await stream.append([[1, 2, 3]])
+      await stream.append(JSON.stringify([[1, 2, 3]]))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -4014,8 +4020,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // Each append stores ONE message
-      await stream.append([1, 2, 3])
-      await stream.append([`a`, `b`, `c`])
+      await stream.append(JSON.stringify([1, 2, 3]))
+      await stream.append(JSON.stringify([`a`, `b`, `c`]))
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()
@@ -4035,10 +4041,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         contentType: `application/json`,
       })
 
-      await stream.append({ single: 1 }) // 1 message
-      await stream.append([{ batch: 2 }, { batch: 3 }]) // 1 message (array)
-      await stream.append([[`nested`, `array`]]) // 1 message (nested array)
-      await stream.append(42) // 1 message
+      await stream.append(JSON.stringify({ single: 1 })) // 1 message
+      await stream.append(JSON.stringify([{ batch: 2 }, { batch: 3 }])) // 1 message (array)
+      await stream.append(JSON.stringify([[`nested`, `array`]])) // 1 message (nested array)
+      await stream.append(JSON.stringify(42)) // 1 message
 
       const response = await fetch(`${getBaseUrl()}${streamPath}`)
       const data = await response.json()

@@ -142,15 +142,6 @@ class TestEncodeBody:
         result = encode_body(data)
         assert result == "héllo wörld".encode()
 
-    def test_dict_to_json(self) -> None:
-        data = {"key": "value"}
-        result = encode_body(data)
-        assert result == b'{"key": "value"}'
-
-    def test_list_to_json(self) -> None:
-        data = [1, 2, 3]
-        result = encode_body(data)
-        assert result == b"[1, 2, 3]"
 
 
 class TestBuildUrlWithParams:

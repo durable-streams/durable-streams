@@ -7,6 +7,7 @@ starting and stopping the server automatically.
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -59,9 +60,9 @@ class TestIntegrationStreamBasics:
         )
 
         try:
-            # Append JSON items
-            handle.append({"id": 1, "name": "Alice"})
-            handle.append({"id": 2, "name": "Bob"})
+            # Append JSON items (pre-serialized)
+            handle.append(json.dumps({"id": 1, "name": "Alice"}))
+            handle.append(json.dumps({"id": 2, "name": "Bob"}))
 
             # Read them back
             with handle.stream(live=False) as res:
@@ -290,9 +291,9 @@ class TestIntegrationIteration:
         handle = DurableStream.create(url, content_type="application/json")
 
         try:
-            handle.append({"id": 1})
-            handle.append({"id": 2})
-            handle.append({"id": 3})
+            handle.append(json.dumps({"id": 1}))
+            handle.append(json.dumps({"id": 2}))
+            handle.append(json.dumps({"id": 3}))
 
             with handle.stream(live=False) as res:
                 items = list(res.iter_json())
@@ -311,7 +312,7 @@ class TestIntegrationIteration:
         handle = DurableStream.create(url, content_type="application/json")
 
         try:
-            handle.append([{"id": 1}, {"id": 2}])
+            handle.append(json.dumps([{"id": 1}, {"id": 2}]))
 
             with handle.stream(live=False) as res:
                 events = list(res.iter_events())
@@ -423,8 +424,8 @@ class TestIntegrationAsyncStream:
         url = f"{test_server.url}/{stream_id}"
 
         handle = DurableStream.create(url, content_type="application/json")
-        handle.append({"id": 1})
-        handle.append({"id": 2})
+        handle.append(json.dumps({"id": 1}))
+        handle.append(json.dumps({"id": 2}))
         handle.close()
 
         try:

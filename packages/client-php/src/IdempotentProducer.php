@@ -92,17 +92,17 @@ final class IdempotentProducer
      * Returns immediately - no network I/O performed.
      * Auto-flushes if batch size limit reached.
      *
-     * @param mixed $data Data to append (arrays/objects are JSON-encoded)
+     * For JSON streams, pass pre-serialized JSON strings.
+     *
+     * Example:
+     *   $producer->enqueue(json_encode(['message' => 'hello']));
+     *
+     * @param string $data Data to append (string only, pre-serialize JSON)
      * @throws MessageTooLargeException if single item exceeds maxBatchBytes
      */
-    public function enqueue(mixed $data): void
+    public function enqueue(string $data): void
     {
-        // Calculate size
-        if (is_string($data)) {
-            $size = strlen($data);
-        } else {
-            $size = strlen(json_encode($data, JSON_THROW_ON_ERROR));
-        }
+        $size = strlen($data);
 
         // Reject single items that exceed max batch size
         if ($size > $this->maxBatchBytes) {
@@ -321,16 +321,17 @@ final class IdempotentProducer
         $headers['Content-Type'] = $contentType;
 
         // Encode data based on content type
+        // $data is an array of pre-serialized string items
         $data = $batch['data'];
         $isJson = str_contains($contentType, 'json');
 
         if (is_array($data)) {
             if ($isJson) {
-                // JSON content: encode as JSON array
-                $body = json_encode($data, JSON_THROW_ON_ERROR);
+                // JSON content: wrap pre-serialized JSON strings in array
+                $body = '[' . implode(',', $data) . ']';
             } else {
                 // Non-JSON content: concatenate string items
-                $body = implode('', array_map('strval', $data));
+                $body = implode('', $data);
             }
         } else {
             $body = (string)$data;

@@ -583,18 +583,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           lingerMs: 0, // Send immediately for testing
         })
 
-        // For JSON streams, parse the string data into a native object
-        // (IdempotentProducer expects native objects for JSON streams)
-        const normalizedContentType = contentType
-          .split(`;`)[0]
-          ?.trim()
-          .toLowerCase()
-        const isJson = normalizedContentType === `application/json`
-        const data = isJson ? JSON.parse(command.data) : command.data
-
         try {
           // append() is fire-and-forget (synchronous), then flush() sends the batch
-          producer.append(data)
+          // Data is already pre-serialized, pass directly to append()
+          producer.append(command.data)
           await producer.flush()
           await producer.close()
 
@@ -639,20 +631,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           maxBatchBytes: testingConcurrency ? 1 : 1024 * 1024,
         })
 
-        // For JSON streams, parse string items into native objects
-        // (IdempotentProducer expects native objects for JSON streams)
-        const normalizedContentType = contentType
-          .split(`;`)[0]
-          ?.trim()
-          .toLowerCase()
-        const isJson = normalizedContentType === `application/json`
-        const items = isJson
-          ? command.items.map((item: string) => JSON.parse(item))
-          : command.items
-
         try {
           // append() is fire-and-forget (synchronous), adds to pending batch
-          for (const item of items) {
+          // Data is already pre-serialized, pass directly to append()
+          for (const item of command.items) {
             producer.append(item)
           }
 

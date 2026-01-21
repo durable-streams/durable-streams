@@ -4,8 +4,6 @@ Shared utility functions for the Durable Streams client.
 This module provides common utilities used by both sync and async implementations.
 """
 
-from typing import Any
-
 from durable_streams._types import HeadersLike, ParamsLike
 
 
@@ -166,27 +164,26 @@ def is_sse_compatible_content_type(content_type: str | None) -> bool:
     return normalized.startswith("text/") or normalized == "application/json"
 
 
-def encode_body(body: str | bytes | Any) -> bytes:
+def encode_body(body: str | bytes) -> bytes:
     """
     Encode a body value to bytes.
 
     - Bytes are returned as-is
     - Strings are encoded as UTF-8
-    - Other values are JSON-serialized
 
     Args:
-        body: The body value to encode
+        body: The body value to encode (str or bytes)
 
     Returns:
         Encoded bytes
-    """
-    import json
 
+    Raises:
+        TypeError: If body is not str or bytes
+    """
     if isinstance(body, bytes):
         return body
-    if isinstance(body, str):
-        return body.encode("utf-8")
-    return json.dumps(body).encode("utf-8")
+    # body is str at this point (type narrowed)
+    return body.encode("utf-8")
 
 
 def build_url_with_params(

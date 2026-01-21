@@ -73,9 +73,15 @@ module DurableStreams
     end
 
     # Append a message (fire-and-forget, batched)
-    # @param data [Object] Data to append
+    # For JSON streams, pass pre-serialized JSON strings.
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
+    # @example
+    #   producer.append(JSON.generate({ message: "hello" }))
     def append(data)
       raise ClosedError.new("Producer is closed", url: @url) if @closed
+      unless data.is_a?(String)
+        raise ArgumentError, "append() requires a String. For objects, use JSON.generate(). Got #{data.class}"
+      end
 
       batch_to_send = nil
       @mutex.synchronize do
@@ -98,7 +104,7 @@ module DurableStreams
     end
 
     # Shovel operator for append (Ruby idiom)
-    # @param data [Object] Data to append
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @return [self] Returns self for chaining
     def <<(data)
       append(data)
@@ -106,7 +112,7 @@ module DurableStreams
     end
 
     # Append and wait for acknowledgment (sync/blocking)
-    # @param data [Object] Data to append
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @return [ProducerResult]
     def append!(data)
       append(data)
@@ -168,15 +174,8 @@ module DurableStreams
     private
 
     def batch_size_bytes
-      # Rough estimate of batch size
-      @pending.sum do |msg|
-        data = msg[:data]
-        if data.is_a?(String)
-          data.bytesize
-        else
-          JSON.generate(data).bytesize
-        end
-      end
+      # Data is now pre-serialized strings
+      @pending.sum { |msg| msg[:data].bytesize }
     end
 
     def start_linger_timer
@@ -320,11 +319,12 @@ module DurableStreams
       first_seq = batch.first[:seq]
       headers[PRODUCER_SEQ_HEADER] = first_seq.to_s
 
-      # Build body
+      # Build body - data is pre-serialized strings
       body = if DurableStreams.json_content_type?(@content_type)
-               JSON.generate(batch.map { |m| m[:data] })
+               # Wrap pre-serialized JSON strings in array
+               "[#{batch.map { |m| m[:data] }.join(',')}]"
              else
-               batch.map { |m| m[:data].is_a?(String) ? m[:data] : m[:data].to_s }.join
+               batch.map { |m| m[:data] }.join
              end
 
       response = @transport.request(:post, @url, headers: headers, body: body)

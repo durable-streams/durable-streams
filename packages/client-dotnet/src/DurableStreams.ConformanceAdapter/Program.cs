@@ -486,16 +486,8 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
 
         await using (producer)
         {
-            if (stream.ContentType == "application/json")
-            {
-                // Parse and append as JSON
-                using var doc = JsonDocument.Parse(data);
-                producer.Append(doc.RootElement);
-            }
-            else
-            {
-                producer.Append(data);
-            }
+            // Data is already pre-serialized, just pass it through
+            producer.Append(data);
 
             await producer.FlushAsync();
         }
@@ -574,15 +566,8 @@ async Task<object> HandleIdempotentAppendBatch(JsonElement root)
             foreach (var item in items.EnumerateArray())
             {
                 var data = item.GetString()!;
-                if (stream.ContentType == "application/json")
-                {
-                    using var doc = JsonDocument.Parse(data);
-                    producer.Append(doc.RootElement);
-                }
-                else
-                {
-                    producer.Append(data);
-                }
+                // Data is already pre-serialized, just pass it through
+                producer.Append(data);
             }
 
             await producer.FlushAsync();

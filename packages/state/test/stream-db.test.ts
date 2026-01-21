@@ -106,24 +106,30 @@ describe(`Stream DB`, () => {
 
     // Write change events in parallel
     await Promise.all([
-      stream.append({
-        type: `user`,
-        key: `1`,
-        value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-        headers: { operation: `insert` },
-      }),
-      stream.append({
-        type: `user`,
-        key: `2`,
-        value: { name: `Alice`, email: `alice@example.com` },
-        headers: { operation: `insert` },
-      }),
-      stream.append({
-        type: `message`,
-        key: `msg1`,
-        value: { text: `Hello!`, userId: `1` },
-        headers: { operation: `insert` },
-      }),
+      stream.append(
+        JSON.stringify({
+          type: `user`,
+          key: `1`,
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+          headers: { operation: `insert` },
+        })
+      ),
+      stream.append(
+        JSON.stringify({
+          type: `user`,
+          key: `2`,
+          value: { name: `Alice`, email: `alice@example.com` },
+          headers: { operation: `insert` },
+        })
+      ),
+      stream.append(
+        JSON.stringify({
+          type: `message`,
+          key: `msg1`,
+          value: { text: `Hello!`, userId: `1` },
+          headers: { operation: `insert` },
+        })
+      ),
     ])
 
     // Preload (eager mode waits for all data to sync)
@@ -168,18 +174,22 @@ describe(`Stream DB`, () => {
     })
 
     // Insert then update
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@old.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@new.com` },
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@old.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@new.com` },
+        headers: { operation: `update` },
+      })
+    )
 
     await db.preload()
 
@@ -210,17 +220,21 @@ describe(`Stream DB`, () => {
     })
 
     // Insert then delete
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      headers: { operation: `delete` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        headers: { operation: `delete` },
+      })
+    )
 
     await db.preload()
 
@@ -281,18 +295,22 @@ describe(`Stream DB`, () => {
     })
 
     // Write events with unknown types (should be ignored)
-    await stream.append({
-      type: `unknown_type`,
-      key: `1`,
-      value: { foo: `bar` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `unknown_type`,
+        key: `1`,
+        value: { foo: `bar` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     await db.preload()
 
@@ -323,23 +341,27 @@ describe(`Stream DB`, () => {
       state: streamState,
     })
 
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     await db.preload()
     expect(db.collections.users.get(`1`)?.name).toBe(`Kyle`)
 
     // Write more events AFTER preload
-    await stream.append({
-      type: `user`,
-      key: `2`,
-      value: { name: `Alice`, email: `alice@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `2`,
+        value: { name: `Alice`, email: `alice@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     // Wait a bit for live update to arrive
     await new Promise((resolve) => setTimeout(resolve, 50))
@@ -376,24 +398,30 @@ describe(`Stream DB`, () => {
     })
 
     // Mix of user and message events
-    await stream.append({
-      type: `message`,
-      key: `m1`,
-      value: { text: `First`, userId: `1` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `message`,
-      key: `m2`,
-      value: { text: `Second`, userId: `1` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `message`,
+        key: `m1`,
+        value: { text: `First`, userId: `1` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `message`,
+        key: `m2`,
+        value: { text: `Second`, userId: `1` },
+        headers: { operation: `insert` },
+      })
+    )
 
     await db.preload()
 
@@ -429,39 +457,49 @@ describe(`Stream DB`, () => {
 
     // Sequence of operations on the same key
     // 1. Insert
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@v1.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@v1.com` },
+        headers: { operation: `insert` },
+      })
+    )
     // 2. Update
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle Smith`, email: `kyle@v2.com` },
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle Smith`, email: `kyle@v2.com` },
+        headers: { operation: `update` },
+      })
+    )
     // 3. Another update
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle J Smith`, email: `kyle@v3.com` },
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle J Smith`, email: `kyle@v3.com` },
+        headers: { operation: `update` },
+      })
+    )
     // 4. Delete
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      headers: { operation: `delete` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        headers: { operation: `delete` },
+      })
+    )
     // 5. Re-insert with new data
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `New Kyle`, email: `newkyle@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `New Kyle`, email: `newkyle@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     await db.preload()
 
@@ -495,41 +533,53 @@ describe(`Stream DB`, () => {
     })
 
     // Interleaved operations on different keys
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Alice`, email: `alice@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `2`,
-      value: { name: `Bob`, email: `bob@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Alice Updated`, email: `alice@new.com` },
-      headers: { operation: `update` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `3`,
-      value: { name: `Charlie`, email: `charlie@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `2`,
-      headers: { operation: `delete` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `3`,
-      value: { name: `Charlie Updated`, email: `charlie@new.com` },
-      headers: { operation: `update` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Alice`, email: `alice@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `2`,
+        value: { name: `Bob`, email: `bob@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Alice Updated`, email: `alice@new.com` },
+        headers: { operation: `update` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `3`,
+        value: { name: `Charlie`, email: `charlie@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `2`,
+        headers: { operation: `delete` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `3`,
+        value: { name: `Charlie Updated`, email: `charlie@new.com` },
+        headers: { operation: `update` },
+      })
+    )
 
     await db.preload()
 
@@ -574,12 +624,14 @@ describe(`Stream DB`, () => {
     const events = []
     for (let i = 0; i < 10; i++) {
       events.push(
-        stream.append({
-          type: `user`,
-          key: String(i),
-          value: { name: `User ${i}`, email: `user${i}@example.com` },
-          headers: { operation: `insert` },
-        })
+        stream.append(
+          JSON.stringify({
+            type: `user`,
+            key: String(i),
+            value: { name: `User ${i}`, email: `user${i}@example.com` },
+            headers: { operation: `insert` },
+          })
+        )
       )
     }
     await Promise.all(events)
@@ -626,17 +678,21 @@ describe(`Stream DB`, () => {
 
     // Append initial events (before StreamDB creation)
     await stream.append(
-      streamState.users.insert({
-        key: `1`,
-        value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          key: `1`,
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     await stream.append(
-      streamState.users.insert({
-        key: `2`,
-        value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          key: `2`,
+          value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
+        })
+      )
     )
 
     // Create StreamDB
@@ -672,11 +728,13 @@ describe(`Stream DB`, () => {
 
     // Append live update
     await stream.append(
-      streamState.users.update({
-        key: `1`,
-        value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
-        oldValue: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.update({
+          key: `1`,
+          value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
+          oldValue: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     // Wait for live update
@@ -694,9 +752,11 @@ describe(`Stream DB`, () => {
     // Test delete
     allChanges.length = 0
     await stream.append(
-      streamState.users.delete({
-        key: `2`,
-      })
+      JSON.stringify(
+        streamState.users.delete({
+          key: `2`,
+        })
+      )
     )
 
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -734,29 +794,35 @@ describe(`Stream DB`, () => {
     })
 
     // Initial data
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Initial`, email: `initial@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Initial`, email: `initial@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     await db.preload()
     expect(db.collections.users.get(`1`)?.name).toBe(`Initial`)
 
     // Now write more events that should be batched in subsequent commits
-    await stream.append({
-      type: `user`,
-      key: `2`,
-      value: { name: `Second`, email: `second@example.com` },
-      headers: { operation: `insert` },
-    })
-    await stream.append({
-      type: `user`,
-      key: `3`,
-      value: { name: `Third`, email: `third@example.com` },
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `2`,
+        value: { name: `Second`, email: `second@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `3`,
+        value: { name: `Third`, email: `third@example.com` },
+        headers: { operation: `insert` },
+      })
+    )
 
     // Wait for live updates to arrive and be committed
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -790,12 +856,14 @@ describe(`Stream DB`, () => {
     })
 
     // Append the primitive value BEFORE creating the DB
-    await stream.append({
-      type: `config`,
-      key: `theme`,
-      value: `dark`, // primitive string, not an object
-      headers: { operation: `insert` },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `config`,
+        key: `theme`,
+        value: `dark`, // primitive string, not an object
+        headers: { operation: `insert` },
+      })
+    )
 
     const db = createStreamDB({
       streamOptions: { url: stream.url, contentType: stream.contentType },
@@ -1305,9 +1373,11 @@ describe(`Upsert Operations`, () => {
 
     // Upsert a new user (should act as insert)
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1341,16 +1411,20 @@ describe(`Upsert Operations`, () => {
 
     // First insert
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `Kyle`, email: `kyle@old.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@old.com` },
+        })
+      )
     )
 
     // Then upsert the same key (should act as update)
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Kyle Updated`, email: `kyle@new.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Kyle Updated`, email: `kyle@new.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1384,19 +1458,25 @@ describe(`Upsert Operations`, () => {
 
     // Multiple upserts on the same key
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 1`, email: `v1@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 1`, email: `v1@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 2`, email: `v2@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 2`, email: `v2@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `1`, name: `Version 3`, email: `v3@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `1`, name: `Version 3`, email: `v3@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1431,14 +1511,18 @@ describe(`Upsert Operations`, () => {
 
     // Insert same key twice - upsert logic should convert second to update
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `First`, email: `first@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `First`, email: `first@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `Second`, email: `second@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Second`, email: `second@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1473,28 +1557,36 @@ describe(`Upsert Operations`, () => {
 
     // Mix of operations
     await stream.append(
-      streamState.users.insert({
-        value: { id: `1`, name: `User 1`, email: `user1@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `User 1`, email: `user1@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: { id: `2`, name: `User 2`, email: `user2@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: { id: `2`, name: `User 2`, email: `user2@example.com` },
+        })
+      )
     )
     await stream.append(
-      streamState.users.upsert({
-        value: {
-          id: `1`,
-          name: `User 1 Updated`,
-          email: `user1new@example.com`,
-        },
-      })
+      JSON.stringify(
+        streamState.users.upsert({
+          value: {
+            id: `1`,
+            name: `User 1 Updated`,
+            email: `user1new@example.com`,
+          },
+        })
+      )
     )
     await stream.append(
-      streamState.users.insert({
-        value: { id: `3`, name: `User 3`, email: `user3@example.com` },
-      })
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `3`, name: `User 3`, email: `user3@example.com` },
+        })
+      )
     )
 
     await db.preload()
@@ -1564,13 +1656,15 @@ describe(`Stream DB Actions`, () => {
             mutationResults.push({ name, signal })
             // Persist via stream
             await stream.append(
-              streamState.users.insert({
-                value: {
-                  id: crypto.randomUUID(),
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  value: {
+                    id: crypto.randomUUID(),
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1635,14 +1729,16 @@ describe(`Stream DB Actions`, () => {
           },
           mutationFn: async (name: string) => {
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1656,10 +1752,12 @@ describe(`Stream DB Actions`, () => {
             const user = dbInstance.collections.users.get(id)
             if (user) {
               await stream.append(
-                streamState.users.update({
-                  key: id,
-                  value: { ...user, name },
-                })
+                JSON.stringify(
+                  streamState.users.update({
+                    key: id,
+                    value: { ...user, name },
+                  })
+                )
               )
             }
           },
@@ -1773,14 +1871,16 @@ describe(`Stream DB Actions`, () => {
           },
           mutationFn: async (name: string) => {
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1831,14 +1931,16 @@ describe(`Stream DB Actions`, () => {
               throw new Error(`mutationFn error`)
             }
             await stream.append(
-              streamState.users.insert({
-                key: name,
-                value: {
-                  id: name,
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  key: name,
+                  value: {
+                    id: name,
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                })
+              )
             )
           },
         },
@@ -1899,12 +2001,14 @@ describe(`Stream DB TxId Tracking`, () => {
     const txid = crypto.randomUUID()
 
     // Write an event with the txid header
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `insert`, txid },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Kyle`, email: `kyle@example.com` },
+        headers: { operation: `insert`, txid },
+      })
+    )
 
     // awaitTxId should resolve when the txid is seen
     await db.utils.awaitTxId(txid)
@@ -1943,12 +2047,14 @@ describe(`Stream DB TxId Tracking`, () => {
     const txid = crypto.randomUUID()
 
     // Write event with txid
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Alice`, email: `alice@example.com` },
-      headers: { operation: `insert`, txid },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Alice`, email: `alice@example.com` },
+        headers: { operation: `insert`, txid },
+      })
+    )
 
     await db.preload()
 
@@ -2033,14 +2139,16 @@ describe(`Stream DB TxId Tracking`, () => {
 
             // Write to stream with txid
             await stream.append(
-              streamState.users.insert({
-                value: {
-                  id: crypto.randomUUID(),
-                  name,
-                  email: `${name.toLowerCase()}@example.com`,
-                },
-                headers: { txid },
-              })
+              JSON.stringify(
+                streamState.users.insert({
+                  value: {
+                    id: crypto.randomUUID(),
+                    name,
+                    email: `${name.toLowerCase()}@example.com`,
+                  },
+                  headers: { txid },
+                })
+              )
             )
 
             // Wait for txid to be synced back
@@ -2098,12 +2206,14 @@ describe(`Stream DB TxId Tracking`, () => {
     ]
 
     // Write event with txid
-    await stream.append({
-      type: `user`,
-      key: `1`,
-      value: { name: `Concurrent`, email: `concurrent@example.com` },
-      headers: { operation: `insert`, txid },
-    })
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Concurrent`, email: `concurrent@example.com` },
+        headers: { operation: `insert`, txid },
+      })
+    )
 
     // All awaits should resolve
     await Promise.all(awaits)

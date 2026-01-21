@@ -127,33 +127,49 @@ class TestDecodeJsonItems:
 
 
 class TestWrapForJsonAppend:
-    """Tests for wrap_for_json_append."""
+    """Tests for wrap_for_json_append.
+
+    Note: wrap_for_json_append now expects pre-serialized JSON strings
+    and returns a JSON array string (not a Python list).
+    """
 
     def test_wraps_dict(self) -> None:
-        result = wrap_for_json_append({"key": "value"})
-        assert result == [{"key": "value"}]
+        result = wrap_for_json_append('{"key": "value"}')
+        assert result == '[{"key": "value"}]'
 
     def test_wraps_string(self) -> None:
-        result = wrap_for_json_append("hello")
-        assert result == ["hello"]
+        result = wrap_for_json_append('"hello"')
+        assert result == '["hello"]'
 
     def test_wraps_number(self) -> None:
-        result = wrap_for_json_append(42)
-        assert result == [42]
+        result = wrap_for_json_append("42")
+        assert result == "[42]"
 
     def test_wraps_array(self) -> None:
         # Arrays are also wrapped - server will flatten
-        result = wrap_for_json_append([1, 2, 3])
-        assert result == [[1, 2, 3]]
+        result = wrap_for_json_append("[1, 2, 3]")
+        assert result == "[[1, 2, 3]]"
+
+    def test_wraps_bytes(self) -> None:
+        result = wrap_for_json_append(b'{"key": "value"}')
+        assert result == '[{"key": "value"}]'
 
 
 class TestBatchForJsonAppend:
-    """Tests for batch_for_json_append."""
+    """Tests for batch_for_json_append.
+
+    Note: batch_for_json_append now expects pre-serialized JSON strings.
+    """
 
     def test_batches_items(self) -> None:
-        items = [{"a": 1}, {"b": 2}]
+        items = ['{"a": 1}', '{"b": 2}']
         result = batch_for_json_append(items)
-        assert result == b'[{"a": 1}, {"b": 2}]'
+        assert result == b'[{"a": 1},{"b": 2}]'
+
+    def test_batches_bytes_items(self) -> None:
+        items = [b'{"a": 1}', b'{"b": 2}']
+        result = batch_for_json_append(items)
+        assert result == b'[{"a": 1},{"b": 2}]'
 
     def test_empty_raises(self) -> None:
         with pytest.raises(ValueError, match="empty"):

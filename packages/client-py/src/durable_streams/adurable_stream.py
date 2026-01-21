@@ -8,7 +8,6 @@ reading, appending, and deleting streams.
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import deque
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -55,7 +54,7 @@ from durable_streams.astream import astream as astream_fn
 class _QueuedMessage:
     """Internal type for batching queue."""
 
-    data: Any
+    data: bytes | str
     seq: str | None
     content_type: str | None
     future: asyncio.Future[AppendResult] | None = None
@@ -76,7 +75,7 @@ class AsyncDurableStream:
         ... )
         >>>
         >>> # Append data
-        >>> await handle.append({"message": "hello"})
+        >>> await handle.append(json.dumps({"message": "hello"}))
         >>>
         >>> # Read data
         >>> async with handle.stream() as res:
@@ -395,7 +394,7 @@ class AsyncDurableStream:
 
     async def append(
         self,
-        data: bytes | str | Any,
+        data: bytes | str,
         *,
         seq: str | None = None,
         content_type: str | None = None,
@@ -407,8 +406,19 @@ class AsyncDurableStream:
         will be batched together into a single request. All callers await until
         their data is durably acknowledged or an error occurs.
 
+        Args:
+            data: Data to append. For JSON streams, pass pre-serialized JSON strings.
+                  For byte streams, pass bytes or str.
+
         Returns:
             AppendResult with the new tail offset
+
+        Example:
+            # JSON stream - pass pre-serialized JSON
+            await stream.append(json.dumps({"message": "hello"}))
+
+            # Byte stream
+            await stream.append(b"raw bytes")
         """
         if self._batching:
             return await self._append_with_batching(data, seq, content_type)
@@ -416,7 +426,7 @@ class AsyncDurableStream:
 
     async def _append_direct(
         self,
-        data: Any,
+        data: bytes | str,
         seq: str | None,
         content_type: str | None,
     ) -> AppendResult:
@@ -433,7 +443,8 @@ class AsyncDurableStream:
             resolved_headers[STREAM_SEQ_HEADER] = seq
 
         if is_json_content_type(ct):
-            body = json.dumps(wrap_for_json_append(data)).encode("utf-8")
+            # For JSON mode, wrap pre-serialized JSON string in array
+            body = wrap_for_json_append(data).encode("utf-8")
         else:
             body = encode_body(data)
 
@@ -466,7 +477,7 @@ class AsyncDurableStream:
 
     async def _append_with_batching(
         self,
-        data: Any,
+        data: bytes | str,
         seq: str | None,
         content_type: str | None,
     ) -> AppendResult:

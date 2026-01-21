@@ -69,10 +69,12 @@ function createRegistryDB(url: string) {
         mutationFn: async (metadata: StreamMetadata) => {
           const txid = crypto.randomUUID()
           await stream.append(
-            registryStateSchema.streams.insert({
-              value: metadata,
-              headers: { txid },
-            })
+            JSON.stringify(
+              registryStateSchema.streams.insert({
+                value: metadata,
+                headers: { txid },
+              })
+            )
           )
           await db.utils.awaitTxId(txid)
         },
@@ -106,10 +108,12 @@ function createPresenceDB(url: string) {
         mutationFn: async (data: PresenceData) => {
           const txid = crypto.randomUUID()
           await stream.append(
-            presenceStateSchema.presence.upsert({
-              value: data,
-              headers: { txid },
-            })
+            JSON.stringify(
+              presenceStateSchema.presence.upsert({
+                value: data,
+                headers: { txid },
+              })
+            )
           )
           await db.utils.awaitTxId(txid)
         },
@@ -121,10 +125,12 @@ function createPresenceDB(url: string) {
         mutationFn: async (sessionId: string) => {
           const txid = crypto.randomUUID()
           await stream.append(
-            presenceStateSchema.presence.delete({
-              key: sessionId,
-              headers: { txid },
-            })
+            JSON.stringify(
+              presenceStateSchema.presence.delete({
+                key: sessionId,
+                headers: { txid },
+              })
+            )
           )
           await db.utils.awaitTxId(txid)
         },

@@ -318,7 +318,7 @@ async function runScenario(
           messages.push({ n: i, data: `message-${i}-padding-for-size` })
         }
         // Batch append for speed
-        await Promise.all(messages.map((msg) => ds.append(msg)))
+        await Promise.all(messages.map((msg) => ds.append(JSON.stringify(msg))))
       }
     }
 
