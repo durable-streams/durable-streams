@@ -524,6 +524,7 @@ public actor DurableStream {
     }
 
     /// Append a string to the stream.
+    /// For JSON streams, pass pre-serialized JSON strings.
     public func appendSync(_ text: String) async throws -> AppendResult {
         guard let data = text.data(using: .utf8) else {
             throw DurableStreamError.badRequest(message: "Invalid UTF-8 string")
@@ -531,8 +532,9 @@ public actor DurableStream {
         return try await appendSync(data)
     }
 
-    /// Append an encodable value as JSON.
-    public func appendSync<T: Encodable>(_ value: T, encoder: JSONEncoder = JSONEncoder()) async throws -> AppendResult {
+    /// Append an encodable value as JSON (convenience method that auto-serializes).
+    /// This wraps the value in an array for JSON streams per protocol requirements.
+    public func appendJSONSync<T: Encodable>(_ value: T, encoder: JSONEncoder = JSONEncoder()) async throws -> AppendResult {
         // For JSON mode, wrap in array
         let isJSON = contentType?.isJSONContentType ?? false
         let data: Data

@@ -153,40 +153,42 @@ def decode_json_items(
     return items  # type: ignore[return-value]
 
 
-def wrap_for_json_append(data: Any) -> list[Any]:
+def wrap_for_json_append(data: str | bytes) -> str:
     """
-    Wrap data for JSON append operations.
+    Wrap pre-serialized JSON data for append operations.
 
-    The protocol flattens arrays one level, so:
-    - Single values should be wrapped: x -> [x]
-    - Arrays are sent as-is (server flattens to individual messages)
+    The protocol flattens arrays one level, so single values
+    are wrapped in an array: x -> [x]
 
     Args:
-        data: Data to append
+        data: Pre-serialized JSON string or bytes
 
     Returns:
-        Data wrapped in a list for sending
+        Data wrapped in a JSON array string
     """
-    # Always wrap in a list - server flattens one level
-    return [data]
+    json_str = data.decode("utf-8") if isinstance(data, bytes) else data
+    return f"[{json_str}]"
 
 
-def batch_for_json_append(items: list[Any]) -> bytes:
+def batch_for_json_append(items: list[str | bytes]) -> bytes:
     """
-    Batch multiple items for a JSON append request.
+    Batch multiple pre-serialized JSON items for a JSON append request.
 
     For JSON streams, multiple values are sent as a JSON array.
 
     Args:
-        items: List of items to batch
+        items: List of pre-serialized JSON strings or bytes
 
     Returns:
         JSON-encoded bytes
     """
-    # Empty check should be done by caller, but be safe
     if not items:
         raise ValueError("Cannot send empty batch")
-    return json.dumps(items).encode("utf-8")
+    # Join pre-serialized JSON strings with commas and wrap in array
+    json_strings = [
+        item.decode("utf-8") if isinstance(item, bytes) else item for item in items
+    ]
+    return ("[" + ",".join(json_strings) + "]").encode("utf-8")
 
 
 def batch_for_bytes_append(chunks: list[bytes]) -> bytes:

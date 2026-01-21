@@ -93,52 +93,48 @@ public sealed class IdempotentProducer : IAsyncDisposable
 
     /// <summary>
     /// Append data (fire-and-forget). Returns immediately.
+    /// For JSON streams, pass pre-serialized JSON bytes.
     /// </summary>
+    /// <example>
+    /// // JSON stream - pass pre-serialized JSON
+    /// var json = JsonSerializer.SerializeToUtf8Bytes(new { message = "hello" });
+    /// producer.Append(json);
+    ///
+    /// // Byte stream
+    /// producer.Append(Encoding.UTF8.GetBytes("raw data"));
+    /// </example>
     public void Append(ReadOnlyMemory<byte> data)
     {
-        AppendInternal(data, null);
+        AppendInternal(data);
     }
 
     /// <summary>
-    /// Append JSON-serializable data (fire-and-forget).
+    /// Append string data (fire-and-forget). Returns immediately.
+    /// For JSON streams, pass pre-serialized JSON strings.
     /// </summary>
-    public void Append<T>(T data)
-    {
-        // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
-        var jsonOptions = _stream.Client.Options.JsonSerializerOptions;
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(data, jsonOptions);
-        AppendInternal(bytes, null);
-    }
-
-    /// <summary>
-    /// Append string data (fire-and-forget).
-    /// </summary>
+    /// <example>
+    /// // JSON stream - pass pre-serialized JSON
+    /// producer.Append(JsonSerializer.Serialize(new { message = "hello" }));
+    ///
+    /// // Byte stream
+    /// producer.Append("raw text data");
+    /// </example>
     public void Append(string data)
     {
         var bytes = Encoding.UTF8.GetBytes(data);
-        AppendInternal(bytes, null);
+        AppendInternal(bytes);
     }
 
     /// <summary>
     /// Attempt to append data without blocking.
+    /// For JSON streams, pass pre-serialized JSON bytes.
     /// </summary>
     public bool TryAppend(ReadOnlyMemory<byte> data)
     {
-        return TryAppendInternal(data, null);
+        return TryAppendInternal(data);
     }
 
-    /// <summary>
-    /// Attempt to append JSON data without blocking.
-    /// </summary>
-    public bool TryAppend<T>(T data)
-    {
-        // Serialize once to UTF8 bytes - DoSendBatchAsync uses WriteRawValue for these
-        var jsonOptions = _stream.Client.Options.JsonSerializerOptions;
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(data, jsonOptions);
-        return TryAppendInternal(bytes, null);
-    }
-
-    private void AppendInternal(ReadOnlyMemory<byte> data, JsonElement? jsonData)
+    private void AppendInternal(ReadOnlyMemory<byte> data)
     {
         if (_closed)
         {
@@ -148,7 +144,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
 
         lock (_stateLock)
         {
-            var message = new PendingMessage(data, jsonData);
+            var message = new PendingMessage(data);
             _pendingBatch.Add(message);
             _batchBytes += data.Length;
 
@@ -172,7 +168,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
         }
     }
 
-    private bool TryAppendInternal(ReadOnlyMemory<byte> data, JsonElement? jsonData)
+    private bool TryAppendInternal(ReadOnlyMemory<byte> data)
     {
         if (_closed) return false;
 
@@ -183,7 +179,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
             if (_batchBytes + data.Length > _options.MaxBufferedBytes)
                 return false;
 
-            var message = new PendingMessage(data, jsonData);
+            var message = new PendingMessage(data);
             _pendingBatch.Add(message);
             _batchBytes += data.Length;
 
@@ -293,21 +289,15 @@ public sealed class IdempotentProducer : IAsyncDisposable
             {
                 // JSON: send as array (server flattens one level)
                 // Use Utf8JsonWriter for efficient direct-to-bytes serialization
+                // All data is pre-serialized JSON bytes
                 using var ms = new MemoryStream();
                 using (var writer = new Utf8JsonWriter(ms))
                 {
                     writer.WriteStartArray();
                     foreach (var msg in batch)
                     {
-                        if (msg.JsonData.HasValue)
-                        {
-                            msg.JsonData.Value.WriteTo(writer);
-                        }
-                        else
-                        {
-                            // Raw bytes - write as raw JSON
-                            writer.WriteRawValue(msg.Data.Span);
-                        }
+                        // Write pre-serialized JSON directly
+                        writer.WriteRawValue(msg.Data.Span);
                     }
                     writer.WriteEndArray();
                 }
@@ -542,5 +532,5 @@ public sealed class IdempotentProducer : IAsyncDisposable
         _flushLock.Dispose();
     }
 
-    private readonly record struct PendingMessage(ReadOnlyMemory<byte> Data, JsonElement? JsonData);
+    private readonly record struct PendingMessage(ReadOnlyMemory<byte> Data);
 }

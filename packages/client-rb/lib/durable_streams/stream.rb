@@ -169,9 +169,16 @@ module DurableStreams
     # --- Write Operations ---
 
     # Append data to stream
-    # @param data [Object] Data to append
+    # For JSON streams, pass pre-serialized JSON strings.
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @param seq [String, nil] Optional sequence number for ordering
     # @return [AppendResult]
+    # @example
+    #   # JSON stream - pass pre-serialized JSON
+    #   stream.append(JSON.generate({ message: "hello" }))
+    #
+    #   # Byte stream
+    #   stream.append("raw text data")
     def append(data, seq: nil)
       if @batching
         append_with_batching(data, seq)
@@ -181,7 +188,7 @@ module DurableStreams
     end
 
     # Sync append (same as append, explicit name for clarity)
-    # @param data [Object] Data to append
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @param seq [String, nil] Optional sequence number
     # @return [AppendResult]
     def append!(data, seq: nil)
@@ -189,7 +196,7 @@ module DurableStreams
     end
 
     # Shovel operator for append
-    # @param data [Object] Data to append
+    # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @return [self] Returns self for chaining
     def <<(data)
       append(data)
@@ -349,10 +356,12 @@ module DurableStreams
       headers["content-type"] = @content_type if @content_type
       headers[STREAM_SEQ_HEADER] = seq.to_s if seq
 
+      # data_items are pre-serialized strings
       body = if DurableStreams.json_content_type?(@content_type)
-               JSON.generate(data_items)
+               # Wrap pre-serialized JSON strings in array
+               "[#{data_items.join(',')}]"
              else
-               data_items.map { |d| d.is_a?(String) ? d : d.to_s }.join
+               data_items.join
              end
 
       response = @transport.request(:post, @url, headers: headers, body: body)

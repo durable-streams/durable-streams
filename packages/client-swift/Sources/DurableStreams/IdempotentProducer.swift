@@ -106,20 +106,18 @@ public actor IdempotentProducer {
 
     // MARK: - Public API
 
-    /// Enqueue an encodable value for sending (returns immediately).
-    public func append<T: Encodable>(_ value: T, encoder: JSONEncoder = JSONEncoder()) {
-        guard !closed else { return }
-
-        do {
-            // For JSON streams, we send individual items that get wrapped by the batch
-            let data = try encoder.encode(value)
-            enqueueData(data)
-        } catch {
-            config.onError?(error)
-        }
-    }
-
     /// Enqueue raw data for sending (returns immediately).
+    /// For JSON streams, pass pre-serialized JSON data.
+    ///
+    /// Example:
+    /// ```swift
+    /// // JSON stream - pass pre-serialized JSON
+    /// let jsonData = try JSONEncoder().encode(MyMessage(text: "hello"))
+    /// producer.appendData(jsonData)
+    ///
+    /// // Byte stream
+    /// producer.appendData("raw data".data(using: .utf8)!)
+    /// ```
     public func appendData(_ data: Data) {
         guard !closed else { return }
         enqueueData(data)
@@ -127,6 +125,7 @@ public actor IdempotentProducer {
 
     /// Enqueue multiple raw data items at once (single actor hop).
     /// Much faster than calling appendData() in a loop.
+    /// For JSON streams, each item should be pre-serialized JSON.
     public func appendBatch(_ items: [Data]) {
         guard !closed else { return }
         for data in items {
@@ -143,6 +142,16 @@ public actor IdempotentProducer {
     }
 
     /// Enqueue a string for sending (returns immediately).
+    /// For JSON streams, pass pre-serialized JSON strings.
+    ///
+    /// Example:
+    /// ```swift
+    /// // JSON stream - pass pre-serialized JSON
+    /// producer.appendString("{\"message\":\"hello\"}")
+    ///
+    /// // Byte stream
+    /// producer.appendString("raw text data")
+    /// ```
     public func appendString(_ text: String) {
         guard !closed else { return }
         guard let data = text.data(using: .utf8) else {

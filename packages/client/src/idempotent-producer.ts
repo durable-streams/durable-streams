@@ -76,12 +76,9 @@ function normalizeContentType(contentType: string | undefined): string {
 
 /**
  * Internal type for pending batch entries.
- * Stores original data for proper JSON batching.
  */
 interface PendingEntry {
-  /** Original data - parsed for JSON mode batching */
-  data: unknown
-  /** Encoded bytes for byte-stream mode */
+  /** Encoded bytes */
   body: Uint8Array
 }
 
@@ -243,12 +240,22 @@ export class IdempotentProducer {
    * Errors are reported via onError callback if configured. Use flush() to
    * wait for all pending messages to be sent.
    *
-   * For JSON streams, pass native objects (which will be serialized internally).
+   * For JSON streams, pass pre-serialized JSON strings.
    * For byte streams, pass string or Uint8Array.
    *
-   * @param body - Data to append (object for JSON streams, string or Uint8Array for byte streams)
+   * @param body - Data to append (string or Uint8Array)
+   *
+   * @example
+   * ```typescript
+   * // JSON stream
+   * producer.append(JSON.stringify({ message: "hello" }));
+   *
+   * // Byte stream
+   * producer.append("raw text data");
+   * producer.append(new Uint8Array([1, 2, 3]));
+   * ```
    */
-  append(body: Uint8Array | string | unknown): void {
+  append(body: Uint8Array | string): void {
     if (this.#closed) {
       throw new DurableStreamError(
         `Producer is closed`,
@@ -258,35 +265,21 @@ export class IdempotentProducer {
       )
     }
 
-    const isJson =
-      normalizeContentType(this.#stream.contentType) === `application/json`
-
     let bytes: Uint8Array
-    let data: unknown
-
-    if (isJson) {
-      // For JSON streams: accept native objects, serialize internally
-      const json = JSON.stringify(body)
-      bytes = new TextEncoder().encode(json)
-      data = body
+    if (typeof body === `string`) {
+      bytes = new TextEncoder().encode(body)
+    } else if (body instanceof Uint8Array) {
+      bytes = body
     } else {
-      // For byte streams, require string or Uint8Array
-      if (typeof body === `string`) {
-        bytes = new TextEncoder().encode(body)
-      } else if (body instanceof Uint8Array) {
-        bytes = body
-      } else {
-        throw new DurableStreamError(
-          `Non-JSON streams require string or Uint8Array`,
-          `BAD_REQUEST`,
-          400,
-          undefined
-        )
-      }
-      data = bytes
+      throw new DurableStreamError(
+        `append() requires string or Uint8Array. For objects, use JSON.stringify().`,
+        `BAD_REQUEST`,
+        400,
+        undefined
+      )
     }
 
-    this.#pendingBatch.push({ data, body: bytes })
+    this.#pendingBatch.push({ body: bytes })
     this.#batchBytes += bytes.length
 
     // Check if batch should be sent immediately
@@ -542,8 +535,9 @@ export class IdempotentProducer {
       // For JSON mode: always send as array (server flattens one level)
       // Single append: [value] → server stores value
       // Multiple appends: [val1, val2] → server stores val1, val2
-      const values = batch.map((e) => e.data)
-      batchedBody = JSON.stringify(values)
+      // Input is pre-serialized JSON strings, join them into an array
+      const jsonStrings = batch.map((e) => new TextDecoder().decode(e.body))
+      batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
       // For byte mode: concatenate all chunks
       const totalSize = batch.reduce((sum, e) => sum + e.body.length, 0)

@@ -81,8 +81,6 @@ class _PendingEntry:
     """Internal type for pending batch entries."""
 
     body: bytes
-    # For JSON mode, store parsed data for proper array wrapping
-    data: Any = None
 
 
 @dataclass
@@ -219,7 +217,7 @@ class IdempotentProducer:
         """Number of batches currently in flight."""
         return len(self._in_flight)
 
-    def append(self, body: bytes | str | Any) -> None:
+    def append(self, body: bytes | str) -> None:
         """
         Append data to the stream.
 
@@ -233,11 +231,19 @@ class IdempotentProducer:
         wait for all pending messages to be sent.
 
         Args:
-            body: Data to append. For JSON streams, pass native objects (dict, list, etc.)
-                  which will be serialized internally. For byte streams, pass bytes or str.
+            body: Data to append. For JSON streams, pass pre-serialized JSON strings.
+                  For byte streams, pass bytes or str.
 
         Raises:
             DurableStreamError: If producer is closed
+
+        Example:
+            # JSON stream - pass pre-serialized JSON
+            producer.append(json.dumps({"message": "hello"}))
+
+            # Byte stream
+            producer.append(b"raw bytes")
+            producer.append("raw text")
         """
         if self._closed:
             raise DurableStreamError(
@@ -246,27 +252,18 @@ class IdempotentProducer:
                 status=None,
             )
 
-        is_json = _normalize_content_type(self._content_type) == "application/json"
-
-        if is_json:
-            # For JSON mode: accept native objects, serialize internally
-            data_bytes = json.dumps(body).encode("utf-8")
-            parsed_data = body
+        if isinstance(body, str):
+            data_bytes = body.encode("utf-8")
+        elif isinstance(body, bytes):
+            data_bytes = body
         else:
-            # For byte mode: require bytes or str
-            if isinstance(body, str):
-                data_bytes = body.encode("utf-8")
-            elif isinstance(body, bytes):
-                data_bytes = body
-            else:
-                raise DurableStreamError(
-                    "Non-JSON streams require bytes or str",
-                    code="BAD_REQUEST",
-                    status=400,
-                )
-            parsed_data = data_bytes
+            raise DurableStreamError(
+                "append() requires bytes or str. For objects, use json.dumps().",
+                code="BAD_REQUEST",
+                status=400,
+            )
 
-        entry = _PendingEntry(body=data_bytes, data=parsed_data)
+        entry = _PendingEntry(body=data_bytes)
         self._pending_batch.append(entry)
         self._batch_bytes += len(data_bytes)
 
@@ -489,8 +486,9 @@ class IdempotentProducer:
             # For JSON mode: always send as array (server flattens one level)
             # Single append: [value] → server stores value
             # Multiple appends: [val1, val2] → server stores val1, val2
-            values = [entry.data for entry in batch]
-            batched_body = json.dumps(values).encode("utf-8")
+            # Input is pre-serialized JSON strings, join them into an array
+            json_strings = [entry.body.decode("utf-8") for entry in batch]
+            batched_body = ("[" + ",".join(json_strings) + "]").encode("utf-8")
         else:
             # For byte mode: concatenate all chunks
             batched_body = b"".join(entry.body for entry in batch)

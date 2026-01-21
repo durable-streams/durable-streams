@@ -133,12 +133,19 @@ final class DurableStream
     /**
      * Append data to the stream.
      *
-     * @param string|array<mixed> $data Data to append (arrays are JSON-encoded)
+     * @param string $data Data to append (for JSON streams, pass pre-serialized JSON)
      * @param string|null $seq Optional sequence number
      * @param array<string, string> $extraHeaders Additional headers for this request
+     *
+     * Example:
+     *   // JSON stream - pass pre-serialized JSON
+     *   $stream->append(json_encode(['message' => 'hello']));
+     *
+     *   // Byte stream
+     *   $stream->append("raw text data");
      */
     public function append(
-        string|array $data,
+        string $data,
         ?string $seq = null,
         array $extraHeaders = [],
     ): AppendResult {
@@ -148,12 +155,7 @@ final class DurableStream
         $contentType = $this->contentType ?? 'application/octet-stream';
         $headers['Content-Type'] = $contentType;
 
-        // Encode data
-        if (is_array($data)) {
-            $body = json_encode($data, JSON_THROW_ON_ERROR);
-        } else {
-            $body = $data;
-        }
+        $body = $data;
 
         if ($seq !== null) {
             $headers['Stream-Seq'] = $seq;

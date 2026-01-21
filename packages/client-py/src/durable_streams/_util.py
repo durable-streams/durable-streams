@@ -166,27 +166,30 @@ def is_sse_compatible_content_type(content_type: str | None) -> bool:
     return normalized.startswith("text/") or normalized == "application/json"
 
 
-def encode_body(body: str | bytes | Any) -> bytes:
+def encode_body(body: str | bytes) -> bytes:
     """
     Encode a body value to bytes.
 
     - Bytes are returned as-is
     - Strings are encoded as UTF-8
-    - Other values are JSON-serialized
 
     Args:
-        body: The body value to encode
+        body: The body value to encode (str or bytes)
 
     Returns:
         Encoded bytes
-    """
-    import json
 
+    Raises:
+        TypeError: If body is not str or bytes
+    """
     if isinstance(body, bytes):
         return body
     if isinstance(body, str):
         return body.encode("utf-8")
-    return json.dumps(body).encode("utf-8")
+    raise TypeError(
+        f"encode_body() requires str or bytes, got {type(body).__name__}. "
+        "For objects, use json.dumps()."
+    )
 
 
 def build_url_with_params(

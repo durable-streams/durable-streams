@@ -49,7 +49,7 @@ import type {
  * Queued message for batching.
  */
 interface QueuedMessage {
-  data: unknown
+  data: Uint8Array | string
   seq?: string
   contentType?: string
   signal?: AbortSignal
@@ -350,23 +350,27 @@ export class DurableStream {
    * a POST is in-flight will be batched together into a single request.
    * This significantly improves throughput for high-frequency writes.
    *
-   * - `body` may be Uint8Array, string, or any JSON-serializable value (for JSON streams).
-   * - `body` may also be a Promise that resolves to any of the above types.
+   * - `body` must be string or Uint8Array.
+   * - For JSON streams, pass pre-serialized JSON strings.
+   * - `body` may also be a Promise that resolves to string or Uint8Array.
    * - Strings are encoded as UTF-8.
    * - `seq` (if provided) is sent as stream-seq (writer coordination).
    *
    * @example
    * ```typescript
-   * // Direct value
-   * await stream.append({ message: "hello" });
+   * // JSON stream - pass pre-serialized JSON
+   * await stream.append(JSON.stringify({ message: "hello" }));
+   *
+   * // Byte stream
+   * await stream.append("raw text data");
+   * await stream.append(new Uint8Array([1, 2, 3]));
    *
    * // Promise value - awaited before buffering
    * await stream.append(fetchData());
-   * await stream.append(Promise.all([a, b, c]));
    * ```
    */
   async append(
-    body: BodyInit | Uint8Array | string | unknown,
+    body: Uint8Array | string | Promise<Uint8Array | string>,
     opts?: AppendOptions
   ): Promise<void> {
     // Await promises before buffering
@@ -382,7 +386,7 @@ export class DurableStream {
    * Direct append without batching (used when batching is disabled).
    */
   async #appendDirect(
-    body: BodyInit | Uint8Array | string | unknown,
+    body: Uint8Array | string,
     opts?: AppendOptions
   ): Promise<void> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest()
@@ -398,9 +402,11 @@ export class DurableStream {
     }
 
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
+    // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
-    const bodyToEncode = isJson ? [body] : body
-    const encodedBody = encodeBody(bodyToEncode)
+    const bodyStr =
+      typeof body === `string` ? body : new TextDecoder().decode(body)
+    const encodedBody: BodyInit = isJson ? `[${bodyStr}]` : bodyStr
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
       method: `POST`,
@@ -418,7 +424,7 @@ export class DurableStream {
    * Append with batching - buffers messages and sends them in batches.
    */
   async #appendWithBatching(
-    body: unknown,
+    body: Uint8Array | string,
     opts?: AppendOptions
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
@@ -511,29 +517,17 @@ export class DurableStream {
       // For JSON mode: always send as array (server flattens one level)
       // Single append: [value] → server stores value
       // Multiple appends: [val1, val2] → server stores val1, val2
-      const values = batch.map((m) => m.data)
-      batchedBody = JSON.stringify(values)
+      // Input is pre-serialized JSON strings, join them into an array
+      const jsonStrings = batch.map((m) =>
+        typeof m.data === `string` ? m.data : new TextDecoder().decode(m.data)
+      )
+      batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      // For byte mode: concatenate all chunks
-      const totalSize = batch.reduce((sum, m) => {
-        const size =
-          typeof m.data === `string`
-            ? new TextEncoder().encode(m.data).length
-            : (m.data as Uint8Array).length
-        return sum + size
-      }, 0)
-
-      const concatenated = new Uint8Array(totalSize)
-      let offset = 0
-      for (const msg of batch) {
-        const bytes =
-          typeof msg.data === `string`
-            ? new TextEncoder().encode(msg.data)
-            : (msg.data as Uint8Array)
-        concatenated.set(bytes, offset)
-        offset += bytes.length
-      }
-      batchedBody = concatenated
+      // For byte mode: concatenate all chunks as a string
+      const strings = batch.map((m) =>
+        typeof m.data === `string` ? m.data : new TextDecoder().decode(m.data)
+      )
+      batchedBody = strings.join(``)
     }
 
     // Combine signals: stream-level signal + any per-message signals

@@ -3,7 +3,6 @@ package durablestreams
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -91,9 +90,7 @@ type IdempotentAppendResult struct {
 // pendingEntry represents a message waiting to be sent.
 type pendingEntry struct {
 	data   []byte
-	// For JSON mode, store the raw JSON value for proper array wrapping
-	jsonData json.RawMessage
-	result   chan idempotentResult
+	result chan idempotentResult
 }
 
 type idempotentResult struct {
@@ -289,10 +286,19 @@ func (p *IdempotentProducer) InFlightCount() int {
 // Errors are reported via OnError callback if configured. Use Flush to
 // wait for all pending messages to be sent.
 //
-// For JSON streams, pass native Go values (maps, slices, structs, etc.)
-// which will be serialized internally. For byte streams, pass []byte or string.
+// For JSON streams, pass pre-serialized JSON strings as []byte or string.
+// For byte streams, pass []byte or string.
 //
 // Returns ErrProducerClosed if the producer is closed.
+//
+// Example:
+//
+//	// JSON stream - pass pre-serialized JSON
+//	jsonData, _ := json.Marshal(map[string]string{"message": "hello"})
+//	producer.Append(jsonData)
+//
+//	// Byte stream
+//	producer.Append([]byte("raw bytes"))
 func (p *IdempotentProducer) Append(data any) error {
 	p.mu.Lock()
 	if p.closed {
@@ -300,37 +306,22 @@ func (p *IdempotentProducer) Append(data any) error {
 		return ErrProducerClosed
 	}
 
-	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
 	var dataBytes []byte
-	var jsonData json.RawMessage
-
-	if isJSON {
-		// For JSON mode: accept native objects, serialize internally
-		jsonBytes, err := json.Marshal(data)
-		if err != nil {
-			p.mu.Unlock()
-			return newStreamError("append", p.url, 0, fmt.Errorf("json marshal: %w", err))
-		}
-		dataBytes = jsonBytes
-		jsonData = json.RawMessage(jsonBytes)
-	} else {
-		// For byte mode: require []byte or string
-		switch v := data.(type) {
-		case []byte:
-			dataBytes = v
-		case string:
-			dataBytes = []byte(v)
-		default:
-			p.mu.Unlock()
-			return newStreamError("append", p.url, 0, fmt.Errorf("non-JSON streams require []byte or string, got %T", data))
-		}
+	// Require []byte or string
+	switch v := data.(type) {
+	case []byte:
+		dataBytes = v
+	case string:
+		dataBytes = []byte(v)
+	default:
+		p.mu.Unlock()
+		return newStreamError("append", p.url, 0, fmt.Errorf("append() requires []byte or string. For objects, use json.Marshal(). Got %T", data))
 	}
 
 	// Add to pending batch (no result channel needed for async)
 	entry := pendingEntry{
-		data:     dataBytes,
-		jsonData: jsonData,
-		result:   nil, // nil signals fire-and-forget
+		data:   dataBytes,
+		result: nil, // nil signals fire-and-forget
 	}
 	p.pendingBatch = append(p.pendingBatch, entry)
 	p.batchBytes += len(dataBytes)
@@ -584,15 +575,17 @@ func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEnt
 		// For JSON mode: always send as array (server flattens one level)
 		// Single append: [value] → server stores value
 		// Multiple appends: [val1, val2] → server stores val1, val2
-		values := make([]json.RawMessage, len(batch))
+		// Input is pre-serialized JSON strings, join them into an array
+		var builder strings.Builder
+		builder.WriteByte('[')
 		for i, e := range batch {
-			values[i] = e.jsonData
+			if i > 0 {
+				builder.WriteByte(',')
+			}
+			builder.Write(e.data)
 		}
-		var err error
-		batchedBody, err = json.Marshal(values)
-		if err != nil {
-			return IdempotentAppendResult{}, fmt.Errorf("json batch encode: %w", err)
-		}
+		builder.WriteByte(']')
+		batchedBody = []byte(builder.String())
 	} else {
 		// For byte mode: concatenate all chunks
 		var totalSize int
