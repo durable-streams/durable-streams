@@ -1,0 +1,26 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`CLI --help > outputs expected usage text 1`] = `
+"
+Usage:
+  durable-stream create <stream_id>              Create a new stream
+  durable-stream write <stream_id> <content>     Write content to a stream
+  cat file.txt | durable-stream write <stream_id>    Write stdin to a stream
+  durable-stream read <stream_id>                Follow a stream and write to stdout
+  durable-stream delete <stream_id>              Delete a stream
+
+Global Options:
+  --url <url>             Stream server URL (overrides STREAM_URL env var)
+  --auth <value>          Authorization header value (e.g., "Bearer my-token")
+  --help, -h              Show this help message
+
+Write Options:
+  --content-type <type>   Content-Type for the message (default: application/octet-stream)
+  --json                  Write as JSON (input stored as single message)
+  --batch-json            Write as JSON array of messages (each array element stored separately)
+
+Environment Variables:
+  STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
+  STREAM_AUTH   Authorization header value (overridden by --auth flag)
+"
+`;
