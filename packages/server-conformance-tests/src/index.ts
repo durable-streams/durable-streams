@@ -4061,15 +4061,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     describe(`Byte-Exactness Property`, () => {
       const NUM_CONCURRENT_READERS = 7
 
-      // Helper to read entire stream with pagination
       async function readEntireStream(streamPath: string): Promise<Uint8Array> {
         const accumulated: Array<number> = []
         let currentOffset: string | null = null
-        let iterations = 0
 
-        while (iterations < 100) {
-          iterations++
-
+        for (let i = 0; i < 100; i++) {
           const url: string = currentOffset
             ? `${getBaseUrl()}${streamPath}?offset=${encodeURIComponent(currentOffset)}`
             : `${getBaseUrl()}${streamPath}`
@@ -4077,12 +4073,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           const response: Response = await fetch(url, { method: `GET` })
           expect(response.status).toBe(200)
 
-          const buffer = await response.arrayBuffer()
-          const data = new Uint8Array(buffer)
-
-          if (data.length > 0) {
-            accumulated.push(...Array.from(data))
-          }
+          const data = new Uint8Array(await response.arrayBuffer())
+          accumulated.push(...data)
 
           const nextOffset: string | null =
             response.headers.get(STREAM_OFFSET_HEADER)
@@ -4133,34 +4125,17 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 expect(response.status).toBe(204)
               }
 
-              // Calculate expected result
-              const totalLength = chunks.reduce(
-                (sum, chunk) => sum + chunk.length,
-                0
-              )
-              const expected = new Uint8Array(totalLength)
-              let offset = 0
-              for (const chunk of chunks) {
-                expected.set(chunk, offset)
-                offset += chunk.length
-              }
+              const expected = Uint8Array.from(chunks.flatMap((c) => [...c]))
 
-              // Launch 7 concurrent readers to detect race conditions
-              const readerPromises = Array.from(
-                { length: NUM_CONCURRENT_READERS },
-                () => readEntireStream(streamPath)
+              const results = await Promise.all(
+                Array.from({ length: NUM_CONCURRENT_READERS }, () =>
+                  readEntireStream(streamPath)
+                )
               )
-              const results = await Promise.all(readerPromises)
 
-              // Verify all readers got identical bytes matching expected
               for (const result of results) {
-                expect(result.length).toBe(expected.length)
-                for (let i = 0; i < expected.length; i++) {
-                  expect(result[i]).toBe(expected[i])
-                }
+                expect(result).toEqual(expected)
               }
-
-              return true
             }
           ),
           { numRuns: 20 } // Limit runs since each creates a stream
@@ -4175,37 +4150,28 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
             async (byteValue) => {
               const streamPath = `/v1/stream/fc-single-byte-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
-              // Create and append single byte
               await fetch(`${getBaseUrl()}${streamPath}`, {
                 method: `PUT`,
                 headers: { "Content-Type": `application/octet-stream` },
               })
 
-              const chunk = new Uint8Array([byteValue])
               await fetch(`${getBaseUrl()}${streamPath}`, {
                 method: `POST`,
                 headers: { "Content-Type": `application/octet-stream` },
-                body: chunk,
+                body: new Uint8Array([byteValue]),
               })
 
-              // Launch 7 concurrent readers to detect race conditions
-              const readerPromises = Array.from(
-                { length: NUM_CONCURRENT_READERS },
-                async () => {
-                  const response = await fetch(`${getBaseUrl()}${streamPath}`)
-                  const buffer = await response.arrayBuffer()
-                  return new Uint8Array(buffer)
-                }
+              const expected = new Uint8Array([byteValue])
+
+              const results = await Promise.all(
+                Array.from({ length: NUM_CONCURRENT_READERS }, () =>
+                  readEntireStream(streamPath)
+                )
               )
-              const results = await Promise.all(readerPromises)
 
-              // Verify all readers got the same single byte
               for (const result of results) {
-                expect(result.length).toBe(1)
-                expect(result[0]).toBe(byteValue)
+                expect(result).toEqual(expected)
               }
-
-              return true
             }
           ),
           { numRuns: 50 } // Test a good sample of byte values
