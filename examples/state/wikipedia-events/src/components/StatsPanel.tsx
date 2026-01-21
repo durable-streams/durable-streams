@@ -1,7 +1,7 @@
 // @refresh skip
 import { For, createMemo } from "solid-js"
 import { useLiveQuery } from "@tanstack/solid-db"
-import { count, eq } from "@durable-streams/state"
+import { count, eq } from "@tanstack/db"
 import { useWikipediaDB } from "../lib/stream-db"
 import "./StatsPanel.css"
 
