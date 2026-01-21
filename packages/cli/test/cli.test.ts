@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process"
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { getUsageText } from "../src/index"
@@ -90,6 +93,46 @@ describe(`CLI --help`, () => {
     // -h should print to stdout, not stderr (POSIX convention)
     expect(result.stdout).toContain(`Usage:`)
     expect(result.stderr).toBe(``)
+  })
+
+  it(`works when invoked through a symlink (like npx)`, async () => {
+    const cliPath = new URL(`../dist/index.js`, import.meta.url).pathname
+    const tempDir = mkdtempSync(join(tmpdir(), `cli-symlink-test-`))
+    const symlinkPath = join(tempDir, `cli-symlink`)
+
+    try {
+      symlinkSync(cliPath, symlinkPath)
+
+      const result = await new Promise<{
+        stdout: string
+        stderr: string
+        exitCode: number
+      }>((resolve) => {
+        const child = spawn(process.execPath, [symlinkPath, `--help`], {
+          env: { ...process.env },
+        })
+
+        let stdout = ``
+        let stderr = ``
+
+        child.stdout.on(`data`, (data) => {
+          stdout += data.toString()
+        })
+        child.stderr.on(`data`, (data) => {
+          stderr += data.toString()
+        })
+
+        child.on(`close`, (code) => {
+          resolve({ stdout, stderr, exitCode: code ?? 1 })
+        })
+      })
+
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain(`Usage:`)
+      expect(result.stderr).toBe(``)
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })
 

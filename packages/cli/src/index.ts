@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from "node:fs"
 import { STATUS_CODES } from "node:http"
 import { resolve as resolvePath } from "node:path"
 import { stderr, stdin, stdout } from "node:process"
@@ -483,9 +484,17 @@ async function main() {
 // Only run when executed directly, not when imported as a module
 function isMainModule(): boolean {
   if (!process.argv[1]) return false
-  const scriptPath = resolvePath(process.argv[1])
-  const modulePath = fileURLToPath(import.meta.url)
-  return scriptPath === modulePath
+  try {
+    // Use realpathSync to resolve symlinks - needed for npx which uses symlinked bins
+    const scriptPath = realpathSync(resolvePath(process.argv[1]))
+    const modulePath = realpathSync(fileURLToPath(import.meta.url))
+    return scriptPath === modulePath
+  } catch {
+    // If realpathSync fails (e.g., file doesn't exist), fall back to direct comparison
+    const scriptPath = resolvePath(process.argv[1])
+    const modulePath = fileURLToPath(import.meta.url)
+    return scriptPath === modulePath
+  }
 }
 
 if (isMainModule()) {
