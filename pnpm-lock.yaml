@@ -360,7 +360,7 @@ importers:
         version: link:../server
       '@types/node':
         specifier: ^22.0.0
-        version: 22.19.3
+        version: 22.19.7
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
@@ -369,7 +369,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.0
-        version: 4.0.16(@types/node@22.19.3)(jiti@2.6.1)(lightningcss@1.30.2)(tsx@4.21.0)(yaml@2.8.2)
+        version: 4.0.17(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/server:
     dependencies:
