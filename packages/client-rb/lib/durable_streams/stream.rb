@@ -180,6 +180,10 @@ module DurableStreams
     #   # Byte stream
     #   stream.append("raw text data")
     def append(data, seq: nil)
+      unless data.is_a?(String)
+        raise ArgumentError, "append() requires a String. For objects, use JSON.generate(). Got #{data.class}"
+      end
+
       if @batching
         append_with_batching(data, seq)
       else

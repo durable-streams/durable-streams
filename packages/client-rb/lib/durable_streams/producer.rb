@@ -79,6 +79,9 @@ module DurableStreams
     #   producer.append(JSON.generate({ message: "hello" }))
     def append(data)
       raise ClosedError.new("Producer is closed", url: @url) if @closed
+      unless data.is_a?(String)
+        raise ArgumentError, "append() requires a String. For objects, use JSON.generate(). Got #{data.class}"
+      end
 
       batch_to_send = nil
       @mutex.synchronize do

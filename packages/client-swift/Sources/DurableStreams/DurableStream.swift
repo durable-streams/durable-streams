@@ -532,20 +532,6 @@ public actor DurableStream {
         return try await appendSync(data)
     }
 
-    /// Append an encodable value as JSON (convenience method that auto-serializes).
-    /// This wraps the value in an array for JSON streams per protocol requirements.
-    public func appendJSONSync<T: Encodable>(_ value: T, encoder: JSONEncoder = JSONEncoder()) async throws -> AppendResult {
-        // For JSON mode, wrap in array
-        let isJSON = contentType?.isJSONContentType ?? false
-        let data: Data
-        if isJSON {
-            data = try encoder.encode([value])
-        } else {
-            data = try encoder.encode(value)
-        }
-        return try await appendSync(data, contentType: "application/json")
-    }
-
     /// Append raw data with producer headers.
     public func appendWithProducer(
         _ data: Data,

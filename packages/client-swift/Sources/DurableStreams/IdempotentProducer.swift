@@ -119,7 +119,10 @@ public actor IdempotentProducer {
     /// producer.appendData("raw data".data(using: .utf8)!)
     /// ```
     public func appendData(_ data: Data) {
-        guard !closed else { return }
+        guard !closed else {
+            config.onError?(DurableStreamError.badRequest(message: "Producer is closed"))
+            return
+        }
         enqueueData(data)
     }
 
@@ -127,7 +130,10 @@ public actor IdempotentProducer {
     /// Much faster than calling appendData() in a loop.
     /// For JSON streams, each item should be pre-serialized JSON.
     public func appendBatch(_ items: [Data]) {
-        guard !closed else { return }
+        guard !closed else {
+            config.onError?(DurableStreamError.badRequest(message: "Producer is closed"))
+            return
+        }
         for data in items {
             pendingItems.append(data)
             pendingSize += data.count
@@ -153,7 +159,10 @@ public actor IdempotentProducer {
     /// producer.appendString("raw text data")
     /// ```
     public func appendString(_ text: String) {
-        guard !closed else { return }
+        guard !closed else {
+            config.onError?(DurableStreamError.badRequest(message: "Producer is closed"))
+            return
+        }
         guard let data = text.data(using: .utf8) else {
             config.onError?(DurableStreamError.badRequest(message: "Invalid UTF-8 string"))
             return
