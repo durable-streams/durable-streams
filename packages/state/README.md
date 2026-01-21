@@ -517,9 +517,11 @@ const schema = createStateSchema({
 })
 
 // Different types coexist in the same stream
-await stream.append(schema.users.insert({ value: user }))
-await stream.append(schema.messages.insert({ value: message }))
-await stream.append(schema.reactions.insert({ value: reaction }))
+await stream.append(JSON.stringify(schema.users.insert({ value: user })))
+await stream.append(JSON.stringify(schema.messages.insert({ value: message })))
+await stream.append(
+  JSON.stringify(schema.reactions.insert({ value: reaction }))
+)
 ```
 
 ## Best Practices
@@ -564,7 +566,9 @@ For critical operations, always use transaction IDs to ensure confirmation:
 
 ```typescript
 const txid = crypto.randomUUID()
-await stream.append(schema.users.insert({ value: user, headers: { txid } }))
+await stream.append(
+  JSON.stringify(schema.users.insert({ value: user, headers: { txid } }))
+)
 await db.utils.awaitTxId(txid, 10000) // Wait up to 10 seconds
 ```
 

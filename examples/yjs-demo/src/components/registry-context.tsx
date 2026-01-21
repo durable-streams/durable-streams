@@ -25,10 +25,12 @@ function createRegistryDB(url: string) {
         mutationFn: async (metadata: RoomMetadata) => {
           const txid = crypto.randomUUID()
           await stream.append(
-            registryStateSchema.rooms.insert({
-              value: metadata,
-              headers: { txid },
-            })
+            JSON.stringify(
+              registryStateSchema.rooms.insert({
+                value: metadata,
+                headers: { txid },
+              })
+            )
           )
           await db.utils.awaitTxId(txid)
         },
@@ -40,10 +42,12 @@ function createRegistryDB(url: string) {
         mutationFn: async (roomId: string) => {
           const txid = crypto.randomUUID()
           await stream.append(
-            registryStateSchema.rooms.delete({
-              key: roomId,
-              headers: { txid },
-            })
+            JSON.stringify(
+              registryStateSchema.rooms.delete({
+                key: roomId,
+                headers: { txid },
+              })
+            )
           )
           await db.utils.awaitTxId(txid)
         },
