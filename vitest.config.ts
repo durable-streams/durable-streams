@@ -60,6 +60,11 @@ export default defineConfig({
           name: "cli",
           include: ["packages/cli/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
+          pool: "forks",
+          testTimeout: 30000,
+          sequence: {
+            concurrent: false,
+          },
         },
         resolve: { alias },
       }),
