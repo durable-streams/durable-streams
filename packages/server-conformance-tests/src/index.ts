@@ -4117,21 +4117,31 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
               const expected = Uint8Array.from(chunks.flatMap((c) => [...c]))
 
+              // Track when writes are done so readers know to stop
+              let writesComplete = false
+
               // Start readers and writer concurrently to catch race conditions
               const readerPromises = Array.from(
                 { length: NUM_CONCURRENT_READERS },
                 async () => {
-                  // Random delay to interleave reads with writes
-                  await new Promise((r) => setTimeout(r, Math.random() * 10))
-                  const response: Response = await fetch(
-                    `${getBaseUrl()}${streamPath}`
-                  )
-                  return new Uint8Array(await response.arrayBuffer())
+                  const snapshots: Array<Uint8Array> = []
+                  // Keep reading until writes complete, capturing snapshots
+                  while (!writesComplete) {
+                    const response: Response = await fetch(
+                      `${getBaseUrl()}${streamPath}`
+                    )
+                    snapshots.push(new Uint8Array(await response.arrayBuffer()))
+                    // Small delay between reads
+                    await new Promise((r) => setTimeout(r, Math.random() * 3))
+                  }
+                  return snapshots
                 }
               )
 
               const writerPromise = (async () => {
                 for (const chunk of chunks) {
+                  // Random delay between writes to interleave with readers
+                  await new Promise((r) => setTimeout(r, Math.random() * 5))
                   const response = await fetch(`${getBaseUrl()}${streamPath}`, {
                     method: `POST`,
                     headers: { "Content-Type": `application/octet-stream` },
@@ -4139,6 +4149,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                   })
                   expect(response.status).toBe(204)
                 }
+                writesComplete = true
               })()
 
               const [readerResults] = await Promise.all([
@@ -4146,12 +4157,13 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 writerPromise,
               ])
 
-              // Each reader must see a valid prefix of expected data
-              // (they may see partial data if reading mid-write)
-              for (const result of readerResults) {
-                expect(result.length).toBeLessThanOrEqual(expected.length)
-                for (let i = 0; i < result.length; i++) {
-                  expect(result[i]).toBe(expected[i])
+              // Each snapshot from each reader must be a valid prefix of expected
+              for (const snapshots of readerResults) {
+                for (const snapshot of snapshots) {
+                  expect(snapshot.length).toBeLessThanOrEqual(expected.length)
+                  for (let i = 0; i < snapshot.length; i++) {
+                    expect(snapshot[i]).toBe(expected[i])
+                  }
                 }
               }
 
