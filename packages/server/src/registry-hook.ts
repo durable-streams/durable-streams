@@ -100,7 +100,7 @@ export function createRegistryHooks(
         },
       })
 
-      await registryStream.append(changeEvent)
+      await registryStream.append(JSON.stringify(changeEvent))
     },
 
     onStreamDeleted: async (event) => {
@@ -112,7 +112,7 @@ export function createRegistryHooks(
         key: streamName,
       })
 
-      await registryStream.append(changeEvent)
+      await registryStream.append(JSON.stringify(changeEvent))
     },
   }
 }

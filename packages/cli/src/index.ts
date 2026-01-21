@@ -119,7 +119,7 @@ async function appendJson(
 ): Promise<number> {
   let count = 0
   for (const item of flattenJsonForAppend(parsed)) {
-    await stream.append(item)
+    await stream.append(JSON.stringify(item))
     count++
   }
   return count
