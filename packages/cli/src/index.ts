@@ -103,11 +103,12 @@ function parseGlobalOptions(args: Array<string>): {
   return { options, remainingArgs, warnings }
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function buildHeaders(options: GlobalOptions): Record<string, string> {
-  if (options.auth) {
-    return { Authorization: options.auth }
-  }
-  return {}
+  return options.auth ? { Authorization: options.auth } : {}
 }
 
 function getUsageText(): string {
@@ -155,9 +156,8 @@ async function createStream(
     console.log(`Stream created successfully: ${streamId}`)
     console.log(`  URL: ${url}`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
     stderr.write(`Failed to create stream "${streamId}"\n`)
-    stderr.write(`  ${formatErrorMessage(message)}\n`)
+    stderr.write(`  ${formatErrorMessage(getErrorMessage(error))}\n`)
     process.exit(1)
   }
 }
@@ -168,8 +168,9 @@ async function createStream(
 function formatErrorMessage(message: string): string {
   // Extract HTTP status codes and make them more readable
   const httpMatch = message.match(/HTTP Error (\d+)/)
-  if (httpMatch) {
-    const status = parseInt(httpMatch[1], 10)
+  const statusCode = httpMatch?.[1]
+  if (statusCode) {
+    const status = parseInt(statusCode, 10)
     const statusText = getHttpStatusText(status)
     return message.replace(/HTTP Error \d+/, `${statusText} (${status})`)
   }
@@ -192,17 +193,46 @@ function getHttpStatusText(status: number): string {
 
 /**
  * Append JSON data to a stream with one-level array flattening.
+ * Returns the number of messages written.
  */
-async function appendJson(
+async function appendJsonBatch(
   stream: DurableStream,
   parsed: unknown
 ): Promise<number> {
-  let count = 0
-  for (const item of flattenJsonForAppend(parsed)) {
+  const items = [...flattenJsonForAppend(parsed)]
+  for (const item of items) {
     await stream.append(item)
-    count++
   }
-  return count
+  return items.length
+}
+
+/**
+ * Read all data from stdin into a Buffer.
+ */
+async function readStdin(): Promise<Buffer> {
+  const chunks: Array<Buffer> = []
+
+  stdin.on(`data`, (chunk) => {
+    chunks.push(chunk)
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    stdin.on(`end`, resolve)
+    stdin.on(`error`, reject)
+  })
+
+  return Buffer.concat(chunks)
+}
+
+/**
+ * Process escape sequences in content string.
+ */
+function processEscapeSequences(content: string): string {
+  return content
+    .replace(/\\n/g, `\n`)
+    .replace(/\\t/g, `\t`)
+    .replace(/\\r/g, `\r`)
+    .replace(/\\\\/g, `\\`)
 }
 
 async function writeStream(
@@ -212,94 +242,63 @@ async function writeStream(
   batchJson: boolean,
   headers: Record<string, string>,
   content?: string
-) {
+): Promise<void> {
   const url = `${baseUrl}/v1/stream/${streamId}`
   const isJson = isJsonContentType(contentType)
+
+  // Get the data to write - either from argument or stdin
+  let data: string | Buffer
+  let source: `argument` | `stdin`
+
+  if (content) {
+    data = processEscapeSequences(content)
+    source = `argument`
+  } else {
+    data = await readStdin()
+    source = `stdin`
+    if (data.length === 0) {
+      stderr.write(`No data received from stdin\n`)
+      process.exit(1)
+    }
+  }
 
   try {
     const stream = new DurableStream({ url, headers, contentType })
 
-    if (content) {
-      // Write provided content, interpreting escape sequences
-      const processedContent = content
-        .replace(/\\n/g, `\n`)
-        .replace(/\\t/g, `\t`)
-        .replace(/\\r/g, `\r`)
-        .replace(/\\\\/g, `\\`)
-
-      if (isJson) {
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(processedContent)
-        } catch {
+    if (isJson) {
+      const jsonString = typeof data === `string` ? data : data.toString(`utf8`)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(jsonString)
+      } catch {
+        if (source === `argument`) {
+          const preview = jsonString.slice(0, 100)
+          const ellipsis = jsonString.length > 100 ? `...` : ``
           stderr.write(`Failed to parse JSON content\n`)
-          stderr.write(
-            `  Invalid JSON: ${processedContent.slice(0, 100)}${processedContent.length > 100 ? `...` : ``}\n`
-          )
-          process.exit(1)
-        }
-        if (batchJson) {
-          const count = await appendJson(stream, parsed)
-          console.log(
-            `Wrote ${count} message${count !== 1 ? `s` : ``} to stream "${streamId}"`
-          )
+          stderr.write(`  Invalid JSON: ${preview}${ellipsis}\n`)
         } else {
-          await stream.append(parsed)
-          console.log(`Wrote 1 JSON message to stream "${streamId}"`)
+          stderr.write(`Failed to parse JSON from stdin\n`)
+          stderr.write(`  Invalid JSON input\n`)
         }
-      } else {
-        await stream.append(processedContent)
-        console.log(
-          `Wrote ${formatBytes(processedContent.length)} to stream "${streamId}"`
-        )
-      }
-    } else {
-      // Read from stdin
-      const chunks: Array<Buffer> = []
-
-      stdin.on(`data`, (chunk) => {
-        chunks.push(chunk)
-      })
-
-      await new Promise<void>((resolve, reject) => {
-        stdin.on(`end`, resolve)
-        stdin.on(`error`, reject)
-      })
-
-      const data = Buffer.concat(chunks)
-
-      if (data.length === 0) {
-        stderr.write(`No data received from stdin\n`)
         process.exit(1)
       }
 
-      if (isJson) {
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(data.toString(`utf8`))
-        } catch {
-          stderr.write(`Failed to parse JSON from stdin\n`)
-          stderr.write(`  Invalid JSON input\n`)
-          process.exit(1)
-        }
-        if (batchJson) {
-          const count = await appendJson(stream, parsed)
-          console.log(
-            `Wrote ${count} message${count !== 1 ? `s` : ``} to stream "${streamId}"`
-          )
-        } else {
-          await stream.append(parsed)
-          console.log(`Wrote 1 JSON message to stream "${streamId}"`)
-        }
+      if (batchJson) {
+        const count = await appendJsonBatch(stream, parsed)
+        console.log(
+          `Wrote ${count} message${count !== 1 ? `s` : ``} to stream "${streamId}"`
+        )
       } else {
-        await stream.append(data)
-        console.log(`Wrote ${formatBytes(data.length)} to stream "${streamId}"`)
+        await stream.append(parsed)
+        console.log(`Wrote 1 JSON message to stream "${streamId}"`)
       }
+    } else {
+      await stream.append(data)
+      console.log(`Wrote ${formatBytes(data.length)} to stream "${streamId}"`)
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
     stderr.write(`Failed to write to stream "${streamId}"\n`)
-    stderr.write(`  ${formatErrorMessage(message)}\n`)
+    stderr.write(`  ${formatErrorMessage(getErrorMessage(error))}\n`)
     process.exit(1)
   }
 }
@@ -332,9 +331,8 @@ async function readStream(
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
     stderr.write(`Failed to read stream "${streamId}"\n`)
-    stderr.write(`  ${formatErrorMessage(message)}\n`)
+    stderr.write(`  ${formatErrorMessage(getErrorMessage(error))}\n`)
     process.exit(1)
   }
 }
@@ -351,9 +349,8 @@ async function deleteStream(
     await stream.delete()
     console.log(`Stream deleted successfully: ${streamId}`)
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
     stderr.write(`Failed to delete stream "${streamId}"\n`)
-    stderr.write(`  ${formatErrorMessage(message)}\n`)
+    stderr.write(`  ${formatErrorMessage(getErrorMessage(error))}\n`)
     process.exit(1)
   }
 }
@@ -377,8 +374,7 @@ async function main() {
     args = parsed.remainingArgs
     warnings = parsed.warnings
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    stderr.write(`Error: ${message}\n`)
+    stderr.write(`Error: ${getErrorMessage(error)}\n`)
     process.exit(1)
   }
 
@@ -427,30 +423,19 @@ async function main() {
       try {
         parsed = parseWriteArgs(args.slice(2))
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        stderr.write(`Error: ${message}\n`)
+        stderr.write(`Error: ${getErrorMessage(error)}\n`)
         process.exit(1)
       }
 
-      // Check for content: argument first, then stdin
-      if (parsed.content) {
-        // Content provided as argument
+      const hasContent = parsed.content || !stdin.isTTY
+      if (hasContent) {
         await writeStream(
           options.url!,
           streamId,
           parsed.contentType,
           parsed.batchJson,
           headers,
-          parsed.content
-        )
-      } else if (!stdin.isTTY) {
-        // Reading from stdin (piped input)
-        await writeStream(
-          options.url!,
-          streamId,
-          parsed.contentType,
-          parsed.batchJson,
-          headers
+          parsed.content || undefined
         )
       } else {
         stderr.write(`Error: No content provided\n`)
@@ -494,8 +479,7 @@ function isMainModule(): boolean {
 
 if (isMainModule()) {
   main().catch((error) => {
-    const message = error instanceof Error ? error.message : String(error)
-    stderr.write(`Fatal error: ${message}\n`)
+    stderr.write(`Fatal error: ${getErrorMessage(error)}\n`)
     process.exit(1)
   })
 }
