@@ -48,7 +48,8 @@ export function validateUrl(url: string): ValidationResult {
 
 /**
  * Validate an authorization header value.
- * Should be non-empty and ideally follow "Scheme value" format.
+ * Returns valid=true for any non-empty value, but includes a warning
+ * if the value doesn't match common auth schemes (Bearer, Basic, ApiKey, Token).
  */
 export function validateAuth(auth: string): ValidationResult {
   if (!auth || !auth.trim()) {
@@ -79,7 +80,8 @@ export function validateAuth(auth: string): ValidationResult {
 
 /**
  * Validate a stream ID.
- * Must be non-empty and contain only valid characters.
+ * Must be 1-256 characters containing only: letters, numbers, underscores,
+ * hyphens, dots, and colons (URL-safe characters).
  */
 export function validateStreamId(streamId: string): ValidationResult {
   if (!streamId || !streamId.trim()) {

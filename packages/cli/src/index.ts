@@ -24,9 +24,9 @@ interface GlobalOptions {
 }
 
 /**
- * Parse global options (like --auth) from args.
- * Falls back to STREAM_AUTH env var if --auth flag not provided.
- * Returns the parsed options and remaining args.
+ * Parse global options (--url, --auth) from args.
+ * Falls back to STREAM_URL/STREAM_AUTH env vars when flags not provided.
+ * Returns the parsed options, remaining args, and any warnings.
  */
 function parseGlobalOptions(args: Array<string>): {
   options: GlobalOptions
@@ -192,7 +192,9 @@ function getHttpStatusText(status: number): string {
 }
 
 /**
- * Append JSON data to a stream with one-level array flattening.
+ * Append JSON data to a stream using batch semantics.
+ * Arrays are flattened one level (each element becomes a separate message).
+ * Non-array values are written as a single message.
  * Returns the number of messages written.
  */
 async function appendJsonBatch(
@@ -218,7 +220,9 @@ async function readStdin(): Promise<Buffer> {
 
   await new Promise<void>((resolve, reject) => {
     stdin.on(`end`, resolve)
-    stdin.on(`error`, reject)
+    stdin.on(`error`, (err) => {
+      reject(new Error(`Failed to read from stdin: ${err.message}`))
+    })
   })
 
   return Buffer.concat(chunks)
@@ -270,15 +274,20 @@ async function writeStream(
       let parsed: unknown
       try {
         parsed = JSON.parse(jsonString)
-      } catch {
+      } catch (parseError) {
+        const parseMessage =
+          parseError instanceof SyntaxError
+            ? parseError.message
+            : `Unknown parsing error`
         if (source === `argument`) {
           const preview = jsonString.slice(0, 100)
           const ellipsis = jsonString.length > 100 ? `...` : ``
           stderr.write(`Failed to parse JSON content\n`)
-          stderr.write(`  Invalid JSON: ${preview}${ellipsis}\n`)
+          stderr.write(`  ${parseMessage}\n`)
+          stderr.write(`  Input: ${preview}${ellipsis}\n`)
         } else {
           stderr.write(`Failed to parse JSON from stdin\n`)
-          stderr.write(`  Invalid JSON input\n`)
+          stderr.write(`  ${parseMessage}\n`)
         }
         process.exit(1)
       }

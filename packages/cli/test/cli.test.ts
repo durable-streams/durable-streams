@@ -27,6 +27,66 @@ describe(`CLI --help`, () => {
     expect(usage).toContain(`read <stream_id>`)
     expect(usage).toContain(`delete <stream_id>`)
   })
+
+  it(`exits with code 0 when --help flag is passed`, async () => {
+    const cliPath = new URL(`../dist/index.js`, import.meta.url).pathname
+    const result = await new Promise<{
+      stdout: string
+      stderr: string
+      exitCode: number
+    }>((resolve) => {
+      const child = spawn(process.execPath, [cliPath, `--help`], {
+        env: { ...process.env },
+      })
+
+      let stdout = ``
+      let stderr = ``
+
+      child.stdout.on(`data`, (data) => {
+        stdout += data.toString()
+      })
+      child.stderr.on(`data`, (data) => {
+        stderr += data.toString()
+      })
+
+      child.on(`close`, (code) => {
+        resolve({ stdout, stderr, exitCode: code ?? 1 })
+      })
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout + result.stderr).toContain(`Usage:`)
+  })
+
+  it(`exits with code 0 when -h flag is passed`, async () => {
+    const cliPath = new URL(`../dist/index.js`, import.meta.url).pathname
+    const result = await new Promise<{
+      stdout: string
+      stderr: string
+      exitCode: number
+    }>((resolve) => {
+      const child = spawn(process.execPath, [cliPath, `-h`], {
+        env: { ...process.env },
+      })
+
+      let stdout = ``
+      let stderr = ``
+
+      child.stdout.on(`data`, (data) => {
+        stdout += data.toString()
+      })
+      child.stderr.on(`data`, (data) => {
+        stderr += data.toString()
+      })
+
+      child.on(`close`, (code) => {
+        resolve({ stdout, stderr, exitCode: code ?? 1 })
+      })
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout + result.stderr).toContain(`Usage:`)
+  })
 })
 
 describe(`CLI commands with server`, () => {
