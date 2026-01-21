@@ -1,7 +1,7 @@
 // @refresh skip
 import { For } from "solid-js"
 import { useLiveQuery } from "@tanstack/solid-db"
-import { count } from "@tanstack/db"
+import { count } from "@durable-streams/state"
 import { useWikipediaDB } from "../lib/stream-db"
 import { NAMESPACES } from "../lib/types"
 import type { Filters } from "../lib/types"
