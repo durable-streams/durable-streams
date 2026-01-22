@@ -2,26 +2,38 @@ import { TEAMS, TEAM_COLORS } from "../../lib/teams"
 import type { TeamName } from "../../lib/teams"
 import "./ScoreBoard.css"
 
-export function ScoreBoard() {
-  // TODO: Get scores from game state
-  const scores: Record<TeamName, number> = {
-    RED: 0,
-    BLUE: 0,
-    GREEN: 0,
-    YELLOW: 0,
-  }
+export interface ScoreBoardProps {
+  scores?: [number, number, number, number]
+}
+
+interface TeamScore {
+  team: TeamName
+  score: number
+  color: string
+}
+
+export function ScoreBoard({ scores = [0, 0, 0, 0] }: ScoreBoardProps) {
+  // Create team scores and sort by score descending
+  const teamScores: Array<TeamScore> = TEAMS.map((team, i) => ({
+    team,
+    score: scores[i],
+    color: TEAM_COLORS[team].primary,
+  })).sort((a, b) => b.score - a.score)
 
   return (
     <div className="scoreboard" data-testid="scoreboard">
-      {TEAMS.map((team) => (
-        <span
+      {teamScores.map(({ team, score, color }) => (
+        <div
           key={team}
           className="scoreboard-item"
           data-testid={`score-${team.toLowerCase()}`}
-          style={{ color: TEAM_COLORS[team].primary }}
         >
-          {team.charAt(0)}: {scores[team]}
-        </span>
+          <span
+            className="scoreboard-indicator"
+            style={{ background: color }}
+          />
+          <span className="scoreboard-value">{score.toLocaleString()}</span>
+        </div>
       ))}
     </div>
   )

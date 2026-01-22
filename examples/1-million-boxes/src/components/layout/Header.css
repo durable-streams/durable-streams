@@ -7,4 +7,50 @@
   background: rgba(255, 255, 255, 0.9);
   border-bottom: 1px solid var(--color-border);
   z-index: 10;
+  gap: 12px;
+}
+
+.header-share-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: white;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text);
+  transition: background-color var(--transition-fast);
+}
+
+.header-share-button:hover {
+  background: #f0f0f0;
+}
+
+.header-share-button:active {
+  background: #e0e0e0;
+}
+
+.header-share-button svg {
+  flex-shrink: 0;
+}
+
+/* Mobile: hide text, show only icon */
+@media (max-width: 640px) {
+  .header {
+    padding: 0 12px;
+    gap: 8px;
+  }
+
+  .header-share-text {
+    display: none;
+  }
+
+  .header-share-button {
+    padding: 8px;
+    min-width: var(--touch-min);
+    min-height: var(--touch-min);
+    justify-content: center;
+  }
 }

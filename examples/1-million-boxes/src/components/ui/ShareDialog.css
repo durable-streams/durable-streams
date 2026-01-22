@@ -1,0 +1,133 @@
+.share-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  animation: backdrop-fade-in 150ms ease-out;
+}
+
+.share-dialog-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+  width: 90%;
+  max-width: 420px;
+  z-index: 101;
+  animation: popup-slide-in 200ms ease-out;
+}
+
+.share-dialog-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.share-dialog-description {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  margin-bottom: 16px;
+}
+
+.share-dialog-content {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.share-dialog-input {
+  flex: 1;
+  padding: 10px 12px;
+  font-size: 0.875rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: #f9f9f5;
+  color: var(--color-text);
+  min-width: 0;
+}
+
+.share-dialog-input:focus {
+  outline: none;
+  border-color: var(--color-blue);
+}
+
+.share-dialog-copy-button {
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: var(--color-blue);
+  color: white;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--transition-fast),
+    transform var(--transition-fast);
+  white-space: nowrap;
+}
+
+.share-dialog-copy-button:hover {
+  background: #1565c0;
+}
+
+.share-dialog-copy-button:active {
+  transform: scale(0.98);
+}
+
+.share-dialog-copy-button.copied {
+  background: var(--quota-full);
+}
+
+.share-dialog-close-button {
+  width: 100%;
+  padding: 12px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.share-dialog-close-button:hover {
+  background: #f0f0f0;
+}
+
+/* Animations */
+@keyframes backdrop-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes popup-slide-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .share-dialog-popup {
+    padding: 20px;
+    width: 94%;
+  }
+
+  .share-dialog-content {
+    flex-direction: column;
+  }
+
+  .share-dialog-copy-button {
+    width: 100%;
+  }
+}

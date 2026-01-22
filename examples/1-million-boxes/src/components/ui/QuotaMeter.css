@@ -4,40 +4,86 @@
   gap: 8px;
 }
 
-.quota-progress {
-  width: 100px;
+.quota-segments {
+  display: flex;
+  gap: 3px;
 }
 
-.quota-track {
-  height: 8px;
+.quota-segment {
+  width: 8px;
+  height: 16px;
+  border-radius: 2px;
+  transition: background-color var(--transition-fast);
+}
+
+.quota-segment-empty {
   background: #ddd;
-  border-radius: 4px;
-  overflow: hidden;
 }
 
-.quota-indicator {
-  height: 100%;
-  transition: width 0.2s ease;
-}
-
-.quota-full {
+.quota-segment-filled.quota-full {
   background: var(--quota-full);
 }
 
-.quota-mid {
+.quota-segment-filled.quota-mid {
   background: var(--quota-mid);
 }
 
-.quota-low {
+.quota-segment-filled.quota-low {
   background: var(--quota-low);
 }
 
 .quota-text {
   font-size: 14px;
   font-weight: 500;
+  min-width: 48px;
 }
 
 .quota-refill {
   font-size: 12px;
   color: var(--color-muted);
+}
+
+/* Recharging state with pulse animation */
+.quota-recharging .quota-recharging-text {
+  animation: quota-pulse 1.5s ease-in-out infinite;
+}
+
+.quota-recharging .quota-segment-empty {
+  animation: segment-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes quota-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes segment-pulse {
+  0%,
+  100% {
+    background: #ddd;
+  }
+  50% {
+    background: #ccc;
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .quota-segment {
+    width: 6px;
+    height: 14px;
+  }
+
+  .quota-text {
+    font-size: 13px;
+  }
+
+  .quota-refill {
+    font-size: 11px;
+  }
 }

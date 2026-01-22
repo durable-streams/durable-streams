@@ -1,12 +1,48 @@
 .scoreboard {
   display: flex;
   gap: 12px;
-  font-weight: 600;
   font-size: 0.875rem;
 }
 
 .scoreboard-item {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+}
+
+.scoreboard-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.scoreboard-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+}
+
+/* Mobile: stack vertically or show fewer items */
+@media (max-width: 480px) {
+  .scoreboard {
+    gap: 8px;
+    font-size: 0.8rem;
+  }
+
+  .scoreboard-indicator {
+    width: 8px;
+    height: 8px;
+  }
+
+  .scoreboard-value {
+    min-width: 20px;
+  }
+}
+
+/* Very small screens: hide lower scoring teams */
+@media (max-width: 360px) {
+  .scoreboard-item:nth-child(n + 3) {
+    display: none;
+  }
 }

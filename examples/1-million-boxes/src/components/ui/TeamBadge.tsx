@@ -1,40 +1,22 @@
+import { useTeam } from "../../contexts/team-context"
 import { TEAM_COLORS } from "../../lib/teams"
-import type { TeamName } from "../../lib/teams"
+import "./TeamBadge.css"
 
-export interface TeamBadgeProps {
-  team: TeamName
-  teamId: number
-}
-
-export function TeamBadge({ team, teamId }: TeamBadgeProps) {
+export function TeamBadge() {
+  const { team, teamId } = useTeam()
   const color = TEAM_COLORS[team].primary
 
   return (
-    <div
-      className="team-badge"
-      data-testid="team-badge"
-      style={{
-        display: `flex`,
-        alignItems: `center`,
-        gap: `8px`,
-      }}
-    >
+    <div className="team-badge" data-testid="team-badge">
       <div
+        className="team-badge-dot"
         data-testid="team-color-dot"
-        style={{
-          width: 16,
-          height: 16,
-          borderRadius: `50%`,
-          background: color,
-        }}
+        style={{ background: color }}
       />
-      <span data-testid="team-name">
+      <span className="team-badge-name" data-testid="team-name">
         {team.charAt(0) + team.slice(1).toLowerCase()}
       </span>
-      <span
-        data-testid="team-id"
-        style={{ color: `var(--color-muted)`, fontSize: `0.875rem` }}
-      >
+      <span className="team-badge-id" data-testid="team-id">
         #{teamId}
       </span>
     </div>
