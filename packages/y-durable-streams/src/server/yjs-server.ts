@@ -562,6 +562,10 @@ export class YjsServer {
     live: string | null,
     _url: URL
   ): Promise<void> {
+    // Ensure document stream exists - this creates it if it doesn't
+    // This allows reads to a new document to succeed with empty response
+    await this.ensureDocumentStream(route.service, route.docPath)
+
     // Build DS URL with query params (DS server expects these as query params)
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
     const dsUrl = new URL(dsPath, this.dsServerUrl)
