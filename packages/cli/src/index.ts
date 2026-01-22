@@ -131,9 +131,11 @@ Global Options:
   --auth <value>          Authorization header value (e.g., "Bearer my-token")
   --help, -h              Show this help message
 
-Write Options:
-  --content-type <type>   Content-Type for the message (default: application/octet-stream)
-  --json                  Write as JSON (input stored as single message)
+Create/Write Options:
+  --content-type <type>   Content-Type for the stream (default: application/octet-stream)
+  --json                  Shorthand for --content-type application/json
+
+Write-only Options:
   --batch-json            Write as JSON array of messages (each array element stored separately)
 
 Environment Variables:
@@ -147,10 +149,53 @@ function printUsage({ to = `stderr` }: { to?: `stdout` | `stderr` } = {}) {
   out.write(getUsageText())
 }
 
+interface ParsedCreateArgs {
+  contentType: string
+}
+
+/**
+ * Parse create command arguments, extracting content-type flags.
+ * @param args - Arguments after the stream_id
+ * @returns Parsed content type
+ * @throws Error if --content-type is missing its value or if unknown flags are provided
+ */
+function parseCreateArgs(args: Array<string>): ParsedCreateArgs {
+  let contentType = `application/octet-stream`
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!
+
+    if (arg === `--json`) {
+      contentType = `application/json`
+      continue
+    }
+
+    if (arg === `--content-type`) {
+      const nextArg = args[i + 1]
+      if (!nextArg || nextArg.startsWith(`--`)) {
+        throw new Error(`--content-type requires a value`)
+      }
+      contentType = nextArg
+      i++
+      continue
+    }
+
+    if (arg.startsWith(`--`)) {
+      throw new Error(`unknown flag: ${arg}`)
+    }
+
+    // Unexpected positional argument
+    throw new Error(`unexpected argument: ${arg}`)
+  }
+
+  return { contentType }
+}
+
 async function createStream(
   baseUrl: string,
   streamId: string,
-  headers: Record<string, string>
+  headers: Record<string, string>,
+  contentType: string
 ) {
   const url = `${baseUrl}/v1/stream/${streamId}`
 
@@ -158,7 +203,7 @@ async function createStream(
     await DurableStream.create({
       url,
       headers,
-      contentType: `application/octet-stream`,
+      contentType,
     })
     console.log(`Stream created successfully: "${streamId}"`)
     console.log(`  URL: ${url}`)
@@ -420,7 +465,21 @@ async function main() {
   switch (command) {
     case `create`: {
       const streamId = getStreamId()
-      await createStream(options.url!, streamId, headers)
+
+      let createArgs: ParsedCreateArgs
+      try {
+        createArgs = parseCreateArgs(args.slice(2))
+      } catch (error) {
+        stderr.write(`Error: ${getErrorMessage(error)}\n`)
+        process.exit(1)
+      }
+
+      await createStream(
+        options.url!,
+        streamId,
+        headers,
+        createArgs.contentType
+      )
       break
     }
 
