@@ -2,12 +2,12 @@ import { H, W, coordsToEdgeId } from "../../lib/edge-math"
 import { getTeamColor } from "../../lib/teams"
 import { drawWobblyLine } from "../../lib/hand-drawn"
 import { getVisibleBounds, worldToScreen } from "../../lib/view-transform"
+import { HOVERED_EDGE_COLOR } from "../../lib/config"
 import type { ViewState } from "../../hooks/useViewState"
 import type { GameState } from "../../lib/game-state"
 
 const UNPLACED_COLOR = `rgba(150, 150, 150, 0.3)`
 const PENDING_COLOR = `rgba(100, 100, 100, 0.6)`
-const HOVERED_COLOR = `rgba(0, 0, 0, 0.5)`
 
 /**
  * Render all visible edges on the canvas.
@@ -142,7 +142,7 @@ function renderEdge(
     ctx.lineWidth = lineWidth * 1.5
     ctx.setLineDash([4, 4])
   } else if (isHovered) {
-    ctx.strokeStyle = HOVERED_COLOR
+    ctx.strokeStyle = HOVERED_EDGE_COLOR
     ctx.lineWidth = lineWidth * 1.3
   } else {
     ctx.strokeStyle = UNPLACED_COLOR

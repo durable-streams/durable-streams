@@ -1,6 +1,7 @@
 import { GameState } from "../lib/game-state"
 import { encodeEvent, parseStreamRecords } from "../lib/stream-parser"
 import { isValidEdgeId } from "../lib/edge-math"
+import { GAME_STREAM_PATH } from "../lib/config"
 import type { GameEvent } from "../lib/game-state"
 
 interface Env {
@@ -68,7 +69,7 @@ export class GameWriterDO {
 
     try {
       // Fetch entire stream from Durable Streams server
-      const streamUrl = `${this.env.DURABLE_STREAMS_URL}/game`
+      const streamUrl = `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
       const response = await fetch(streamUrl)
 
       if (response.ok) {
@@ -192,7 +193,7 @@ export class GameWriterDO {
 
       // POST to the stream URL to append (per Durable Streams protocol)
       const appendResponse = await fetch(
-        `${this.env.DURABLE_STREAMS_URL}/game`,
+        `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`,
         {
           method: `POST`,
           headers: { "Content-Type": `application/octet-stream` },

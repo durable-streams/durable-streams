@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import { StreamParser } from "../lib/stream-parser"
+import { GAME_STREAM_URL, STREAM_RECONNECT_DELAY_MS } from "../lib/config"
 import type { GameEvent } from "../lib/game-state"
-
-const STREAM_URL =
-  import.meta.env.VITE_DURABLE_STREAMS_URL || `http://localhost:4437/v1/stream`
-
-const RECONNECT_DELAY_MS = 3000
 
 export interface UseGameStreamOptions {
   onEvents: (events: Array<GameEvent>) => void
@@ -80,8 +76,8 @@ export function useGameStream(
 
       // Build SSE URL with optional seq parameter
       const sseUrl = fromSeq
-        ? `${STREAM_URL}/game?live=sse&seq=${fromSeq}`
-        : `${STREAM_URL}/game?live=sse`
+        ? `${GAME_STREAM_URL}?live=sse&seq=${fromSeq}`
+        : `${GAME_STREAM_URL}?live=sse`
 
       const eventSource = new EventSource(sseUrl)
       eventSourceRef.current = eventSource
@@ -133,7 +129,7 @@ export function useGameStream(
           if (isMountedRef.current) {
             connect()
           }
-        }, RECONNECT_DELAY_MS)
+        }, STREAM_RECONNECT_DELAY_MS)
       }
     },
     [disconnect]
@@ -144,7 +140,7 @@ export function useGameStream(
 
     try {
       // First fetch existing data
-      const response = await fetch(`${STREAM_URL}/game`)
+      const response = await fetch(GAME_STREAM_URL)
 
       if (response.status === 404) {
         // Stream doesn't exist yet - this is fine, start with empty state

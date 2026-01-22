@@ -5,11 +5,17 @@ import {
   useEffect,
   useState,
 } from "react"
+import {
+  MAX_QUOTA,
+  QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_STORAGE_KEY,
+} from "../lib/config"
 import type { ReactNode } from "react"
 
-export const QUOTA_KEY = `boxes:quota`
-export const MAX_QUOTA = 8
-export const REFILL_INTERVAL_MS = 7500 // 7.5 seconds
+// Re-export for backward compatibility
+export { MAX_QUOTA }
+export const QUOTA_KEY = QUOTA_STORAGE_KEY
+export const REFILL_INTERVAL_MS = QUOTA_REFILL_INTERVAL_MS
 
 export interface QuotaState {
   remaining: number

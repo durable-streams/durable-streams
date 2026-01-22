@@ -1,29 +1,20 @@
-import { useState } from "react"
+import {
+  DEFAULT_ZOOM,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  useViewStateContext,
+} from "../../hooks/useViewState"
 import "./ZoomControls.css"
 
-const MIN_ZOOM = 25
-const MAX_ZOOM = 200
-const ZOOM_STEP = 25
-const DEFAULT_ZOOM = 100
-
 export function ZoomControls() {
-  // TODO: Replace with ViewStateContext when available
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM)
+  const { view, zoomIn, zoomOut, resetView } = useViewStateContext()
 
-  const handleZoomIn = () => {
-    setZoom((z) => Math.min(MAX_ZOOM, z + ZOOM_STEP))
-  }
+  // Convert zoom level to percentage for display
+  const zoomPercent = Math.round(view.zoom * 100)
 
-  const handleZoomOut = () => {
-    setZoom((z) => Math.max(MIN_ZOOM, z - ZOOM_STEP))
-  }
-
-  const handleReset = () => {
-    setZoom(DEFAULT_ZOOM)
-  }
-
-  const isAtMin = zoom <= MIN_ZOOM
-  const isAtMax = zoom >= MAX_ZOOM
+  const isAtMin = view.zoom <= MIN_ZOOM
+  const isAtMax = view.zoom >= MAX_ZOOM
+  const isDefault = Math.abs(view.zoom - DEFAULT_ZOOM) < 0.01
 
   return (
     <div className="zoom-controls" data-testid="zoom-controls">
@@ -31,7 +22,7 @@ export function ZoomControls() {
         className="zoom-button zoom-button-left"
         data-testid="zoom-out"
         aria-label="Zoom out"
-        onClick={handleZoomOut}
+        onClick={zoomOut}
         disabled={isAtMin}
       >
         −
@@ -40,16 +31,17 @@ export function ZoomControls() {
         className="zoom-button zoom-button-center"
         data-testid="zoom-level"
         aria-label="Reset zoom"
-        onClick={handleReset}
+        onClick={resetView}
         title="Click to reset"
+        disabled={isDefault}
       >
-        {zoom}%
+        {zoomPercent}%
       </button>
       <button
         className="zoom-button zoom-button-right"
         data-testid="zoom-in"
         aria-label="Zoom in"
-        onClick={handleZoomIn}
+        onClick={zoomIn}
         disabled={isAtMax}
       >
         +

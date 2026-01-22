@@ -1,14 +1,21 @@
-// Grid dimensions
-export const W = 1000
-export const H = 1000
+import {
+  GRID_HEIGHT,
+  GRID_WIDTH,
+  HORIZ_EDGE_COUNT,
+  TOTAL_BOX_COUNT,
+  TOTAL_EDGE_COUNT,
+  VERT_EDGE_COUNT,
+} from "./config"
 
-// Edge counts
-export const HORIZ_COUNT = W * (H + 1) // 1,001,000
-export const VERT_COUNT = (W + 1) * H // 1,001,000
-export const EDGE_COUNT = HORIZ_COUNT + VERT_COUNT // 2,002,000
+// Re-export grid dimensions with short aliases for use in this module
+export const W = GRID_WIDTH
+export const H = GRID_HEIGHT
 
-// Box count
-export const BOX_COUNT = W * H // 1,000,000
+// Re-export edge/box counts
+export const HORIZ_COUNT = HORIZ_EDGE_COUNT
+export const VERT_COUNT = VERT_EDGE_COUNT
+export const EDGE_COUNT = TOTAL_EDGE_COUNT
+export const BOX_COUNT = TOTAL_BOX_COUNT
 
 // Types
 export interface EdgeCoords {

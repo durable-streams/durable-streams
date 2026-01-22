@@ -1,21 +1,21 @@
 import { createContext, useCallback, useContext, useState } from "react"
 import { H, W } from "../lib/edge-math"
+import { DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP } from "../lib/config"
 import type { ReactNode } from "react"
 
+// Re-export zoom constants for components that need them
+export { MIN_ZOOM, MAX_ZOOM, DEFAULT_ZOOM }
+
 export interface ViewState {
-  centerX: number // 0..1000
-  centerY: number // 0..1000
-  zoom: number // 0.1..10
+  centerX: number // 0..W (grid width)
+  centerY: number // 0..H (grid height)
+  zoom: number // MIN_ZOOM..MAX_ZOOM
 }
 
 export interface CanvasSize {
   width: number
   height: number
 }
-
-export const MIN_ZOOM = 0.1
-export const MAX_ZOOM = 10
-export const DEFAULT_ZOOM = 1
 
 export interface ViewStateActions {
   view: ViewState
@@ -91,14 +91,14 @@ export function useViewState(): ViewStateActions {
   const zoomIn = useCallback(() => {
     setView((v) => ({
       ...v,
-      zoom: Math.min(MAX_ZOOM, v.zoom * 1.5),
+      zoom: Math.min(MAX_ZOOM, v.zoom * ZOOM_STEP),
     }))
   }, [])
 
   const zoomOut = useCallback(() => {
     setView((v) => ({
       ...v,
-      zoom: Math.max(MIN_ZOOM, v.zoom / 1.5),
+      zoom: Math.max(MIN_ZOOM, v.zoom / ZOOM_STEP),
     }))
   }, [])
 
