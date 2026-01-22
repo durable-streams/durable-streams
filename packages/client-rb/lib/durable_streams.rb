@@ -97,7 +97,7 @@ module DurableStreams
     # Read from a stream
     # @param url [String] Stream URL or path
     # @param offset [String] Starting offset (default: "-1" for beginning)
-    # @param live [Boolean, Symbol] Live mode (false, :auto, :long_poll, :sse)
+    # @param live [Boolean, Symbol] Live mode (false, :long_poll, :sse)
     # @param format [Symbol] Format hint (:auto, :json, :bytes)
     # @param context [Context] Optional context
     # @return [JsonReader, ByteReader] Reader for iterating messages

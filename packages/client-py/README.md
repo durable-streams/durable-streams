@@ -132,7 +132,7 @@ asyncio.run(main())
 
 ### Top-Level Functions
 
-#### `stream(url, *, offset=None, live="auto", ...)`
+#### `stream(url, *, offset=None, live=True, ...)`
 
 Create a synchronous streaming session.
 
@@ -142,13 +142,13 @@ from durable_streams import stream
 res = stream(
     url="https://example.com/stream",
     offset="12345",           # Resume from offset
-    live="auto",              # Live mode (see below)
+    live=True,                # Live mode (see below)
     headers={"Authorization": "Bearer token"},
     params={"tenant": "my-tenant"},
 )
 ```
 
-#### `astream(url, *, offset=None, live="auto", ...)`
+#### `astream(url, *, offset=None, live=True, ...)`
 
 Create an asynchronous streaming session.
 
@@ -158,7 +158,7 @@ from durable_streams import astream
 res = await astream(
     url="https://example.com/stream",
     offset="12345",
-    live="auto",
+    live=True,
 )
 ```
 
@@ -167,9 +167,7 @@ res = await astream(
 The `live` parameter controls streaming behavior:
 
 - `False` - Catch-up only. Stop after reaching the end of the stream.
-- `"auto"` (default) - Behavior depends on consumption method:
-  - `read_*()` methods: Stop after reaching up-to-date
-  - Iteration methods: Continue with long-poll for live updates
+- `True` (default) - Catch-up first, then continue with long-poll for live updates
 - `"long-poll"` - Explicit long-poll mode for live updates
 - `"sse"` - Explicit Server-Sent Events mode for live updates
 
@@ -413,7 +411,7 @@ class StreamEvent(Generic[T]):
 ### LiveMode
 
 ```python
-LiveMode = Literal["auto", "long-poll", "sse"] | bool
+LiveMode = Literal["long-poll", "sse"] | bool
 ```
 
 ### HeadResult

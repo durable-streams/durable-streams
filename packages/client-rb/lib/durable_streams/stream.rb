@@ -211,7 +211,7 @@ module DurableStreams
 
     # Read from stream
     # @param offset [String] Starting offset (default: "-1" for beginning)
-    # @param live [Boolean, Symbol] Live mode (false, :auto, :long_poll, :sse)
+    # @param live [Boolean, Symbol] Live mode (false, :long_poll, :sse)
     # @param format [Symbol] Format hint (:auto, :json, :bytes)
     # @param cursor [String, nil] Optional cursor for continuation
     # @yield [Reader] Optional block for automatic cleanup

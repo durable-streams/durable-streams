@@ -99,11 +99,6 @@ stream.read(live: :sse).each do |msg|
   puts msg
 end
 
-# Auto-detect best mode
-stream.read(live: :auto).each do |msg|
-  handle(msg)
-end
-
 # Lazy enumeration works with Enumerator
 stream.read(live: :sse).each.lazy.take(10).to_a
 ```
@@ -235,7 +230,7 @@ stream.close  # Shutdown transport
 ```ruby
 stream.read(
   offset: "-1",      # Starting position ("-1" = beginning)
-  live: false,       # false, :auto, :long_poll, :sse
+  live: false,       # false, :long_poll, :sse
   format: :auto,     # :auto, :json, :bytes
   cursor: nil        # Server-provided cursor for continuation
 )
@@ -246,7 +241,6 @@ stream.read(
 | `false`      | Return immediately when caught up (catch-up only)     |
 | `:long_poll` | Wait for new data, return when available or timeout   |
 | `:sse`       | Server-Sent Events stream with automatic reconnection |
-| `:auto`      | SSE for JSON/text streams, long-poll otherwise        |
 
 | `format` | Behavior                                |
 | -------- | --------------------------------------- |
