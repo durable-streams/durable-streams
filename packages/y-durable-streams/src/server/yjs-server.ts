@@ -571,8 +571,10 @@ export class YjsServer {
       dsUrl.searchParams.set(`offset`, offset)
     }
     if (live) {
-      // Forward live mode (can be 'true', 'auto', 'sse', etc.)
-      dsUrl.searchParams.set(`live`, live)
+      // Map live mode to DS server format
+      // live=true means "server picks transport" - use long-poll for updates
+      const dsLive = live === `true` ? `long-poll` : live
+      dsUrl.searchParams.set(`live`, dsLive)
     }
 
     // Build headers
@@ -787,8 +789,10 @@ export class YjsServer {
         dsUrl.searchParams.set(`offset`, offset)
       }
       if (live) {
-        // Forward live mode (sse, long-poll, etc.)
-        dsUrl.searchParams.set(`live`, live)
+        // Map live mode to DS server format
+        // live=true means "server picks transport" - use SSE for awareness
+        const dsLive = live === `true` ? `sse` : live
+        dsUrl.searchParams.set(`live`, dsLive)
       }
 
       const dsResponse = await fetch(dsUrl.toString(), {
