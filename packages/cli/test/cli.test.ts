@@ -217,6 +217,39 @@ describe(`CLI commands with server`, () => {
     )
   })
 
+  it(`creates a stream with --content-type flag`, async () => {
+    const streamId = `test-create-content-type-${Date.now()}`
+    const result = await runCli([
+      `create`,
+      streamId,
+      `--content-type`,
+      `application/json`,
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
+  })
+
+  it(`creates a stream with --json flag`, async () => {
+    const streamId = `test-create-json-${Date.now()}`
+    const result = await runCli([`create`, streamId, `--json`])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
+  })
+
+  it(`shows error when --content-type flag is missing value`, async () => {
+    const streamId = `test-create-no-value-${Date.now()}`
+    const result = await runCli([`create`, streamId, `--content-type`])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(`--content-type requires a value`)
+  })
+
   it(`writes to a stream with success message`, async () => {
     const streamId = `test-write-${Date.now()}`
 
