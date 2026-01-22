@@ -15,6 +15,14 @@
     ]
   },
 
+  // Durable Object migrations
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["GameWriterDO"]
+    }
+  ],
+
   // Rate limiting for draw endpoint
   "rate_limits": [
     {
