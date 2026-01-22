@@ -1,5 +1,17 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.0
+
+### Minor Changes
+
+- Bump all packages to version 0.2.0 ([#206](https://github.com/durable-streams/durable-streams/pull/206))
+
+### Patch Changes
+
+- Updated dependencies [[`2a0f163`](https://github.com/durable-streams/durable-streams/commit/2a0f1639f7d84f4f1b611f46c8a3bbbc0cca41f3)]:
+  - @durable-streams/server@0.2.0
+  - @durable-streams/client@0.2.0
+
 ## 0.1.9
 
 ### Patch Changes

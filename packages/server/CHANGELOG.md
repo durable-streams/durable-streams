@@ -1,5 +1,17 @@
 # @durable-streams/server
 
+## 0.2.0
+
+### Minor Changes
+
+- Bump all packages to version 0.2.0 ([#206](https://github.com/durable-streams/durable-streams/pull/206))
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.0
+  - @durable-streams/state@0.2.0
+
 ## 0.1.7
 
 ### Patch Changes
