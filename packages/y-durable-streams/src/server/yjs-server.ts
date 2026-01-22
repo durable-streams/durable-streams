@@ -260,8 +260,12 @@ export class YjsServer {
       // Handle document updates
       if (method === `GET`) {
         await this.handleUpdatesRead(req, res, route, offset, live, url)
+      } else if (method === `HEAD`) {
+        await this.handleDocumentHead(res, route)
       } else if (method === `POST`) {
         await this.handleUpdateWrite(req, res, route)
+      } else if (method === `PUT`) {
+        await this.handleDocumentCreate(res, route)
       } else {
         res.writeHead(405, { "content-type": `application/json` })
         res.end(
@@ -628,6 +632,94 @@ export class YjsServer {
     }
 
     res.end()
+  }
+
+  // ---- Document Head (existence check) ----
+
+  private async handleDocumentHead(
+    res: ServerResponse,
+    route: RouteMatch
+  ): Promise<void> {
+    // Check if the underlying .updates stream exists by issuing HEAD to DS server
+    const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+    const dsUrl = new URL(dsPath, this.dsServerUrl)
+
+    const dsResponse = await fetch(dsUrl.toString(), {
+      method: `HEAD`,
+      headers: this.dsServerHeaders,
+    })
+
+    // Forward relevant headers from DS response
+    const responseHeaders: Record<string, string> = {
+      "content-type": `application/octet-stream`,
+    }
+
+    const headersToForward = [
+      YJS_HEADERS.STREAM_NEXT_OFFSET,
+      YJS_HEADERS.STREAM_UP_TO_DATE,
+      YJS_HEADERS.STREAM_CURSOR,
+      `stream-offset`,
+    ]
+    for (const header of headersToForward) {
+      const value = dsResponse.headers.get(header)
+      if (value) {
+        responseHeaders[header] = value
+      }
+    }
+
+    res.writeHead(dsResponse.status, responseHeaders)
+    res.end()
+  }
+
+  // ---- Document Create (PUT) ----
+
+  private async handleDocumentCreate(
+    res: ServerResponse,
+    route: RouteMatch
+  ): Promise<void> {
+    const stateKey = this.stateKey(route.service, route.docPath)
+
+    // Check if already exists
+    if (this.createdStreams.has(stateKey)) {
+      // Already exists - return 409 Conflict
+      res.writeHead(409, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          error: { code: `CONFLICT`, message: `Document already exists` },
+        })
+      )
+      return
+    }
+
+    try {
+      // Create the underlying .updates stream
+      await this.ensureDocumentStream(route.service, route.docPath)
+
+      res.writeHead(201, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          created: true,
+          service: route.service,
+          docPath: route.docPath,
+        })
+      )
+    } catch (err) {
+      // Check if it's a conflict error (stream already exists on DS server)
+      if (isConflictExistsError(err)) {
+        // Mark as created locally and return success (idempotent)
+        this.createdStreams.add(stateKey)
+        res.writeHead(201, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            created: true,
+            service: route.service,
+            docPath: route.docPath,
+          })
+        )
+        return
+      }
+      throw err
+    }
   }
 
   // ---- Update Write ----
