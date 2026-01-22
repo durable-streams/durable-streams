@@ -12,47 +12,23 @@ A real-time collaborative text editor built with Yjs, CodeMirror, and the Durabl
 
 ## Quick Start
 
-You need to run two servers: a Durable Streams server (storage backend) and a Yjs server (protocol layer).
+### 1. Start the Servers
 
-### 1. Start the Durable Streams Server
-
-In one terminal:
+In one terminal, start both the DS server (storage) and Yjs server (protocol):
 
 ```bash
-cd packages/cli
-pnpm start:dev
+cd examples/yjs-demo
+pnpm dev:server
 ```
 
-This starts the DS server at `http://localhost:4437`.
+This starts:
 
-### 2. Start the Yjs Server
+- DS server at `http://localhost:4437`
+- Yjs server at `http://localhost:4438`
 
-In another terminal, create a simple server script or run the Yjs server programmatically:
+### 2. Run the Demo
 
-```typescript
-// yjs-server.ts
-import { DurableStreamTestServer } from "@durable-streams/server"
-import { YjsServer } from "@durable-streams/y-durable-streams/server"
-
-// Start DS server
-const dsServer = new DurableStreamTestServer({ port: 4437 })
-await dsServer.start()
-
-// Start Yjs server (wraps DS server)
-const yjsServer = new YjsServer({
-  port: 4438,
-  dsServerUrl: dsServer.url,
-  compactionThreshold: 1024 * 1024, // 1MB
-  minUpdatesBeforeCompaction: 100,
-})
-
-await yjsServer.start()
-console.log(`Yjs server running at ${yjsServer.url}`)
-```
-
-Or use the combined approach with a single server setup (see below).
-
-### 3. Run the Demo
+In another terminal:
 
 ```bash
 cd examples/yjs-demo
@@ -63,15 +39,15 @@ Open `http://localhost:5173` in your browser.
 
 ## Configuration
 
-The demo connects to the server based on `VITE_SERVER_URL` environment variable, or falls back to `http://localhost:4437`.
+The demo connects to the Yjs server based on `VITE_SERVER_URL` environment variable, or falls back to `http://localhost:4438`.
 
-Create a `.env` file in the yjs-demo directory:
+Create a `.env` file in the yjs-demo directory to customize:
 
 ```env
-VITE_SERVER_URL=http://localhost:4437
+VITE_SERVER_URL=http://localhost:4438
 ```
 
-**Note**: The demo constructs the Yjs URL as `${VITE_SERVER_URL}/v1/yjs/rooms`, so your Yjs server should be accessible at that path.
+**Note**: The demo constructs the Yjs URL as `${VITE_SERVER_URL}/v1/yjs/rooms`.
 
 ## Architecture
 
@@ -113,7 +89,10 @@ The demo uses Yjs awareness for presence:
 # Install dependencies
 pnpm install
 
-# Run development server
+# Start the backend servers (DS + Yjs)
+pnpm dev:server
+
+# In another terminal, run the frontend
 pnpm dev
 
 # Type check
