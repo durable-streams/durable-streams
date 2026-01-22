@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { ViewStateProvider } from "../hooks/useViewState"
 import { Header } from "../components/layout/Header"
 import { Footer } from "../components/layout/Footer"
 import { GameCanvas } from "../components/game/GameCanvas"
@@ -13,15 +14,17 @@ export const Route = createFileRoute(`/`)({
 
 function GamePage() {
   return (
-    <div className="game-layout" data-testid="game-layout">
-      <Header />
-      <ConnectionStatus />
-      <main className="game-main" data-testid="game-main">
-        <GameCanvas />
-        <WorldView />
-      </main>
-      <Footer />
-      <ErrorToast />
-    </div>
+    <ViewStateProvider>
+      <div className="game-layout" data-testid="game-layout">
+        <Header />
+        <ConnectionStatus />
+        <main className="game-main" data-testid="game-main">
+          <GameCanvas />
+          <WorldView />
+        </main>
+        <Footer />
+        <ErrorToast />
+      </div>
+    </ViewStateProvider>
   )
 }

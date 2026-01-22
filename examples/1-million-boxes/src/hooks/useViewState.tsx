@@ -1,10 +1,16 @@
 import { createContext, useCallback, useContext, useState } from "react"
 import { H, W } from "../lib/edge-math"
+import type { ReactNode } from "react"
 
 export interface ViewState {
   centerX: number // 0..1000
   centerY: number // 0..1000
   zoom: number // 0.1..10
+}
+
+export interface CanvasSize {
+  width: number
+  height: number
 }
 
 export const MIN_ZOOM = 0.1
@@ -13,6 +19,8 @@ export const DEFAULT_ZOOM = 1
 
 export interface ViewStateActions {
   view: ViewState
+  canvasSize: CanvasSize
+  setCanvasSize: (size: CanvasSize) => void
   pan: (deltaX: number, deltaY: number) => void
   zoomTo: (newZoom: number, focalX?: number, focalY?: number) => void
   zoomIn: () => void
@@ -38,6 +46,11 @@ export function useViewState(): ViewStateActions {
     centerX: W / 2,
     centerY: H / 2,
     zoom: DEFAULT_ZOOM,
+  })
+
+  const [canvasSize, setCanvasSize] = useState<CanvasSize>({
+    width: 0,
+    height: 0,
   })
 
   const pan = useCallback((deltaX: number, deltaY: number) => {
@@ -107,6 +120,8 @@ export function useViewState(): ViewStateActions {
 
   return {
     view,
+    canvasSize,
+    setCanvasSize,
     pan,
     zoomTo,
     zoomIn,
@@ -114,4 +129,18 @@ export function useViewState(): ViewStateActions {
     resetView,
     jumpTo,
   }
+}
+
+export interface ViewStateProviderProps {
+  children: ReactNode
+}
+
+export function ViewStateProvider({ children }: ViewStateProviderProps) {
+  const viewState = useViewState()
+
+  return (
+    <ViewStateContext.Provider value={viewState}>
+      {children}
+    </ViewStateContext.Provider>
+  )
 }

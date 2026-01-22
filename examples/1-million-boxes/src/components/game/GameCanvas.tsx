@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import { ViewStateContext, useViewState } from "../../hooks/useViewState"
+import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
 import { screenToWorld } from "../../lib/view-transform"
@@ -12,11 +12,9 @@ import "./GameCanvas.css"
 export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
-  const viewState = useViewState()
-  const { view, pan, zoomTo } = viewState
+  const { view, pan, zoomTo, canvasSize, setCanvasSize } = useViewStateContext()
   const { gameState, pendingEdge, placeEdge } = useGameState()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
 
   // Handle resize
   useEffect(() => {
@@ -30,7 +28,7 @@ export function GameCanvas() {
 
     observer.observe(container)
     return () => observer.disconnect()
-  }, [])
+  }, [setCanvasSize])
 
   // Set up pan/zoom handlers
   usePanZoom(containerRef, {
@@ -115,18 +113,16 @@ export function GameCanvas() {
   }, [hoveredEdge, placeEdge])
 
   return (
-    <ViewStateContext.Provider value={viewState}>
-      <div ref={containerRef} className="game-canvas-container">
-        <canvas
-          ref={canvasRef}
-          className="game-canvas"
-          data-testid="game-canvas"
-          style={{ width: canvasSize.width, height: canvasSize.height }}
-          onMouseMove={handleMouseMove}
-          onMouseLeave={() => setHoveredEdge(null)}
-          onClick={handleClick}
-        />
-      </div>
-    </ViewStateContext.Provider>
+    <div ref={containerRef} className="game-canvas-container">
+      <canvas
+        ref={canvasRef}
+        className="game-canvas"
+        data-testid="game-canvas"
+        style={{ width: canvasSize.width, height: canvasSize.height }}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setHoveredEdge(null)}
+        onClick={handleClick}
+      />
+    </div>
   )
 }

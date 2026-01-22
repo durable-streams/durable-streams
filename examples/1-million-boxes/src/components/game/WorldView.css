@@ -1,0 +1,27 @@
+.world-view {
+  position: absolute;
+  bottom: var(--minimap-margin, 16px);
+  right: var(--minimap-margin, 16px);
+  width: 150px;
+  height: 150px;
+  border-radius: 8px;
+  border: 2px solid white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  transition: transform 0.2s ease-in-out;
+  z-index: 100;
+}
+
+.world-view:hover {
+  transform: scale(1.05);
+}
+
+/* Responsive: smaller on mobile */
+@media (max-width: 600px) {
+  .world-view {
+    width: 100px;
+    height: 100px;
+    bottom: var(--minimap-margin-mobile, 8px);
+    right: var(--minimap-margin-mobile, 8px);
+  }
+}
