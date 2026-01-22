@@ -331,7 +331,7 @@ await db.preload()
 db.close()
 
 // Wait for a transaction to be confirmed
-await db.utils.awaitTxId("txid-uuid", 5000) // 5 second timeout
+await db.utils.awaitTxId("txid-uuid", 30000) // 30 second timeout
 ```
 
 ## Optimistic Actions

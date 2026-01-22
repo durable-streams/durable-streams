@@ -164,7 +164,7 @@ export interface StreamDBUtils {
   /**
    * Wait for a specific transaction ID to be synced through the stream
    * @param txid The transaction ID to wait for (UUID string)
-   * @param timeout Optional timeout in milliseconds (defaults to 5000ms)
+   * @param timeout Optional timeout in milliseconds (defaults to 30000ms)
    * @returns Promise that resolves when the txid is synced
    */
   awaitTxId: (txid: string, timeout?: number) => Promise<void>
@@ -463,7 +463,7 @@ class EventDispatcher {
   /**
    * Wait for a specific txid to be seen in the stream
    */
-  awaitTxId(txid: string, timeout: number = 5000): Promise<void> {
+  awaitTxId(txid: string, timeout: number = 30000): Promise<void> {
     // Check if we've already seen this txid
     if (this.seenTxids.has(txid)) {
       return Promise.resolve()
