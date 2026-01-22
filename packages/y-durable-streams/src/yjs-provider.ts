@@ -1,36 +1,26 @@
 /**
- * YjsProvider - Yjs provider using Durable Streams client directly.
+ * YjsProvider - Yjs provider implementing the Yjs Durable Streams Protocol.
  *
- * This provider uses the DurableStream client to read/write:
- * - Index stream: JSON metadata pointing to current snapshot/updates
- * - Updates stream: Binary Yjs updates with lib0 framing
- * - Snapshot stream: Binary Yjs snapshots
- * - Awareness stream: Text/plain with base64-encoded awareness data (SSE for reads)
+ * This provider uses the DurableStream client to sync Yjs documents:
+ * - Single document URL with query parameters
+ * - Snapshot discovery via ?offset=snapshot (307 redirects)
+ * - Updates via long-polling
+ * - Awareness via ?awareness=<name> query parameter
  *
- * The provider connects to a Yjs server which proxies to the DS server,
- * handling stream creation and compaction.
+ * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/PROTOCOL.md
  */
 
 import * as Y from "yjs"
 import * as awarenessProtocol from "y-protocols/awareness"
 import { ObservableV2 } from "lib0/observable"
-import * as encoding from "lib0/encoding"
 import * as decoding from "lib0/decoding"
 import {
-  BackoffDefaults,
   DurableStream,
   DurableStreamError,
   FetchError,
   IdempotentProducer,
 } from "@durable-streams/client"
 import type { HeadersRecord } from "@durable-streams/client"
-import type { YjsIndex } from "./server/types"
-
-const DEFAULT_INDEX: YjsIndex = {
-  snapshot_stream: null,
-  updates_stream: `updates-001`,
-  update_offset: `-1`,
-}
 
 // ---- State Machine ----
 
@@ -61,8 +51,8 @@ interface ConnectionContext {
   readonly id: number
   /** Abort signal for this connection */
   readonly controller: AbortController
-  /** Current index (set during connect) */
-  index: YjsIndex | null
+  /** Starting offset for updates (set after snapshot discovery) */
+  startOffset: string
   /** Idempotent producer for sending updates */
   producer: IdempotentProducer | null
 }
@@ -88,7 +78,8 @@ export interface YjsProviderOptions {
   baseUrl: string
 
   /**
-   * Document identifier.
+   * Document path (can include forward slashes).
+   * E.g., "my-doc" or "project/chapter-1"
    */
   docId: string
 
@@ -159,10 +150,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private awarenessHeartbeat: ReturnType<typeof setInterval> | null = null
   private awarenessRetryCount = 0
   private readonly MAX_AWARENESS_RETRIES = 30
-  private readonly connectBackoffOptions = {
-    ...BackoffDefaults,
-    maxRetries: 0,
-  }
 
   constructor(options: YjsProviderOptions) {
     super()
@@ -233,7 +220,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const ctx: ConnectionContext = {
       id: this._connectionId,
       controller: new AbortController(),
-      index: null,
+      startOffset: `-1`,
       producer: null,
     }
     this._ctx = ctx
@@ -259,15 +246,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const ctx = this.createConnectionContext()
 
     try {
-      // Step 1: Fetch the index
-      ctx.index = await this.fetchIndex(ctx)
+      // Step 1: Discover snapshot and get starting offset
+      await this.discoverSnapshot(ctx)
       if (this.isStale(ctx)) return
 
       // Step 2: Create idempotent producer for sending updates
       this.createUpdatesProducer(ctx)
 
-      // Step 3: Fetch snapshot and start updates stream
-      await this.initialSync(ctx)
+      // Step 3: Start updates stream (will load snapshot if needed)
+      await this.startUpdatesStream(ctx, ctx.startOffset)
       if (this.isStale(ctx)) return
 
       // Step 4: Start awareness if configured
@@ -331,13 +318,110 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     super.destroy()
   }
 
+  // ---- URL builders ----
+
+  /**
+   * Get the document URL.
+   */
+  private docUrl(): string {
+    return `${this.baseUrl}/docs/${this.docId}`
+  }
+
+  /**
+   * Get the awareness URL for a named stream.
+   */
+  private awarenessUrl(name: string = `default`): string {
+    return `${this.docUrl()}?awareness=${encodeURIComponent(name)}`
+  }
+
+  // ---- Snapshot Discovery ----
+
+  /**
+   * Discover the current snapshot state via ?offset=snapshot.
+   * Handles 307 redirect to determine starting offset.
+   */
+  private async discoverSnapshot(ctx: ConnectionContext): Promise<void> {
+    const url = `${this.docUrl()}?offset=snapshot`
+
+    const response = await fetch(url, {
+      method: `GET`,
+      headers: this.headers as Record<string, string>,
+      redirect: `manual`, // Don't follow redirects automatically
+      signal: ctx.controller.signal,
+    })
+
+    if (response.status === 307) {
+      // Parse the redirect location
+      const location = response.headers.get(`location`)
+      if (location) {
+        const redirectUrl = new URL(location, url)
+        const offset = redirectUrl.searchParams.get(`offset`)
+        if (offset) {
+          if (offset.endsWith(`_snapshot`)) {
+            // Snapshot exists - load it
+            await this.loadSnapshot(ctx, offset)
+          } else {
+            // No snapshot - start from the indicated offset
+            ctx.startOffset = offset
+          }
+          return
+        }
+      }
+    }
+
+    // Fallback: if redirect parsing fails, start from beginning
+    ctx.startOffset = `-1`
+  }
+
+  /**
+   * Load a snapshot from the server.
+   */
+  private async loadSnapshot(
+    ctx: ConnectionContext,
+    snapshotOffset: string
+  ): Promise<void> {
+    const url = `${this.docUrl()}?offset=${encodeURIComponent(snapshotOffset)}`
+
+    try {
+      const response = await fetch(url, {
+        method: `GET`,
+        headers: this.headers as Record<string, string>,
+        signal: ctx.controller.signal,
+      })
+
+      if (!response.ok) {
+        if (response.status === 404) {
+          // Snapshot deleted - retry discovery
+          await this.discoverSnapshot(ctx)
+          return
+        }
+        throw new Error(`Failed to load snapshot: ${response.status}`)
+      }
+
+      // Apply snapshot
+      const data = new Uint8Array(await response.arrayBuffer())
+      if (data.length > 0) {
+        Y.applyUpdate(this.doc, data, `server`)
+      }
+
+      // Get the next offset from header
+      const nextOffset = response.headers.get(`stream-next-offset`)
+      ctx.startOffset = nextOffset ?? `-1`
+    } catch (err) {
+      if (this.isNotFoundError(err)) {
+        // Snapshot deleted - retry discovery
+        await this.discoverSnapshot(ctx)
+        return
+      }
+      throw err
+    }
+  }
+
   // ---- Updates Producer ----
 
   private createUpdatesProducer(ctx: ConnectionContext): void {
-    if (!ctx.index) return
-
     const stream = new DurableStream({
-      url: this.updatesUrl(ctx.index.updates_stream),
+      url: this.docUrl(),
       headers: this.headers,
       contentType: `application/octet-stream`,
     })
@@ -375,180 +459,13 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     ctx.producer = null
   }
 
-  // ---- Stream URL builders ----
-
-  private indexUrl(): string {
-    return `${this.baseUrl}/docs/${this.docId}/index`
-  }
-
-  private updatesUrl(streamId: string): string {
-    return `${this.baseUrl}/docs/${this.docId}/updates/${streamId}`
-  }
-
-  private snapshotUrl(snapshotId: string): string {
-    return `${this.baseUrl}/docs/${this.docId}/snapshots/${snapshotId}`
-  }
-
-  private awarenessUrl(): string {
-    return `${this.baseUrl}/docs/${this.docId}/awareness`
-  }
-
-  // ---- Index management ----
-
-  private async fetchIndex(ctx: ConnectionContext): Promise<YjsIndex> {
-    const stream = new DurableStream({
-      url: this.indexUrl(),
-      headers: this.headers,
-      contentType: `application/json`,
-      backoffOptions: this.connectBackoffOptions,
-    })
-
-    try {
-      const response = await stream.stream({
-        offset: `-1`,
-        signal: ctx.controller.signal,
-      })
-      const items = await response.json<YjsIndex>()
-
-      if (items.length === 0) {
-        return DEFAULT_INDEX
-      }
-
-      return items[items.length - 1]!
-    } catch (err) {
-      if (this.isNotFoundError(err)) {
-        return DEFAULT_INDEX
-      }
-      throw err
-    }
-  }
-
-  // ---- Initial sync ----
-
-  private async initialSync(ctx: ConnectionContext): Promise<void> {
-    if (!ctx.index) return
-
-    // Parallel fetch: start both snapshot and updates fetches simultaneously
-    // This saves one full round-trip latency for documents with snapshots
-    if (ctx.index.snapshot_stream) {
-      const snapshotPromise = this.fetchSnapshot(ctx, ctx.index.snapshot_stream)
-      const updatesPromise = this.fetchInitialUpdates(
-        ctx,
-        ctx.index.update_offset
-      )
-
-      const [snapshotResult, updatesResult] = await Promise.all([
-        snapshotPromise,
-        updatesPromise,
-      ])
-
-      if (this.isStale(ctx)) return
-
-      // Handle snapshot deleted during fetch (compaction race)
-      if (!snapshotResult.found) {
-        // Re-fetch index and retry with sequential approach
-        ctx.index = await this.fetchIndex(ctx)
-        if (this.isStale(ctx)) return
-        return this.initialSync(ctx)
-      }
-
-      // Apply in correct order: snapshot first, then updates
-      if (snapshotResult.data.length > 0) {
-        Y.applyUpdate(this.doc, snapshotResult.data, `server`)
-      }
-      this.applyUpdates(updatesResult.data)
-
-      // Start live streaming from where we left off
-      await this.startUpdatesStream(ctx, updatesResult.endOffset)
-    } else {
-      // No snapshot - just start updates stream from the beginning
-      await this.startUpdatesStream(ctx, ctx.index.update_offset)
-    }
-  }
-
-  /**
-   * Fetch snapshot data without applying it.
-   * Returns {found: false} if snapshot was deleted (compaction race).
-   */
-  private async fetchSnapshot(
-    ctx: ConnectionContext,
-    snapshotId: string
-  ): Promise<{ found: true; data: Uint8Array } | { found: false }> {
-    const stream = new DurableStream({
-      url: this.snapshotUrl(snapshotId),
-      headers: this.headers,
-      contentType: `application/octet-stream`,
-      backoffOptions: this.connectBackoffOptions,
-    })
-
-    try {
-      const response = await stream.stream({
-        offset: `-1`,
-        signal: ctx.controller.signal,
-      })
-      const data = await response.body()
-      return { found: true, data }
-    } catch (err) {
-      if (this.isNotFoundError(err)) {
-        return { found: false }
-      }
-      throw err
-    }
-  }
-
-  /**
-   * Fetch initial updates in one shot (no live streaming).
-   * Returns the data and the end offset for subsequent live streaming.
-   */
-  private async fetchInitialUpdates(
-    ctx: ConnectionContext,
-    offset: string
-  ): Promise<{ data: Uint8Array; endOffset: string }> {
-    if (!ctx.index) {
-      return { data: new Uint8Array(0), endOffset: offset }
-    }
-
-    const stream = new DurableStream({
-      url: this.updatesUrl(ctx.index.updates_stream),
-      headers: this.headers,
-      contentType: `application/octet-stream`,
-    })
-
-    try {
-      // Use false for one-shot fetch (no live polling)
-      const response = await stream.stream({
-        offset,
-        live: false,
-        signal: ctx.controller.signal,
-      })
-      const data = await response.body()
-      return { data, endOffset: response.offset }
-    } catch (err) {
-      if (this.isNotFoundError(err)) {
-        // Stream doesn't exist yet - return empty data, keep original offset
-        return { data: new Uint8Array(0), endOffset: offset }
-      }
-      throw err
-    }
-  }
-
-  private applyUpdates(data: Uint8Array): void {
-    if (data.length === 0) return
-
-    const decoder = decoding.createDecoder(data)
-    while (decoding.hasContent(decoder)) {
-      const update = decoding.readVarUint8Array(decoder)
-      Y.applyUpdate(this.doc, update, `server`)
-    }
-  }
-
   // ---- Live updates streaming ----
 
   private startUpdatesStream(
     ctx: ConnectionContext,
     offset: string
   ): Promise<void> {
-    if (!ctx.index || ctx.controller.signal.aborted) {
+    if (ctx.controller.signal.aborted) {
       return Promise.resolve()
     }
 
@@ -597,8 +514,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     resolveInitialSync: () => void,
     rejectInitialSync: (error: Error) => void
   ): Promise<void> {
-    if (!ctx.index) return
-
     let currentOffset = offset
     let initialSyncPending = true
 
@@ -624,7 +539,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       }
 
       const stream = new DurableStream({
-        url: this.updatesUrl(ctx.index.updates_stream),
+        url: this.docUrl(),
         headers: this.headers,
         contentType: `application/octet-stream`,
       })
@@ -632,7 +547,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       try {
         const response = await stream.stream({
           offset: currentOffset,
-          live: `auto`,
+          live: `auto`, // Use long-poll mode per protocol
           signal: ctx.controller.signal,
         })
 
@@ -699,6 +614,19 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
+  /**
+   * Apply lib0-framed updates from the server.
+   */
+  private applyUpdates(data: Uint8Array): void {
+    if (data.length === 0) return
+
+    const decoder = decoding.createDecoder(data)
+    while (decoding.hasContent(decoder)) {
+      const update = decoding.readVarUint8Array(decoder)
+      Y.applyUpdate(this.doc, update, `server`)
+    }
+  }
+
   // ---- Document updates ----
 
   private handleDocumentUpdate = (
@@ -712,13 +640,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     // Mark as unsynced - will become true when our write echoes back
     this.synced = false
 
-    // Frame the update with lib0 VarUint8Array encoding
-    const encoder = encoding.createEncoder()
-    encoding.writeVarUint8Array(encoder, update)
-    const framedUpdate = encoding.toUint8Array(encoder)
-
-    // Fire-and-forget: producer handles batching, retries, and error reporting
-    producer.append(framedUpdate)
+    // Send raw update - server handles framing
+    producer.append(update)
   }
 
   // ---- Awareness ----
@@ -840,7 +763,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       const response = await stream.stream({
         offset: `now`,
-        live: `sse`,
+        live: `sse`, // Use SSE for awareness per protocol
         signal,
       })
       // Ensure closed promise is handled to avoid unhandled rejections.
