@@ -101,8 +101,8 @@ This monorepo contains:
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
 - **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
-- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (124 tests)
-- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (110 tests)
+- **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (192 tests)
+- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (212 tests)
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
