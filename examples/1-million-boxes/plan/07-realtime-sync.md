@@ -151,7 +151,7 @@ export function useGameStream({
   const connect = useCallback(() => {
     // Get stream URL from environment
     const streamUrl =
-      import.meta.env.VITE_DURABLE_STREAMS_URL || "http://localhost:8787"
+      import.meta.env.VITE_DURABLE_STREAMS_URL || "http://localhost:4437"
     const url = `${streamUrl}/streams/boxes/edges`
 
     // First, fetch existing data

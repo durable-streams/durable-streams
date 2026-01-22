@@ -55,14 +55,14 @@ cd packages/server
 pnpm dev
 ```
 
-This starts the stream server on `http://localhost:8787`.
+This starts the stream server on `http://localhost:4437`.
 
 ### 3. Configure Environment Variables
 
 Create a `.dev.vars` file in this directory:
 
 ```bash
-DURABLE_STREAMS_URL=http://localhost:8787
+DURABLE_STREAMS_URL=http://localhost:4437
 TEAM_COOKIE_SECRET=dev-secret-change-in-production
 ```
 

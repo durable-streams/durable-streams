@@ -94,7 +94,7 @@ Create `wrangler.jsonc`:
 Create `.dev.vars`:
 
 ```bash
-DURABLE_STREAMS_URL=http://localhost:8787
+DURABLE_STREAMS_URL=http://localhost:4437
 TEAM_COOKIE_SECRET=dev-secret-change-in-production
 ```
 

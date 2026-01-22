@@ -3,7 +3,7 @@ import { StreamParser } from "../lib/stream-parser"
 import type { GameEvent } from "../lib/game-state"
 
 const STREAM_URL =
-  import.meta.env.VITE_DURABLE_STREAMS_URL || `http://localhost:8787`
+  import.meta.env.VITE_DURABLE_STREAMS_URL || `http://localhost:4437`
 
 const RECONNECT_DELAY_MS = 3000
 

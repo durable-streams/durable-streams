@@ -60,7 +60,7 @@ Configure via environment variables:
 
 ```bash
 # .dev.vars (local development)
-DURABLE_STREAMS_URL=http://localhost:8787
+DURABLE_STREAMS_URL=http://localhost:4437
 
 # wrangler.jsonc (production - set via Cloudflare dashboard or wrangler secret)
 # DURABLE_STREAMS_URL=https://your-project.electric-sql.com
@@ -326,7 +326,7 @@ If the game reaches full completion (all edges placed):
 
 3. **Durable Stream: `boxes/edges`** (External Service)
 
-- **Local dev**: Durable Streams server from this repo (localhost:8787)
+- **Local dev**: Durable Streams server from this repo (localhost:4437)
 - **Production**: [ElectricSQL Cloud](https://electric-sql.com/) hosted Durable Streams
 
 The Durable Stream is:

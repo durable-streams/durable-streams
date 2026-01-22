@@ -1,3 +1,6 @@
+/* Import mobile-specific styles - must be at top */
+@import "./mobile.css";
+
 :root {
   /* Team colors */
   --color-red: #e53935;
@@ -181,5 +184,3 @@ a {
   }
 }
 
-/* Import mobile-specific styles */
-@import "./mobile.css";
