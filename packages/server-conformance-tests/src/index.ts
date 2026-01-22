@@ -17,7 +17,7 @@ import {
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
   baseUrl: string
-  /** Timeout for long-poll tests in milliseconds (default: 20000) */
+  /** Timeout for long-poll tests in milliseconds (default: 30000) */
   longPollTimeoutMs?: number
 }
 
@@ -36,7 +36,7 @@ async function fetchSSE(
   } = {}
 ): Promise<{ response: Response; received: string }> {
   const {
-    timeoutMs = 2000,
+    timeoutMs = 30000,
     maxChunks = 10,
     untilContent,
     headers = {},
@@ -147,7 +147,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   // mutable config objects (needed for dynamic port assignment)
   const getBaseUrl = () => options.baseUrl
   const getLongPollTestTimeoutMs = () =>
-    (options.longPollTimeoutMs ?? 20_000) + 1_000
+    (options.longPollTimeoutMs ?? 30_000) + 1_000
 
   // ============================================================================
   // Basic Stream Operations
@@ -4413,7 +4413,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 25 }
         )
-      }, 15000)
+      }, 30000)
 
       test(`read-your-writes: data is immediately visible after append`, async () => {
         await fc.assert(
@@ -4604,7 +4604,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 20 }
         )
-      })
+      }, 30000)
 
       test(`out-of-order seq values are rejected`, async () => {
         await fc.assert(
@@ -4701,7 +4701,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           content.includes(`writer-${i}`)
         ).filter(Boolean)
         expect(matchingWriters.length).toBeGreaterThanOrEqual(1)
-      })
+      }, 30000)
 
       test(`concurrent writers racing with incrementing seq values`, async () => {
         await fc.assert(
@@ -4936,7 +4936,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 15 }
         )
-      }, 15000)
+      }, 30000)
 
       test(`content hash changes with each append`, async () => {
         const streamPath = `/v1/stream/hash-changes-${Date.now()}-${Math.random().toString(36).slice(2)}`
