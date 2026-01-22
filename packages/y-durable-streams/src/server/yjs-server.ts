@@ -819,19 +819,22 @@ export class YjsServer {
         }
       }
 
+      // For SSE, disable buffering and set appropriate headers
+      if (live === `sse` || live === `true`) {
+        responseHeaders[`cache-control`] = `no-cache`
+        responseHeaders[`connection`] = `keep-alive`
+      }
+
       res.writeHead(dsResponse.status, responseHeaders)
 
-      // Stream the response
+      // Stream the response - flush after each chunk for SSE
       if (dsResponse.body) {
-        const reader = dsResponse.body.getReader()
-        try {
-          for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            res.write(value)
+        for await (const chunk of dsResponse.body) {
+          res.write(chunk)
+          // Flush for SSE to ensure immediate delivery
+          if ((live === `sse` || live === `true`) && res.flush) {
+            ;(res as unknown as { flush: () => void }).flush()
           }
-        } finally {
-          reader.releaseLock()
         }
       }
 
