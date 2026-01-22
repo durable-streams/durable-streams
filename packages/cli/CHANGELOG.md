@@ -1,5 +1,11 @@
 # @durable-streams/cli
 
+## 0.1.9
+
+### Patch Changes
+
+- Fix CLI not running when invoked via npx by resolving symlinks in the isMainModule check. ([#194](https://github.com/durable-streams/durable-streams/pull/194))
+
 ## 0.1.8
 
 ### Patch Changes
