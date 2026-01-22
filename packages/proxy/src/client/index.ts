@@ -8,7 +8,13 @@
  */
 
 // Main API
-export { createDurableFetch, createAbortFn } from "./durable-fetch"
+export {
+  createDurableFetch,
+  createAbortFn,
+  resume,
+  type ResumeOptions,
+  unwrapProxySSE,
+} from "./durable-fetch"
 
 // Storage utilities
 export {
@@ -31,4 +37,5 @@ export type {
   DurableFetchRequestOptions,
   DurableResponse,
   DurableFetch,
+  HeadersConfig,
 } from "./types"
