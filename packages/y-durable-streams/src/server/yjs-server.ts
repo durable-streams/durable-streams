@@ -17,7 +17,7 @@ import {
   DurableStreamError,
   FetchError,
 } from "@durable-streams/client"
-import { Compactor, frameUpdate } from "./compaction"
+import { Compactor } from "./compaction"
 import { PathUtils, YJS_HEADERS, YjsStreamPaths } from "./types"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
@@ -644,7 +644,7 @@ export class YjsServer {
 
   /**
    * POST - Streaming proxy to write to .updates stream.
-   * Frames the update with lib0 encoding (Yjs protocol requirement).
+   * Client sends lib0-framed updates; we pass through directly.
    */
   private async handleUpdateWrite(
     req: IncomingMessage,
@@ -653,9 +653,9 @@ export class YjsServer {
   ): Promise<void> {
     const stateKey = this.stateKey(route.service, route.docPath)
 
-    // Read and frame the update with lib0 encoding
+    // Client sends lib0-framed updates - pass through directly
+    // (Client frames each update before batching to handle IdempotentProducer concatenation)
     const body = await this.readBody(req)
-    const framedUpdate = frameUpdate(body)
 
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
     const dsUrl = new URL(dsPath, this.dsServerUrl)
@@ -680,7 +680,7 @@ export class YjsServer {
     const dsResponse = await fetch(dsUrl.toString(), {
       method: `POST`,
       headers,
-      body: Buffer.from(framedUpdate),
+      body: Buffer.from(body),
     })
 
     // Forward response headers (skip content-encoding/length - fetch decompresses)

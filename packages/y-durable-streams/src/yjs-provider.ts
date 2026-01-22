@@ -14,6 +14,7 @@ import * as Y from "yjs"
 import * as awarenessProtocol from "y-protocols/awareness"
 import { ObservableV2 } from "lib0/observable"
 import * as decoding from "lib0/decoding"
+import * as encoding from "lib0/encoding"
 import {
   DurableStream,
   DurableStreamError,
@@ -640,8 +641,16 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     // Mark as unsynced - will become true when our write echoes back
     this.synced = false
 
-    // Send raw update - server handles framing
-    producer.append(update)
+    // Frame update with lib0 encoding before appending.
+    // This is critical because the IdempotentProducer batches multiple appends
+    // by concatenating bytes. Without framing, concatenated raw Yjs updates
+    // would be invalid. With framing, each update is length-prefixed so
+    // concatenation produces valid lib0-framed data.
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint8Array(encoder, update)
+    const framedUpdate = encoding.toUint8Array(encoder)
+
+    producer.append(framedUpdate)
   }
 
   // ---- Awareness ----

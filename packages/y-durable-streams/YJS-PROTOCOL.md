@@ -259,7 +259,7 @@ Content-Type: application/octet-stream
 
 Appends a Yjs update to the document stream. Documents and streams are created implicitly on first write.
 
-**Note:** Writes send a single raw Yjs update without framing. The server stores updates and adds lib0 framing with offsets when serving read responses (Section 7).
+**Note:** Writes **MUST** send lib0-framed updates (Section 7). This is critical because clients may batch multiple updates into a single HTTP request (e.g., using an idempotent producer with batching). Each update must be individually framed so that batched/concatenated updates remain valid lib0-framed data.
 
 #### Response
 
@@ -399,7 +399,16 @@ while (decoding.hasContent(decoder)) {
 
 ### 7.4. Write Requests
 
-Write requests send a single raw Yjs update **without** framing. The server stores updates individually and adds lib0 framing with offsets when serving read responses. This keeps write requests simple (just the Yjs update bytes) while enabling efficient batched reads.
+Write requests **MUST** use lib0 framing. Clients frame each Yjs update before sending:
+
+```
+POST {document-url}
+Content-Type: application/octet-stream
+
+<lib0-framed update>
+```
+
+This is critical for batching: when clients use an idempotent producer that batches multiple `append()` calls into a single HTTP request (concatenating the bytes), each update must be individually framed. Without framing, concatenated raw Yjs updates would be invalid. With framing, concatenation produces valid lib0-framed data that can be stored and read back correctly.
 
 ### 7.5. Efficiency
 
