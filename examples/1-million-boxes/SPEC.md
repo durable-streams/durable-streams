@@ -8,12 +8,152 @@ A global, finite, realtime game of Dots & Boxes on a **1000×1000** grid (1,000,
 
 ---
 
+## 1.1) Technology Stack
+
+- **Frontend Framework**: [TanStack Start](https://tanstack.com/start/latest) (React, full-stack TypeScript)
+- **UI Components**: [Base UI](https://base-ui.com) (unstyled, accessible components)
+- **Styling**: Plain CSS (no Tailwind, no CSS-in-JS)
+- **Runtime**: Cloudflare Workers (via [@cloudflare/vite-plugin](https://developers.cloudflare.com/workers/frameworks/framework-guides/tanstack-start/) + Wrangler)
+- **Backend**: Cloudflare Durable Objects
+- **Real-time**: Durable Streams (SSE)
+- **Rendering**: HTML Canvas (2D context)
+
+TanStack Start provides:
+
+- File-based routing with type-safe navigation
+- Server functions for API calls
+- SSR for initial page load (game metadata, team assignment)
+- Cloudflare Workers deployment via official Vite plugin
+
+Base UI provides:
+
+- Accessible dialog/modal for game info, share links
+- Tooltip for edge hover states and quota info
+- Progress bar for quota meter
+
+---
+
+## 1.2) Development & Deployment
+
+### Local Development
+
+Use Wrangler's local dev server which simulates the Cloudflare Workers runtime including Durable Objects:
+
+```bash
+pnpm dev
+```
+
+This runs `vite dev` with the `@cloudflare/vite-plugin`, which:
+
+- Simulates the Workers runtime locally
+- Emulates Durable Objects with local persistence
+- Uses the **local durable-streams server** from this repo for stream operations
+
+### Durable Streams Configuration
+
+| Environment | Durable Streams Server                                                |
+| ----------- | --------------------------------------------------------------------- |
+| Local dev   | Local server from `durable-streams` repo (localhost)                  |
+| Production  | [ElectricSQL Cloud](https://electric-sql.com/) hosted Durable Streams |
+
+Configure via environment variables:
+
+```bash
+# .dev.vars (local development)
+DURABLE_STREAMS_URL=http://localhost:8787
+
+# wrangler.jsonc (production - set via Cloudflare dashboard or wrangler secret)
+# DURABLE_STREAMS_URL=https://your-project.electric-sql.com
+```
+
+### Vite Configuration
+
+```typescript
+// vite.config.ts
+import { defineConfig } from "vite"
+import { tanstackStart } from "@tanstack/react-start/plugin/vite"
+import { cloudflare } from "@cloudflare/vite-plugin"
+import viteReact from "@vitejs/plugin-react"
+
+export default defineConfig({
+  plugins: [
+    cloudflare({ viteEnvironment: { name: "ssr" } }),
+    tanstackStart(),
+    viteReact(),
+  ],
+})
+```
+
+### Wrangler Configuration
+
+```jsonc
+// wrangler.jsonc
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "1-million-boxes",
+  "compatibility_date": "2025-01-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+
+  // Durable Object binding for game state
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_WRITER",
+        "class_name": "GameWriterDO",
+      },
+    ],
+  },
+
+  // Rate limiting
+  "rate_limits": [
+    {
+      "name": "draw-limit",
+      "period": 60,
+      "limit": 10,
+    },
+  ],
+}
+```
+
+### Package Scripts
+
+```json
+{
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && tsc --noEmit",
+    "preview": "vite preview",
+    "deploy": "pnpm build && wrangler deploy",
+    "cf-typegen": "wrangler types"
+  }
+}
+```
+
+### Deployment
+
+```bash
+# Login to Cloudflare (one-time)
+pnpm dlx wrangler login
+
+# Deploy to production
+pnpm deploy
+```
+
+This deploys:
+
+- TanStack Start app as a Cloudflare Worker
+- GameWriterDO as a Durable Object
+- Connects to ElectricSQL Cloud Durable Streams
+
+---
+
 ## 2) Goals and Non-Goals
 
 ### Goals
 
-- Viral, extremely simple: “click lines, complete squares”.
-- Global “single world” experience (one shared board per active game).
+- Viral, extremely simple: "click lines, complete squares".
+- Global "single world" experience (one shared board per active game).
 - Deterministic outcomes from a compact append-only log.
 - Efficient storage: events are **3 bytes each**.
 - Client computes:
@@ -26,7 +166,7 @@ A global, finite, realtime game of Dots & Boxes on a **1000×1000** grid (1,000,
   - rate limiting (Cloudflare rate limiting)
 
 - Supports multiple games over time:
-  - one “current game”
+  - one "current game"
   - old games remain replayable (log persists)
 
 ### Non-Goals (v1)
@@ -51,7 +191,7 @@ A global, finite, realtime game of Dots & Boxes on a **1000×1000** grid (1,000,
 
 ### Moves
 
-- A move is: “place edge `edgeId`”.
+- A move is: "place edge `edgeId`".
 - If the edge is already placed, the move is rejected.
 
 ### Claiming a box
@@ -166,37 +306,69 @@ If the game reaches full completion (all edges placed):
 
 ## 6.1 Components
 
-1. **Worker** (HTTP entry)
+1. **TanStack Start App** (Cloudflare Worker)
 
-- Serves static UI assets (or via Pages)
+- Serves SSR pages and static assets
 - Provides API endpoints (see below)
 - Applies **Cloudflare rate limiting** to draw endpoint
-- Routes draw requests to the game DO
+- Routes draw requests to the GameWriterDO
 
-2. **Durable Object: GameWriterDO(gameId)**
+2. **Durable Object: GameWriterDO**
 
-- Single writer / coordinator for a game:
+- Single writer / coordinator for the game:
   - keeps **edge availability bitset in memory**
-  - validates “edge not already set”
-  - appends accepted moves to the Durable Stream
+  - validates "edge not already set"
+  - appends accepted moves to the Durable Stream (via HTTP)
   - updates in-memory bitset and counters
 
 - On DO startup:
   - fully replays the stream to rebuild bitset before accepting writes
 
-3. **Durable Stream: `boxes/{gameId}/edges`**
+3. **Durable Stream: `boxes/edges`** (External Service)
+
+- **Local dev**: Durable Streams server from this repo (localhost:8787)
+- **Production**: [ElectricSQL Cloud](https://electric-sql.com/) hosted Durable Streams
+
+The Durable Stream is:
 
 - Authoritative append-only log of accepted edges (3 bytes each)
-- Public read (spectator), write only via DO
+- Public read (spectator) via SSE
+- Write only via GameWriterDO (HTTP POST)
 
-4. **Game Registry**
-   Minimal mechanism to support multiple games:
+**Note**: There is only one game at a time. The stream path is hardcoded. To start a new game, deploy with a fresh stream name or clear the existing stream.
 
-- A tiny KV/D1 record (or a small “registry DO”) that stores:
-  - `currentGameId`
-  - metadata list for past games
+### 6.1.1 Data Flow
 
-(Registry is not on the hot path; it’s admin/UX glue.)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Cloudflare Edge                              │
+│  ┌─────────────────────┐    ┌─────────────────────────────────┐ │
+│  │  TanStack Start     │    │  GameWriterDO                   │ │
+│  │  (Worker)           │───▶│  - edge bitset (250KB)          │ │
+│  │                     │    │  - validates moves              │ │
+│  │  - SSR / static     │    │  - appends to stream            │ │
+│  │  - /draw endpoint   │    └───────────────┬─────────────────┘ │
+│  │  - rate limiting    │                    │                   │
+│  └─────────────────────┘                    │ HTTP POST         │
+└─────────────────────────────────────────────┼───────────────────┘
+                                              │
+                                              ▼
+                            ┌─────────────────────────────────────┐
+                            │  ElectricSQL Cloud                  │
+                            │  Durable Streams                    │
+                            │                                     │
+                            │  Stream: boxes/edges                │
+                            │  - append-only log                  │
+                            │  - SSE for live tail                │
+                            └─────────────────────────────────────┘
+                                              ▲
+                                              │ SSE
+                            ┌─────────────────┴─────────────────┐
+                            │  Browser Clients                  │
+                            │  - read stream directly           │
+                            │  - derive game state locally      │
+                            └───────────────────────────────────┘
+```
 
 ---
 
@@ -264,78 +436,208 @@ On rate limit breach:
 
 ---
 
-## 7) Client “Simulated Quota”
+## 7) Client Line Quota System
 
-Client displays a local quota counter that is slightly conservative, e.g.:
+The client maintains a **local line quota** that is slightly more conservative than the server's Cloudflare rate limit. This provides immediate feedback and prevents most 429 errors.
 
-- UI shows “8 per minute” while server enforces 10/min.
+### 7.1 Quota Parameters
 
-Rules:
+| Parameter   | Client (UI)   | Server (CF) |
+| ----------- | ------------- | ----------- |
+| Max quota   | 8 lines       | 10 lines    |
+| Refill rate | 1 line / 7.5s | 1 line / 6s |
+| Burst       | 8             | 10          |
 
-- UI decrements locally on click to feel responsive.
-- If server returns 429 or edge-taken, UI corrects.
-- UI may “refill” on a timer (purely cosmetic).
+The client limit is intentionally ~20% stricter so users rarely hit the server limit.
 
-(You’re explicitly OK with this being approximate.)
+### 7.2 localStorage Persistence
+
+Quota state is persisted in `localStorage` under the key `boxes:quota`:
+
+```json
+{
+  "remaining": 6,
+  "lastRefillAt": 1706000000000,
+  "version": 1
+}
+```
+
+- `remaining`: current available lines (0–8)
+- `lastRefillAt`: Unix timestamp (ms) of last refill calculation
+- `version`: schema version for future migrations
+
+On page load:
+
+1. Read quota from localStorage
+2. Calculate elapsed time since `lastRefillAt`
+3. Add `floor(elapsed / 7500)` lines (capped at 8)
+4. Update `lastRefillAt` to now minus remainder
+
+If localStorage is missing or corrupt, initialize with full quota (8 lines).
+
+### 7.3 Quota UI Display
+
+Display quota as a visual indicator near the game controls:
+
+```
+┌─────────────────────────┐
+│  Lines: ████████░░ 6/8  │
+│         ↑ refill in 4s  │
+└─────────────────────────┘
+```
+
+- **Progress bar**: filled segments = remaining quota
+- **Numeric display**: `{remaining}/{max}`
+- **Refill timer**: countdown to next line (updates every second)
+- **Color coding**:
+  - Green: 6–8 remaining
+  - Yellow: 3–5 remaining
+  - Red: 0–2 remaining
+
+When quota is 0:
+
+- Disable edge click/hover interactions
+- Show "Recharging..." state
+- Continue showing countdown timer
+
+### 7.4 Quota Consumption Flow
+
+On edge click:
+
+1. Check `remaining > 0`
+   - If no: show "Out of lines" toast, abort
+2. Decrement `remaining` in memory and localStorage
+3. Optimistically update UI (draw edge in pending state)
+4. Send `POST /games/:gameId/draw`
+5. Handle response:
+   - `200 OK`: confirm edge placement
+   - `409 EDGE_TAKEN`: revert UI, **refund 1 line** to quota
+   - `429 RATE_LIMITED`: revert UI (don't refund—server says slow down)
+   - `503 WARMING_UP`: revert UI, refund 1 line, show retry message
+
+### 7.5 Quota Refill Logic
+
+Run a refill check on an interval (every 1 second):
+
+```typescript
+function refillQuota() {
+  const now = Date.now()
+  const elapsed = now - state.lastRefillAt
+  const linesToAdd = Math.floor(elapsed / 7500) // 7.5s per line
+
+  if (linesToAdd > 0) {
+    state.remaining = Math.min(8, state.remaining + linesToAdd)
+    state.lastRefillAt += linesToAdd * 7500
+    persistToLocalStorage(state)
+  }
+}
+```
+
+### 7.6 Cross-Tab Synchronization
+
+Use the `storage` event to sync quota across tabs:
+
+```typescript
+window.addEventListener("storage", (e) => {
+  if (e.key === "boxes:quota" && e.newValue) {
+    state = JSON.parse(e.newValue)
+    updateUI()
+  }
+})
+```
+
+This prevents users from opening multiple tabs to bypass quota.
 
 ---
 
 ## 8) APIs
 
-### 8.1 Public game discovery
+There is only one active game per deployment. No game discovery APIs are needed—the frontend hardcodes the stream path.
 
-#### `GET /games/current`
+### 8.1 Team allocation
 
-Returns metadata for the current game.
+Team assignment happens automatically on first visit and persists via a signed, HTTP-only cookie.
 
-```json
-{
-  "gameId": "01J…",
-  "status": "ACTIVE",
-  "w": 1000,
-  "h": 1000,
-  "stream": "boxes/{gameId}/edges",
-  "startedAt": "2026-01-22T12:00:00Z"
-}
-```
+#### Assignment Flow
 
-#### `GET /games`
-
-List all games (active + finished).
-
-```json
-[
-  { "gameId": "…", "status": "ACTIVE", "startedAt": "…" },
-  { "gameId": "…", "status": "FINISHED", "startedAt": "…", "finishedAt": "…" }
-]
-```
-
-#### `GET /games/:gameId`
-
-Returns metadata for a specific game.
-
----
-
-### 8.2 Team allocation
+1. **On page load** (in TanStack Start loader or root layout):
+   - Call `getTeam()` server function
+   - Server checks for existing `team` cookie
+2. **If cookie exists and valid**:
+   - Verify HMAC signature
+   - Return `{ team: "RED", teamId: 0 }`
+3. **If cookie missing or invalid**:
+   - Assign team using **round-robin with jitter**:
+     - Fetch current team counts from a lightweight counter (KV or in-memory)
+     - Assign to the team with fewest members
+     - If tied, pick randomly among tied teams
+   - Generate signed cookie
+   - Set cookie and return team
 
 #### `GET /team`
 
-Returns your assigned team and sets a **signed cookie** if missing.
+Returns your assigned team. Sets a **signed cookie** if missing.
 
 ```json
-{ "team": "RED" }
+{ "team": "RED", "teamId": 0 }
 ```
 
-Cookie fields (conceptual):
+#### Cookie Specification
 
-- `teamId` (0..3)
-- signature (HMAC)
+```
+Name: boxes_team
+Value: <teamId>.<signature>
+Example: 2.a1b2c3d4e5f6...
+
+Attributes:
+  HttpOnly: true
+  Secure: true (production)
+  SameSite: Lax
+  Path: /
+  Max-Age: 31536000 (1 year)
+```
+
+- `teamId`: 0–3 (RED=0, BLUE=1, GREEN=2, YELLOW=3)
+- `signature`: HMAC-SHA256(teamId, SECRET_KEY), hex-encoded, truncated to 32 chars
+
+#### Server-Side Verification
+
+```typescript
+function verifyTeamCookie(cookie: string, secret: string): number | null {
+  const [teamIdStr, sig] = cookie.split(".")
+  const teamId = parseInt(teamIdStr, 10)
+  if (isNaN(teamId) || teamId < 0 || teamId > 3) return null
+
+  const expected = hmacSha256(teamIdStr, secret).slice(0, 32)
+  if (!timingSafeEqual(sig, expected)) return null
+
+  return teamId
+}
+```
+
+#### Client-Side Team Context
+
+The team is provided to the React tree via context:
+
+```typescript
+// In __root.tsx loader
+export const Route = createRootRoute({
+  loader: async () => {
+    const { team, teamId } = await getTeam()
+    return { team, teamId }
+  },
+  component: RootComponent,
+})
+
+// TeamContext available throughout app
+const { team, teamId } = Route.useLoaderData()
+```
 
 ---
 
-### 8.3 Draw an edge
+### 8.2 Draw an edge
 
-#### `POST /games/:gameId/draw`
+#### `POST /draw`
 
 Request:
 
@@ -376,20 +678,21 @@ Notes:
 
 ---
 
-### 8.4 Read the event log (spectators + clients)
+### 8.3 Read the event log (spectators + clients)
 
-You’ll expose a read endpoint that proxies Durable Streams (or you serve stream reads directly if your platform supports it):
+Durable Streams natively supports SSE for live tailing. The client should:
 
-#### `GET /games/:gameId/edges?fromRecord=N`
+1. **Initial fetch**: `GET /edges` to get all existing records
+2. **Live tail**: Use SSE connection to receive new records as they're appended
+
+#### `GET /edges?fromRecord=N`
 
 Returns a binary body containing concatenated 3-byte records starting at record index N.
 
-- Clients can:
-  - fetch from 0 to full replay
-  - then poll for new bytes
-  - or upgrade to a streaming transport (SSE/WS) if you want live tailing
+For live streaming, the client can either:
 
-(Exact transport is implementation-defined; spec only requires “read from offset” support.)
+- Use Durable Streams SSE endpoint directly (preferred)
+- Poll with increasing `fromRecord` values
 
 ---
 
@@ -410,7 +713,7 @@ Clients derive everything from the edge log in order.
 
 For each record `(edgeId, teamId)` in log order:
 
-1. If edge already set (shouldn’t happen if DO enforces uniqueness), ignore.
+1. If edge already set (shouldn't happen if DO enforces uniqueness), ignore.
 2. Set edge bit.
 3. Determine candidate boxes adjacent to that edge:
    - If horizontal at (x,y): boxes at (x,y-1) and (x,y)
@@ -426,91 +729,287 @@ This is O(1) per event and deterministic.
 
 ---
 
-## 10) Rendering and “Fully Zoomed Out View”
+## 10) Rendering and Visual Design
 
-### 10.1 Global view
-
-A single canvas where **1 pixel = 1 box**:
-
-- Canvas logical size: `1000×1000`
-- Scale to fit viewport.
-- When a box is claimed, set its pixel color to the team color.
-
-This gives the “whole world at once” view immediately and is cheap.
-
-### 10.2 Zoom-in view
-
-When user zooms:
-
-- Render dots + edges for visible region only
-- Show edge hover target and click-to-place
-- Optional: show claimed boxes fill under the grid
-
-### 10.3 Live updates
-
-As events stream in:
-
-- Update derived state incrementally
-- Update pixels incrementally
-- Update scores incrementally
+The game has a **hand-drawn aesthetic**—like a Dots & Boxes game sketched on paper with colored pencils. This applies to both the main canvas and all UI elements.
 
 ---
 
-## 11) Game Lifecycle and Multiple Games
+### 10.1 Hand-Drawn Visual Style
 
-### 11.1 Game states
+#### Edges (Lines)
 
-- `ACTIVE`: accepts draws
-- `FINISHED`: read-only (draw returns 410 or 409 + code)
-- `ARCHIVED`: same as finished; purely a labeling choice
+- Drawn with a slight **wobble/imperfection** using quadratic bezier curves with randomized control points
+- Line thickness: 2–3px at normal zoom
+- Unplaced edges: faint, dotted gray (like pencil guidelines)
+- Placed edges: solid, team-colored, slightly thicker
+- Pending edges (optimistic): pulsing/animated, semi-transparent
 
-### 11.2 Creating a new game
+#### Dots (Vertices)
 
-Admin-only endpoint:
+- Small filled circles at grid intersections
+- Slightly irregular (not perfect circles)
+- Dark gray/black, ~4px diameter at normal zoom
 
-#### `POST /admin/games`
+#### Claimed Boxes
 
-Creates a new game:
+- Filled with team color using a **watercolor/crayon texture**
+- Slight transparency (0.6–0.8 alpha) so edges remain visible
+- Optional: subtle paper grain texture overlay
+- Fill should look "colored in by hand"—not perfectly uniform
 
-- assigns `gameId` (ULID recommended)
-- creates durable stream `boxes/{gameId}/edges` (empty)
-- creates/initializes DO instance keyed by `gameId` (optional eager warm)
-- updates registry:
-  - sets `currentGameId = newGameId`
-  - marks old current game as `FINISHED` (if desired)
+#### Team Colors
 
-Returns game metadata.
+| Team   | Primary Color | Fill Color (with alpha)   |
+| ------ | ------------- | ------------------------- |
+| RED    | `#E53935`     | `rgba(229, 57, 53, 0.5)`  |
+| BLUE   | `#1E88E5`     | `rgba(30, 136, 229, 0.5)` |
+| GREEN  | `#43A047`     | `rgba(67, 160, 71, 0.5)`  |
+| YELLOW | `#FDD835`     | `rgba(253, 216, 53, 0.5)` |
 
-### 11.3 Finishing a game
+#### Background
 
-Admin-only endpoint:
+- Off-white/cream paper texture (`#F5F5DC` or similar)
+- Optional: subtle grid paper lines in very light gray
 
-#### `POST /admin/games/:gameId/finish`
+---
 
-Marks game as finished in registry and prevents further draws.
+### 10.2 Canvas Architecture
 
-Server-side finish condition (v1, simple):
+Two canvases are used:
 
-- DO can also auto-finish when `edgesPlacedCount == EDGE_COUNT`
-- If you do auto-finish, DO calls registry update.
+1. **Main Canvas** (full viewport)
+   - Renders the zoomed/panned view of the game
+   - Handles touch/mouse interaction
+   - Uses `transform` for pan/zoom (not re-rendering at different scales)
 
-### 11.4 Accessing old games
+2. **World View Canvas** (minimap)
+   - Fixed size: 150×150px (scales to fit 1000×1000 logical)
+   - Positioned: bottom-right corner, 16px margin
+   - Shows entire board at 1 pixel = 1 box
+   - Viewport indicator: rectangle showing current view bounds
+   - Semi-transparent background with border
+   - Clickable: tap to jump to that location
 
-Old games remain replayable:
+---
 
-- Clients load `/games/:gameId`
-- Fetch edge log from record 0 (or support `fromRecord`)
-- Recompute box owners and final scores client-side
+### 10.3 Pan and Zoom
 
-### 11.5 Share links and replay
+#### Zoom Levels
 
-Share URLs:
+- **Min zoom**: 0.1x (entire board visible, ~1000px logical = 100px screen)
+- **Max zoom**: 10x (individual boxes are ~100px)
+- **Default zoom**: fit board to viewport with padding
 
-- `/g/:gameId` – watch from the start
-- `/g/:gameId?atRecord=N` – “rewind to this moment”
-  - client replays from 0 to N (or uses range fetches)
+#### Zoom Controls
 
-- Optional: a timeline scrubber that changes `atRecord`
+- **Pinch-to-zoom** on touch devices
+- **Scroll wheel** on desktop (with Ctrl/Cmd for finer control)
+- **Zoom buttons** (+/−) in UI for accessibility
+- **Double-tap/click** to zoom in centered on point
+
+#### Pan Controls
+
+- **Drag** to pan (touch or mouse)
+- **Two-finger drag** on touch (after pinch gesture ends)
+- **Arrow keys** for keyboard navigation
+- **Momentum/inertia** for smooth panning
+
+#### Implementation
+
+```typescript
+interface ViewState {
+  // Center of the viewport in world coordinates
+  centerX: number // 0..1000
+  centerY: number // 0..1000
+
+  // Zoom level (1 = 1 world unit = 1 screen pixel at base)
+  zoom: number // 0.1..10
+}
+
+// Transform world coords to screen coords
+function worldToScreen(
+  wx: number,
+  wy: number,
+  view: ViewState,
+  canvas: HTMLCanvasElement
+) {
+  const cx = canvas.width / 2
+  const cy = canvas.height / 2
+  return {
+    x: cx + (wx - view.centerX) * view.zoom,
+    y: cy + (wy - view.centerY) * view.zoom,
+  }
+}
+```
+
+---
+
+### 10.4 Mobile-First Design
+
+The game must be fully playable on mobile devices (phones and tablets).
+
+#### Touch Interactions
+
+- **Tap edge**: place a line (if within quota)
+- **Tap and hold**: show edge preview with tooltip
+- **Pinch**: zoom in/out
+- **Drag**: pan the view
+- **Tap minimap**: jump to location
+
+#### Responsive Layout
+
+```
+┌──────────────────────────────────┐
+│  [Team Badge]    [Score Board]   │  ← Header (fixed, 48px)
+├──────────────────────────────────┤
+│                                  │
+│                                  │
+│         Main Canvas              │  ← Fills remaining space
+│         (game board)             │
+│                                  │
+│                         ┌──────┐ │
+│                         │ Mini │ │  ← World view (150×150)
+│                         │ map  │ │
+│                         └──────┘ │
+├──────────────────────────────────┤
+│  [Quota Meter]      [Zoom +/-]   │  ← Footer (fixed, 56px)
+└──────────────────────────────────┘
+```
+
+#### Breakpoints
+
+- **Mobile** (<640px): Stack score/quota vertically, larger touch targets
+- **Tablet** (640–1024px): Side-by-side layout, medium touch targets
+- **Desktop** (>1024px): Full layout, hover states enabled
+
+#### Touch Target Sizes
+
+- Minimum 44×44px for all interactive elements
+- Edges have enlarged hit areas (±8px from center line)
+- Minimap has 48px minimum dimension
+
+#### Viewport Meta
+
+```html
+<meta
+  name="viewport"
+  content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+/>
+```
+
+Disable browser zoom to prevent conflicts with canvas pinch-zoom.
+
+---
+
+### 10.5 World View (Minimap)
+
+The minimap provides global context and quick navigation.
+
+#### Rendering
+
+- Canvas size: 150×150 CSS pixels (300×300 for Retina)
+- Each box = 0.15 CSS pixels (accumulated via `ImageData`)
+- Background: dark semi-transparent (`rgba(0,0,0,0.7)`)
+- Border: 2px white/light gray
+- Border radius: 8px
+
+#### Content
+
+- Unclaimed boxes: transparent (shows background)
+- Claimed boxes: team color (full opacity for visibility)
+- Viewport rectangle: white outline, 2px stroke
+
+#### Interaction
+
+- **Click/tap**: Center main view on clicked location
+- **Drag**: Pan main view in real-time (optional, may be too fiddly on mobile)
+
+#### Viewport Rectangle
+
+```typescript
+function drawViewportRect(
+  ctx: CanvasRenderingContext2D,
+  view: ViewState,
+  canvas: HTMLCanvasElement
+) {
+  const scale = 150 / 1000 // minimap scale
+
+  // Calculate visible bounds in world coords
+  const halfW = canvas.width / view.zoom / 2
+  const halfH = canvas.height / view.zoom / 2
+
+  const left = (view.centerX - halfW) * scale
+  const top = (view.centerY - halfH) * scale
+  const width = halfW * 2 * scale
+  const height = halfH * 2 * scale
+
+  ctx.strokeStyle = "white"
+  ctx.lineWidth = 2
+  ctx.strokeRect(left, top, width, height)
+}
+```
+
+---
+
+### 10.6 Live Updates and Animation
+
+As events stream in:
+
+1. **Update derived state** (bitset, boxOwner, scores)
+2. **Mark dirty regions** for incremental canvas updates
+3. **Animate new claims**:
+   - Flash effect: brief white overlay that fades
+   - Or: box "fills in" from center outward over 200ms
+
+#### Performance Considerations
+
+- Use `requestAnimationFrame` for all rendering
+- Batch multiple events before re-render (e.g., max 60fps)
+- Only redraw visible region + dirty boxes
+- Use `ImageData` for bulk pixel operations on minimap
+- Consider WebGL for very high event rates (future optimization)
+
+---
+
+## 11) Game Lifecycle
+
+### 11.1 Single Game Per Deployment
+
+There is **one game per deployment**. The stream path (`boxes/edges`) is hardcoded.
+
+To start a new game:
+
+1. Deploy a new version with a different stream name, OR
+2. Delete/reset the existing Durable Stream
+
+The game state is entirely derived from the stream—there is no separate "game metadata" or status field.
+
+### 11.2 Game Completion
+
+The game is considered **complete** when all 2,002,000 edges have been placed.
+
+Client-side detection:
+
+```typescript
+const isComplete = edgesPlacedCount === EDGE_COUNT // 2,002,000
+```
+
+When complete:
+
+- Display final scores and winner
+- Disable edge placement UI
+- Show "Game Over" state
+
+The server does not need to track completion—the DO can optionally reject draws once `edgesPlacedCount == EDGE_COUNT`, but this is just an optimization (the client would already have all edges marked as taken).
+
+### 11.3 Share Links
+
+Share URL:
+
+- `https://yourdomain.com/` – the game
+
+Since there's only one game, the URL is simple. Future versions could add `?atRecord=N` for replay scrubbing.
 
 ---
 
@@ -528,9 +1027,910 @@ A single writer DO serializes all accepted edges. This is fine for launch but is
 
 ---
 
-## 13) Future Extensions (designed-in hooks)
+## 13) TanStack Start Application Structure
+
+### 13.1 Project Structure
+
+```
+src/
+├── routes/
+│   ├── __root.tsx          # Root layout, team provider, quota provider
+│   └── index.tsx           # Game view (canvas, controls, quota UI)
+├── components/
+│   ├── game/
+│   │   ├── GameCanvas.tsx      # Main game canvas with pan/zoom
+│   │   ├── WorldView.tsx       # Minimap in bottom corner
+│   │   ├── EdgeRenderer.ts     # Hand-drawn edge rendering logic
+│   │   └── BoxRenderer.ts      # Watercolor box fill rendering
+│   ├── ui/
+│   │   ├── QuotaMeter.tsx      # Line quota progress bar
+│   │   ├── TeamBadge.tsx       # Team color indicator
+│   │   ├── ScoreBoard.tsx      # Live team scores
+│   │   ├── ZoomControls.tsx    # +/- buttons
+│   │   └── ShareDialog.tsx     # Share link modal (Base UI Dialog)
+│   └── layout/
+│       ├── Header.tsx          # Top bar with team/scores
+│       └── Footer.tsx          # Bottom bar with quota/controls
+├── hooks/
+│   ├── useGameState.ts         # Edge bitset, box owners, scores
+│   ├── useViewState.ts         # Pan/zoom state management
+│   ├── useQuota.ts             # localStorage quota with refill
+│   ├── usePanZoom.ts           # Touch/mouse pan-zoom gestures
+│   └── useGameStream.ts        # SSE connection to Durable Streams
+├── lib/
+│   ├── edge-math.ts            # Edge ID ↔ (x,y) conversions
+│   ├── game-state.ts           # Fold algorithm, state derivation
+│   ├── hand-drawn.ts           # Wobble/bezier curve generation
+│   └── quota-storage.ts        # localStorage persistence
+├── styles/
+│   ├── global.css              # Reset, CSS variables, fonts
+│   ├── game.css                # Canvas container, layout
+│   ├── components.css          # Component styles
+│   └── mobile.css              # Responsive overrides
+└── server/
+    └── functions.ts            # TanStack Start server functions
+```
+
+### 13.2 Server Functions
+
+```typescript
+// src/server/functions.ts
+
+import { createServerFn } from "@tanstack/react-start"
+import { z } from "zod"
+
+// Fetch team assignment (sets cookie if needed)
+export const getTeam = createServerFn({ method: "GET" }).handler(
+  async ({ request }) => {
+    const cookie = request.headers.get("cookie")
+    // Parse and verify existing cookie, or assign new team
+    // Set cookie in response if new
+    return { team: "RED", teamId: 0 }
+  }
+)
+
+// Draw an edge
+export const drawEdge = createServerFn({ method: "POST" })
+  .validator(z.object({ edgeId: z.number() }))
+  .handler(async ({ data }) => {
+    // Forward to Cloudflare Worker → DO
+    // Return { ok: true } or { ok: false, code: '...' }
+  })
+```
+
+### 13.3 CSS Architecture
+
+Plain CSS with CSS custom properties for theming:
+
+```css
+/* src/styles/global.css */
+
+:root {
+  /* Team colors */
+  --color-red: #e53935;
+  --color-blue: #1e88e5;
+  --color-green: #43a047;
+  --color-yellow: #fdd835;
+
+  /* UI colors */
+  --color-bg: #f5f5dc; /* Paper/cream */
+  --color-text: #2d2d2d;
+  --color-border: #8b8b7a;
+
+  /* Quota colors */
+  --quota-full: #43a047;
+  --quota-mid: #ffc107;
+  --quota-low: #e53935;
+
+  /* Spacing */
+  --header-height: 48px;
+  --footer-height: 56px;
+  --minimap-size: 150px;
+  --minimap-margin: 16px;
+
+  /* Touch targets */
+  --touch-min: 44px;
+}
+
+/* Paper texture background */
+body {
+  background-color: var(--color-bg);
+  background-image: url("/textures/paper-grain.png");
+  font-family: "Comic Sans MS", "Chalkboard", cursive, sans-serif;
+}
+```
+
+### 13.4 Base UI Component Usage
+
+```tsx
+// ShareDialog.tsx - using Base UI Dialog
+
+import * as Dialog from "@base-ui/react/dialog"
+
+export function ShareDialog({ gameId, open, onClose }) {
+  const shareUrl = `${window.location.origin}/g/${gameId}`
+
+  return (
+    <Dialog.Root open={open} onOpenChange={onClose}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="dialog-backdrop" />
+        <Dialog.Popup className="dialog-popup">
+          <Dialog.Title>Share this game</Dialog.Title>
+          <Dialog.Description>
+            Copy the link to invite others to play
+          </Dialog.Description>
+          <input
+            type="text"
+            value={shareUrl}
+            readOnly
+            className="share-input"
+          />
+          <button onClick={() => navigator.clipboard.writeText(shareUrl)}>
+            Copy Link
+          </button>
+          <Dialog.Close className="dialog-close">×</Dialog.Close>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+```
+
+```tsx
+// QuotaMeter.tsx - using Base UI Progress
+
+import * as Progress from "@base-ui/react/progress"
+
+export function QuotaMeter({ remaining, max, refillIn }) {
+  const percent = (remaining / max) * 100
+  const color = remaining > 5 ? "full" : remaining > 2 ? "mid" : "low"
+
+  return (
+    <div className="quota-meter">
+      <Progress.Root value={remaining} max={max} className="quota-progress">
+        <Progress.Track className="quota-track">
+          <Progress.Indicator className={`quota-indicator quota-${color}`} />
+        </Progress.Track>
+      </Progress.Root>
+      <span className="quota-text">
+        {remaining}/{max} lines
+      </span>
+      {remaining < max && (
+        <span className="quota-refill">+1 in {refillIn}s</span>
+      )}
+    </div>
+  )
+}
+```
+
+---
+
+## 14) Testing
+
+### 14.1 Test Stack
+
+- **Unit tests**: Vitest
+- **Component tests**: Vitest + React Testing Library
+- **E2E tests**: Playwright
+- **Visual regression**: Playwright screenshots (optional)
+
+### 14.2 Project Test Structure
+
+```
+src/
+├── lib/
+│   ├── edge-math.ts
+│   ├── edge-math.test.ts         # Unit tests
+│   ├── game-state.ts
+│   ├── game-state.test.ts        # Unit tests
+│   ├── quota-storage.ts
+│   └── quota-storage.test.ts     # Unit tests
+├── hooks/
+│   ├── useQuota.ts
+│   └── useQuota.test.ts          # Hook tests
+├── components/
+│   └── ui/
+│       ├── QuotaMeter.tsx
+│       └── QuotaMeter.test.tsx   # Component tests
+tests/
+├── e2e/
+│   ├── game-flow.spec.ts         # Full game E2E
+│   ├── mobile.spec.ts            # Mobile interactions
+│   └── quota.spec.ts             # Quota enforcement
+└── integration/
+    ├── do-validation.test.ts     # DO edge validation
+    └── stream-replay.test.ts     # Stream state derivation
+```
+
+### 14.3 Unit Tests
+
+#### Edge Math (`edge-math.test.ts`)
+
+```typescript
+import { describe, it, expect } from "vitest"
+import {
+  edgeIdToCoords,
+  coordsToEdgeId,
+  isHorizontal,
+  getAdjacentBoxes,
+  HORIZ_COUNT,
+  EDGE_COUNT,
+} from "./edge-math"
+
+describe("edge-math", () => {
+  describe("edgeIdToCoords", () => {
+    it("converts horizontal edge at origin", () => {
+      expect(edgeIdToCoords(0)).toEqual({ x: 0, y: 0, horizontal: true })
+    })
+
+    it("converts last horizontal edge", () => {
+      expect(edgeIdToCoords(HORIZ_COUNT - 1)).toEqual({
+        x: 999,
+        y: 1000,
+        horizontal: true,
+      })
+    })
+
+    it("converts first vertical edge", () => {
+      expect(edgeIdToCoords(HORIZ_COUNT)).toEqual({
+        x: 0,
+        y: 0,
+        horizontal: false,
+      })
+    })
+
+    it("round-trips all edge IDs", () => {
+      // Test a sample of edges
+      const samples = [
+        0,
+        1,
+        999,
+        1000,
+        HORIZ_COUNT,
+        HORIZ_COUNT + 1,
+        EDGE_COUNT - 1,
+      ]
+      for (const id of samples) {
+        const coords = edgeIdToCoords(id)
+        const backToId = coordsToEdgeId(coords.x, coords.y, coords.horizontal)
+        expect(backToId).toBe(id)
+      }
+    })
+  })
+
+  describe("getAdjacentBoxes", () => {
+    it("returns two boxes for interior horizontal edge", () => {
+      const boxes = getAdjacentBoxes(500 * 1000 + 500) // h(500, 500)
+      expect(boxes).toHaveLength(2)
+      expect(boxes).toContainEqual({ x: 500, y: 499 })
+      expect(boxes).toContainEqual({ x: 500, y: 500 })
+    })
+
+    it("returns one box for top boundary horizontal edge", () => {
+      const boxes = getAdjacentBoxes(0) // h(0, 0) - top edge of board
+      expect(boxes).toHaveLength(1)
+      expect(boxes[0]).toEqual({ x: 0, y: 0 })
+    })
+
+    it("returns one box for bottom boundary horizontal edge", () => {
+      const boxes = getAdjacentBoxes(1000 * 1000) // h(0, 1000) - bottom edge
+      expect(boxes).toHaveLength(1)
+      expect(boxes[0]).toEqual({ x: 0, y: 999 })
+    })
+  })
+})
+```
+
+#### Game State (`game-state.test.ts`)
+
+```typescript
+import { describe, it, expect, beforeEach } from "vitest"
+import { GameState } from "./game-state"
+
+describe("GameState", () => {
+  let state: GameState
+
+  beforeEach(() => {
+    state = new GameState()
+  })
+
+  describe("applyEvent", () => {
+    it("marks edge as taken", () => {
+      state.applyEvent({ edgeId: 0, teamId: 0 })
+      expect(state.isEdgeTaken(0)).toBe(true)
+    })
+
+    it("ignores duplicate edge", () => {
+      state.applyEvent({ edgeId: 0, teamId: 0 })
+      state.applyEvent({ edgeId: 0, teamId: 1 }) // Should be ignored
+      expect(state.getEdgesPlacedCount()).toBe(1)
+    })
+
+    it("claims box when fourth edge is placed", () => {
+      // Box at (0,0) needs edges: h(0,0), h(0,1), v(0,0), v(1,0)
+      const topEdge = 0 // h(0,0)
+      const bottomEdge = 1000 // h(0,1)
+      const leftEdge = 1001000 // v(0,0) = HORIZ_COUNT + 0
+      const rightEdge = 1001001 // v(1,0) = HORIZ_COUNT + 1
+
+      state.applyEvent({ edgeId: topEdge, teamId: 0 })
+      state.applyEvent({ edgeId: bottomEdge, teamId: 1 })
+      state.applyEvent({ edgeId: leftEdge, teamId: 2 })
+
+      expect(state.getBoxOwner(0)).toBe(0) // Unclaimed
+
+      state.applyEvent({ edgeId: rightEdge, teamId: 3 })
+
+      expect(state.getBoxOwner(0)).toBe(4) // Team 3 (teamId + 1)
+      expect(state.getScore(3)).toBe(1)
+    })
+  })
+
+  describe("scores", () => {
+    it("starts with all zeros", () => {
+      expect(state.getScores()).toEqual([0, 0, 0, 0])
+    })
+
+    it("increments correct team score on claim", () => {
+      // Complete a box with team 2 placing final edge
+      completeBox(state, 0, 0, 2)
+      expect(state.getScore(2)).toBe(1)
+    })
+  })
+
+  describe("serialization", () => {
+    it("exports and imports state correctly", () => {
+      state.applyEvent({ edgeId: 0, teamId: 0 })
+      state.applyEvent({ edgeId: 1, teamId: 1 })
+
+      const exported = state.export()
+      const newState = GameState.import(exported)
+
+      expect(newState.isEdgeTaken(0)).toBe(true)
+      expect(newState.isEdgeTaken(1)).toBe(true)
+      expect(newState.isEdgeTaken(2)).toBe(false)
+    })
+  })
+})
+
+// Helper to complete a box
+function completeBox(
+  state: GameState,
+  x: number,
+  y: number,
+  finalTeam: number
+) {
+  const edges = getBoxEdges(x, y)
+  edges
+    .slice(0, 3)
+    .forEach((e, i) => state.applyEvent({ edgeId: e, teamId: i }))
+  state.applyEvent({ edgeId: edges[3], teamId: finalTeam })
+}
+```
+
+#### Quota Storage (`quota-storage.test.ts`)
+
+```typescript
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { QuotaManager, QUOTA_KEY } from "./quota-storage"
+
+describe("QuotaManager", () => {
+  beforeEach(() => {
+    localStorage.clear()
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("initializes with full quota when no stored state", () => {
+    const manager = new QuotaManager()
+    expect(manager.getRemaining()).toBe(8)
+  })
+
+  it("restores state from localStorage", () => {
+    localStorage.setItem(
+      QUOTA_KEY,
+      JSON.stringify({
+        remaining: 5,
+        lastRefillAt: Date.now(),
+        version: 1,
+      })
+    )
+
+    const manager = new QuotaManager()
+    expect(manager.getRemaining()).toBe(5)
+  })
+
+  it("refills quota based on elapsed time", () => {
+    const now = Date.now()
+    localStorage.setItem(
+      QUOTA_KEY,
+      JSON.stringify({
+        remaining: 3,
+        lastRefillAt: now - 15000, // 15 seconds ago = 2 refills
+        version: 1,
+      })
+    )
+
+    const manager = new QuotaManager()
+    expect(manager.getRemaining()).toBe(5) // 3 + 2
+  })
+
+  it("caps refill at max quota", () => {
+    const now = Date.now()
+    localStorage.setItem(
+      QUOTA_KEY,
+      JSON.stringify({
+        remaining: 7,
+        lastRefillAt: now - 60000, // 60 seconds ago = 8 refills
+        version: 1,
+      })
+    )
+
+    const manager = new QuotaManager()
+    expect(manager.getRemaining()).toBe(8) // Capped at max
+  })
+
+  it("decrements quota on consume", () => {
+    const manager = new QuotaManager()
+    expect(manager.consume()).toBe(true)
+    expect(manager.getRemaining()).toBe(7)
+  })
+
+  it("returns false when consuming with zero quota", () => {
+    localStorage.setItem(
+      QUOTA_KEY,
+      JSON.stringify({
+        remaining: 0,
+        lastRefillAt: Date.now(),
+        version: 1,
+      })
+    )
+
+    const manager = new QuotaManager()
+    expect(manager.consume()).toBe(false)
+    expect(manager.getRemaining()).toBe(0)
+  })
+
+  it("refunds quota correctly", () => {
+    const manager = new QuotaManager()
+    manager.consume()
+    manager.refund()
+    expect(manager.getRemaining()).toBe(8)
+  })
+
+  it("persists changes to localStorage", () => {
+    const manager = new QuotaManager()
+    manager.consume()
+
+    const stored = JSON.parse(localStorage.getItem(QUOTA_KEY)!)
+    expect(stored.remaining).toBe(7)
+  })
+})
+```
+
+### 14.4 Component Tests
+
+#### QuotaMeter (`QuotaMeter.test.tsx`)
+
+```typescript
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { QuotaMeter } from './QuotaMeter';
+
+describe('QuotaMeter', () => {
+  it('displays remaining quota', () => {
+    render(<QuotaMeter remaining={6} max={8} refillIn={5} />);
+    expect(screen.getByText('6/8 lines')).toBeInTheDocument();
+  });
+
+  it('shows refill timer when not full', () => {
+    render(<QuotaMeter remaining={5} max={8} refillIn={3} />);
+    expect(screen.getByText('+1 in 3s')).toBeInTheDocument();
+  });
+
+  it('hides refill timer when full', () => {
+    render(<QuotaMeter remaining={8} max={8} refillIn={0} />);
+    expect(screen.queryByText(/\+1 in/)).not.toBeInTheDocument();
+  });
+
+  it('applies low color class when quota is low', () => {
+    const { container } = render(<QuotaMeter remaining={1} max={8} refillIn={5} />);
+    expect(container.querySelector('.quota-low')).toBeInTheDocument();
+  });
+
+  it('applies full color class when quota is high', () => {
+    const { container } = render(<QuotaMeter remaining={7} max={8} refillIn={5} />);
+    expect(container.querySelector('.quota-full')).toBeInTheDocument();
+  });
+});
+```
+
+### 14.5 Integration Tests
+
+#### DO Validation (`do-validation.test.ts`)
+
+Tests the GameWriterDO logic (run against local Wrangler):
+
+```typescript
+import { describe, it, expect, beforeAll, afterAll } from "vitest"
+import { unstable_dev } from "wrangler"
+import type { UnstableDevWorker } from "wrangler"
+
+describe("GameWriterDO", () => {
+  let worker: UnstableDevWorker
+
+  beforeAll(async () => {
+    worker = await unstable_dev("src/worker.ts", {
+      experimental: { disableExperimentalWarning: true },
+    })
+  })
+
+  afterAll(async () => {
+    await worker.stop()
+  })
+
+  it("accepts valid edge placement", async () => {
+    const res = await worker.fetch("/draw", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: "boxes_team=0.validSignature",
+      },
+      body: JSON.stringify({ edgeId: 12345 }),
+    })
+
+    expect(res.status).toBe(200)
+    const data = await res.json()
+    expect(data.ok).toBe(true)
+  })
+
+  it("rejects duplicate edge placement", async () => {
+    // Place edge first time
+    await worker.fetch("/draw", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: "boxes_team=0.validSignature",
+      },
+      body: JSON.stringify({ edgeId: 99999 }),
+    })
+
+    // Try to place same edge again
+    const res = await worker.fetch("/draw", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: "boxes_team=1.validSignature",
+      },
+      body: JSON.stringify({ edgeId: 99999 }),
+    })
+
+    expect(res.status).toBe(409)
+    const data = await res.json()
+    expect(data.code).toBe("EDGE_TAKEN")
+  })
+
+  it("rejects invalid edge ID", async () => {
+    const res = await worker.fetch("/draw", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Cookie: "boxes_team=0.validSignature",
+      },
+      body: JSON.stringify({ edgeId: 9999999 }), // Out of range
+    })
+
+    expect(res.status).toBe(400)
+  })
+
+  it("rejects request without team cookie", async () => {
+    const res = await worker.fetch("/draw", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ edgeId: 11111 }),
+    })
+
+    expect(res.status).toBe(401)
+  })
+})
+```
+
+#### Stream Replay (`stream-replay.test.ts`)
+
+```typescript
+import { describe, it, expect } from "vitest"
+import { GameState } from "../lib/game-state"
+import { parseStreamRecords } from "../lib/stream-parser"
+
+describe("Stream Replay", () => {
+  it("replays empty stream to empty state", () => {
+    const state = new GameState()
+    const records = parseStreamRecords(new Uint8Array(0))
+
+    records.forEach((r) => state.applyEvent(r))
+
+    expect(state.getEdgesPlacedCount()).toBe(0)
+    expect(state.getScores()).toEqual([0, 0, 0, 0])
+  })
+
+  it("replays single record correctly", () => {
+    const state = new GameState()
+    // edgeId=100, teamId=2 => (100 << 2) | 2 = 402 = 0x000192
+    const bytes = new Uint8Array([0x00, 0x01, 0x92])
+    const records = parseStreamRecords(bytes)
+
+    expect(records).toHaveLength(1)
+    expect(records[0]).toEqual({ edgeId: 100, teamId: 2 })
+
+    records.forEach((r) => state.applyEvent(r))
+    expect(state.isEdgeTaken(100)).toBe(true)
+  })
+
+  it("handles partial record at end gracefully", () => {
+    // 4 bytes = 1 complete record + 1 partial byte
+    const bytes = new Uint8Array([0x00, 0x01, 0x92, 0xff])
+    const records = parseStreamRecords(bytes)
+
+    expect(records).toHaveLength(1) // Only complete records
+  })
+
+  it("replays 1000 records and computes correct scores", () => {
+    const state = new GameState()
+    const bytes = generateTestStream(1000)
+    const records = parseStreamRecords(bytes)
+
+    records.forEach((r) => state.applyEvent(r))
+
+    expect(state.getEdgesPlacedCount()).toBe(1000)
+    // Scores should sum to number of completed boxes
+    const totalBoxes = state.getScores().reduce((a, b) => a + b, 0)
+    expect(totalBoxes).toBeGreaterThanOrEqual(0)
+  })
+})
+
+function generateTestStream(count: number): Uint8Array {
+  const bytes = new Uint8Array(count * 3)
+  for (let i = 0; i < count; i++) {
+    const edgeId = i // Sequential edges
+    const teamId = i % 4
+    const packed = (edgeId << 2) | teamId
+    bytes[i * 3] = (packed >> 16) & 0xff
+    bytes[i * 3 + 1] = (packed >> 8) & 0xff
+    bytes[i * 3 + 2] = packed & 0xff
+  }
+  return bytes
+}
+```
+
+### 14.6 E2E Tests (Playwright)
+
+#### Game Flow (`game-flow.spec.ts`)
+
+```typescript
+import { test, expect } from "@playwright/test"
+
+test.describe("Game Flow", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/")
+  })
+
+  test("displays team badge on load", async ({ page }) => {
+    await expect(page.locator('[data-testid="team-badge"]')).toBeVisible()
+    await expect(page.locator('[data-testid="team-badge"]')).toHaveText(
+      /RED|BLUE|GREEN|YELLOW/
+    )
+  })
+
+  test("displays quota meter", async ({ page }) => {
+    await expect(page.locator('[data-testid="quota-meter"]')).toBeVisible()
+    await expect(page.locator('[data-testid="quota-meter"]')).toContainText(
+      "/8 lines"
+    )
+  })
+
+  test("displays scoreboard with four teams", async ({ page }) => {
+    await expect(page.locator('[data-testid="scoreboard"]')).toBeVisible()
+    await expect(page.locator('[data-testid="score-red"]')).toBeVisible()
+    await expect(page.locator('[data-testid="score-blue"]')).toBeVisible()
+    await expect(page.locator('[data-testid="score-green"]')).toBeVisible()
+    await expect(page.locator('[data-testid="score-yellow"]')).toBeVisible()
+  })
+
+  test("displays world view minimap", async ({ page }) => {
+    await expect(page.locator('[data-testid="world-view"]')).toBeVisible()
+  })
+
+  test("can zoom in and out", async ({ page }) => {
+    const zoomIn = page.locator('[data-testid="zoom-in"]')
+    const zoomOut = page.locator('[data-testid="zoom-out"]')
+
+    await expect(zoomIn).toBeVisible()
+    await expect(zoomOut).toBeVisible()
+
+    // Click zoom in
+    await zoomIn.click()
+    // Verify zoom level changed (check canvas transform or data attribute)
+
+    // Click zoom out
+    await zoomOut.click()
+  })
+
+  test("shows edge highlight on hover", async ({ page }) => {
+    // Zoom in first to make edges visible
+    await page.locator('[data-testid="zoom-in"]').click()
+    await page.locator('[data-testid="zoom-in"]').click()
+
+    // Hover over canvas center
+    const canvas = page.locator('[data-testid="game-canvas"]')
+    await canvas.hover({ position: { x: 300, y: 300 } })
+
+    // Check for hover state (implementation-specific)
+  })
+
+  test("decrements quota on edge click", async ({ page }) => {
+    // Get initial quota
+    const quotaText = await page
+      .locator('[data-testid="quota-meter"]')
+      .textContent()
+    const initialQuota = parseInt(quotaText?.match(/(\d+)\/8/)?.[1] || "8")
+
+    // Zoom in and click an edge
+    await page.locator('[data-testid="zoom-in"]').click()
+    await page.locator('[data-testid="zoom-in"]').click()
+
+    const canvas = page.locator('[data-testid="game-canvas"]')
+    await canvas.click({ position: { x: 300, y: 300 } })
+
+    // Wait for response
+    await page.waitForTimeout(500)
+
+    // Check quota decreased (or stayed same if edge was taken)
+    const newQuotaText = await page
+      .locator('[data-testid="quota-meter"]')
+      .textContent()
+    const newQuota = parseInt(newQuotaText?.match(/(\d+)\/8/)?.[1] || "8")
+
+    expect(newQuota).toBeLessThanOrEqual(initialQuota)
+  })
+})
+```
+
+#### Mobile Tests (`mobile.spec.ts`)
+
+```typescript
+import { test, expect, devices } from "@playwright/test"
+
+test.use({ ...devices["iPhone 13"] })
+
+test.describe("Mobile", () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto("/")
+  })
+
+  test("displays mobile-optimized layout", async ({ page }) => {
+    // Header and footer should be visible
+    await expect(page.locator('[data-testid="header"]')).toBeVisible()
+    await expect(page.locator('[data-testid="footer"]')).toBeVisible()
+
+    // World view should be smaller on mobile
+    const worldView = page.locator('[data-testid="world-view"]')
+    const box = await worldView.boundingBox()
+    expect(box?.width).toBeLessThanOrEqual(120) // Smaller on mobile
+  })
+
+  test("supports pinch-to-zoom", async ({ page }) => {
+    const canvas = page.locator('[data-testid="game-canvas"]')
+
+    // Simulate pinch gesture
+    await canvas.dispatchEvent("touchstart", {
+      touches: [
+        { clientX: 100, clientY: 200, identifier: 0 },
+        { clientX: 200, clientY: 200, identifier: 1 },
+      ],
+    })
+
+    await canvas.dispatchEvent("touchmove", {
+      touches: [
+        { clientX: 50, clientY: 200, identifier: 0 },
+        { clientX: 250, clientY: 200, identifier: 1 },
+      ],
+    })
+
+    await canvas.dispatchEvent("touchend", {})
+
+    // Verify zoom changed
+  })
+
+  test("supports pan with drag", async ({ page }) => {
+    const canvas = page.locator('[data-testid="game-canvas"]')
+
+    await canvas.dispatchEvent("touchstart", {
+      touches: [{ clientX: 200, clientY: 300, identifier: 0 }],
+    })
+
+    await canvas.dispatchEvent("touchmove", {
+      touches: [{ clientX: 250, clientY: 350, identifier: 0 }],
+    })
+
+    await canvas.dispatchEvent("touchend", {})
+
+    // Verify pan changed
+  })
+
+  test("touch targets are at least 44px", async ({ page }) => {
+    const zoomIn = page.locator('[data-testid="zoom-in"]')
+    const box = await zoomIn.boundingBox()
+
+    expect(box?.width).toBeGreaterThanOrEqual(44)
+    expect(box?.height).toBeGreaterThanOrEqual(44)
+  })
+})
+```
+
+### 14.7 Test Commands
+
+```json
+{
+  "scripts": {
+    "test": "vitest",
+    "test:unit": "vitest run --testPathPattern='\\.test\\.ts'",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run tests/integration"
+  }
+}
+```
+
+### 14.8 CI Configuration
+
+```yaml
+# .github/workflows/test.yml
+name: Test
+
+on: [push, pull_request]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+      - run: pnpm install
+      - run: pnpm test:unit
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "pnpm"
+      - run: pnpm install
+      - run: pnpm dlx playwright install --with-deps
+      - run: pnpm build
+      - run: pnpm test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+```
+
+---
+
+## 15) Future Extensions (designed-in hooks)
 
 - **Sharded writer DOs** by region if needed.
 - **Server-derived aggregates** (tiles, scores) if client computation becomes too heavy on low-end devices.
 - Individual accounts and per-user leaderboards (requires including userId in events, or a secondary claim log).
-- Snapshots for instant join (not required if you’re happy with full replay).
+- Snapshots for instant join (not required if you're happy with full replay).
