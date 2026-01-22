@@ -261,11 +261,11 @@ export class YjsServer {
       if (method === `GET`) {
         await this.handleUpdatesRead(req, res, route, offset, live, url)
       } else if (method === `HEAD`) {
-        await this.handleDocumentHead(res, route)
+        await this.handleDocumentHead(req, res, route)
       } else if (method === `POST`) {
         await this.handleUpdateWrite(req, res, route)
       } else if (method === `PUT`) {
-        await this.handleDocumentCreate(res, route)
+        await this.handleDocumentCreate(req, res, route)
       } else {
         res.writeHead(405, { "content-type": `application/json` })
         res.end(
@@ -556,174 +556,67 @@ export class YjsServer {
     return offset
   }
 
-  // ---- Updates Read ----
+  // ---- Proxies to .updates stream ----
 
+  /**
+   * GET - Proxy to read from .updates stream.
+   * Maps live=true to long-poll for updates.
+   */
   private async handleUpdatesRead(
-    _req: IncomingMessage,
+    req: IncomingMessage,
     res: ServerResponse,
     route: RouteMatch,
     offset: string | null,
     live: string | null,
     _url: URL
   ): Promise<void> {
-    // Ensure document stream exists - this creates it if it doesn't
-    // This allows reads to a new document to succeed with empty response
-    await this.ensureDocumentStream(route.service, route.docPath)
+    let dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
 
-    // Build DS URL with query params (DS server expects these as query params)
-    const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
-    const dsUrl = new URL(dsPath, this.dsServerUrl)
-
-    // Forward query params to DS server
+    // Build query string
+    const params = new URLSearchParams()
     if (offset !== null) {
-      dsUrl.searchParams.set(`offset`, offset)
+      params.set(`offset`, offset)
     }
     if (live) {
-      // Map live mode to DS server format
       // live=true means "server picks transport" - use long-poll for updates
-      const dsLive = live === `true` ? `long-poll` : live
-      dsUrl.searchParams.set(`live`, dsLive)
+      params.set(`live`, live === `true` ? `long-poll` : live)
+    }
+    const query = params.toString()
+    if (query) {
+      dsPath = `${dsPath}?${query}`
     }
 
-    // Build headers
-    const headers: Record<string, string> = {
-      ...this.dsServerHeaders,
-    }
-
-    // Proxy to DS server
-    const dsResponse = await fetch(dsUrl.toString(), {
-      method: `GET`,
-      headers,
-    })
-
-    // Copy response headers
-    const responseHeaders: Record<string, string> = {
-      "content-type":
-        dsResponse.headers.get(`content-type`) ?? `application/octet-stream`,
-    }
-
-    const headersToForward = [
-      YJS_HEADERS.STREAM_NEXT_OFFSET,
-      YJS_HEADERS.STREAM_UP_TO_DATE,
-      YJS_HEADERS.STREAM_CURSOR,
-      `stream-offset`, // Also check lowercase variants
-    ]
-    for (const header of headersToForward) {
-      const value = dsResponse.headers.get(header)
-      if (value) {
-        responseHeaders[header] = value
-      }
-    }
-
-    res.writeHead(dsResponse.status, responseHeaders)
-
-    // Stream the response body
-    if (dsResponse.body) {
-      const reader = dsResponse.body.getReader()
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          res.write(value)
-        }
-      } finally {
-        reader.releaseLock()
-      }
-    }
-
-    res.end()
+    await this.proxyToDsServer(req, res, dsPath)
   }
 
-  // ---- Document Head (existence check) ----
-
+  /**
+   * HEAD - Proxy to check .updates stream existence.
+   */
   private async handleDocumentHead(
+    req: IncomingMessage,
     res: ServerResponse,
     route: RouteMatch
   ): Promise<void> {
-    // Check if the underlying .updates stream exists by issuing HEAD to DS server
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
-    const dsUrl = new URL(dsPath, this.dsServerUrl)
-
-    const dsResponse = await fetch(dsUrl.toString(), {
-      method: `HEAD`,
-      headers: this.dsServerHeaders,
-    })
-
-    // Forward relevant headers from DS response
-    const responseHeaders: Record<string, string> = {
-      "content-type": `application/octet-stream`,
-    }
-
-    const headersToForward = [
-      YJS_HEADERS.STREAM_NEXT_OFFSET,
-      YJS_HEADERS.STREAM_UP_TO_DATE,
-      YJS_HEADERS.STREAM_CURSOR,
-      `stream-offset`,
-    ]
-    for (const header of headersToForward) {
-      const value = dsResponse.headers.get(header)
-      if (value) {
-        responseHeaders[header] = value
-      }
-    }
-
-    res.writeHead(dsResponse.status, responseHeaders)
-    res.end()
+    await this.proxyToDsServer(req, res, dsPath)
   }
 
-  // ---- Document Create (PUT) ----
-
+  /**
+   * PUT - Proxy to create .updates stream.
+   */
   private async handleDocumentCreate(
+    req: IncomingMessage,
     res: ServerResponse,
     route: RouteMatch
   ): Promise<void> {
-    const stateKey = this.stateKey(route.service, route.docPath)
-
-    // Check if already exists
-    if (this.createdStreams.has(stateKey)) {
-      // Already exists - return 409 Conflict
-      res.writeHead(409, { "content-type": `application/json` })
-      res.end(
-        JSON.stringify({
-          error: { code: `CONFLICT`, message: `Document already exists` },
-        })
-      )
-      return
-    }
-
-    try {
-      // Create the underlying .updates stream
-      await this.ensureDocumentStream(route.service, route.docPath)
-
-      res.writeHead(201, { "content-type": `application/json` })
-      res.end(
-        JSON.stringify({
-          created: true,
-          service: route.service,
-          docPath: route.docPath,
-        })
-      )
-    } catch (err) {
-      // Check if it's a conflict error (stream already exists on DS server)
-      if (isConflictExistsError(err)) {
-        // Mark as created locally and return success (idempotent)
-        this.createdStreams.add(stateKey)
-        res.writeHead(201, { "content-type": `application/json` })
-        res.end(
-          JSON.stringify({
-            created: true,
-            service: route.service,
-            docPath: route.docPath,
-          })
-        )
-        return
-      }
-      throw err
-    }
+    const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+    await this.proxyToDsServer(req, res, dsPath)
   }
 
-  // ---- Update Write ----
-
+  /**
+   * POST - Streaming proxy to write to .updates stream.
+   * Frames the update with lib0 encoding (Yjs protocol requirement).
+   */
   private async handleUpdateWrite(
     req: IncomingMessage,
     res: ServerResponse,
@@ -731,89 +624,67 @@ export class YjsServer {
   ): Promise<void> {
     const stateKey = this.stateKey(route.service, route.docPath)
 
-    // Ensure document stream exists
-    await this.ensureDocumentStream(route.service, route.docPath)
-
-    // Read the raw update from request
+    // Read and frame the update with lib0 encoding
     const body = await this.readBody(req)
-
-    // Frame the update with lib0 encoding for storage
     const framedUpdate = frameUpdate(body)
 
-    // Build DS URL
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
     const dsUrl = new URL(dsPath, this.dsServerUrl)
 
-    // Copy producer headers if present
+    // Forward headers including producer headers
     const headers: Record<string, string> = {
       ...this.dsServerHeaders,
       "content-type": `application/octet-stream`,
     }
-
-    // Forward producer headers (check both prefixed and non-prefixed versions)
-    const producerHeaderMappings = [
-      [`producer-id`, `Producer-Id`],
-      [`producer-epoch`, `Producer-Epoch`],
-      [`producer-seq`, `Producer-Seq`],
-      [`stream-producer-id`],
-      [`stream-producer-epoch`],
-      [`stream-producer-seq`],
-    ]
-    for (const variants of producerHeaderMappings) {
-      for (const header of variants) {
-        const value = req.headers[header.toLowerCase()]
-        if (typeof value === `string`) {
-          headers[header] = value
-          break
-        }
-      }
+    for (const h of [
+      `producer-id`,
+      `producer-epoch`,
+      `producer-seq`,
+      `stream-producer-id`,
+      `stream-producer-epoch`,
+      `stream-producer-seq`,
+    ]) {
+      const v = req.headers[h]
+      if (typeof v === `string`) headers[h] = v
     }
 
-    // Append to DS server
     const dsResponse = await fetch(dsUrl.toString(), {
       method: `POST`,
       headers,
       body: Buffer.from(framedUpdate),
     })
 
-    // Forward all response headers from DS server
+    // Forward all response headers
     const responseHeaders: Record<string, string> = {}
+    dsResponse.headers.forEach((value, key) => {
+      responseHeaders[key] = value
+    })
 
-    // Check multiple possible header names for offset
-    const offsetHeaderNames = [
-      YJS_HEADERS.STREAM_NEXT_OFFSET,
-      `stream-offset`,
-      `Stream-Offset`,
-      `Stream-Next-Offset`,
-    ]
-    for (const headerName of offsetHeaderNames) {
-      const value = dsResponse.headers.get(headerName)
-      if (value) {
-        responseHeaders[YJS_HEADERS.STREAM_NEXT_OFFSET] = value
-        responseHeaders[`stream-offset`] = value // Also set stream-offset for compatibility
-        break
+    res.writeHead(dsResponse.status, responseHeaders)
+
+    if (dsResponse.body) {
+      for await (const chunk of dsResponse.body) {
+        res.write(chunk)
       }
     }
 
-    if (!dsResponse.ok) {
-      // Clone the response to read body safely
-      const text = await dsResponse.text()
-      res.writeHead(dsResponse.status, {
-        "content-type":
-          dsResponse.headers.get(`content-type`) ?? `application/json`,
-        ...responseHeaders,
-      })
-      res.end(text)
-      return
-    }
+    res.end()
 
-    // Track update size for compaction
-    const state = this.documentStates.get(stateKey)
-    if (state) {
+    // Track for compaction on success
+    if (dsResponse.status >= 200 && dsResponse.status < 300) {
+      if (!this.documentStates.has(stateKey)) {
+        this.documentStates.set(stateKey, {
+          snapshotOffset: null,
+          updatesSizeBytes: 0,
+          updatesCount: 0,
+          compacting: false,
+        })
+      }
+      const state = this.documentStates.get(stateKey)!
       state.updatesSizeBytes += body.length
       state.updatesCount += 1
 
-      // Check if compaction should be triggered
+      // Trigger compaction if thresholds met
       if (this.shouldTriggerCompaction(state)) {
         this.compactor
           .triggerCompaction(route.service, route.docPath)
@@ -822,9 +693,6 @@ export class YjsServer {
           })
       }
     }
-
-    res.writeHead(204, responseHeaders)
-    res.end()
   }
 
   // ---- Awareness ----
@@ -928,8 +796,9 @@ export class YjsServer {
         for await (const chunk of dsResponse.body) {
           res.write(chunk)
           // Flush for SSE to ensure immediate delivery
-          if ((live === `sse` || live === `true`) && res.flush) {
-            ;(res as unknown as { flush: () => void }).flush()
+          if (live === `sse` || live === `true`) {
+            const flushable = res as unknown as { flush?: () => void }
+            flushable.flush?.()
           }
         }
       }
@@ -946,50 +815,6 @@ export class YjsServer {
   }
 
   // ---- Stream management ----
-
-  // Track which streams have been created on the DS server
-  private readonly createdStreams = new Set<string>()
-
-  private async ensureDocumentStream(
-    service: string,
-    docPath: string
-  ): Promise<void> {
-    const stateKey = this.stateKey(service, docPath)
-
-    // Check if we've already created this stream on the DS server
-    if (this.createdStreams.has(stateKey)) {
-      return
-    }
-
-    // Create document stream on DS server
-    const streamUrl = `${this.dsServerUrl}${YjsStreamPaths.dsStream(service, docPath)}`
-
-    try {
-      await DurableStream.create({
-        url: streamUrl,
-        headers: this.dsServerHeaders,
-        contentType: `application/octet-stream`,
-      })
-    } catch (err) {
-      if (!isConflictExistsError(err)) {
-        throw err
-      }
-      // Stream already exists - that's fine
-    }
-
-    // Mark as created
-    this.createdStreams.add(stateKey)
-
-    // Initialize document state if not already present
-    if (!this.documentStates.has(stateKey)) {
-      this.documentStates.set(stateKey, {
-        snapshotOffset: null,
-        updatesSizeBytes: 0,
-        updatesCount: 0,
-        compacting: false,
-      })
-    }
-  }
 
   private async ensureAwarenessStream(
     service: string,
