@@ -262,7 +262,7 @@ function CollaborativeEditor() {
         setEditorReady(false)
       }
     }
-  }, [doc, awareness, isSynced])
+  }, [doc, awareness, hasEverSynced])
 
   if (error) {
     return (
