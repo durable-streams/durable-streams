@@ -1,0 +1,26 @@
+.zoom-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.zoom-button {
+  width: var(--touch-min);
+  height: var(--touch-min);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  font-weight: 600;
+  background: white;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.zoom-button:hover:not(:disabled) {
+  background: #f0f0f0;
+}
+
+.zoom-button:active:not(:disabled) {
+  background: #e0e0e0;
+}

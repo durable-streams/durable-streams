@@ -1,75 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { Header } from "../components/layout/Header"
+import { Footer } from "../components/layout/Footer"
+import { GameCanvas } from "../components/game/GameCanvas"
+import { WorldView } from "../components/game/WorldView"
+import "../styles/game.css"
 
 export const Route = createFileRoute(`/`)({
-  component: IndexComponent,
+  component: GamePage,
 })
 
-function IndexComponent() {
+function GamePage() {
   return (
-    <div
-      style={{
-        display: `flex`,
-        flexDirection: `column`,
-        alignItems: `center`,
-        justifyContent: `center`,
-        height: `100%`,
-        gap: `1rem`,
-        padding: `2rem`,
-        textAlign: `center`,
-      }}
-    >
-      <h1 style={{ fontSize: `2.5rem`, fontWeight: 700 }}>1 Million Boxes</h1>
-      <p style={{ color: `var(--color-muted)`, maxWidth: `32rem` }}>
-        A global, finite, realtime game of Dots &amp; Boxes on a 1000×1000 grid.
-        Four teams race to claim the most boxes.
-      </p>
-      <div
-        style={{
-          display: `flex`,
-          gap: `0.5rem`,
-          marginTop: `1rem`,
-        }}
-      >
-        <span
-          style={{
-            display: `inline-block`,
-            width: 24,
-            height: 24,
-            borderRadius: `var(--radius-sm)`,
-            backgroundColor: `var(--color-red)`,
-          }}
-        />
-        <span
-          style={{
-            display: `inline-block`,
-            width: 24,
-            height: 24,
-            borderRadius: `var(--radius-sm)`,
-            backgroundColor: `var(--color-blue)`,
-          }}
-        />
-        <span
-          style={{
-            display: `inline-block`,
-            width: 24,
-            height: 24,
-            borderRadius: `var(--radius-sm)`,
-            backgroundColor: `var(--color-green)`,
-          }}
-        />
-        <span
-          style={{
-            display: `inline-block`,
-            width: 24,
-            height: 24,
-            borderRadius: `var(--radius-sm)`,
-            backgroundColor: `var(--color-yellow)`,
-          }}
-        />
-      </div>
-      <p style={{ color: `var(--color-muted)`, fontSize: `0.875rem` }}>
-        Game coming soon...
-      </p>
+    <div className="game-layout" data-testid="game-layout">
+      <Header />
+      <main className="game-main" data-testid="game-main">
+        <GameCanvas />
+        <WorldView />
+      </main>
+      <Footer />
     </div>
   )
 }

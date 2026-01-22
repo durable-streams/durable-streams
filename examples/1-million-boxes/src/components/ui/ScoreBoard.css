@@ -1,0 +1,12 @@
+.scoreboard {
+  display: flex;
+  gap: 12px;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.scoreboard-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}

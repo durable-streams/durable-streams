@@ -1,0 +1,13 @@
+.game-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh; /* Dynamic viewport height for mobile */
+  overflow: hidden;
+}
+
+.game-main {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
