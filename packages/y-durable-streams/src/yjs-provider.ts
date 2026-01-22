@@ -319,6 +319,19 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     super.destroy()
   }
 
+  /**
+   * Flush any pending updates to the server.
+   *
+   * This is useful for testing to ensure all batched updates have been sent
+   * before making assertions. In production, updates are sent automatically
+   * via the IdempotentProducer's batching/linger mechanism.
+   */
+  async flush(): Promise<void> {
+    if (this._ctx?.producer) {
+      await this._ctx.producer.flush()
+    }
+  }
+
   // ---- URL builders ----
 
   /**

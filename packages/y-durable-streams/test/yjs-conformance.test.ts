@@ -462,6 +462,98 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
+    describe(`write.rapid-batched-updates`, () => {
+      it(`should handle rapid writes that trigger batching`, async () => {
+        // This test validates that lib0 framing on the client works correctly
+        // when the IdempotentProducer batches multiple append() calls into
+        // a single HTTP request (concatenating the bytes).
+        const docId = `rapid-writes-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+
+        // Simulate rapid typing - insert many characters without awaiting
+        // This will trigger batching in the IdempotentProducer
+        const chars = `The quick brown fox jumps over the lazy dog. `.repeat(5)
+        for (let i = 0; i < chars.length; i++) {
+          text.insert(i, chars[i]!)
+        }
+
+        // Wait for producer to flush all batches
+        await provider1.flush()
+
+        // Give time for updates to be stored and echoed back
+        await new Promise((r) => setTimeout(r, 500))
+
+        // Verify local document has all content
+        expect(text.toString()).toBe(chars)
+
+        // Now verify a second client can read all the batched updates correctly
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        // Second client should have identical content
+        await waitForCondition(
+          () => doc2.getText(`content`).toString() === chars,
+          { label: `second client syncs all batched updates` }
+        )
+
+        expect(doc2.getText(`content`).toString()).toBe(chars)
+      })
+
+      it(`should handle multiple rapid bursts`, async () => {
+        const docId = `rapid-bursts-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+
+        // Burst 1: rapid inserts
+        for (let i = 0; i < 50; i++) {
+          text.insert(text.length, `A`)
+        }
+
+        // Small pause to let some batches complete
+        await new Promise((r) => setTimeout(r, 20))
+
+        // Burst 2: more rapid inserts
+        for (let i = 0; i < 50; i++) {
+          text.insert(text.length, `B`)
+        }
+
+        // Flush and wait
+        await provider1.flush()
+        await new Promise((r) => setTimeout(r, 300))
+
+        const expected = `A`.repeat(50) + `B`.repeat(50)
+        expect(text.toString()).toBe(expected)
+
+        // Verify second client gets correct content
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        await waitForCondition(
+          () => doc2.getText(`content`).toString() === expected,
+          { label: `second client syncs burst updates` }
+        )
+
+        expect(doc2.getText(`content`).toString()).toBe(expected)
+      })
+    })
+
     describe(`Y.Map and Y.Array support`, () => {
       it(`should sync Y.Map`, async () => {
         const docId = `map-${Date.now()}`
