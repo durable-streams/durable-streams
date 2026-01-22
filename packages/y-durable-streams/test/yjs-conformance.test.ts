@@ -6,7 +6,7 @@
  * 2. Starting a Yjs server (protocol layer)
  * 3. Testing various scenarios with the YjsProvider
  *
- * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/PROTOCOL.md
+ * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md
  */
 
 import {
@@ -712,11 +712,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
     })
 
     describe(`presence.cleanup`, () => {
-      // TODO: This test is flaky due to SSE stream timing issues.
-      // The awareness removal relies on the y-protocols/awareness timeout mechanism
-      // which defaults to 30 seconds. The immediate removal notification via SSE
-      // may not always be delivered in time during tests.
-      it.skip(`should remove awareness state after disconnect`, async () => {
+      it(`should remove awareness state after disconnect`, async () => {
         const docId = `awareness-cleanup-${Date.now()}`
 
         const doc1 = new Y.Doc()
@@ -984,9 +980,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
   })
 
   // Server restart test requires local servers - skip when using external URL
-  // TODO: Debug why provider2 doesn't sync after serverB starts
   describe.skipIf(!!externalServerUrl)(`Server Restart`, () => {
-    it.skip(
+    it(
       `should preserve document state across restarts`,
       { timeout: 30000 },
       async () => {
