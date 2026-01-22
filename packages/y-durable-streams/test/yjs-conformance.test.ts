@@ -390,7 +390,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
 
     describe(`doc.path-with-slashes`, () => {
       it(`should support document paths with forward slashes`, async () => {
-        const docId = `project/chapter-1/section-a`
+        const docId = `project-${Date.now()}/chapter-1/section-a`
 
         const doc1 = new Y.Doc()
         const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
