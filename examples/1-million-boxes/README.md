@@ -146,13 +146,22 @@ pnpm dlx wrangler login
 
 ```bash
 pnpm dlx wrangler secret put DURABLE_STREAMS_URL
-# Enter your production Durable Streams URL
+# Enter your production Durable Streams URL (e.g., https://streams.electric-sql.com/v1/stream)
+
+pnpm dlx wrangler secret put DURABLE_STREAMS_AUTH
+# Enter your Electric Cloud API key (if using Electric Cloud)
 
 pnpm dlx wrangler secret put TEAM_COOKIE_SECRET
-# Enter a secure random secret
+# Enter a secure random secret for signing team cookies
 ```
 
-3. **Deploy:**
+3. **Set frontend environment variables** in your Cloudflare dashboard or wrangler.toml:
+
+```bash
+VITE_USE_STREAM_PROXY=true  # Routes stream requests through the worker
+```
+
+4. **Deploy:**
 
 ```bash
 pnpm deploy
@@ -167,40 +176,55 @@ For production, you'll need:
    - Hosted on [ElectricSQL Cloud](https://electric-sql.com/)
 
 2. **Environment Variables:**
-   - `DURABLE_STREAMS_URL` - URL to your production Durable Streams server
-   - `TEAM_COOKIE_SECRET` - A secure random string for signing cookies
+
+   | Variable                | Required | Description                                           |
+   | ----------------------- | -------- | ----------------------------------------------------- |
+   | `DURABLE_STREAMS_URL`   | Yes      | URL to your production Durable Streams server         |
+   | `DURABLE_STREAMS_AUTH`  | If Cloud | API key for Electric Cloud authentication             |
+   | `TEAM_COOKIE_SECRET`    | Yes      | Secure random string for signing team cookies         |
+   | `VITE_USE_STREAM_PROXY` | If Cloud | Set to `true` to proxy stream requests through worker |
+
+3. **Stream Proxy Security:**
+   When using Electric Cloud or any authenticated stream server, the worker acts as a proxy:
+   - Clients connect to `/api/stream/game` on the worker
+   - The worker adds authentication headers and forwards to the stream server
+   - Users can only read (GET/HEAD), not write (POST/PUT) - writes go through the GameWriterDO
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Cloudflare Edge                              │
-│  ┌─────────────────────┐    ┌─────────────────────────────────┐ │
-│  │  TanStack Start     │    │  GameWriterDO                   │ │
-│  │  (Worker)           │───▶│  - edge bitset (250KB)          │ │
-│  │                     │    │  - validates moves              │ │
-│  │  - SSR / static     │    │  - appends to stream            │ │
-│  │  - /draw endpoint   │    └───────────────┬─────────────────┘ │
-│  │  - rate limiting    │                    │                   │
-│  └─────────────────────┘                    │ HTTP POST         │
-└─────────────────────────────────────────────┼───────────────────┘
-                                              │
-                                              ▼
-                            ┌─────────────────────────────────────┐
-                            │  Durable Streams Server             │
-                            │  (ElectricSQL Cloud / Self-hosted)  │
-                            │                                     │
-                            │  Stream: boxes/edges                │
-                            │  - append-only log                  │
-                            │  - SSE for live tail                │
-                            └─────────────────────────────────────┘
-                                              ▲
-                                              │ SSE
-                            ┌─────────────────┴─────────────────┐
-                            │  Browser Clients                  │
-                            │  - read stream directly           │
-                            │  - derive game state locally      │
-                            └───────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                     Cloudflare Edge                                 │
+│  ┌─────────────────────────┐    ┌───────────────────────────────┐  │
+│  │  TanStack Start         │    │  GameWriterDO                 │  │
+│  │  (Worker)               │───▶│  - edge bitset (250KB)        │  │
+│  │                         │    │  - validates moves            │  │
+│  │  - SSR / static         │    │  - appends to stream          │  │
+│  │  - /draw endpoint       │    └─────────────┬─────────────────┘  │
+│  │  - rate limiting        │                  │                    │
+│  │  - /api/stream/game ◀───┼──────────────────┼────────────────┐   │
+│  │    (stream proxy)       │                  │ POST (with auth)   │
+│  └─────────────────────────┘                  │                │   │
+└────────────────────────────┼──────────────────┼────────────────┼───┘
+                             │                  │                │
+                             │ GET/SSE          │                │
+                             │ (with auth)      ▼                │
+                             │  ┌─────────────────────────────────────┐
+                             │  │  Durable Streams Server             │
+                             │  │  (ElectricSQL Cloud / Self-hosted)  │
+                             │  │                                     │
+                             │  │  Stream: /game                      │
+                             │  │  - append-only log                  │
+                             │  │  - SSE for live tail                │
+                             │  └─────────────────────────────────────┘
+                             │                  ▲
+                             │                  │ SSE (dev only)
+┌────────────────────────────┼──────────────────┼─────────────────────┐
+│  Browser Clients           │                  │                     │
+│  - Production: via proxy ──┘                  │                     │
+│  - Development: direct ───────────────────────┘                     │
+│  - derive game state locally                                        │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Concepts

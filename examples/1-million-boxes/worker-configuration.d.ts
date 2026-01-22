@@ -5,6 +5,7 @@
 declare namespace Cloudflare {
   interface Env {
     DURABLE_STREAMS_URL: string
+    DURABLE_STREAMS_AUTH?: string // Auth token for Electric Cloud
     TEAM_COOKIE_SECRET: string
     GAME_WRITER: DurableObjectNamespace
     NODE_ENV?: string

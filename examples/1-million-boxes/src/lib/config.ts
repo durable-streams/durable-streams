@@ -10,7 +10,7 @@
 // =============================================================================
 
 /**
- * Base URL for the Durable Streams server.
+ * Base URL for the Durable Streams server (used by backend/DO).
  * Can be overridden via VITE_DURABLE_STREAMS_URL environment variable.
  */
 export const DURABLE_STREAMS_URL =
@@ -22,9 +22,22 @@ export const DURABLE_STREAMS_URL =
 export const GAME_STREAM_PATH = `/game`
 
 /**
- * Full URL for the game stream.
+ * Full URL for the game stream (direct access).
  */
 export const GAME_STREAM_URL = `${DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
+
+/**
+ * API endpoint for proxied stream access through the worker.
+ * This is used for SSE connections in production.
+ */
+export const STREAM_PROXY_ENDPOINT = `/api/stream/game`
+
+/**
+ * Whether to use the proxy for stream connections.
+ * In production (when VITE_USE_STREAM_PROXY is set), we proxy through the worker.
+ * In development, we connect directly to the stream server.
+ */
+export const USE_STREAM_PROXY = import.meta.env.VITE_USE_STREAM_PROXY === `true`
 
 /**
  * Delay before reconnecting after a stream connection error (in ms).
