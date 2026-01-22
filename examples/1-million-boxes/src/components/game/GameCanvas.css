@@ -1,0 +1,11 @@
+.game-canvas-container {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  touch-action: none; /* Prevent browser handling of touch gestures */
+  cursor: crosshair;
+}
+
+.game-canvas {
+  display: block;
+}

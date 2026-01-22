@@ -1,0 +1,117 @@
+import { createContext, useCallback, useContext, useState } from "react"
+import { H, W } from "../lib/edge-math"
+
+export interface ViewState {
+  centerX: number // 0..1000
+  centerY: number // 0..1000
+  zoom: number // 0.1..10
+}
+
+export const MIN_ZOOM = 0.1
+export const MAX_ZOOM = 10
+export const DEFAULT_ZOOM = 1
+
+export interface ViewStateActions {
+  view: ViewState
+  pan: (deltaX: number, deltaY: number) => void
+  zoomTo: (newZoom: number, focalX?: number, focalY?: number) => void
+  zoomIn: () => void
+  zoomOut: () => void
+  resetView: () => void
+  jumpTo: (x: number, y: number) => void
+}
+
+export const ViewStateContext = createContext<ViewStateActions | null>(null)
+
+export function useViewStateContext(): ViewStateActions {
+  const context = useContext(ViewStateContext)
+  if (!context) {
+    throw new Error(
+      `useViewStateContext must be used within a ViewStateContext.Provider`
+    )
+  }
+  return context
+}
+
+export function useViewState(): ViewStateActions {
+  const [view, setView] = useState<ViewState>({
+    centerX: W / 2,
+    centerY: H / 2,
+    zoom: DEFAULT_ZOOM,
+  })
+
+  const pan = useCallback((deltaX: number, deltaY: number) => {
+    setView((v) => ({
+      ...v,
+      centerX: Math.max(0, Math.min(W, v.centerX - deltaX / v.zoom)),
+      centerY: Math.max(0, Math.min(H, v.centerY - deltaY / v.zoom)),
+    }))
+  }, [])
+
+  const zoomTo = useCallback(
+    (newZoom: number, focalX?: number, focalY?: number) => {
+      setView((v) => {
+        const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom))
+
+        // If focal point provided, adjust center to keep that point fixed
+        if (focalX !== undefined && focalY !== undefined) {
+          const scale = clampedZoom / v.zoom
+          return {
+            centerX: Math.max(
+              0,
+              Math.min(W, focalX + (v.centerX - focalX) / scale)
+            ),
+            centerY: Math.max(
+              0,
+              Math.min(H, focalY + (v.centerY - focalY) / scale)
+            ),
+            zoom: clampedZoom,
+          }
+        }
+
+        return { ...v, zoom: clampedZoom }
+      })
+    },
+    []
+  )
+
+  const zoomIn = useCallback(() => {
+    setView((v) => ({
+      ...v,
+      zoom: Math.min(MAX_ZOOM, v.zoom * 1.5),
+    }))
+  }, [])
+
+  const zoomOut = useCallback(() => {
+    setView((v) => ({
+      ...v,
+      zoom: Math.max(MIN_ZOOM, v.zoom / 1.5),
+    }))
+  }, [])
+
+  const resetView = useCallback(() => {
+    setView({
+      centerX: W / 2,
+      centerY: H / 2,
+      zoom: DEFAULT_ZOOM,
+    })
+  }, [])
+
+  const jumpTo = useCallback((x: number, y: number) => {
+    setView((v) => ({
+      ...v,
+      centerX: Math.max(0, Math.min(W, x)),
+      centerY: Math.max(0, Math.min(H, y)),
+    }))
+  }, [])
+
+  return {
+    view,
+    pan,
+    zoomTo,
+    zoomIn,
+    zoomOut,
+    resetView,
+    jumpTo,
+  }
+}
