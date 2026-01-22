@@ -1,0 +1,182 @@
+:root {
+  /* Team colors */
+  --color-red: #e53935;
+  --color-blue: #1e88e5;
+  --color-green: #43a047;
+  --color-yellow: #fdd835;
+
+  /* Team fill colors (with alpha for watercolor effect) */
+  --color-red-fill: rgba(229, 57, 53, 0.5);
+  --color-blue-fill: rgba(30, 136, 229, 0.5);
+  --color-green-fill: rgba(67, 160, 71, 0.5);
+  --color-yellow-fill: rgba(253, 216, 53, 0.5);
+
+  /* UI colors */
+  --color-bg: #f5f5dc;
+  --color-text: #2d2d2d;
+  --color-border: #8b8b7a;
+  --color-muted: #6b6b5a;
+
+  /* Quota colors */
+  --quota-full: #43a047;
+  --quota-mid: #ffc107;
+  --quota-low: #e53935;
+
+  /* Spacing */
+  --header-height: 48px;
+  --footer-height: 56px;
+  --minimap-size: 150px;
+  --minimap-margin: 16px;
+
+  /* Touch targets */
+  --touch-min: 44px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.15);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.2);
+
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+}
+
+/* Reset */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family:
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* App root */
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Typography */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+/* Buttons */
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Links */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Focus styles for accessibility */
+:focus-visible {
+  outline: 2px solid var(--color-blue);
+  outline-offset: 2px;
+}
+
+/* Utility classes */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Team color utilities */
+.team-red {
+  color: var(--color-red);
+}
+
+.team-blue {
+  color: var(--color-blue);
+}
+
+.team-green {
+  color: var(--color-green);
+}
+
+.team-yellow {
+  color: var(--color-yellow);
+}
+
+.team-red-bg {
+  background-color: var(--color-red);
+}
+
+.team-blue-bg {
+  background-color: var(--color-blue);
+}
+
+.team-green-bg {
+  background-color: var(--color-green);
+}
+
+.team-yellow-bg {
+  background-color: var(--color-yellow);
+}
+
+/* Mobile breakpoints */
+@media (max-width: 640px) {
+  :root {
+    --header-height: 44px;
+    --footer-height: 52px;
+    --minimap-size: 120px;
+    --minimap-margin: 12px;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --minimap-size: 180px;
+  }
+}

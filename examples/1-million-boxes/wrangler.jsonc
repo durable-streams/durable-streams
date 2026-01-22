@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "1-million-boxes",
+  "compatibility_date": "2025-01-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "@tanstack/react-start/server-entry",
+
+  // Durable Object binding for game state
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "GAME_WRITER",
+        "class_name": "GameWriterDO"
+      }
+    ]
+  },
+
+  // Rate limiting for draw endpoint
+  "rate_limits": [
+    {
+      "name": "draw-limit",
+      "period": 60,
+      "limit": 10
+    }
+  ]
+}
