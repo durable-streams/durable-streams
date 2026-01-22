@@ -547,7 +547,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       try {
         const response = await stream.stream({
           offset: currentOffset,
-          live: `auto`, // Use long-poll mode per protocol
+          live: `auto`, // Auto: first request returns immediately, then long-poll on reconnect
           signal: ctx.controller.signal,
         })
 
