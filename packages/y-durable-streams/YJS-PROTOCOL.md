@@ -34,9 +34,9 @@ Copyright (c) 2026 ElectricSQL
 6. [Offset Sentinels](#6-offset-sentinels)
 7. [Binary Framing](#7-binary-framing)
    - 7.1. [Variable-Length Integer Encoding](#71-variable-length-integer-encoding)
-   - 7.2. [Update Frame Format](#72-update-frame-format)
-   - 7.3. [Encoding and Decoding](#73-encoding-and-decoding)
-   - 7.4. [Write Requests](#74-write-requests)
+   - 7.2. [Write Frame Format](#72-write-frame-format-client--server)
+   - 7.3. [Read Frame Format](#73-read-frame-format-server--client)
+   - 7.4. [Summary](#74-summary)
    - 7.5. [Efficiency](#75-efficiency)
 8. [Compaction](#8-compaction)
 9. [Client Sync Flow](#9-client-sync-flow)
@@ -254,12 +254,12 @@ If timeout expires with no new data, server **MUST** return `204 No Content` wit
 POST {document-url}
 Content-Type: application/octet-stream
 
-<yjs update binary>
+<lib0-framed update>
 ```
 
 Appends a Yjs update to the document stream. Documents and streams are created implicitly on first write.
 
-**Note:** Writes **MUST** send lib0-framed updates (Section 7). This is critical because clients may batch multiple updates into a single HTTP request (e.g., using an idempotent producer with batching). Each update must be individually framed so that batched/concatenated updates remain valid lib0-framed data.
+Clients **MUST** send lib0-framed updates (Section 7.4). Each update is framed with a length prefix using lib0's `writeVarUint8Array`. This is critical because clients may batch multiple updates into a single HTTP request; each update must be individually framed so that concatenated bytes remain valid.
 
 #### Response
 
@@ -359,30 +359,31 @@ This is similar to Protocol Buffers' varint encoding. For example:
 - `128` encodes as `0x80 0x01` (2 bytes)
 - `300` encodes as `0xAC 0x02` (2 bytes)
 
-### 7.2. Update Frame Format
+### 7.2. Write Frame Format (Client → Server)
 
-Each update in a read response is framed as:
+Clients **MUST** frame each update before sending. The write frame format is:
 
 1. **Length prefix**: Variable-length unsigned int (lib0's `writeVarUint`) indicating the byte length of the Yjs update
 2. **Yjs update bytes**: The raw Yjs update data
-3. **Offset**: Variable-length unsigned int representing the stream offset for this update
 
-Multiple updates are concatenated without separators; the length prefix enables parsing.
+Multiple updates can be concatenated in a single request; the length prefix enables parsing.
 
-### 7.3. Encoding and Decoding
-
-**Encoding (server-side):**
+**Encoding (client-side):**
 
 ```javascript
 import * as encoding from "lib0/encoding"
 
 const encoder = encoding.createEncoder()
-for (const { update, offset } of updates) {
-  encoding.writeVarUint8Array(encoder, update) // writes length + bytes
-  encoding.writeVarUint(encoder, offset)
-}
-const bytes = encoding.toUint8Array(encoder)
+encoding.writeVarUint8Array(encoder, update) // writes length + bytes
+const framedUpdate = encoding.toUint8Array(encoder)
+// Send framedUpdate in POST body
 ```
+
+This is critical for batching: when clients use an idempotent producer that batches multiple `append()` calls into a single HTTP request (concatenating the bytes), each update must be individually framed. Without framing, concatenated raw Yjs updates would be invalid. With framing, concatenation produces valid lib0-framed data.
+
+### 7.3. Read Frame Format (Server → Client)
+
+Read responses include the stored lib0-framed updates. Since clients already framed updates on write, the server stores and returns them as-is.
 
 **Decoding (client-side):**
 
@@ -392,23 +393,18 @@ import * as decoding from "lib0/decoding"
 const decoder = decoding.createDecoder(bytes)
 while (decoding.hasContent(decoder)) {
   const update = decoding.readVarUint8Array(decoder)
-  const offset = decoding.readVarUint(decoder)
   // apply update to Y.Doc
 }
 ```
 
-### 7.4. Write Requests
+### 7.4. Summary
 
-Write requests **MUST** use lib0 framing. Clients frame each Yjs update before sending:
+| Direction               | Frame Format             | Who Frames               |
+| ----------------------- | ------------------------ | ------------------------ |
+| Write (Client → Server) | `[length][update bytes]` | Client                   |
+| Read (Server → Client)  | `[length][update bytes]` | Stored as-is from client |
 
-```
-POST {document-url}
-Content-Type: application/octet-stream
-
-<lib0-framed update>
-```
-
-This is critical for batching: when clients use an idempotent producer that batches multiple `append()` calls into a single HTTP request (concatenating the bytes), each update must be individually framed. Without framing, concatenated raw Yjs updates would be invalid. With framing, concatenation produces valid lib0-framed data that can be stored and read back correctly.
+The server acts as a pass-through for framed updates, storing exactly what clients send.
 
 ### 7.5. Efficiency
 
