@@ -786,8 +786,9 @@ export class YjsServer {
       if (offset !== null) {
         dsUrl.searchParams.set(`offset`, offset)
       }
-      if (live === `true`) {
-        dsUrl.searchParams.set(`live`, `sse`) // Use SSE for awareness
+      if (live) {
+        // Forward live mode (sse, long-poll, etc.)
+        dsUrl.searchParams.set(`live`, live)
       }
 
       const dsResponse = await fetch(dsUrl.toString(), {
