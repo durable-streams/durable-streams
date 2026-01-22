@@ -4,7 +4,7 @@ import { buildHeaders, parseGlobalOptions } from "../src/index"
 describe(`parseGlobalOptions`, () => {
   it(`returns default url when no flags provided`, () => {
     const result = parseGlobalOptions([`create`, `my-stream`])
-    expect(result.options.url).toBe(`http://localhost:4437`)
+    expect(result.options.url).toBe(`http://localhost:4437/v1/stream`)
     expect(result.options.auth).toBeUndefined()
     expect(result.remainingArgs).toEqual([`create`, `my-stream`])
   })

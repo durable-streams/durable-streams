@@ -29,7 +29,7 @@ export {
   validateUrl,
 }
 
-const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
+const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437/v1/stream`
 const STREAM_AUTH = process.env.STREAM_AUTH
 
 interface GlobalOptions {
@@ -144,7 +144,7 @@ Write Options:
   --batch-json            Write as JSON array of messages (each array element stored separately)
 
 Environment Variables:
-  STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
+  STREAM_URL    Base URL of the stream server (default: http://localhost:4437/v1/stream)
   STREAM_AUTH   Authorization header value (overridden by --auth flag)
 `
 }
