@@ -16,7 +16,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "types": ["@cloudflare/workers-types", "vite/client"]
+    "types": [
+      "@cloudflare/workers-types",
+      "vite/client",
+      "@testing-library/jest-dom"
+    ]
   },
   "include": [
     "src/**/*",
