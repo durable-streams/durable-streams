@@ -1,6 +1,7 @@
 import { Outlet, createRootRoute } from "@tanstack/react-router"
 import { TeamProvider } from "../contexts/team-context"
 import { QuotaProvider } from "../contexts/quota-context"
+import { GameStateProvider } from "../contexts/game-state-context"
 import "../styles/global.css"
 
 export const Route = createRootRoute({
@@ -15,9 +16,11 @@ function RootComponent() {
   return (
     <TeamProvider team={team} teamId={teamId}>
       <QuotaProvider>
-        <div className="app-container" data-testid="app-container">
-          <Outlet />
-        </div>
+        <GameStateProvider>
+          <div className="app-container" data-testid="app-container">
+            <Outlet />
+          </div>
+        </GameStateProvider>
       </QuotaProvider>
     </TeamProvider>
   )

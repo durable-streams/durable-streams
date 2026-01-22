@@ -1,22 +1,26 @@
-import { useState } from "react"
-import { GameState } from "../lib/game-state"
+import { useGameStateContext } from "../contexts/game-state-context"
 
 /**
- * Placeholder game state hook.
- * This will be replaced with real implementation in Phase 07.
+ * Hook for accessing game state and placing edges.
+ *
+ * Provides:
+ * - gameState: The current GameState instance
+ * - pendingEdge: Edge ID of an optimistically placed edge (or null)
+ * - placeEdge: Function to place an edge
+ * - isLoading: Whether initial data is loading
+ * - error: Current error message (or null)
+ * - isConnected: Whether connected to the stream
  */
 export function useGameState() {
-  const [gameState] = useState(() => new GameState())
-  const [pendingEdge] = useState<number | null>(null)
-
-  const placeEdge = (_edgeId: number) => {
-    // Placeholder - will be implemented in Phase 07
-    console.log(`placeEdge called with:`, _edgeId)
-  }
+  const { gameState, pendingEdge, placeEdge, isLoading, error, isConnected } =
+    useGameStateContext()
 
   return {
     gameState,
     pendingEdge,
     placeEdge,
+    isLoading,
+    error,
+    isConnected,
   }
 }

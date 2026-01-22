@@ -67,5 +67,5 @@ export const drawEdge = createServerFn({ method: `POST` })
       body: JSON.stringify({ edgeId: data.edgeId, teamId }),
     })
 
-    return (await response.json()) as DrawResponse
+    return await response.json()
   })
