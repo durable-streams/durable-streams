@@ -128,9 +128,8 @@ export class Compactor {
         }
       }
 
-      // Load all updates and track the final offset
-      // Read from the start of the stream (offset=-1) since the document stream
-      // contains all updates, and we need to apply them all to reconstruct state
+      // Load updates since the current snapshot (or from start if none)
+      // This avoids reapplying full history on each compaction.
       const updatesUrl = `${dsServerUrl}${YjsStreamPaths.dsStream(service, docPath)}`
       const updatesStream = new DurableStream({
         url: updatesUrl,
@@ -138,11 +137,12 @@ export class Compactor {
         contentType: `application/octet-stream`,
       })
 
-      let currentEndOffset = `-1`
+      const updatesOffset = state.snapshotOffset ?? `-1`
+      let currentEndOffset = updatesOffset
 
       try {
         const response = await updatesStream.stream({
-          offset: `-1`,
+          offset: updatesOffset,
         })
         const updatesData = await response.body()
 

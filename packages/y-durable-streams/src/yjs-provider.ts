@@ -693,16 +693,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.awareness.clientID,
       ])
 
-      // Encode to base64 for text/plain stream
-      const base64 = this.uint8ArrayToBase64(encoded)
-
       const stream = new DurableStream({
         url: this.awarenessUrl(),
         headers: this.headers,
-        contentType: `text/plain`,
+        contentType: `application/octet-stream`,
       })
 
-      stream.append(base64, { contentType: `text/plain` }).catch(() => {})
+      stream
+        .append(encoded, { contentType: `application/octet-stream` })
+        .catch(() => {})
     } catch {
       // Ignore errors during disconnect
     }
@@ -731,16 +730,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           changedClients
         )
 
-        // Encode to base64 for text/plain stream
-        const base64 = this.uint8ArrayToBase64(encoded)
-
         const stream = new DurableStream({
           url: this.awarenessUrl(),
           headers: this.headers,
-          contentType: `text/plain`,
+          contentType: `application/octet-stream`,
         })
 
-        await stream.append(base64, { contentType: `text/plain` })
+        await stream.append(encoded, {
+          contentType: `application/octet-stream`,
+        })
       }
     } catch (err) {
       console.error(`[YjsProvider] Failed to send awareness:`, err)
@@ -852,10 +850,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         (err.code === `UNAUTHORIZED` || err.code === `FORBIDDEN`)) ||
       (err instanceof FetchError && (err.status === 401 || err.status === 403))
     )
-  }
-
-  private uint8ArrayToBase64(bytes: Uint8Array): string {
-    return btoa(String.fromCharCode(...bytes))
   }
 
   private base64ToUint8Array(base64: string): Uint8Array {

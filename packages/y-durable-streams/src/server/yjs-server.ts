@@ -426,16 +426,41 @@ export class YjsServer {
         return null
       }
 
-      // Parse all entries and return the last one (most recent)
-      const lines = body.trim().split(`\n`)
-      const lastLine = lines[lines.length - 1]
-
-      if (!lastLine) {
-        return null
+      // Prefer JSON array format (DS JSON streams return arrays)
+      try {
+        const parsed = JSON.parse(body) as unknown
+        if (Array.isArray(parsed)) {
+          const last = parsed[parsed.length - 1] as YjsIndexEntry | undefined
+          if (last?.snapshotOffset) {
+            return last.snapshotOffset
+          }
+        } else if (
+          parsed &&
+          typeof parsed === `object` &&
+          `snapshotOffset` in parsed
+        ) {
+          return (parsed as YjsIndexEntry).snapshotOffset
+        }
+      } catch {
+        // Fall through to newline-delimited parsing
       }
 
-      const entry = JSON.parse(lastLine) as YjsIndexEntry
-      return entry.snapshotOffset
+      // Fallback: parse newline-delimited entries
+      const lines = body.trim().split(`\n`)
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i]?.trim()
+        if (!line) continue
+        try {
+          const entry = JSON.parse(line) as YjsIndexEntry
+          if (entry.snapshotOffset) {
+            return entry.snapshotOffset
+          }
+        } catch {
+          // Keep scanning
+        }
+      }
+
+      return null
     } catch (err) {
       if (isNotFoundError(err)) {
         // No index stream yet - that's fine
@@ -712,13 +737,57 @@ export class YjsServer {
     )
 
     if (method === `POST`) {
-      // Ensure awareness stream exists, then proxy
+      // Ensure awareness stream exists, then append base64-encoded payload
       await this.ensureAwarenessStream(
         route.service,
         route.docPath,
         awarenessName
       )
-      await this.proxyToDsServer(req, res, dsPath)
+
+      const body = await this.readBody(req)
+      // Awareness writes are binary, but SSE is text-only. Encode to base64
+      // before appending so reads over SSE deliver base64 strings.
+      const base64 = Buffer.from(body).toString(`base64`)
+
+      const dsUrl = new URL(dsPath, this.dsServerUrl)
+
+      // Forward producer headers if present
+      const headers: Record<string, string> = {
+        ...this.dsServerHeaders,
+        "content-type": `text/plain`,
+      }
+      for (const h of [
+        `producer-id`,
+        `producer-epoch`,
+        `producer-seq`,
+        `stream-producer-id`,
+        `stream-producer-epoch`,
+        `stream-producer-seq`,
+      ]) {
+        const v = req.headers[h]
+        if (typeof v === `string`) headers[h] = v
+      }
+
+      const dsResponse = await fetch(dsUrl.toString(), {
+        method: `POST`,
+        headers,
+        body: Buffer.from(base64),
+      })
+
+      const responseHeaders: Record<string, string> = {}
+      dsResponse.headers.forEach((value, key) => {
+        responseHeaders[key] = value
+      })
+
+      res.writeHead(dsResponse.status, responseHeaders)
+
+      if (dsResponse.body) {
+        for await (const chunk of dsResponse.body) {
+          res.write(chunk)
+        }
+      }
+
+      res.end()
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
