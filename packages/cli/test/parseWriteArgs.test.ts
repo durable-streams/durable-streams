@@ -27,6 +27,12 @@ describe(`parseWriteArgs`, () => {
     expect(result.content).toBe(`hello`)
   })
 
+  it(`parses --content-type=value syntax`, () => {
+    const result = parseWriteArgs([`--content-type=text/plain`, `hello`])
+    expect(result.contentType).toBe(`text/plain`)
+    expect(result.content).toBe(`hello`)
+  })
+
   it(`parses --content-type flag after content`, () => {
     const result = parseWriteArgs([`hello`, `--content-type`, `text/plain`])
     expect(result.contentType).toBe(`text/plain`)

@@ -5,6 +5,37 @@ export interface ParsedWriteArgs {
 }
 
 /**
+ * Extract a flag value from args, supporting both --flag=value and --flag value syntax.
+ * Returns { value, consumed } where consumed is the number of args used (0 if no match).
+ */
+function extractFlagValue(
+  args: Array<string>,
+  index: number,
+  flagName: string
+): { value: string | null; consumed: number } {
+  const arg = args[index]!
+  const prefix = `${flagName}=`
+
+  if (arg.startsWith(prefix)) {
+    const value = arg.slice(prefix.length)
+    if (!value) {
+      throw new Error(`${flagName} requires a value`)
+    }
+    return { value, consumed: 1 }
+  }
+
+  if (arg === flagName) {
+    const value = args[index + 1]
+    if (!value || value.startsWith(`--`)) {
+      throw new Error(`${flagName} requires a value`)
+    }
+    return { value, consumed: 2 }
+  }
+
+  return { value: null, consumed: 0 }
+}
+
+/**
  * Parse write command arguments, extracting content-type flags and content.
  * @param args - Arguments after the stream_id (starting from index 2)
  * @returns Parsed content type and content string
@@ -29,13 +60,10 @@ export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
       continue
     }
 
-    if (arg === `--content-type`) {
-      const nextArg = args[i + 1]
-      if (!nextArg || nextArg.startsWith(`--`)) {
-        throw new Error(`--content-type requires a value`)
-      }
-      contentType = nextArg
-      i++
+    const contentTypeResult = extractFlagValue(args, i, `--content-type`)
+    if (contentTypeResult.value !== null) {
+      contentType = contentTypeResult.value
+      i += contentTypeResult.consumed - 1
       continue
     }
 
