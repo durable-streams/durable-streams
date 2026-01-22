@@ -126,15 +126,19 @@ tests:
           chunkCount: 0
 
   - id: sse-binary-data
-    name: SSE with binary data
-    description: SSE should correctly transmit binary data
+    name: SSE with binary data (base64 encoded)
+    description: |
+      SSE should correctly transmit binary data using base64 encoding.
+      For binary content types (not text/* or application/json), the server
+      MUST base64-encode the data in SSE data events and include
+      encoding: "base64" in the control event.
     setup:
       - action: create
         as: streamPath
         contentType: application/octet-stream
       - action: append
         path: ${streamPath}
-        binaryData: "/f7/AA==" # some binary bytes
+        binaryData: "/f7/AA==" # bytes [253, 254, 255, 0] in base64
     operations:
       - action: read
         path: ${streamPath}
@@ -143,6 +147,111 @@ tests:
         expect:
           minChunks: 1
           upToDate: true
+          # The client should decode the base64 and return the original binary data
+          data: "/f7/AA=="
+
+  - id: sse-binary-data-multiple-appends
+    name: SSE with multiple binary appends
+    description: |
+      SSE should correctly transmit multiple binary data chunks.
+      Each data event should be base64-encoded.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID" # [1, 2, 3] in base64
+      - action: append
+        path: ${streamPath}
+        binaryData: "BAUG" # [4, 5, 6] in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          dataContainsAll:
+            - "AQID"
+            - "BAUG"
+
+  - id: sse-binary-empty-bytes
+    name: SSE with empty binary append
+    description: |
+      SSE should handle edge case where no data is appended to a binary stream.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          chunkCount: 0
+
+  - id: sse-binary-large-payload
+    name: SSE with large binary payload
+    description: |
+      SSE should correctly handle larger binary payloads via base64 encoding.
+      Base64 encoded data may span multiple data: lines.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      # 100 bytes of binary data: base64 of bytes 0-99
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiYw=="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-binary-with-live-data
+    name: SSE binary stream receives new data
+    description: |
+      SSE should receive binary data appended after connection.
+      New data should be base64-encoded in the SSE response.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "aW5pdGlhbA==" # "initial" in base64
+        expect:
+          storeOffsetAs: offset
+    operations:
+      # Start SSE read in background (will be waiting for new data)
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      # Wait for the SSE connection to establish
+      - action: wait
+        ms: 200
+      # Append binary data via direct server HTTP (adapter is blocked on read)
+      - action: server-append
+        path: ${streamPath}
+        data: "bmV3LWRhdGE=" # "new-data" in base64 (sent as raw bytes to binary stream)
+      # Wait for the background read to complete
+      - action: await
+        ref: readOp
+        expect:
+          minChunks: 1
 
   - id: sse-preserves-nel-character
     name: SSE preserves NEL character (U+0085)

@@ -463,7 +463,7 @@ The timeout for long-polling is implementation-defined. Servers **MAY** accept a
 GET {stream-url}?offset=<offset>&live=sse
 ```
 
-Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Events (SSE) stream. **ONLY** valid for streams with `content-type: text/*` or `application/json` (the stream's configured content type). SSE responses **MUST** use `Content-Type: text/event-stream` in the HTTP response headers.
+Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Events (SSE) stream. SSE responses **MUST** use `Content-Type: text/event-stream` in the HTTP response headers.
 
 #### Query Parameters
 
@@ -476,7 +476,7 @@ Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Eve
 #### Response Codes
 
 - `200 OK`: Streaming body (SSE format)
-- `400 Bad Request`: Content type incompatible with SSE or invalid parameters
+- `400 Bad Request`: Invalid parameters
 - `404 Not Found`: Stream does not exist
 - `429 Too Many Requests`: Rate limit exceeded
 
@@ -492,8 +492,9 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
 - `control`: Emitted after every data event
   - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
   - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - For binary streams (content types other than `text/*` or `application/json`), the control event **MUST** include `encoding: "base64"` to indicate that the preceding `data` event payload is base64-encoded.
 
-**Example:**
+**Example (text/JSON stream):**
 
 ```
 event: data
@@ -505,6 +506,26 @@ data: ]
 event: control
 data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 ```
+
+**Example (binary stream with base64 encoding):**
+
+```
+event: data
+data: SGVsbG8gV29ybGQh
+
+event: control
+data: {"streamNextOffset":"123456_789","streamCursor":"abc","encoding":"base64"}
+```
+
+#### Binary Stream Encoding
+
+For streams with binary content types (content types other than `text/*` or `application/json`), servers **MUST** base64-encode the data in SSE `data` events. This enables SSE transport for binary protocols such as CRDT synchronization, Protocol Buffers, or custom binary formats.
+
+The encoding rules are:
+- Servers **MUST** use standard base64 encoding (RFC 4648) for binary data
+- Servers **MUST** include `encoding: "base64"` in the control event that follows each data event
+- Clients **MUST** base64-decode the data payload when `encoding: "base64"` is present in the control event
+- The base64-encoded data **MAY** span multiple `data:` lines (clients concatenate all lines before decoding)
 
 #### Connection Lifecycle
 
@@ -561,10 +582,6 @@ Clients **MUST** use the `Stream-Next-Offset` value returned in responses for su
 ## 7. Content Types
 
 The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
-
-**Restriction:**
-
-- SSE mode (Section 5.7) **REQUIRES** `content-type: text/*` or `application/json`
 
 Clients **MAY** use any content type for their streams, including:
 
