@@ -56,6 +56,31 @@ export function normalizeBaseUrl(url: string): string {
 }
 
 /**
+ * Build the full stream URL from a base URL and stream ID.
+ * If the URL path already contains "/v1/stream", only append the stream ID.
+ * Otherwise, append "/v1/stream/{streamId}".
+ *
+ * Examples:
+ *   buildStreamUrl("http://localhost:4437", "my-stream")
+ *     => "http://localhost:4437/v1/stream/my-stream"
+ *
+ *   buildStreamUrl("http://localhost:3002/v1/stream/my-group", "my-stream")
+ *     => "http://localhost:3002/v1/stream/my-group/my-stream"
+ */
+export function buildStreamUrl(baseUrl: string, streamId: string): string {
+  const parsed = new URL(baseUrl)
+  const pathContainsV1Stream = parsed.pathname.includes(`/v1/stream`)
+
+  if (pathContainsV1Stream) {
+    // URL already has /v1/stream in the path, just append the stream ID
+    return `${baseUrl}/${streamId}`
+  } else {
+    // URL is just a base host, append the full path
+    return `${baseUrl}/v1/stream/${streamId}`
+  }
+}
+
+/**
  * Validate an authorization header value.
  * Returns valid=true for any non-empty value, but includes a warning
  * if the value doesn't match common auth schemes (Bearer, Basic, ApiKey, Token).
