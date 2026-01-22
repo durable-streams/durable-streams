@@ -329,8 +329,12 @@ export class YjsServer {
       })
 
       // Copy response status and headers
+      // Note: fetch() automatically decompresses gzip/deflate responses,
+      // so we must NOT forward content-encoding (data is already decompressed)
       const responseHeaders: Record<string, string> = {}
       response.headers.forEach((value, key) => {
+        // Skip headers that don't apply after fetch decompression
+        if (key === `content-encoding` || key === `content-length`) return
         responseHeaders[key] = value
       })
 
@@ -679,9 +683,10 @@ export class YjsServer {
       body: Buffer.from(framedUpdate),
     })
 
-    // Forward all response headers
+    // Forward response headers (skip content-encoding/length - fetch decompresses)
     const responseHeaders: Record<string, string> = {}
     dsResponse.headers.forEach((value, key) => {
+      if (key === `content-encoding` || key === `content-length`) return
       responseHeaders[key] = value
     })
 
@@ -774,8 +779,10 @@ export class YjsServer {
         body: Buffer.from(base64),
       })
 
+      // Forward response headers (skip content-encoding/length - fetch decompresses)
       const responseHeaders: Record<string, string> = {}
       dsResponse.headers.forEach((value, key) => {
+        if (key === `content-encoding` || key === `content-length`) return
         responseHeaders[key] = value
       })
 
@@ -838,12 +845,13 @@ export class YjsServer {
       headers: this.dsServerHeaders,
     })
 
-    // Forward headers with SSE additions
+    // Forward headers with SSE additions (skip content-encoding/length - fetch decompresses)
     const responseHeaders: Record<string, string> = {
       "cache-control": `no-cache`,
       connection: `keep-alive`,
     }
     response.headers.forEach((value, key) => {
+      if (key === `content-encoding` || key === `content-length`) return
       responseHeaders[key] = value
     })
 
