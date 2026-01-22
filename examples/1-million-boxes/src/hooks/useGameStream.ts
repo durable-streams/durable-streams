@@ -3,7 +3,7 @@ import { StreamParser } from "../lib/stream-parser"
 import type { GameEvent } from "../lib/game-state"
 
 const STREAM_URL =
-  import.meta.env.VITE_DURABLE_STREAMS_URL || `http://localhost:4437`
+  import.meta.env.VITE_DURABLE_STREAMS_URL || `http://localhost:4437/v1/stream`
 
 const RECONNECT_DELAY_MS = 3000
 
@@ -145,6 +145,14 @@ export function useGameStream(
     try {
       // First fetch existing data
       const response = await fetch(`${STREAM_URL}/game`)
+
+      if (response.status === 404) {
+        // Stream doesn't exist yet - this is fine, start with empty state
+        // and connect to SSE for live updates (server may auto-create on first write)
+        console.log(`Game stream not found, starting with empty state`)
+        connectSSE(0)
+        return
+      }
 
       if (!response.ok) {
         throw new Error(`Failed to fetch stream: ${response.status}`)

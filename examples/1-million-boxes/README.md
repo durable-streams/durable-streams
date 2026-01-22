@@ -55,14 +55,15 @@ cd packages/server
 pnpm dev
 ```
 
-This starts the stream server on `http://localhost:4437`.
+This starts the stream server on `http://localhost:4437`. The stream endpoint will be at `http://localhost:4437/v1/stream/game`.
 
 ### 3. Configure Environment Variables
 
 Create a `.dev.vars` file in this directory:
 
 ```bash
-DURABLE_STREAMS_URL=http://localhost:4437
+DURABLE_STREAMS_URL=http://localhost:4437/v1/stream
+VITE_DURABLE_STREAMS_URL=http://localhost:4437/v1/stream
 TEAM_COOKIE_SECRET=dev-secret-change-in-production
 ```
 

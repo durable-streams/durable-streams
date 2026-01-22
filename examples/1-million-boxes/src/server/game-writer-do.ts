@@ -68,9 +68,8 @@ export class GameWriterDO {
 
     try {
       // Fetch entire stream from Durable Streams server
-      const response = await fetch(
-        `${this.env.DURABLE_STREAMS_URL}/streams/boxes/edges`
-      )
+      const streamUrl = `${this.env.DURABLE_STREAMS_URL}/game`
+      const response = await fetch(streamUrl)
 
       if (response.ok) {
         const bytes = new Uint8Array(await response.arrayBuffer())
@@ -84,8 +83,17 @@ export class GameWriterDO {
           `GameWriterDO initialized: ${this.gameState.getEdgesPlacedCount()} edges`
         )
       } else if (response.status === 404) {
-        // Stream doesn't exist yet - start fresh
-        console.log(`GameWriterDO initialized: empty stream`)
+        // Stream doesn't exist yet - create it with PUT
+        console.log(`Creating game stream...`)
+        const createResponse = await fetch(streamUrl, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+        })
+        if (createResponse.ok) {
+          console.log(`GameWriterDO initialized: new stream created`)
+        } else {
+          console.error(`Failed to create stream: ${createResponse.status}`)
+        }
       } else {
         console.error(`Failed to fetch stream: ${response.status}`)
       }
@@ -182,8 +190,9 @@ export class GameWriterDO {
         encoded.byteOffset + encoded.byteLength
       ) as ArrayBuffer
 
+      // POST to the stream URL to append (per Durable Streams protocol)
       const appendResponse = await fetch(
-        `${this.env.DURABLE_STREAMS_URL}/streams/boxes/edges/append`,
+        `${this.env.DURABLE_STREAMS_URL}/game`,
         {
           method: `POST`,
           headers: { "Content-Type": `application/octet-stream` },
