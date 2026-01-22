@@ -22,7 +22,7 @@ Write-only Options:
   --batch-json            Write as JSON array of messages (each array element stored separately)
 
 Environment Variables:
-  STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
+  STREAM_URL    Base URL of the stream server (default: http://localhost:4437/v1/stream)
   STREAM_AUTH   Authorization header value (overridden by --auth flag)
 "
 `;

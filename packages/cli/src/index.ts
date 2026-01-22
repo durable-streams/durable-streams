@@ -9,6 +9,7 @@ import { DurableStream } from "@durable-streams/client"
 import { flattenJsonForAppend, isJsonContentType } from "./jsonUtils.js"
 import { parseWriteArgs } from "./parseWriteArgs.js"
 import {
+  buildStreamUrl,
   normalizeBaseUrl,
   validateAuth,
   validateStreamId,
@@ -20,9 +21,15 @@ export type { ParsedWriteArgs }
 export type { GlobalOptions }
 export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
 export { parseGlobalOptions, buildHeaders, getUsageText }
-export { validateUrl, validateAuth, validateStreamId, normalizeBaseUrl }
+export {
+  buildStreamUrl,
+  normalizeBaseUrl,
+  validateAuth,
+  validateStreamId,
+  validateUrl,
+}
 
-const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437`
+const STREAM_URL = process.env.STREAM_URL || `http://localhost:4437/v1/stream`
 const STREAM_AUTH = process.env.STREAM_AUTH
 
 interface GlobalOptions {
@@ -139,7 +146,7 @@ Write-only Options:
   --batch-json            Write as JSON array of messages (each array element stored separately)
 
 Environment Variables:
-  STREAM_URL    Base URL of the stream server (default: http://localhost:4437)
+  STREAM_URL    Base URL of the stream server (default: http://localhost:4437/v1/stream)
   STREAM_AUTH   Authorization header value (overridden by --auth flag)
 `
 }
@@ -197,7 +204,7 @@ async function createStream(
   headers: Record<string, string>,
   contentType: string
 ) {
-  const url = `${baseUrl}/v1/stream/${streamId}`
+  const url = buildStreamUrl(baseUrl, streamId)
 
   try {
     await DurableStream.create({
@@ -289,7 +296,7 @@ async function writeStream(
   headers: Record<string, string>,
   content?: string
 ): Promise<void> {
-  const url = `${baseUrl}/v1/stream/${streamId}`
+  const url = buildStreamUrl(baseUrl, streamId)
   const isJson = isJsonContentType(contentType)
 
   // Get the data to write - either from argument or stdin
@@ -368,7 +375,7 @@ async function readStream(
   streamId: string,
   headers: Record<string, string>
 ) {
-  const url = `${baseUrl}/v1/stream/${streamId}`
+  const url = buildStreamUrl(baseUrl, streamId)
 
   try {
     const stream = new DurableStream({ url, headers })
@@ -395,7 +402,7 @@ async function deleteStream(
   streamId: string,
   headers: Record<string, string>
 ) {
-  const url = `${baseUrl}/v1/stream/${streamId}`
+  const url = buildStreamUrl(baseUrl, streamId)
 
   try {
     const stream = new DurableStream({ url, headers })

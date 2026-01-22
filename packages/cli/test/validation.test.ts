@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
+  buildStreamUrl,
   normalizeBaseUrl,
   validateAuth,
   validateStreamId,
@@ -35,6 +36,32 @@ describe(`normalizeBaseUrl`, () => {
     expect(normalizeBaseUrl(`http://localhost:4437/api/`)).toBe(
       `http://localhost:4437/api`
     )
+  })
+})
+
+describe(`buildStreamUrl`, () => {
+  it(`appends stream ID to base URL`, () => {
+    expect(buildStreamUrl(`http://localhost:4437/v1/stream`, `my-stream`)).toBe(
+      `http://localhost:4437/v1/stream/my-stream`
+    )
+  })
+
+  it(`appends stream ID to URL with group path`, () => {
+    expect(
+      buildStreamUrl(`http://localhost:3002/v1/stream/my-group`, `my-stream`)
+    ).toBe(`http://localhost:3002/v1/stream/my-group/my-stream`)
+  })
+
+  it(`handles https URLs`, () => {
+    expect(buildStreamUrl(`https://api.example.com/v1/stream`, `events`)).toBe(
+      `https://api.example.com/v1/stream/events`
+    )
+  })
+
+  it(`handles URL with port and nested path`, () => {
+    expect(
+      buildStreamUrl(`http://localhost:8080/prefix/v1/stream/group`, `stream-1`)
+    ).toBe(`http://localhost:8080/prefix/v1/stream/group/stream-1`)
   })
 })
 
