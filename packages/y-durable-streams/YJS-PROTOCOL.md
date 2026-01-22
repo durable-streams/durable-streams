@@ -652,6 +652,8 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `write.creates-document`      | POST to new doc creates stream implicitly                              |
 | `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                      |
 | `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                      |
+| `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data              |
+| `write.multiple-rapid-bursts` | Multiple bursts of rapid writes are correctly stored and synced        |
 | `updates.read-from-offset`    | GET updates with offset returns updates from that position             |
 | `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                       |
 | `updates.live-polling`        | GET with `live=true` holds connection, receives new updates            |
