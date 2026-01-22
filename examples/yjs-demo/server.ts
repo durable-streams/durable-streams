@@ -8,10 +8,7 @@
  *   pnpm dev:server
  */
 
-import {
-  DurableStreamTestServer,
-  createRegistryHooks,
-} from "@durable-streams/server"
+import { DurableStreamTestServer } from "@durable-streams/server"
 import { YjsServer } from "@durable-streams/y-durable-streams/server"
 
 const DS_PORT = 4437
@@ -25,20 +22,6 @@ async function main() {
   })
 
   const dsUrl = await dsServer.start()
-
-  // Add hooks for registry stream (used by test-ui)
-  const hooks = createRegistryHooks(dsServer.store, dsUrl)
-  ;(
-    dsServer as unknown as {
-      options: { onStreamCreated?: unknown; onStreamDeleted?: unknown }
-    }
-  ).options.onStreamCreated = hooks.onStreamCreated
-  ;(
-    dsServer as unknown as {
-      options: { onStreamCreated?: unknown; onStreamDeleted?: unknown }
-    }
-  ).options.onStreamDeleted = hooks.onStreamDeleted
-
   console.log(`✓ Durable Streams server running at ${dsUrl}`)
 
   // Start Yjs server (wraps DS server)

@@ -570,8 +570,9 @@ export class YjsServer {
     if (offset !== null) {
       dsUrl.searchParams.set(`offset`, offset)
     }
-    if (live === `true`) {
-      dsUrl.searchParams.set(`live`, `true`)
+    if (live) {
+      // Forward live mode (can be 'true', 'auto', 'sse', etc.)
+      dsUrl.searchParams.set(`live`, live)
     }
 
     // Build headers
