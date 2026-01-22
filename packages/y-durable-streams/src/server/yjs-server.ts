@@ -586,15 +586,15 @@ export class YjsServer {
       headers,
     })
 
-    // Handle 404 for new documents - return empty response instead of error
-    // This happens when the .updates stream doesn't exist yet
+    // Handle 404 for new documents
+    // Return 404 so client knows to retry - it has built-in backoff for this case
     if (dsResponse.status === 404) {
-      res.writeHead(200, {
-        "content-type": `application/octet-stream`,
-        [YJS_HEADERS.STREAM_NEXT_OFFSET]: `-1`,
-        [YJS_HEADERS.STREAM_UP_TO_DATE]: `true`,
-      })
-      res.end()
+      res.writeHead(404, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          error: { code: `NOT_FOUND`, message: `Document stream not found` },
+        })
+      )
       return
     }
 
