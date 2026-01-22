@@ -20,6 +20,16 @@ describe(`parseGlobalOptions`, () => {
     expect(result.remainingArgs).toEqual([`read`, `my-stream`])
   })
 
+  it(`parses --url=value syntax`, () => {
+    const result = parseGlobalOptions([
+      `--url=http://example.com:8080`,
+      `read`,
+      `my-stream`,
+    ])
+    expect(result.options.url).toBe(`http://example.com:8080`)
+    expect(result.remainingArgs).toEqual([`read`, `my-stream`])
+  })
+
   it(`parses --url flag after command`, () => {
     const result = parseGlobalOptions([
       `read`,
@@ -67,6 +77,16 @@ describe(`parseGlobalOptions`, () => {
     const result = parseGlobalOptions([
       `--auth`,
       `Bearer token`,
+      `read`,
+      `my-stream`,
+    ])
+    expect(result.options.auth).toBe(`Bearer token`)
+    expect(result.remainingArgs).toEqual([`read`, `my-stream`])
+  })
+
+  it(`parses --auth=value syntax`, () => {
+    const result = parseGlobalOptions([
+      `--auth=Bearer token`,
       `read`,
       `my-stream`,
     ])

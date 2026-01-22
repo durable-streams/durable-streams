@@ -38,6 +38,42 @@ interface GlobalOptions {
 }
 
 /**
+ * Extract a flag value from args, supporting both --flag=value and --flag value syntax.
+ * Returns { value, consumed } where consumed is the number of args used (0 if no match).
+ */
+function extractFlagValue(
+  args: Array<string>,
+  index: number,
+  flagName: string,
+  example: string
+): { value: string | null; consumed: number } {
+  const arg = args[index]!
+  const prefix = `${flagName}=`
+
+  if (arg.startsWith(prefix)) {
+    const value = arg.slice(prefix.length)
+    if (!value) {
+      throw new Error(
+        `${flagName} requires a value\n  Example: ${flagName}="${example}"`
+      )
+    }
+    return { value, consumed: 1 }
+  }
+
+  if (arg === flagName) {
+    const value = args[index + 1]
+    if (!value || value.startsWith(`--`)) {
+      throw new Error(
+        `${flagName} requires a value\n  Example: ${flagName} "${example}"`
+      )
+    }
+    return { value, consumed: 2 }
+  }
+
+  return { value: null, consumed: 0 }
+}
+
+/**
  * Parse global options (--url, --auth) from args.
  * Falls back to STREAM_URL/STREAM_AUTH env vars when flags not provided.
  * Returns the parsed options, remaining args, and any warnings.
@@ -54,38 +90,39 @@ function parseGlobalOptions(args: Array<string>): {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!
 
-    if (arg === `--url`) {
-      const value = args[i + 1]
-      if (!value || value.startsWith(`--`)) {
-        throw new Error(
-          `--url requires a value\n  Example: --url "http://localhost:4437"`
-        )
-      }
-      const urlValidation = validateUrl(value)
+    // Handle --url and --url=value
+    const urlResult = extractFlagValue(
+      args,
+      i,
+      `--url`,
+      `http://localhost:4437`
+    )
+    if (urlResult.value !== null) {
+      const urlValidation = validateUrl(urlResult.value)
       if (!urlValidation.valid) {
         throw new Error(urlValidation.error)
       }
-      options.url = normalizeBaseUrl(value)
-      i++
-    } else if (arg === `--auth`) {
-      const value = args[i + 1]
-      if (!value || value.startsWith(`--`)) {
-        throw new Error(
-          `--auth requires a value\n  Example: --auth "Bearer my-token"`
-        )
-      }
-      const authValidation = validateAuth(value)
+      options.url = normalizeBaseUrl(urlResult.value)
+      i += urlResult.consumed - 1
+      continue
+    }
+
+    // Handle --auth and --auth=value
+    const authResult = extractFlagValue(args, i, `--auth`, `Bearer my-token`)
+    if (authResult.value !== null) {
+      const authValidation = validateAuth(authResult.value)
       if (!authValidation.valid) {
         throw new Error(authValidation.error)
       }
       if (authValidation.warning) {
         warnings.push(authValidation.warning)
       }
-      options.auth = value
-      i++
-    } else {
-      remainingArgs.push(arg)
+      options.auth = authResult.value
+      i += authResult.consumed - 1
+      continue
     }
+
+    remainingArgs.push(arg)
   }
 
   // Fall back to STREAM_URL env var if no --url flag provided
@@ -177,13 +214,15 @@ function parseCreateArgs(args: Array<string>): ParsedCreateArgs {
       continue
     }
 
-    if (arg === `--content-type`) {
-      const nextArg = args[i + 1]
-      if (!nextArg || nextArg.startsWith(`--`)) {
-        throw new Error(`--content-type requires a value`)
-      }
-      contentType = nextArg
-      i++
+    const contentTypeResult = extractFlagValue(
+      args,
+      i,
+      `--content-type`,
+      `application/json`
+    )
+    if (contentTypeResult.value !== null) {
+      contentType = contentTypeResult.value
+      i += contentTypeResult.consumed - 1
       continue
     }
 
@@ -191,7 +230,6 @@ function parseCreateArgs(args: Array<string>): ParsedCreateArgs {
       throw new Error(`unknown flag: ${arg}`)
     }
 
-    // Unexpected positional argument
     throw new Error(`unexpected argument: ${arg}`)
   }
 
@@ -535,8 +573,20 @@ async function main() {
       break
     }
 
-    default:
-      if (command?.startsWith(`-`)) {
+    default: {
+      // Check if user put a command-specific flag before the command
+      const commandSpecificFlags = [`--content-type`, `--json`, `--batch-json`]
+      if (command && commandSpecificFlags.includes(command)) {
+        stderr.write(
+          `Error: "${command}" must come after the command and stream_id\n`
+        )
+        stderr.write(
+          `  Example: durable-stream create <stream_id> ${command} ...\n`
+        )
+        stderr.write(
+          `  Example: durable-stream write <stream_id> ${command} ...\n`
+        )
+      } else if (command?.startsWith(`-`)) {
         stderr.write(`Error: Unknown option "${command}"\n`)
       } else {
         stderr.write(`Error: Unknown command "${command}"\n`)
@@ -544,6 +594,7 @@ async function main() {
       }
       stderr.write(`  Run "durable-stream --help" for usage information\n`)
       process.exit(1)
+    }
   }
 }
 

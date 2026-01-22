@@ -240,6 +240,27 @@ describe(`CLI commands with server`, () => {
     expect(head.contentType).toBe(`application/json`)
   })
 
+  it(`creates a stream with --content-type=value syntax`, async () => {
+    const streamId = `test-create-content-type-equals-${Date.now()}`
+    const result = await runCli([
+      `create`,
+      streamId,
+      `--content-type=text/plain`,
+    ])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
+
+    // Verify the stream was created with the correct content-type
+    const stream = new DurableStream({
+      url: `${serverUrl}/v1/stream/${streamId}`,
+    })
+    const head = await stream.head()
+    expect(head.contentType).toBe(`text/plain`)
+  })
+
   it(`creates a stream with --json flag`, async () => {
     const streamId = `test-create-json-${Date.now()}`
     const result = await runCli([`create`, streamId, `--json`])
@@ -263,6 +284,30 @@ describe(`CLI commands with server`, () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain(`--content-type requires a value`)
+  })
+
+  it(`shows helpful error when --content-type is placed before command`, async () => {
+    const result = await runCli([
+      `--content-type`,
+      `text/plain`,
+      `create`,
+      `test`,
+    ])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(
+      `"--content-type" must come after the command and stream_id`
+    )
+    expect(result.stderr).toContain(`Example: durable-stream create`)
+  })
+
+  it(`shows helpful error when --json is placed before command`, async () => {
+    const result = await runCli([`--json`, `create`, `test`])
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain(
+      `"--json" must come after the command and stream_id`
+    )
   })
 
   it(`writes to a stream with success message`, async () => {
