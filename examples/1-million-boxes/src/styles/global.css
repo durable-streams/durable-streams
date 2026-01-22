@@ -180,3 +180,6 @@ a {
     --minimap-size: 180px;
   }
 }
+
+/* Import mobile-specific styles */
+@import "./mobile.css";

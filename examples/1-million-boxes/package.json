@@ -10,7 +10,7 @@
     "deploy": "pnpm build && wrangler deploy",
     "cf-typegen": "wrangler types",
     "test": "vitest",
-    "test:unit": "vitest run --testPathPattern='\\.test\\.ts'",
+    "test:unit": "vitest run",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:coverage": "vitest run --coverage",

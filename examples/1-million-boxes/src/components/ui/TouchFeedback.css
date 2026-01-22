@@ -1,0 +1,82 @@
+/**
+ * Touch feedback ripple effect styles
+ */
+
+.touch-feedback-container {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.touch-ripple {
+  position: absolute;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.6) 0%,
+    rgba(255, 255, 255, 0.3) 40%,
+    rgba(255, 255, 255, 0) 70%
+  );
+  transform: translate(-50%, -50%) scale(0);
+  animation: ripple 0.5s ease-out forwards;
+  pointer-events: none;
+}
+
+/* Team-colored ripples */
+.touch-ripple.team-red {
+  background: radial-gradient(
+    circle,
+    rgba(229, 57, 53, 0.5) 0%,
+    rgba(229, 57, 53, 0.2) 40%,
+    rgba(229, 57, 53, 0) 70%
+  );
+}
+
+.touch-ripple.team-blue {
+  background: radial-gradient(
+    circle,
+    rgba(30, 136, 229, 0.5) 0%,
+    rgba(30, 136, 229, 0.2) 40%,
+    rgba(30, 136, 229, 0) 70%
+  );
+}
+
+.touch-ripple.team-green {
+  background: radial-gradient(
+    circle,
+    rgba(67, 160, 71, 0.5) 0%,
+    rgba(67, 160, 71, 0.2) 40%,
+    rgba(67, 160, 71, 0) 70%
+  );
+}
+
+.touch-ripple.team-yellow {
+  background: radial-gradient(
+    circle,
+    rgba(253, 216, 53, 0.5) 0%,
+    rgba(253, 216, 53, 0.2) 40%,
+    rgba(253, 216, 53, 0) 70%
+  );
+}
+
+@keyframes ripple {
+  0% {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(3);
+    opacity: 0;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .touch-ripple {
+    animation: none;
+    display: none;
+  }
+}
