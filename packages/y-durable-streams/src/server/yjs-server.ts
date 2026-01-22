@@ -183,7 +183,7 @@ export class YjsServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `authorization, content-type, stream-offset, stream-live, stream-producer-id, stream-producer-epoch, stream-producer-seq`
+      `authorization, content-type, stream-offset, stream-live, producer-id, producer-epoch, producer-seq, stream-producer-id, stream-producer-epoch, stream-producer-seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -663,15 +663,22 @@ export class YjsServer {
       "content-type": `application/octet-stream`,
     }
 
-    const producerHeaders = [
-      `stream-producer-id`,
-      `stream-producer-epoch`,
-      `stream-producer-seq`,
+    // Forward producer headers (check both prefixed and non-prefixed versions)
+    const producerHeaderMappings = [
+      [`producer-id`, `Producer-Id`],
+      [`producer-epoch`, `Producer-Epoch`],
+      [`producer-seq`, `Producer-Seq`],
+      [`stream-producer-id`],
+      [`stream-producer-epoch`],
+      [`stream-producer-seq`],
     ]
-    for (const header of producerHeaders) {
-      const value = req.headers[header]
-      if (typeof value === `string`) {
-        headers[header] = value
+    for (const variants of producerHeaderMappings) {
+      for (const header of variants) {
+        const value = req.headers[header.toLowerCase()]
+        if (typeof value === `string`) {
+          headers[header] = value
+          break
+        }
       }
     }
 
