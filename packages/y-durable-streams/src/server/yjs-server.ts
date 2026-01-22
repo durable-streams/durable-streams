@@ -214,12 +214,23 @@ export class YjsServer {
 
     const route = parseRoute(path)
     if (!route) {
-      res.writeHead(400, { "content-type": `application/json` })
-      res.end(
-        JSON.stringify({
-          error: { code: `INVALID_REQUEST`, message: `Invalid document path` },
-        })
-      )
+      // Check if this looks like a Yjs path but failed validation
+      // (e.g., path traversal attempts)
+      if (path.startsWith(`/v1/yjs/`)) {
+        res.writeHead(400, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            error: {
+              code: `INVALID_REQUEST`,
+              message: `Invalid document path`,
+            },
+          })
+        )
+        return
+      }
+
+      // Not a Yjs route - proxy to DS server
+      await this.proxyToDsServer(req, res, rawUrl)
       return
     }
 
@@ -266,6 +277,76 @@ export class YjsServer {
         res.end(
           JSON.stringify({
             error: { code: `INTERNAL_ERROR`, message: `Internal error` },
+          })
+        )
+      }
+    }
+  }
+
+  // ---- Proxy for non-Yjs routes ----
+
+  /**
+   * Proxy requests that don't match Yjs routes to the underlying DS server.
+   * This allows clients to use a single endpoint for both Yjs and raw DS operations.
+   */
+  private async proxyToDsServer(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string
+  ): Promise<void> {
+    const targetUrl = `${this.dsServerUrl}${path}`
+    const method = req.method ?? `GET`
+
+    // Read request body if present
+    let body: Buffer | undefined
+    if (method !== `GET` && method !== `HEAD`) {
+      const chunks: Array<Buffer> = []
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer)
+      }
+      if (chunks.length > 0) {
+        body = Buffer.concat(chunks)
+      }
+    }
+
+    // Forward headers, excluding host
+    const headers: Record<string, string> = { ...this.dsServerHeaders }
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase() !== `host` && value) {
+        headers[key] = Array.isArray(value) ? value.join(`, `) : value
+      }
+    }
+
+    try {
+      const response = await fetch(targetUrl, {
+        method,
+        headers,
+        body: body ? new Uint8Array(body) : undefined,
+      })
+
+      // Copy response status and headers
+      const responseHeaders: Record<string, string> = {}
+      response.headers.forEach((value, key) => {
+        responseHeaders[key] = value
+      })
+
+      res.writeHead(response.status, responseHeaders)
+
+      // Stream response body
+      if (response.body) {
+        for await (const chunk of response.body) {
+          res.write(chunk)
+        }
+      }
+
+      res.end()
+    } catch (err) {
+      console.error(`[YjsServer] Proxy error for ${method} ${path}:`, err)
+      if (!res.headersSent) {
+        res.writeHead(502, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            error: { code: `PROXY_ERROR`, message: `Failed to proxy request` },
           })
         )
       }
