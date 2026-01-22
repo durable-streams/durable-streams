@@ -586,18 +586,6 @@ export class YjsServer {
       headers,
     })
 
-    // Handle 404 for new documents
-    // Return 404 so client knows to retry - it has built-in backoff for this case
-    if (dsResponse.status === 404) {
-      res.writeHead(404, { "content-type": `application/json` })
-      res.end(
-        JSON.stringify({
-          error: { code: `NOT_FOUND`, message: `Document stream not found` },
-        })
-      )
-      return
-    }
-
     // Copy response headers
     const responseHeaders: Record<string, string> = {
       "content-type":
