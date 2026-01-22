@@ -585,6 +585,18 @@ export class YjsServer {
       headers,
     })
 
+    // Handle 404 for new documents - return empty response instead of error
+    // This happens when the .updates stream doesn't exist yet
+    if (dsResponse.status === 404) {
+      res.writeHead(200, {
+        "content-type": `application/octet-stream`,
+        [YJS_HEADERS.STREAM_NEXT_OFFSET]: `-1`,
+        [YJS_HEADERS.STREAM_UP_TO_DATE]: `true`,
+      })
+      res.end()
+      return
+    }
+
     // Copy response headers
     const responseHeaders: Record<string, string> = {
       "content-type":
