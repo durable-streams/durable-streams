@@ -1,5 +1,26 @@
 # @durable-streams/cli
 
+## 0.2.0
+
+### Minor Changes
+
+- Bump all packages to version 0.2.0 ([#206](https://github.com/durable-streams/durable-streams/pull/206))
+
+### Patch Changes
+
+- Add support for `--flag=value` syntax for all CLI flags that take values (`--url`, `--auth`, `--content-type`). Previously only the space-separated syntax (`--flag value`) was supported, causing the `=` syntax to be silently ignored. Also improves error messages when command-specific flags like `--content-type` are placed before the command instead of after. ([#207](https://github.com/durable-streams/durable-streams/pull/207))
+
+- Fix `--content-type` and `--json` flags not being respected on `create` command. Previously, creating a stream always used `application/octet-stream` regardless of the content-type flag provided. ([#201](https://github.com/durable-streams/durable-streams/pull/201))
+
+- Fix URL handling when --url contains /v1/stream path ([#200](https://github.com/durable-streams/durable-streams/pull/200))
+
+  Previously, the CLI always appended `/v1/stream/{streamId}` to the provided URL. When users provided a URL that already contained `/v1/stream` (e.g., `http://localhost:3002/v1/stream/my-group`), it would incorrectly produce a doubled path like `/v1/stream/my-group/v1/stream/my-stream`.
+
+  Now the CLI correctly detects when the URL already contains `/v1/stream` and only appends the stream ID.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.0
+
 ## 0.1.9
 
 ### Patch Changes
