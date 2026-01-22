@@ -94,7 +94,11 @@ export async function* parseSSEStream(
           }
           currentEvent = { data: [] }
         } else if (line.startsWith(`event:`)) {
-          currentEvent.type = line.slice(6).trim()
+          // Per SSE spec, strip only one optional space after "event:"
+          const eventType = line.slice(6)
+          currentEvent.type = eventType.startsWith(` `)
+            ? eventType.slice(1)
+            : eventType
         } else if (line.startsWith(`data:`)) {
           // Per SSE spec, strip the optional space after "data:"
           const content = line.slice(5)
