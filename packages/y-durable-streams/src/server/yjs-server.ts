@@ -705,105 +705,45 @@ export class YjsServer {
     url: URL
   ): Promise<void> {
     const method = req.method?.toUpperCase()
-
-    // Build DS URL for awareness stream
     const dsPath = YjsStreamPaths.awarenessStream(
       route.service,
       route.docPath,
       awarenessName
     )
-    const dsUrl = new URL(dsPath, this.dsServerUrl)
 
     if (method === `POST`) {
-      // Ensure awareness stream exists
+      // Ensure awareness stream exists, then proxy
       await this.ensureAwarenessStream(
         route.service,
         route.docPath,
         awarenessName
       )
-
-      // Read body and append
-      const body = await this.readBody(req)
-
-      const dsResponse = await fetch(dsUrl.toString(), {
-        method: `POST`,
-        headers: {
-          ...this.dsServerHeaders,
-          "content-type": `text/plain`,
-        },
-        body: Buffer.from(body),
-      })
-
-      const responseHeaders: Record<string, string> = {}
-      const nextOffset =
-        dsResponse.headers.get(YJS_HEADERS.STREAM_NEXT_OFFSET) ??
-        dsResponse.headers.get(`stream-offset`)
-      if (nextOffset) {
-        responseHeaders[YJS_HEADERS.STREAM_NEXT_OFFSET] = nextOffset
-      }
-
-      res.writeHead(dsResponse.ok ? 204 : dsResponse.status, responseHeaders)
-      res.end()
+      await this.proxyToDsServer(req, res, dsPath)
     } else if (method === `GET`) {
+      // Build path with query params
       const offset = url.searchParams.get(`offset`)
       const live = url.searchParams.get(`live`)
 
-      // Forward query params to DS server
+      const params = new URLSearchParams()
       if (offset !== null) {
-        dsUrl.searchParams.set(`offset`, offset)
+        params.set(`offset`, offset)
       }
       if (live) {
-        // Map live mode to DS server format
         // live=true means "server picks transport" - use SSE for awareness
-        const dsLive = live === `true` ? `sse` : live
-        dsUrl.searchParams.set(`live`, dsLive)
+        params.set(`live`, live === `true` ? `sse` : live)
       }
 
-      const dsResponse = await fetch(dsUrl.toString(), {
-        method: `GET`,
-        headers: this.dsServerHeaders,
-      })
+      const query = params.toString()
+      const fullPath = query ? `${dsPath}?${query}` : dsPath
 
-      // Copy response headers
-      const responseHeaders: Record<string, string> = {
-        "content-type":
-          dsResponse.headers.get(`content-type`) ?? `text/event-stream`,
-      }
-
-      const headersToForward = [
-        YJS_HEADERS.STREAM_NEXT_OFFSET,
-        YJS_HEADERS.STREAM_UP_TO_DATE,
-        YJS_HEADERS.STREAM_CURSOR,
-        `stream-offset`,
-      ]
-      for (const header of headersToForward) {
-        const value = dsResponse.headers.get(header)
-        if (value) {
-          responseHeaders[header] = value
-        }
-      }
-
-      // For SSE, disable buffering and set appropriate headers
+      // For SSE, we need special handling with flush
       if (live === `sse` || live === `true`) {
-        responseHeaders[`cache-control`] = `no-cache`
-        responseHeaders[`connection`] = `keep-alive`
+        await this.proxyWithSseFlush(req, res, fullPath)
+      } else {
+        await this.proxyToDsServer(req, res, fullPath)
       }
-
-      res.writeHead(dsResponse.status, responseHeaders)
-
-      // Stream the response - flush after each chunk for SSE
-      if (dsResponse.body) {
-        for await (const chunk of dsResponse.body) {
-          res.write(chunk)
-          // Flush for SSE to ensure immediate delivery
-          if (live === `sse` || live === `true`) {
-            const flushable = res as unknown as { flush?: () => void }
-            flushable.flush?.()
-          }
-        }
-      }
-
-      res.end()
+    } else if (method === `HEAD`) {
+      await this.proxyToDsServer(req, res, dsPath)
     } else {
       res.writeHead(405, { "content-type": `application/json` })
       res.end(
@@ -812,6 +752,44 @@ export class YjsServer {
         })
       )
     }
+  }
+
+  /**
+   * Proxy with SSE-specific handling: flush after each chunk for immediate delivery.
+   */
+  private async proxyWithSseFlush(
+    req: IncomingMessage,
+    res: ServerResponse,
+    path: string
+  ): Promise<void> {
+    const targetUrl = `${this.dsServerUrl}${path}`
+
+    const response = await fetch(targetUrl, {
+      method: `GET`,
+      headers: this.dsServerHeaders,
+    })
+
+    // Forward headers with SSE additions
+    const responseHeaders: Record<string, string> = {
+      "cache-control": `no-cache`,
+      connection: `keep-alive`,
+    }
+    response.headers.forEach((value, key) => {
+      responseHeaders[key] = value
+    })
+
+    res.writeHead(response.status, responseHeaders)
+
+    if (response.body) {
+      for await (const chunk of response.body) {
+        res.write(chunk)
+        // Flush for SSE to ensure immediate delivery
+        const flushable = res as unknown as { flush?: () => void }
+        flushable.flush?.()
+      }
+    }
+
+    res.end()
   }
 
   // ---- Stream management ----
