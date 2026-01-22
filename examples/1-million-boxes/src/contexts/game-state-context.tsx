@@ -65,6 +65,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Handle connection events
   const handleConnected = useCallback(() => {
     setIsConnected(true)
+    setIsLoading(false)
     setError(null)
   }, [])
 

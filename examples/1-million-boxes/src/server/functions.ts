@@ -41,6 +41,23 @@ export const getTeam = createServerFn({ method: `GET` }).handler(async () => {
 })
 
 /**
+ * Initialize the game - ensures the stream exists.
+ * Called on page load to create the stream if it doesn't exist.
+ */
+export const initGame = createServerFn({ method: `POST` }).handler(async () => {
+  // Get DO stub for the single game instance
+  const id = env.GAME_WRITER.idFromName(`game`)
+  const stub = env.GAME_WRITER.get(id)
+
+  // Call init endpoint on DO
+  const response = await stub.fetch(`http://do/init`, {
+    method: `POST`,
+  })
+
+  return await response.json()
+})
+
+/**
  * Draw an edge on the game board.
  * Validates team from cookie and forwards request to GameWriterDO.
  */

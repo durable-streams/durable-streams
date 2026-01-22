@@ -1,0 +1,155 @@
+.about-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  animation: about-backdrop-fade-in 150ms ease-out;
+}
+
+.about-dialog-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 24px;
+  width: 90%;
+  max-width: 480px;
+  z-index: 101;
+  animation: about-popup-slide-in 200ms ease-out;
+}
+
+.about-dialog-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.about-dialog-content {
+  margin-bottom: 20px;
+}
+
+.about-dialog-content p {
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--color-text);
+  margin-bottom: 12px;
+}
+
+.about-dialog-content p:last-of-type {
+  margin-bottom: 0;
+}
+
+.about-dialog-teams {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 16px 0;
+  padding: 12px;
+  background: #f9f9f5;
+  border-radius: var(--radius-sm);
+}
+
+.about-team {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.about-team-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.about-team-red .about-team-dot {
+  background: var(--color-red);
+}
+
+.about-team-blue .about-team-dot {
+  background: var(--color-blue);
+}
+
+.about-team-green .about-team-dot {
+  background: var(--color-green);
+}
+
+.about-team-yellow .about-team-dot {
+  background: var(--color-yellow);
+}
+
+.about-dialog-tech {
+  font-size: 0.8125rem !important;
+  color: var(--color-muted) !important;
+  text-align: center;
+  margin-top: 16px !important;
+}
+
+.about-dialog-tech a {
+  color: var(--color-blue);
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.about-dialog-tech a:hover {
+  text-decoration: underline;
+}
+
+.about-dialog-close-button {
+  width: 100%;
+  padding: 12px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  background: var(--color-blue);
+  color: white;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.about-dialog-close-button:hover {
+  background: #1565c0;
+}
+
+.about-dialog-close-button:active {
+  transform: scale(0.98);
+}
+
+/* Animations */
+@keyframes about-backdrop-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes about-popup-slide-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -48%);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%);
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .about-dialog-popup {
+    padding: 20px;
+    width: 94%;
+  }
+
+  .about-dialog-teams {
+    grid-template-columns: 1fr;
+  }
+}

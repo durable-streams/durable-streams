@@ -112,11 +112,32 @@ export class GameWriterDO {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
 
+    // Health check / initialization endpoint
+    if (url.pathname === `/init` && request.method === `POST`) {
+      return this.handleInit()
+    }
+
     if (url.pathname === `/draw` && request.method === `POST`) {
       return this.handleDraw(request)
     }
 
     return new Response(`Not found`, { status: 404 })
+  }
+
+  /**
+   * Handle init request - ensures the stream exists.
+   * Called on page load to create the stream if needed.
+   */
+  private async handleInit(): Promise<Response> {
+    try {
+      await this.ensureReady()
+      return Response.json({
+        ok: true,
+        edgesPlaced: this.gameState?.getEdgesPlacedCount() ?? 0,
+      })
+    } catch {
+      return Response.json({ ok: false, code: `INIT_FAILED` }, { status: 500 })
+    }
   }
 
   /**

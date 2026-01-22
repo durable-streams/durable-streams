@@ -1,11 +1,34 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
-// The createFileRoute import is added by TanStack Router's code generation
-// but is not used in API routes - we use createAPIFileRoute instead
 import { createFileRoute } from "@tanstack/react-router"
-/* eslint-enable @typescript-eslint/no-unused-vars */
-import { createAPIFileRoute } from "@tanstack/react-start/api"
 import { env } from "cloudflare:workers"
 import { GAME_STREAM_PATH } from "../../../lib/config"
+
+/**
+ * Default Durable Streams URL for development.
+ */
+const DEFAULT_DURABLE_STREAMS_URL = `http://localhost:4437/v1/stream`
+
+/**
+ * Get the Durable Streams URL from environment or use default.
+ */
+function getDurableStreamsUrl(): string {
+  try {
+    return env.DURABLE_STREAMS_URL || DEFAULT_DURABLE_STREAMS_URL
+  } catch {
+    // env might throw if not in Cloudflare Workers context
+    return DEFAULT_DURABLE_STREAMS_URL
+  }
+}
+
+/**
+ * Get auth token from environment if available.
+ */
+function getAuthToken(): string | undefined {
+  try {
+    return env.DURABLE_STREAMS_AUTH
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Build headers for upstream Durable Streams requests.
@@ -19,15 +42,16 @@ function buildUpstreamHeaders(
   }
 
   // Add auth header if configured (for Electric Cloud)
-  if (env.DURABLE_STREAMS_AUTH) {
-    headers[`Authorization`] = `Bearer ${env.DURABLE_STREAMS_AUTH}`
+  const authToken = getAuthToken()
+  if (authToken) {
+    headers[`Authorization`] = `Bearer ${authToken}`
   }
 
   return headers
 }
 
 /**
- * API route that proxies requests to the Durable Streams server.
+ * Server route that proxies requests to the Durable Streams server.
  *
  * This allows:
  * - Adding authentication headers for Electric Cloud
@@ -39,106 +63,148 @@ function buildUpstreamHeaders(
  * - HEAD: Check stream status
  * - OPTIONS: CORS preflight
  */
-export const Route = createAPIFileRoute(`/api/stream/game`)({
-  OPTIONS: () => {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": `*`,
-        "Access-Control-Allow-Methods": `GET, HEAD, OPTIONS`,
-        "Access-Control-Allow-Headers": `Content-Type, Accept`,
-        "Access-Control-Max-Age": `86400`,
-      },
-    })
-  },
+export const Route = createFileRoute(`/api/stream/game`)({
+  server: {
+    async handler({ request }) {
+      const method = request.method
+      const url = new URL(request.url)
+      const queryString = url.search
+      const baseUrl = getDurableStreamsUrl()
 
-  HEAD: async () => {
-    const upstreamUrl = `${env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
-
-    const response = await fetch(upstreamUrl, {
-      method: `HEAD`,
-      headers: buildUpstreamHeaders(),
-    })
-
-    // Forward status with CORS headers
-    return new Response(null, {
-      status: response.status,
-      headers: {
-        "Access-Control-Allow-Origin": `*`,
-      },
-    })
-  },
-
-  GET: async ({ request }) => {
-    const url = new URL(request.url)
-    const queryString = url.search
-
-    // Build upstream URL
-    const upstreamUrl = `${env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}${queryString}`
-
-    // Determine if this is an SSE request
-    const isSSE = url.searchParams.get(`live`) === `sse`
-
-    if (isSSE) {
-      // Proxy SSE connection
-      const upstreamResponse = await fetch(upstreamUrl, {
-        method: `GET`,
-        headers: buildUpstreamHeaders({
-          Accept: `text/event-stream`,
-          "Cache-Control": `no-cache`,
-        }),
-      })
-
-      // Create response headers
-      const headers = new Headers()
-      headers.set(`Content-Type`, `text/event-stream`)
-      headers.set(`Cache-Control`, `no-cache`)
-      headers.set(`Connection`, `keep-alive`)
-      headers.set(`Access-Control-Allow-Origin`, `*`)
-
-      // Copy any relevant headers from upstream
-      const upstreamCursor = upstreamResponse.headers.get(`Stream-Cursor`)
-      if (upstreamCursor) {
-        headers.set(`Stream-Cursor`, upstreamCursor)
+      // CORS preflight
+      if (method === `OPTIONS`) {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            "Access-Control-Allow-Origin": `*`,
+            "Access-Control-Allow-Methods": `GET, HEAD, OPTIONS`,
+            "Access-Control-Allow-Headers": `Content-Type, Accept`,
+            "Access-Control-Max-Age": `86400`,
+          },
+        })
       }
 
-      return new Response(upstreamResponse.body, {
-        status: upstreamResponse.status,
-        headers,
-      })
-    }
+      // HEAD request
+      if (method === `HEAD`) {
+        const upstreamUrl = `${baseUrl}${GAME_STREAM_PATH}`
+        const response = await fetch(upstreamUrl, {
+          method: `HEAD`,
+          headers: buildUpstreamHeaders(),
+        })
+        return new Response(null, {
+          status: response.status,
+          headers: { "Access-Control-Allow-Origin": `*` },
+        })
+      }
 
-    // Regular GET request - fetch stream data
-    const response = await fetch(upstreamUrl, {
-      method: `GET`,
-      headers: buildUpstreamHeaders({
-        Accept: `application/octet-stream`,
-      }),
-    })
+      // GET request
+      if (method === `GET`) {
+        const upstreamUrl = `${baseUrl}${GAME_STREAM_PATH}${queryString}`
+        const isSSE = url.searchParams.get(`live`) === `sse`
 
-    // Create response with CORS headers
-    const headers = new Headers()
-    headers.set(`Access-Control-Allow-Origin`, `*`)
+        if (isSSE) {
+          // Proxy SSE connection
+          let upstreamResponse = await fetch(upstreamUrl, {
+            method: `GET`,
+            headers: buildUpstreamHeaders({
+              Accept: `text/event-stream`,
+              "Cache-Control": `no-cache`,
+            }),
+          })
 
-    // Copy content-type and other relevant headers
-    const contentType = response.headers.get(`Content-Type`)
-    if (contentType) {
-      headers.set(`Content-Type`, contentType)
-    }
+          // If stream doesn't exist, create it first
+          if (upstreamResponse.status === 404) {
+            const createUrl = `${baseUrl}${GAME_STREAM_PATH}`
+            const createResponse = await fetch(createUrl, {
+              method: `PUT`,
+              headers: buildUpstreamHeaders({
+                "Content-Type": `application/octet-stream`,
+              }),
+            })
 
-    const streamOffset = response.headers.get(`Stream-Next-Offset`)
-    if (streamOffset) {
-      headers.set(`Stream-Next-Offset`, streamOffset)
-    }
+            if (createResponse.ok) {
+              upstreamResponse = await fetch(upstreamUrl, {
+                method: `GET`,
+                headers: buildUpstreamHeaders({
+                  Accept: `text/event-stream`,
+                  "Cache-Control": `no-cache`,
+                }),
+              })
+            }
+          }
 
-    const streamCursor = response.headers.get(`Stream-Cursor`)
-    if (streamCursor) {
-      headers.set(`Stream-Cursor`, streamCursor)
-    }
+          const headers = new Headers()
+          headers.set(`Content-Type`, `text/event-stream`)
+          headers.set(`Cache-Control`, `no-cache`)
+          headers.set(`Connection`, `keep-alive`)
+          headers.set(`Access-Control-Allow-Origin`, `*`)
 
-    return new Response(response.body, {
-      status: response.status,
-      headers,
-    })
+          // Forward protocol headers
+          for (const h of [
+            `Stream-Offset`,
+            `Stream-Cursor`,
+            `Stream-Up-To-Date`,
+          ]) {
+            const value = upstreamResponse.headers.get(h)
+            if (value) headers.set(h, value)
+          }
+
+          return new Response(upstreamResponse.body, {
+            status: upstreamResponse.status,
+            headers,
+          })
+        }
+
+        // Regular GET - fetch stream data
+        let response = await fetch(upstreamUrl, {
+          method: `GET`,
+          headers: buildUpstreamHeaders({
+            Accept: `application/octet-stream`,
+          }),
+        })
+
+        // Create stream if it doesn't exist
+        if (response.status === 404) {
+          const createUrl = `${baseUrl}${GAME_STREAM_PATH}`
+          const createResponse = await fetch(createUrl, {
+            method: `PUT`,
+            headers: buildUpstreamHeaders({
+              "Content-Type": `application/octet-stream`,
+            }),
+          })
+
+          if (createResponse.ok) {
+            response = await fetch(upstreamUrl, {
+              method: `GET`,
+              headers: buildUpstreamHeaders({
+                Accept: `application/octet-stream`,
+              }),
+            })
+          }
+        }
+
+        const headers = new Headers()
+        headers.set(`Access-Control-Allow-Origin`, `*`)
+
+        // Forward headers
+        for (const h of [
+          `Content-Type`,
+          `Stream-Offset`,
+          `Stream-Cursor`,
+          `Stream-Up-To-Date`,
+        ]) {
+          const value = response.headers.get(h)
+          if (value) headers.set(h, value)
+        }
+
+        return new Response(response.body, {
+          status: response.status,
+          headers,
+        })
+      }
+
+      // Method not allowed
+      return new Response(`Method not allowed`, { status: 405 })
+    },
   },
 })

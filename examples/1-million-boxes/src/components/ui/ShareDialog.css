@@ -33,6 +33,53 @@
   margin-bottom: 16px;
 }
 
+.share-dialog-native-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  padding: 14px 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  background: var(--color-blue);
+  color: white;
+  border-radius: var(--radius-sm);
+  margin-bottom: 16px;
+  transition:
+    background-color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.share-dialog-native-button:hover {
+  background: #1565c0;
+}
+
+.share-dialog-native-button:active {
+  transform: scale(0.98);
+}
+
+.share-dialog-native-button svg {
+  flex-shrink: 0;
+}
+
+.share-dialog-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  color: var(--color-muted);
+  font-size: 0.8125rem;
+}
+
+.share-dialog-divider::before,
+.share-dialog-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+}
+
 .share-dialog-content {
   display: flex;
   gap: 8px;

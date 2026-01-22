@@ -34,10 +34,10 @@ export const STREAM_PROXY_ENDPOINT = `/api/stream/game`
 
 /**
  * Whether to use the proxy for stream connections.
- * In production (when VITE_USE_STREAM_PROXY is set), we proxy through the worker.
+ * In production, we proxy through the worker for auth.
  * In development, we connect directly to the stream server.
  */
-export const USE_STREAM_PROXY = import.meta.env.VITE_USE_STREAM_PROXY === `true`
+export const USE_STREAM_PROXY = import.meta.env.PROD
 
 /**
  * Delay before reconnecting after a stream connection error (in ms).

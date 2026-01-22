@@ -71,6 +71,9 @@ importers:
       '@base-ui/react':
         specifier: ^1.0.0-alpha.4
         version: 1.1.0(@types/react@19.2.9)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@tanstack/react-router':
         specifier: ^1.93.0
         version: 1.154.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react"
+import { FetchError, stream as durableStream } from "@durable-streams/client"
 import { StreamParser } from "../lib/stream-parser"
 import {
   GAME_STREAM_URL,
@@ -6,14 +7,26 @@ import {
   STREAM_RECONNECT_DELAY_MS,
   USE_STREAM_PROXY,
 } from "../lib/config"
-import { getGameStream } from "../server/stream-proxy"
+import type { StreamResponse } from "@durable-streams/client"
 import type { GameEvent } from "../lib/game-state"
+
+/**
+ * Delay before retrying when the stream doesn't exist (404).
+ * This is longer than normal reconnect delay to avoid spamming.
+ */
+const STREAM_NOT_FOUND_RETRY_DELAY_MS = 5000
 
 export interface UseGameStreamOptions {
   onEvents: (events: Array<GameEvent>) => void
   onError?: (error: Error) => void
   onConnected?: () => void
   onDisconnected?: () => void
+  /**
+   * Whether to enable the stream connection.
+   * Set to false to delay connection until ready.
+   * @default true
+   */
+  enabled?: boolean
 }
 
 export interface UseGameStreamResult {
@@ -22,27 +35,23 @@ export interface UseGameStreamResult {
 }
 
 /**
- * Get the URL for SSE connections.
+ * Get the URL for stream connections.
  * Uses proxy endpoint in production, direct URL in development.
  */
-function getSSEUrl(fromSeq?: number): string {
-  const baseUrl = USE_STREAM_PROXY ? STREAM_PROXY_ENDPOINT : GAME_STREAM_URL
-  const params = new URLSearchParams({ live: `sse` })
-  if (fromSeq !== undefined) {
-    params.set(`seq`, String(fromSeq))
-  }
-  return `${baseUrl}?${params.toString()}`
+function getStreamUrl(): string {
+  return USE_STREAM_PROXY ? STREAM_PROXY_ENDPOINT : GAME_STREAM_URL
 }
 
 /**
- * Hook for connecting to the game event stream.
+ * Hook for connecting to the game event stream using the Durable Streams client.
  *
- * Fetches existing data first, then connects to SSE for live updates.
- * Automatically reconnects on error with a delay.
+ * Uses the @durable-streams/client library for:
+ * - Proper SSE handling with automatic reconnection
+ * - Offset tracking for resumption
+ * - Backpressure-aware consumption
  *
  * In production (USE_STREAM_PROXY=true):
- * - Initial data is fetched via server function (with auth)
- * - SSE connects through the worker proxy endpoint
+ * - Connects through the worker proxy endpoint which adds auth
  *
  * In development:
  * - Connects directly to the Durable Streams server
@@ -50,9 +59,16 @@ function getSSEUrl(fromSeq?: number): string {
 export function useGameStream(
   options: UseGameStreamOptions
 ): UseGameStreamResult {
-  const { onEvents, onError, onConnected, onDisconnected } = options
+  const {
+    onEvents,
+    onError,
+    onConnected,
+    onDisconnected,
+    enabled = true,
+  } = options
 
-  const eventSourceRef = useRef<EventSource | null>(null)
+  const streamResponseRef = useRef<StreamResponse | null>(null)
+  const unsubscribeRef = useRef<(() => void) | null>(null)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const parserRef = useRef<StreamParser>(new StreamParser())
   const isConnectedRef = useRef(false)
@@ -72,14 +88,22 @@ export function useGameStream(
   }, [onEvents, onError, onConnected, onDisconnected])
 
   const disconnect = useCallback(() => {
+    // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
       reconnectTimeoutRef.current = null
     }
 
-    if (eventSourceRef.current) {
-      eventSourceRef.current.close()
-      eventSourceRef.current = null
+    // Unsubscribe from the stream
+    if (unsubscribeRef.current) {
+      unsubscribeRef.current()
+      unsubscribeRef.current = null
+    }
+
+    // Cancel the stream response
+    if (streamResponseRef.current) {
+      streamResponseRef.current.cancel()
+      streamResponseRef.current = null
     }
 
     if (isConnectedRef.current) {
@@ -88,188 +112,129 @@ export function useGameStream(
     }
   }, [])
 
-  const connectSSE = useCallback(
-    (fromSeq?: number) => {
-      if (!isMountedRef.current) return
+  const connect = useCallback(async () => {
+    if (!isMountedRef.current) return
 
-      // Close any existing connection
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
+    // Reset parser for new connection
+    parserRef.current.reset()
+
+    try {
+      const streamUrl = getStreamUrl()
+
+      // Connect using the Durable Streams client
+      // We throw from onError to disable the client's built-in retry loop
+      // and handle all retries manually with proper delays
+      const response = await durableStream({
+        url: streamUrl,
+        live: `sse`, // Use SSE for live updates
+        onError: (error) => {
+          // Throw to stop the client's retry loop - we handle retries manually
+          throw error
+        },
+      })
+
+      // Check if component unmounted during the async connect
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (!isMountedRef.current) {
+        response.cancel()
+        return
       }
 
-      // Reset parser for new connection
-      parserRef.current.reset()
+      streamResponseRef.current = response
 
-      // Build SSE URL (uses proxy in production, direct in dev)
-      const sseUrl = getSSEUrl(fromSeq)
+      // Mark as connected
 
-      const eventSource = new EventSource(sseUrl)
-      eventSourceRef.current = eventSource
-
-      eventSource.onopen = () => {
-        if (!isMountedRef.current) return
-        if (!isConnectedRef.current) {
-          isConnectedRef.current = true
-          onConnectedRef.current?.()
-        }
+      if (!isConnectedRef.current) {
+        isConnectedRef.current = true
+        onConnectedRef.current?.()
       }
 
-      eventSource.onmessage = (event) => {
+      // Subscribe to byte chunks and parse them into game events
+      unsubscribeRef.current = response.subscribeBytes((chunk) => {
         if (!isMountedRef.current) return
 
         try {
-          // SSE data is base64 encoded binary
-          const base64 = event.data as string
-          const binary = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))
-
-          // Parse events using streaming parser
-          const events = parserRef.current.feed(binary)
+          // Parse the binary chunk into game events
+          const events = parserRef.current.feed(chunk.data)
 
           if (events.length > 0) {
             onEventsRef.current(events)
           }
         } catch (err) {
-          console.error(`Error parsing SSE message:`, err)
+          console.error(`Error parsing stream chunk:`, err)
           onErrorRef.current?.(
             err instanceof Error ? err : new Error(String(err))
           )
         }
+      })
+
+      // Handle stream completion/cancellation
+      response.closed
+        .then(() => {
+          if (isMountedRef.current && isConnectedRef.current) {
+            isConnectedRef.current = false
+            onDisconnectedRef.current?.()
+          }
+        })
+        .catch((err: unknown) => {
+          if (isMountedRef.current) {
+            console.error(`Stream closed with error:`, err)
+            onErrorRef.current?.(
+              err instanceof Error ? err : new Error(String(err))
+            )
+          }
+        })
+    } catch (err) {
+      // Check error type to determine retry delay
+      const is404 = err instanceof FetchError && err.status === 404
+
+      if (is404) {
+        console.log(
+          `Stream not found, will retry in ${STREAM_NOT_FOUND_RETRY_DELAY_MS}ms`
+        )
+      } else {
+        console.error(`Error connecting to stream:`, err)
+        onErrorRef.current?.(
+          err instanceof Error ? err : new Error(String(err))
+        )
       }
 
-      eventSource.onerror = () => {
-        if (!isMountedRef.current) return
+      // Schedule reconnect with appropriate delay
+      // 404 = stream doesn't exist yet, use longer delay
+      // Other errors = use standard reconnect delay
+      const retryDelay = is404
+        ? STREAM_NOT_FOUND_RETRY_DELAY_MS
+        : STREAM_RECONNECT_DELAY_MS
 
-        // Clean up current connection
-        eventSource.close()
-        eventSourceRef.current = null
-
-        if (isConnectedRef.current) {
-          isConnectedRef.current = false
-          onDisconnectedRef.current?.()
-        }
-
-        // Schedule reconnect
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+      if (isMountedRef.current) {
         reconnectTimeoutRef.current = setTimeout(() => {
           if (isMountedRef.current) {
             connect()
           }
-        }, STREAM_RECONNECT_DELAY_MS)
+        }, retryDelay)
       }
-    },
-    [disconnect]
-  )
-
-  /**
-   * Fetch initial stream data via proxy (server function).
-   * Returns the parsed events and byte length.
-   */
-  const fetchViaProxy = useCallback(async (): Promise<{
-    events: Array<GameEvent>
-    byteLength: number
-  }> => {
-    const result = await getGameStream()
-
-    if (!result.ok) {
-      // Type narrowing: when ok is false, we have status and error
-      const errorResult = result as { ok: false; status: number; error: string }
-      if (errorResult.status === 404) {
-        return { events: [], byteLength: 0 }
-      }
-      throw new Error(errorResult.error)
     }
-
-    // Type narrowing: when ok is true, we have data and length
-    const successResult = result as { ok: true; data: string; length: number }
-    if (successResult.length === 0) {
-      return { events: [], byteLength: 0 }
-    }
-
-    // Decode base64 data
-    const binary = Uint8Array.from(atob(successResult.data), (c) =>
-      c.charCodeAt(0)
-    )
-    const events = parserRef.current.feed(binary)
-
-    return { events, byteLength: binary.length }
   }, [])
-
-  /**
-   * Fetch initial stream data directly.
-   * Returns the parsed events and byte length.
-   */
-  const fetchDirect = useCallback(async (): Promise<{
-    events: Array<GameEvent>
-    byteLength: number
-  }> => {
-    const response = await fetch(GAME_STREAM_URL)
-
-    if (response.status === 404) {
-      return { events: [], byteLength: 0 }
-    }
-
-    if (!response.ok) {
-      throw new Error(`Failed to fetch stream: ${response.status}`)
-    }
-
-    const arrayBuffer = await response.arrayBuffer()
-    const bytes = new Uint8Array(arrayBuffer)
-    const events = parserRef.current.feed(bytes)
-
-    return { events, byteLength: bytes.length }
-  }, [])
-
-  const connect = useCallback(async () => {
-    if (!isMountedRef.current) return
-
-    try {
-      // Fetch initial data (via proxy in production, direct in dev)
-      const { events, byteLength } = USE_STREAM_PROXY
-        ? await fetchViaProxy()
-        : await fetchDirect()
-
-      // Check if component unmounted during the async fetch
-      // (the ref value can change between the initial check and here)
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-      if (!isMountedRef.current) return
-
-      if (events.length > 0) {
-        onEventsRef.current(events)
-      }
-
-      // Calculate seq for SSE (number of complete 3-byte records)
-      const seq = Math.floor(byteLength / 3)
-
-      // Connect to SSE for live updates
-      connectSSE(seq)
-    } catch (err) {
-      console.error(`Error connecting to stream:`, err)
-      onErrorRef.current?.(err instanceof Error ? err : new Error(String(err)))
-
-      // Schedule reconnect on fetch error
-      reconnectTimeoutRef.current = setTimeout(() => {
-        if (isMountedRef.current) {
-          connect()
-        }
-      }, STREAM_RECONNECT_DELAY_MS)
-    }
-  }, [connectSSE, fetchViaProxy, fetchDirect])
 
   const reconnect = useCallback(() => {
     disconnect()
-    parserRef.current.reset()
     connect()
   }, [disconnect, connect])
 
-  // Initial connection
+  // Initial connection (when enabled)
   useEffect(() => {
     isMountedRef.current = true
-    connect()
+
+    if (enabled) {
+      connect()
+    }
 
     return () => {
       isMountedRef.current = false
       disconnect()
     }
-  }, [connect, disconnect])
+  }, [connect, disconnect, enabled])
 
   return { disconnect, reconnect }
 }
