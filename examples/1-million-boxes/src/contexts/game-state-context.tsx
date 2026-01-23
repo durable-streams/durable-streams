@@ -21,6 +21,8 @@ export interface GameStateContextValue {
   error: string | null
   version: number
   recentEvents: Array<RecentEvent>
+  isGameComplete: boolean
+  winner: number | null // teamId (0-3) or null if tie
 }
 
 const GameStateContext = createContext<GameStateContextValue | null>(null)
@@ -216,6 +218,8 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
     error,
     version,
     recentEvents,
+    isGameComplete: gameStateRef.current.isComplete(),
+    winner: gameStateRef.current.getWinner(),
   }
 
   return (

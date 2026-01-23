@@ -5,6 +5,7 @@ import {
   getAdjacentBoxes,
   getBoxEdges,
 } from "./edge-math"
+import { FIRST_TO_SCORE_TARGET, GAME_END_MODE, TOTAL_BOX_COUNT } from "./config"
 
 /**
  * A game event representing an edge placement.
@@ -153,10 +154,37 @@ export class GameState {
   }
 
   /**
-   * Check if the game is complete (all edges placed).
+   * Get the total number of boxes claimed across all teams.
+   */
+  getTotalBoxesClaimed(): number {
+    return this.scores.reduce((sum, score) => sum + score, 0)
+  }
+
+  /**
+   * Check if all boxes have been claimed.
+   */
+  isBoardComplete(): boolean {
+    return this.getTotalBoxesClaimed() === TOTAL_BOX_COUNT
+  }
+
+  /**
+   * Check if any team has reached the target score (for first_to_score mode).
+   */
+  hasTeamReachedTarget(): boolean {
+    return this.scores.some((score) => score >= FIRST_TO_SCORE_TARGET)
+  }
+
+  /**
+   * Check if the game is complete based on the configured end mode.
+   * - "board_complete": All boxes are claimed
+   * - "first_to_score": Any team has reached the target score
    */
   isComplete(): boolean {
-    return this.edgesPlacedCount === EDGE_COUNT
+    if (GAME_END_MODE === `first_to_score`) {
+      return this.hasTeamReachedTarget()
+    }
+    // Default: board_complete
+    return this.isBoardComplete()
   }
 
   /**
@@ -164,6 +192,10 @@ export class GameState {
    * Returns the teamId (0-3) of the winner, or null if there's a tie.
    */
   getWinner(): number | null {
+    if (!this.isComplete()) {
+      return null
+    }
+
     const maxScore = Math.max(...this.scores)
     const winners = this.scores
       .map((score, teamId) => (score === maxScore ? teamId : -1))

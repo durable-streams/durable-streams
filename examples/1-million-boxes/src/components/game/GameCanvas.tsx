@@ -23,7 +23,8 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const { view, pan, zoomTo, canvasSize, setCanvasSize } = useViewStateContext()
-  const { gameState, pendingEdge, placeEdge, version } = useGameState()
+  const { gameState, pendingEdge, placeEdge, version, isGameComplete } =
+    useGameState()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
   const { ripples, addRipple } = useTouchFeedback()
 
@@ -105,6 +106,12 @@ export function GameCanvas() {
   // Handle mouse move for edge hover
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Disable hover when game is complete
+      if (isGameComplete) {
+        setHoveredEdge(null)
+        return
+      }
+
       if (!canvasRef.current) return
 
       const rect = canvasRef.current.getBoundingClientRect()
@@ -127,16 +134,19 @@ export function GameCanvas() {
 
       setHoveredEdge(edgeId)
     },
-    [view, canvasSize]
+    [view, canvasSize, isGameComplete]
   )
 
   // Handle click to place edge
   const handleClick = useCallback(() => {
+    // Disable drawing when game is complete
+    if (isGameComplete) return
+
     if (hoveredEdge !== null) {
       placeEdge(hoveredEdge)
       triggerHapticFeedback(15)
     }
-  }, [hoveredEdge, placeEdge])
+  }, [hoveredEdge, placeEdge, isGameComplete])
 
   // Handle touch start - track position for tap detection
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -156,6 +166,12 @@ export function GameCanvas() {
   // Handle touch end - place edge on tap (not drag)
   const handleTouchEnd = useCallback(
     (e: React.TouchEvent) => {
+      // Disable drawing when game is complete
+      if (isGameComplete) {
+        touchStartPos.current = null
+        return
+      }
+
       // Only process if this was a tap (not a pan/zoom gesture)
       if (
         touchMoved.current ||
@@ -198,7 +214,7 @@ export function GameCanvas() {
 
       touchStartPos.current = null
     },
-    [view, canvasSize, placeEdge, addRipple]
+    [view, canvasSize, placeEdge, addRipple, isGameComplete]
   )
 
   return (

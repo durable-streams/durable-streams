@@ -26,6 +26,30 @@ export const STREAM_PROXY_ENDPOINT = `/api/stream/game`
 export const STREAM_RECONNECT_DELAY_MS = 3000
 
 // =============================================================================
+// Game End Conditions
+// =============================================================================
+
+/**
+ * Game end mode:
+ * - "board_complete": Game ends when all boxes are claimed, leader wins
+ * - "first_to_score": Game ends when a team reaches the target score
+ */
+export type GameEndMode = `board_complete` | `first_to_score`
+
+/**
+ * Current game end mode.
+ * Change this to test different end conditions.
+ */
+export const GAME_END_MODE: GameEndMode = `first_to_score`
+
+/**
+ * Target score for "first_to_score" mode.
+ * Game ends when any team reaches this number of boxes.
+ * Only used when GAME_END_MODE is "first_to_score".
+ */
+export const FIRST_TO_SCORE_TARGET = 5
+
+// =============================================================================
 // Game Grid Configuration
 // =============================================================================
 

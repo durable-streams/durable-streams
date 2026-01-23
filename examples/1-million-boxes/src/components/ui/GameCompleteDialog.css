@@ -1,0 +1,163 @@
+.game-complete-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: game-complete-fade-in 0.3s ease-out;
+}
+
+.game-complete-dialog {
+  background: white;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  padding: 32px;
+  width: 90%;
+  max-width: 400px;
+  text-align: center;
+  animation: game-complete-slide-in 0.4s ease-out;
+}
+
+.game-complete-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  margin: 0 0 8px 0;
+  color: var(--color-text);
+}
+
+.game-complete-mode {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+  margin-bottom: 24px;
+}
+
+.game-complete-winner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.game-complete-winner-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.game-complete-winner-name {
+  font-size: 1.5rem;
+  font-weight: 700;
+}
+
+.game-complete-tie {
+  font-size: 1.5rem;
+  font-weight: 700;
+  margin-bottom: 24px;
+  color: var(--color-muted);
+}
+
+.game-complete-scores {
+  margin-bottom: 24px;
+}
+
+.game-complete-scores h3 {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-muted);
+  margin: 0 0 12px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.game-complete-score-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.game-complete-score-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #f9f9f5;
+  border-radius: var(--radius-sm);
+}
+
+.game-complete-score-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.game-complete-score-name {
+  flex: 1;
+  text-align: left;
+  font-weight: 500;
+}
+
+.game-complete-score-value {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.game-complete-button {
+  width: 100%;
+  padding: 14px;
+  font-size: 1rem;
+  font-weight: 600;
+  background: var(--color-blue);
+  color: white;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.game-complete-button:hover {
+  background: #1565c0;
+}
+
+.game-complete-button:active {
+  transform: scale(0.98);
+}
+
+@keyframes game-complete-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes game-complete-slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* Mobile adjustments */
+@media (max-width: 640px) {
+  .game-complete-dialog {
+    padding: 24px;
+  }
+
+  .game-complete-title {
+    font-size: 1.5rem;
+  }
+
+  .game-complete-winner-name {
+    font-size: 1.25rem;
+  }
+}

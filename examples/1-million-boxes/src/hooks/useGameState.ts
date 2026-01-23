@@ -11,6 +11,7 @@ import { useGameStateContext } from "../contexts/game-state-context"
  * - error: Current error message (or null)
  * - isConnected: Whether connected to the stream
  * - version: Counter that increments on state changes (for re-render triggers)
+ * - isGameComplete: Whether the game has ended
  */
 export function useGameState() {
   const {
@@ -21,6 +22,7 @@ export function useGameState() {
     error,
     isConnected,
     version,
+    isGameComplete,
   } = useGameStateContext()
 
   return {
@@ -31,5 +33,6 @@ export function useGameState() {
     error,
     isConnected,
     version,
+    isGameComplete,
   }
 }

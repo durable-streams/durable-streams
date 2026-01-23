@@ -22,23 +22,18 @@ export function ScoreBoard({
   const totalClaimed = scores.reduce((a, b) => a + b, 0)
   const remaining = TOTAL_BOX_COUNT - totalClaimed
 
-  // Don't show anything if all scores are 0 (loading state)
+  // Create team scores - sort by score if there are any, otherwise keep original order
   const hasScores = totalClaimed > 0
-  if (!hasScores) {
-    return (
-      <div
-        className={`scoreboard ${className}`.trim()}
-        data-testid="scoreboard"
-      />
-    )
-  }
-
-  // Create team scores and sort by score descending
   const teamScores: Array<TeamScore> = TEAMS.map((team, i) => ({
     team,
     score: scores[i],
     color: TEAM_COLORS[team].primary,
-  })).sort((a, b) => b.score - a.score)
+  }))
+
+  // Only sort if there are actual scores
+  if (hasScores) {
+    teamScores.sort((a, b) => b.score - a.score)
+  }
 
   return (
     <div className={`scoreboard ${className}`.trim()} data-testid="scoreboard">
