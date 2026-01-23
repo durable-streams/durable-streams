@@ -1,7 +1,6 @@
 ---
 "@durable-streams/client": patch
-"durable-streams-client-py": patch
-"durable-streams-client-go": patch
+"@durable-streams/client-py": patch
 ---
 
 Fix SSE event field parsing to comply with spec
