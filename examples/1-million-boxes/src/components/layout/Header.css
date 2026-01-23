@@ -18,11 +18,14 @@
 }
 
 .header-title {
-  font-size: 1.125rem;
-  font-weight: 700;
-  color: var(--color-text);
   margin: 0;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+}
+
+.header-logo {
+  height: 22px;
+  width: auto;
 }
 
 .header-center {
@@ -67,8 +70,13 @@
   display: none;
 }
 
-/* Tablet: hide button text, icon-only buttons */
+/* Tablet/Mobile: icon-only buttons and floating scoreboard */
 @media (max-width: 768px) {
+  .header {
+    padding: 0 12px;
+    gap: 6px;
+  }
+
   .header-button-text {
     display: none;
   }
@@ -83,25 +91,17 @@
   .header-button svg {
     display: block;
   }
-}
-
-/* Mobile layout: title left, team center, buttons right */
-@media (max-width: 640px) {
-  .header {
-    padding: 0 12px;
-    gap: 6px;
-  }
 
   .header-left {
     flex: 1;
   }
 
-  /* Hide team badge from header-left on mobile */
+  /* Hide team badge from header-left on tablet/mobile */
   .header-left .team-badge {
     display: none;
   }
 
-  /* Show centered team badge on mobile */
+  /* Show centered team badge on tablet/mobile */
   .header-center {
     display: flex;
     justify-content: center;
@@ -113,16 +113,16 @@
     justify-content: flex-end;
   }
 
-  .header-title {
-    font-size: 1.2rem;
+  .header-logo {
+    height: 20px;
   }
 
-  /* Hide scoreboard in header on mobile */
+  /* Hide scoreboard in header on tablet/mobile */
   .header-scoreboard {
     display: none;
   }
 
-  /* Show floating scoreboard on mobile */
+  /* Show floating scoreboard on tablet/mobile */
   .floating-scoreboard {
     display: flex;
     position: absolute;
@@ -141,7 +141,7 @@
 
 /* Very small screens */
 @media (max-width: 400px) {
-  .header-title {
-    font-size: 0.8rem;
+  .header-logo {
+    height: 16px;
   }
 }

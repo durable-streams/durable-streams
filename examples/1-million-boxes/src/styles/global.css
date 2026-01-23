@@ -203,8 +203,8 @@ a {
   }
 }
 
-/* Mobile (< 640px) */
-@media (max-width: 640px) {
+/* Tablet/Mobile (< 768px) */
+@media (max-width: 768px) {
   :root {
     --header-height: 52px;
     --footer-height: 56px;

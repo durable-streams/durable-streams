@@ -15,7 +15,13 @@ export function Header() {
     <>
       <header className="header" data-testid="header">
         <div className="header-left">
-          <h1 className="header-title">1 Million Boxes</h1>
+          <h1 className="header-title">
+            <img
+              src="/logo.svg"
+              alt="1 Million Boxes"
+              className="header-logo"
+            />
+          </h1>
           <TeamBadge />
         </div>
 

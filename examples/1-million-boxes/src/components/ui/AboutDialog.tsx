@@ -13,7 +13,11 @@ export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
         <Dialog.Backdrop className="about-dialog-backdrop" />
         <Dialog.Popup className="about-dialog-popup">
           <Dialog.Title className="about-dialog-title">
-            1 Million Boxes
+            <img
+              src="/logo.svg"
+              alt="1 Million Boxes"
+              className="about-dialog-logo"
+            />
           </Dialog.Title>
 
           <div className="about-dialog-content">

@@ -22,10 +22,13 @@
 }
 
 .about-dialog-title {
-  font-size: 1.5rem;
-  font-weight: 700;
   margin-bottom: 16px;
   text-align: center;
+}
+
+.about-dialog-logo {
+  height: 32px;
+  width: auto;
 }
 
 .about-dialog-content {
