@@ -24,6 +24,7 @@
   },
   "include": [
     "src/**/*",
+    "shared/**/*",
     "tests/**/*",
     "worker/**/*",
     "worker-configuration.d.ts",
