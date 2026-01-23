@@ -54,7 +54,7 @@ export function AboutDialog({ open, onOpenChange }: AboutDialogProps) {
             <p className="about-dialog-tech">
               Built with{` `}
               <a
-                href="https://electric-sql.com/product/durable-streams"
+                href="http://github.com/durable-streams/durable-streams/"
                 target="_blank"
                 rel="noopener noreferrer"
               >
