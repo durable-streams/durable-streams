@@ -6,6 +6,12 @@ import { useQuota } from "./quota-context"
 import type { GameEvent } from "../lib/game-state"
 import type { ReactNode } from "react"
 
+export interface RecentEvent {
+  edgeId: number
+  teamId: number
+  timestamp: number
+}
+
 export interface GameStateContextValue {
   gameState: GameState
   pendingEdge: number | null
@@ -14,6 +20,7 @@ export interface GameStateContextValue {
   isLoading: boolean
   error: string | null
   version: number
+  recentEvents: Array<RecentEvent>
 }
 
 const GameStateContext = createContext<GameStateContextValue | null>(null)
@@ -21,6 +28,9 @@ const GameStateContext = createContext<GameStateContextValue | null>(null)
 export interface GameStateProviderProps {
   children: ReactNode
 }
+
+// How long to keep recent events for animation (ms)
+const RECENT_EVENT_TTL = 1000
 
 export function GameStateProvider({ children }: GameStateProviderProps) {
   // Use a ref for the game state to avoid re-renders on every event
@@ -35,14 +45,45 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Track recent events for minimap pop animation
+  const [recentEvents, setRecentEvents] = useState<Array<RecentEvent>>([])
+
+  // Track if initial sync is complete (don't show pops during replay)
+  const initialSyncCompleteRef = useRef(false)
+
   // Get team and quota from contexts
   const { teamId } = useTeam()
   const { consume, refund } = useQuota()
 
   // Handle events from stream
   const handleEvents = useCallback((events: Array<GameEvent>) => {
+    const now = Date.now()
+    const newRecentEvents: Array<RecentEvent> = []
+
     for (const event of events) {
       gameStateRef.current.applyEvent(event)
+
+      // Track for pop animation (only edge events, and only after initial sync)
+      if (
+        initialSyncCompleteRef.current &&
+        `edgeId` in event &&
+        `teamId` in event
+      ) {
+        newRecentEvents.push({
+          edgeId: event.edgeId,
+          teamId: event.teamId,
+          timestamp: now,
+        })
+      }
+    }
+
+    // Add new events to recent list and clean up old ones
+    if (newRecentEvents.length > 0) {
+      setRecentEvents((prev) => {
+        const cutoff = now - RECENT_EVENT_TTL
+        const filtered = prev.filter((e) => e.timestamp > cutoff)
+        return [...filtered, ...newRecentEvents]
+      })
     }
 
     // Clear pending edge if it was confirmed
@@ -58,6 +99,14 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
     // Trigger re-render
     setVersion((v) => v + 1)
+
+    // Mark initial sync as complete after first batch of events
+    if (!initialSyncCompleteRef.current) {
+      // Use a small delay to ensure we skip any initial batch
+      setTimeout(() => {
+        initialSyncCompleteRef.current = true
+      }, 100)
+    }
     setIsLoading(false)
   }, [])
 
@@ -166,6 +215,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
     isLoading,
     error,
     version,
+    recentEvents,
   }
 
   return (

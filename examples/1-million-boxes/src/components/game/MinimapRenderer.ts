@@ -30,11 +30,9 @@ export class MinimapRenderer {
     this.canvas = canvas
     this.size = size
 
-    // Set up canvas (no retina scaling - we want exact pixel control)
+    // Set internal canvas resolution (CSS controls display size)
     this.canvas.width = size
     this.canvas.height = size
-    this.canvas.style.width = `${size}px`
-    this.canvas.style.height = `${size}px`
 
     const ctx = canvas.getContext(`2d`, { willReadFrequently: true })
     if (!ctx) {

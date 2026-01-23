@@ -1,4 +1,4 @@
-.world-view {
+.world-view-container {
   position: absolute;
   bottom: var(--minimap-margin);
   right: var(--minimap-margin);
@@ -10,4 +10,39 @@
   cursor: pointer;
   transition: transform var(--transition-normal);
   z-index: 100;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.world-view-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+/* Pop animation for new moves */
+.world-view-pop {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+  animation: worldview-pop 0.8s ease-out forwards;
+}
+
+@keyframes worldview-pop {
+  0% {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 1;
+  }
+  40% {
+    transform: translate(-50%, -50%) scale(2.5);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(4);
+    opacity: 0;
+  }
 }

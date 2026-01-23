@@ -33,7 +33,7 @@
     padding-right: max(12px, env(safe-area-inset-right));
   }
 
-  .world-view {
+  .world-view-container {
     right: max(var(--minimap-margin), env(safe-area-inset-right));
     bottom: max(var(--minimap-margin), env(safe-area-inset-bottom));
   }
@@ -47,7 +47,7 @@
 .game-canvas-container,
 .game-canvas,
 .zoom-controls,
-.world-view {
+.world-view-container {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -83,7 +83,7 @@
    Hover States (pointer devices only)
    ============================================ */
 @media (hover: hover) and (pointer: fine) {
-  .world-view:hover {
+  .world-view-container:hover {
     transform: scale(1.05);
   }
 }
@@ -94,7 +94,7 @@
     display: none;
   }
 
-  .world-view:hover {
+  .world-view-container:hover {
     transform: none;
   }
 }
@@ -104,7 +104,7 @@
    ============================================ */
 @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
   .zoom-button,
-  .world-view {
+  .world-view-container {
     border-width: 1px;
   }
 }
@@ -139,7 +139,7 @@
 
   /* Hide minimap in very cramped landscape */
   @media (max-height: 360px) {
-    .world-view {
+    .world-view-container {
       display: none;
     }
   }
