@@ -1,4 +1,13 @@
+import { DOT_SPACING } from "./config"
 import type { ViewState } from "../hooks/useViewState"
+
+/**
+ * Get the effective scale factor (pixels per grid unit).
+ * At zoom=1, each grid cell is DOT_SPACING pixels.
+ */
+export function getScale(view: ViewState): number {
+  return view.zoom * DOT_SPACING
+}
 
 /**
  * Convert world coordinates to screen coordinates.
@@ -12,9 +21,10 @@ export function worldToScreen(
 ): { x: number; y: number } {
   const cx = canvasWidth / 2
   const cy = canvasHeight / 2
+  const scale = getScale(view)
   return {
-    x: cx + (wx - view.centerX) * view.zoom,
-    y: cy + (wy - view.centerY) * view.zoom,
+    x: cx + (wx - view.centerX) * scale,
+    y: cy + (wy - view.centerY) * scale,
   }
 }
 
@@ -30,9 +40,10 @@ export function screenToWorld(
 ): { x: number; y: number } {
   const cx = canvasWidth / 2
   const cy = canvasHeight / 2
+  const scale = getScale(view)
   return {
-    x: view.centerX + (sx - cx) / view.zoom,
-    y: view.centerY + (sy - cy) / view.zoom,
+    x: view.centerX + (sx - cx) / scale,
+    y: view.centerY + (sy - cy) / scale,
   }
 }
 
@@ -44,8 +55,9 @@ export function getVisibleBounds(
   canvasWidth: number,
   canvasHeight: number
 ): { minX: number; minY: number; maxX: number; maxY: number } {
-  const halfW = canvasWidth / view.zoom / 2
-  const halfH = canvasHeight / view.zoom / 2
+  const scale = getScale(view)
+  const halfW = canvasWidth / scale / 2
+  const halfH = canvasHeight / scale / 2
 
   return {
     minX: Math.floor(view.centerX - halfW),

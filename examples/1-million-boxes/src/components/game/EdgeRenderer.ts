@@ -1,7 +1,11 @@
 import { H, W, coordsToEdgeId } from "../../lib/edge-math"
 import { getTeamColor } from "../../lib/teams"
 import { drawWobblyLine } from "../../lib/hand-drawn"
-import { getVisibleBounds, worldToScreen } from "../../lib/view-transform"
+import {
+  getScale,
+  getVisibleBounds,
+  worldToScreen,
+} from "../../lib/view-transform"
 import { HOVERED_EDGE_COLOR } from "../../lib/config"
 import type { ViewState } from "../../hooks/useViewState"
 import type { GameState } from "../../lib/game-state"
@@ -22,7 +26,7 @@ export function renderEdges(
   hoveredEdgeId: number | null = null
 ): void {
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
-  const gridSize = view.zoom // 1 world unit = zoom pixels
+  const gridSize = getScale(view) // pixels per grid cell
 
   // Only render if zoomed in enough to see edges
   if (gridSize < 5) return

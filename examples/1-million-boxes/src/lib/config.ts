@@ -34,8 +34,8 @@ export const STREAM_PROXY_ENDPOINT = `/api/stream/game`
 
 /**
  * Whether to use the proxy for stream connections.
- * In production, we proxy through the worker for auth.
- * In development, we connect directly to the stream server.
+ * In development, connect directly to the Durable Streams server.
+ * In production, use the proxy for auth.
  */
 export const USE_STREAM_PROXY = import.meta.env.PROD
 
@@ -81,18 +81,22 @@ export const TOTAL_BOX_COUNT = GRID_WIDTH * GRID_HEIGHT
 
 /**
  * Minimum zoom level (fully zoomed out).
+ * At 0.05 with DOT_SPACING=10, a box is 0.5px - barely visible but allows
+ * seeing large portions of the grid.
  */
-export const MIN_ZOOM = 0.1
+export const MIN_ZOOM = 0.05
 
 /**
  * Maximum zoom level (fully zoomed in).
+ * At 20 with DOT_SPACING=10, a box is 200px.
  */
-export const MAX_ZOOM = 10
+export const MAX_ZOOM = 20
 
 /**
  * Default zoom level on initial load.
+ * At 2 with DOT_SPACING=10, a box is 20px - comfortable for interaction.
  */
-export const DEFAULT_ZOOM = 1
+export const DEFAULT_ZOOM = 2
 
 /**
  * Zoom step for zoom in/out buttons (multiplier).

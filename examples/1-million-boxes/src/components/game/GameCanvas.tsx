@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
-import { screenToWorld } from "../../lib/view-transform"
+import { getScale, screenToWorld } from "../../lib/view-transform"
 import { findNearestEdge } from "../../lib/edge-picker"
 import { TouchFeedback, useTouchFeedback } from "../ui/TouchFeedback"
 import { renderBoxes } from "./BoxRenderer"
@@ -118,7 +118,12 @@ export function GameCanvas() {
         canvasSize.width,
         canvasSize.height
       )
-      const edgeId = findNearestEdge(worldPos.x, worldPos.y, view.zoom, false)
+      const edgeId = findNearestEdge(
+        worldPos.x,
+        worldPos.y,
+        getScale(view),
+        false
+      )
 
       setHoveredEdge(edgeId)
     },
@@ -175,7 +180,12 @@ export function GameCanvas() {
         canvasSize.width,
         canvasSize.height
       )
-      const edgeId = findNearestEdge(worldPos.x, worldPos.y, view.zoom, true)
+      const edgeId = findNearestEdge(
+        worldPos.x,
+        worldPos.y,
+        getScale(view),
+        true
+      )
 
       if (edgeId !== null) {
         // Add visual feedback

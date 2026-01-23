@@ -1,13 +1,13 @@
 import { H, W } from "../../lib/edge-math"
 import { drawWobblyDot } from "../../lib/hand-drawn"
-import { getVisibleBounds, worldToScreen } from "../../lib/view-transform"
+import { getScale, getVisibleBounds, worldToScreen } from "../../lib/view-transform"
 import type { ViewState } from "../../hooks/useViewState"
 
 const DOT_COLOR = `#2D2D2D`
 
 /**
  * Render all visible dots (grid intersection points) on the canvas.
- * Only renders when zoomed in enough (zoom >= 3).
+ * Only renders when zoomed in enough (scale >= 15 pixels per grid cell).
  */
 export function renderDots(
   ctx: CanvasRenderingContext2D,
@@ -16,10 +16,11 @@ export function renderDots(
   canvasHeight: number
 ): void {
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
-  const dotRadius = Math.max(2, view.zoom * 0.15)
+  const scale = getScale(view)
+  const dotRadius = Math.max(2, scale * 0.15)
 
   // Only render if zoomed in enough
-  if (view.zoom < 3) return
+  if (scale < 15) return
 
   ctx.fillStyle = DOT_COLOR
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react"
-import { FetchError, stream as durableStream } from "@durable-streams/client"
+import { DurableStream } from "@durable-streams/client"
 import { StreamParser } from "../lib/stream-parser"
 import {
   GAME_STREAM_URL,
@@ -10,22 +10,11 @@ import {
 import type { StreamResponse } from "@durable-streams/client"
 import type { GameEvent } from "../lib/game-state"
 
-/**
- * Delay before retrying when the stream doesn't exist (404).
- * This is longer than normal reconnect delay to avoid spamming.
- */
-const STREAM_NOT_FOUND_RETRY_DELAY_MS = 5000
-
 export interface UseGameStreamOptions {
   onEvents: (events: Array<GameEvent>) => void
   onError?: (error: Error) => void
   onConnected?: () => void
   onDisconnected?: () => void
-  /**
-   * Whether to enable the stream connection.
-   * Set to false to delay connection until ready.
-   * @default true
-   */
   enabled?: boolean
 }
 
@@ -36,25 +25,23 @@ export interface UseGameStreamResult {
 
 /**
  * Get the URL for stream connections.
- * Uses proxy endpoint in production, direct URL in development.
  */
 function getStreamUrl(): string {
-  return USE_STREAM_PROXY ? STREAM_PROXY_ENDPOINT : GAME_STREAM_URL
+  if (USE_STREAM_PROXY) {
+    const origin =
+      typeof window !== `undefined`
+        ? window.location.origin
+        : `http://localhost:5173`
+    return `${origin}${STREAM_PROXY_ENDPOINT}`
+  }
+  return GAME_STREAM_URL
 }
 
 /**
- * Hook for connecting to the game event stream using the Durable Streams client.
+ * Hook for connecting to the game event stream using the DurableStream client.
  *
- * Uses the @durable-streams/client library for:
- * - Proper SSE handling with automatic reconnection
- * - Offset tracking for resumption
- * - Backpressure-aware consumption
- *
- * In production (USE_STREAM_PROXY=true):
- * - Connects through the worker proxy endpoint which adds auth
- *
- * In development:
- * - Connects directly to the Durable Streams server
+ * Uses the @durable-streams/client library's DurableStream class for
+ * proper SSE handling with automatic reconnection.
  */
 export function useGameStream(
   options: UseGameStreamOptions
@@ -67,14 +54,15 @@ export function useGameStream(
     enabled = true,
   } = options
 
+  const streamRef = useRef<DurableStream | null>(null)
   const streamResponseRef = useRef<StreamResponse | null>(null)
   const unsubscribeRef = useRef<(() => void) | null>(null)
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const parserRef = useRef<StreamParser>(new StreamParser())
   const isConnectedRef = useRef(false)
   const isMountedRef = useRef(true)
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Store callbacks in refs to avoid dependency issues
+  // Store callbacks in refs
   const onEventsRef = useRef(onEvents)
   const onErrorRef = useRef(onError)
   const onConnectedRef = useRef(onConnected)
@@ -86,6 +74,20 @@ export function useGameStream(
     onConnectedRef.current = onConnected
     onDisconnectedRef.current = onDisconnected
   }, [onEvents, onError, onConnected, onDisconnected])
+
+  const scheduleReconnect = useCallback((delayMs: number) => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current)
+    }
+
+    reconnectTimeoutRef.current = setTimeout(() => {
+      reconnectTimeoutRef.current = null
+      if (isMountedRef.current) {
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        connect()
+      }
+    }, delayMs)
+  }, [])
 
   const disconnect = useCallback(() => {
     // Clear any pending reconnect
@@ -118,23 +120,35 @@ export function useGameStream(
     // Reset parser for new connection
     parserRef.current.reset()
 
-    try {
-      const streamUrl = getStreamUrl()
+    const streamUrl = getStreamUrl()
+    console.log(`[useGameStream] Connecting to: ${streamUrl}`)
 
-      // Connect using the Durable Streams client
-      // We throw from onError to disable the client's built-in retry loop
-      // and handle all retries manually with proper delays
-      const response = await durableStream({
-        url: streamUrl,
-        live: `sse`, // Use SSE for live updates
-        onError: (error) => {
-          // Throw to stop the client's retry loop - we handle retries manually
-          throw error
-        },
+    try {
+      // Create or reuse DurableStream instance
+      if (!streamRef.current) {
+        streamRef.current = new DurableStream({ url: streamUrl })
+      }
+
+      // Check if stream exists, create if it doesn't
+      try {
+        await streamRef.current.head()
+        console.log(`[useGameStream] Stream exists`)
+      } catch {
+        console.log(`[useGameStream] Stream not found, creating...`)
+        await DurableStream.create({
+          url: streamUrl,
+          contentType: `application/octet-stream`,
+        })
+        console.log(`[useGameStream] Stream created`)
+      }
+
+      if (!isMountedRef.current) return
+
+      // Start streaming with SSE
+      const response = await streamRef.current.stream({
+        live: `sse`,
       })
 
-      // Check if component unmounted during the async connect
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!isMountedRef.current) {
         response.cancel()
         return
@@ -143,9 +157,9 @@ export function useGameStream(
       streamResponseRef.current = response
 
       // Mark as connected
-
       if (!isConnectedRef.current) {
         isConnectedRef.current = true
+        console.log(`[useGameStream] Connected`)
         onConnectedRef.current?.()
       }
 
@@ -154,75 +168,66 @@ export function useGameStream(
         if (!isMountedRef.current) return
 
         try {
-          // Parse the binary chunk into game events
           const events = parserRef.current.feed(chunk.data)
-
           if (events.length > 0) {
             onEventsRef.current(events)
           }
         } catch (err) {
-          console.error(`Error parsing stream chunk:`, err)
+          console.error(`[useGameStream] Error parsing chunk:`, err)
           onErrorRef.current?.(
             err instanceof Error ? err : new Error(String(err))
           )
         }
       })
 
-      // Handle stream completion/cancellation
+      // Handle stream completion
       response.closed
         .then(() => {
-          if (isMountedRef.current && isConnectedRef.current) {
-            isConnectedRef.current = false
-            onDisconnectedRef.current?.()
+          if (isMountedRef.current) {
+            console.log(`[useGameStream] Stream closed, reconnecting...`)
+            if (isConnectedRef.current) {
+              isConnectedRef.current = false
+              onDisconnectedRef.current?.()
+            }
+            scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
           }
         })
         .catch((err: unknown) => {
           if (isMountedRef.current) {
-            console.error(`Stream closed with error:`, err)
+            console.error(`[useGameStream] Stream error:`, err)
+            if (isConnectedRef.current) {
+              isConnectedRef.current = false
+              onDisconnectedRef.current?.()
+            }
             onErrorRef.current?.(
               err instanceof Error ? err : new Error(String(err))
             )
+            scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
           }
         })
     } catch (err) {
-      // Check error type to determine retry delay
-      const is404 = err instanceof FetchError && err.status === 404
+      console.error(`[useGameStream] Connection error:`, err)
+      onErrorRef.current?.(
+        err instanceof Error ? err : new Error(String(err))
+      )
 
-      if (is404) {
-        console.log(
-          `Stream not found, will retry in ${STREAM_NOT_FOUND_RETRY_DELAY_MS}ms`
-        )
-      } else {
-        console.error(`Error connecting to stream:`, err)
-        onErrorRef.current?.(
-          err instanceof Error ? err : new Error(String(err))
-        )
-      }
-
-      // Schedule reconnect with appropriate delay
-      // 404 = stream doesn't exist yet, use longer delay
-      // Other errors = use standard reconnect delay
-      const retryDelay = is404
-        ? STREAM_NOT_FOUND_RETRY_DELAY_MS
-        : STREAM_RECONNECT_DELAY_MS
-
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (isMountedRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => {
-          if (isMountedRef.current) {
-            connect()
-          }
-        }, retryDelay)
+        scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
       }
     }
-  }, [])
+  }, [scheduleReconnect])
 
   const reconnect = useCallback(() => {
     disconnect()
-    connect()
+    // Clear the stream ref to force a new instance
+    streamRef.current = null
+    setTimeout(() => {
+      if (isMountedRef.current) {
+        connect()
+      }
+    }, 100)
   }, [disconnect, connect])
 
-  // Initial connection (when enabled)
   useEffect(() => {
     isMountedRef.current = true
 

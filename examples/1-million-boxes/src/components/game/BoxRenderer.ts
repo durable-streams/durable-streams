@@ -1,7 +1,11 @@
 import { H, W } from "../../lib/edge-math"
 import { getTeamColor } from "../../lib/teams"
 import { drawWatercolorFill } from "../../lib/hand-drawn"
-import { getVisibleBounds, worldToScreen } from "../../lib/view-transform"
+import {
+  getScale,
+  getVisibleBounds,
+  worldToScreen,
+} from "../../lib/view-transform"
 import type { ViewState } from "../../hooks/useViewState"
 import type { GameState } from "../../lib/game-state"
 
@@ -16,7 +20,7 @@ export function renderBoxes(
   canvasHeight: number
 ): void {
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
-  const boxSize = view.zoom
+  const boxSize = getScale(view)
 
   // Iterate over visible boxes
   for (let y = Math.max(0, bounds.minY); y < Math.min(H, bounds.maxY); y++) {

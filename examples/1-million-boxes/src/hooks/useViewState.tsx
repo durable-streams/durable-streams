@@ -1,6 +1,12 @@
 import { createContext, useCallback, useContext, useState } from "react"
 import { H, W } from "../lib/edge-math"
-import { DEFAULT_ZOOM, MAX_ZOOM, MIN_ZOOM, ZOOM_STEP } from "../lib/config"
+import {
+  DEFAULT_ZOOM,
+  DOT_SPACING,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  ZOOM_STEP,
+} from "../lib/config"
 import type { ReactNode } from "react"
 
 // Re-export zoom constants for components that need them
@@ -54,11 +60,14 @@ export function useViewState(): ViewStateActions {
   })
 
   const pan = useCallback((deltaX: number, deltaY: number) => {
-    setView((v) => ({
-      ...v,
-      centerX: Math.max(0, Math.min(W, v.centerX - deltaX / v.zoom)),
-      centerY: Math.max(0, Math.min(H, v.centerY - deltaY / v.zoom)),
-    }))
+    setView((v) => {
+      const scale = v.zoom * DOT_SPACING
+      return {
+        ...v,
+        centerX: Math.max(0, Math.min(W, v.centerX - deltaX / scale)),
+        centerY: Math.max(0, Math.min(H, v.centerY - deltaY / scale)),
+      }
+    })
   }, [])
 
   const zoomTo = useCallback(

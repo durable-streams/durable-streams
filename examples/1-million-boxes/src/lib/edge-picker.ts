@@ -21,21 +21,22 @@ export function isTouchDevice(): boolean {
  *
  * @param worldX - X coordinate in world space
  * @param worldY - Y coordinate in world space
- * @param zoom - Current zoom level
+ * @param scale - Pixels per grid cell (zoom * DOT_SPACING)
  * @param isTouch - Whether this is a touch interaction (defaults to isTouchDevice())
  */
 export function findNearestEdge(
   worldX: number,
   worldY: number,
-  zoom: number,
+  scale: number,
   isTouch?: boolean
 ): number | null {
   // Default to device detection if not specified
   const touchMode = isTouch ?? isTouchDevice()
 
-  // Touch devices need lower zoom threshold for easier selection
-  const minZoom = touchMode ? 3 : 5
-  if (zoom < minZoom) return null
+  // Minimum scale (pixels per cell) for edge picking
+  // Touch devices need lower threshold for easier selection
+  const minScale = touchMode ? 12 : 15
+  if (scale < minScale) return null
 
   // Larger hit radius for touch to accommodate finger imprecision
   const hitRadius = touchMode ? 0.4 : 0.25

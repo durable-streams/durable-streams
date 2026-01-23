@@ -1,16 +1,9 @@
-import { RouterProvider, createRouter } from "@tanstack/react-router"
-import { routeTree } from "./routeTree.gen"
+import { RouterProvider } from "@tanstack/react-router"
+import { getRouter } from "./router"
 import "./styles/global.css"
 
-// Create the router instance
-const router = createRouter({ routeTree })
-
-// Register the router for type safety
-declare module "@tanstack/react-router" {
-  interface Register {
-    router: typeof router
-  }
-}
+// Create the router instance using the shared getRouter function
+const router = getRouter()
 
 export function App() {
   return <RouterProvider router={router} />

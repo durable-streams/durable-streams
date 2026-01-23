@@ -10,6 +10,7 @@ import "../styles/game.css"
 
 export const Route = createFileRoute(`/`)({
   component: GamePage,
+  ssr: false, // Client-only rendering
 })
 
 function GamePage() {
