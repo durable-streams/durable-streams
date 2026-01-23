@@ -10,10 +10,18 @@ import { useGameStateContext } from "../contexts/game-state-context"
  * - isLoading: Whether initial data is loading
  * - error: Current error message (or null)
  * - isConnected: Whether connected to the stream
+ * - version: Counter that increments on state changes (for re-render triggers)
  */
 export function useGameState() {
-  const { gameState, pendingEdge, placeEdge, isLoading, error, isConnected } =
-    useGameStateContext()
+  const {
+    gameState,
+    pendingEdge,
+    placeEdge,
+    isLoading,
+    error,
+    isConnected,
+    version,
+  } = useGameStateContext()
 
   return {
     gameState,
@@ -22,5 +30,6 @@ export function useGameState() {
     isLoading,
     error,
     isConnected,
+    version,
   }
 }

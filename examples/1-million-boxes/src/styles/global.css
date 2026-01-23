@@ -192,19 +192,32 @@ a {
   background-color: var(--color-yellow);
 }
 
-/* Mobile breakpoints */
-@media (max-width: 640px) {
-  :root {
-    --header-height: 44px;
-    --footer-height: 52px;
-    --minimap-size: 120px;
-    --minimap-margin: 12px;
-  }
-}
+/* ============================================
+   Responsive Breakpoints
+   ============================================ */
 
+/* Large screens */
 @media (min-width: 1024px) {
   :root {
     --minimap-size: 180px;
+  }
+}
+
+/* Mobile (< 640px) */
+@media (max-width: 640px) {
+  :root {
+    --header-height: 52px;
+    --footer-height: 56px;
+    --minimap-size: 100px;
+    --minimap-margin: 8px;
+    --touch-min: 44px;
+  }
+}
+
+/* Very small screens (< 400px) */
+@media (max-width: 400px) {
+  :root {
+    --minimap-size: 80px;
   }
 }
 

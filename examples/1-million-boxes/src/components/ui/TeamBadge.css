@@ -6,6 +6,7 @@
   background: white;
   border-radius: 20px;
   box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border);
 }
 
 .team-badge-dot {
@@ -40,6 +41,10 @@
 
   .team-badge-name {
     font-size: 13px;
+  }
+
+  .team-badge-suffix {
+    display: none;
   }
 
   .team-badge-id {

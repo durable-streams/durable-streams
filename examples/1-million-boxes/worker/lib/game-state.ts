@@ -132,14 +132,6 @@ export class GameState {
   }
 
   /**
-   * Get the team that placed an edge.
-   * Returns the teamId (0-3) or undefined if edge is not taken.
-   */
-  getEdgeOwner(edgeId: number): number | undefined {
-    return this.edgeOwner.get(edgeId)
-  }
-
-  /**
    * Get a team's score.
    */
   getScore(teamId: number): number {

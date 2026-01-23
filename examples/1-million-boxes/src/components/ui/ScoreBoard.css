@@ -23,8 +23,12 @@
   min-width: 24px;
 }
 
-/* Mobile: stack vertically or show fewer items */
-@media (max-width: 480px) {
+.scoreboard-remaining {
+  opacity: 0.3;
+}
+
+/* Mobile: compact layout */
+@media (max-width: 640px) {
   .scoreboard {
     gap: 8px;
     font-size: 0.8rem;
@@ -38,11 +42,17 @@
   .scoreboard-value {
     min-width: 20px;
   }
+
+  /* Hide remaining count on mobile to save space */
+  .scoreboard-remaining {
+    display: none;
+  }
 }
 
-/* Very small screens: hide lower scoring teams */
-@media (max-width: 360px) {
-  .scoreboard-item:nth-child(n + 3) {
-    display: none;
+/* Very small screens: more compact */
+@media (max-width: 400px) {
+  .scoreboard {
+    gap: 6px;
+    font-size: 0.75rem;
   }
 }

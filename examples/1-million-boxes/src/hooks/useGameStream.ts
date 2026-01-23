@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useRef } from "react"
 import { DurableStream } from "@durable-streams/client"
 import { StreamParser } from "../lib/stream-parser"
-import {
-  GAME_STREAM_URL,
-  STREAM_PROXY_ENDPOINT,
-  STREAM_RECONNECT_DELAY_MS,
-  USE_STREAM_PROXY,
-} from "../lib/config"
+import { STREAM_PROXY_ENDPOINT, STREAM_RECONNECT_DELAY_MS } from "../lib/config"
 import type { StreamResponse } from "@durable-streams/client"
 import type { GameEvent } from "../lib/game-state"
 
@@ -25,23 +20,21 @@ export interface UseGameStreamResult {
 
 /**
  * Get the URL for stream connections.
+ * Always uses the proxy endpoint through the worker.
  */
 function getStreamUrl(): string {
-  if (USE_STREAM_PROXY) {
-    const origin =
-      typeof window !== `undefined`
-        ? window.location.origin
-        : `http://localhost:5173`
-    return `${origin}${STREAM_PROXY_ENDPOINT}`
-  }
-  return GAME_STREAM_URL
+  const origin =
+    typeof window !== `undefined`
+      ? window.location.origin
+      : `http://localhost:5173`
+  return `${origin}${STREAM_PROXY_ENDPOINT}`
 }
 
 /**
  * Hook for connecting to the game event stream using the DurableStream client.
  *
- * Uses the @durable-streams/client library's DurableStream class for
- * proper SSE handling with automatic reconnection.
+ * Uses the @durable-streams/client library's DurableStream class with
+ * long polling for real-time updates (SSE not supported for octet-stream).
  */
 export function useGameStream(
   options: UseGameStreamOptions
@@ -54,42 +47,30 @@ export function useGameStream(
     enabled = true,
   } = options
 
-  const streamRef = useRef<DurableStream | null>(null)
+  // Connection ID to invalidate stale connection attempts
+  const connectionIdRef = useRef(0)
   const streamResponseRef = useRef<StreamResponse | null>(null)
   const unsubscribeRef = useRef<(() => void) | null>(null)
   const parserRef = useRef<StreamParser>(new StreamParser())
   const isConnectedRef = useRef(false)
-  const isMountedRef = useRef(true)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Store callbacks in refs
+  // Store callbacks in refs to avoid stale closures
   const onEventsRef = useRef(onEvents)
   const onErrorRef = useRef(onError)
   const onConnectedRef = useRef(onConnected)
   const onDisconnectedRef = useRef(onDisconnected)
 
-  useEffect(() => {
-    onEventsRef.current = onEvents
-    onErrorRef.current = onError
-    onConnectedRef.current = onConnected
-    onDisconnectedRef.current = onDisconnected
-  }, [onEvents, onError, onConnected, onDisconnected])
-
-  const scheduleReconnect = useCallback((delayMs: number) => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current)
-    }
-
-    reconnectTimeoutRef.current = setTimeout(() => {
-      reconnectTimeoutRef.current = null
-      if (isMountedRef.current) {
-        // eslint-disable-next-line @typescript-eslint/no-use-before-define
-        connect()
-      }
-    }, delayMs)
-  }, [])
+  // Update callback refs when they change
+  onEventsRef.current = onEvents
+  onErrorRef.current = onError
+  onConnectedRef.current = onConnected
+  onDisconnectedRef.current = onDisconnected
 
   const disconnect = useCallback(() => {
+    // Increment connection ID to invalidate any in-flight connections
+    connectionIdRef.current++
+
     // Clear any pending reconnect
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
@@ -114,86 +95,97 @@ export function useGameStream(
     }
   }, [])
 
-  const connect = useCallback(async () => {
-    if (!isMountedRef.current) return
+  const connect = useCallback(() => {
+    // Increment and capture connection ID for this attempt
+    const myConnectionId = ++connectionIdRef.current
+
+    // Helper to check if this connection is still valid
+    const isValid = () => connectionIdRef.current === myConnectionId
 
     // Reset parser for new connection
     parserRef.current.reset()
 
     const streamUrl = getStreamUrl()
-    console.log(`[useGameStream] Connecting to: ${streamUrl}`)
+    console.log(
+      `[useGameStream] Connecting to:`,
+      streamUrl,
+      `(id: ${myConnectionId})`
+    )
 
-    try {
-      // Create or reuse DurableStream instance
-      if (!streamRef.current) {
-        streamRef.current = new DurableStream({ url: streamUrl })
-      }
-
-      // Check if stream exists, create if it doesn't
+    const doConnect = async () => {
       try {
-        await streamRef.current.head()
-        console.log(`[useGameStream] Stream exists`)
-      } catch {
-        console.log(`[useGameStream] Stream not found, creating...`)
-        await DurableStream.create({
-          url: streamUrl,
-          contentType: `application/octet-stream`,
-        })
-        console.log(`[useGameStream] Stream created`)
-      }
+        const stream = new DurableStream({ url: streamUrl })
 
-      if (!isMountedRef.current) return
-
-      // Start streaming with SSE
-      const response = await streamRef.current.stream({
-        live: `sse`,
-      })
-
-      if (!isMountedRef.current) {
-        response.cancel()
-        return
-      }
-
-      streamResponseRef.current = response
-
-      // Mark as connected
-      if (!isConnectedRef.current) {
-        isConnectedRef.current = true
-        console.log(`[useGameStream] Connected`)
-        onConnectedRef.current?.()
-      }
-
-      // Subscribe to byte chunks and parse them into game events
-      unsubscribeRef.current = response.subscribeBytes((chunk) => {
-        if (!isMountedRef.current) return
-
+        // Check if stream exists, create if it doesn't
         try {
-          const events = parserRef.current.feed(chunk.data)
-          if (events.length > 0) {
-            onEventsRef.current(events)
-          }
-        } catch (err) {
-          console.error(`[useGameStream] Error parsing chunk:`, err)
-          onErrorRef.current?.(
-            err instanceof Error ? err : new Error(String(err))
-          )
+          await stream.head()
+          if (!isValid()) return
+          console.log(`[useGameStream] Stream exists`)
+        } catch {
+          if (!isValid()) return
+          console.log(`[useGameStream] Stream not found, creating...`)
+          await DurableStream.create({
+            url: streamUrl,
+            contentType: `application/octet-stream`,
+          })
+          if (!isValid()) return
+          console.log(`[useGameStream] Stream created`)
         }
-      })
 
-      // Handle stream completion
-      response.closed
-        .then(() => {
-          if (isMountedRef.current) {
+        if (!isValid()) return
+
+        // Start streaming with long polling
+        const response = await stream.stream({
+          live: `long-poll`,
+        })
+
+        if (!isValid()) {
+          response.cancel()
+          return
+        }
+
+        streamResponseRef.current = response
+
+        // Mark as connected
+        if (!isConnectedRef.current) {
+          isConnectedRef.current = true
+          console.log(`[useGameStream] Connected`)
+          onConnectedRef.current?.()
+        }
+
+        // Subscribe to byte chunks and parse them into game events
+        unsubscribeRef.current = response.subscribeBytes((chunk) => {
+          if (!isValid()) return
+
+          try {
+            const events = parserRef.current.feed(chunk.data)
+            if (events.length > 0) {
+              onEventsRef.current(events)
+            }
+          } catch (err) {
+            console.error(`[useGameStream] Error parsing chunk:`, err)
+            onErrorRef.current?.(
+              err instanceof Error ? err : new Error(String(err))
+            )
+          }
+        })
+
+        // Handle stream completion - schedule reconnect
+        response.closed
+          .then(() => {
+            if (!isValid()) return
             console.log(`[useGameStream] Stream closed, reconnecting...`)
             if (isConnectedRef.current) {
               isConnectedRef.current = false
               onDisconnectedRef.current?.()
             }
-            scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
-          }
-        })
-        .catch((err: unknown) => {
-          if (isMountedRef.current) {
+            reconnectTimeoutRef.current = setTimeout(() => {
+              reconnectTimeoutRef.current = null
+              if (isValid()) connect()
+            }, STREAM_RECONNECT_DELAY_MS)
+          })
+          .catch((err: unknown) => {
+            if (!isValid()) return
             console.error(`[useGameStream] Stream error:`, err)
             if (isConnectedRef.current) {
               isConnectedRef.current = false
@@ -202,44 +194,42 @@ export function useGameStream(
             onErrorRef.current?.(
               err instanceof Error ? err : new Error(String(err))
             )
-            scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
-          }
-        })
-    } catch (err) {
-      console.error(`[useGameStream] Connection error:`, err)
-      onErrorRef.current?.(
-        err instanceof Error ? err : new Error(String(err))
-      )
-
-      if (isMountedRef.current) {
-        scheduleReconnect(STREAM_RECONNECT_DELAY_MS)
+            reconnectTimeoutRef.current = setTimeout(() => {
+              reconnectTimeoutRef.current = null
+              if (isValid()) connect()
+            }, STREAM_RECONNECT_DELAY_MS)
+          })
+      } catch (err) {
+        if (!isValid()) return
+        console.error(`[useGameStream] Connection error:`, err)
+        onErrorRef.current?.(
+          err instanceof Error ? err : new Error(String(err))
+        )
+        reconnectTimeoutRef.current = setTimeout(() => {
+          reconnectTimeoutRef.current = null
+          if (isValid()) connect()
+        }, STREAM_RECONNECT_DELAY_MS)
       }
     }
-  }, [scheduleReconnect])
+
+    doConnect()
+  }, [])
 
   const reconnect = useCallback(() => {
     disconnect()
-    // Clear the stream ref to force a new instance
-    streamRef.current = null
-    setTimeout(() => {
-      if (isMountedRef.current) {
-        connect()
-      }
-    }, 100)
+    setTimeout(() => connect(), 100)
   }, [disconnect, connect])
 
+  // Main effect - only runs once on mount/unmount
   useEffect(() => {
-    isMountedRef.current = true
-
     if (enabled) {
       connect()
     }
 
     return () => {
-      isMountedRef.current = false
       disconnect()
     }
-  }, [connect, disconnect, enabled])
+  }, [enabled])
 
   return { disconnect, reconnect }
 }

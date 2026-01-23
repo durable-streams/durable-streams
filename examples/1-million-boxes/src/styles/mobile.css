@@ -1,95 +1,16 @@
 /**
  * Mobile-specific styles for 1 Million Boxes
- * Touch targets, responsive layouts, and device-specific adjustments
+ * 
+ * This file contains GLOBAL mobile behaviors only:
+ * - Safe area insets for notched devices
+ * - Touch interaction behaviors
+ * - Hover/pointer media queries
+ * - Reduced motion preferences
+ * - High DPI adjustments
+ * 
+ * Component-specific mobile styles live in each component's CSS file.
+ * Responsive variable overrides are in global.css.
  */
-
-/* ============================================
-   Mobile Breakpoint (< 640px)
-   ============================================ */
-@media (max-width: 640px) {
-  :root {
-    --header-height: 40px;
-    --footer-height: 48px;
-    --minimap-size: 100px;
-    --minimap-margin: 8px;
-    --touch-min: 48px; /* Larger touch targets on mobile */
-  }
-
-  /* Compact header for mobile */
-  .game-header {
-    padding: 0 8px;
-    gap: 8px;
-  }
-
-  /* Smaller team badges */
-  .team-badge {
-    padding: 4px 8px;
-    font-size: 0.75rem;
-  }
-
-  /* Compact quota meter */
-  .quota-meter {
-    max-width: 100px;
-  }
-
-  /* Compact scoreboard */
-  .scoreboard {
-    gap: 4px;
-    font-size: 0.75rem;
-  }
-
-  .scoreboard-item {
-    padding: 4px 6px;
-    min-width: 40px;
-  }
-
-  /* Footer adjustments */
-  .game-footer {
-    padding: 4px 8px;
-  }
-
-  /* Zoom controls - ensure touch-friendly size */
-  .zoom-controls .zoom-button {
-    min-width: 48px;
-    height: 48px;
-  }
-
-  .zoom-controls .zoom-button-center {
-    min-width: 48px;
-  }
-}
-
-/* ============================================
-   Very Small Screens (< 400px)
-   ============================================ */
-@media (max-width: 400px) {
-  :root {
-    --header-height: 36px;
-    --footer-height: 44px;
-    --minimap-size: 80px;
-  }
-
-  /* Hide some UI elements on very small screens */
-  .quota-meter-label {
-    display: none;
-  }
-
-  /* More compact scoreboard */
-  .scoreboard {
-    gap: 2px;
-  }
-
-  .scoreboard-item {
-    padding: 2px 4px;
-    min-width: 32px;
-    font-size: 0.7rem;
-  }
-
-  /* Hide less important UI */
-  .connection-status-text {
-    display: none;
-  }
-}
 
 /* ============================================
    Safe Area Insets (notched devices)
@@ -102,55 +23,19 @@
     padding-right: env(safe-area-inset-right);
   }
 
-  .game-header {
-    padding-left: max(8px, env(safe-area-inset-left));
-    padding-right: max(8px, env(safe-area-inset-right));
+  .header {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
   }
 
-  .game-footer {
-    padding-left: max(8px, env(safe-area-inset-left));
-    padding-right: max(8px, env(safe-area-inset-right));
-    padding-bottom: max(4px, env(safe-area-inset-bottom));
+  .footer {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
   }
 
-  /* Minimap positioning with safe area */
-  .minimap-container {
+  .world-view {
     right: max(var(--minimap-margin), env(safe-area-inset-right));
     bottom: max(var(--minimap-margin), env(safe-area-inset-bottom));
-  }
-}
-
-/* ============================================
-   Landscape Phone Adjustments
-   ============================================ */
-@media (max-height: 480px) and (orientation: landscape) {
-  :root {
-    --header-height: 32px;
-    --footer-height: 36px;
-    --minimap-size: 80px;
-    --minimap-margin: 4px;
-  }
-
-  /* Compact vertical layout in landscape */
-  .game-header {
-    padding: 0 4px;
-  }
-
-  .game-footer {
-    padding: 2px 4px;
-  }
-
-  /* Smaller zoom buttons in landscape */
-  .zoom-controls .zoom-button {
-    min-width: 40px;
-    height: 36px;
-  }
-
-  /* Hide minimap in very cramped landscape */
-  @media (max-height: 360px) {
-    .minimap-container {
-      display: none;
-    }
   }
 }
 
@@ -158,11 +43,11 @@
    Touch-Specific Styles
    ============================================ */
 
-/* Prevent text selection on canvas and interactive elements */
+/* Prevent text selection on interactive elements */
 .game-canvas-container,
 .game-canvas,
 .zoom-controls,
-.minimap-container {
+.world-view {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
@@ -175,11 +60,6 @@
 
 .game-layout {
   overscroll-behavior: contain;
-}
-
-/* Ensure proper touch handling */
-.game-canvas-container {
-  touch-action: none;
 }
 
 /* Touch target minimum size enforcement */
@@ -203,20 +83,19 @@
    Hover States (pointer devices only)
    ============================================ */
 @media (hover: hover) and (pointer: fine) {
-  /* Only show hover states on devices that support hover */
-  .zoom-button:hover:not(:disabled) {
-    background: #f0f0f0;
-  }
-
-  .minimap-container:hover {
-    opacity: 1;
+  .world-view:hover {
+    transform: scale(1.05);
   }
 }
 
-/* Hide hover-based UI hints on touch devices */
+/* Disable hover effects on touch devices */
 @media (hover: none) {
   .hover-hint {
     display: none;
+  }
+
+  .world-view:hover {
+    transform: none;
   }
 }
 
@@ -224,13 +103,9 @@
    High DPI / Retina Adjustments
    ============================================ */
 @media (-webkit-min-device-pixel-ratio: 2), (min-resolution: 192dpi) {
-  /* Thinner borders on retina displays */
-  .zoom-button {
-    border-width: 0.5px;
-  }
-
-  .minimap-container {
-    border-width: 0.5px;
+  .zoom-button,
+  .world-view {
+    border-width: 1px;
   }
 }
 
@@ -248,5 +123,24 @@
 
   .touch-ripple {
     display: none;
+  }
+}
+
+/* ============================================
+   Landscape Phone Adjustments
+   ============================================ */
+@media (max-height: 480px) and (orientation: landscape) {
+  :root {
+    --header-height: 32px;
+    --footer-height: 36px;
+    --minimap-size: 80px;
+    --minimap-margin: 4px;
+  }
+
+  /* Hide minimap in very cramped landscape */
+  @media (max-height: 360px) {
+    .world-view {
+      display: none;
+    }
   }
 }

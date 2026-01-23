@@ -14,6 +14,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .header-title {
@@ -24,10 +25,15 @@
   white-space: nowrap;
 }
 
+.header-center {
+  display: none;
+}
+
 .header-right {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-shrink: 0;
 }
 
 .header-button {
@@ -56,31 +62,86 @@
   flex-shrink: 0;
 }
 
-/* Mobile: hide text, show only icons */
-@media (max-width: 768px) {
-  .header-title {
-    display: none;
-  }
+/* Floating scoreboard - hidden on desktop, shown on mobile */
+.floating-scoreboard {
+  display: none;
 }
 
-@media (max-width: 640px) {
-  .header {
-    padding: 0 12px;
-    gap: 8px;
-  }
-
-  .header-left {
-    gap: 8px;
-  }
-
+/* Tablet: hide button text, icon-only buttons */
+@media (max-width: 768px) {
   .header-button-text {
     display: none;
   }
 
   .header-button {
-    padding: 8px;
-    min-width: var(--touch-min);
-    min-height: var(--touch-min);
+    padding: 0;
+    width: 40px;
+    height: 40px;
     justify-content: center;
+  }
+
+  .header-button svg {
+    display: block;
+  }
+}
+
+/* Mobile layout: title left, team center, buttons right */
+@media (max-width: 640px) {
+  .header {
+    padding: 0 12px;
+    gap: 6px;
+  }
+
+  .header-left {
+    flex: 1;
+  }
+
+  /* Hide team badge from header-left on mobile */
+  .header-left .team-badge {
+    display: none;
+  }
+
+  /* Show centered team badge on mobile */
+  .header-center {
+    display: flex;
+    justify-content: center;
+    flex: 1;
+  }
+
+  .header-right {
+    flex: 1;
+    justify-content: flex-end;
+  }
+
+  .header-title {
+    font-size: 1.2rem;
+  }
+
+  /* Hide scoreboard in header on mobile */
+  .header-scoreboard {
+    display: none;
+  }
+
+  /* Show floating scoreboard on mobile */
+  .floating-scoreboard {
+    display: flex;
+    position: absolute;
+    top: calc(var(--header-height) + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.95);
+    padding: 8px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--color-border);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 50;
+    backdrop-filter: blur(8px);
+  }
+}
+
+/* Very small screens */
+@media (max-width: 400px) {
+  .header-title {
+    font-size: 0.8rem;
   }
 }

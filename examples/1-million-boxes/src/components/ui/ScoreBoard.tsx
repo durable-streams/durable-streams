@@ -1,9 +1,11 @@
 import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { TOTAL_BOX_COUNT } from "../../lib/config"
 import type { TeamName } from "../../lib/teams"
 import "./ScoreBoard.css"
 
 export interface ScoreBoardProps {
   scores?: [number, number, number, number]
+  className?: string
 }
 
 interface TeamScore {
@@ -12,7 +14,25 @@ interface TeamScore {
   color: string
 }
 
-export function ScoreBoard({ scores = [0, 0, 0, 0] }: ScoreBoardProps) {
+export function ScoreBoard({
+  scores = [0, 0, 0, 0],
+  className = ``,
+}: ScoreBoardProps) {
+  // Calculate claimed and remaining
+  const totalClaimed = scores.reduce((a, b) => a + b, 0)
+  const remaining = TOTAL_BOX_COUNT - totalClaimed
+
+  // Don't show anything if all scores are 0 (loading state)
+  const hasScores = totalClaimed > 0
+  if (!hasScores) {
+    return (
+      <div
+        className={`scoreboard ${className}`.trim()}
+        data-testid="scoreboard"
+      />
+    )
+  }
+
   // Create team scores and sort by score descending
   const teamScores: Array<TeamScore> = TEAMS.map((team, i) => ({
     team,
@@ -21,7 +41,7 @@ export function ScoreBoard({ scores = [0, 0, 0, 0] }: ScoreBoardProps) {
   })).sort((a, b) => b.score - a.score)
 
   return (
-    <div className="scoreboard" data-testid="scoreboard">
+    <div className={`scoreboard ${className}`.trim()} data-testid="scoreboard">
       {teamScores.map(({ team, score, color }) => (
         <div
           key={team}
@@ -35,6 +55,10 @@ export function ScoreBoard({ scores = [0, 0, 0, 0] }: ScoreBoardProps) {
           <span className="scoreboard-value">{score.toLocaleString()}</span>
         </div>
       ))}
+      <div className="scoreboard-item scoreboard-remaining">
+        <span className="scoreboard-indicator" style={{ background: `#999` }} />
+        <span className="scoreboard-value">{remaining.toLocaleString()}</span>
+      </div>
     </div>
   )
 }

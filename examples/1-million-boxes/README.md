@@ -12,15 +12,16 @@ A global, real-time multiplayer game of Dots & Boxes on a **1000×1000 grid** (1
 
 ## Technology Stack
 
-| Layer         | Technology                                                               |
-| ------------- | ------------------------------------------------------------------------ |
-| Frontend      | [TanStack Start](https://tanstack.com/start/latest) (React + TypeScript) |
-| UI Components | [Base UI](https://base-ui.com)                                           |
-| Styling       | Plain CSS                                                                |
-| Runtime       | Cloudflare Workers                                                       |
-| Backend       | Cloudflare Durable Objects                                               |
-| Real-time     | Durable Streams (SSE)                                                    |
-| Rendering     | HTML Canvas (2D)                                                         |
+| Layer         | Technology                     |
+| ------------- | ------------------------------ |
+| Frontend      | React 19 + Vite + TypeScript   |
+| Backend       | Hono (Cloudflare Workers)      |
+| UI Components | [Base UI](https://base-ui.com) |
+| Styling       | Plain CSS                      |
+| Runtime       | Cloudflare Workers             |
+| State         | Cloudflare Durable Objects     |
+| Real-time     | Durable Streams (SSE)          |
+| Rendering     | HTML Canvas (2D)               |
 
 ## Prerequisites
 
@@ -63,7 +64,6 @@ Create a `.dev.vars` file in this directory:
 
 ```bash
 DURABLE_STREAMS_URL=http://localhost:4437/v1/stream
-VITE_DURABLE_STREAMS_URL=http://localhost:4437/v1/stream
 TEAM_COOKIE_SECRET=dev-secret-change-in-production
 ```
 
@@ -73,7 +73,7 @@ TEAM_COOKIE_SECRET=dev-secret-change-in-production
 pnpm dev
 ```
 
-The app will be available at `http://localhost:3000`.
+The app will be available at `http://localhost:5173`.
 
 ## Available Scripts
 
@@ -93,7 +93,9 @@ The app will be available at `http://localhost:3000`.
 ## Project Structure
 
 ```
-src/
+src/                    # React SPA
+├── app.tsx             # Main app with providers
+├── main.tsx            # Entry point
 ├── components/
 │   ├── game/           # GameCanvas, WorldView, renderers
 │   ├── layout/         # Header, Footer
@@ -101,9 +103,18 @@ src/
 ├── contexts/           # React contexts (Team, Quota, GameState)
 ├── hooks/              # Custom hooks (useViewState, usePanZoom, etc.)
 ├── lib/                # Core logic (edge-math, game-state, stream-parser)
-├── routes/             # TanStack Start routes
-├── server/             # Durable Object and server functions
 └── styles/             # CSS files
+
+worker/                 # Hono API backend
+├── index.ts            # Hono app entry point
+├── routes/
+│   ├── stream.ts       # Stream proxy routes
+│   ├── team.ts         # Team assignment
+│   └── draw.ts         # Draw edge endpoint
+├── do/
+│   └── game-writer.ts  # GameWriterDO (Durable Object)
+└── lib/                # Shared utilities
+
 tests/
 ├── e2e/                # Playwright E2E tests
 └── integration/        # Integration tests
@@ -155,13 +166,7 @@ pnpm dlx wrangler secret put TEAM_COOKIE_SECRET
 # Enter a secure random secret for signing team cookies
 ```
 
-3. **Set frontend environment variables** in your Cloudflare dashboard or wrangler.toml:
-
-```bash
-VITE_USE_STREAM_PROXY=true  # Routes stream requests through the worker
-```
-
-4. **Deploy:**
+3. **Deploy:**
 
 ```bash
 pnpm deploy
@@ -177,12 +182,11 @@ For production, you'll need:
 
 2. **Environment Variables:**
 
-   | Variable                | Required | Description                                           |
-   | ----------------------- | -------- | ----------------------------------------------------- |
-   | `DURABLE_STREAMS_URL`   | Yes      | URL to your production Durable Streams server         |
-   | `DURABLE_STREAMS_AUTH`  | If Cloud | API key for Electric Cloud authentication             |
-   | `TEAM_COOKIE_SECRET`    | Yes      | Secure random string for signing team cookies         |
-   | `VITE_USE_STREAM_PROXY` | If Cloud | Set to `true` to proxy stream requests through worker |
+   | Variable               | Required | Description                                   |
+   | ---------------------- | -------- | --------------------------------------------- |
+   | `DURABLE_STREAMS_URL`  | Yes      | URL to your production Durable Streams server |
+   | `DURABLE_STREAMS_AUTH` | If Cloud | API key for Electric Cloud authentication     |
+   | `TEAM_COOKIE_SECRET`   | Yes      | Secure random string for signing team cookies |
 
 3. **Stream Proxy Security:**
    When using Electric Cloud or any authenticated stream server, the worker acts as a proxy:
@@ -196,19 +200,18 @@ For production, you'll need:
 ┌────────────────────────────────────────────────────────────────────┐
 │                     Cloudflare Edge                                 │
 │  ┌─────────────────────────┐    ┌───────────────────────────────┐  │
-│  │  TanStack Start         │    │  GameWriterDO                 │  │
-│  │  (Worker)               │───▶│  - edge bitset (250KB)        │  │
-│  │                         │    │  - validates moves            │  │
-│  │  - SSR / static         │    │  - appends to stream          │  │
-│  │  - /draw endpoint       │    └─────────────┬─────────────────┘  │
-│  │  - rate limiting        │                  │                    │
-│  │  - /api/stream/game ◀───┼──────────────────┼────────────────┐   │
-│  │    (stream proxy)       │                  │ POST (with auth)   │
-│  └─────────────────────────┘                  │                │   │
-└────────────────────────────┼──────────────────┼────────────────┼───┘
-                             │                  │                │
-                             │ GET/SSE          │                │
-                             │ (with auth)      ▼                │
+│  │  Hono Worker            │    │  GameWriterDO                 │  │
+│  │                         │───▶│  - edge bitset (250KB)        │  │
+│  │  GET  /* → React SPA    │    │  - validates moves            │  │
+│  │  GET  /api/team         │    │  - appends to stream          │  │
+│  │  POST /api/draw         │    └─────────────┬─────────────────┘  │
+│  │  GET  /api/stream/game  │                  │                    │
+│  │       (stream proxy)    │                  │ POST               │
+│  └─────────────────────────┘                  │                    │
+└────────────────────────────┼──────────────────┼────────────────────┘
+                             │                  │
+                             │ GET/SSE          │
+                             │                  ▼
                              │  ┌─────────────────────────────────────┐
                              │  │  Durable Streams Server             │
                              │  │  (ElectricSQL Cloud / Self-hosted)  │
@@ -218,11 +221,11 @@ For production, you'll need:
                              │  │  - SSE for live tail                │
                              │  └─────────────────────────────────────┘
                              │                  ▲
-                             │                  │ SSE (dev only)
+                             │                  │
 ┌────────────────────────────┼──────────────────┼─────────────────────┐
 │  Browser Clients           │                  │                     │
-│  - Production: via proxy ──┘                  │                     │
-│  - Development: direct ───────────────────────┘                     │
+│  - All stream requests ────┘                  │                     │
+│    proxied through worker                     │                     │
 │  - derive game state locally                                        │
 └─────────────────────────────────────────────────────────────────────┘
 ```

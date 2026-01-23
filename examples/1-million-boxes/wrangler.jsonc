@@ -3,7 +3,14 @@
   "name": "1-million-boxes",
   "compatibility_date": "2025-01-22",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  "main": "worker/index.ts",
+
+  // Static assets configuration
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
 
   // Durable Object binding for game state
   "durable_objects": {
@@ -23,12 +30,8 @@
     }
   ],
 
-  // Rate limiting for draw endpoint
-  "rate_limits": [
-    {
-      "name": "draw-limit",
-      "period": 60,
-      "limit": 10
-    }
-  ]
+  // Environment variables
+  "vars": {
+    "DURABLE_STREAMS_URL": "http://localhost:4437/v1/stream"
+  }
 }

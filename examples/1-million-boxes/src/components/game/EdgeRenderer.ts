@@ -135,9 +135,8 @@ function renderEdge(
   ctx.setLineDash([])
 
   if (isTaken) {
-    // For taken edges, we use a placeholder color based on edgeId
-    // In the real implementation, edge ownership would come from game state
-    const teamId = edgeId % 4 // Placeholder - should come from actual edge data
+    // Get the team that placed this edge
+    const teamId = gameState.getEdgeOwner(edgeId) ?? 0
     const color = getTeamColor(teamId)
     ctx.strokeStyle = color.primary
     ctx.lineWidth = lineWidth * 1.2

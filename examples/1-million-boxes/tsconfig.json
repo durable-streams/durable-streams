@@ -25,6 +25,7 @@
   "include": [
     "src/**/*",
     "tests/**/*",
+    "worker/**/*",
     "worker-configuration.d.ts",
     "*.config.ts"
   ],

@@ -1,7 +1,6 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react"
 import { GameState } from "../lib/game-state"
 import { useGameStream } from "../hooks/useGameStream"
-import { drawEdge } from "../server/functions"
 import { useTeam } from "./team-context"
 import { useQuota } from "./quota-context"
 import type { GameEvent } from "../lib/game-state"
@@ -103,14 +102,19 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
       setPendingEdge(edgeId)
 
       try {
-        const response = await drawEdge({ data: { edgeId } })
+        const response = await fetch(`/api/draw`, {
+          method: `POST`,
+          headers: { "Content-Type": `application/json` },
+          body: JSON.stringify({ edgeId }),
+        })
+        const result = await response.json()
 
-        if (response.ok) {
+        if (result.ok) {
           // Success - edge will be confirmed via stream
           setError(null)
         } else {
           // Handle error codes
-          switch (response.code) {
+          switch (result.code) {
             case `EDGE_TAKEN`:
               // Refund quota since edge was already taken
               refund()
@@ -138,7 +142,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
               break
             default:
               refund()
-              setError(`Failed to place edge: ${response.code}`)
+              setError(`Failed to place edge: ${result.code}`)
           }
 
           // Clear pending edge on error
