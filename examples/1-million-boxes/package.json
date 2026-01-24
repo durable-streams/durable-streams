@@ -15,7 +15,8 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "vitest run tests/integration"
+    "test:integration": "vitest run tests/integration",
+    "seed": "npx tsx scripts/seed-game.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0-alpha.4",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.0.5",
+    "tsx": "^4.19.2",
     "@cloudflare/workers-types": "^4.20250109.0",
     "@playwright/test": "^1.49.1",
     "@testing-library/jest-dom": "^6.6.3",
