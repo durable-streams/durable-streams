@@ -7,10 +7,10 @@ import {
   worldToScreen,
 } from "../../lib/view-transform"
 import { HOVERED_EDGE_COLOR } from "../../lib/config"
+import { renderGridPattern } from "./GridPatternCache"
 import type { ViewState } from "../../hooks/useViewState"
 import type { GameState } from "../../lib/game-state"
 
-const UNPLACED_COLOR = `rgba(150, 150, 150, 0.3)`
 const PENDING_COLOR = `rgba(100, 100, 100, 0.6)`
 
 /**
@@ -29,16 +29,34 @@ export function renderEdges(
 ): void {
   // Early exit if nothing to render
   if (!renderGridLines && !renderDrawnLines) return
-  const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
+
   const gridSize = getScale(view) // pixels per grid cell
 
   // Only render if zoomed in enough to see edges (matches BITMAP_THRESHOLD in BoxRenderer)
   if (gridSize < 4) return
 
+  // Render grid lines using cached tiled pattern (much faster than individual lines)
+  if (renderGridLines) {
+    renderGridPattern(
+      ctx,
+      gridSize,
+      view.centerX,
+      view.centerY,
+      canvasWidth,
+      canvasHeight
+    )
+  }
+
+  // Only iterate edges if we need to render taken/pending/hovered edges
+  if (!renderDrawnLines && pendingEdgeId === null && hoveredEdgeId === null) {
+    return
+  }
+
+  const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
   const lineWidth = Math.max(1, gridSize * 0.1)
   ctx.lineCap = `round`
 
-  // Render horizontal edges in visible range
+  // Render horizontal edges in visible range (only taken/pending/hovered)
   for (
     let y = Math.max(0, bounds.minY);
     y <= Math.min(H, bounds.maxY + 1);
@@ -50,7 +68,7 @@ export function renderEdges(
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, true)
-      renderEdge(
+      renderSpecialEdge(
         ctx,
         edgeId,
         x,
@@ -63,13 +81,12 @@ export function renderEdges(
         pendingEdgeId,
         hoveredEdgeId,
         lineWidth,
-        renderGridLines,
         renderDrawnLines
       )
     }
   }
 
-  // Render vertical edges in visible range
+  // Render vertical edges in visible range (only taken/pending/hovered)
   for (
     let y = Math.max(0, bounds.minY);
     y < Math.min(H, bounds.maxY + 1);
@@ -81,7 +98,7 @@ export function renderEdges(
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, false)
-      renderEdge(
+      renderSpecialEdge(
         ctx,
         edgeId,
         x,
@@ -94,14 +111,17 @@ export function renderEdges(
         pendingEdgeId,
         hoveredEdgeId,
         lineWidth,
-        renderGridLines,
         renderDrawnLines
       )
     }
   }
 }
 
-function renderEdge(
+/**
+ * Render only "special" edges: taken, pending, or hovered.
+ * Grid lines are handled by the tiled pattern.
+ */
+function renderSpecialEdge(
   ctx: CanvasRenderingContext2D,
   edgeId: number,
   x: number,
@@ -114,16 +134,17 @@ function renderEdge(
   pendingEdgeId: number | null,
   hoveredEdgeId: number | null,
   lineWidth: number,
-  renderGridLines: boolean,
   renderDrawnLines: boolean
 ): void {
   const isTaken = gameState.isEdgeTaken(edgeId)
   const isPending = edgeId === pendingEdgeId
   const isHovered = edgeId === hoveredEdgeId
 
-  // Skip based on debug flags
+  // Skip unplaced edges (handled by tiled pattern)
+  if (!isTaken && !isPending && !isHovered) return
+
+  // Skip taken edges if debug flag is off
   if (isTaken && !renderDrawnLines) return
-  if (!isTaken && !isPending && !isHovered && !renderGridLines) return
 
   let x1: number, y1: number, x2: number, y2: number
 
@@ -160,10 +181,6 @@ function renderEdge(
     ctx.strokeStyle = HOVERED_EDGE_COLOR
     ctx.lineWidth = lineWidth * 1.3
     ctx.setLineDash([])
-  } else {
-    ctx.strokeStyle = UNPLACED_COLOR
-    ctx.lineWidth = lineWidth * 0.5
-    ctx.setLineDash([2, 4])
   }
 
   // Draw with hand-drawn style
