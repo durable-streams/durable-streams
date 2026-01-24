@@ -1,6 +1,3 @@
-import { H, W } from "../../lib/edge-math"
-import { getTeamColor } from "../../lib/teams"
-import { drawWatercolorFill } from "../../lib/hand-drawn"
 import {
   getScale,
   getVisibleBounds,
@@ -11,35 +8,25 @@ import type { GameState } from "../../lib/game-state"
 import type { BoxBitmap } from "../../lib/box-bitmap"
 
 /**
- * Threshold for switching between bitmap and hand-drawn rendering.
- * Below this size (in pixels per box), we use the bitmap approach.
- * Above this, we use the hand-drawn style.
- */
-const BITMAP_THRESHOLD = 4
-
-/**
  * Render all visible claimed boxes on the canvas.
- * Uses hybrid rendering:
- * - Bitmap mode (boxSize <= BITMAP_THRESHOLD): Draw from shared BoxBitmap with scaling
- * - Hand-drawn mode (boxSize > BITMAP_THRESHOLD): Draw individual boxes with watercolor effect
+ * Always uses GPU-accelerated bitmap scaling for performance.
+ * Nearest-neighbor scaling when zoomed in gives crisp pixel edges.
  */
 export function renderBoxes(
   ctx: CanvasRenderingContext2D,
-  gameState: GameState,
+  _gameState: GameState,
   view: ViewState,
   canvasWidth: number,
   canvasHeight: number,
   boxBitmap?: BoxBitmap
 ): void {
-  const boxSize = getScale(view)
+  if (!boxBitmap) return
 
-  // Use bitmap mode when zoomed out (boxes are small)
-  if (boxBitmap && boxSize <= BITMAP_THRESHOLD) {
-    renderBitmapMode(ctx, view, canvasWidth, canvasHeight, boxBitmap)
-  } else {
-    renderHandDrawnMode(ctx, gameState, view, canvasWidth, canvasHeight)
-  }
+  renderBitmapMode(ctx, view, canvasWidth, canvasHeight, boxBitmap)
 }
+
+// Opacity for box fills - gives a softer, watercolor-like appearance
+const BOX_FILL_OPACITY = 0.5
 
 /**
  * Bitmap rendering mode: Draw the visible portion of the BoxBitmap scaled to screen.
@@ -76,6 +63,10 @@ function renderBitmapMode(
   // When boxes are >= 1px, use crisp nearest-neighbor for sharp pixels
   const useSmooth = scale < 1
 
+  // Apply transparency for softer, watercolor-like appearance
+  const prevAlpha = ctx.globalAlpha
+  ctx.globalAlpha = BOX_FILL_OPACITY
+
   // Draw the visible portion scaled to fit
   boxBitmap.drawViewport(
     ctx,
@@ -89,42 +80,7 @@ function renderBitmapMode(
     srcHeight * scale,
     useSmooth
   )
-}
 
-/**
- * Hand-drawn rendering mode: Draw individual boxes with watercolor effect.
- * Used when zoomed in for nice visual quality.
- */
-function renderHandDrawnMode(
-  ctx: CanvasRenderingContext2D,
-  gameState: GameState,
-  view: ViewState,
-  canvasWidth: number,
-  canvasHeight: number
-): void {
-  const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
-  const boxSize = getScale(view)
-
-  // Iterate over visible boxes
-  for (let y = Math.max(0, bounds.minY); y < Math.min(H, bounds.maxY); y++) {
-    for (let x = Math.max(0, bounds.minX); x < Math.min(W, bounds.maxX); x++) {
-      const boxId = y * W + x
-      const owner = gameState.getBoxOwner(boxId)
-
-      if (owner > 0) {
-        const teamId = owner - 1
-        const color = getTeamColor(teamId)
-        const screenPos = worldToScreen(x, y, view, canvasWidth, canvasHeight)
-
-        drawWatercolorFill(
-          ctx,
-          screenPos.x,
-          screenPos.y,
-          boxSize,
-          color.fill,
-          boxId // Use boxId as seed for consistent rendering
-        )
-      }
-    }
-  }
+  // Restore alpha
+  ctx.globalAlpha = prevAlpha
 }
