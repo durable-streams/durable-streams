@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react"
 import { Dialog } from "@base-ui/react/dialog"
 import { TEAMS, TEAM_COLORS } from "../../lib/teams"
 import { useTeam } from "../../contexts/team-context"
@@ -28,6 +29,55 @@ export function AboutDialog({
 }: AboutDialogProps) {
   const { team: userTeam } = useTeam()
   const userTeamColor = TEAM_COLORS[userTeam].primary
+  const contentRef = useRef<HTMLDivElement>(null)
+  const [hasOverflowTop, setHasOverflowTop] = useState(false)
+  const [hasOverflowBottom, setHasOverflowBottom] = useState(false)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+
+  // Check scroll position and overflow state
+  useEffect(() => {
+    if (!open) {
+      setHasOverflowTop(false)
+      setHasOverflowBottom(false)
+      resizeObserverRef.current?.disconnect()
+      return
+    }
+
+    // Wait for portal to mount, then set up observers
+    const timeoutId = setTimeout(() => {
+      const content = contentRef.current
+      if (!content) return
+
+      const checkOverflow = () => {
+        const { scrollTop, scrollHeight, clientHeight } = content
+        // Has content hidden above?
+        setHasOverflowTop(scrollTop > 1)
+        // Has content hidden below? (1px threshold for rounding)
+        setHasOverflowBottom(scrollTop + clientHeight < scrollHeight - 1)
+      }
+
+      // Check immediately
+      checkOverflow()
+
+      // Listen for scroll events
+      content.addEventListener(`scroll`, checkOverflow, { passive: true })
+
+      // Use ResizeObserver to detect size changes
+      resizeObserverRef.current = new ResizeObserver(checkOverflow)
+      resizeObserverRef.current.observe(content)
+
+      // Store scroll listener cleanup
+      return () => {
+        content.removeEventListener(`scroll`, checkOverflow)
+      }
+    }, 50)
+
+    return () => {
+      clearTimeout(timeoutId)
+      resizeObserverRef.current?.disconnect()
+      contentRef.current?.removeEventListener(`scroll`, () => {})
+    }
+  }, [open])
 
   // Calculate claimed and remaining
   const totalClaimed = scores.reduce((a, b) => a + b, 0)
@@ -58,7 +108,9 @@ export function AboutDialog({
       <Dialog.Portal>
         <Dialog.Backdrop className="about-dialog-backdrop" />
         <Dialog.Popup className="about-dialog-popup">
-          <Dialog.Title className="about-dialog-title">
+          <Dialog.Title
+            className={`about-dialog-title${hasOverflowTop ? ` has-overflow` : ``}`}
+          >
             <img
               src="/logo.svg"
               alt="1 Million Boxes"
@@ -66,7 +118,7 @@ export function AboutDialog({
             />
           </Dialog.Title>
 
-          <div className="about-dialog-content">
+          <div className="about-dialog-content" ref={contentRef}>
             <p>
               A massive multiplayer Dots &amp; Boxes game with{` `}
               <strong>1,000,000 boxes</strong> on a 1000×1000 grid.
@@ -144,15 +196,19 @@ export function AboutDialog({
             </p>
           </div>
 
-          <Dialog.Close
-            className="about-dialog-close-button"
-            style={{
-              background: userTeamColor,
-              color: buttonTextColor,
-            }}
+          <div
+            className={`about-dialog-button-container${hasOverflowBottom ? ` has-overflow` : ``}`}
           >
-            You're on the {teamDisplayName} team, Play!
-          </Dialog.Close>
+            <Dialog.Close
+              className="about-dialog-close-button"
+              style={{
+                background: userTeamColor,
+                color: buttonTextColor,
+              }}
+            >
+              You're on the {teamDisplayName} team, Play!
+            </Dialog.Close>
+          </div>
         </Dialog.Popup>
       </Dialog.Portal>
     </Dialog.Root>

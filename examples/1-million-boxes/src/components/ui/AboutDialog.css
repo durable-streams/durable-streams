@@ -14,16 +14,33 @@
   background: white;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
-  padding: 24px;
+  padding: 0;
   width: 90%;
   max-width: 480px;
+  max-height: 90vh;
   z-index: 101;
   animation: about-popup-slide-in 200ms ease-out;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .about-dialog-title {
-  margin-bottom: 16px;
+  padding: 24px 24px 16px;
+  margin-bottom: 0;
   text-align: center;
+  flex-shrink: 0; /* Don't shrink the title */
+  background: white;
+  border-bottom: 1px solid transparent;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.about-dialog-title.has-overflow {
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
 }
 
 .about-dialog-logo {
@@ -32,7 +49,10 @@
 }
 
 .about-dialog-content {
-  margin-bottom: 20px;
+  padding: 0 24px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0; /* Allow shrinking below content size */
 }
 
 .about-dialog-content p {
@@ -153,10 +173,31 @@
   color: var(--color-blue);
   text-decoration: none;
   font-weight: 500;
+  outline: none; /* Prevent focus ring on auto-focus */
 }
 
 .about-dialog-tech a:hover {
   text-decoration: underline;
+}
+
+.about-dialog-tech a:focus-visible {
+  text-decoration: underline; /* Show underline instead of ring for keyboard users */
+}
+
+.about-dialog-button-container {
+  padding: 24px;
+  flex-shrink: 0;
+  background: white;
+  border-top: 1px solid transparent;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.about-dialog-button-container.has-overflow {
+  border-top-color: rgba(0, 0, 0, 0.08);
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.06);
 }
 
 .about-dialog-close-button {
@@ -211,8 +252,20 @@
 /* Mobile adjustments */
 @media (max-width: 640px) {
   .about-dialog-popup {
-    padding: 20px;
     width: 94%;
+    max-height: 85vh;
+  }
+
+  .about-dialog-title {
+    padding: 20px 20px 14px;
+  }
+
+  .about-dialog-content {
+    padding: 0 20px;
+  }
+
+  .about-dialog-button-container {
+    padding: 20px;
   }
 
   .mobile-only {

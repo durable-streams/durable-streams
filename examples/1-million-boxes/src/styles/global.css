@@ -64,6 +64,12 @@ body {
   overflow: hidden;
 }
 
+html,
+body {
+  /* White background for iOS Safari safe areas (notch, home indicator) */
+  background-color: #ffffff;
+}
+
 body {
   font-family:
     system-ui,
@@ -72,7 +78,6 @@ body {
     "Segoe UI",
     Roboto,
     sans-serif;
-  background-color: var(--color-bg);
   color: var(--color-text);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -92,7 +97,7 @@ body {
   align-items: center;
   justify-content: center;
   height: 100%;
-  background: var(--color-bg);
+  background: #ffffff;
 }
 
 .app-loading-spinner {
