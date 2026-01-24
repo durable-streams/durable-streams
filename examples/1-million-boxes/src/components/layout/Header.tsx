@@ -19,7 +19,7 @@ export function Header() {
     }
   })
   // Explicitly depend on version to ensure re-render when game state changes
-  const { gameState, version } = useGameState()
+  const { gameState, version, isLoading } = useGameState()
   // Get current scores (will update when version changes)
   const scores = gameState.getScores()
   // Suppress unused variable warning - version is used to trigger re-renders
@@ -61,7 +61,9 @@ export function Header() {
           <TeamBadge />
         </div>
 
-        <ScoreBoard scores={scores} className="header-scoreboard" />
+        {!isLoading && (
+          <ScoreBoard scores={scores} className="header-scoreboard" />
+        )}
 
         <div className="header-right">
           <button
@@ -115,12 +117,15 @@ export function Header() {
           open={aboutDialogOpen}
           onOpenChange={handleAboutOpenChange}
           scores={scores}
+          isLoading={isLoading}
         />
         <ShareDialog open={shareDialogOpen} onOpenChange={setShareDialogOpen} />
       </header>
 
       {/* Floating scoreboard for mobile */}
-      <ScoreBoard scores={scores} className="floating-scoreboard" />
+      {!isLoading && (
+        <ScoreBoard scores={scores} className="floating-scoreboard" />
+      )}
     </>
   )
 }

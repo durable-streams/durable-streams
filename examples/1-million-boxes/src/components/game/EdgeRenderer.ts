@@ -67,7 +67,8 @@ export function renderEdges(
   pendingEdgeId: number | null = null,
   hoveredEdgeId: number | null = null,
   renderGridLines: boolean = true,
-  renderDrawnLines: boolean = true
+  renderDrawnLines: boolean = true,
+  bounds?: { minX: number; minY: number; maxX: number; maxY: number }
 ): void {
   // Early exit if nothing to render
   if (!renderGridLines && !renderDrawnLines) return
@@ -94,7 +95,8 @@ export function renderEdges(
     return
   }
 
-  const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
+  const visibleBounds =
+    bounds ?? getVisibleBounds(view, canvasWidth, canvasHeight)
   // Line width scales with grid size, with a minimum of 0.5px for very small sizes
   const lineWidth = Math.max(0.5, gridSize * 0.1)
 
@@ -125,13 +127,13 @@ export function renderEdges(
 
   // Collect horizontal edges in visible range
   for (
-    let y = Math.max(0, bounds.minY);
-    y <= Math.min(H, bounds.maxY + 1);
+    let y = Math.max(0, visibleBounds.minY);
+    y <= Math.min(H, visibleBounds.maxY + 1);
     y++
   ) {
     for (
-      let x = Math.max(0, bounds.minX);
-      x < Math.min(W, bounds.maxX + 1);
+      let x = Math.max(0, visibleBounds.minX);
+      x < Math.min(W, visibleBounds.maxX + 1);
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, true)
@@ -154,13 +156,13 @@ export function renderEdges(
 
   // Collect vertical edges in visible range
   for (
-    let y = Math.max(0, bounds.minY);
-    y < Math.min(H, bounds.maxY + 1);
+    let y = Math.max(0, visibleBounds.minY);
+    y < Math.min(H, visibleBounds.maxY + 1);
     y++
   ) {
     for (
-      let x = Math.max(0, bounds.minX);
-      x <= Math.min(W, bounds.maxX + 1);
+      let x = Math.max(0, visibleBounds.minX);
+      x <= Math.min(W, visibleBounds.maxX + 1);
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, false)

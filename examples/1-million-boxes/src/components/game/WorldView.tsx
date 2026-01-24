@@ -85,7 +85,7 @@ export function WorldView() {
         const color = TEAM_COLORS[teamName].primary
 
         return {
-          key: `${event.edgeId}-${event.timestamp}`,
+          key: `${event.id}`,
           x: xPercent,
           y: yPercent,
           color,

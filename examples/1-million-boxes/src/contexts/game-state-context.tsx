@@ -8,6 +8,7 @@ import type { GameEvent } from "../lib/game-state"
 import type { ReactNode } from "react"
 
 export interface RecentEvent {
+  id: number
   edgeId: number
   teamId: number
   timestamp: number
@@ -20,6 +21,8 @@ export interface GameStateContextValue {
   placeEdge: (edgeId: number) => void
   isConnected: boolean
   isLoading: boolean
+  isReadyToRender: boolean
+  notifyCanvasRendered: () => void
   error: string | null
   version: number
   recentEvents: Array<RecentEvent>
@@ -50,13 +53,16 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   const [pendingEdge, setPendingEdge] = useState<number | null>(null)
   const [isConnected, setIsConnected] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  const [isReadyToRender, setIsReadyToRender] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Track recent events for minimap pop animation
   const [recentEvents, setRecentEvents] = useState<Array<RecentEvent>>([])
+  const eventIdRef = useRef(0)
 
   // Track if initial sync is complete (don't show pops during replay, don't render during catchup)
   const initialSyncCompleteRef = useRef(false)
+  const pendingFirstRenderRef = useRef(false)
 
   // 60fps render throttling - only update version once per frame
   const renderScheduledRef = useRef(false)
@@ -119,6 +125,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           `teamId` in event
         ) {
           pendingRecentEventsRef.current.push({
+            id: eventIdRef.current++,
             edgeId: event.edgeId,
             teamId: event.teamId,
             timestamp: now,
@@ -151,12 +158,8 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           // Trigger version update which will cause canvas to render
           setVersion((v) => v + 1)
 
-          // Hide loading message after canvas has rendered (next frame)
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              setIsLoading(false)
-            })
-          })
+          pendingFirstRenderRef.current = true
+          setIsReadyToRender(true)
         }
         // Don't render during initial catchup - wait for upToDate
         return
@@ -171,7 +174,9 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Handle connection events
   const handleConnected = useCallback(() => {
     setIsConnected(true)
-    setIsLoading(false)
+    if (initialSyncCompleteRef.current && !pendingFirstRenderRef.current) {
+      setIsLoading(false)
+    }
     setError(null)
   }, [])
 
@@ -181,6 +186,14 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
   const handleError = useCallback((err: Error) => {
     setError(err.message)
+  }, [])
+
+  const notifyCanvasRendered = useCallback(() => {
+    if (pendingFirstRenderRef.current) {
+      pendingFirstRenderRef.current = false
+      setIsReadyToRender(false)
+      setIsLoading(false)
+    }
   }, [])
 
   // Connect to game stream
@@ -289,6 +302,8 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
     placeEdge,
     isConnected,
     isLoading,
+    isReadyToRender,
+    notifyCanvasRendered,
     error,
     version,
     recentEvents,

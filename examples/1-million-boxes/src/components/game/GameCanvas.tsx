@@ -2,7 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
-import { getScale, screenToWorld } from "../../lib/view-transform"
+import {
+  getScale,
+  screenRectToWorldBounds,
+  screenToWorld,
+  worldToScreen,
+} from "../../lib/view-transform"
+import { H, W, edgeIdToCoords } from "../../lib/edge-math"
 import { findNearestEdge } from "../../lib/edge-picker"
 import { getDebugConfig, subscribeDebugConfig } from "../../lib/debug-config"
 import { TouchFeedback, useTouchFeedback } from "../ui/TouchFeedback"
@@ -11,6 +17,8 @@ import { renderEdges } from "./EdgeRenderer"
 import { renderDots } from "./DotRenderer"
 import type { DebugConfig } from "../../lib/debug-config"
 import "./GameCanvas.css"
+
+const BACKGROUND_COLOR = `#F5F5DC`
 
 /**
  * Trigger haptic feedback if available
@@ -30,12 +38,36 @@ export function GameCanvas() {
     boxBitmap,
     pendingEdge,
     placeEdge,
+    recentEvents,
     version,
+    isLoading,
+    isReadyToRender,
+    notifyCanvasRendered,
     isGameComplete,
   } = useGameState()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
   const { ripples, addRipple } = useTouchFeedback()
   const [debugConfig, setDebugConfig] = useState<DebugConfig>(getDebugConfig)
+
+  const prevViewRef = useRef<typeof view | null>(null)
+  const prevCanvasSizeRef = useRef<typeof canvasSize | null>(null)
+  const prevHoveredEdgeRef = useRef<number | null>(null)
+  const prevPendingEdgeRef = useRef<number | null>(null)
+  const prevDebugConfigRef = useRef<DebugConfig | null>(null)
+  const lastProcessedEventIdRef = useRef<number>(-1)
+  const zoomRedrawTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastZoomRedrawRef = useRef<number>(0)
+  const zoomSnapshotRef = useRef<HTMLCanvasElement | null>(null)
+  const hasDrawnRef = useRef(false)
+  const latestStateRef = useRef({
+    view,
+    canvasSize,
+    pendingEdge,
+    hoveredEdge,
+    debugConfig,
+    gameState,
+    boxBitmap,
+  })
 
   // Subscribe to debug config changes
   useEffect(() => {
@@ -85,7 +117,176 @@ export function GameCanvas() {
     setCurrentZoom(view.zoom)
   }, [view.zoom, setCurrentZoom])
 
-  // Render loop
+  useEffect(() => {
+    latestStateRef.current = {
+      view,
+      canvasSize,
+      pendingEdge,
+      hoveredEdge,
+      debugConfig,
+      gameState,
+      boxBitmap,
+    }
+  }, [
+    view,
+    canvasSize,
+    pendingEdge,
+    hoveredEdge,
+    debugConfig,
+    gameState,
+    boxBitmap,
+  ])
+
+  const setupCanvas = useCallback(
+    (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+      const dpr = window.devicePixelRatio || 1
+      const targetWidth = Math.floor(canvasSize.width * dpr)
+      const targetHeight = Math.floor(canvasSize.height * dpr)
+      if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+        canvas.width = targetWidth
+        canvas.height = targetHeight
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      return dpr
+    },
+    [canvasSize.width, canvasSize.height]
+  )
+
+  const renderLayers = useCallback(
+    (
+      ctx: CanvasRenderingContext2D,
+      renderState: {
+        view: typeof view
+        canvasSize: typeof canvasSize
+        pendingEdge: typeof pendingEdge
+        hoveredEdge: typeof hoveredEdge
+        debugConfig: typeof debugConfig
+        gameState: typeof gameState
+        boxBitmap: typeof boxBitmap
+      },
+      bounds?: { minX: number; minY: number; maxX: number; maxY: number },
+      clipRect?: { x: number; y: number; width: number; height: number }
+    ) => {
+      const {
+        view: renderView,
+        canvasSize: renderCanvasSize,
+        pendingEdge: renderPendingEdge,
+        hoveredEdge: renderHoveredEdge,
+        debugConfig: renderDebugConfig,
+        gameState: renderGameState,
+        boxBitmap: renderBoxBitmap,
+      } = renderState
+
+      if (clipRect) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(clipRect.x, clipRect.y, clipRect.width, clipRect.height)
+        ctx.clip()
+        ctx.fillStyle = BACKGROUND_COLOR
+        ctx.fillRect(clipRect.x, clipRect.y, clipRect.width, clipRect.height)
+      } else {
+        ctx.fillStyle = BACKGROUND_COLOR
+        ctx.fillRect(0, 0, renderCanvasSize.width, renderCanvasSize.height)
+      }
+
+      if (renderDebugConfig.renderShadedBoxes) {
+        renderBoxes(
+          ctx,
+          renderGameState,
+          renderView,
+          renderCanvasSize.width,
+          renderCanvasSize.height,
+          renderBoxBitmap
+        )
+      }
+
+      renderEdges(
+        ctx,
+        renderGameState,
+        renderView,
+        renderCanvasSize.width,
+        renderCanvasSize.height,
+        renderPendingEdge,
+        renderHoveredEdge,
+        renderDebugConfig.renderGridLines,
+        renderDebugConfig.renderDrawnLines,
+        bounds
+      )
+
+      if (renderDebugConfig.renderDots) {
+        renderDots(
+          ctx,
+          renderView,
+          renderCanvasSize.width,
+          renderCanvasSize.height
+        )
+      }
+
+      if (clipRect) {
+        ctx.restore()
+      }
+    },
+    []
+  )
+
+  const performFullRedraw = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas || canvasSize.width === 0) return
+
+    const ctx = canvas.getContext(`2d`)
+    if (!ctx) return
+
+    const renderState = latestStateRef.current
+    if (renderState.canvasSize.width === 0) return
+    setupCanvas(ctx, canvas)
+    renderLayers(ctx, renderState)
+  }, [canvasSize.height, canvasSize.width, renderLayers, setupCanvas])
+
+  const captureZoomSnapshot = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const snapshot = zoomSnapshotRef.current ?? document.createElement(`canvas`)
+    zoomSnapshotRef.current = snapshot
+    if (snapshot.width !== canvas.width || snapshot.height !== canvas.height) {
+      snapshot.width = canvas.width
+      snapshot.height = canvas.height
+    }
+    const snapshotCtx = snapshot.getContext(`2d`)
+    if (!snapshotCtx) return
+    snapshotCtx.setTransform(1, 0, 0, 1, 0, 0)
+    snapshotCtx.drawImage(canvas, 0, 0)
+  }, [])
+
+  const scheduleZoomRedraw = useCallback(() => {
+    const throttleMs = 1000 / 12
+    const now = Date.now()
+    const elapsed = now - lastZoomRedrawRef.current
+
+    if (elapsed >= throttleMs) {
+      lastZoomRedrawRef.current = now
+      performFullRedraw()
+      return
+    }
+
+    if (zoomRedrawTimerRef.current) return
+
+    zoomRedrawTimerRef.current = setTimeout(() => {
+      zoomRedrawTimerRef.current = null
+      lastZoomRedrawRef.current = Date.now()
+      performFullRedraw()
+    }, throttleMs - elapsed)
+  }, [performFullRedraw])
+
+  useEffect(() => {
+    return () => {
+      if (zoomRedrawTimerRef.current) {
+        clearTimeout(zoomRedrawTimerRef.current)
+        zoomRedrawTimerRef.current = null
+      }
+    }
+  }, [])
+
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || canvasSize.width === 0) return
@@ -93,53 +294,264 @@ export function GameCanvas() {
     const ctx = canvas.getContext(`2d`)
     if (!ctx) return
 
-    // Set canvas size (account for device pixel ratio)
-    const dpr = window.devicePixelRatio || 1
-    canvas.width = canvasSize.width * dpr
-    canvas.height = canvasSize.height * dpr
-    ctx.scale(dpr, dpr)
+    const dpr = setupCanvas(ctx, canvas)
+    const renderState = {
+      view,
+      canvasSize,
+      pendingEdge,
+      hoveredEdge,
+      debugConfig,
+      gameState,
+      boxBitmap,
+    }
+    latestStateRef.current = renderState
+    if (isLoading && !isReadyToRender) {
+      return
+    }
 
-    // Clear with background color
-    ctx.fillStyle = `#F5F5DC` // Beige/parchment background
-    ctx.fillRect(0, 0, canvasSize.width, canvasSize.height)
+    if (isLoading && isReadyToRender) {
+      performFullRedraw()
+      hasDrawnRef.current = true
+      notifyCanvasRendered()
+      prevViewRef.current = view
+      prevCanvasSizeRef.current = canvasSize
+      prevDebugConfigRef.current = debugConfig
+      prevHoveredEdgeRef.current = hoveredEdge
+      prevPendingEdgeRef.current = pendingEdge
+      return
+    }
 
-    // Render layers in order: boxes, edges, dots
-    // Each layer can be toggled via debug config
-    if (debugConfig.renderShadedBoxes) {
-      renderBoxes(
-        ctx,
-        gameState,
+    const prevView = prevViewRef.current
+    const prevCanvasSize = prevCanvasSizeRef.current
+    const prevDebugConfig = prevDebugConfigRef.current
+
+    const debugChanged =
+      !prevDebugConfig ||
+      prevDebugConfig.renderShadedBoxes !== debugConfig.renderShadedBoxes ||
+      prevDebugConfig.renderDots !== debugConfig.renderDots ||
+      prevDebugConfig.renderGridLines !== debugConfig.renderGridLines ||
+      prevDebugConfig.renderDrawnLines !== debugConfig.renderDrawnLines
+
+    const sizeChanged =
+      !prevCanvasSize ||
+      prevCanvasSize.width !== canvasSize.width ||
+      prevCanvasSize.height !== canvasSize.height
+
+    if (!hasDrawnRef.current) {
+      performFullRedraw()
+      hasDrawnRef.current = true
+      prevViewRef.current = view
+      prevCanvasSizeRef.current = canvasSize
+      prevDebugConfigRef.current = debugConfig
+      prevHoveredEdgeRef.current = hoveredEdge
+      prevPendingEdgeRef.current = pendingEdge
+      return
+    }
+
+    if (sizeChanged || debugChanged || !prevView) {
+      performFullRedraw()
+      prevViewRef.current = view
+      prevCanvasSizeRef.current = canvasSize
+      prevDebugConfigRef.current = debugConfig
+      prevHoveredEdgeRef.current = hoveredEdge
+      prevPendingEdgeRef.current = pendingEdge
+      return
+    }
+
+    const zoomChanged = prevView.zoom !== view.zoom
+    if (zoomChanged) {
+      captureZoomSnapshot()
+      const scaleRatio = getScale(view) / getScale(prevView)
+      const cx = canvasSize.width / 2
+      const cy = canvasSize.height / 2
+      const offsetX =
+        (cx -
+          scaleRatio * cx +
+          (prevView.centerX - view.centerX) * getScale(view)) *
+        dpr
+      const offsetY =
+        (cy -
+          scaleRatio * cy +
+          (prevView.centerY - view.centerY) * getScale(view)) *
+        dpr
+
+      const snapshot = zoomSnapshotRef.current
+      if (snapshot) {
+        ctx.setTransform(scaleRatio, 0, 0, scaleRatio, offsetX, offsetY)
+        ctx.drawImage(snapshot, 0, 0)
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      }
+      scheduleZoomRedraw()
+      prevViewRef.current = view
+      prevCanvasSizeRef.current = canvasSize
+      prevDebugConfigRef.current = debugConfig
+      prevHoveredEdgeRef.current = hoveredEdge
+      prevPendingEdgeRef.current = pendingEdge
+      return
+    }
+
+    const scale = getScale(view)
+    const deltaX = (prevView.centerX - view.centerX) * scale
+    const deltaY = (prevView.centerY - view.centerY) * scale
+    const centerChanged = deltaX !== 0 || deltaY !== 0
+
+    const redrawScreenRect = (rect: {
+      x: number
+      y: number
+      width: number
+      height: number
+    }) => {
+      if (rect.width <= 0 || rect.height <= 0) return
+      const bounds = screenRectToWorldBounds(
         view,
         canvasSize.width,
         canvasSize.height,
-        boxBitmap
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height
       )
+      renderLayers(ctx, renderState, bounds, rect)
     }
 
-    renderEdges(
-      ctx,
-      gameState,
-      view,
-      canvasSize.width,
-      canvasSize.height,
-      pendingEdge,
-      hoveredEdge,
-      debugConfig.renderGridLines,
-      debugConfig.renderDrawnLines
-    )
+    if (centerChanged) {
+      if (
+        Math.abs(deltaX) >= canvasSize.width ||
+        Math.abs(deltaY) >= canvasSize.height
+      ) {
+        performFullRedraw()
+      } else {
+        ctx.setTransform(1, 0, 0, 1, 0, 0)
+        ctx.drawImage(
+          canvas,
+          Math.round(deltaX * dpr),
+          Math.round(deltaY * dpr)
+        )
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    if (debugConfig.renderDots) {
-      renderDots(ctx, view, canvasSize.width, canvasSize.height)
+        if (deltaX > 0) {
+          redrawScreenRect({
+            x: 0,
+            y: 0,
+            width: deltaX,
+            height: canvasSize.height,
+          })
+        } else if (deltaX < 0) {
+          redrawScreenRect({
+            x: canvasSize.width + deltaX,
+            y: 0,
+            width: -deltaX,
+            height: canvasSize.height,
+          })
+        }
+
+        if (deltaY > 0) {
+          redrawScreenRect({
+            x: 0,
+            y: 0,
+            width: canvasSize.width,
+            height: deltaY,
+          })
+        } else if (deltaY < 0) {
+          redrawScreenRect({
+            x: 0,
+            y: canvasSize.height + deltaY,
+            width: canvasSize.width,
+            height: -deltaY,
+          })
+        }
+      }
     }
+
+    const edgeIdsToRedraw = new Set<number>()
+    const prevPending = prevPendingEdgeRef.current
+    const prevHovered = prevHoveredEdgeRef.current
+
+    if (prevPending !== pendingEdge) {
+      if (prevPending !== null) edgeIdsToRedraw.add(prevPending)
+      if (pendingEdge !== null) edgeIdsToRedraw.add(pendingEdge)
+    }
+
+    if (prevHovered !== hoveredEdge) {
+      if (prevHovered !== null) edgeIdsToRedraw.add(prevHovered)
+      if (hoveredEdge !== null) edgeIdsToRedraw.add(hoveredEdge)
+    }
+
+    for (const event of recentEvents) {
+      if (event.id > lastProcessedEventIdRef.current) {
+        edgeIdsToRedraw.add(event.edgeId)
+        lastProcessedEventIdRef.current = Math.max(
+          lastProcessedEventIdRef.current,
+          event.id
+        )
+      }
+    }
+
+    if (edgeIdsToRedraw.size > 0) {
+      const lineWidth = Math.max(0.5, scale * 0.1)
+      const padding = Math.max(2, lineWidth * 2)
+
+      for (const edgeId of edgeIdsToRedraw) {
+        const coords = edgeIdToCoords(edgeId)
+        const minX = Math.max(0, coords.x - (coords.horizontal ? 0 : 1))
+        const maxX = Math.min(W, coords.x + 1)
+        const minY = Math.max(0, coords.y - (coords.horizontal ? 1 : 0))
+        const maxY = Math.min(H, coords.y + 1)
+
+        const topLeft = worldToScreen(
+          minX,
+          minY,
+          view,
+          canvasSize.width,
+          canvasSize.height
+        )
+        const bottomRight = worldToScreen(
+          maxX,
+          maxY,
+          view,
+          canvasSize.width,
+          canvasSize.height
+        )
+
+        const x = Math.min(topLeft.x, bottomRight.x) - padding
+        const y = Math.min(topLeft.y, bottomRight.y) - padding
+        const width = Math.abs(bottomRight.x - topLeft.x) + padding * 2
+        const height = Math.abs(bottomRight.y - topLeft.y) + padding * 2
+
+        const clippedX = Math.max(0, x)
+        const clippedY = Math.max(0, y)
+        const clippedWidth = Math.min(canvasSize.width - clippedX, width)
+        const clippedHeight = Math.min(canvasSize.height - clippedY, height)
+
+        redrawScreenRect({
+          x: clippedX,
+          y: clippedY,
+          width: clippedWidth,
+          height: clippedHeight,
+        })
+      }
+    }
+
+    prevViewRef.current = view
+    prevCanvasSizeRef.current = canvasSize
+    prevDebugConfigRef.current = debugConfig
+    prevHoveredEdgeRef.current = hoveredEdge
+    prevPendingEdgeRef.current = pendingEdge
   }, [
-    gameState,
     boxBitmap,
-    view,
     canvasSize,
-    pendingEdge,
-    hoveredEdge,
-    version,
+    captureZoomSnapshot,
     debugConfig,
+    gameState,
+    hoveredEdge,
+    pendingEdge,
+    performFullRedraw,
+    recentEvents,
+    renderLayers,
+    scheduleZoomRedraw,
+    setupCanvas,
+    view,
+    version,
   ])
 
   // Handle mouse move for edge hover

@@ -131,6 +131,35 @@
   font-variant-numeric: tabular-nums;
 }
 
+.about-leaderboard-item--loading .about-leaderboard-rank {
+  color: var(--color-muted);
+}
+
+.about-skeleton {
+  display: inline-block;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.06) 0%,
+    rgba(0, 0, 0, 0.12) 50%,
+    rgba(0, 0, 0, 0.06) 100%
+  );
+  background-size: 200% 100%;
+  animation: about-skeleton-pulse 1.2s ease-in-out infinite;
+  border-radius: 999px;
+}
+
+.about-skeleton-text {
+  height: 13.5px;
+  margin: 4px 0;
+  width: 90px;
+}
+
+.about-skeleton-number {
+  height: 13.5px;
+  margin: 4px 0;
+  width: 48px;
+}
+
 .about-dialog-stats {
   display: flex;
   gap: 8px;
@@ -152,6 +181,10 @@
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--color-text);
+}
+
+.about-stat .about-skeleton {
+  border-radius: 6px;
 }
 
 .about-stat-label {
@@ -237,6 +270,15 @@
   to {
     opacity: 1;
     transform: translate(-50%, -50%);
+  }
+}
+
+@keyframes about-skeleton-pulse {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
   }
 }
 

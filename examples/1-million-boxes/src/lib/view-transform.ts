@@ -66,3 +66,32 @@ export function getVisibleBounds(
     maxY: Math.ceil(view.centerY + halfH),
   }
 }
+
+/**
+ * Convert a screen-space rectangle to world bounds.
+ */
+export function screenRectToWorldBounds(
+  view: ViewState,
+  canvasWidth: number,
+  canvasHeight: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const topLeft = screenToWorld(x, y, view, canvasWidth, canvasHeight)
+  const bottomRight = screenToWorld(
+    x + width,
+    y + height,
+    view,
+    canvasWidth,
+    canvasHeight
+  )
+
+  const minX = Math.floor(Math.min(topLeft.x, bottomRight.x))
+  const minY = Math.floor(Math.min(topLeft.y, bottomRight.y))
+  const maxX = Math.ceil(Math.max(topLeft.x, bottomRight.x))
+  const maxY = Math.ceil(Math.max(topLeft.y, bottomRight.y))
+
+  return { minX, minY, maxX, maxY }
+}

@@ -20,6 +20,7 @@ export interface GameEvent {
  */
 export interface SerializedGameState {
   edgeTaken: Uint8Array
+  edgeOwner: Int8Array
   boxOwner: Uint8Array
   scores: Array<number>
   edgesPlaced: number
@@ -38,8 +39,8 @@ export class GameState {
   // Edge bitset: 1 bit per edge (ceil(EDGE_COUNT/8) bytes ≈ 250KB)
   private edgeTaken: Uint8Array
 
-  // Edge ownership: maps edgeId -> teamId (0-3)
-  private edgeOwner: Map<number, number>
+  // Edge ownership: edgeId -> teamId (0-3), -1 for unowned
+  private edgeOwner: Int8Array
 
   // Box ownership: 0 = unclaimed, 1-4 = team (teamId + 1)
   private boxOwner: Uint8Array
@@ -52,7 +53,8 @@ export class GameState {
 
   constructor() {
     this.edgeTaken = new Uint8Array(Math.ceil(EDGE_COUNT / 8))
-    this.edgeOwner = new Map()
+    this.edgeOwner = new Int8Array(EDGE_COUNT)
+    this.edgeOwner.fill(-1)
     this.boxOwner = new Uint8Array(BOX_COUNT)
     this.scores = [0, 0, 0, 0]
     this.edgesPlacedCount = 0
@@ -93,7 +95,7 @@ export class GameState {
 
     // Mark edge as taken and record owner
     this.setEdgeTaken(edgeId)
-    this.edgeOwner.set(edgeId, teamId)
+    this.edgeOwner[edgeId] = teamId
     this.edgesPlacedCount++
 
     // Check adjacent boxes for completion
@@ -137,7 +139,8 @@ export class GameState {
    * Returns the teamId (0-3) or undefined if edge is not taken.
    */
   getEdgeOwner(edgeId: number): number | undefined {
-    return this.edgeOwner.get(edgeId)
+    const owner = this.edgeOwner[edgeId]
+    return owner >= 0 ? owner : undefined
   }
 
   /**
@@ -217,6 +220,7 @@ export class GameState {
   export(): SerializedGameState {
     return {
       edgeTaken: new Uint8Array(this.edgeTaken),
+      edgeOwner: new Int8Array(this.edgeOwner),
       boxOwner: new Uint8Array(this.boxOwner),
       scores: [...this.scores],
       edgesPlaced: this.edgesPlacedCount,
@@ -229,6 +233,7 @@ export class GameState {
   static import(data: SerializedGameState): GameState {
     const state = new GameState()
     state.edgeTaken.set(data.edgeTaken)
+    state.edgeOwner.set(data.edgeOwner)
     state.boxOwner.set(data.boxOwner)
     state.scores = data.scores.slice(0, 4) as [number, number, number, number]
     state.edgesPlacedCount = data.edgesPlaced

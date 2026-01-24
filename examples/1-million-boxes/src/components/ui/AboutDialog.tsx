@@ -14,6 +14,7 @@ export interface AboutDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   scores?: [number, number, number, number]
+  isLoading?: boolean
 }
 
 interface TeamScore {
@@ -26,6 +27,7 @@ export function AboutDialog({
   open,
   onOpenChange,
   scores = [0, 0, 0, 0],
+  isLoading = false,
 }: AboutDialogProps) {
   const { team: userTeam } = useTeam()
   const userTeamColor = TEAM_COLORS[userTeam].primary
@@ -153,32 +155,56 @@ export function AboutDialog({
 
             <h3 className="about-dialog-section-title">Team Leaderboard</h3>
             <div className="about-dialog-leaderboard">
-              {teamScores.map(({ team, score, color }, index) => (
-                <div key={team} className="about-leaderboard-item">
-                  <span className="about-leaderboard-rank">{index + 1}</span>
-                  <span
-                    className="about-leaderboard-dot"
-                    style={{ background: color }}
-                  />
-                  <span className="about-leaderboard-team">{team}</span>
-                  <span className="about-leaderboard-score">
-                    {score.toLocaleString()}
-                  </span>
-                </div>
-              ))}
+              {isLoading
+                ? TEAMS.map((team, index) => (
+                    <div
+                      key={team}
+                      className="about-leaderboard-item about-leaderboard-item--loading"
+                    >
+                      <span className="about-leaderboard-rank">
+                        {index + 1}
+                      </span>
+                      <span className="about-leaderboard-dot about-skeleton" />
+                      <span className="about-leaderboard-team about-skeleton about-skeleton-text" />
+                      <span className="about-leaderboard-score about-skeleton about-skeleton-number" />
+                    </div>
+                  ))
+                : teamScores.map(({ team, score, color }, index) => (
+                    <div key={team} className="about-leaderboard-item">
+                      <span className="about-leaderboard-rank">
+                        {index + 1}
+                      </span>
+                      <span
+                        className="about-leaderboard-dot"
+                        style={{ background: color }}
+                      />
+                      <span className="about-leaderboard-team">{team}</span>
+                      <span className="about-leaderboard-score">
+                        {score.toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
             </div>
 
             <div className="about-dialog-stats">
               <div className="about-stat">
-                <span className="about-stat-value">
-                  {remaining.toLocaleString()}
-                </span>
+                {isLoading ? (
+                  <span className="about-stat-value about-skeleton about-skeleton-number" />
+                ) : (
+                  <span className="about-stat-value">
+                    {remaining.toLocaleString()}
+                  </span>
+                )}
                 <span className="about-stat-label">boxes available</span>
               </div>
               <div className="about-stat">
-                <span className="about-stat-value">
-                  {totalClaimed.toLocaleString()}
-                </span>
+                {isLoading ? (
+                  <span className="about-stat-value about-skeleton about-skeleton-number" />
+                ) : (
+                  <span className="about-stat-value">
+                    {totalClaimed.toLocaleString()}
+                  </span>
+                )}
                 <span className="about-stat-label">boxes claimed</span>
               </div>
             </div>

@@ -182,6 +182,7 @@ describe(`GameState`, () => {
       expect(exported.edgesPlaced).toBe(2)
       expect(exported.scores).toEqual([0, 0, 0, 0])
       expect(exported.edgeTaken).toBeInstanceOf(Uint8Array)
+      expect(exported.edgeOwner).toBeInstanceOf(Int8Array)
       expect(exported.boxOwner).toBeInstanceOf(Uint8Array)
     })
 
@@ -195,6 +196,8 @@ describe(`GameState`, () => {
       expect(imported.isEdgeTaken(0)).toBe(true)
       expect(imported.isEdgeTaken(1)).toBe(true)
       expect(imported.isEdgeTaken(2)).toBe(false)
+      expect(imported.getEdgeOwner(0)).toBe(0)
+      expect(imported.getEdgeOwner(1)).toBe(1)
       expect(imported.getEdgesPlacedCount()).toBe(2)
       expect(imported.getScores()).toEqual([0, 0, 0, 0])
     })

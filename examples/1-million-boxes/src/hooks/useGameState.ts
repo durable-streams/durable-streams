@@ -21,9 +21,12 @@ export function useGameState() {
     pendingEdge,
     placeEdge,
     isLoading,
+    isReadyToRender,
+    notifyCanvasRendered,
     error,
     isConnected,
     version,
+    recentEvents,
     isGameComplete,
   } = useGameStateContext()
 
@@ -33,9 +36,12 @@ export function useGameState() {
     pendingEdge,
     placeEdge,
     isLoading,
+    isReadyToRender,
+    notifyCanvasRendered,
     error,
     isConnected,
     version,
+    recentEvents,
     isGameComplete,
   }
 }
