@@ -3,8 +3,8 @@
 }
 
 .zoom-button {
-  min-width: var(--touch-min);
-  height: var(--touch-min);
+  min-width: 39px;
+  height: 39px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -15,15 +15,25 @@
   transition: background-color var(--transition-fast);
 }
 
+/* Larger touch targets on mobile */
+@media (max-width: 768px) {
+  .zoom-button {
+    min-width: var(--touch-min);
+    height: var(--touch-min);
+  }
+}
+
 .zoom-button-left {
   border-radius: var(--radius-sm) 0 0 var(--radius-sm);
   border-right: none;
   font-size: 1.25rem;
+  padding-bottom: 2px;
 }
 
 .zoom-button-right {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
   font-size: 1.25rem;
+  padding-bottom: 2px;
 }
 
 .zoom-button:hover:not(:disabled) {

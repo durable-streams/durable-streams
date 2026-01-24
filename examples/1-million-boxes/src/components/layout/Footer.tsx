@@ -9,12 +9,15 @@ export function Footer() {
         <QuotaMeter />
       </div>
       <a
-        href="https://durable.ws"
+        href="https://electric-sql.com/blog/TODO"
         target="_blank"
         rel="noopener noreferrer"
         className="footer-link"
       >
-        Learn how we built this
+        <span>
+          Learn how we built this{` `}
+          <span className="footer-link-extra">with Durable Streams</span>
+        </span>
         <svg
           width="14"
           height="14"

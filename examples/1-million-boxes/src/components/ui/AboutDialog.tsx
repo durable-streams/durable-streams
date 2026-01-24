@@ -221,7 +221,15 @@ export function AboutDialog({
               >
                 Durable Streams
               </a>
-              {` `}for real-time synchronization.
+              {` `}for real-time synchronization,{` `}
+              <a
+                href="https://electric-sql.com/blog/TODO"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                learn how we built it
+              </a>
+              .
             </p>
           </div>
 

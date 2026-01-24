@@ -29,32 +29,38 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: white;
-  border: 1px solid var(--color-border);
+  background: var(--color-blue);
+  border: 1px solid var(--color-blue);
   border-radius: var(--radius-sm);
   font-size: 0.875rem;
   font-weight: 500;
-  color: var(--color-text);
+  color: white;
   text-decoration: none;
-  transition: background-color var(--transition-fast);
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .footer-link:hover {
-  background: #f0f0f0;
+  background: #1976d2;
+  border-color: #1976d2;
 }
 
 .footer-link:active {
-  background: #e0e0e0;
+  background: #1565c0;
+  border-color: #1565c0;
 }
 
 .footer-link svg {
   flex-shrink: 0;
-  opacity: 0.6;
+  opacity: 0.8;
 }
 
-/* Hide footer zoom controls on mobile - they're next to the minimap */
+/* Hide footer zoom controls and extra link text on mobile */
 @media (max-width: 768px) {
   .footer-right {
+    display: none;
+  }
+
+  .footer-link-extra {
     display: none;
   }
 }
