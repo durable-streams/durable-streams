@@ -19,4 +19,8 @@ export {
   TOTAL_BOX_COUNT,
   // Stream configuration
   GAME_STREAM_PATH,
+  // Quota configuration
+  MAX_QUOTA,
+  QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_GC_INACTIVE_MS,
 } from "../../shared/game-config"

@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { parseTeamCookie } from "../lib/team-cookie"
+import { parsePlayerCookie } from "../lib/player-cookie"
 import { isValidEdgeId } from "../lib/edge-math"
 import { encodeEvent } from "../lib/stream-parser"
 import { GAME_STREAM_PATH } from "../lib/config"
@@ -82,7 +83,7 @@ async function writeEdgeDirectly(
 
 /**
  * Draw an edge on the game board.
- * Validates team from cookie and forwards request to GameWriterDO.
+ * Validates team and player from cookies and forwards request to GameWriterDO.
  * Falls back to direct stream write in development when DO is unavailable.
  */
 drawRoutes.post(`/`, async (c) => {
@@ -90,9 +91,13 @@ drawRoutes.post(`/`, async (c) => {
   const cookieHeader = c.req.header(`cookie`)
 
   const teamId = await parseTeamCookie(cookieHeader, secret)
-
   if (teamId === null) {
     return c.json({ ok: false, code: `NO_TEAM` }, 401)
+  }
+
+  const playerId = await parsePlayerCookie(cookieHeader, secret)
+  if (playerId === null) {
+    return c.json({ ok: false, code: `NO_PLAYER` }, 401)
   }
 
   // Parse and validate request body
@@ -113,13 +118,13 @@ drawRoutes.post(`/`, async (c) => {
       const response = await stub.fetch(`http://do/draw`, {
         method: `POST`,
         headers: { "Content-Type": `application/json` },
-        body: JSON.stringify({ edgeId: body.edgeId, teamId }),
+        body: JSON.stringify({ edgeId: body.edgeId, teamId, playerId }),
       })
 
       const result = await response.json()
       return c.json(
         result,
-        response.status as 200 | 400 | 409 | 410 | 500 | 503
+        response.status as 200 | 400 | 409 | 410 | 429 | 500 | 503
       )
     }
   } catch (err) {
@@ -127,7 +132,7 @@ drawRoutes.post(`/`, async (c) => {
     console.warn(`DO binding unavailable, using direct stream write:`, err)
   }
 
-  // Fallback: write directly to stream (development mode)
+  // Fallback: write directly to stream (development mode - no quota enforcement)
   const result = await writeEdgeDirectly(
     c.env.DURABLE_STREAMS_URL,
     body.edgeId,

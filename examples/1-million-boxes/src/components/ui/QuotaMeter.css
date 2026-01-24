@@ -7,6 +7,63 @@
 .quota-segments {
   display: flex;
   gap: 3px;
+  position: relative;
+}
+
+/* Bonus toast animation - centered over segments */
+.quota-bonus-toast {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-bottom: 4px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  padding: 6px 12px;
+  border-radius: 16px;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: bonus-float 1.5s ease-out forwards;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  z-index: 100;
+}
+
+/* Team-colored bonus toasts */
+.quota-bonus-red {
+  background: var(--color-red);
+}
+
+.quota-bonus-blue {
+  background: var(--color-blue);
+}
+
+.quota-bonus-green {
+  background: var(--color-green);
+}
+
+.quota-bonus-yellow {
+  background: var(--color-yellow);
+  color: #000; /* Dark text for yellow background */
+}
+
+@keyframes bonus-float {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(0);
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-8px);
+  }
+  70% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-24px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-40px);
+  }
 }
 
 .quota-segment {

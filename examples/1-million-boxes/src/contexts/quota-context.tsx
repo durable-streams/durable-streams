@@ -24,10 +24,25 @@ export interface QuotaState {
 }
 
 export interface QuotaContextValue {
+  /** Current remaining quota tokens */
   remaining: number
+  /** Maximum quota tokens */
   max: number
+  /** Seconds until next refill (0 if full) */
   refillIn: number
+  /** Number of bonus tokens earned (for toast animation), resets after reading */
+  bonusCount: number
+  /** Clear the bonus count after showing toast */
+  clearBonus: () => void
+  /** Optimistically consume a token. Returns false if no tokens available. */
   consume: () => boolean
+  /** Sync quota state from server response. Use this instead of manual refunds. */
+  syncFromServer: (
+    remaining: number,
+    refillIn?: number,
+    boxesClaimed?: number
+  ) => void
+  /** Legacy refund for error cases where server doesn't respond */
   refund: () => void
 }
 
@@ -69,6 +84,7 @@ function saveQuota(state: QuotaState): void {
 export function QuotaProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<QuotaState>(() => loadQuota())
   const [refillIn, setRefillIn] = useState(0)
+  const [bonusCount, setBonusCount] = useState(0)
 
   // Persist to localStorage
   useEffect(() => {
@@ -114,6 +130,7 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(`storage`, handler)
   }, [])
 
+  // Optimistically consume a token (called before server request)
   const consume = useCallback(() => {
     if (state.remaining <= 0) return false
 
@@ -125,6 +142,53 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
     return true
   }, [state.remaining])
 
+  // Sync quota from server response (includes any refunds for completed boxes)
+  const syncFromServer = useCallback(
+    (remaining: number, serverRefillIn?: number, boxesClaimed?: number) => {
+      const now = Date.now()
+
+      // Track bonus for toast animation
+      if (boxesClaimed && boxesClaimed > 0) {
+        setBonusCount(boxesClaimed)
+      }
+
+      // Calculate lastRefillAt to align with server's refillIn
+      // This ensures the interval timer computes the same countdown
+      let newLastRefillAt: number
+      if (serverRefillIn !== undefined && serverRefillIn > 0) {
+        // Server says "next refill in X seconds"
+        // So lastRefillAt should be: now - (interval - X*1000)
+        // Clamp serverRefillIn to interval to prevent future timestamps
+        const clampedRefillMs = Math.min(
+          serverRefillIn * 1000,
+          REFILL_INTERVAL_MS
+        )
+        newLastRefillAt = now - (REFILL_INTERVAL_MS - clampedRefillMs)
+        setRefillIn(Math.floor(clampedRefillMs / 1000))
+      } else {
+        // No server refillIn or quota is full (refillIn=0)
+        // Keep current timing or reset to now
+        newLastRefillAt = now
+        if (remaining >= MAX_QUOTA) {
+          setRefillIn(0)
+        }
+      }
+
+      setState((s) => ({
+        ...s,
+        remaining: Math.min(MAX_QUOTA, Math.max(0, remaining)),
+        lastRefillAt: newLastRefillAt,
+      }))
+    },
+    []
+  )
+
+  // Clear bonus count after toast is shown
+  const clearBonus = useCallback(() => {
+    setBonusCount(0)
+  }, [])
+
+  // Legacy refund for network errors where server doesn't respond
   const refund = useCallback(() => {
     setState((s) => ({
       ...s,
@@ -138,7 +202,10 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
         remaining: state.remaining,
         max: MAX_QUOTA,
         refillIn,
+        bonusCount,
+        clearBonus,
         consume,
+        syncFromServer,
         refund,
       }}
     >

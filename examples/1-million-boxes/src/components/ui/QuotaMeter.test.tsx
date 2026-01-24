@@ -16,7 +16,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 7,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -30,7 +33,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 0,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -51,7 +57,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 5,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -73,7 +82,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 0,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -88,7 +100,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 5,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -103,7 +118,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 5,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -118,7 +136,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 7,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -133,7 +154,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 7,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -147,7 +171,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 0,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)
@@ -161,7 +188,10 @@ describe(`QuotaMeter`, () => {
       max: 8,
       refillIn: 0,
       consume: vi.fn(),
+      syncFromServer: vi.fn(),
       refund: vi.fn(),
+      bonusCount: 0,
+      clearBonus: vi.fn(),
     })
 
     render(<QuotaMeter />)

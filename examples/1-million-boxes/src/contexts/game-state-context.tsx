@@ -65,7 +65,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
   // Get team and quota from contexts
   const { teamId } = useTeam()
-  const { consume, refund } = useQuota()
+  const { consume, syncFromServer, refund } = useQuota()
 
   // Schedule a render for next animation frame (60fps throttle)
   const scheduleRender = useCallback(() => {
@@ -199,9 +199,9 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
         return
       }
 
-      // Check if we have quota
+      // Optimistically consume quota (will be synced from server response)
       if (!consume()) {
-        setError(`Rate limited - please wait`)
+        setError(`Quota exceeded, please wait`)
         return
       }
 
@@ -218,17 +218,34 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
         if (result.ok) {
           // Success - edge will be confirmed via stream
+          // Sync quota from server (includes any refunds for completed boxes)
+          if (typeof result.quotaRemaining === `number`) {
+            syncFromServer(
+              result.quotaRemaining,
+              result.refillIn,
+              result.boxesClaimed
+            )
+          }
           setError(null)
         } else {
           // Handle error codes
+          // Sync quota from server response if provided (even on errors)
+          if (typeof result.quotaRemaining === `number`) {
+            syncFromServer(result.quotaRemaining, result.refillIn)
+          }
+
           switch (result.code) {
             case `EDGE_TAKEN`:
-              // Refund quota since edge was already taken
-              refund()
+              // Server already refunded - quota synced above
               setError(null) // Not really an error, just already taken
               break
+            case `QUOTA_EXHAUSTED`:
+              // Server says no quota - already synced above
+              setError(`Quota exceeded, please wait`)
+              break
             case `NO_TEAM`:
-              refund()
+            case `NO_PLAYER`:
+              refund() // Fallback refund if no server quota info
               setError(`No team assigned - please refresh`)
               break
             case `GAME_COMPLETE`:
@@ -256,13 +273,13 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           setPendingEdge(null)
         }
       } catch (err) {
-        // Network error
+        // Network error - refund locally since we can't reach server
         refund()
         setPendingEdge(null)
         setError(err instanceof Error ? err.message : `Failed to place edge`)
       }
     },
-    [consume, refund, teamId]
+    [consume, syncFromServer, refund, teamId]
   )
 
   const value: GameStateContextValue = {

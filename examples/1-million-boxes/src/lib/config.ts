@@ -23,6 +23,10 @@ export {
   TOTAL_BOX_COUNT,
   // Stream configuration
   GAME_STREAM_PATH,
+  // Quota configuration (from shared - server-side enforced)
+  MAX_QUOTA,
+  QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_STORAGE_KEY,
 } from "../../shared/game-config"
 
 // =============================================================================
@@ -67,25 +71,6 @@ export const DEFAULT_ZOOM = 2
  * Zoom step for zoom in/out buttons (multiplier).
  */
 export const ZOOM_STEP = 1.5
-
-// =============================================================================
-// Quota Configuration
-// =============================================================================
-
-/**
- * LocalStorage key for persisting quota state.
- */
-export const QUOTA_STORAGE_KEY = `boxes:quota`
-
-/**
- * Maximum number of lines a player can have stored.
- */
-export const MAX_QUOTA = 8
-
-/**
- * Time interval for refilling one quota unit (in ms).
- */
-export const QUOTA_REFILL_INTERVAL_MS = 7500
 
 // =============================================================================
 // Rendering Configuration

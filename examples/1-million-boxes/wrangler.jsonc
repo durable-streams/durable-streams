@@ -23,10 +23,11 @@
   },
 
   // Durable Object migrations
+  // Using SQLite storage backend for server-side quota tracking
   "migrations": [
     {
-      "tag": "v1",
-      "new_classes": ["GameWriterDO"]
+      "tag": "v2",
+      "new_sqlite_classes": ["GameWriterDO"]
     }
   ],
 
