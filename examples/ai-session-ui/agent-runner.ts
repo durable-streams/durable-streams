@@ -139,32 +139,6 @@ async function main() {
   // Subscribe to query result changes
   messagesWithContent.subscribeChanges(processQueryResults)
 
-  // Quick relevance check using Haiku - needs conversation history for context
-  // Quick relevance check using Haiku - biased towards "yes" since Sonnet can still decline via stop tool
-  async function shouldRespond(conversationHistory: Array<{ role: "user" | "assistant"; content: string }>): Promise<boolean> {
-    const recentMessages = conversationHistory.slice(-6) // Last 6 messages for context
-
-    const response = await client.messages.create({
-      model: "claude-sonnet-4-5-20250929",
-      max_tokens: 10,
-      system: `Route messages to agents. Output ONLY the word "yes" or "no", nothing else.
-
-Agent: ${agent.name}
-Tools: ${Object.keys(agent.tools).join(", ")}
-
-Say "yes" if this agent might help. Say "no" only if clearly irrelevant.`,
-      messages: recentMessages.length > 0 ? recentMessages : [{ role: "user", content: "hello" }],
-    })
-
-    const firstBlock = response.content[0]
-    const rawAnswer = firstBlock && firstBlock.type === "text"
-      ? firstBlock.text.toLowerCase().trim()
-      : "yes" // Default to yes if response is malformed
-    console.log(`   Router says: "${rawAnswer}" for ${agent.name}`)
-    // Only reject if the answer starts with "no" - bias towards acceptance
-    return !rawAnswer.startsWith("no")
-  }
-
   // Stop tool - allows Sonnet to decline responding after the relevance check passes
   const stopTool: Anthropic.Tool = {
     name: "stop",
