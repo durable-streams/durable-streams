@@ -28,6 +28,11 @@
   width: auto;
 }
 
+/* Show full logo by default, hide mini */
+.header-logo-mini {
+  display: none;
+}
+
 .header-center {
   display: none;
 }
@@ -65,12 +70,36 @@
   flex-shrink: 0;
 }
 
-/* Floating scoreboard - hidden on desktop, shown on mobile */
+/* Floating scoreboard - hidden on desktop, shown when header scoreboard hidden */
 .floating-scoreboard {
   display: none;
 }
 
-/* Tablet/Mobile: icon-only buttons and floating scoreboard */
+/* Medium screens: move scoreboard to floating island */
+@media (max-width: 1030px) {
+  /* Hide scoreboard in header */
+  .header-scoreboard {
+    display: none;
+  }
+
+  /* Show floating scoreboard */
+  .floating-scoreboard {
+    display: flex;
+    position: absolute;
+    top: calc(var(--header-height) + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(255, 255, 255, 0.95);
+    padding: 8px 14px;
+    border-radius: 20px;
+    border: 1px solid var(--color-border);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    z-index: 50;
+    backdrop-filter: blur(8px);
+  }
+}
+
+/* Tablet/Mobile: icon-only buttons and layout changes */
 @media (max-width: 768px) {
   .header {
     padding: 0 12px;
@@ -113,29 +142,14 @@
     justify-content: flex-end;
   }
 
-  .header-logo {
-    height: 20px;
-  }
-
-  /* Hide scoreboard in header on tablet/mobile */
-  .header-scoreboard {
+  /* Show mini logo, hide full logo on tablet/mobile */
+  .header-logo-full {
     display: none;
   }
 
-  /* Show floating scoreboard on tablet/mobile */
-  .floating-scoreboard {
-    display: flex;
-    position: absolute;
-    top: calc(var(--header-height) + 8px);
-    left: 50%;
-    transform: translateX(-50%);
-    background: rgba(255, 255, 255, 0.95);
-    padding: 8px 14px;
-    border-radius: 20px;
-    border: 1px solid var(--color-border);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-    z-index: 50;
-    backdrop-filter: blur(8px);
+  .header-logo-mini {
+    display: block;
+    height: 24px;
   }
 }
 

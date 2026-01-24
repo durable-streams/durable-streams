@@ -45,7 +45,12 @@ export function Header() {
             <img
               src="/logo.svg"
               alt="1 Million Boxes"
-              className="header-logo"
+              className="header-logo header-logo-full"
+            />
+            <img
+              src="/logo-mini.svg"
+              alt="1M Boxes"
+              className="header-logo header-logo-mini"
             />
           </h1>
           <TeamBadge />
