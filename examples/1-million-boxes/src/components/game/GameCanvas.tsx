@@ -4,10 +4,12 @@ import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
 import { getScale, screenToWorld } from "../../lib/view-transform"
 import { findNearestEdge } from "../../lib/edge-picker"
+import { getDebugConfig, subscribeDebugConfig } from "../../lib/debug-config"
 import { TouchFeedback, useTouchFeedback } from "../ui/TouchFeedback"
 import { renderBoxes } from "./BoxRenderer"
 import { renderEdges } from "./EdgeRenderer"
 import { renderDots } from "./DotRenderer"
+import type { DebugConfig } from "../../lib/debug-config"
 import "./GameCanvas.css"
 
 /**
@@ -33,6 +35,12 @@ export function GameCanvas() {
   } = useGameState()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
   const { ripples, addRipple } = useTouchFeedback()
+  const [debugConfig, setDebugConfig] = useState<DebugConfig>(getDebugConfig)
+
+  // Subscribe to debug config changes
+  useEffect(() => {
+    return subscribeDebugConfig(setDebugConfig)
+  }, [])
 
   // Track touch state for tap vs drag detection
   const touchStartPos = useRef<{ x: number; y: number } | null>(null)
@@ -96,14 +104,18 @@ export function GameCanvas() {
     ctx.fillRect(0, 0, canvasSize.width, canvasSize.height)
 
     // Render layers in order: boxes, edges, dots
-    renderBoxes(
-      ctx,
-      gameState,
-      view,
-      canvasSize.width,
-      canvasSize.height,
-      boxBitmap
-    )
+    // Each layer can be toggled via debug config
+    if (debugConfig.renderShadedBoxes) {
+      renderBoxes(
+        ctx,
+        gameState,
+        view,
+        canvasSize.width,
+        canvasSize.height,
+        boxBitmap
+      )
+    }
+
     renderEdges(
       ctx,
       gameState,
@@ -111,9 +123,14 @@ export function GameCanvas() {
       canvasSize.width,
       canvasSize.height,
       pendingEdge,
-      hoveredEdge
+      hoveredEdge,
+      debugConfig.renderGridLines,
+      debugConfig.renderDrawnLines
     )
-    renderDots(ctx, view, canvasSize.width, canvasSize.height)
+
+    if (debugConfig.renderDots) {
+      renderDots(ctx, view, canvasSize.width, canvasSize.height)
+    }
   }, [
     gameState,
     boxBitmap,
@@ -122,6 +139,7 @@ export function GameCanvas() {
     pendingEdge,
     hoveredEdge,
     version,
+    debugConfig,
   ])
 
   // Handle mouse move for edge hover

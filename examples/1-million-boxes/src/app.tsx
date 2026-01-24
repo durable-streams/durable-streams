@@ -3,6 +3,7 @@ import { TeamProvider } from "./contexts/team-context"
 import { QuotaProvider } from "./contexts/quota-context"
 import { GameStateProvider } from "./contexts/game-state-context"
 import { GamePage } from "./components/GamePage"
+import { DebugOverlay } from "./components/ui/DebugOverlay"
 import type { TeamName } from "./lib/teams"
 import "./styles/global.css"
 
@@ -57,6 +58,7 @@ export function App() {
         <GameStateProvider>
           <div className="app-container" data-testid="app-container">
             <GamePage />
+            <DebugOverlay />
           </div>
         </GameStateProvider>
       </QuotaProvider>

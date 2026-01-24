@@ -23,8 +23,12 @@ export function renderEdges(
   canvasWidth: number,
   canvasHeight: number,
   pendingEdgeId: number | null = null,
-  hoveredEdgeId: number | null = null
+  hoveredEdgeId: number | null = null,
+  renderGridLines: boolean = true,
+  renderDrawnLines: boolean = true
 ): void {
+  // Early exit if nothing to render
+  if (!renderGridLines && !renderDrawnLines) return
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
   const gridSize = getScale(view) // pixels per grid cell
 
@@ -58,7 +62,9 @@ export function renderEdges(
         canvasHeight,
         pendingEdgeId,
         hoveredEdgeId,
-        lineWidth
+        lineWidth,
+        renderGridLines,
+        renderDrawnLines
       )
     }
   }
@@ -87,7 +93,9 @@ export function renderEdges(
         canvasHeight,
         pendingEdgeId,
         hoveredEdgeId,
-        lineWidth
+        lineWidth,
+        renderGridLines,
+        renderDrawnLines
       )
     }
   }
@@ -105,8 +113,18 @@ function renderEdge(
   canvasHeight: number,
   pendingEdgeId: number | null,
   hoveredEdgeId: number | null,
-  lineWidth: number
+  lineWidth: number,
+  renderGridLines: boolean,
+  renderDrawnLines: boolean
 ): void {
+  const isTaken = gameState.isEdgeTaken(edgeId)
+  const isPending = edgeId === pendingEdgeId
+  const isHovered = edgeId === hoveredEdgeId
+
+  // Skip based on debug flags
+  if (isTaken && !renderDrawnLines) return
+  if (!isTaken && !isPending && !isHovered && !renderGridLines) return
+
   let x1: number, y1: number, x2: number, y2: number
 
   if (horizontal) {
@@ -127,19 +145,13 @@ function renderEdge(
     y2 = end.y
   }
 
-  const isTaken = gameState.isEdgeTaken(edgeId)
-  const isPending = edgeId === pendingEdgeId
-  const isHovered = edgeId === hoveredEdgeId
-
-  // Reset line dash
-  ctx.setLineDash([])
-
   if (isTaken) {
     // Get the team that placed this edge
     const teamId = gameState.getEdgeOwner(edgeId) ?? 0
     const color = getTeamColor(teamId)
     ctx.strokeStyle = color.primary
     ctx.lineWidth = lineWidth * 1.2
+    ctx.setLineDash([])
   } else if (isPending) {
     ctx.strokeStyle = PENDING_COLOR
     ctx.lineWidth = lineWidth * 1.5
@@ -147,6 +159,7 @@ function renderEdge(
   } else if (isHovered) {
     ctx.strokeStyle = HOVERED_EDGE_COLOR
     ctx.lineWidth = lineWidth * 1.3
+    ctx.setLineDash([])
   } else {
     ctx.strokeStyle = UNPLACED_COLOR
     ctx.lineWidth = lineWidth * 0.5
@@ -155,7 +168,4 @@ function renderEdge(
 
   // Draw with hand-drawn style
   drawWobblyLine(ctx, x1, y1, x2, y2, lineWidth * 0.5, edgeId)
-
-  // Reset line dash after drawing
-  ctx.setLineDash([])
 }
