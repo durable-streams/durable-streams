@@ -23,12 +23,16 @@ function createRandomPositive(seed: number): () => number {
   }
 }
 
+type RenderingContext2D =
+  | CanvasRenderingContext2D
+  | OffscreenCanvasRenderingContext2D
+
 /**
  * Draw a wobbly line using quadratic bezier curves.
  * The line has a hand-drawn appearance with slight imperfections.
  */
 export function drawWobblyLine(
-  ctx: CanvasRenderingContext2D,
+  ctx: RenderingContext2D,
   x1: number,
   y1: number,
   x2: number,
@@ -62,7 +66,7 @@ export function drawWobblyLine(
  * Draw a slightly irregular dot (circle with wobble).
  */
 export function drawWobblyDot(
-  ctx: CanvasRenderingContext2D,
+  ctx: RenderingContext2D,
   x: number,
   y: number,
   radius: number,

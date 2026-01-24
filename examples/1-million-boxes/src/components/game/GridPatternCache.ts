@@ -16,12 +16,43 @@ const UNPLACED_COLOR = `#D9D9C7`
 const TILE_CELLS = 4
 
 // Cache tiles at different cell sizes for crisp rendering at different zoom levels
-// Key: cell size in pixels, Value: OffscreenCanvas
-const tileCache = new Map<number, OffscreenCanvas>()
+interface CacheEntry {
+  canvas: OffscreenCanvas
+  lastUsed: number
+}
+const tileCache = new Map<number, CacheEntry>()
 
 // Available cell sizes to cache (covers typical zoom range)
 // We'll pick the closest one that's >= the target size (scale down, not up)
 const CACHED_CELL_SIZES = [16, 32, 64, 128, 256]
+
+// Dispose tiles not used within this time (in ms)
+const CACHE_TTL = 5_000 // 5 seconds
+
+// Cleanup interval
+let cleanupTimer: ReturnType<typeof setInterval> | null = null
+
+// Track the currently active tile size (never evict this one)
+let currentTileSize: number | null = null
+
+function startCleanupTimer(): void {
+  if (cleanupTimer) return
+  cleanupTimer = setInterval(() => {
+    const now = Date.now()
+    for (const [size, entry] of tileCache) {
+      // Never evict the currently active tile
+      if (size === currentTileSize) continue
+      if (now - entry.lastUsed > CACHE_TTL) {
+        tileCache.delete(size)
+      }
+    }
+    // Stop timer if cache is empty
+    if (tileCache.size === 0 && cleanupTimer) {
+      clearInterval(cleanupTimer)
+      cleanupTimer = null
+    }
+  }, 10_000) // Check every 10 seconds
+}
 
 /**
  * Get the best cached cell size for the given target size.
@@ -96,16 +127,24 @@ function getTile(
 ): { canvas: OffscreenCanvas; cellSize: number } | null {
   const cellSize = getBestCellSize(targetCellSize)
 
-  let canvas = tileCache.get(cellSize)
-  if (!canvas) {
-    canvas = createTile(cellSize) ?? undefined
+  // Track current tile size so it's never evicted
+  currentTileSize = cellSize
+
+  let entry = tileCache.get(cellSize)
+  if (entry) {
+    // Update last used time
+    entry.lastUsed = Date.now()
+  } else {
+    const canvas = createTile(cellSize)
     if (canvas) {
-      tileCache.set(cellSize, canvas)
+      entry = { canvas, lastUsed: Date.now() }
+      tileCache.set(cellSize, entry)
+      startCleanupTimer()
     }
   }
 
-  if (!canvas) return null
-  return { canvas, cellSize }
+  if (!entry) return null
+  return { canvas: entry.canvas, cellSize }
 }
 
 /**
@@ -162,4 +201,8 @@ export function renderGridPattern(
  */
 export function clearGridPatternCache(): void {
   tileCache.clear()
+  if (cleanupTimer) {
+    clearInterval(cleanupTimer)
+    cleanupTimer = null
+  }
 }
