@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useCallback, useState } from "react"
 import { useGameState } from "../../hooks/useGameState"
 import { TeamBadge } from "../ui/TeamBadge"
 import { ScoreBoard } from "../ui/ScoreBoard"
@@ -6,10 +6,36 @@ import { ShareDialog } from "../ui/ShareDialog"
 import { AboutDialog } from "../ui/AboutDialog"
 import "./Header.css"
 
+const ABOUT_DISMISSED_KEY = `boxes:about-dismissed`
+
 export function Header() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false)
-  const [aboutDialogOpen, setAboutDialogOpen] = useState(false)
-  const { gameState } = useGameState()
+  // Show about dialog on first load unless already dismissed this session
+  const [aboutDialogOpen, setAboutDialogOpen] = useState(() => {
+    try {
+      return sessionStorage.getItem(ABOUT_DISMISSED_KEY) !== `true`
+    } catch {
+      return true // Show if sessionStorage unavailable
+    }
+  })
+  // Explicitly depend on version to ensure re-render when game state changes
+  const { gameState, version } = useGameState()
+  // Get current scores (will update when version changes)
+  const scores = gameState.getScores()
+  // Suppress unused variable warning - version is used to trigger re-renders
+  void version
+
+  // Handle about dialog close - store dismissal in sessionStorage
+  const handleAboutOpenChange = useCallback((open: boolean) => {
+    setAboutDialogOpen(open)
+    if (!open) {
+      try {
+        sessionStorage.setItem(ABOUT_DISMISSED_KEY, `true`)
+      } catch {
+        // Ignore if sessionStorage unavailable
+      }
+    }
+  }, [])
 
   return (
     <>
@@ -30,15 +56,12 @@ export function Header() {
           <TeamBadge />
         </div>
 
-        <ScoreBoard
-          scores={gameState.getScores()}
-          className="header-scoreboard"
-        />
+        <ScoreBoard scores={scores} className="header-scoreboard" />
 
         <div className="header-right">
           <button
             className="header-button"
-            onClick={() => setAboutDialogOpen(true)}
+            onClick={() => handleAboutOpenChange(true)}
             aria-label="About"
           >
             <svg
@@ -83,15 +106,16 @@ export function Header() {
           </button>
         </div>
 
-        <AboutDialog open={aboutDialogOpen} onOpenChange={setAboutDialogOpen} />
+        <AboutDialog
+          open={aboutDialogOpen}
+          onOpenChange={handleAboutOpenChange}
+          scores={scores}
+        />
         <ShareDialog open={shareDialogOpen} onOpenChange={setShareDialogOpen} />
       </header>
 
       {/* Floating scoreboard for mobile */}
-      <ScoreBoard
-        scores={gameState.getScores()}
-        className="floating-scoreboard"
-      />
+      <ScoreBoard scores={scores} className="floating-scoreboard" />
     </>
   )
 }
