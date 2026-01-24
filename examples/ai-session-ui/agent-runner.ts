@@ -145,16 +145,14 @@ async function main() {
     const recentMessages = conversationHistory.slice(-6) // Last 6 messages for context
 
     const response = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: "claude-sonnet-4-5-20250929",
       max_tokens: 10,
-      system: `You are a VERY permissive routing assistant. Your job is to say "yes" unless the message is COMPLETELY unrelated to this agent.
+      system: `Route messages to agents. Output ONLY the word "yes" or "no", nothing else.
 
 Agent: ${agent.name}
-Capabilities: ${agent.systemPrompt}
+Tools: ${Object.keys(agent.tools).join(", ")}
 
-IMPORTANT: Almost always say "yes". The agent can decline later. Only say "no" if absolutely certain this agent cannot help (e.g., asking to read files when this agent only does web lookups).
-
-Respond with ONLY "yes" or "no".`,
+Say "yes" if this agent might help. Say "no" only if clearly irrelevant.`,
       messages: recentMessages.length > 0 ? recentMessages : [{ role: "user", content: "hello" }],
     })
 
@@ -162,7 +160,7 @@ Respond with ONLY "yes" or "no".`,
     const rawAnswer = firstBlock && firstBlock.type === "text"
       ? firstBlock.text.toLowerCase().trim()
       : "yes" // Default to yes if response is malformed
-    console.log(`   Haiku says: "${rawAnswer}" for ${agent.name}`)
+    console.log(`   Router says: "${rawAnswer}" for ${agent.name}`)
     // Only reject if the answer starts with "no" - bias towards acceptance
     return !rawAnswer.startsWith("no")
   }
@@ -193,49 +191,68 @@ Respond with ONLY "yes" or "no".`,
         }))
         .filter((m) => m.content)
 
-      // Quick check if this agent should respond (with conversation context)
-      const relevant = await shouldRespond(conversationHistory)
-      if (!relevant) {
-        console.log(`   Skipping - not relevant to ${agent.name}`)
-        return
-      }
-
-      console.log(`   Relevant - processing...`)
+      console.log(`   Processing with ${agent.name}...`)
       console.log(`   Conversation history: ${conversationHistory.length} messages`)
+      const startTime = Date.now()
 
       // Get tool schemas for API - include stop tool so Sonnet can decline
       const tools = agent.tools as Record<string, ToolDefinition>
       const toolSchemas = [...Object.values(tools).map(t => t.schema), stopTool]
 
-      // First call: don't write to stream yet - wait to see if Sonnet calls "stop"
+      // First call: stream but buffer until we confirm no "stop" tool call
       let currentMessages: Anthropic.MessageParam[] = conversationHistory
       const toolNames = Object.keys(tools).join(", ")
-      const firstResponse = await client.messages.create({
+      const systemPrompt = `${agent.systemPrompt}
+
+You are part of a multi-agent system. Your tools are: ${toolNames}.
+
+CRITICAL:
+- If you can help, USE YOUR TOOLS immediately. Never answer from memory.
+- If you CANNOT help (request is outside your tools), call "stop" tool IMMEDIATELY with no text output. Do not explain why you can't help - just call stop silently. Another agent will handle it.
+
+Examples for ${agent.name}:
+${toolNames.includes("fetch_weather") ? "- Weather questions: use fetch_weather (SLC ≈ 40.76, -111.89)" : "- Weather questions: call stop (not your domain)"}
+${toolNames.includes("fetch_wikipedia") ? "- Info lookups: use fetch_wikipedia" : "- Info lookups: call stop (not your domain)"}
+${toolNames.includes("list_directory") ? "- File questions: use list_directory, read_file, search_files" : "- File questions: call stop (not your domain)"}`
+
+      const firstStream = client.messages.stream({
         model: agent.model,
         max_tokens: 4096,
-        system: `${agent.systemPrompt}
-
-You are part of a multi-agent system. You can ONLY help with tasks that use your specific tools: ${toolNames}.
-
-CRITICAL RULES:
-1. If the user's request cannot be answered using your tools, you MUST call the "stop" tool immediately
-2. Do NOT answer questions from general knowledge - only use your tools
-3. Do NOT try to help with requests outside your capabilities - another agent will handle them
-4. When in doubt, call "stop"`,
+        system: systemPrompt,
         messages: currentMessages,
         tools: toolSchemas,
       })
 
+      // Buffer text while streaming, check for stop tool
+      const textBuffer: string[] = []
+      let sawStopTool = false
+
+      for await (const event of firstStream) {
+        if (event.type === "content_block_delta") {
+          const delta = event.delta
+          if (delta.type === "text_delta") {
+            textBuffer.push(delta.text)
+          }
+        } else if (event.type === "content_block_start") {
+          if (event.content_block.type === "tool_use" && event.content_block.name === "stop") {
+            sawStopTool = true
+          }
+        }
+      }
+
+      const firstResponse = await firstStream.finalMessage()
+      console.log(`   [${Date.now() - startTime}ms] First response: stop_reason=${firstResponse.stop_reason}, content_blocks=${firstResponse.content.length}`)
+      for (const block of firstResponse.content) {
+        console.log(`     - ${block.type}${block.type === "tool_use" ? `: ${block.name}` : block.type === "text" ? `: "${block.text.substring(0, 100)}..."` : ""}`)
+      }
+
       // Check if Sonnet declined by calling stop
-      const calledStop = firstResponse.content.some(
-        block => block.type === "tool_use" && block.name === "stop"
-      )
-      if (calledStop) {
+      if (sawStopTool) {
         console.log(`   Sonnet declined - not relevant to ${agent.name}`)
         return
       }
 
-      // Sonnet wants to respond - now create the message
+      // Sonnet wants to respond - now create the message and flush buffer
       const responseMessage = await session.createMessage({
         role: "assistant",
         agentId,
@@ -257,15 +274,19 @@ CRITICAL RULES:
         })
       }
 
-      // Write the first response content to the stream
-      let hasText = false
-      const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
+      // Flush buffered text from first response
+      let hasText = textBuffer.length > 0
+      if (hasText) {
+        console.log(`   First response text: "${textBuffer.join("").substring(0, 200)}..."`)
+      }
+      for (const text of textBuffer) {
+        await appendText(text)
+      }
 
+      // Collect tool uses from first response
+      const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = []
       for (const block of firstResponse.content) {
-        if (block.type === "text") {
-          hasText = true
-          await appendText(block.text)
-        } else if (block.type === "tool_use") {
+        if (block.type === "tool_use" && block.name !== "stop") {
           console.log(`   Tool call: ${block.name}`)
           toolUses.push({
             id: block.id,
@@ -309,14 +330,19 @@ CRITICAL RULES:
         while (currentToolUses.length > 0 && maxSteps > 0) {
           maxSteps--
 
-          // Write tool calls to stream and execute
-          const toolResultsContent: Array<{ type: "tool_result"; tool_use_id: string; content: string }> = []
+          // Pre-assign partIndex for each tool (call + result = 2 parts each)
+          const toolPartIndices = currentToolUses.map((_, i) => ({
+            callIndex: partIndex + (i * 2),
+            resultIndex: partIndex + (i * 2) + 1,
+          }))
+          partIndex += currentToolUses.length * 2
 
-          for (const toolUse of currentToolUses) {
-            // Write tool-call delta
+          // Write all tool-call deltas first
+          for (let i = 0; i < currentToolUses.length; i++) {
+            const toolUse = currentToolUses[i]
             await session.appendDelta({
               messageId: responseMessage.id,
-              partIndex,
+              partIndex: toolPartIndices[i].callIndex,
               partType: "tool-call",
               seq: 0,
               toolCallId: toolUse.id,
@@ -324,38 +350,40 @@ CRITICAL RULES:
               text: JSON.stringify(toolUse.input, null, 2),
               done: true,
             })
-            partIndex++
-
-            // Execute tool
-            const tool = tools[toolUse.name]
-            let result: string
-            if (!tool) {
-              result = `Error: Unknown tool ${toolUse.name}`
-            } else {
-              console.log(`   Executing tool: ${toolUse.name}`)
-              result = await tool.execute(toolUse.input)
-              console.log(`   Tool result: ${result.substring(0, 100)}...`)
-            }
-
-            // Write tool-result delta
-            await session.appendDelta({
-              messageId: responseMessage.id,
-              partIndex,
-              partType: "tool-result",
-              seq: 0,
-              toolCallId: toolUse.id,
-              toolName: toolUse.name,
-              text: result,
-              done: true,
-            })
-            partIndex++
-
-            toolResultsContent.push({
-              type: "tool_result" as const,
-              tool_use_id: toolUse.id,
-              content: result,
-            })
           }
+
+          // Execute all tools in parallel
+          console.log(`   [${Date.now() - startTime}ms] Executing ${currentToolUses.length} tool(s) in parallel...`)
+          const toolResultsContent = await Promise.all(
+            currentToolUses.map(async (toolUse, i) => {
+              const tool = tools[toolUse.name]
+              let result: string
+              if (!tool) {
+                result = `Error: Unknown tool ${toolUse.name}`
+              } else {
+                result = await tool.execute(toolUse.input)
+                console.log(`   Tool ${toolUse.name} result: ${result.substring(0, 100)}...`)
+              }
+
+              // Write tool-result delta with pre-assigned index
+              await session.appendDelta({
+                messageId: responseMessage.id,
+                partIndex: toolPartIndices[i].resultIndex,
+                partType: "tool-result",
+                seq: 0,
+                toolCallId: toolUse.id,
+                toolName: toolUse.name,
+                text: result,
+                done: true,
+              })
+
+              return {
+                type: "tool_result" as const,
+                tool_use_id: toolUse.id,
+                content: result,
+              }
+            })
+          )
 
           const toolResults: Anthropic.MessageParam = {
             role: "user",
@@ -369,8 +397,9 @@ CRITICAL RULES:
             toolResults,
           ]
 
-          // Get next response
-          const nextResponse = await client.messages.create({
+          // Get next response with streaming
+          console.log(`   [${Date.now() - startTime}ms] Calling API for next response...`)
+          const stream = client.messages.stream({
             model: agent.model,
             max_tokens: 4096,
             system: agent.systemPrompt,
@@ -378,13 +407,23 @@ CRITICAL RULES:
             tools: toolSchemas,
           })
 
-          // Process next response
+          // Stream text as it arrives
           currentToolUses = []
+          for await (const event of stream) {
+            if (event.type === "content_block_delta") {
+              const delta = event.delta
+              if (delta.type === "text_delta") {
+                await appendText(delta.text)
+                hasText = true
+              }
+            }
+          }
+
+          // Get final message for tool calls
+          const nextResponse = await stream.finalMessage()
+          console.log(`   [${Date.now() - startTime}ms] Got next response`)
           for (const block of nextResponse.content) {
-            if (block.type === "text") {
-              await appendText(block.text)
-              hasText = true
-            } else if (block.type === "tool_use" && block.name !== "stop") {
+            if (block.type === "tool_use" && block.name !== "stop") {
               console.log(`   Tool call: ${block.name}`)
               currentToolUses.push({
                 id: block.id,
@@ -422,7 +461,7 @@ CRITICAL RULES:
         }
       }
 
-      console.log(`   Response complete`)
+      console.log(`   [${Date.now() - startTime}ms] Response complete`)
     } catch (err) {
       console.error(`   Error processing message:`, err)
     }
