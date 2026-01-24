@@ -198,7 +198,7 @@ For production, you'll need:
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                     Cloudflare Edge                                 │
+│                     Cloudflare Edge                                │
 │  ┌─────────────────────────┐    ┌───────────────────────────────┐  │
 │  │  Hono Worker            │    │  GameWriterDO                 │  │
 │  │                         │───▶│  - edge bitset (250KB)        │  │
@@ -235,7 +235,171 @@ For production, you'll need:
 - **Edge ID**: Each of the 2,002,000 edges has a unique ID (0 to 2,001,999)
 - **Event Format**: 3 bytes per event (`edgeId << 2 | teamId`)
 - **Client-side State**: Clients derive all state (box ownership, scores) from the stream
-- **Optimistic Updates**: Edges appear immediately, confirmed via SSE
+- **Optimistic Updates**: Edges appear immediately, confirmed via long-poll
+
+## Durable Streams Integration
+
+The game uses [Durable Streams](../../README.md) as the backbone for real-time state synchronization. All game state is derived from an append-only log of edge placement events.
+
+### Stream Architecture
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│  Browser                                                                  │
+│  ┌─────────────────────────────────────────────────────────────────────┐  │
+│  │  React App                                                          │  │
+│  │                                                                     │  │
+│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │  │
+│  │  │ useGameStream   │───▶│  StreamParser   │───▶│   GameState     │  │  │
+│  │  │                 │    │                 │    │                 │  │  │
+│  │  │ DurableStream   │    │ Decodes 3-byte  │    │ Applies events  │  │  │
+│  │  │ client library  │    │ records into    │    │ to derive:      │  │  │
+│  │  │                 │    │ {edgeId,teamId} │    │ - edges placed  │  │  │
+│  │  │ live: long-poll │    │                 │    │ - box ownership │  │  │
+│  │  │                 │    │                 │    │ - team scores   │  │  │
+│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘  │  │
+│  └─────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+### Client-Side: Reading the Stream
+
+The frontend uses the `@durable-streams/client` library:
+
+```typescript
+import { DurableStream } from "@durable-streams/client"
+
+// Create stream instance
+const stream = new DurableStream({ url: "/api/stream/game" })
+
+// Stream with long-polling for live updates
+const response = await stream.stream({ live: "long-poll" })
+
+// Subscribe to binary chunks
+response.subscribeBytes((chunk) => {
+  const events = parser.feed(chunk.data) // Parse 3-byte records
+  for (const event of events) {
+    gameState.applyEvent(event) // Update local state
+  }
+})
+```
+
+**Why Long-Poll instead of SSE?**  
+The stream uses `application/octet-stream` content type for binary data. SSE (`text/event-stream`) requires text encoding, so we use long-polling which natively supports binary chunks.
+
+### Server-Side: Writing to the Stream
+
+The `GameWriterDO` Durable Object handles all write operations:
+
+1. **Initialization**: Replays the entire stream to rebuild in-memory state
+2. **Validation**: Checks edge availability, team validity, game completion
+3. **Append**: Posts encoded 3-byte record to Durable Streams server
+4. **State Update**: Applies event to local state for future validations
+
+```typescript
+// Encode and append a move
+const event = { edgeId: 12345, teamId: 2 }
+const encoded = encodeEvent(event) // 3 bytes
+
+await fetch(streamUrl, {
+  method: "POST",
+  headers: { "Content-Type": "application/octet-stream" },
+  body: encoded,
+})
+```
+
+## Wire Format: Bit-Packed Events
+
+Each edge placement is encoded as a **3-byte (24-bit) big-endian** value for minimal bandwidth and storage.
+
+### Packed Format
+
+```
+Byte 0        Byte 1        Byte 2
+┌─────────┐   ┌─────────┐   ┌─────────┐
+│ 7     0 │   │ 7     0 │   │ 7     0 │
+├─────────┤   ├─────────┤   ├─────────┤
+│ E E E E │   │ E E E E │   │ E E E E │
+│ E E E E │   │ E E E E │   │ E E T T │
+└─────────┘   └─────────┘   └─────────┘
+
+E = Edge ID bits (22 bits total, max value ~4.2 million)
+T = Team ID bits (2 bits, values 0-3)
+
+packed = (edgeId << 2) | teamId
+```
+
+### Encoding/Decoding
+
+```typescript
+// Encode: GameEvent → 3 bytes
+function encodeEvent(event: GameEvent): Uint8Array {
+  const packed = (event.edgeId << 2) | event.teamId
+  return new Uint8Array([
+    (packed >> 16) & 0xff, // High byte
+    (packed >> 8) & 0xff, // Middle byte
+    packed & 0xff, // Low byte
+  ])
+}
+
+// Decode: 3 bytes → GameEvent
+function decodeRecord(bytes: Uint8Array, offset: number): GameEvent {
+  const packed =
+    (bytes[offset] << 16) | (bytes[offset + 1] << 8) | bytes[offset + 2]
+  return {
+    edgeId: packed >> 2,
+    teamId: packed & 0b11,
+  }
+}
+```
+
+### Edge ID Layout
+
+The grid has 1000×1000 boxes, requiring 2,002,000 edges:
+
+| Edge Type  | Count     | ID Range              | Formula                    |
+| ---------- | --------- | --------------------- | -------------------------- |
+| Horizontal | 1,001,000 | 0 – 1,000,999         | `y * 1000 + x`             |
+| Vertical   | 1,001,000 | 1,001,000 – 2,001,999 | `1,001,000 + y * 1001 + x` |
+
+- **Horizontal edges**: 1001 rows × 1000 edges/row
+- **Vertical edges**: 1000 rows × 1001 edges/row
+
+### Bandwidth Efficiency
+
+| Metric          | Value               |
+| --------------- | ------------------- |
+| Bytes per event | 3                   |
+| Max stream size | ~6 MB (all edges)   |
+| Initial sync    | Single HTTP request |
+| Live updates    | Long-poll chunks    |
+
+### Streaming Parser
+
+The `StreamParser` class handles chunk boundaries correctly:
+
+```typescript
+class StreamParser {
+  private buffer: Uint8Array = new Uint8Array(0)
+
+  feed(chunk: Uint8Array): Array<GameEvent> {
+    // Combine with buffered partial record
+    const combined = new Uint8Array(this.buffer.length + chunk.length)
+    combined.set(this.buffer)
+    combined.set(chunk, this.buffer.length)
+
+    // Parse complete 3-byte records
+    const recordCount = Math.floor(combined.length / 3)
+    const events = parseRecords(combined.subarray(0, recordCount * 3))
+
+    // Buffer any remaining 1-2 bytes for next chunk
+    this.buffer = combined.slice(recordCount * 3)
+    return events
+  }
+}
+```
+
+This ensures that even if a chunk boundary falls mid-record, the parser correctly buffers and reassembles the data
 
 ## Testing
 
