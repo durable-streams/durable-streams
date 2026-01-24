@@ -4,6 +4,7 @@ import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
 import {
   getScale,
+  getVisibleBounds,
   screenRectToWorldBounds,
   screenToWorld,
   worldToScreen,
@@ -358,6 +359,25 @@ export function GameCanvas() {
       return
     }
 
+    const redrawScreenRect = (rect: {
+      x: number
+      y: number
+      width: number
+      height: number
+    }) => {
+      if (rect.width <= 0 || rect.height <= 0) return
+      const bounds = screenRectToWorldBounds(
+        view,
+        canvasSize.width,
+        canvasSize.height,
+        rect.x,
+        rect.y,
+        rect.width,
+        rect.height
+      )
+      renderLayers(ctx, renderState, bounds, rect)
+    }
+
     const zoomChanged = prevView.zoom !== view.zoom
     if (zoomChanged) {
       captureZoomSnapshot()
@@ -381,6 +401,65 @@ export function GameCanvas() {
         ctx.drawImage(snapshot, 0, 0)
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
       }
+
+      const prevBounds = getVisibleBounds(
+        prevView,
+        canvasSize.width,
+        canvasSize.height
+      )
+      const prevTopLeft = worldToScreen(
+        prevBounds.minX,
+        prevBounds.minY,
+        view,
+        canvasSize.width,
+        canvasSize.height
+      )
+      const prevBottomRight = worldToScreen(
+        prevBounds.maxX,
+        prevBounds.maxY,
+        view,
+        canvasSize.width,
+        canvasSize.height
+      )
+
+      const rectLeft = Math.min(prevTopLeft.x, prevBottomRight.x)
+      const rectRight = Math.max(prevTopLeft.x, prevBottomRight.x)
+      const rectTop = Math.min(prevTopLeft.y, prevBottomRight.y)
+      const rectBottom = Math.max(prevTopLeft.y, prevBottomRight.y)
+
+      if (rectLeft > 0) {
+        redrawScreenRect({
+          x: 0,
+          y: 0,
+          width: rectLeft,
+          height: canvasSize.height,
+        })
+      }
+      if (rectRight < canvasSize.width) {
+        redrawScreenRect({
+          x: rectRight,
+          y: 0,
+          width: canvasSize.width - rectRight,
+          height: canvasSize.height,
+        })
+      }
+      if (rectTop > 0) {
+        redrawScreenRect({
+          x: 0,
+          y: 0,
+          width: canvasSize.width,
+          height: rectTop,
+        })
+      }
+      if (rectBottom < canvasSize.height) {
+        redrawScreenRect({
+          x: 0,
+          y: rectBottom,
+          width: canvasSize.width,
+          height: canvasSize.height - rectBottom,
+        })
+      }
+
       scheduleZoomRedraw()
       prevViewRef.current = view
       prevCanvasSizeRef.current = canvasSize
@@ -394,25 +473,6 @@ export function GameCanvas() {
     const deltaX = (prevView.centerX - view.centerX) * scale
     const deltaY = (prevView.centerY - view.centerY) * scale
     const centerChanged = deltaX !== 0 || deltaY !== 0
-
-    const redrawScreenRect = (rect: {
-      x: number
-      y: number
-      width: number
-      height: number
-    }) => {
-      if (rect.width <= 0 || rect.height <= 0) return
-      const bounds = screenRectToWorldBounds(
-        view,
-        canvasSize.width,
-        canvasSize.height,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height
-      )
-      renderLayers(ctx, renderState, bounds, rect)
-    }
 
     if (centerChanged) {
       if (

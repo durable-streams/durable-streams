@@ -50,6 +50,9 @@ export function AboutDialog({
       const content = contentRef.current
       if (!content) return
 
+      // Ensure dialog starts at top on open
+      content.scrollTop = 0
+
       const checkOverflow = () => {
         const { scrollTop, scrollHeight, clientHeight } = content
         // Has content hidden above?
