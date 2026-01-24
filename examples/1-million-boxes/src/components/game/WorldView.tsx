@@ -3,6 +3,7 @@ import { W, edgeIdToCoords } from "../../lib/edge-math"
 import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameStateContext } from "../../contexts/game-state-context"
 import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { ZoomControls } from "../ui/ZoomControls"
 import { MinimapRenderer } from "./MinimapRenderer"
 import "./WorldView.css"
 
@@ -95,25 +96,28 @@ export function WorldView() {
   }, [recentEvents])
 
   return (
-    <div
-      ref={containerRef}
-      className="world-view-container"
-      onClick={handleClick}
-      data-testid="world-view"
-    >
-      <canvas ref={canvasRef} className="world-view-canvas" />
-      {pops.map((pop) => (
-        <div
-          key={pop.key}
-          className="world-view-pop"
-          style={{
-            left: `${pop.x}%`,
-            top: `${pop.y}%`,
-            backgroundColor: pop.color,
-            animationDelay: `-${pop.age}ms`,
-          }}
-        />
-      ))}
+    <div className="world-view-wrapper">
+      <ZoomControls className="minimap-zoom-controls" />
+      <div
+        ref={containerRef}
+        className="world-view-container"
+        onClick={handleClick}
+        data-testid="world-view"
+      >
+        <canvas ref={canvasRef} className="world-view-canvas" />
+        {pops.map((pop) => (
+          <div
+            key={pop.key}
+            className="world-view-pop"
+            style={{
+              left: `${pop.x}%`,
+              top: `${pop.y}%`,
+              backgroundColor: pop.color,
+              animationDelay: `-${pop.age}ms`,
+            }}
+          />
+        ))}
+      </div>
     </div>
   )
 }

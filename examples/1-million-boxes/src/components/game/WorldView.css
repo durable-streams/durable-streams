@@ -1,7 +1,38 @@
-.world-view-container {
+.world-view-wrapper {
   position: absolute;
   bottom: var(--minimap-margin);
   right: var(--minimap-margin);
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 100;
+}
+
+/* Hide minimap zoom controls on desktop - they're in the footer */
+.minimap-zoom-controls {
+  display: none;
+}
+
+/* Show minimap zoom controls on mobile, vertical layout with + on top */
+@media (max-width: 768px) {
+  .minimap-zoom-controls {
+    display: flex;
+    flex-direction: column-reverse;
+  }
+
+  .minimap-zoom-controls .zoom-button-left {
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    border-right: 1px solid var(--color-border);
+  }
+
+  .minimap-zoom-controls .zoom-button-right {
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    border-bottom: none;
+  }
+}
+
+.world-view-container {
   width: var(--minimap-size);
   height: var(--minimap-size);
   border-radius: var(--radius-md);
@@ -9,7 +40,6 @@
   box-shadow: var(--shadow-lg);
   cursor: pointer;
   transition: transform var(--transition-normal);
-  z-index: 100;
   overflow: hidden;
   background: var(--color-bg);
 }

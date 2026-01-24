@@ -21,16 +21,8 @@
   font-size: 1.25rem;
 }
 
-.zoom-button-center {
-  border-radius: 0;
-  min-width: 64px;
-  font-variant-numeric: tabular-nums;
-  font-size: 0.875rem;
-}
-
 .zoom-button-right {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  border-left: none;
   font-size: 1.25rem;
 }
 
@@ -47,10 +39,3 @@
   cursor: not-allowed;
 }
 
-/* Mobile adjustments */
-@media (max-width: 640px) {
-  .zoom-button-center {
-    min-width: 56px;
-    font-size: 0.8rem;
-  }
-}

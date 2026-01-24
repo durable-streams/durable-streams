@@ -33,7 +33,7 @@
     padding-right: max(12px, env(safe-area-inset-right));
   }
 
-  .world-view-container {
+  .world-view-wrapper {
     right: max(var(--minimap-margin), env(safe-area-inset-right));
     bottom: max(var(--minimap-margin), env(safe-area-inset-bottom));
   }
@@ -83,7 +83,7 @@
    Hover States (pointer devices only)
    ============================================ */
 @media (hover: hover) and (pointer: fine) {
-  .world-view-container:hover {
+  .world-view-wrapper:hover .world-view-container {
     transform: scale(1.05);
   }
 }
@@ -94,7 +94,7 @@
     display: none;
   }
 
-  .world-view-container:hover {
+  .world-view-wrapper:hover .world-view-container {
     transform: none;
   }
 }
@@ -139,7 +139,7 @@
 
   /* Hide minimap in very cramped landscape */
   @media (max-height: 360px) {
-    .world-view-container {
+    .world-view-wrapper {
       display: none;
     }
   }
