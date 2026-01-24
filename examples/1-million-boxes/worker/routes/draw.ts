@@ -1,7 +1,6 @@
 import { Hono } from "hono"
 import { z } from "zod"
-import { parseTeamCookie } from "../lib/team-cookie"
-import { parsePlayerCookie } from "../lib/player-cookie"
+import { parseIdentityCookie } from "../lib/identity-cookie"
 import { isValidEdgeId } from "../lib/edge-math"
 import { encodeEvent } from "../lib/stream-parser"
 import { GAME_STREAM_PATH } from "../lib/config"
@@ -90,15 +89,13 @@ drawRoutes.post(`/`, async (c) => {
   const secret = c.env.TEAM_COOKIE_SECRET || `dev-secret`
   const cookieHeader = c.req.header(`cookie`)
 
-  const teamId = await parseTeamCookie(cookieHeader, secret)
-  if (teamId === null) {
-    return c.json({ ok: false, code: `NO_TEAM` }, 401)
+  // Parse combined identity cookie (playerId.teamId.hmac)
+  const identity = await parseIdentityCookie(cookieHeader, secret)
+  if (identity === null) {
+    return c.json({ ok: false, code: `NO_IDENTITY` }, 401)
   }
 
-  const playerId = await parsePlayerCookie(cookieHeader, secret)
-  if (playerId === null) {
-    return c.json({ ok: false, code: `NO_PLAYER` }, 401)
-  }
+  const { playerId, teamId } = identity
 
   // Parse and validate request body
   let body: { edgeId: number }

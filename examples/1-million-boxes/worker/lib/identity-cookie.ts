@@ -1,4 +1,9 @@
-const COOKIE_NAME = `boxes_player`
+const COOKIE_NAME = `boxes_identity`
+
+export interface Identity {
+  playerId: string
+  teamId: number
+}
 
 /**
  * Create HMAC signature using Web Crypto API.
@@ -51,13 +56,22 @@ export function generatePlayerId(): string {
 }
 
 /**
- * Parse and verify player cookie from cookie header.
- * Returns playerId or null if invalid/missing.
+ * Generate a random team ID (0-3).
  */
-export async function parsePlayerCookie(
+export function generateTeamId(): number {
+  return Math.floor(Math.random() * 4)
+}
+
+/**
+ * Parse and verify identity cookie from cookie header.
+ * Returns { playerId, teamId } or null if invalid/missing.
+ *
+ * Cookie format: playerId.teamId.signature
+ */
+export async function parseIdentityCookie(
   cookieHeader: string | null | undefined,
   secret: string
-): Promise<string | null> {
+): Promise<Identity | null> {
   if (!cookieHeader) return null
 
   // Find our cookie
@@ -67,16 +81,18 @@ export async function parsePlayerCookie(
   if (!ourCookie) return null
 
   const value = ourCookie.slice(COOKIE_NAME.length + 1)
-  const lastDotIndex = value.lastIndexOf(`.`)
 
-  if (lastDotIndex === -1) return null
+  // Format: playerId.teamId.signature
+  // playerId is UUID (36 chars with dashes)
+  // teamId is 0-3 (1 char)
+  // signature is 32 chars
+  const parts = value.split(`.`)
 
-  const playerId = value.slice(0, lastDotIndex)
-  const sig = value.slice(lastDotIndex + 1)
+  if (parts.length !== 3) return null
 
-  if (!playerId || !sig) return null
+  const [playerId, teamIdStr, sig] = parts
 
-  // Validate UUID format (basic check)
+  // Validate UUID format
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
       playerId
@@ -85,27 +101,36 @@ export async function parsePlayerCookie(
     return null
   }
 
-  const valid = await verify(playerId, sig, secret)
+  // Validate teamId
+  const teamId = parseInt(teamIdStr, 10)
+  if (isNaN(teamId) || teamId < 0 || teamId > 3) return null
+
+  // Verify signature covers both playerId and teamId
+  const dataToSign = `${playerId}.${teamId}`
+  const valid = await verify(dataToSign, sig, secret)
   if (!valid) return null
 
-  return playerId
+  return { playerId, teamId }
 }
 
 /**
- * Create signed player cookie value in format: playerId.signature
+ * Create signed identity cookie value.
+ * Format: playerId.teamId.signature
  */
-export async function createPlayerCookie(
+export async function createIdentityCookie(
   playerId: string,
+  teamId: number,
   secret: string
 ): Promise<string> {
-  const sig = await sign(playerId, secret)
-  return `${playerId}.${sig}`
+  const dataToSign = `${playerId}.${teamId}`
+  const sig = await sign(dataToSign, secret)
+  return `${playerId}.${teamId}.${sig}`
 }
 
 /**
  * Build Set-Cookie header with appropriate security attributes.
  */
-export function buildPlayerCookieHeader(
+export function buildIdentityCookieHeader(
   cookieValue: string,
   isProduction: boolean
 ): string {
