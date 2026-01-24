@@ -63,6 +63,24 @@ export const AgentSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 })
 
+// Status updates - like Claude Code's thinking/token display
+export const StatusSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  messageId: z.string().nullable(), // Which message this relates to
+  state: z.enum(["thinking", "tool_executing", "streaming", "done", "error"]),
+  activity: z.string().optional(), // Human-readable description e.g. "Searching files..."
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  cacheReadTokens: z.number().default(0),
+  cacheWriteTokens: z.number().default(0),
+  costUsd: z.number().default(0),
+  durationMs: z.number().default(0),
+  toolName: z.string().optional(), // Current tool being executed
+  createdAt: z.number(),
+  updatedAt: z.number(),
+})
+
 // =============================================================================
 // Inferred Types
 // =============================================================================
@@ -71,6 +89,7 @@ export type Message = z.infer<typeof MessageSchema>
 export type Delta = z.infer<typeof DeltaSchema>
 export type Presence = z.infer<typeof PresenceSchema>
 export type Agent = z.infer<typeof AgentSchema>
+export type Status = z.infer<typeof StatusSchema>
 
 // =============================================================================
 // State Schema
@@ -95,6 +114,11 @@ export const aiSessionSchema = createStateSchema({
   agents: {
     schema: AgentSchema,
     type: "agent",
+    primaryKey: "id",
+  },
+  status: {
+    schema: StatusSchema,
+    type: "status",
     primaryKey: "id",
   },
 })
@@ -143,4 +167,10 @@ export function generateDeltaId(
 
 export function generatePresenceId(type: "agent" | "user", id: string): string {
   return `${type}_${id}`
+}
+
+let statusCounter = 0
+
+export function generateStatusId(agentId: string): string {
+  return `status_${agentId}_${Date.now()}_${++statusCounter}`
 }

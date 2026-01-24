@@ -9,10 +9,12 @@ import {
   generateMessageId,
   generateDeltaId,
   generatePresenceId,
+  generateStatusId,
   type Message,
   type Delta,
   type Presence,
   type Agent,
+  type Status,
 } from "./schema.js"
 
 // =============================================================================
@@ -53,6 +55,20 @@ export interface AppendDeltaOptions {
   done?: boolean
 }
 
+export interface UpdateStatusOptions {
+  agentId: string
+  messageId?: string | null
+  state: Status["state"]
+  activity?: string
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  costUsd?: number
+  durationMs?: number
+  toolName?: string
+}
+
 type SessionDB = StreamDB<typeof aiSessionSchema>
 
 export interface AISession {
@@ -83,6 +99,9 @@ export interface AISession {
 
   // Agent operations
   registerAgent(agent: Omit<Agent, "id"> & { id?: string }): Promise<Agent>
+
+  // Status operations (Claude Code-style progress updates)
+  updateStatus(options: UpdateStatusOptions): Promise<Status>
 }
 
 // =============================================================================
@@ -230,6 +249,33 @@ export async function createAISession(
       )
 
       return fullAgent
+    },
+
+    async updateStatus(opts: UpdateStatusOptions): Promise<Status> {
+      const now = Date.now()
+      const status: Status = {
+        id: generateStatusId(opts.agentId),
+        agentId: opts.agentId,
+        messageId: opts.messageId ?? null,
+        state: opts.state,
+        activity: opts.activity,
+        inputTokens: opts.inputTokens ?? 0,
+        outputTokens: opts.outputTokens ?? 0,
+        cacheReadTokens: opts.cacheReadTokens ?? 0,
+        cacheWriteTokens: opts.cacheWriteTokens ?? 0,
+        costUsd: opts.costUsd ?? 0,
+        durationMs: opts.durationMs ?? 0,
+        toolName: opts.toolName,
+        createdAt: now,
+        updatedAt: now,
+      }
+
+      // Use upsert since we want to update the same agent's status
+      await stream.append(
+        JSON.stringify(aiSessionSchema.status.upsert({ value: status }))
+      )
+
+      return status
     },
   }
 }

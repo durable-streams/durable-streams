@@ -6,6 +6,6 @@
     "noEmit": false,
     "isolatedDeclarations": false
   },
-  "include": ["src/**/*", "examples/**/*", "test/**/*"],
+  "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
 }

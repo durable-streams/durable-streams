@@ -5,9 +5,26 @@ import {
   type Message,
   type Delta,
   type Agent,
+  type Status,
 } from "@durable-streams/ai-session"
 import { useLiveQuery } from "@tanstack/react-db"
 import { Streamdown } from "streamdown"
+
+// Add pulse animation
+const pulseKeyframes = `
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+`
+
+// Inject styles once
+if (typeof document !== "undefined" && !document.getElementById("pulse-style")) {
+  const style = document.createElement("style")
+  style.id = "pulse-style"
+  style.textContent = pulseKeyframes
+  document.head.appendChild(style)
+}
 
 // Styles
 const styles = {
@@ -159,10 +176,24 @@ function SessionView({ session }: { session: AISession }) {
   const messagesQuery = useLiveQuery(session.db.collections.messages as any)
   const deltasQuery = useLiveQuery(session.db.collections.deltas as any)
   const agentsQuery = useLiveQuery(session.db.collections.agents as any)
+  const statusQuery = useLiveQuery(session.db.collections.status as any)
 
   const messages = (messagesQuery.data || []) as Message[]
   const deltas = (deltasQuery.data || []) as Delta[]
   const agents = (agentsQuery.data || []) as Agent[]
+  const statuses = (statusQuery.data || []) as Status[]
+
+  // Get the most recent status for each agent
+  const latestStatusByAgent = useMemo(() => {
+    const latest = new Map<string, Status>()
+    for (const status of statuses) {
+      const existing = latest.get(status.agentId)
+      if (!existing || status.updatedAt > existing.updatedAt) {
+        latest.set(status.agentId, status)
+      }
+    }
+    return latest
+  }, [statuses])
 
   // Sort messages by time
   const sortedMessages = [...messages].sort((a, b) => a.createdAt - b.createdAt)
@@ -280,6 +311,59 @@ function SessionView({ session }: { session: AISession }) {
             Agents: {agents.map(a => a.name).join(", ") || "none connected"}
           </span>
         </div>
+
+        {/* Agent Status Display */}
+        {latestStatusByAgent.size > 0 && (
+          <div style={{ marginTop: "12px", display: "flex", gap: "12px", flexWrap: "wrap" as const }}>
+            {Array.from(latestStatusByAgent.entries()).map(([agentId, status]) => {
+              const agent = agents.find(a => a.id === agentId)
+              const isActive = status.state !== "done" && status.state !== "error"
+              const color = getAgentColor(agentId)
+
+              return (
+                <div
+                  key={agentId}
+                  style={{
+                    background: isActive ? "#1a2a3a" : "#1a1a1a",
+                    border: isActive ? `1px solid ${color}` : "1px solid #333",
+                    borderRadius: "8px",
+                    padding: "8px 12px",
+                    fontSize: "12px",
+                    minWidth: "200px",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                    <div
+                      style={{
+                        width: "8px",
+                        height: "8px",
+                        borderRadius: "50%",
+                        background: status.state === "done" ? "#22c55e"
+                          : status.state === "error" ? "#ef4444"
+                          : status.state === "thinking" ? "#f59e0b"
+                          : status.state === "tool_executing" ? "#a78bfa"
+                          : "#3b82f6",
+                        animation: isActive ? "pulse 1.5s infinite" : "none",
+                      }}
+                    />
+                    <span style={{ fontWeight: 600 }}>{agent?.name || agentId}</span>
+                    <span style={{ color: "#888", marginLeft: "auto" }}>
+                      {(status.durationMs / 1000).toFixed(1)}s
+                    </span>
+                  </div>
+                  <div style={{ color: "#9ca3af" }}>
+                    {status.activity || status.state}
+                  </div>
+                  <div style={{ color: "#666", marginTop: "4px", fontSize: "11px" }}>
+                    Tokens: {status.inputTokens.toLocaleString()} in / {status.outputTokens.toLocaleString()} out
+                    {status.cacheReadTokens > 0 && ` (${status.cacheReadTokens.toLocaleString()} cached)`}
+                    {" • "}${status.costUsd.toFixed(5)}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </header>
 
       <div style={styles.messagesContainer}>

@@ -150,8 +150,22 @@ async function main() {
     },
   }
 
+  // Token usage tracking
+  let totalInputTokens = 0
+  let totalOutputTokens = 0
+  let totalCacheReadTokens = 0
+  let totalCacheWriteTokens = 0
+
+  // Helper to calculate cost (approximate Sonnet pricing)
+  function calculateCost(input: number, output: number, cacheRead: number, cacheWrite: number): number {
+    // Sonnet 4: $3/M input, $15/M output, $0.30/M cache read, $3.75/M cache write
+    return (input * 3 + output * 15 + cacheRead * 0.3 + cacheWrite * 3.75) / 1_000_000
+  }
+
   // Message processing function
   async function processMessage(_messageId: string, messageContent: string) {
+    const startTime = Date.now()
+
     try {
       console.log(`\nChecking relevance: "${messageContent}"`)
 
@@ -167,7 +181,14 @@ async function main() {
 
       console.log(`   Processing with ${agent.name}...`)
       console.log(`   Conversation history: ${conversationHistory.length} messages`)
-      const startTime = Date.now()
+
+      // Emit "thinking" status
+      await session.updateStatus({
+        agentId,
+        state: "thinking",
+        activity: "Processing request...",
+        durationMs: 0,
+      })
 
       // Get tool schemas for API - include stop tool so Sonnet can decline
       const tools = agent.tools as Record<string, ToolDefinition>
@@ -215,7 +236,19 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
       }
 
       const firstResponse = await firstStream.finalMessage()
+
+      // Track token usage
+      totalInputTokens += firstResponse.usage.input_tokens
+      totalOutputTokens += firstResponse.usage.output_tokens
+      if ('cache_read_input_tokens' in firstResponse.usage) {
+        totalCacheReadTokens += (firstResponse.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0
+      }
+      if ('cache_creation_input_tokens' in firstResponse.usage) {
+        totalCacheWriteTokens += (firstResponse.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0
+      }
+
       console.log(`   [${Date.now() - startTime}ms] First response: stop_reason=${firstResponse.stop_reason}, content_blocks=${firstResponse.content.length}`)
+      console.log(`   Tokens: in=${firstResponse.usage.input_tokens} out=${firstResponse.usage.output_tokens}`)
       for (const block of firstResponse.content) {
         console.log(`     - ${block.type}${block.type === "tool_use" ? `: ${block.name}` : block.type === "text" ? `: "${block.text.substring(0, 100)}..."` : ""}`)
       }
@@ -223,6 +256,17 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
       // Check if Sonnet declined by calling stop
       if (sawStopTool) {
         console.log(`   Sonnet declined - not relevant to ${agent.name}`)
+        await session.updateStatus({
+          agentId,
+          state: "done",
+          activity: "Not relevant, delegating...",
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          cacheReadTokens: totalCacheReadTokens,
+          cacheWriteTokens: totalCacheWriteTokens,
+          costUsd: calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens),
+          durationMs: Date.now() - startTime,
+        })
         return
       }
 
@@ -232,6 +276,20 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
         agentId,
       })
       console.log(`   Created response message: ${responseMessage.id}`)
+
+      // Update status to streaming
+      await session.updateStatus({
+        agentId,
+        messageId: responseMessage.id,
+        state: "streaming",
+        activity: "Generating response...",
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cacheReadTokens: totalCacheReadTokens,
+        cacheWriteTokens: totalCacheWriteTokens,
+        costUsd: calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens),
+        durationMs: Date.now() - startTime,
+      })
 
       let partIndex = 0
       let seq = 0
@@ -326,6 +384,22 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
             })
           }
 
+          // Update status to tool_executing
+          const toolNamesList = currentToolUses.map(t => t.name).join(", ")
+          await session.updateStatus({
+            agentId,
+            messageId: responseMessage.id,
+            state: "tool_executing",
+            activity: `Running ${currentToolUses.length} tool(s): ${toolNamesList}`,
+            toolName: currentToolUses[0].name,
+            inputTokens: totalInputTokens,
+            outputTokens: totalOutputTokens,
+            cacheReadTokens: totalCacheReadTokens,
+            cacheWriteTokens: totalCacheWriteTokens,
+            costUsd: calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens),
+            durationMs: Date.now() - startTime,
+          })
+
           // Execute all tools in parallel
           console.log(`   [${Date.now() - startTime}ms] Executing ${currentToolUses.length} tool(s) in parallel...`)
           const toolResultsContent = await Promise.all(
@@ -395,7 +469,18 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
 
           // Get final message for tool calls
           const nextResponse = await stream.finalMessage()
-          console.log(`   [${Date.now() - startTime}ms] Got next response`)
+
+          // Track additional token usage
+          totalInputTokens += nextResponse.usage.input_tokens
+          totalOutputTokens += nextResponse.usage.output_tokens
+          if ('cache_read_input_tokens' in nextResponse.usage) {
+            totalCacheReadTokens += (nextResponse.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0
+          }
+          if ('cache_creation_input_tokens' in nextResponse.usage) {
+            totalCacheWriteTokens += (nextResponse.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0
+          }
+
+          console.log(`   [${Date.now() - startTime}ms] Got next response (tokens: in=${nextResponse.usage.input_tokens} out=${nextResponse.usage.output_tokens})`)
           for (const block of nextResponse.content) {
             if (block.type === "tool_use" && block.name !== "stop") {
               console.log(`   Tool call: ${block.name}`)
@@ -435,9 +520,37 @@ ${toolNames.includes("list_directory") ? "- File questions: use list_directory, 
         }
       }
 
+      // Final "done" status
+      await session.updateStatus({
+        agentId,
+        messageId: responseMessage.id,
+        state: "done",
+        activity: "Response complete",
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cacheReadTokens: totalCacheReadTokens,
+        cacheWriteTokens: totalCacheWriteTokens,
+        costUsd: calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens),
+        durationMs: Date.now() - startTime,
+      })
+
       console.log(`   [${Date.now() - startTime}ms] Response complete`)
+      console.log(`   Total tokens: in=${totalInputTokens} out=${totalOutputTokens} cache_read=${totalCacheReadTokens}`)
+      console.log(`   Estimated cost: $${calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens).toFixed(6)}`)
     } catch (err) {
       console.error(`   Error processing message:`, err)
+      // Error status
+      await session.updateStatus({
+        agentId,
+        state: "error",
+        activity: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        cacheReadTokens: totalCacheReadTokens,
+        cacheWriteTokens: totalCacheWriteTokens,
+        costUsd: calculateCost(totalInputTokens, totalOutputTokens, totalCacheReadTokens, totalCacheWriteTokens),
+        durationMs: Date.now() - startTime,
+      })
     }
   }
 
