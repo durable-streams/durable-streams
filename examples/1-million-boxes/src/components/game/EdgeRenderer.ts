@@ -1,6 +1,5 @@
 import { H, W, coordsToEdgeId } from "../../lib/edge-math"
 import { getTeamColor } from "../../lib/teams"
-import { drawWobblyLine } from "../../lib/hand-drawn"
 import {
   getScale,
   getVisibleBounds,
@@ -12,6 +11,49 @@ import type { ViewState } from "../../hooks/useViewState"
 import type { GameState } from "../../lib/game-state"
 
 const PENDING_COLOR = `rgba(100, 100, 100, 0.6)`
+
+// Threshold below which we use straight lines with wobbled endpoints (faster)
+// Above this, we use full quadratic curves
+const CURVE_THRESHOLD = 15
+
+// Threshold below which we disable endpoint wobble entirely (fastest)
+const WOBBLE_THRESHOLD = 8
+
+/**
+ * Simple seeded random for deterministic wobble
+ */
+function seededRandom(seed: number): number {
+  seed = (seed * 1103515245 + 12345) & 0x7fffffff
+  return (seed / 0x7fffffff) * 2 - 1 // -1 to 1
+}
+
+/**
+ * Get second seeded random value
+ */
+function seededRandom2(seed: number): number {
+  return seededRandom(seed * 127 + 31)
+}
+
+/**
+ * Edge data for batched rendering
+ */
+interface EdgeSegment {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+  edgeId: number
+}
+
+/**
+ * Batched edges grouped by color
+ */
+interface EdgeBatch {
+  color: string
+  lineWidth: number
+  dashed: boolean
+  edges: Array<EdgeSegment>
+}
 
 /**
  * Render all visible edges on the canvas.
@@ -32,8 +74,8 @@ export function renderEdges(
 
   const gridSize = getScale(view) // pixels per grid cell
 
-  // Only render if zoomed in enough to see edges (matches BITMAP_THRESHOLD in BoxRenderer)
-  if (gridSize < 4) return
+  // Only render if zoomed in enough to see edges
+  if (gridSize < 2) return
 
   // Render grid lines using cached tiled pattern (much faster than individual lines)
   if (renderGridLines) {
@@ -53,10 +95,35 @@ export function renderEdges(
   }
 
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
-  const lineWidth = Math.max(1, gridSize * 0.1)
-  ctx.lineCap = `round`
+  // Line width scales with grid size, with a minimum of 0.5px for very small sizes
+  const lineWidth = Math.max(0.5, gridSize * 0.1)
 
-  // Render horizontal edges in visible range (only taken/pending/hovered)
+  // Batches for color grouping: Map<colorKey, EdgeBatch>
+  // colorKey format: "color|lineWidthMultiplier|dashed"
+  const batches = new Map<string, EdgeBatch>()
+
+  // Helper to add edge to batch
+  const addToBatch = (
+    color: string,
+    lineWidthMult: number,
+    dashed: boolean,
+    segment: EdgeSegment
+  ) => {
+    const key = `${color}|${lineWidthMult}|${dashed}`
+    let batch = batches.get(key)
+    if (!batch) {
+      batch = {
+        color,
+        lineWidth: lineWidth * lineWidthMult,
+        dashed,
+        edges: [],
+      }
+      batches.set(key, batch)
+    }
+    batch.edges.push(segment)
+  }
+
+  // Collect horizontal edges in visible range
   for (
     let y = Math.max(0, bounds.minY);
     y <= Math.min(H, bounds.maxY + 1);
@@ -68,8 +135,7 @@ export function renderEdges(
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, true)
-      renderSpecialEdge(
-        ctx,
+      collectEdge(
         edgeId,
         x,
         y,
@@ -80,13 +146,13 @@ export function renderEdges(
         canvasHeight,
         pendingEdgeId,
         hoveredEdgeId,
-        lineWidth,
-        renderDrawnLines
+        renderDrawnLines,
+        addToBatch
       )
     }
   }
 
-  // Render vertical edges in visible range (only taken/pending/hovered)
+  // Collect vertical edges in visible range
   for (
     let y = Math.max(0, bounds.minY);
     y < Math.min(H, bounds.maxY + 1);
@@ -98,8 +164,7 @@ export function renderEdges(
       x++
     ) {
       const edgeId = coordsToEdgeId(x, y, false)
-      renderSpecialEdge(
-        ctx,
+      collectEdge(
         edgeId,
         x,
         y,
@@ -110,19 +175,28 @@ export function renderEdges(
         canvasHeight,
         pendingEdgeId,
         hoveredEdgeId,
-        lineWidth,
-        renderDrawnLines
+        renderDrawnLines,
+        addToBatch
       )
     }
+  }
+
+  // Render all batches
+  ctx.lineCap = `round`
+  const useCurves = gridSize >= CURVE_THRESHOLD
+  const useWobble = gridSize >= WOBBLE_THRESHOLD
+  const wobbleAmount = lineWidth * 0.5
+
+  for (const batch of batches.values()) {
+    renderBatch(ctx, batch, useCurves, useWobble, wobbleAmount)
   }
 }
 
 /**
- * Render only "special" edges: taken, pending, or hovered.
+ * Collect edge into appropriate batch if it's a special edge (taken, pending, or hovered).
  * Grid lines are handled by the tiled pattern.
  */
-function renderSpecialEdge(
-  ctx: CanvasRenderingContext2D,
+function collectEdge(
   edgeId: number,
   x: number,
   y: number,
@@ -133,8 +207,13 @@ function renderSpecialEdge(
   canvasHeight: number,
   pendingEdgeId: number | null,
   hoveredEdgeId: number | null,
-  lineWidth: number,
-  renderDrawnLines: boolean
+  renderDrawnLines: boolean,
+  addToBatch: (
+    color: string,
+    lineWidthMult: number,
+    dashed: boolean,
+    segment: EdgeSegment
+  ) => void
 ): void {
   const isTaken = gameState.isEdgeTaken(edgeId)
   const isPending = edgeId === pendingEdgeId
@@ -166,23 +245,83 @@ function renderSpecialEdge(
     y2 = end.y
   }
 
+  const segment: EdgeSegment = { x1, y1, x2, y2, edgeId }
+
   if (isTaken) {
-    // Get the team that placed this edge
     const teamId = gameState.getEdgeOwner(edgeId) ?? 0
-    const color = getTeamColor(teamId)
-    ctx.strokeStyle = color.primary
-    ctx.lineWidth = lineWidth * 1.2
-    ctx.setLineDash([])
+    const color = getTeamColor(teamId).primary
+    addToBatch(color, 1.2, false, segment)
   } else if (isPending) {
-    ctx.strokeStyle = PENDING_COLOR
-    ctx.lineWidth = lineWidth * 1.5
-    ctx.setLineDash([4, 4])
+    addToBatch(PENDING_COLOR, 1.5, true, segment)
   } else if (isHovered) {
-    ctx.strokeStyle = HOVERED_EDGE_COLOR
-    ctx.lineWidth = lineWidth * 1.3
-    ctx.setLineDash([])
+    addToBatch(HOVERED_EDGE_COLOR, 1.3, false, segment)
+  }
+}
+
+/**
+ * Render a batch of edges with the same style.
+ * Uses a single Path2D and stroke() call for all edges in the batch.
+ */
+function renderBatch(
+  ctx: CanvasRenderingContext2D,
+  batch: EdgeBatch,
+  useCurves: boolean,
+  useWobble: boolean,
+  wobbleAmount: number
+): void {
+  if (batch.edges.length === 0) return
+
+  ctx.strokeStyle = batch.color
+  ctx.lineWidth = batch.lineWidth
+  ctx.setLineDash(batch.dashed ? [4, 4] : [])
+
+  const path = new Path2D()
+
+  for (const edge of batch.edges) {
+    const { x1, y1, x2, y2, edgeId } = edge
+
+    if (useWobble) {
+      // Deterministic wobble based on edge ID
+      const r1 = seededRandom(edgeId)
+      const r2 = seededRandom2(edgeId)
+      const r3 = seededRandom(edgeId + 1000)
+      const r4 = seededRandom2(edgeId + 1000)
+
+      // Wobbled start and end points
+      const startX = x1 + r1 * 0.5
+      const startY = y1 + r2 * 0.5
+      const endX = x2 + r3 * 0.5
+      const endY = y2 + r4 * 0.5
+
+      path.moveTo(startX, startY)
+
+      if (useCurves) {
+        // Full quadratic curve for zoomed in view
+        const dx = x2 - x1
+        const dy = y2 - y1
+        const length = Math.sqrt(dx * dx + dy * dy)
+
+        if (length > 0.001) {
+          // Perpendicular direction for midpoint wobble
+          const px = -dy / length
+          const py = dx / length
+          const midX = (x1 + x2) / 2 + px * wobbleAmount * r1
+          const midY = (y1 + y2) / 2 + py * wobbleAmount * r2
+
+          path.quadraticCurveTo(midX, midY, endX, endY)
+        } else {
+          path.lineTo(endX, endY)
+        }
+      } else {
+        // Straight line with wobbled endpoints
+        path.lineTo(endX, endY)
+      }
+    } else {
+      // No wobble - pure straight lines (fastest)
+      path.moveTo(x1, y1)
+      path.lineTo(x2, y2)
+    }
   }
 
-  // Draw with hand-drawn style
-  drawWobblyLine(ctx, x1, y1, x2, y2, lineWidth * 0.5, edgeId)
+  ctx.stroke(path)
 }

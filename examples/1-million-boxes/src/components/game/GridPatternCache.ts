@@ -81,8 +81,8 @@ function createTile(cellSize: number): OffscreenCanvas | null {
   const ctx = canvas.getContext(`2d`)
   if (!ctx) return null
 
-  // Setup style for grid lines
-  const lineWidth = Math.max(1, cellSize * 0.1)
+  // Setup style for grid lines - minimum 0.5px for very small sizes
+  const lineWidth = Math.max(0.5, cellSize * 0.1)
   ctx.strokeStyle = UNPLACED_COLOR
   ctx.lineWidth = lineWidth * 0.5
   ctx.lineCap = `round`
@@ -160,7 +160,7 @@ export function renderGridPattern(
   canvasHeight: number
 ): void {
   // Don't render grid at very small sizes
-  if (gridSize < 4) return
+  if (gridSize < 2) return
 
   const tileData = getTile(gridSize)
   if (!tileData) return

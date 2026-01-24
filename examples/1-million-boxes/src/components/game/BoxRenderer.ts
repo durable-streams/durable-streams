@@ -27,6 +27,10 @@ export function renderBoxes(
 
 // Opacity for box fills - gives a softer, watercolor-like appearance
 const BOX_FILL_OPACITY = 0.5
+// Higher opacity when edges are not rendered (very zoomed out)
+const BOX_FILL_OPACITY_NO_EDGES = 0.8
+// Threshold below which edges are not rendered
+const EDGE_RENDER_THRESHOLD = 2
 
 /**
  * Bitmap rendering mode: Draw the visible portion of the BoxBitmap scaled to screen.
@@ -64,8 +68,10 @@ function renderBitmapMode(
   const useSmooth = scale < 1
 
   // Apply transparency for softer, watercolor-like appearance
+  // Use higher opacity when edges are not rendered (very zoomed out)
   const prevAlpha = ctx.globalAlpha
-  ctx.globalAlpha = BOX_FILL_OPACITY
+  ctx.globalAlpha =
+    scale < EDGE_RENDER_THRESHOLD ? BOX_FILL_OPACITY_NO_EDGES : BOX_FILL_OPACITY
 
   // Draw the visible portion scaled to fit
   boxBitmap.drawViewport(
