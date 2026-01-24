@@ -13,7 +13,7 @@ export function WorldView() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const rendererRef = useRef<MinimapRenderer | null>(null)
-  const { gameState, version, recentEvents } = useGameStateContext()
+  const { boxBitmap, version, recentEvents } = useGameStateContext()
   const { view, canvasSize, jumpTo } = useViewStateContext()
 
   // Initialize renderer
@@ -33,15 +33,14 @@ export function WorldView() {
     const renderer = rendererRef.current
     if (!renderer) return
 
-    // Render all boxes
-    renderer.renderFull(gameState)
-    renderer.render()
+    // Render using shared bitmap
+    renderer.render(boxBitmap)
 
     // Draw viewport rectangle if we have canvas size
     if (canvasSize.width > 0 && canvasSize.height > 0) {
       renderer.drawViewport(view, canvasSize.width, canvasSize.height)
     }
-  }, [gameState, version, view, canvasSize])
+  }, [boxBitmap, version, view, canvasSize])
 
   // Handle click to navigate
   const handleClick = useCallback(

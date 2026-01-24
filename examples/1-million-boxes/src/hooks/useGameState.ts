@@ -5,6 +5,7 @@ import { useGameStateContext } from "../contexts/game-state-context"
  *
  * Provides:
  * - gameState: The current GameState instance
+ * - boxBitmap: Shared 1px-per-box bitmap for rendering
  * - pendingEdge: Edge ID of an optimistically placed edge (or null)
  * - placeEdge: Function to place an edge
  * - isLoading: Whether initial data is loading
@@ -16,6 +17,7 @@ import { useGameStateContext } from "../contexts/game-state-context"
 export function useGameState() {
   const {
     gameState,
+    boxBitmap,
     pendingEdge,
     placeEdge,
     isLoading,
@@ -27,6 +29,7 @@ export function useGameState() {
 
   return {
     gameState,
+    boxBitmap,
     pendingEdge,
     placeEdge,
     isLoading,

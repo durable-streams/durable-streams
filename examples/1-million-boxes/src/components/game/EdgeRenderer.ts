@@ -28,8 +28,8 @@ export function renderEdges(
   const bounds = getVisibleBounds(view, canvasWidth, canvasHeight)
   const gridSize = getScale(view) // pixels per grid cell
 
-  // Only render if zoomed in enough to see edges
-  if (gridSize < 5) return
+  // Only render if zoomed in enough to see edges (matches BITMAP_THRESHOLD in BoxRenderer)
+  if (gridSize < 4) return
 
   const lineWidth = Math.max(1, gridSize * 0.1)
   ctx.lineCap = `round`

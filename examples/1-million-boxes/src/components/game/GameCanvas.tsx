@@ -23,8 +23,14 @@ export function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const { view, pan, zoomTo, canvasSize, setCanvasSize } = useViewStateContext()
-  const { gameState, pendingEdge, placeEdge, version, isGameComplete } =
-    useGameState()
+  const {
+    gameState,
+    boxBitmap,
+    pendingEdge,
+    placeEdge,
+    version,
+    isGameComplete,
+  } = useGameState()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
   const { ripples, addRipple } = useTouchFeedback()
 
@@ -90,7 +96,14 @@ export function GameCanvas() {
     ctx.fillRect(0, 0, canvasSize.width, canvasSize.height)
 
     // Render layers in order: boxes, edges, dots
-    renderBoxes(ctx, gameState, view, canvasSize.width, canvasSize.height)
+    renderBoxes(
+      ctx,
+      gameState,
+      view,
+      canvasSize.width,
+      canvasSize.height,
+      boxBitmap
+    )
     renderEdges(
       ctx,
       gameState,
@@ -101,7 +114,15 @@ export function GameCanvas() {
       hoveredEdge
     )
     renderDots(ctx, view, canvasSize.width, canvasSize.height)
-  }, [gameState, view, canvasSize, pendingEdge, hoveredEdge, version])
+  }, [
+    gameState,
+    boxBitmap,
+    view,
+    canvasSize,
+    pendingEdge,
+    hoveredEdge,
+    version,
+  ])
 
   // Handle mouse move for edge hover
   const handleMouseMove = useCallback(

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react"
 import { GameState } from "../lib/game-state"
+import { BoxBitmap } from "../lib/box-bitmap"
 import { useGameStream } from "../hooks/useGameStream"
 import { useTeam } from "./team-context"
 import { useQuota } from "./quota-context"
@@ -14,6 +15,7 @@ export interface RecentEvent {
 
 export interface GameStateContextValue {
   gameState: GameState
+  boxBitmap: BoxBitmap
   pendingEdge: number | null
   placeEdge: (edgeId: number) => void
   isConnected: boolean
@@ -38,6 +40,9 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Use a ref for the game state to avoid re-renders on every event
   const gameStateRef = useRef<GameState>(new GameState())
 
+  // Shared bitmap for rendering (1px per box, used by minimap and main canvas)
+  const boxBitmapRef = useRef<BoxBitmap>(new BoxBitmap())
+
   // Version counter to trigger re-renders when needed
   const [version, setVersion] = useState(0)
 
@@ -50,67 +55,118 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Track recent events for minimap pop animation
   const [recentEvents, setRecentEvents] = useState<Array<RecentEvent>>([])
 
-  // Track if initial sync is complete (don't show pops during replay)
+  // Track if initial sync is complete (don't show pops during replay, don't render during catchup)
   const initialSyncCompleteRef = useRef(false)
+
+  // 60fps render throttling - only update version once per frame
+  const renderScheduledRef = useRef(false)
+  const pendingRecentEventsRef = useRef<Array<RecentEvent>>([])
+  const bitmapDirtyRef = useRef(false)
 
   // Get team and quota from contexts
   const { teamId } = useTeam()
   const { consume, refund } = useQuota()
 
-  // Handle events from stream
-  const handleEvents = useCallback((events: Array<GameEvent>) => {
-    const now = Date.now()
-    const newRecentEvents: Array<RecentEvent> = []
+  // Schedule a render for next animation frame (60fps throttle)
+  const scheduleRender = useCallback(() => {
+    if (renderScheduledRef.current) return
 
-    for (const event of events) {
-      gameStateRef.current.applyEvent(event)
+    renderScheduledRef.current = true
+    requestAnimationFrame(() => {
+      renderScheduledRef.current = false
 
-      // Track for pop animation (only edge events, and only after initial sync)
-      if (
-        initialSyncCompleteRef.current &&
-        `edgeId` in event &&
-        `teamId` in event
-      ) {
-        newRecentEvents.push({
-          edgeId: event.edgeId,
-          teamId: event.teamId,
-          timestamp: now,
+      // Commit bitmap if dirty
+      if (bitmapDirtyRef.current) {
+        boxBitmapRef.current.commit()
+        bitmapDirtyRef.current = false
+      }
+
+      // Add pending recent events
+      if (pendingRecentEventsRef.current.length > 0) {
+        const newEvents = pendingRecentEventsRef.current
+        pendingRecentEventsRef.current = []
+        const now = Date.now()
+        setRecentEvents((prev) => {
+          const cutoff = now - RECENT_EVENT_TTL
+          const filtered = prev.filter((e) => e.timestamp > cutoff)
+          return [...filtered, ...newEvents]
         })
       }
-    }
 
-    // Add new events to recent list and clean up old ones
-    if (newRecentEvents.length > 0) {
-      setRecentEvents((prev) => {
-        const cutoff = now - RECENT_EVENT_TTL
-        const filtered = prev.filter((e) => e.timestamp > cutoff)
-        return [...filtered, ...newRecentEvents]
-      })
-    }
+      // Trigger re-render
+      setVersion((v) => v + 1)
+    })
+  }, [])
 
-    // Clear pending edge if it was confirmed
-    setPendingEdge((current) => {
-      if (current !== null) {
-        // Check if pending edge was placed
-        if (gameStateRef.current.isEdgeTaken(current)) {
-          return null
+  // Handle events from stream
+  const handleEvents = useCallback(
+    (events: Array<GameEvent>, upToDate: boolean) => {
+      const now = Date.now()
+
+      for (const event of events) {
+        const { boxesClaimed } = gameStateRef.current.applyEvent(event)
+
+        // Update bitmap pixels (but don't commit yet - batch for frame)
+        for (const boxId of boxesClaimed) {
+          boxBitmapRef.current.updateBox(boxId, event.teamId)
+          bitmapDirtyRef.current = true
+        }
+
+        // Track for pop animation (only after initial sync)
+        if (
+          initialSyncCompleteRef.current &&
+          `edgeId` in event &&
+          `teamId` in event
+        ) {
+          pendingRecentEventsRef.current.push({
+            edgeId: event.edgeId,
+            teamId: event.teamId,
+            timestamp: now,
+          })
         }
       }
-      return current
-    })
 
-    // Trigger re-render
-    setVersion((v) => v + 1)
+      // Clear pending edge if it was confirmed
+      setPendingEdge((current) => {
+        if (current !== null) {
+          if (gameStateRef.current.isEdgeTaken(current)) {
+            return null
+          }
+        }
+        return current
+      })
 
-    // Mark initial sync as complete after first batch of events
-    if (!initialSyncCompleteRef.current) {
-      // Use a small delay to ensure we skip any initial batch
-      setTimeout(() => {
-        initialSyncCompleteRef.current = true
-      }, 100)
-    }
-    setIsLoading(false)
-  }, [])
+      // Handle initial sync - wait until upToDate before first render
+      if (!initialSyncCompleteRef.current) {
+        if (upToDate) {
+          // We've caught up to live mode - do first render
+          initialSyncCompleteRef.current = true
+
+          // Commit final bitmap state
+          if (bitmapDirtyRef.current) {
+            boxBitmapRef.current.commit()
+            bitmapDirtyRef.current = false
+          }
+
+          // Trigger version update which will cause canvas to render
+          setVersion((v) => v + 1)
+
+          // Hide loading message after canvas has rendered (next frame)
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              setIsLoading(false)
+            })
+          })
+        }
+        // Don't render during initial catchup - wait for upToDate
+        return
+      }
+
+      // After initial sync, schedule throttled render
+      scheduleRender()
+    },
+    [scheduleRender]
+  )
 
   // Handle connection events
   const handleConnected = useCallback(() => {
@@ -211,6 +267,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
   const value: GameStateContextValue = {
     gameState: gameStateRef.current,
+    boxBitmap: boxBitmapRef.current,
     pendingEdge,
     placeEdge,
     isConnected,

@@ -107,13 +107,19 @@ export function drawWatercolorFill(
   // Main fill with some transparency variation
   ctx.fillStyle = color
 
-  // Draw multiple overlapping shapes for watercolor effect
-  const layers = 3
+  // Scale inset and wobble based on box size to prevent gaps at small sizes
+  // At large sizes (50px+), use full effect. At small sizes (4px), minimal effect.
+  const effectScale = Math.min(1, (size - 4) / 46) // 0 at 4px, 1 at 50px+
+  const baseInset = effectScale * 2 // 0-2px inset based on size
+  const wobbleScale = effectScale * 1 // 0-1px wobble based on size
+
+  // Reduce layers at smaller sizes for performance (3 layers not visible at small sizes)
+  const layers = size < 10 ? 1 : size < 25 ? 2 : 3
   for (let layer = 0; layer < layers; layer++) {
     ctx.globalAlpha = 0.3 + random() * 0.2
 
-    const inset = 1 + random() * 2
-    const wobble = 1
+    const inset = baseInset * (0.5 + random() * 0.5)
+    const wobble = wobbleScale
 
     ctx.beginPath()
     ctx.moveTo(x + inset + random() * wobble, y + inset + random() * wobble)

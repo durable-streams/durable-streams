@@ -6,7 +6,7 @@ import type { StreamResponse } from "@durable-streams/client"
 import type { GameEvent } from "../lib/game-state"
 
 export interface UseGameStreamOptions {
-  onEvents: (events: Array<GameEvent>) => void
+  onEvents: (events: Array<GameEvent>, upToDate: boolean) => void
   onError?: (error: Error) => void
   onConnected?: () => void
   onDisconnected?: () => void
@@ -160,7 +160,10 @@ export function useGameStream(
           try {
             const events = parserRef.current.feed(chunk.data)
             if (events.length > 0) {
-              onEventsRef.current(events)
+              onEventsRef.current(events, chunk.upToDate)
+            } else if (chunk.upToDate) {
+              // No events but we're up to date - signal this to the handler
+              onEventsRef.current([], true)
             }
           } catch (err) {
             console.error(`[useGameStream] Error parsing chunk:`, err)
