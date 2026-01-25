@@ -403,9 +403,16 @@ export class DurableStream {
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
     // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
-    const bodyStr =
-      typeof body === `string` ? body : new TextDecoder().decode(body)
-    const encodedBody: BodyInit = isJson ? `[${bodyStr}]` : bodyStr
+    let encodedBody: BodyInit
+    if (isJson) {
+      const bodyStr =
+        typeof body === `string` ? body : new TextDecoder().decode(body)
+      encodedBody = `[${bodyStr}]`
+    } else {
+      // For binary mode, pass body as-is to preserve byte integrity
+      // Cast Uint8Array to BodyInit (it's a valid fetch body type)
+      encodedBody = body as BodyInit
+    }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
       method: `POST`,
@@ -522,11 +529,12 @@ export class DurableStream {
       )
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      // For byte mode: concatenate all chunks as a string
-      const strings = batch.map((m) =>
-        typeof m.data === `string` ? m.data : new TextDecoder().decode(m.data)
-      )
-      batchedBody = strings.join(``)
+      // For binary mode: use Blob to preserve byte integrity and avoid memcopy
+      // (TextDecoder would corrupt non-UTF8 bytes by replacing them with U+FFFD)
+      const parts = batch.map((m) =>
+        typeof m.data === `string` ? new TextEncoder().encode(m.data) : m.data
+      ) as Array<BlobPart>
+      batchedBody = new Blob(parts)
     }
 
     // Combine signals: stream-level signal + any per-message signals
