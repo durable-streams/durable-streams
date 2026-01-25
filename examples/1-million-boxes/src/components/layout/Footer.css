@@ -29,24 +29,19 @@
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
-  background: var(--color-blue);
-  border: 1px solid var(--color-blue);
   border-radius: var(--radius-sm);
   font-size: 0.875rem;
   font-weight: 500;
-  color: white;
   text-decoration: none;
-  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+  transition: filter var(--transition-fast);
 }
 
 .footer-link:hover {
-  background: #1976d2;
-  border-color: #1976d2;
+  filter: brightness(0.9);
 }
 
 .footer-link:active {
-  background: #1565c0;
-  border-color: #1565c0;
+  filter: brightness(0.8);
 }
 
 .footer-link svg {

@@ -1,8 +1,14 @@
 import { QuotaMeter } from "../ui/QuotaMeter"
 import { ZoomControls } from "../ui/ZoomControls"
+import { useTeam } from "../../contexts/team-context"
+import { TEAM_COLORS } from "../../lib/teams"
 import "./Footer.css"
 
 export function Footer() {
+  const { team } = useTeam()
+  const teamColor = TEAM_COLORS[team].primary
+  const textColor = team === `YELLOW` ? `#333` : `white`
+
   return (
     <footer className="footer" data-testid="footer">
       <div className="footer-left">
@@ -13,6 +19,11 @@ export function Footer() {
         target="_blank"
         rel="noopener noreferrer"
         className="footer-link"
+        style={{
+          background: teamColor,
+          borderColor: teamColor,
+          color: textColor,
+        }}
       >
         <span>
           Learn how we built this{` `}
