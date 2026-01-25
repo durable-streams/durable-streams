@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react"
 import { TEAMS, TEAM_COLORS } from "../../lib/teams"
 import { useQuota } from "../../contexts/quota-context"
 import type { TeamName } from "../../lib/teams"
@@ -12,6 +13,56 @@ interface TeamScore {
   team: TeamName
   score: number
   color: string
+}
+
+/** Animated score value that glows when it changes */
+function AnimatedScore({
+  value,
+  color,
+  className = ``,
+}: {
+  value: number
+  color?: string
+  className?: string
+}) {
+  const [glowKey, setGlowKey] = useState(0)
+  const prevValueRef = useRef(value)
+  const isFirstRender = useRef(true)
+
+  useEffect(() => {
+    // Skip animation on first render
+    if (isFirstRender.current) {
+      isFirstRender.current = false
+      prevValueRef.current = value
+      return
+    }
+
+    // Trigger glow when value changes by incrementing key
+    if (value !== prevValueRef.current) {
+      prevValueRef.current = value
+      setGlowKey((k) => k + 1)
+    }
+  }, [value])
+
+  const formattedValue = value.toLocaleString()
+
+  return (
+    <span
+      className={`scoreboard-value ${className}`.trim()}
+      style={color ? { [`--glow-color` as string]: color } : undefined}
+    >
+      {formattedValue}
+      {glowKey > 0 && (
+        <span
+          key={glowKey}
+          className="scoreboard-glow-overlay"
+          aria-hidden="true"
+        >
+          {formattedValue}
+        </span>
+      )}
+    </span>
+  )
 }
 
 export function ScoreBoard({
@@ -54,9 +105,11 @@ export function ScoreBoard({
           <circle cx="12" cy="7" r="4" />
           <path d="M12 14c-6 0-9 3-9 6v1h18v-1c0-3-3-6-9-6z" />
         </svg>
-        <span className="scoreboard-value">
-          {localBoxesCompleted.toLocaleString()}
-        </span>
+        <AnimatedScore
+          value={localBoxesCompleted}
+          className="scoreboard-value-local"
+          color="rgba(120, 120, 120, 0.8)"
+        />
       </div>
       <span className="scoreboard-divider" />
       {teamScores.map(({ team, score, color }) => (
@@ -69,7 +122,7 @@ export function ScoreBoard({
             className="scoreboard-indicator"
             style={{ background: color }}
           />
-          <span className="scoreboard-value">{score.toLocaleString()}</span>
+          <AnimatedScore value={score} color={color} />
         </div>
       ))}
     </div>

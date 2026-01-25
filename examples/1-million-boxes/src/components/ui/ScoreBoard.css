@@ -18,9 +18,39 @@
 }
 
 .scoreboard-value {
+  position: relative;
+  isolation: isolate;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   min-width: 24px;
+}
+
+.scoreboard-glow-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  color: transparent;
+  pointer-events: none;
+  animation: score-glow 0.8s linear forwards;
+}
+
+@keyframes score-glow {
+  0% {
+    text-shadow: 0 0 0px var(--glow-color, currentColor),
+      0 0 0px var(--glow-color, currentColor);
+  }
+  10% {
+    text-shadow: 0 0 4px var(--glow-color, currentColor),
+      0 0 8px var(--glow-color, currentColor);
+  }
+  100% {
+    text-shadow: 0 0 20px transparent,
+      0 0 40px transparent;
+  }
+}
+
+.scoreboard-value-local {
+  min-width: 0;
 }
 
 .scoreboard-local {
