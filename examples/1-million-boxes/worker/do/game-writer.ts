@@ -174,7 +174,10 @@ export class GameWriterDO extends DurableObject<Env> {
    * Get or create quota state for a player.
    * Returns current tokens after applying time-based refill.
    */
-  private getPlayerQuota(playerId: string): {
+  private getPlayerQuota(
+    playerId: string,
+    allowPrune: boolean = false
+  ): {
     tokens: number
     lastActiveAt: number
   } {
@@ -197,6 +200,11 @@ export class GameWriterDO extends DurableObject<Env> {
     const refills = Math.floor(elapsed / QUOTA_REFILL_INTERVAL_MS)
     const baseTokens = Math.floor(row.tokens)
     const refilledTokens = Math.min(MAX_QUOTA, baseTokens + refills)
+
+    if (allowPrune && refilledTokens >= MAX_QUOTA) {
+      this.sql.exec(`DELETE FROM player_quota WHERE player_id = ?`, playerId)
+      return { tokens: MAX_QUOTA, lastActiveAt: now }
+    }
 
     return { tokens: refilledTokens, lastActiveAt: row.last_active_at }
   }
@@ -240,6 +248,11 @@ export class GameWriterDO extends DurableObject<Env> {
   private grantQuota(playerId: string, amount: number): number {
     const quota = this.getPlayerQuota(playerId)
     const newTokens = Math.min(MAX_QUOTA, quota.tokens + amount)
+
+    if (newTokens >= MAX_QUOTA) {
+      this.sql.exec(`DELETE FROM player_quota WHERE player_id = ?`, playerId)
+      return MAX_QUOTA
+    }
 
     // Only update tokens, preserve last_active_at for refill timing
     this.sql.exec(
@@ -300,7 +313,7 @@ export class GameWriterDO extends DurableObject<Env> {
       )
     }
 
-    const quota = this.getPlayerQuota(playerId)
+    const quota = this.getPlayerQuota(playerId, true)
     const refillIn = quota.tokens < MAX_QUOTA ? this.getRefillIn(playerId) : 0
 
     return Response.json({
