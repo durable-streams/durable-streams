@@ -10,6 +10,31 @@ A global, real-time multiplayer game of Dots & Boxes on a **1000×1000 grid** (1
 - All game state is derived from an append-only log of edge placements
 - Each edge placement is just **3 bytes** (edge ID + team ID)
 
+## Architectural Overview
+
+This example is a split architecture: a React SPA for rendering and interaction, a Worker for API routing, and a Durable Object for authoritative state. Durable Streams is the append-only source of truth.
+
+### Data Flow
+
+```
+Browser (React SPA)
+  ├─ GET /api/team → Worker → team cookie + player id
+  ├─ GET /api/stream/game → Worker proxy → Durable Streams (long-poll)
+  └─ POST /api/draw → Worker → GameWriterDO → Durable Streams (append)
+
+GameWriterDO
+  ├─ Replays stream on startup to rebuild state
+  ├─ Validates edge availability + quota
+  └─ Appends accepted moves to Durable Streams
+```
+
+### Component Responsibilities
+
+- **React SPA**: renders the grid and UI, applies stream events locally, and performs optimistic edge placement
+- **Worker (Hono)**: serves static assets, issues team identity, proxies stream reads, routes draw requests
+- **GameWriterDO**: authoritative validator (edge uniqueness, quota), single-writer coordinator
+- **Durable Streams**: append-only event log; read by clients, written only by the DO
+
 ## Technology Stack
 
 | Layer         | Technology                     |
@@ -20,7 +45,7 @@ A global, real-time multiplayer game of Dots & Boxes on a **1000×1000 grid** (1
 | Styling       | Plain CSS                      |
 | Runtime       | Cloudflare Workers             |
 | State         | Cloudflare Durable Objects     |
-| Real-time     | Durable Streams (SSE)          |
+| Real-time     | Durable Streams (long-poll)    |
 | Rendering     | HTML Canvas (2D)               |
 
 ## Prerequisites
@@ -102,8 +127,15 @@ src/                    # React SPA
 │   └── ui/             # QuotaMeter, TeamBadge, ScoreBoard, etc.
 ├── contexts/           # React contexts (Team, Quota, GameState)
 ├── hooks/              # Custom hooks (useViewState, usePanZoom, etc.)
-├── lib/                # Core logic (edge-math, game-state, stream-parser)
+├── lib/                # UI-facing helpers (edge-picker, view-transform, etc.)
 └── styles/             # CSS files
+
+shared/                 # Shared game logic (used by app + worker)
+├── edge-math.ts
+├── game-config.ts
+├── game-state.ts
+├── stream-parser.ts
+└── teams.ts
 
 worker/                 # Hono API backend
 ├── index.ts            # Hono app entry point
@@ -113,11 +145,10 @@ worker/                 # Hono API backend
 │   └── draw.ts         # Draw edge endpoint
 ├── do/
 │   └── game-writer.ts  # GameWriterDO (Durable Object)
-└── lib/                # Shared utilities
-
 tests/
 ├── e2e/                # Playwright E2E tests
-└── integration/        # Integration tests
+├── integration/        # Integration tests
+└── unit/               # Unit tests
 ```
 
 ## Game Features
@@ -133,7 +164,7 @@ tests/
 ### Quota System
 
 - Each player has **8 lines** they can place
-- Lines refill at **1 line per 7.5 seconds**
+- Lines refill at **1 line per 6 seconds**
 - Quota persists across page refreshes (localStorage)
 - Syncs across browser tabs in real-time
 
@@ -226,43 +257,7 @@ For production, you'll need:
    - The worker adds authentication headers and forwards to the stream server
    - Users can only read (GET/HEAD), not write (POST/PUT) - writes go through the GameWriterDO
 
-## Architecture
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                     Cloudflare Edge                                │
-│  ┌─────────────────────────┐    ┌───────────────────────────────┐  │
-│  │  Hono Worker            │    │  GameWriterDO                 │  │
-│  │                         │───▶│  - edge bitset (250KB)        │  │
-│  │  GET  /* → React SPA    │    │  - validates moves            │  │
-│  │  GET  /api/team         │    │  - appends to stream          │  │
-│  │  POST /api/draw         │    └─────────────┬─────────────────┘  │
-│  │  GET  /api/stream/game  │                  │                    │
-│  │       (stream proxy)    │                  │ POST               │
-│  └─────────────────────────┘                  │                    │
-└────────────────────────────┼──────────────────┼────────────────────┘
-                             │                  │
-                             │ GET/SSE          │
-                             │                  ▼
-                             │  ┌─────────────────────────────────────┐
-                             │  │  Durable Streams Server             │
-                             │  │  (ElectricSQL Cloud / Self-hosted)  │
-                             │  │                                     │
-                             │  │  Stream: /game                      │
-                             │  │  - append-only log                  │
-                             │  │  - SSE for live tail                │
-                             │  └─────────────────────────────────────┘
-                             │                  ▲
-                             │                  │
-┌────────────────────────────┼──────────────────┼─────────────────────┐
-│  Browser Clients           │                  │                     │
-│  - All stream requests ────┘                  │                     │
-│    proxied through worker                     │                     │
-│  - derive game state locally                                        │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-### Key Concepts
+## Key Concepts
 
 - **Edge ID**: Each of the 2,002,000 edges has a unique ID (0 to 2,001,999)
 - **Event Format**: 3 bytes per event (`edgeId << 2 | teamId`)
@@ -276,22 +271,11 @@ The game uses [Durable Streams](../../README.md) as the backbone for real-time s
 ### Stream Architecture
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│  Browser                                                                  │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │  React App                                                          │  │
-│  │                                                                     │  │
-│  │  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐  │  │
-│  │  │ useGameStream   │───▶│  StreamParser   │───▶│   GameState     │  │  │
-│  │  │                 │    │                 │    │                 │  │  │
-│  │  │ DurableStream   │    │ Decodes 3-byte  │    │ Applies events  │  │  │
-│  │  │ client library  │    │ records into    │    │ to derive:      │  │  │
-│  │  │                 │    │ {edgeId,teamId} │    │ - edges placed  │  │  │
-│  │  │ live: long-poll │    │                 │    │ - box ownership │  │  │
-│  │  │                 │    │                 │    │ - team scores   │  │  │
-│  │  └─────────────────┘    └─────────────────┘    └─────────────────┘  │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-└───────────────────────────────────────────────────────────────────────────┘
+Browser
+  └─ React App
+     ├─ DurableStream client (long-poll)
+     ├─ StreamParser (decodes 3-byte records)
+     └─ GameState (applies events)
 ```
 
 ### Client-Side: Reading the Stream
@@ -355,7 +339,7 @@ Byte 0        Byte 1        Byte 2
 │ E E E E │   │ E E E E │   │ E E T T │
 └─────────┘   └─────────┘   └─────────┘
 
-E = Edge ID bits (22 bits total, max value ~4.2 million)
+E = Edge ID bits (values 0..2,001,999)
 T = Team ID bits (2 bits, values 0-3)
 
 packed = (edgeId << 2) | teamId
