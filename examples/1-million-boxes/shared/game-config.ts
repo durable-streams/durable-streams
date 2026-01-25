@@ -67,7 +67,7 @@ export const TOTAL_BOX_COUNT = GRID_WIDTH * GRID_HEIGHT
 /**
  * The stream path for the game events.
  */
-export const GAME_STREAM_PATH = `/game`
+export const GAME_STREAM_PATH = `/game0`
 
 // =============================================================================
 // Quota Configuration (Shared: Server + Client)
