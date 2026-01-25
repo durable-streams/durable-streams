@@ -16,7 +16,8 @@
     "test:e2e:headed": "playwright test --headed",
     "test:coverage": "vitest run --coverage",
     "test:integration": "vitest run tests/integration",
-    "seed": "npx tsx scripts/seed-game.ts"
+    "seed": "npx tsx scripts/seed-game.ts",
+    "generate:og": "npx tsx scripts/generate-og-image.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.0.0-alpha.4",
@@ -28,6 +29,8 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.0.5",
+    "@resvg/resvg-js": "^2.6.2",
+    "satori": "^0.12.1",
     "tsx": "^4.19.2",
     "@cloudflare/workers-types": "^4.20250109.0",
     "@playwright/test": "^1.49.1",
