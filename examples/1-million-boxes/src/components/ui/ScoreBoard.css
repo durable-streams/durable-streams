@@ -23,8 +23,19 @@
   min-width: 24px;
 }
 
-.scoreboard-remaining {
-  opacity: 0.3;
+.scoreboard-local {
+  color: var(--color-text);
+}
+
+.scoreboard-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.scoreboard-divider {
+  width: 1px;
+  background: var(--color-border);
+  opacity: 0.5;
 }
 
 /* Mobile: compact layout */
@@ -43,9 +54,9 @@
     min-width: 20px;
   }
 
-  /* Hide remaining count on mobile to save space */
-  .scoreboard-remaining {
-    display: none;
+  .scoreboard-icon {
+    width: 10px;
+    height: 10px;
   }
 }
 

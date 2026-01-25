@@ -16,6 +16,7 @@ import type { ReactNode } from "react"
 export { MAX_QUOTA }
 export const QUOTA_KEY = QUOTA_STORAGE_KEY
 export const REFILL_INTERVAL_MS = QUOTA_REFILL_INTERVAL_MS
+const LOCAL_BOXES_KEY = `boxes:local-completed`
 
 export interface QuotaState {
   remaining: number
@@ -53,6 +54,8 @@ export interface QuotaContextValue {
   ) => void
   /** Legacy refund for error cases where server doesn't respond */
   refund: () => void
+  /** Local user's total completed boxes count (persisted in localStorage) */
+  localBoxesCompleted: number
 }
 
 const QuotaContext = createContext<QuotaContextValue | null>(null)
@@ -90,11 +93,24 @@ function saveQuota(state: QuotaState): void {
   localStorage.setItem(QUOTA_KEY, JSON.stringify(state))
 }
 
+function loadLocalBoxes(): number {
+  try {
+    const stored = localStorage.getItem(LOCAL_BOXES_KEY)
+    if (stored) {
+      return parseInt(stored, 10) || 0
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return 0
+}
+
 export function QuotaProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<QuotaState>(() => loadQuota())
   const [refillIn, setRefillIn] = useState(0)
   const [bonusCount, setBonusCount] = useState(0)
   const [bonusPosition, setBonusPosition] = useState<BonusPosition | null>(null)
+  const [localBoxesCompleted, setLocalBoxesCompleted] = useState(loadLocalBoxes)
 
   // Persist to localStorage
   useEffect(() => {
@@ -134,6 +150,9 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
       if (e.key === QUOTA_KEY && e.newValue) {
         setState(JSON.parse(e.newValue))
       }
+      if (e.key === LOCAL_BOXES_KEY && e.newValue) {
+        setLocalBoxesCompleted(parseInt(e.newValue, 10) || 0)
+      }
     }
 
     window.addEventListener(`storage`, handler)
@@ -157,9 +176,18 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
     (remaining: number, serverRefillIn?: number, boxesClaimed?: number) => {
       const now = Date.now()
 
-      // Track bonus for toast animation
+      // Track bonus for toast animation and increment local boxes count
       if (boxesClaimed && boxesClaimed > 0) {
         setBonusCount(boxesClaimed)
+        setLocalBoxesCompleted((prev) => {
+          const newCount = prev + boxesClaimed
+          try {
+            localStorage.setItem(LOCAL_BOXES_KEY, String(newCount))
+          } catch {
+            // Ignore storage errors
+          }
+          return newCount
+        })
       }
 
       // Calculate lastRefillAt to align with server's refillIn
@@ -220,6 +248,7 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
         consume,
         syncFromServer,
         refund,
+        localBoxesCompleted,
       }}
     >
       {children}

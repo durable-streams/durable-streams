@@ -22,6 +22,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -41,6 +42,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -67,6 +69,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -94,6 +97,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -114,6 +118,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -134,6 +139,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -154,6 +160,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -174,6 +181,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -193,6 +201,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
@@ -212,6 +221,7 @@ describe(`QuotaMeter`, () => {
       bonusPosition: null,
       setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
+      localBoxesCompleted: 0,
     })
 
     render(<QuotaMeter />)
