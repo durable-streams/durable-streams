@@ -26,9 +26,6 @@ coverage/
 playwright-report/
 test-results/
 
-# Fonts (download via pnpm generate:og instructions)
-scripts/fonts/
-
 # Misc
 *.log
 npm-debug.log*

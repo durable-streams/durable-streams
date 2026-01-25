@@ -553,7 +553,8 @@ interface FontConfig {
 }
 
 async function loadFonts(): Promise<Array<FontConfig>> {
-  const fontsDir = join(__dirname, `fonts`)
+  // Load fonts from public/fonts (shared with the web app)
+  const fontsDir = join(ROOT, `public`, `fonts`)
   const fonts: Array<FontConfig> = []
 
   const fontFiles: Array<{ file: string; weight: FontWeight }> = [

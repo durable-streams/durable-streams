@@ -1,6 +1,23 @@
 /* Import mobile-specific styles - must be at top */
 @import "./mobile.css";
 
+/* Inter font */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/Inter-Regular.ttf") format("truetype");
+}
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/fonts/Inter-Bold.ttf") format("truetype");
+}
+
 :root {
   /* Team colors */
   --color-red: #e53935;
@@ -72,6 +89,7 @@ body {
 
 body {
   font-family:
+    "Inter",
     system-ui,
     -apple-system,
     BlinkMacSystemFont,
