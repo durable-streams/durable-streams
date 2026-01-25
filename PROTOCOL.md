@@ -2,7 +2,7 @@
 
 **Document:** Durable Streams Protocol  
 **Version:** 1.0
-**Date:** 2026-01-24 
+**Date:** 2026-01-24
 **Author:** ElectricSQL
 
 ---
