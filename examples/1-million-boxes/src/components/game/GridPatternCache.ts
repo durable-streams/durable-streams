@@ -6,6 +6,7 @@
  * edges before the pattern repeats, making it look more natural.
  */
 
+import { GRID_HEIGHT, GRID_WIDTH } from "../../../shared/game-config"
 import { drawWobblyLine } from "../../lib/hand-drawn"
 
 // Solid color equivalent of rgba(150, 150, 150, 0.3) blended on #F5F5DC background
@@ -150,6 +151,7 @@ function getTile(
 /**
  * Render the grid pattern across the visible area.
  * Uses pattern.setTransform() to scale the pattern to match the current grid size.
+ * Clips to the playable area boundaries to prevent overflow.
  */
 export function renderGridPattern(
   ctx: CanvasRenderingContext2D,
@@ -192,8 +194,29 @@ export function renderGridPattern(
 
   pattern.setTransform(matrix)
 
-  ctx.fillStyle = pattern
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight)
+  // Calculate the playable area bounds in screen coordinates
+  // The grid lines exist from (0,0) to (W,H) in world coordinates
+  // Expand by a small margin (half dot radius) to show full line width at edges
+  // This is enough to show the line thickness without showing extra line segments
+  const lineMargin = 0.1 * gridSize
+  const boundsMinX = worldOriginX - lineMargin
+  const boundsMinY = worldOriginY - lineMargin
+  const boundsMaxX = worldOriginX + GRID_WIDTH * gridSize + lineMargin
+  const boundsMaxY = worldOriginY + GRID_HEIGHT * gridSize + lineMargin
+
+  // Clip to visible canvas area
+  const fillX = Math.max(0, boundsMinX)
+  const fillY = Math.max(0, boundsMinY)
+  const fillMaxX = Math.min(canvasWidth, boundsMaxX)
+  const fillMaxY = Math.min(canvasHeight, boundsMaxY)
+  const fillW = fillMaxX - fillX
+  const fillH = fillMaxY - fillY
+
+  // Only render if there's something visible
+  if (fillW > 0 && fillH > 0) {
+    ctx.fillStyle = pattern
+    ctx.fillRect(fillX, fillY, fillW, fillH)
+  }
 }
 
 /**

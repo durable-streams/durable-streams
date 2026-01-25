@@ -6,6 +6,7 @@
  * Dots are offset by half a cell so tile seams fall at cell centers.
  */
 
+import { GRID_HEIGHT, GRID_WIDTH } from "../../../shared/game-config"
 import { drawWobblyDot } from "../../lib/hand-drawn"
 
 const DOT_COLOR = `#2D2D2D`
@@ -128,6 +129,7 @@ function getTile(
 /**
  * Render the dot pattern across the visible area.
  * Uses pattern.setTransform() to scale the pattern to match the current grid size.
+ * Clips to the playable area boundaries to prevent overflow.
  */
 export function renderDotPattern(
   ctx: CanvasRenderingContext2D,
@@ -165,8 +167,29 @@ export function renderDotPattern(
 
   pattern.setTransform(matrix)
 
-  ctx.fillStyle = pattern
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight)
+  // Calculate the playable area bounds in screen coordinates
+  // Dots exist at grid intersections from (0,0) to (W,H) in world coordinates
+  // Expand bounds slightly to include full dots at edges (not just half)
+  // Dot radius in screen pixels is approximately 0.15 * gridSize, add margin for wobble
+  const dotMargin = 0.2 * gridSize
+  const boundsMinX = worldOriginX - dotMargin
+  const boundsMinY = worldOriginY - dotMargin
+  const boundsMaxX = worldOriginX + GRID_WIDTH * gridSize + dotMargin
+  const boundsMaxY = worldOriginY + GRID_HEIGHT * gridSize + dotMargin
+
+  // Clip to visible canvas area
+  const fillX = Math.max(0, boundsMinX)
+  const fillY = Math.max(0, boundsMinY)
+  const fillMaxX = Math.min(canvasWidth, boundsMaxX)
+  const fillMaxY = Math.min(canvasHeight, boundsMaxY)
+  const fillW = fillMaxX - fillX
+  const fillH = fillMaxY - fillY
+
+  // Only render if there's something visible
+  if (fillW > 0 && fillH > 0) {
+    ctx.fillStyle = pattern
+    ctx.fillRect(fillX, fillY, fillW, fillH)
+  }
 }
 
 /**
