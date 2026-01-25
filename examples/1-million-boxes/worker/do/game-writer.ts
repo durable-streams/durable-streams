@@ -16,8 +16,11 @@ import { isValidEdgeId } from "../../shared/edge-math"
 import {
   GAME_STREAM_PATH,
   MAX_QUOTA,
+  QUOTA_BONUS_DOUBLE,
+  QUOTA_BONUS_SINGLE,
   QUOTA_GC_INACTIVE_MS,
   QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_TIMING_LEEWAY_MS,
 } from "../lib/config"
 import type { GameEvent } from "../../shared/game-state"
 
@@ -306,14 +309,19 @@ export class GameWriterDO extends DurableObject<Env> {
   /**
    * Get or create quota state for a player.
    * Returns current tokens after applying time-based refill.
+   *
+   * @param playerId - The player's unique identifier
+   * @param options.allowPrune - If true, removes player from DB when at max quota
+   * @param options.leewayMs - Extra milliseconds to add to elapsed time (for timing tolerance)
    */
   private getPlayerQuota(
     playerId: string,
-    allowPrune: boolean = false
+    options: { allowPrune?: boolean; leewayMs?: number } = {}
   ): {
     tokens: number
     lastActiveAt: number
   } {
+    const { allowPrune = false, leewayMs = 0 } = options
     const now = Date.now()
 
     const row = this.sql
@@ -328,8 +336,8 @@ export class GameWriterDO extends DurableObject<Env> {
       return { tokens: MAX_QUOTA, lastActiveAt: now }
     }
 
-    // Calculate refilled tokens based on elapsed time
-    const elapsed = now - row.last_active_at
+    // Calculate refilled tokens based on elapsed time (with optional leeway)
+    const elapsed = now - row.last_active_at + leewayMs
     const refills = Math.floor(elapsed / QUOTA_REFILL_INTERVAL_MS)
     const baseTokens = Math.floor(row.tokens)
     const refilledTokens = Math.min(MAX_QUOTA, baseTokens + refills)
@@ -345,10 +353,15 @@ export class GameWriterDO extends DurableObject<Env> {
   /**
    * Consume a quota token for a player.
    * Returns the new token count, or null if no tokens available.
+   *
+   * Uses 500ms leeway to account for client/server timing differences.
    */
   private consumeQuota(playerId: string): number | null {
     const now = Date.now()
-    const quota = this.getPlayerQuota(playerId)
+    // Add leeway to handle client/server timing differences
+    const quota = this.getPlayerQuota(playerId, {
+      leewayMs: QUOTA_TIMING_LEEWAY_MS,
+    })
 
     if (quota.tokens < 1) {
       return null
@@ -446,7 +459,7 @@ export class GameWriterDO extends DurableObject<Env> {
       )
     }
 
-    const quota = this.getPlayerQuota(playerId, true)
+    const quota = this.getPlayerQuota(playerId, { allowPrune: true })
     const refillIn = quota.tokens < MAX_QUOTA ? this.getRefillIn(playerId) : 0
 
     return Response.json({
@@ -578,10 +591,13 @@ export class GameWriterDO extends DurableObject<Env> {
     // Update local game state and check for box completions
     const { boxesClaimed } = this.gameState!.applyEvent(event)
 
-    // Grant refund for completed boxes
+    // Grant bonus tokens for completed boxes
+    // 1 box = QUOTA_BONUS_SINGLE tokens, 2 boxes = QUOTA_BONUS_DOUBLE tokens
     let finalQuota = tokensAfterConsume
     if (boxesClaimed.length > 0) {
-      finalQuota = this.grantQuota(playerId, boxesClaimed.length)
+      const bonus =
+        boxesClaimed.length >= 2 ? QUOTA_BONUS_DOUBLE : QUOTA_BONUS_SINGLE
+      finalQuota = this.grantQuota(playerId, bonus)
     }
 
     // Ensure GC alarm is scheduled

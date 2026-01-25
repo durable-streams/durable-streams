@@ -118,31 +118,48 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
   }, [state])
 
   // Refill timer - check every 1 second
+  // Uses functional update to avoid stale closure issues
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now()
-      const elapsed = now - state.lastRefillAt
-      const refills = Math.floor(elapsed / REFILL_INTERVAL_MS)
 
-      if (refills > 0 && state.remaining < MAX_QUOTA) {
-        setState((s) => ({
-          ...s,
-          remaining: Math.min(MAX_QUOTA, s.remaining + refills),
-          lastRefillAt: s.lastRefillAt + refills * REFILL_INTERVAL_MS,
-        }))
-      }
+      setState((s) => {
+        const elapsed = now - s.lastRefillAt
+        const refills = Math.floor(elapsed / REFILL_INTERVAL_MS)
 
-      // Calculate time until next refill
-      const timeSinceLastRefill = now - state.lastRefillAt
-      const timeUntilNext = Math.max(
-        0,
-        REFILL_INTERVAL_MS - timeSinceLastRefill
-      )
-      setRefillIn(Math.ceil(timeUntilNext / 1000))
+        if (refills > 0 && s.remaining < MAX_QUOTA) {
+          const newRemaining = Math.min(MAX_QUOTA, s.remaining + refills)
+          const newLastRefillAt = s.lastRefillAt + refills * REFILL_INTERVAL_MS
+
+          // Update refillIn based on new state
+          const timeSinceNewRefill = now - newLastRefillAt
+          const timeUntilNext = Math.max(
+            0,
+            REFILL_INTERVAL_MS - timeSinceNewRefill
+          )
+          setRefillIn(Math.ceil(timeUntilNext / 1000))
+
+          return {
+            ...s,
+            remaining: newRemaining,
+            lastRefillAt: newLastRefillAt,
+          }
+        }
+
+        // No refill needed, just update the countdown
+        const timeSinceLastRefill = now - s.lastRefillAt
+        const timeUntilNext = Math.max(
+          0,
+          REFILL_INTERVAL_MS - timeSinceLastRefill
+        )
+        setRefillIn(Math.ceil(timeUntilNext / 1000))
+
+        return s // No state change
+      })
     }, 1000)
 
     return () => clearInterval(interval)
-  }, [state.lastRefillAt, state.remaining])
+  }, [])
 
   // Cross-tab sync via storage event
   useEffect(() => {
@@ -192,31 +209,40 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
 
       // Calculate lastRefillAt to align with server's refillIn
       // This ensures the interval timer computes the same countdown
-      let newLastRefillAt: number
-      if (serverRefillIn !== undefined && serverRefillIn > 0) {
-        // Server says "next refill in X seconds"
-        // So lastRefillAt should be: now - (interval - X*1000)
-        // Clamp serverRefillIn to interval to prevent future timestamps
-        const clampedRefillMs = Math.min(
-          serverRefillIn * 1000,
-          REFILL_INTERVAL_MS
-        )
-        newLastRefillAt = now - (REFILL_INTERVAL_MS - clampedRefillMs)
-        setRefillIn(Math.floor(clampedRefillMs / 1000))
-      } else {
-        // No server refillIn or quota is full (refillIn=0)
-        // Keep current timing or reset to now
-        newLastRefillAt = now
-        if (remaining >= MAX_QUOTA) {
-          setRefillIn(0)
+      setState((s) => {
+        let newLastRefillAt: number
+        if (serverRefillIn !== undefined && serverRefillIn >= 0) {
+          if (serverRefillIn === 0 && remaining < MAX_QUOTA) {
+            // Server says refill is imminent (less than 1 second away)
+            // Set lastRefillAt so client will refill on next timer tick
+            newLastRefillAt = now - REFILL_INTERVAL_MS
+            setRefillIn(0)
+          } else if (serverRefillIn > 0) {
+            // Server says "next refill in X seconds"
+            // So lastRefillAt should be: now - (interval - X*1000)
+            // Clamp serverRefillIn to interval to prevent future timestamps
+            const clampedRefillMs = Math.min(
+              serverRefillIn * 1000,
+              REFILL_INTERVAL_MS
+            )
+            newLastRefillAt = now - (REFILL_INTERVAL_MS - clampedRefillMs)
+            setRefillIn(Math.floor(clampedRefillMs / 1000))
+          } else {
+            // refillIn=0 and quota is full - no pending refill
+            newLastRefillAt = now
+            setRefillIn(0)
+          }
+        } else {
+          // No server refillIn provided - keep current timing
+          newLastRefillAt = s.lastRefillAt
         }
-      }
 
-      setState((s) => ({
-        ...s,
-        remaining: Math.min(MAX_QUOTA, Math.max(0, remaining)),
-        lastRefillAt: newLastRefillAt,
-      }))
+        return {
+          ...s,
+          remaining: Math.min(MAX_QUOTA, Math.max(0, remaining)),
+          lastRefillAt: newLastRefillAt,
+        }
+      })
     },
     []
   )

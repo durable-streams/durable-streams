@@ -77,9 +77,10 @@ export const GAME_STREAM_PATH = `/game0`
 // - Each player has a token bucket with MAX_QUOTA tokens (default: 8)
 // - Drawing a line costs 1 token
 // - Tokens refill at a rate of 1 per QUOTA_REFILL_INTERVAL_MS (default: 6s)
-// - BONUS: Completing a box refunds the token spent on that move!
+// - BONUS: Completing a box grants bonus tokens!
+//   - Complete 1 box: get QUOTA_BONUS_SINGLE tokens back (refund + bonus)
+//   - Complete 2 boxes with one line: get QUOTA_BONUS_DOUBLE tokens back
 //   This mimics the "extra turn" mechanic from classic Dots & Boxes.
-//   If you complete 2 boxes with one line, you get 2 tokens back (net +1).
 // - The server (Durable Object) is authoritative; client tracks optimistically
 //   for instant UI feedback, then syncs with server response.
 //
@@ -92,9 +93,28 @@ export const MAX_QUOTA = 8
 
 /**
  * Time interval for refilling one quota token (in ms).
- * At 6000ms, a player gets 1 token every 6 seconds.
+ * At 3000ms, a player gets 1 token every 3 seconds.
  */
-export const QUOTA_REFILL_INTERVAL_MS = 6000
+export const QUOTA_REFILL_INTERVAL_MS = 3000
+
+/**
+ * Bonus tokens granted for completing 1 box with a single move.
+ * This includes the refund for the move spent plus a bonus.
+ */
+export const QUOTA_BONUS_SINGLE = 2
+
+/**
+ * Bonus tokens granted for completing 2 boxes with a single move.
+ * This includes the refund for the move spent plus a bonus.
+ */
+export const QUOTA_BONUS_DOUBLE = 4
+
+/**
+ * Timing leeway in ms for quota consumption (server-side).
+ * Allows moves if a refill would happen within this window.
+ * Accounts for client/server clock differences and network latency.
+ */
+export const QUOTA_TIMING_LEEWAY_MS = 500
 
 /**
  * Time in ms after which inactive players are garbage collected (server-side).

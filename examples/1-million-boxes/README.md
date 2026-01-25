@@ -164,7 +164,8 @@ tests/
 ### Quota System
 
 - Each player has **8 lines** they can place
-- Lines refill at **1 line per 6 seconds**
+- Lines refill at **1 line per 3 seconds**
+- **Bonus:** Complete 1 box = **+2 moves**, complete 2 boxes = **+4 moves**
 - Quota persists across page refreshes (localStorage)
 - Syncs across browser tabs in real-time
 

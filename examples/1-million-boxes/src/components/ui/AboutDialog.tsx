@@ -4,6 +4,8 @@ import { TEAMS, TEAM_COLORS } from "../../../shared/teams"
 import { useTeam } from "../../contexts/team-context"
 import {
   MAX_QUOTA,
+  QUOTA_BONUS_DOUBLE,
+  QUOTA_BONUS_SINGLE,
   QUOTA_REFILL_INTERVAL_MS,
   TOTAL_BOX_COUNT,
 } from "../../lib/config"
@@ -152,9 +154,13 @@ export function AboutDialog({
                 Moves refill by <strong>1 every {refillSeconds} seconds</strong>
               </li>
               <li>
-                <strong>Bonus:</strong> Completing a box refunds your move
+                <strong>Bonus:</strong> Completing a box gives you{` `}
+                <strong>+{QUOTA_BONUS_SINGLE} moves</strong> (refund + bonus)
               </li>
-              <li>Complete 2 boxes with one line? Get 2 moves back!</li>
+              <li>
+                Complete 2 boxes with one line? Get{` `}
+                <strong>+{QUOTA_BONUS_DOUBLE} moves</strong> back!
+              </li>
             </ul>
 
             <h3 className="about-dialog-section-title">Team Leaderboard</h3>

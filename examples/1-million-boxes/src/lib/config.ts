@@ -26,6 +26,8 @@ export {
   // Quota configuration (from shared - server-side enforced)
   MAX_QUOTA,
   QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_BONUS_SINGLE,
+  QUOTA_BONUS_DOUBLE,
   QUOTA_STORAGE_KEY,
 } from "../../shared/game-config"
 

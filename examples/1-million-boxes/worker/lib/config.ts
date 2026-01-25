@@ -22,5 +22,8 @@ export {
   // Quota configuration
   MAX_QUOTA,
   QUOTA_REFILL_INTERVAL_MS,
+  QUOTA_BONUS_SINGLE,
+  QUOTA_BONUS_DOUBLE,
+  QUOTA_TIMING_LEEWAY_MS,
   QUOTA_GC_INACTIVE_MS,
 } from "../../shared/game-config"

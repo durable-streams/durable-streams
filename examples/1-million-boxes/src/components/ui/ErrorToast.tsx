@@ -23,6 +23,9 @@ export function ErrorToast() {
       }, TOAST_DURATION_MS)
 
       return () => clearTimeout(timer)
+    } else {
+      // Immediately hide when error is cleared
+      setVisible(false)
     }
   }, [error])
 

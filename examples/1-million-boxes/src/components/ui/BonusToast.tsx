@@ -1,46 +1,68 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQuota } from "../../contexts/quota-context"
 import { useTeam } from "../../contexts/team-context"
+import { QUOTA_BONUS_DOUBLE, QUOTA_BONUS_SINGLE } from "../../lib/config"
 import "./BonusToast.css"
+
+interface ToastInstance {
+  id: number
+  text: string
+  x: number
+  y: number
+}
 
 export function BonusToast() {
   const { bonusCount, bonusPosition, clearBonus } = useQuota()
   const { team } = useTeam()
-  const [showBonus, setShowBonus] = useState(false)
-  const [bonusText, setBonusText] = useState(``)
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(
-    null
-  )
+  const [toasts, setToasts] = useState<Array<ToastInstance>>([])
+  const nextIdRef = useRef(0)
 
-  // Show bonus toast when boxes are completed
+  // Add a new toast when bonus is earned
+  // bonusCount is the number of boxes claimed (1 or 2)
+  // We display the actual token bonus from config
   useEffect(() => {
     if (bonusCount > 0 && bonusPosition) {
-      setBonusText(bonusCount > 1 ? `+${bonusCount} Bonus!` : `Bonus!`)
-      setPosition(bonusPosition)
-      setShowBonus(true)
+      const tokenBonus =
+        bonusCount >= 2 ? QUOTA_BONUS_DOUBLE : QUOTA_BONUS_SINGLE
+      const id = nextIdRef.current++
 
-      // Clear after animation completes
-      const timer = setTimeout(() => {
-        setShowBonus(false)
-        clearBonus()
+      setToasts((prev) => [
+        ...prev,
+        {
+          id,
+          text: `+${tokenBonus} Bonus!`,
+          x: bonusPosition.x,
+          y: bonusPosition.y,
+        },
+      ])
+
+      // Clear this toast after animation completes
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id))
       }, 1500)
 
-      return () => clearTimeout(timer)
+      // Clear the bonus state so new bonuses can be detected
+      clearBonus()
     }
   }, [bonusCount, bonusPosition, clearBonus])
 
-  if (!showBonus || !position) return null
+  if (toasts.length === 0) return null
 
   return (
-    <div
-      className={`bonus-toast bonus-toast-${team.toLowerCase()}`}
-      style={{
-        left: position.x,
-        top: position.y,
-      }}
-      data-testid="bonus-toast"
-    >
-      {bonusText}
-    </div>
+    <>
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`bonus-toast bonus-toast-${team.toLowerCase()}`}
+          style={{
+            left: toast.x,
+            top: toast.y,
+          }}
+          data-testid="bonus-toast"
+        >
+          {toast.text}
+        </div>
+      ))}
+    </>
   )
 }

@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, useRef, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 import { GameState } from "../../shared/game-state"
 import { GAME_START_TIMESTAMP_KEY } from "../../shared/game-config"
 import { BoxBitmap } from "../lib/box-bitmap"
@@ -78,7 +85,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
   // Get team and quota from contexts
   const { teamId } = useTeam()
-  const { consume, syncFromServer, refund } = useQuota()
+  const { consume, syncFromServer, refund, remaining } = useQuota()
 
   // Schedule a render for next animation frame (60fps throttle)
   const scheduleRender = useCallback(() => {
@@ -201,6 +208,13 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
     setError(err.message)
   }, [])
 
+  // Clear "Quota exceeded" error when quota becomes available
+  useEffect(() => {
+    if (remaining > 0 && error === `Quota exceeded, please wait`) {
+      setError(null)
+    }
+  }, [remaining, error])
+
   const notifyCanvasRendered = useCallback(() => {
     if (pendingFirstRenderRef.current) {
       pendingFirstRenderRef.current = false
@@ -260,6 +274,9 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Place an edge on the board
   const placeEdge = useCallback(
     async (edgeId: number) => {
+      // Clear any previous error on new attempt
+      setError(null)
+
       // Check if edge is already taken
       if (gameStateRef.current.isEdgeTaken(edgeId)) {
         return
