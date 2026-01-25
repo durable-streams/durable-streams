@@ -283,15 +283,6 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           headers: { "Content-Type": `application/json` },
           body: JSON.stringify({ edgeId }),
         })
-
-        // Handle rate limiting (429)
-        if (response.status === 429) {
-          refund()
-          setPendingEdge(null)
-          setError(`You're too fast! Rate limited`)
-          return
-        }
-
         const result = await response.json()
 
         if (result.ok) {
@@ -320,6 +311,11 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
             case `QUOTA_EXHAUSTED`:
               // Server says no quota - already synced above
               setError(`Quota exceeded, please wait`)
+              break
+            case `RATE_LIMITED`:
+              // Cloudflare rate limiter triggered
+              refund()
+              setError(`You're too fast! Rate limited`)
               break
             case `NO_IDENTITY`:
             case `NO_TEAM`:
