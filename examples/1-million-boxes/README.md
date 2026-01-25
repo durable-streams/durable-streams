@@ -135,7 +135,39 @@ tests/
 - Each player has **8 lines** they can place
 - Lines refill at **1 line per 7.5 seconds**
 - Quota persists across page refreshes (localStorage)
-- Syncs across browser tabs
+- Syncs across browser tabs in real-time
+
+#### Cross-Tab Quota Sync
+
+The quota system uses the browser's `storage` event to sync state across tabs without any server communication:
+
+```typescript
+// Quota state stored in localStorage
+interface QuotaState {
+  remaining: number // Current tokens available
+  lastRefillAt: number // Timestamp of last refill
+}
+
+// Listen for changes from other tabs
+useEffect(() => {
+  const handler = (e: StorageEvent) => {
+    if (e.key === QUOTA_KEY && e.newValue) {
+      setState(JSON.parse(e.newValue))
+    }
+  }
+  window.addEventListener("storage", handler)
+  return () => window.removeEventListener("storage", handler)
+}, [])
+```
+
+**How it works:**
+
+1. **Tab A** consumes a token → updates React state → saves to localStorage
+2. **Browser** fires `storage` event to all other same-origin tabs
+3. **Tab B** receives event → parses new value → updates its React state
+4. Both tabs now show the same quota instantly
+
+This pattern provides real-time sync without WebSockets or BroadcastChannel, using only the built-in localStorage event system.
 
 ### Team Assignment
 
