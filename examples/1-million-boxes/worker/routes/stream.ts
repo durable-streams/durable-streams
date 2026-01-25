@@ -54,12 +54,37 @@ async function ensureStreamExists(c: { env: Bindings }): Promise<boolean> {
 }
 
 /**
+ * Build upstream URL with auth secret if configured.
+ */
+function buildUpstreamUrl(
+  baseUrl: string,
+  path: string,
+  search: string,
+  auth?: string
+): string {
+  const url = new URL(`${baseUrl}${path}`)
+  // Preserve original query params
+  const originalParams = new URLSearchParams(search.replace(/^\?/, ``))
+  originalParams.forEach((value, key) => url.searchParams.set(key, value))
+  // Add auth secret if configured
+  if (auth) {
+    url.searchParams.set(`secret`, auth)
+  }
+  return url.toString()
+}
+
+/**
  * Stream proxy - passthrough to Durable Streams server.
  * Handles both regular requests and SSE connections.
  * If the stream doesn't exist (404), creates it via GameWriterDO and retries.
  */
 streamRoutes.all(`/game`, async (c) => {
-  const upstreamUrl = `${c.env.DURABLE_STREAMS_URL}/game${new URL(c.req.url).search}`
+  const upstreamUrl = buildUpstreamUrl(
+    c.env.DURABLE_STREAMS_URL,
+    `/game`,
+    new URL(c.req.url).search,
+    c.env.DURABLE_STREAMS_AUTH
+  )
 
   // Forward request to upstream
   let upstreamResponse = await fetch(upstreamUrl, {

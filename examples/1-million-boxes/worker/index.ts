@@ -11,6 +11,7 @@ export type Bindings = {
   ASSETS: Fetcher
   GAME_WRITER?: DurableObjectNamespace // Optional - not available in local dev
   DURABLE_STREAMS_URL: string
+  DURABLE_STREAMS_AUTH?: string // Secret for Electric Cloud authentication
   TEAM_COOKIE_SECRET?: string
   DRAW_RATE_LIMITER?: RateLimit
   NODE_ENV?: string

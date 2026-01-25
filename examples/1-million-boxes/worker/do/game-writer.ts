@@ -23,6 +23,7 @@ import type { GameEvent } from "../../shared/game-state"
 
 interface Env {
   DURABLE_STREAMS_URL: string
+  DURABLE_STREAMS_AUTH?: string
 }
 
 /**
@@ -76,9 +77,13 @@ export class GameWriterDO extends DurableObject<Env> {
     this.sql = ctx.storage.sql
 
     // Initialize DurableStream client with limited retries for initialization
-    const streamUrl = `${env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
+    // Build URL with auth secret if configured (for Electric Cloud)
+    const streamUrl = new URL(`${env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`)
+    if (env.DURABLE_STREAMS_AUTH) {
+      streamUrl.searchParams.set(`secret`, env.DURABLE_STREAMS_AUTH)
+    }
     this.stream = new DurableStream({
-      url: streamUrl,
+      url: streamUrl.toString(),
       contentType: `application/octet-stream`,
       // Limit retries to avoid getting stuck in backoff during initialization
       backoffOptions: {
