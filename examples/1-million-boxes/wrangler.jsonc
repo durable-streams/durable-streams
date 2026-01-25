@@ -43,8 +43,8 @@
     }
   ],
 
-  // Environment variables
-  "vars": {
-    "DURABLE_STREAMS_URL": "http://localhost:4437/v1/stream"
-  }
+  // Environment variables are set via secrets for production:
+  // wrangler secret put DURABLE_STREAMS_URL
+  // wrangler secret put TEAM_COOKIE_SECRET
+  // wrangler secret put DURABLE_STREAMS_AUTH (optional)
 }
