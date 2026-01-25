@@ -9,10 +9,18 @@ export const streamRoutes = new Hono<{ Bindings: Bindings }>()
 /**
  * Create the game stream directly (fallback for dev when DO is unavailable).
  */
-async function createStreamDirectly(streamUrl: string): Promise<boolean> {
+async function createStreamDirectly(
+  streamUrl: string,
+  auth?: string
+): Promise<boolean> {
   try {
+    // Build URL with auth if configured
+    const url = new URL(`${streamUrl}${GAME_STREAM_PATH}`)
+    if (auth) {
+      url.searchParams.set(`secret`, auth)
+    }
     const stream = new DurableStream({
-      url: `${streamUrl}${GAME_STREAM_PATH}`,
+      url: url.toString(),
       contentType: `application/octet-stream`,
     })
     await stream.create()
@@ -50,7 +58,10 @@ async function ensureStreamExists(c: { env: Bindings }): Promise<boolean> {
   }
 
   // Fallback: create stream directly (development mode)
-  return createStreamDirectly(c.env.DURABLE_STREAMS_URL)
+  return createStreamDirectly(
+    c.env.DURABLE_STREAMS_URL,
+    c.env.DURABLE_STREAMS_AUTH
+  )
 }
 
 /**
@@ -81,7 +92,7 @@ function buildUpstreamUrl(
 streamRoutes.all(`/game`, async (c) => {
   const upstreamUrl = buildUpstreamUrl(
     c.env.DURABLE_STREAMS_URL,
-    `/game`,
+    GAME_STREAM_PATH,
     new URL(c.req.url).search,
     c.env.DURABLE_STREAMS_AUTH
   )
