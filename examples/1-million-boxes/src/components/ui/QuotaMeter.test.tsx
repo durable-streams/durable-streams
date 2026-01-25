@@ -19,6 +19,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -36,6 +38,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -60,6 +64,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -85,6 +91,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -103,6 +111,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -121,6 +131,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -139,6 +151,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -157,6 +171,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -174,6 +190,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 
@@ -191,6 +209,8 @@ describe(`QuotaMeter`, () => {
       syncFromServer: vi.fn(),
       refund: vi.fn(),
       bonusCount: 0,
+      bonusPosition: null,
+      setBonusPosition: vi.fn(),
       clearBonus: vi.fn(),
     })
 

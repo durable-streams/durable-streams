@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
+import { useQuota } from "../../contexts/quota-context"
 import {
   getScale,
   getVisibleBounds,
@@ -46,7 +47,9 @@ export function GameCanvas() {
     notifyCanvasRendered,
     isGameComplete,
   } = useGameState()
+  const { setBonusPosition } = useQuota()
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null)
+  const lastEdgeScreenPosRef = useRef<{ x: number; y: number } | null>(null)
   const { ripples, addRipple } = useTouchFeedback()
   const [debugConfig, setDebugConfig] = useState<DebugConfig>(getDebugConfig)
 
@@ -644,6 +647,11 @@ export function GameCanvas() {
       )
 
       setHoveredEdge(edgeId)
+
+      // Track screen position for bonus toast
+      if (edgeId !== null) {
+        lastEdgeScreenPosRef.current = { x: e.clientX, y: e.clientY }
+      }
     },
     [view, canvasSize, isGameComplete]
   )
@@ -654,10 +662,14 @@ export function GameCanvas() {
     if (isGameComplete) return
 
     if (hoveredEdge !== null) {
+      // Set bonus position for toast (will show if boxes are completed)
+      if (lastEdgeScreenPosRef.current) {
+        setBonusPosition(lastEdgeScreenPosRef.current)
+      }
       placeEdge(hoveredEdge)
       triggerHapticFeedback(15)
     }
-  }, [hoveredEdge, placeEdge, isGameComplete])
+  }, [hoveredEdge, placeEdge, isGameComplete, setBonusPosition])
 
   // Handle touch start - track position for tap detection
   const handleTouchStart = useCallback((e: React.TouchEvent) => {
@@ -719,13 +731,18 @@ export function GameCanvas() {
         addRipple(x, y)
         // Haptic feedback
         triggerHapticFeedback(15)
+        // Set bonus position for toast (use client coordinates)
+        setBonusPosition({
+          x: touchStartPos.current.x,
+          y: touchStartPos.current.y,
+        })
         // Place the edge
         placeEdge(edgeId)
       }
 
       touchStartPos.current = null
     },
-    [view, canvasSize, placeEdge, addRipple, isGameComplete]
+    [view, canvasSize, placeEdge, addRipple, isGameComplete, setBonusPosition]
   )
 
   return (

@@ -1,0 +1,49 @@
+.bonus-toast {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  padding: 6px 12px;
+  border-radius: 16px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: white;
+  z-index: 1000;
+  pointer-events: none;
+  animation: bonus-float 1.5s ease-out forwards;
+  white-space: nowrap;
+}
+
+/* Team-colored bonus toasts */
+.bonus-toast-red {
+  background: var(--color-red);
+}
+
+.bonus-toast-blue {
+  background: var(--color-blue);
+}
+
+.bonus-toast-green {
+  background: var(--color-green);
+}
+
+.bonus-toast-yellow {
+  background: var(--color-yellow);
+  color: #333;
+}
+
+@keyframes bonus-float {
+  0% {
+    opacity: 1;
+    transform: translate(-50%, -100%) scale(0.8);
+  }
+  20% {
+    opacity: 1;
+    transform: translate(-50%, -100%) scale(1.1);
+  }
+  40% {
+    transform: translate(-50%, -100%) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -150%) scale(1);
+  }
+}

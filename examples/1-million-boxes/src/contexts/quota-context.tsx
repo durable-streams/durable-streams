@@ -23,6 +23,11 @@ export interface QuotaState {
   version: number
 }
 
+export interface BonusPosition {
+  x: number
+  y: number
+}
+
 export interface QuotaContextValue {
   /** Current remaining quota tokens */
   remaining: number
@@ -32,6 +37,10 @@ export interface QuotaContextValue {
   refillIn: number
   /** Number of bonus tokens earned (for toast animation), resets after reading */
   bonusCount: number
+  /** Screen position where bonus toast should appear */
+  bonusPosition: BonusPosition | null
+  /** Set the position for the bonus toast (called by GameCanvas) */
+  setBonusPosition: (pos: BonusPosition | null) => void
   /** Clear the bonus count after showing toast */
   clearBonus: () => void
   /** Optimistically consume a token. Returns false if no tokens available. */
@@ -85,6 +94,7 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<QuotaState>(() => loadQuota())
   const [refillIn, setRefillIn] = useState(0)
   const [bonusCount, setBonusCount] = useState(0)
+  const [bonusPosition, setBonusPosition] = useState<BonusPosition | null>(null)
 
   // Persist to localStorage
   useEffect(() => {
@@ -183,9 +193,10 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
     []
   )
 
-  // Clear bonus count after toast is shown
+  // Clear bonus count and position after toast is shown
   const clearBonus = useCallback(() => {
     setBonusCount(0)
+    setBonusPosition(null)
   }, [])
 
   // Legacy refund for network errors where server doesn't respond
@@ -203,6 +214,8 @@ export function QuotaProvider({ children }: { children: ReactNode }) {
         max: MAX_QUOTA,
         refillIn,
         bonusCount,
+        bonusPosition,
+        setBonusPosition,
         clearBonus,
         consume,
         syncFromServer,

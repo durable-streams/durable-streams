@@ -5,6 +5,7 @@ import { GameCanvas } from "./game/GameCanvas"
 import { WorldView } from "./game/WorldView"
 import { ConnectionStatus } from "./ui/ConnectionStatus"
 import { ErrorToast } from "./ui/ErrorToast"
+import { BonusToast } from "./ui/BonusToast"
 import { GameCompleteDialog } from "./ui/GameCompleteDialog"
 import "../styles/game.css"
 
@@ -20,6 +21,7 @@ export function GamePage() {
         </main>
         <Footer />
         <ErrorToast />
+        <BonusToast />
         <GameCompleteDialog />
       </div>
     </ViewStateProvider>
