@@ -145,13 +145,14 @@ export function AboutDialog({
             <h3 className="about-dialog-section-title">Quota System</h3>
             <ul className="about-dialog-rules">
               <li>
-                You have <strong>{MAX_QUOTA} moves</strong> available at a time
+                You have up to<strong>{MAX_QUOTA} moves</strong> available at a
+                time
               </li>
               <li>
-                Moves refill at <strong>1 every {refillSeconds} seconds</strong>
+                Moves refill by <strong>1 every {refillSeconds} seconds</strong>
               </li>
               <li>
-                <strong>Bonus:</strong> Completing a box refunds your move!
+                <strong>Bonus:</strong> Completing a box refunds your move
               </li>
               <li>Complete 2 boxes with one line? Get 2 moves back!</li>
             </ul>

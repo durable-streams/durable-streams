@@ -37,7 +37,7 @@
       "name": "DRAW_RATE_LIMITER",
       "namespace_id": "482917",
       "simple": {
-        "limit": 60,
+        "limit": 120,
         "period": 60
       }
     }
