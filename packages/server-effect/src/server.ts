@@ -9,7 +9,7 @@ import {
   HttpServerResponse,
 } from "@effect/platform"
 import { NodeHttpServer } from "@effect/platform-node"
-import { Duration, Effect, Either, Layer, Stream } from "effect"
+import { Duration, Effect, Either, Layer, Option, Stream } from "effect"
 
 import { StreamStoreService, normalizeContentType } from "./StreamStore"
 import {
@@ -324,47 +324,57 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
     }).pipe(Effect.withSpan(`server.handleHead`))
 
     /**
+     * SSE state machine phases:
+     * - 'read': Read messages and emit data + control events
+     * - 'wait': Wait for new messages, emit keep-alive on timeout
+     */
+    type SSEPhase = `read` | `wait`
+    interface SSEState {
+      phase: SSEPhase
+      offset: string | undefined
+    }
+
+    /**
      * Create SSE stream using Effect patterns.
+     * Uses Stream.unfoldEffect with two phases to emit BEFORE waiting.
      */
     const createSSEStream = (
       path: string,
-      initialOffset: string,
+      initialOffset: string | undefined,
+      streamCurrentOffset: string,
       isJsonStream: boolean,
       clientCursor: string | undefined
     ): Stream.Stream<string, StreamNotFoundError> =>
-      Stream.async<string, StreamNotFoundError>((emit) => {
-        let currentOffset = initialOffset
-        let cancelled = false
+      Stream.unfoldEffect(
+        { phase: `read`, offset: initialOffset } as SSEState,
+        (state) =>
+          Effect.gen(function* () {
+            if (state.phase === `read`) {
+              // Read phase: emit data events + control, then transition to wait
+              const readResult = yield* store.read(path, state.offset)
 
-        const run = async () => {
-          try {
-            while (!cancelled) {
-              const readResult = await Effect.runPromise(
-                store.read(path, currentOffset)
-              )
+              let events = ``
+              let newOffset: string = streamCurrentOffset
 
+              // Build data events for each message
               for (const msg of readResult.messages) {
-                if (cancelled) break
                 let dataPayload: string
                 if (isJsonStream) {
-                  const jsonBytes = await Effect.runPromise(
-                    store.formatResponse(path, [msg])
-                  )
+                  const jsonBytes = yield* store.formatResponse(path, [msg])
                   dataPayload = new TextDecoder().decode(jsonBytes)
                 } else {
                   dataPayload = new TextDecoder().decode(msg.data)
                 }
-                emit.single(`event: data\n${encodeSSEData(dataPayload)}`)
-                currentOffset = msg.offset
+                events += `event: data\n${encodeSSEData(dataPayload)}`
+                newOffset = msg.offset
               }
 
-              if (cancelled) break
-
-              // Compute offset for control message
+              // Compute offset for control message (last message or stream's current offset)
               const controlOffset =
                 readResult.messages[readResult.messages.length - 1]?.offset ??
-                currentOffset
+                streamCurrentOffset
 
+              // Build control event
               const cursor = generateResponseCursor(
                 clientCursor || undefined,
                 cursorOptions
@@ -374,41 +384,48 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
                 streamCursor: cursor,
                 upToDate: true,
               })
-              emit.single(`event: control\n${encodeSSEData(control)}`)
-              currentOffset = controlOffset
+              events += `event: control\n${encodeSSEData(control)}`
+              newOffset = controlOffset
 
-              // Wait for new messages
-              const waitResult = await Effect.runPromise(
-                store.waitForMessages(path, currentOffset, longPollTimeoutMs)
+              // Emit events, then transition to wait phase
+              return Option.some([
+                events,
+                { phase: `wait` as SSEPhase, offset: newOffset },
+              ] as const)
+            } else {
+              // Wait phase: wait for new messages (offset is always valid at this point)
+              const waitResult = yield* store.waitForMessages(
+                path,
+                state.offset!,
+                longPollTimeoutMs
               )
 
-              if (cancelled) break
-
               if (waitResult.timedOut) {
+                // Timeout: emit keep-alive control, stay in wait phase
                 const keepAliveCursor = generateResponseCursor(
                   clientCursor || undefined,
                   cursorOptions
                 )
                 const keepAlive = JSON.stringify({
-                  streamNextOffset: currentOffset,
+                  streamNextOffset: state.offset,
                   streamCursor: keepAliveCursor,
                   upToDate: true,
                 })
-                emit.single(`event: control\n${encodeSSEData(keepAlive)}`)
+                return Option.some([
+                  `event: control\n${encodeSSEData(keepAlive)}`,
+                  { phase: `wait` as SSEPhase, offset: state.offset },
+                ] as const)
               }
+
+              // New data available: transition back to read phase
+              // Emit empty string (will be filtered out)
+              return Option.some([
+                ``,
+                { phase: `read` as SSEPhase, offset: state.offset },
+              ] as const)
             }
-          } catch {
-            emit.end()
-          }
-        }
-
-        run()
-
-        // Return cleanup
-        return Effect.sync(() => {
-          cancelled = true
-        })
-      })
+          })
+      ).pipe(Stream.filter((s) => s.length > 0))
 
     /**
      * Handle GET - Read stream.
@@ -495,19 +512,35 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
           )
         }
 
+        // For SSE, preserve the original offset (-1 or undefined means from beginning)
+        // store.read handles undefined/-1 as "read all from beginning"
+        const sseOffset =
+          offsetParam === `now`
+            ? stream.currentOffset
+            : offsetParam === `-1`
+              ? undefined
+              : offsetParam || undefined
+
         const isJsonStream = contentType === `application/json`
         const sseStream = createSSEStream(
           path,
-          offset || stream.currentOffset,
+          sseOffset,
+          stream.currentOffset,
           isJsonStream,
           clientCursor || undefined
         )
 
+        // Encode strings to bytes manually to avoid charset being added
+        const encoder = new TextEncoder()
+        const sseByteStream = sseStream.pipe(
+          Stream.map((s) => encoder.encode(s))
+        )
+
         return addCorsHeaders(
-          HttpServerResponse.stream(sseStream.pipe(Stream.encodeText), {
+          HttpServerResponse.stream(sseByteStream, {
             status: 200,
+            contentType: `text/event-stream`,
           }).pipe(
-            HttpServerResponse.setHeader(`content-type`, `text/event-stream`),
             HttpServerResponse.setHeader(`cache-control`, `no-cache, no-store`),
             HttpServerResponse.setHeader(`connection`, `keep-alive`),
             HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
