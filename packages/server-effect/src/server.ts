@@ -9,7 +9,7 @@ import {
   HttpServerResponse,
 } from "@effect/platform"
 import { NodeHttpServer } from "@effect/platform-node"
-import { Duration, Effect, Either, Layer, Option, Stream } from "effect"
+import { Duration, Effect, Layer, Option, Stream } from "effect"
 
 import { StreamStoreService, normalizeContentType } from "./StreamStore"
 import {
@@ -212,8 +212,9 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
       const url = new URL(request.url, `http://${host}:${port}`)
       const path = url.pathname
 
-      yield* Effect.log(`PUT ${path}`).pipe(
-        Effect.withSpan(`handleCreate.start`)
+      yield* Effect.annotateCurrentSpan({ path, method: `PUT` })
+      yield* Effect.logInfo(`Handling PUT request`).pipe(
+        Effect.annotateLogs({ path })
       )
 
       const contentType = getHeader(request.headers, `content-type`)
@@ -251,40 +252,39 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
 
       const exists = yield* store.has(path)
 
-      const result = yield* store
+      return yield* store
         .create(path, {
           contentType,
           ttlSeconds: ttlResult.value,
           expiresAt: expiresResult.value,
           initialData: bodyArray.length > 0 ? bodyArray : undefined,
         })
-        .pipe(Effect.either)
+        .pipe(
+          Effect.map((stream) => {
+            const status = exists ? 200 : 201
+            const responseHeaders: Record<string, string> = {
+              [ProtocolHeaders.STREAM_NEXT_OFFSET]: stream.currentOffset,
+            }
 
-      if (result._tag === `Left`) {
-        return addCorsHeaders(
-          createResponse(result.left.message, { status: 409 })
+            // Add Location header for 201 Created responses
+            if (!exists) {
+              responseHeaders[`location`] = `http://${host}:${port}${path}`
+            }
+
+            return addCorsHeaders(
+              createResponse(``, {
+                status,
+                contentType: stream.contentType || `application/octet-stream`,
+                headers: responseHeaders,
+              })
+            )
+          }),
+          Effect.catchTag(`StreamConflictError`, (err) =>
+            Effect.succeed(
+              addCorsHeaders(createResponse(err.message, { status: 409 }))
+            )
+          )
         )
-      }
-
-      const stream = result.right
-      const status = exists ? 200 : 201
-
-      const responseHeaders: Record<string, string> = {
-        [ProtocolHeaders.STREAM_NEXT_OFFSET]: stream.currentOffset,
-      }
-
-      // Add Location header for 201 Created responses
-      if (!exists) {
-        responseHeaders[`location`] = `http://${host}:${port}${path}`
-      }
-
-      return addCorsHeaders(
-        createResponse(``, {
-          status,
-          contentType: stream.contentType || `application/octet-stream`,
-          headers: responseHeaders,
-        })
-      )
     }).pipe(Effect.withSpan(`server.handleCreate`))
 
     /**
@@ -294,30 +294,32 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
       const request = yield* HttpServerRequest.HttpServerRequest
       const path = new URL(request.url, `http://localhost`).pathname
 
-      const result = yield* store.get(path).pipe(Effect.either)
+      yield* Effect.annotateCurrentSpan({ path, method: `HEAD` })
 
-      if (result._tag === `Left`) {
-        return addCorsHeaders(
-          createResponse(`Stream not found`, { status: 404 })
-        )
-      }
-
-      const stream = result.right
-      return addCorsHeaders(
-        HttpServerResponse.empty({ status: 200 }).pipe(
-          HttpServerResponse.setHeader(
-            ProtocolHeaders.STREAM_NEXT_OFFSET,
-            stream.currentOffset
-          ),
-          HttpServerResponse.setHeader(
-            `content-type`,
-            stream.contentType || `application/octet-stream`
-          ),
-          HttpServerResponse.setHeader(`cache-control`, `no-store`),
-          HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-          HttpServerResponse.setHeader(
-            `cross-origin-resource-policy`,
-            `cross-origin`
+      return yield* store.get(path).pipe(
+        Effect.map((stream) =>
+          addCorsHeaders(
+            HttpServerResponse.empty({ status: 200 }).pipe(
+              HttpServerResponse.setHeader(
+                ProtocolHeaders.STREAM_NEXT_OFFSET,
+                stream.currentOffset
+              ),
+              HttpServerResponse.setHeader(
+                `content-type`,
+                stream.contentType || `application/octet-stream`
+              ),
+              HttpServerResponse.setHeader(`cache-control`, `no-store`),
+              HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
+              HttpServerResponse.setHeader(
+                `cross-origin-resource-policy`,
+                `cross-origin`
+              )
+            )
+          )
+        ),
+        Effect.catchTag(`StreamNotFoundError`, () =>
+          Effect.succeed(
+            addCorsHeaders(createResponse(`Stream not found`, { status: 404 }))
           )
         )
       )
@@ -435,7 +437,10 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
       const url = new URL(request.url, `http://localhost`)
       const path = url.pathname
 
-      yield* Effect.log(`GET ${path}`).pipe(Effect.withSpan(`handleRead.start`))
+      yield* Effect.annotateCurrentSpan({ path, method: `GET` })
+      yield* Effect.logInfo(`Handling GET request`).pipe(
+        Effect.annotateLogs({ path })
+      )
 
       const offsetParam = url.searchParams.get(`offset`)
       const liveMode = url.searchParams.get(`live`)
@@ -478,263 +483,291 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
         )
       }
 
-      const streamResult = yield* store.get(path).pipe(Effect.either)
+      return yield* store.get(path).pipe(
+        Effect.flatMap((stream) =>
+          Effect.gen(function* () {
+            const streamContentType =
+              stream.contentType || `application/octet-stream`
 
-      if (streamResult._tag === `Left`) {
-        return addCorsHeaders(
-          createResponse(`Stream not found`, { status: 404 })
-        )
-      }
+            // For offset=now, convert to actual tail offset
+            const effectiveOffset =
+              offsetParam === `now` ? stream.currentOffset : offsetParam
 
-      const stream = streamResult.right
-      const streamContentType = stream.contentType || `application/octet-stream`
+            let offset: string | undefined
+            if (effectiveOffset && effectiveOffset !== `-1`) {
+              offset = effectiveOffset
+            }
 
-      // For offset=now, convert to actual tail offset
-      const effectiveOffset =
-        offsetParam === `now` ? stream.currentOffset : offsetParam
+            // Handle SSE mode
+            if (liveMode === `sse`) {
+              const contentType = normalizeContentType(stream.contentType)
+              if (
+                contentType !== `application/json` &&
+                !contentType.startsWith(`text/`)
+              ) {
+                return addCorsHeaders(
+                  createResponse(
+                    `SSE mode not supported for this content type`,
+                    {
+                      status: 400,
+                    }
+                  )
+                )
+              }
 
-      let offset: string | undefined
-      if (effectiveOffset && effectiveOffset !== `-1`) {
-        offset = effectiveOffset
-      }
+              // For SSE, preserve the original offset (-1 or undefined means from beginning)
+              // store.read handles undefined/-1 as "read all from beginning"
+              const sseOffset =
+                offsetParam === `now`
+                  ? stream.currentOffset
+                  : offsetParam === `-1`
+                    ? undefined
+                    : offsetParam || undefined
 
-      // Handle SSE mode
-      if (liveMode === `sse`) {
-        const contentType = normalizeContentType(stream.contentType)
-        if (
-          contentType !== `application/json` &&
-          !contentType.startsWith(`text/`)
-        ) {
-          return addCorsHeaders(
-            createResponse(`SSE mode not supported for this content type`, {
-              status: 400,
-            })
-          )
-        }
-
-        // For SSE, preserve the original offset (-1 or undefined means from beginning)
-        // store.read handles undefined/-1 as "read all from beginning"
-        const sseOffset =
-          offsetParam === `now`
-            ? stream.currentOffset
-            : offsetParam === `-1`
-              ? undefined
-              : offsetParam || undefined
-
-        const isJsonStream = contentType === `application/json`
-        const sseStream = createSSEStream(
-          path,
-          sseOffset,
-          stream.currentOffset,
-          isJsonStream,
-          clientCursor || undefined
-        )
-
-        // Encode strings to bytes manually to avoid charset being added
-        const encoder = new TextEncoder()
-        const sseByteStream = sseStream.pipe(
-          Stream.map((s) => encoder.encode(s))
-        )
-
-        return addCorsHeaders(
-          HttpServerResponse.stream(sseByteStream, {
-            status: 200,
-            contentType: `text/event-stream`,
-          }).pipe(
-            HttpServerResponse.setHeader(`cache-control`, `no-cache, no-store`),
-            HttpServerResponse.setHeader(`connection`, `keep-alive`),
-            HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-            HttpServerResponse.setHeader(
-              `cross-origin-resource-policy`,
-              `cross-origin`
-            )
-          )
-        )
-      }
-
-      // Handle catch-up mode offset=now: return empty response with tail offset
-      // For long-poll mode, we fall through to wait for new data instead
-      if (offsetParam === `now` && liveMode !== `long-poll`) {
-        const isJsonMode =
-          normalizeContentType(stream.contentType) === `application/json`
-        const responseBody = isJsonMode ? `[]` : ``
-
-        return addCorsHeaders(
-          createResponse(responseBody, {
-            status: 200,
-            contentType: streamContentType,
-            headers: {
-              [ProtocolHeaders.STREAM_NEXT_OFFSET]: stream.currentOffset,
-              [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
-              "cache-control": `no-store`,
-            },
-          })
-        )
-      }
-
-      // Read current messages
-      const readResult = yield* store.read(path, offset)
-
-      // Only wait in long-poll if:
-      // 1. long-poll mode is enabled
-      // 2. Client provided an offset (not first request) OR used offset=now
-      // 3. Client's offset matches current offset (already caught up)
-      // 4. No new messages
-      const clientIsCaughtUp =
-        (offset && offset === stream.currentOffset) || offsetParam === `now`
-
-      if (
-        liveMode === `long-poll` &&
-        clientIsCaughtUp &&
-        readResult.messages.length === 0
-      ) {
-        const waitResult = yield* store.waitForMessages(
-          path,
-          offset || stream.currentOffset,
-          longPollTimeoutMs
-        )
-
-        const cursor = generateResponseCursor(
-          clientCursor || undefined,
-          cursorOptions
-        )
-
-        if (waitResult.timedOut) {
-          return addCorsHeaders(
-            HttpServerResponse.empty({ status: 204 }).pipe(
-              HttpServerResponse.setHeader(
-                ProtocolHeaders.STREAM_NEXT_OFFSET,
-                offset || stream.currentOffset
-              ),
-              HttpServerResponse.setHeader(
-                ProtocolHeaders.STREAM_UP_TO_DATE,
-                `true`
-              ),
-              HttpServerResponse.setHeader(
-                ProtocolHeaders.STREAM_CURSOR,
-                cursor
-              ),
-              HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-              HttpServerResponse.setHeader(
-                `cross-origin-resource-policy`,
-                `cross-origin`
+              const isJsonStream = contentType === `application/json`
+              const sseStream = createSSEStream(
+                path,
+                sseOffset,
+                stream.currentOffset,
+                isJsonStream,
+                clientCursor || undefined
               )
-            )
-          )
-        }
 
-        if (waitResult.messages.length > 0) {
-          const body = yield* store.formatResponse(path, waitResult.messages)
-          const lastOffset =
-            waitResult.messages[waitResult.messages.length - 1]!.offset
-
-          return addCorsHeaders(
-            createResponse(body, {
-              status: 200,
-              contentType: streamContentType,
-              headers: {
-                [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
-                [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
-                [ProtocolHeaders.STREAM_CURSOR]: cursor,
-              },
-            })
-          )
-        }
-      }
-
-      // Long-poll with data already available - return immediately with cursor
-      if (liveMode === `long-poll` && readResult.messages.length > 0) {
-        const cursor = generateResponseCursor(
-          clientCursor || undefined,
-          cursorOptions
-        )
-        const body = yield* store.formatResponse(path, readResult.messages)
-        const lastOffset =
-          readResult.messages[readResult.messages.length - 1]!.offset
-
-        return addCorsHeaders(
-          createResponse(body, {
-            status: 200,
-            contentType: streamContentType,
-            headers: {
-              [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
-              [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
-              [ProtocolHeaders.STREAM_CURSOR]: cursor,
-            },
-          })
-        )
-      }
-
-      // Normal catch-up read
-      if (readResult.messages.length === 0) {
-        const responseOffset = offset || stream.currentOffset
-        const startOffsetStr = offsetParam ?? `-1`
-        const etag = generateETag(path, startOffsetStr, responseOffset)
-
-        // Check If-None-Match
-        const ifNoneMatch = getHeader(request.headers, `if-none-match`)
-        if (ifNoneMatch && ifNoneMatch === etag) {
-          return addCorsHeaders(
-            HttpServerResponse.empty({ status: 304 }).pipe(
-              HttpServerResponse.setHeader(`etag`, etag),
-              HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-              HttpServerResponse.setHeader(
-                `cross-origin-resource-policy`,
-                `cross-origin`
+              // Encode strings to bytes manually to avoid charset being added
+              const encoder = new TextEncoder()
+              const sseByteStream = sseStream.pipe(
+                Stream.map((s) => encoder.encode(s))
               )
+
+              return addCorsHeaders(
+                HttpServerResponse.stream(sseByteStream, {
+                  status: 200,
+                  contentType: `text/event-stream`,
+                }).pipe(
+                  HttpServerResponse.setHeader(
+                    `cache-control`,
+                    `no-cache, no-store`
+                  ),
+                  HttpServerResponse.setHeader(`connection`, `keep-alive`),
+                  HttpServerResponse.setHeader(
+                    `x-content-type-options`,
+                    `nosniff`
+                  ),
+                  HttpServerResponse.setHeader(
+                    `cross-origin-resource-policy`,
+                    `cross-origin`
+                  )
+                )
+              )
+            }
+
+            // Handle catch-up mode offset=now: return empty response with tail offset
+            // For long-poll mode, we fall through to wait for new data instead
+            if (offsetParam === `now` && liveMode !== `long-poll`) {
+              const isJsonMode =
+                normalizeContentType(stream.contentType) === `application/json`
+              const responseBody = isJsonMode ? `[]` : ``
+
+              return addCorsHeaders(
+                createResponse(responseBody, {
+                  status: 200,
+                  contentType: streamContentType,
+                  headers: {
+                    [ProtocolHeaders.STREAM_NEXT_OFFSET]: stream.currentOffset,
+                    [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
+                    "cache-control": `no-store`,
+                  },
+                })
+              )
+            }
+
+            // Read current messages
+            const readResult = yield* store.read(path, offset)
+
+            // Only wait in long-poll if:
+            // 1. long-poll mode is enabled
+            // 2. Client provided an offset (not first request) OR used offset=now
+            // 3. Client's offset matches current offset (already caught up)
+            // 4. No new messages
+            const clientIsCaughtUp =
+              (offset && offset === stream.currentOffset) ||
+              offsetParam === `now`
+
+            if (
+              liveMode === `long-poll` &&
+              clientIsCaughtUp &&
+              readResult.messages.length === 0
+            ) {
+              const waitResult = yield* store.waitForMessages(
+                path,
+                offset || stream.currentOffset,
+                longPollTimeoutMs
+              )
+
+              const cursor = generateResponseCursor(
+                clientCursor || undefined,
+                cursorOptions
+              )
+
+              if (waitResult.timedOut) {
+                return addCorsHeaders(
+                  HttpServerResponse.empty({ status: 204 }).pipe(
+                    HttpServerResponse.setHeader(
+                      ProtocolHeaders.STREAM_NEXT_OFFSET,
+                      offset || stream.currentOffset
+                    ),
+                    HttpServerResponse.setHeader(
+                      ProtocolHeaders.STREAM_UP_TO_DATE,
+                      `true`
+                    ),
+                    HttpServerResponse.setHeader(
+                      ProtocolHeaders.STREAM_CURSOR,
+                      cursor
+                    ),
+                    HttpServerResponse.setHeader(
+                      `x-content-type-options`,
+                      `nosniff`
+                    ),
+                    HttpServerResponse.setHeader(
+                      `cross-origin-resource-policy`,
+                      `cross-origin`
+                    )
+                  )
+                )
+              }
+
+              if (waitResult.messages.length > 0) {
+                const body = yield* store.formatResponse(
+                  path,
+                  waitResult.messages
+                )
+                const lastOffset =
+                  waitResult.messages[waitResult.messages.length - 1]!.offset
+
+                return addCorsHeaders(
+                  createResponse(body, {
+                    status: 200,
+                    contentType: streamContentType,
+                    headers: {
+                      [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
+                      [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
+                      [ProtocolHeaders.STREAM_CURSOR]: cursor,
+                    },
+                  })
+                )
+              }
+            }
+
+            // Long-poll with data already available - return immediately with cursor
+            if (liveMode === `long-poll` && readResult.messages.length > 0) {
+              const cursor = generateResponseCursor(
+                clientCursor || undefined,
+                cursorOptions
+              )
+              const body = yield* store.formatResponse(
+                path,
+                readResult.messages
+              )
+              const lastOffset =
+                readResult.messages[readResult.messages.length - 1]!.offset
+
+              return addCorsHeaders(
+                createResponse(body, {
+                  status: 200,
+                  contentType: streamContentType,
+                  headers: {
+                    [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
+                    [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
+                    [ProtocolHeaders.STREAM_CURSOR]: cursor,
+                  },
+                })
+              )
+            }
+
+            // Normal catch-up read
+            if (readResult.messages.length === 0) {
+              const responseOffset = offset || stream.currentOffset
+              const startOffsetStr = offsetParam ?? `-1`
+              const etag = generateETag(path, startOffsetStr, responseOffset)
+
+              // Check If-None-Match
+              const ifNoneMatch = getHeader(request.headers, `if-none-match`)
+              if (ifNoneMatch && ifNoneMatch === etag) {
+                return addCorsHeaders(
+                  HttpServerResponse.empty({ status: 304 }).pipe(
+                    HttpServerResponse.setHeader(`etag`, etag),
+                    HttpServerResponse.setHeader(
+                      `x-content-type-options`,
+                      `nosniff`
+                    ),
+                    HttpServerResponse.setHeader(
+                      `cross-origin-resource-policy`,
+                      `cross-origin`
+                    )
+                  )
+                )
+              }
+
+              // For JSON mode, return empty array; otherwise empty body
+              const isJsonMode =
+                normalizeContentType(stream.contentType) === `application/json`
+              const responseBody = isJsonMode ? `[]` : ``
+
+              return addCorsHeaders(
+                createResponse(responseBody, {
+                  status: 200,
+                  contentType: streamContentType,
+                  headers: {
+                    [ProtocolHeaders.STREAM_NEXT_OFFSET]: responseOffset,
+                    [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
+                    etag: etag,
+                  },
+                })
+              )
+            }
+
+            const body = yield* store.formatResponse(path, readResult.messages)
+            const lastOffset =
+              readResult.messages[readResult.messages.length - 1]!.offset
+            const startOffsetStr = offsetParam ?? `-1`
+            const etag = generateETag(path, startOffsetStr, lastOffset)
+
+            // Check If-None-Match
+            const ifNoneMatch = getHeader(request.headers, `if-none-match`)
+            if (ifNoneMatch && ifNoneMatch === etag) {
+              return addCorsHeaders(
+                HttpServerResponse.empty({ status: 304 }).pipe(
+                  HttpServerResponse.setHeader(`etag`, etag),
+                  HttpServerResponse.setHeader(
+                    `x-content-type-options`,
+                    `nosniff`
+                  ),
+                  HttpServerResponse.setHeader(
+                    `cross-origin-resource-policy`,
+                    `cross-origin`
+                  )
+                )
+              )
+            }
+
+            return addCorsHeaders(
+              createResponse(body, {
+                status: 200,
+                contentType: streamContentType,
+                headers: {
+                  [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
+                  [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
+                  etag: etag,
+                },
+              })
             )
-          )
-        }
-
-        // For JSON mode, return empty array; otherwise empty body
-        const isJsonMode =
-          normalizeContentType(stream.contentType) === `application/json`
-        const responseBody = isJsonMode ? `[]` : ``
-
-        return addCorsHeaders(
-          createResponse(responseBody, {
-            status: 200,
-            contentType: streamContentType,
-            headers: {
-              [ProtocolHeaders.STREAM_NEXT_OFFSET]: responseOffset,
-              [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
-              etag: etag,
-            },
           })
-        )
-      }
-
-      const body = yield* store.formatResponse(path, readResult.messages)
-      const lastOffset =
-        readResult.messages[readResult.messages.length - 1]!.offset
-      const startOffsetStr = offsetParam ?? `-1`
-      const etag = generateETag(path, startOffsetStr, lastOffset)
-
-      // Check If-None-Match
-      const ifNoneMatch = getHeader(request.headers, `if-none-match`)
-      if (ifNoneMatch && ifNoneMatch === etag) {
-        return addCorsHeaders(
-          HttpServerResponse.empty({ status: 304 }).pipe(
-            HttpServerResponse.setHeader(`etag`, etag),
-            HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-            HttpServerResponse.setHeader(
-              `cross-origin-resource-policy`,
-              `cross-origin`
-            )
+        ),
+        Effect.catchTag(`StreamNotFoundError`, () =>
+          Effect.succeed(
+            addCorsHeaders(createResponse(`Stream not found`, { status: 404 }))
           )
         )
-      }
-
-      return addCorsHeaders(
-        createResponse(body, {
-          status: 200,
-          contentType: streamContentType,
-          headers: {
-            [ProtocolHeaders.STREAM_NEXT_OFFSET]: lastOffset,
-            [ProtocolHeaders.STREAM_UP_TO_DATE]: `true`,
-            etag: etag,
-          },
-        })
       )
     }).pipe(Effect.withSpan(`server.handleRead`))
 
@@ -745,8 +778,9 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
       const request = yield* HttpServerRequest.HttpServerRequest
       const path = new URL(request.url, `http://localhost`).pathname
 
-      yield* Effect.log(`POST ${path}`).pipe(
-        Effect.withSpan(`handleAppend.start`)
+      yield* Effect.annotateCurrentSpan({ path, method: `POST` })
+      yield* Effect.logInfo(`Handling POST request`).pipe(
+        Effect.annotateLogs({ path })
       )
 
       const contentType = getHeader(request.headers, `content-type`)
@@ -831,7 +865,7 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
         return addCorsHeaders(createResponse(`Empty body`, { status: 400 }))
       }
 
-      const appendResult = yield* store
+      return yield* store
         .append(path, bodyArray, {
           contentType,
           seq: seqHeader,
@@ -840,58 +874,85 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
           producerEpoch,
           producerSeq,
         })
-        .pipe(Effect.either)
+        .pipe(
+          Effect.flatMap((result) =>
+            Effect.gen(function* () {
+              if (result.producerResult) {
+                const pr = result.producerResult
 
-      if (appendResult._tag === `Left`) {
-        const err = appendResult.left
-        switch (err._tag) {
-          case `StreamNotFoundError`:
-            return addCorsHeaders(
-              createResponse(`Stream not found`, { status: 404 })
-            )
-          case `ContentTypeMismatchError`:
-            return addCorsHeaders(
-              createResponse(
-                `Content-Type mismatch: expected ${err.expected}, got ${err.received}`,
-                { status: 409 }
-              )
-            )
-          case `SequenceConflictError`:
-            return addCorsHeaders(
-              createResponse(
-                `Sequence conflict: ${err.receivedSeq} <= ${err.currentSeq}`,
-                {
-                  status: 409,
+                switch (pr.status) {
+                  case `duplicate`:
+                    return addCorsHeaders(
+                      HttpServerResponse.empty({ status: 204 }).pipe(
+                        HttpServerResponse.setHeader(
+                          ProtocolHeaders.PRODUCER_EPOCH,
+                          String(producerEpoch)
+                        ),
+                        HttpServerResponse.setHeader(
+                          ProtocolHeaders.PRODUCER_SEQ,
+                          String(pr.lastSeq)
+                        ),
+                        HttpServerResponse.setHeader(
+                          `x-content-type-options`,
+                          `nosniff`
+                        ),
+                        HttpServerResponse.setHeader(
+                          `cross-origin-resource-policy`,
+                          `cross-origin`
+                        )
+                      )
+                    )
+
+                  case `stale_epoch`:
+                    return addCorsHeaders(
+                      createResponse(`Stale producer epoch`, {
+                        status: 403,
+                        headers: {
+                          [ProtocolHeaders.PRODUCER_EPOCH]: String(
+                            pr.currentEpoch
+                          ),
+                        },
+                      })
+                    )
+
+                  case `invalid_epoch_seq`:
+                    return addCorsHeaders(
+                      createResponse(`New epoch must start with sequence 0`, {
+                        status: 400,
+                      })
+                    )
+
+                  case `sequence_gap`:
+                    return addCorsHeaders(
+                      createResponse(`Sequence gap detected`, {
+                        status: 409,
+                        headers: {
+                          [ProtocolHeaders.PRODUCER_EXPECTED_SEQ]: String(
+                            pr.expectedSeq
+                          ),
+                          [ProtocolHeaders.PRODUCER_RECEIVED_SEQ]: String(
+                            pr.receivedSeq
+                          ),
+                        },
+                      })
+                    )
+
+                  case `accepted`:
+                    break
                 }
-              )
-            )
-          case `InvalidJsonError`:
-            return addCorsHeaders(
-              createResponse(`Invalid JSON`, { status: 400 })
-            )
-          case `EmptyArrayError`:
-            return addCorsHeaders(
-              createResponse(`Empty arrays are not allowed`, { status: 400 })
-            )
-        }
-      }
+              }
 
-      const result = Either.getOrThrow(appendResult)
+              const streamData = yield* store.get(path)
 
-      if (result.producerResult) {
-        const pr = result.producerResult
+              // Standard append (no producer) returns 204
+              // With producer returns 200
+              const hasValidProducer = hasProducerId && producerId !== ``
+              const status = hasValidProducer ? 200 : 204
 
-        switch (pr.status) {
-          case `duplicate`:
-            return addCorsHeaders(
-              HttpServerResponse.empty({ status: 204 }).pipe(
+              let response = HttpServerResponse.empty({ status }).pipe(
                 HttpServerResponse.setHeader(
-                  ProtocolHeaders.PRODUCER_EPOCH,
-                  String(producerEpoch)
-                ),
-                HttpServerResponse.setHeader(
-                  ProtocolHeaders.PRODUCER_SEQ,
-                  String(pr.lastSeq)
+                  ProtocolHeaders.STREAM_NEXT_OFFSET,
+                  streamData.currentOffset
                 ),
                 HttpServerResponse.setHeader(
                   `x-content-type-options`,
@@ -902,78 +963,65 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
                   `cross-origin`
                 )
               )
-            )
 
-          case `stale_epoch`:
-            return addCorsHeaders(
-              createResponse(`Stale producer epoch`, {
-                status: 403,
-                headers: {
-                  [ProtocolHeaders.PRODUCER_EPOCH]: String(pr.currentEpoch),
-                },
-              })
-            )
-
-          case `invalid_epoch_seq`:
-            return addCorsHeaders(
-              createResponse(`New epoch must start with sequence 0`, {
-                status: 400,
-              })
-            )
-
-          case `sequence_gap`:
-            return addCorsHeaders(
-              createResponse(`Sequence gap detected`, {
-                status: 409,
-                headers: {
-                  [ProtocolHeaders.PRODUCER_EXPECTED_SEQ]: String(
-                    pr.expectedSeq
+              if (
+                hasValidProducer &&
+                result.producerResult?.status === `accepted`
+              ) {
+                response = response.pipe(
+                  HttpServerResponse.setHeader(
+                    ProtocolHeaders.PRODUCER_EPOCH,
+                    String(result.producerResult.proposedState.epoch)
                   ),
-                  [ProtocolHeaders.PRODUCER_RECEIVED_SEQ]: String(
-                    pr.receivedSeq
-                  ),
-                },
-              })
-            )
+                  HttpServerResponse.setHeader(
+                    ProtocolHeaders.PRODUCER_SEQ,
+                    String(result.producerResult.proposedState.lastSeq)
+                  )
+                )
+              }
 
-          case `accepted`:
-            break
-        }
-      }
-
-      const streamData = yield* store.get(path)
-
-      // Standard append (no producer) returns 204
-      // With producer returns 200
-      const hasValidProducer = hasProducerId && producerId !== ``
-      const status = hasValidProducer ? 200 : 204
-
-      let response = HttpServerResponse.empty({ status }).pipe(
-        HttpServerResponse.setHeader(
-          ProtocolHeaders.STREAM_NEXT_OFFSET,
-          streamData.currentOffset
-        ),
-        HttpServerResponse.setHeader(`x-content-type-options`, `nosniff`),
-        HttpServerResponse.setHeader(
-          `cross-origin-resource-policy`,
-          `cross-origin`
-        )
-      )
-
-      if (hasValidProducer && result.producerResult?.status === `accepted`) {
-        response = response.pipe(
-          HttpServerResponse.setHeader(
-            ProtocolHeaders.PRODUCER_EPOCH,
-            String(result.producerResult.proposedState.epoch)
+              return addCorsHeaders(response)
+            })
           ),
-          HttpServerResponse.setHeader(
-            ProtocolHeaders.PRODUCER_SEQ,
-            String(result.producerResult.proposedState.lastSeq)
-          )
+          Effect.catchTags({
+            StreamNotFoundError: () =>
+              Effect.succeed(
+                addCorsHeaders(
+                  createResponse(`Stream not found`, { status: 404 })
+                )
+              ),
+            ContentTypeMismatchError: (err) =>
+              Effect.succeed(
+                addCorsHeaders(
+                  createResponse(
+                    `Content-Type mismatch: expected ${err.expected}, got ${err.received}`,
+                    { status: 409 }
+                  )
+                )
+              ),
+            SequenceConflictError: (err) =>
+              Effect.succeed(
+                addCorsHeaders(
+                  createResponse(
+                    `Sequence conflict: ${err.receivedSeq} <= ${err.currentSeq}`,
+                    { status: 409 }
+                  )
+                )
+              ),
+            InvalidJsonError: () =>
+              Effect.succeed(
+                addCorsHeaders(createResponse(`Invalid JSON`, { status: 400 }))
+              ),
+            EmptyArrayError: () =>
+              Effect.succeed(
+                addCorsHeaders(
+                  createResponse(`Empty arrays are not allowed`, {
+                    status: 400,
+                  })
+                )
+              ),
+          })
         )
-      }
-
-      return addCorsHeaders(response)
     }).pipe(Effect.withSpan(`server.handleAppend`))
 
     /**
@@ -983,8 +1031,9 @@ const makeRouter = (port: number, host: string, config: ServerConfigShape) =>
       const request = yield* HttpServerRequest.HttpServerRequest
       const path = new URL(request.url, `http://localhost`).pathname
 
-      yield* Effect.log(`DELETE ${path}`).pipe(
-        Effect.withSpan(`handleDelete.start`)
+      yield* Effect.annotateCurrentSpan({ path, method: `DELETE` })
+      yield* Effect.logInfo(`Handling DELETE request`).pipe(
+        Effect.annotateLogs({ path })
       )
 
       const deleted = yield* store.delete(path)
