@@ -1,4 +1,5 @@
 .game-canvas-container {
+  position: relative;
   width: 100%;
   height: 100%;
   overflow: hidden;
@@ -12,13 +13,12 @@
 
 /* Pop animation for other players' moves */
 .game-canvas-pop {
-  position: fixed;
+  position: absolute;
   width: 12px;
   height: 12px;
   border-radius: 50%;
   transform: translate(-50%, -50%) scale(0);
   pointer-events: none;
-  z-index: 50;
   animation: game-canvas-pop 0.8s ease-out forwards;
 }
 

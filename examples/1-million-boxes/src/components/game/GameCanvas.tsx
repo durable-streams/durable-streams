@@ -623,10 +623,6 @@ export function GameCanvas() {
   // Calculate pops for other players' moves in viewport
   const canvasPops = useMemo(() => {
     const now = Date.now()
-    const canvas = canvasRef.current
-    if (!canvas) return []
-
-    const rect = canvas.getBoundingClientRect()
 
     return recentEvents
       .filter((e) => !e.isLocal && now - e.timestamp < POP_DURATION)
@@ -636,7 +632,7 @@ export function GameCanvas() {
         const worldX = coords.horizontal ? coords.x + 0.5 : coords.x
         const worldY = coords.horizontal ? coords.y : coords.y + 0.5
 
-        // Convert to screen coordinates
+        // Convert to screen coordinates (relative to canvas)
         const screenPos = worldToScreen(
           worldX,
           worldY,
@@ -646,6 +642,7 @@ export function GameCanvas() {
         )
 
         // Check if in viewport (with some margin for the pop animation)
+        // Container has overflow:hidden so pops outside will be clipped
         const margin = 50
         if (
           screenPos.x < -margin ||
@@ -662,8 +659,8 @@ export function GameCanvas() {
 
         return {
           key: `${event.id}`,
-          x: screenPos.x + rect.left,
-          y: screenPos.y + rect.top,
+          x: screenPos.x,
+          y: screenPos.y,
           color,
           age: now - event.timestamp,
         }
