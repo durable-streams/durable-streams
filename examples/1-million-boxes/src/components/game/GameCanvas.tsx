@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useViewStateContext } from "../../hooks/useViewState"
 import { useGameState } from "../../hooks/useGameState"
 import { usePanZoom } from "../../hooks/usePanZoom"
@@ -14,11 +14,14 @@ import { H, W, edgeIdToCoords } from "../../lib/edge-math"
 import { findNearestEdge } from "../../lib/edge-picker"
 import { getDebugConfig, subscribeDebugConfig } from "../../lib/debug-config"
 import { TouchFeedback, useTouchFeedback } from "../ui/TouchFeedback"
+import { TEAMS, TEAM_COLORS } from "../../lib/teams"
 import { renderBoxes } from "./BoxRenderer"
 import { renderEdges } from "./EdgeRenderer"
 import { renderDots } from "./DotRenderer"
 import type { DebugConfig } from "../../lib/debug-config"
 import "./GameCanvas.css"
+
+const POP_DURATION = 800 // ms - should match CSS animation
 
 const BACKGROUND_COLOR = `#F5F5DC`
 
@@ -617,6 +620,57 @@ export function GameCanvas() {
     version,
   ])
 
+  // Calculate pops for other players' moves in viewport
+  const canvasPops = useMemo(() => {
+    const now = Date.now()
+    const canvas = canvasRef.current
+    if (!canvas) return []
+
+    const rect = canvas.getBoundingClientRect()
+
+    return recentEvents
+      .filter((e) => !e.isLocal && now - e.timestamp < POP_DURATION)
+      .map((event) => {
+        const coords = edgeIdToCoords(event.edgeId)
+        // Get edge center position in world coordinates
+        const worldX = coords.horizontal ? coords.x + 0.5 : coords.x
+        const worldY = coords.horizontal ? coords.y : coords.y + 0.5
+
+        // Convert to screen coordinates
+        const screenPos = worldToScreen(
+          worldX,
+          worldY,
+          view,
+          canvasSize.width,
+          canvasSize.height
+        )
+
+        // Check if in viewport (with some margin for the pop animation)
+        const margin = 50
+        if (
+          screenPos.x < -margin ||
+          screenPos.x > canvasSize.width + margin ||
+          screenPos.y < -margin ||
+          screenPos.y > canvasSize.height + margin
+        ) {
+          return null
+        }
+
+        // Get team color
+        const teamName = TEAMS[event.teamId]
+        const color = TEAM_COLORS[teamName].primary
+
+        return {
+          key: `${event.id}`,
+          x: screenPos.x + rect.left,
+          y: screenPos.y + rect.top,
+          color,
+          age: now - event.timestamp,
+        }
+      })
+      .filter((pop): pop is NonNullable<typeof pop> => pop !== null)
+  }, [recentEvents, view, canvasSize])
+
   // Handle mouse move for edge hover
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
@@ -760,6 +814,19 @@ export function GameCanvas() {
         onTouchEnd={handleTouchEnd}
       />
       <TouchFeedback ripples={ripples} />
+      {/* Pop animations for other players' moves */}
+      {canvasPops.map((pop) => (
+        <div
+          key={pop.key}
+          className="game-canvas-pop"
+          style={{
+            left: pop.x,
+            top: pop.y,
+            backgroundColor: pop.color,
+            animationDelay: `-${pop.age}ms`,
+          }}
+        />
+      ))}
     </div>
   )
 }

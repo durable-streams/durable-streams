@@ -12,6 +12,7 @@ export interface RecentEvent {
   edgeId: number
   teamId: number
   timestamp: number
+  isLocal: boolean // true if placed by the current user
 }
 
 export interface GameStateContextValue {
@@ -59,6 +60,8 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
   // Track recent events for minimap pop animation
   const [recentEvents, setRecentEvents] = useState<Array<RecentEvent>>([])
   const eventIdRef = useRef(0)
+  // Track edge IDs placed by the local user (to identify local vs remote events)
+  const localEdgeIdsRef = useRef<Set<number>>(new Set())
 
   // Track if initial sync is complete (don't show pops during replay, don't render during catchup)
   const initialSyncCompleteRef = useRef(false)
@@ -124,11 +127,17 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           `edgeId` in event &&
           `teamId` in event
         ) {
+          const isLocal = localEdgeIdsRef.current.has(event.edgeId)
+          // Clean up local edge tracking after it's been processed
+          if (isLocal) {
+            localEdgeIdsRef.current.delete(event.edgeId)
+          }
           pendingRecentEventsRef.current.push({
             id: eventIdRef.current++,
             edgeId: event.edgeId,
             teamId: event.teamId,
             timestamp: now,
+            isLocal,
           })
         }
       }
@@ -220,6 +229,9 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
 
       // Set pending edge for optimistic UI
       setPendingEdge(edgeId)
+
+      // Track as local edge for pop animation filtering
+      localEdgeIdsRef.current.add(edgeId)
 
       try {
         const response = await fetch(`/api/draw`, {

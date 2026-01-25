@@ -9,3 +9,30 @@
 .game-canvas {
   display: block;
 }
+
+/* Pop animation for other players' moves */
+.game-canvas-pop {
+  position: fixed;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+  z-index: 50;
+  animation: game-canvas-pop 0.8s ease-out forwards;
+}
+
+@keyframes game-canvas-pop {
+  0% {
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 1;
+  }
+  30% {
+    transform: translate(-50%, -50%) scale(2);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(3);
+    opacity: 0;
+  }
+}
