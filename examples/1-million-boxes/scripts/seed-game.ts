@@ -16,12 +16,14 @@
  * 4. Write edges to complete those boxes
  */
 
+import { DurableStream, DurableStreamError } from "@durable-streams/client"
 import {
   GAME_STREAM_PATH,
   GRID_HEIGHT,
   GRID_WIDTH,
   TOTAL_BOX_COUNT,
 } from "../shared/game-config"
+import { encodeHeader } from "../shared/stream-parser"
 
 // Default stream URL (local dev) - matches wrangler.jsonc DURABLE_STREAMS_URL
 const DEFAULT_STREAM_URL = `http://localhost:4437/v1/stream`
@@ -111,32 +113,39 @@ async function main() {
   console.log(`Target: ${percentage}% complete`)
   console.log(``)
 
+  // Create DurableStream client
+  const stream = new DurableStream({
+    url: streamPath,
+    contentType: `application/octet-stream`,
+    batching: false, // Disable batching for seeding script
+  })
+
   // Step 1: Delete existing stream
   console.log(`🗑️  Deleting existing stream...`)
   try {
-    const deleteResponse = await fetch(streamPath, { method: `DELETE` })
-    if (deleteResponse.ok) {
-      console.log(`   Stream deleted`)
-    } else if (deleteResponse.status === 404) {
+    await stream.delete()
+    console.log(`   Stream deleted`)
+  } catch (err) {
+    if (
+      err instanceof DurableStreamError &&
+      (err).code === `NOT_FOUND`
+    ) {
       console.log(`   Stream didn't exist (OK)`)
     } else {
-      console.log(`   Warning: Delete returned ${deleteResponse.status}`)
+      console.log(`   Warning: Delete failed (stream may not exist)`)
     }
-  } catch {
-    console.log(`   Warning: Delete failed (stream may not exist)`)
   }
 
   // Step 2: Create new stream
   console.log(`📝 Creating new stream...`)
-  const createResponse = await fetch(streamPath, {
-    method: `PUT`,
-    headers: { "Content-Type": `application/octet-stream` },
-  })
-  if (!createResponse.ok) {
-    console.error(`   Failed to create stream: ${createResponse.status}`)
-    process.exit(1)
-  }
+  await stream.create()
   console.log(`   Stream created`)
+
+  // Step 2b: Write header with game start timestamp
+  console.log(`📝 Writing header...`)
+  const header = encodeHeader(Date.now())
+  await stream.append(header)
+  console.log(`   Header written`)
 
   // Step 3: Calculate boxes to complete
   const targetBoxes = Math.floor(TOTAL_BOX_COUNT * (percentage / 100))
@@ -189,16 +198,7 @@ async function main() {
     }
 
     // Write to stream
-    const response = await fetch(streamPath, {
-      method: `POST`,
-      headers: { "Content-Type": `application/octet-stream` },
-      body: combined,
-    })
-
-    if (!response.ok) {
-      console.error(`   Failed to write batch: ${response.status}`)
-      process.exit(1)
-    }
+    await stream.append(combined)
 
     written += batch.length
     const pct = Math.floor((written / edges.length) * 100)

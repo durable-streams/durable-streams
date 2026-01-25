@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { GAME_START_TIMESTAMP_KEY } from "../../../shared/game-config"
 import {
   getDebugConfig,
   setDebugConfig,
@@ -14,6 +15,7 @@ import "./DebugOverlay.css"
 export function DebugOverlay() {
   const [config, setConfig] = useState<DebugConfig>(getDebugConfig)
   const [fps, setFps] = useState(0)
+  const [gameStartTime, setGameStartTime] = useState<string | null>(null)
   const frameTimesRef = useRef<Array<number>>([])
   const lastTimeRef = useRef(performance.now())
   const rafIdRef = useRef<number>(0)
@@ -22,6 +24,31 @@ export function DebugOverlay() {
   useEffect(() => {
     return subscribeDebugConfig(setConfig)
   }, [])
+
+  // Load game start timestamp from localStorage
+  useEffect(() => {
+    if (!config.showFps) return
+
+    const loadTimestamp = () => {
+      try {
+        const stored = localStorage.getItem(GAME_START_TIMESTAMP_KEY)
+        if (stored) {
+          const timestamp = parseInt(stored, 10)
+          const date = new Date(timestamp)
+          setGameStartTime(date.toISOString())
+        } else {
+          setGameStartTime(null)
+        }
+      } catch {
+        setGameStartTime(null)
+      }
+    }
+
+    loadTimestamp()
+    // Refresh periodically in case it changes
+    const interval = setInterval(loadTimestamp, 1000)
+    return () => clearInterval(interval)
+  }, [config.showFps])
 
   // FPS measurement
   useEffect(() => {
@@ -133,6 +160,13 @@ export function DebugOverlay() {
           Shaded Boxes
         </label>
       </div>
+
+      {gameStartTime && (
+        <div className="debug-info">
+          <span className="debug-info-label">Game Start:</span>
+          <span className="debug-info-value">{gameStartTime}</span>
+        </div>
+      )}
 
       <div className="debug-hint">Press D to close</div>
     </div>

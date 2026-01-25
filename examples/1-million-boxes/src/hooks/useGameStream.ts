@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from "react"
-import { DurableStream } from "@durable-streams/client"
+import { stream } from "@durable-streams/client"
 import { StreamParser } from "../../shared/stream-parser"
 import { STREAM_PROXY_ENDPOINT, STREAM_RECONNECT_DELAY_MS } from "../lib/config"
 import type { StreamResponse } from "@durable-streams/client"
@@ -33,9 +33,9 @@ function getStreamUrl(): string {
 }
 
 /**
- * Hook for connecting to the game event stream using the DurableStream client.
+ * Hook for connecting to the game event stream using the durable streams client.
  *
- * Uses the @durable-streams/client library's DurableStream class with
+ * Uses the @durable-streams/client library's stream() function with
  * long polling for real-time updates (SSE not supported for octet-stream).
  */
 export function useGameStream(
@@ -121,28 +121,9 @@ export function useGameStream(
 
     const doConnect = async () => {
       try {
-        const stream = new DurableStream({ url: streamUrl })
-
-        // Check if stream exists, create if it doesn't
-        try {
-          await stream.head()
-          if (!isValid()) return
-          console.log(`[useGameStream] Stream exists`)
-        } catch {
-          if (!isValid()) return
-          console.log(`[useGameStream] Stream not found, creating...`)
-          await DurableStream.create({
-            url: streamUrl,
-            contentType: `application/octet-stream`,
-          })
-          if (!isValid()) return
-          console.log(`[useGameStream] Stream created`)
-        }
-
-        if (!isValid()) return
-
-        // Start streaming with long polling
-        const response = await stream.stream({
+        // Start streaming with long polling using the read-only stream API
+        const response = await stream({
+          url: streamUrl,
           live: `long-poll`,
         })
 

@@ -106,3 +106,9 @@ export const QUOTA_GC_INACTIVE_MS = 10 * 60 * 1000 // 10 minutes
  * LocalStorage key for persisting quota state (client-side optimistic UI).
  */
 export const QUOTA_STORAGE_KEY = `boxes:quota`
+
+/**
+ * LocalStorage key for storing the game start timestamp.
+ * Used to detect game resets and clear stale client data.
+ */
+export const GAME_START_TIMESTAMP_KEY = `boxes:game-start`
