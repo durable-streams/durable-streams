@@ -36,6 +36,12 @@ export function QuotaMeter() {
           +1 in {refillIn}s
         </span>
       )}
+      {/* Mobile-only refill text below bars */}
+      {remaining < max && (
+        <span className="quota-refill-mobile" data-testid="quota-refill-mobile">
+          +1 in {refillIn}s
+        </span>
+      )}
     </div>
   )
 }

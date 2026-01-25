@@ -100,6 +100,11 @@
   color: var(--color-muted);
 }
 
+/* Mobile-only refill text - hidden on desktop */
+.quota-refill-mobile {
+  display: none;
+}
+
 /* Recharging state with pulse animation */
 .quota-recharging .quota-recharging-text {
   animation: quota-pulse 1.5s ease-in-out infinite;
@@ -131,16 +136,42 @@
 
 /* Mobile adjustments */
 @media (max-width: 640px) {
+  .quota-meter {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+
+  .quota-segments {
+    order: 1;
+  }
+
   .quota-segment {
     width: 6px;
     height: 14px;
   }
 
+  /* Hide quota text (X/X) on mobile */
   .quota-text {
-    font-size: 13px;
+    display: none;
   }
 
+  /* Hide "Recharging..." text on mobile */
+  .quota-recharging-text {
+    display: none;
+  }
+
+  /* Hide inline refill text on mobile */
   .quota-refill {
-    font-size: 11px;
+    display: none;
+  }
+
+  /* Show refill text below bars on mobile */
+  .quota-refill-mobile {
+    display: block;
+    order: 2;
+    font-size: 10px;
+    color: var(--color-muted);
+    line-height: 1;
   }
 }
