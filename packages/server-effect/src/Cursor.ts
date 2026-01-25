@@ -5,12 +5,12 @@
 /**
  * Default epoch for cursor calculation: October 9, 2024 00:00:00 UTC.
  */
-export const DEFAULT_CURSOR_EPOCH: Date = new Date("2024-10-09T00:00:00.000Z")
+export const DEFAULT_CURSOR_EPOCH: Date = new Date(`2024-10-09T00:00:00.000Z`)
 
 /**
  * Default interval duration in seconds.
  */
-export const DEFAULT_CURSOR_INTERVAL_SECONDS: number = 20
+export const DEFAULT_CURSOR_INTERVAL_SECONDS = 20
 
 /**
  * Maximum jitter in seconds to add on collision.
@@ -34,7 +34,8 @@ export interface CursorOptions {
  * Calculate the current cursor value based on time intervals.
  */
 export function calculateCursor(options: CursorOptions = {}): string {
-  const intervalSeconds = options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
+  const intervalSeconds =
+    options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
   const epoch = options.epoch ?? DEFAULT_CURSOR_EPOCH
 
   const now = Date.now()
@@ -64,7 +65,8 @@ export function generateResponseCursor(
   clientCursor: string | undefined,
   options: CursorOptions = {}
 ): string {
-  const intervalSeconds = options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
+  const intervalSeconds =
+    options.intervalSeconds ?? DEFAULT_CURSOR_INTERVAL_SECONDS
   const currentCursor = calculateCursor(options)
   const currentInterval = parseInt(currentCursor, 10)
 

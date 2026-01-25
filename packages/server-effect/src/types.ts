@@ -35,7 +35,7 @@ export interface Stream {
   /** Content type of the stream */
   contentType?: string
   /** Messages in the stream */
-  messages: StreamMessage[]
+  messages: Array<StreamMessage>
   /** Current offset (next offset to write to) */
   currentOffset: string
   /** Last sequence number for writer coordination (Stream-Seq) */
@@ -55,15 +55,15 @@ export interface Stream {
  */
 export type ProducerValidationResult =
   | {
-      status: "accepted"
+      status: `accepted`
       isNew: boolean
       producerId: string
       proposedState: ProducerState
     }
-  | { status: "duplicate"; lastSeq: number }
-  | { status: "stale_epoch"; currentEpoch: number }
-  | { status: "invalid_epoch_seq" }
-  | { status: "sequence_gap"; expectedSeq: number; receivedSeq: number }
+  | { status: `duplicate`; lastSeq: number }
+  | { status: `stale_epoch`; currentEpoch: number }
+  | { status: `invalid_epoch_seq` }
+  | { status: `sequence_gap`; expectedSeq: number; receivedSeq: number }
 
 /**
  * Options for creating a stream.
@@ -113,21 +113,21 @@ export interface ServerConfig {
 /**
  * Initial offset for a new stream.
  */
-export const INITIAL_OFFSET = "0000000000000000_0000000000000000"
+export const INITIAL_OFFSET = `0000000000000000_0000000000000000`
 
 /**
  * Protocol headers.
  */
 export const Headers = {
-  STREAM_NEXT_OFFSET: "stream-next-offset",
-  STREAM_CURSOR: "stream-cursor",
-  STREAM_UP_TO_DATE: "stream-up-to-date",
-  STREAM_SEQ: "stream-seq",
-  STREAM_TTL: "stream-ttl",
-  STREAM_EXPIRES_AT: "stream-expires-at",
-  PRODUCER_ID: "producer-id",
-  PRODUCER_EPOCH: "producer-epoch",
-  PRODUCER_SEQ: "producer-seq",
-  PRODUCER_EXPECTED_SEQ: "producer-expected-seq",
-  PRODUCER_RECEIVED_SEQ: "producer-received-seq",
+  STREAM_NEXT_OFFSET: `stream-next-offset`,
+  STREAM_CURSOR: `stream-cursor`,
+  STREAM_UP_TO_DATE: `stream-up-to-date`,
+  STREAM_SEQ: `stream-seq`,
+  STREAM_TTL: `stream-ttl`,
+  STREAM_EXPIRES_AT: `stream-expires-at`,
+  PRODUCER_ID: `producer-id`,
+  PRODUCER_EPOCH: `producer-epoch`,
+  PRODUCER_SEQ: `producer-seq`,
+  PRODUCER_EXPECTED_SEQ: `producer-expected-seq`,
+  PRODUCER_RECEIVED_SEQ: `producer-received-seq`,
 } as const

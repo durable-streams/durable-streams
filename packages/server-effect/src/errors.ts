@@ -1,180 +1,104 @@
 /**
- * Typed errors for the durable streams server.
+ * Typed errors for the durable streams server using Effect's Schema.TaggedError.
+ * These errors are yieldable in Effect generators and serializable.
  */
+import { Schema } from "effect"
 
 /**
  * Stream not found error.
  */
-export interface StreamNotFoundError {
-  readonly _tag: "StreamNotFoundError"
-  readonly path: string
-}
-
-export const StreamNotFoundError = (path: string): StreamNotFoundError => ({
-  _tag: "StreamNotFoundError",
-  path,
-})
+export class StreamNotFoundError extends Schema.TaggedError<StreamNotFoundError>()(
+  `StreamNotFoundError`,
+  { path: Schema.String }
+) {}
 
 /**
  * Stream already exists with different configuration.
  */
-export interface StreamConflictError {
-  readonly _tag: "StreamConflictError"
-  readonly path: string
-  readonly message: string
-}
-
-export const StreamConflictError = (path: string, message: string): StreamConflictError => ({
-  _tag: "StreamConflictError",
-  path,
-  message,
-})
+export class StreamConflictError extends Schema.TaggedError<StreamConflictError>()(
+  `StreamConflictError`,
+  { path: Schema.String, message: Schema.String }
+) {}
 
 /**
  * Content-type mismatch error.
  */
-export interface ContentTypeMismatchError {
-  readonly _tag: "ContentTypeMismatchError"
-  readonly expected: string
-  readonly received: string
-}
-
-export const ContentTypeMismatchError = (
-  expected: string,
-  received: string
-): ContentTypeMismatchError => ({
-  _tag: "ContentTypeMismatchError",
-  expected,
-  received,
-})
+export class ContentTypeMismatchError extends Schema.TaggedError<ContentTypeMismatchError>()(
+  `ContentTypeMismatchError`,
+  { expected: Schema.String, received: Schema.String }
+) {}
 
 /**
  * Sequence conflict error (Stream-Seq regression).
  */
-export interface SequenceConflictError {
-  readonly _tag: "SequenceConflictError"
-  readonly currentSeq: string
-  readonly receivedSeq: string
-}
-
-export const SequenceConflictError = (
-  currentSeq: string,
-  receivedSeq: string
-): SequenceConflictError => ({
-  _tag: "SequenceConflictError",
-  currentSeq,
-  receivedSeq,
-})
+export class SequenceConflictError extends Schema.TaggedError<SequenceConflictError>()(
+  `SequenceConflictError`,
+  { currentSeq: Schema.String, receivedSeq: Schema.String }
+) {}
 
 /**
  * Invalid JSON error.
  */
-export interface InvalidJsonError {
-  readonly _tag: "InvalidJsonError"
-  readonly message: string
-}
-
-export const InvalidJsonError = (message: string): InvalidJsonError => ({
-  _tag: "InvalidJsonError",
-  message,
-})
+export class InvalidJsonError extends Schema.TaggedError<InvalidJsonError>()(
+  `InvalidJsonError`,
+  { message: Schema.String }
+) {}
 
 /**
  * Empty array error (for POST with JSON mode).
  */
-export interface EmptyArrayError {
-  readonly _tag: "EmptyArrayError"
-}
-
-export const EmptyArrayError = (): EmptyArrayError => ({
-  _tag: "EmptyArrayError",
-})
+export class EmptyArrayError extends Schema.TaggedError<EmptyArrayError>()(
+  `EmptyArrayError`,
+  {}
+) {}
 
 /**
  * Invalid offset error.
  */
-export interface InvalidOffsetError {
-  readonly _tag: "InvalidOffsetError"
-  readonly offset: string
-}
-
-export const InvalidOffsetError = (offset: string): InvalidOffsetError => ({
-  _tag: "InvalidOffsetError",
-  offset,
-})
+export class InvalidOffsetError extends Schema.TaggedError<InvalidOffsetError>()(
+  `InvalidOffsetError`,
+  { offset: Schema.String }
+) {}
 
 /**
  * Invalid header value error.
  */
-export interface InvalidHeaderError {
-  readonly _tag: "InvalidHeaderError"
-  readonly header: string
-  readonly value: string
-  readonly message: string
-}
-
-export const InvalidHeaderError = (
-  header: string,
-  value: string,
-  message: string
-): InvalidHeaderError => ({
-  _tag: "InvalidHeaderError",
-  header,
-  value,
-  message,
-})
+export class InvalidHeaderError extends Schema.TaggedError<InvalidHeaderError>()(
+  `InvalidHeaderError`,
+  { header: Schema.String, value: Schema.String, message: Schema.String }
+) {}
 
 /**
  * Stale epoch error.
  */
-export interface StaleEpochError {
-  readonly _tag: "StaleEpochError"
-  readonly currentEpoch: number
-}
-
-export const StaleEpochError = (currentEpoch: number): StaleEpochError => ({
-  _tag: "StaleEpochError",
-  currentEpoch,
-})
+export class StaleEpochError extends Schema.TaggedError<StaleEpochError>()(
+  `StaleEpochError`,
+  { currentEpoch: Schema.Number }
+) {}
 
 /**
  * Invalid epoch sequence error.
  */
-export interface InvalidEpochSeqError {
-  readonly _tag: "InvalidEpochSeqError"
-}
-
-export const InvalidEpochSeqError = (): InvalidEpochSeqError => ({
-  _tag: "InvalidEpochSeqError",
-})
+export class InvalidEpochSeqError extends Schema.TaggedError<InvalidEpochSeqError>()(
+  `InvalidEpochSeqError`,
+  {}
+) {}
 
 /**
  * Sequence gap error.
  */
-export interface SequenceGapError {
-  readonly _tag: "SequenceGapError"
-  readonly expectedSeq: number
-  readonly receivedSeq: number
-}
-
-export const SequenceGapError = (expectedSeq: number, receivedSeq: number): SequenceGapError => ({
-  _tag: "SequenceGapError",
-  expectedSeq,
-  receivedSeq,
-})
+export class SequenceGapError extends Schema.TaggedError<SequenceGapError>()(
+  `SequenceGapError`,
+  { expectedSeq: Schema.Number, receivedSeq: Schema.Number }
+) {}
 
 /**
  * Duplicate message error.
  */
-export interface DuplicateMessageError {
-  readonly _tag: "DuplicateMessageError"
-  readonly lastSeq: number
-}
-
-export const DuplicateMessageError = (lastSeq: number): DuplicateMessageError => ({
-  _tag: "DuplicateMessageError",
-  lastSeq,
-})
+export class DuplicateMessageError extends Schema.TaggedError<DuplicateMessageError>()(
+  `DuplicateMessageError`,
+  { lastSeq: Schema.Number }
+) {}
 
 /**
  * Union of all server errors.

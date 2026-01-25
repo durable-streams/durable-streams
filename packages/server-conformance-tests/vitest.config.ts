@@ -1,9 +1,9 @@
-import { defineConfig } from "vitest/config"
 import path from "node:path"
+import { defineConfig } from "vitest/config"
 
 export default defineConfig({
   test: {
-    include: ["src/test-runner.ts"],
+    include: [`src/test-runner.ts`],
     testTimeout: 30000,
     hookTimeout: 30000,
   },
@@ -11,7 +11,7 @@ export default defineConfig({
     alias: {
       "@durable-streams/server-conformance-tests": path.resolve(
         __dirname,
-        "./src"
+        `./src`
       ),
     },
   },
