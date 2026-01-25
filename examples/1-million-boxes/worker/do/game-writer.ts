@@ -1,6 +1,17 @@
 import { DurableObject } from "cloudflare:workers"
+import {
+  DurableStream,
+  DurableStreamError,
+  FetchError,
+} from "@durable-streams/client"
 import { GameState } from "../../shared/game-state"
-import { encodeEvent, parseStreamRecords } from "../../shared/stream-parser"
+import {
+  HEADER_BYTES,
+  decodeHeader,
+  encodeEvent,
+  encodeHeader,
+  parseStreamRecords,
+} from "../../shared/stream-parser"
 import { isValidEdgeId } from "../../shared/edge-math"
 import {
   GAME_STREAM_PATH,
@@ -52,6 +63,9 @@ export class GameWriterDO extends DurableObject<Env> {
   // SQL storage interface
   private sql: SqlStorage
 
+  // DurableStream client for reading/writing to the stream
+  private stream: DurableStream
+
   // In-memory game state
   private gameState: GameState | null = null
   private ready = false
@@ -61,7 +75,21 @@ export class GameWriterDO extends DurableObject<Env> {
     super(ctx, env)
     this.sql = ctx.storage.sql
 
-    // Initialize quota table
+    // Initialize DurableStream client with limited retries for initialization
+    const streamUrl = `${env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
+    this.stream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/octet-stream`,
+      // Limit retries to avoid getting stuck in backoff during initialization
+      backoffOptions: {
+        initialDelay: 100,
+        maxDelay: 1000,
+        multiplier: 1.5,
+        maxRetries: 3,
+      },
+    })
+
+    // Initialize tables
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS player_quota (
         player_id TEXT PRIMARY KEY,
@@ -69,7 +97,45 @@ export class GameWriterDO extends DurableObject<Env> {
         last_active_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_last_active ON player_quota(last_active_at);
+
+      -- Game metadata table (stores game start timestamp)
+      CREATE TABLE IF NOT EXISTS game_metadata (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
     `)
+  }
+
+  /**
+   * Get the stored game start timestamp from SQL storage.
+   */
+  private getStoredGameTimestamp(): number | null {
+    const result = this.sql
+      .exec(
+        `SELECT value FROM game_metadata WHERE key = 'game_start_timestamp'`
+      )
+      .toArray()
+    if (result.length > 0) {
+      return parseInt(result[0].value as string, 10)
+    }
+    return null
+  }
+
+  /**
+   * Store the game start timestamp in SQL storage.
+   */
+  private setStoredGameTimestamp(timestamp: number): void {
+    this.sql.exec(
+      `INSERT OR REPLACE INTO game_metadata (key, value) VALUES ('game_start_timestamp', '${timestamp}')`
+    )
+  }
+
+  /**
+   * Clear all player quota data (called when game resets).
+   */
+  private clearPlayerQuotas(): void {
+    this.sql.exec(`DELETE FROM player_quota`)
+    console.log(`GameWriterDO: cleared all player quotas (game reset)`)
   }
 
   /**
@@ -91,40 +157,102 @@ export class GameWriterDO extends DurableObject<Env> {
   }
 
   /**
+   * Helper to check if an error indicates stream not found (404).
+   */
+  private isNotFoundError(err: unknown): boolean {
+    if (err instanceof DurableStreamError && err.code === `NOT_FOUND`) {
+      return true
+    }
+    if (err instanceof FetchError && err.status === 404) {
+      return true
+    }
+    // Duck-typing for cross-module compatibility
+    if (err instanceof Error && `code` in err) {
+      if ((err as { code: string }).code === `NOT_FOUND`) {
+        return true
+      }
+    }
+    if (err instanceof Error && `status` in err) {
+      if ((err as { status: number }).status === 404) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /**
    * Initialize the game state by replaying events from the Durable Streams server.
    */
   private async initialize(): Promise<void> {
     this.gameState = new GameState()
 
-    // Fetch entire stream from Durable Streams server
-    const streamUrl = `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
-    const response = await fetch(streamUrl)
-
-    if (response.ok) {
-      const bytes = new Uint8Array(await response.arrayBuffer())
-      const events = parseStreamRecords(bytes)
-
-      for (const event of events) {
-        this.gameState.applyEvent(event)
+    // First, check if stream exists using HEAD request (fails fast with 404)
+    let streamExists = false
+    try {
+      await this.stream.head()
+      streamExists = true
+    } catch (err) {
+      if (!this.isNotFoundError(err)) {
+        // Not a 404 - some other error
+        throw err
       }
+    }
 
-      console.log(
-        `GameWriterDO initialized: ${this.gameState.getEdgesPlacedCount()} edges`
-      )
-    } else if (response.status === 404) {
-      // Stream doesn't exist yet - create it with PUT
-      console.log(`Creating game stream...`)
-      const createResponse = await fetch(streamUrl, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/octet-stream` },
-      })
-      if (createResponse.ok) {
+    if (streamExists) {
+      // Stream exists - read all data
+      const streamResponse = await this.stream.stream({ live: false })
+      const bytes = await streamResponse.body()
+
+      // Check if stream has the header (8 bytes minimum)
+      if (bytes.length >= HEADER_BYTES) {
+        const timestamp = decodeHeader(bytes)
+
+        // Check if this is a new game (timestamp changed)
+        if (timestamp !== null) {
+          const storedTimestamp = this.getStoredGameTimestamp()
+          if (storedTimestamp !== null && storedTimestamp !== timestamp) {
+            this.clearPlayerQuotas()
+          }
+          this.setStoredGameTimestamp(timestamp)
+        }
+
+        // Parse events, skipping the header
+        const events = parseStreamRecords(bytes, true)
+
+        for (const event of events) {
+          this.gameState.applyEvent(event)
+        }
+
+        console.log(
+          `GameWriterDO initialized: ${this.gameState.getEdgesPlacedCount()} edges`
+        )
+      } else if (bytes.length === 0) {
+        // Stream exists but is empty - append the header
+        const newTimestamp = Date.now()
+        const header = encodeHeader(newTimestamp)
+        await this.stream.append(header)
+
+        this.clearPlayerQuotas()
+        this.setStoredGameTimestamp(newTimestamp)
         console.log(`GameWriterDO initialized: new stream created`)
       } else {
-        throw new Error(`Failed to create stream: ${createResponse.status}`)
+        // Stream has data but not enough for header (corrupted)
+        throw new Error(
+          `Stream has invalid header (${bytes.length} bytes, expected >= ${HEADER_BYTES})`
+        )
       }
     } else {
-      throw new Error(`Failed to fetch stream: ${response.status}`)
+      // Stream doesn't exist - create it and append header
+      const newTimestamp = Date.now()
+      const header = encodeHeader(newTimestamp)
+
+      await this.stream.create()
+      await this.stream.append(header)
+
+      // Store the new timestamp and clear any stale quota data
+      this.clearPlayerQuotas()
+      this.setStoredGameTimestamp(newTimestamp)
+      console.log(`GameWriterDO initialized: new stream created`)
     }
 
     this.ready = true
@@ -430,25 +558,8 @@ export class GameWriterDO extends DurableObject<Env> {
     const encoded = encodeEvent(event)
 
     try {
-      // Convert Uint8Array to ArrayBuffer for Cloudflare Workers fetch compatibility
-      const requestBody = encoded.buffer.slice(
-        encoded.byteOffset,
-        encoded.byteOffset + encoded.byteLength
-      ) as ArrayBuffer
-
-      // POST to the stream URL to append (per Durable Streams protocol)
-      const appendResponse = await fetch(
-        `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`,
-        {
-          method: `POST`,
-          headers: { "Content-Type": `application/octet-stream` },
-          body: requestBody,
-        }
-      )
-
-      if (!appendResponse.ok) {
-        throw new Error(`Append failed: ${appendResponse.status}`)
-      }
+      // Append using the DurableStream client
+      await this.stream.append(encoded)
     } catch (err) {
       console.error(`Failed to append to stream:`, err)
       // Refund the consumed quota since the stream write failed

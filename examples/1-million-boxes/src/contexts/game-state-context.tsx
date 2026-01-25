@@ -1,11 +1,15 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react"
 import { GameState } from "../../shared/game-state"
+import { GAME_START_TIMESTAMP_KEY } from "../../shared/game-config"
 import { BoxBitmap } from "../lib/box-bitmap"
 import { useGameStream } from "../hooks/useGameStream"
 import { useTeam } from "./team-context"
-import { useQuota } from "./quota-context"
+import { QUOTA_KEY, useQuota } from "./quota-context"
 import type { GameEvent } from "../../shared/game-state"
 import type { ReactNode } from "react"
+
+// Local storage key for user's completed boxes (must match quota-context.tsx)
+const LOCAL_BOXES_KEY = `boxes:local-completed`
 
 export interface RecentEvent {
   id: number
@@ -205,12 +209,52 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
     }
   }, [])
 
+  // Handle game start timestamp from stream header
+  // If the timestamp changes (game reset), clear client-side cached data
+  const handleGameStartTimestamp = useCallback((timestamp: number) => {
+    try {
+      // Validate the incoming timestamp
+      if (!Number.isFinite(timestamp) || timestamp <= 0) {
+        console.warn(`[GameState] Invalid timestamp received:`, timestamp)
+        return
+      }
+
+      const storedTimestamp = localStorage.getItem(GAME_START_TIMESTAMP_KEY)
+      const storedValue = storedTimestamp ? parseInt(storedTimestamp, 10) : null
+
+      // Validate stored value - if invalid, treat as no stored value
+      const validStoredValue =
+        storedValue !== null && Number.isFinite(storedValue) && storedValue > 0
+          ? storedValue
+          : null
+
+      if (validStoredValue !== null && validStoredValue !== timestamp) {
+        // Game has been reset - clear stale client data
+        console.log(
+          `[GameState] Game reset detected. Old: ${validStoredValue}, New: ${timestamp}`
+        )
+        localStorage.removeItem(QUOTA_KEY)
+        localStorage.removeItem(LOCAL_BOXES_KEY)
+        // Force a page reload to reset all state
+        window.location.reload()
+      }
+
+      // Store the current timestamp
+      localStorage.setItem(GAME_START_TIMESTAMP_KEY, String(timestamp))
+    } catch (err) {
+      console.error(`[GameState] Error handling game start timestamp:`, err)
+      // Clear potentially corrupted localStorage data
+      localStorage.removeItem(GAME_START_TIMESTAMP_KEY)
+    }
+  }, [])
+
   // Connect to game stream
   useGameStream({
     onEvents: handleEvents,
     onError: handleError,
     onConnected: handleConnected,
     onDisconnected: handleDisconnected,
+    onGameStartTimestamp: handleGameStartTimestamp,
   })
 
   // Place an edge on the board

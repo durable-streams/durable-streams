@@ -10,6 +10,8 @@ export interface UseGameStreamOptions {
   onError?: (error: Error) => void
   onConnected?: () => void
   onDisconnected?: () => void
+  /** Called when the game start timestamp is parsed from the stream header */
+  onGameStartTimestamp?: (timestamp: number) => void
   enabled?: boolean
 }
 
@@ -44,6 +46,7 @@ export function useGameStream(
     onError,
     onConnected,
     onDisconnected,
+    onGameStartTimestamp,
     enabled = true,
   } = options
 
@@ -54,18 +57,21 @@ export function useGameStream(
   const parserRef = useRef<StreamParser>(new StreamParser())
   const isConnectedRef = useRef(false)
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timestampReportedRef = useRef(false)
 
   // Store callbacks in refs to avoid stale closures
   const onEventsRef = useRef(onEvents)
   const onErrorRef = useRef(onError)
   const onConnectedRef = useRef(onConnected)
   const onDisconnectedRef = useRef(onDisconnected)
+  const onGameStartTimestampRef = useRef(onGameStartTimestamp)
 
   // Update callback refs when they change
   onEventsRef.current = onEvents
   onErrorRef.current = onError
   onConnectedRef.current = onConnected
   onDisconnectedRef.current = onDisconnected
+  onGameStartTimestampRef.current = onGameStartTimestamp
 
   const disconnect = useCallback(() => {
     // Increment connection ID to invalidate any in-flight connections
@@ -102,8 +108,9 @@ export function useGameStream(
     // Helper to check if this connection is still valid
     const isValid = () => connectionIdRef.current === myConnectionId
 
-    // Reset parser for new connection
+    // Reset parser and timestamp tracking for new connection
     parserRef.current.reset()
+    timestampReportedRef.current = false
 
     const streamUrl = getStreamUrl()
     console.log(
@@ -159,6 +166,19 @@ export function useGameStream(
 
           try {
             const events = parserRef.current.feed(chunk.data)
+
+            // Report game start timestamp once after header is parsed
+            if (
+              !timestampReportedRef.current &&
+              parserRef.current.isHeaderParsed()
+            ) {
+              const timestamp = parserRef.current.getGameStartTimestamp()
+              if (timestamp !== null) {
+                timestampReportedRef.current = true
+                onGameStartTimestampRef.current?.(timestamp)
+              }
+            }
+
             if (events.length > 0) {
               onEventsRef.current(events, chunk.upToDate)
             } else if (chunk.upToDate) {
