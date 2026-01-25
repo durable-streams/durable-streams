@@ -31,6 +31,18 @@
     }
   ],
 
+  // Rate limiting (Workers Rate Limiting API binding)
+  "ratelimits": [
+    {
+      "name": "DRAW_RATE_LIMITER",
+      "namespace_id": "482917",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ],
+
   // Environment variables
   "vars": {
     "DURABLE_STREAMS_URL": "http://localhost:4437/v1/stream"

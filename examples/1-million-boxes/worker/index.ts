@@ -12,6 +12,7 @@ export type Bindings = {
   GAME_WRITER?: DurableObjectNamespace // Optional - not available in local dev
   DURABLE_STREAMS_URL: string
   TEAM_COOKIE_SECRET?: string
+  DRAW_RATE_LIMITER?: RateLimit
   NODE_ENV?: string
 }
 

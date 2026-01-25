@@ -107,6 +107,14 @@ drawRoutes.post(`/`, async (c) => {
     return c.json({ ok: false, code: `INVALID_REQUEST` }, 400)
   }
 
+  if (c.env.DRAW_RATE_LIMITER) {
+    const key = `draw:${playerId}:${teamId}`
+    const { success } = await c.env.DRAW_RATE_LIMITER.limit({ key })
+    if (!success) {
+      return c.json({ ok: false, code: `RATE_LIMITED` }, 429)
+    }
+  }
+
   // Try to use the DO first (works in production)
   try {
     if (c.env.GAME_WRITER) {

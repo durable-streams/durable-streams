@@ -8,6 +8,7 @@ declare namespace Cloudflare {
     DURABLE_STREAMS_AUTH?: string // Auth token for Electric Cloud
     TEAM_COOKIE_SECRET: string
     GAME_WRITER?: DurableObjectNamespace // Optional - not available in local dev
+    DRAW_RATE_LIMITER?: RateLimit
     NODE_ENV?: string
   }
 }
