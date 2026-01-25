@@ -283,6 +283,15 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
           headers: { "Content-Type": `application/json` },
           body: JSON.stringify({ edgeId }),
         })
+
+        // Handle rate limiting (429)
+        if (response.status === 429) {
+          refund()
+          setPendingEdge(null)
+          setError(`You're too fast! Rate limited`)
+          return
+        }
+
         const result = await response.json()
 
         if (result.ok) {
