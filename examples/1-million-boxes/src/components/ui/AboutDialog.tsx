@@ -145,7 +145,7 @@ export function AboutDialog({
             <h3 className="about-dialog-section-title">Quota System</h3>
             <ul className="about-dialog-rules">
               <li>
-                You have up to<strong>{MAX_QUOTA} moves</strong> available at a
+                You have up to <strong>{MAX_QUOTA} moves</strong> available at a
                 time
               </li>
               <li>
