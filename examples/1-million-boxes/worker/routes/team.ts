@@ -1,5 +1,5 @@
 import { Hono } from "hono"
-import { teamIdToName } from "../lib/teams"
+import { teamIdToName } from "../../shared/teams"
 import { assignTeam } from "../lib/team-assignment"
 import {
   buildIdentityCookieHeader,

@@ -10,20 +10,13 @@ A global, finite, realtime game of Dots & Boxes on a **1000×1000** grid (1,000,
 
 ## 1.1) Technology Stack
 
-- **Frontend Framework**: [TanStack Start](https://tanstack.com/start/latest) (React, full-stack TypeScript)
+- **Frontend**: Vite + React (SPA)
 - **UI Components**: [Base UI](https://base-ui.com) (unstyled, accessible components)
 - **Styling**: Plain CSS (no Tailwind, no CSS-in-JS)
-- **Runtime**: Cloudflare Workers (via [@cloudflare/vite-plugin](https://developers.cloudflare.com/workers/frameworks/framework-guides/tanstack-start/) + Wrangler)
+- **Runtime**: Cloudflare Workers (via [@cloudflare/vite-plugin](https://developers.cloudflare.com/workers/frameworks/framework-guides/vite/))
 - **Backend**: Cloudflare Durable Objects
-- **Real-time**: Durable Streams (SSE)
+- **Real-time**: Durable Streams (long-poll via `@durable-streams/client`)
 - **Rendering**: HTML Canvas (2D context)
-
-TanStack Start provides:
-
-- File-based routing with type-safe navigation
-- Server functions for API calls
-- SSR for initial page load (game metadata, team assignment)
-- Cloudflare Workers deployment via official Vite plugin
 
 Base UI provides:
 
@@ -70,17 +63,12 @@ DURABLE_STREAMS_URL=http://localhost:4437
 
 ```typescript
 // vite.config.ts
-import { defineConfig } from "vite"
-import { tanstackStart } from "@tanstack/react-start/plugin/vite"
 import { cloudflare } from "@cloudflare/vite-plugin"
-import viteReact from "@vitejs/plugin-react"
+import react from "@vitejs/plugin-react"
+import { defineConfig } from "vite"
 
 export default defineConfig({
-  plugins: [
-    cloudflare({ viteEnvironment: { name: "ssr" } }),
-    tanstackStart(),
-    viteReact(),
-  ],
+  plugins: [react(), cloudflare()],
 })
 ```
 
@@ -93,7 +81,7 @@ export default defineConfig({
   "name": "1-million-boxes",
   "compatibility_date": "2025-01-22",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "@tanstack/react-start/server-entry",
+  "main": "worker/index.ts",
 
   // Durable Object binding for game state
   "durable_objects": {
@@ -142,7 +130,7 @@ pnpm deploy
 
 This deploys:
 
-- TanStack Start app as a Cloudflare Worker
+- Vite SPA assets served by the Worker
 - GameWriterDO as a Durable Object
 - Connects to ElectricSQL Cloud Durable Streams
 
@@ -271,7 +259,7 @@ A box is complete iff all four edges are set.
 Each accepted move becomes one fixed-size record:
 
 - `packed24 = (edgeId << 2) | teamId`
-  - `edgeId` fits in 21 bits (max ~2,002,000)
+  - `edgeId` range: 0..2,001,999 (fits in 21 bits; stored in the upper 22 bits of the 24-bit field)
   - `teamId` fits in 2 bits (0..3)
 
 Record size: **3 bytes** (24 bits), big-endian.
@@ -306,7 +294,7 @@ If the game reaches full completion (all edges placed):
 
 ## 6.1 Components
 
-1. **TanStack Start App** (Cloudflare Worker)
+1. **Worker App** (Cloudflare Worker)
 
 - Serves SSR pages and static assets
 - Provides API endpoints (see below)
@@ -324,7 +312,7 @@ If the game reaches full completion (all edges placed):
 - On DO startup:
   - fully replays the stream to rebuild bitset before accepting writes
 
-3. **Durable Stream: `boxes/edges`** (External Service)
+3. **Durable Stream: `/game`** (External Service)
 
 - **Local dev**: Durable Streams server from this repo (localhost:4437)
 - **Production**: [ElectricSQL Cloud](https://electric-sql.com/) hosted Durable Streams
@@ -332,7 +320,7 @@ If the game reaches full completion (all edges placed):
 The Durable Stream is:
 
 - Authoritative append-only log of accepted edges (3 bytes each)
-- Public read (spectator) via SSE
+- Public read (spectator) via long-polling through the Worker proxy
 - Write only via GameWriterDO (HTTP POST)
 
 **Note**: There is only one game at a time. The stream path is hardcoded. To start a new game, deploy with a fresh stream name or clear the existing stream.
@@ -343,12 +331,11 @@ The Durable Stream is:
 ┌─────────────────────────────────────────────────────────────────┐
 │                     Cloudflare Edge                              │
 │  ┌─────────────────────┐    ┌─────────────────────────────────┐ │
-│  │  TanStack Start     │    │  GameWriterDO                   │ │
-│  │  (Worker)           │───▶│  - edge bitset (250KB)          │ │
-│  │                     │    │  - validates moves              │ │
-│  │  - SSR / static     │    │  - appends to stream            │ │
-│  │  - /draw endpoint   │    └───────────────┬─────────────────┘ │
-│  │  - rate limiting    │                    │                   │
+│  │  Worker App         │    │  GameWriterDO                   │ │
+│  │                     │───▶│  - edge bitset (250KB)          │ │
+│  │  - static assets    │    │  - validates moves              │ │
+│  │  - /api/draw        │    │  - appends to stream            │ │
+│  │  - rate limiting    │    └───────────────┬─────────────────┘ │
 │  └─────────────────────┘                    │ HTTP POST         │
 └─────────────────────────────────────────────┼───────────────────┘
                                               │
@@ -357,15 +344,15 @@ The Durable Stream is:
                             │  ElectricSQL Cloud                  │
                             │  Durable Streams                    │
                             │                                     │
-                            │  Stream: boxes/edges                │
+                            │  Stream: /game                      │
                             │  - append-only log                  │
-                            │  - SSE for live tail                │
+                            │  - long-poll for live tail          │
                             └─────────────────────────────────────┘
                                               ▲
-                                              │ SSE
+                                              │ long-poll
                             ┌─────────────────┴─────────────────┐
                             │  Browser Clients                  │
-                            │  - read stream directly           │
+                            │  - read stream via worker proxy   │
                             │  - derive game state locally      │
                             └───────────────────────────────────┘
 ```
@@ -560,7 +547,7 @@ Team assignment happens automatically on first visit and persists via a signed, 
 
 #### Assignment Flow
 
-1. **On page load** (in TanStack Start loader or root layout):
+1. **On page load** (in app bootstrap):
    - Call `getTeam()` server function
    - Server checks for existing `team` cookie
 2. **If cookie exists and valid**:
@@ -680,18 +667,18 @@ Notes:
 
 ### 8.3 Read the event log (spectators + clients)
 
-Durable Streams natively supports SSE for live tailing. The client should:
+Durable Streams supports streaming tails. The client should:
 
-1. **Initial fetch**: `GET /edges` to get all existing records
-2. **Live tail**: Use SSE connection to receive new records as they're appended
+1. **Initial fetch**: `GET /game` to get all existing records
+2. **Live tail**: Use long-poll streaming to receive new records as they're appended
 
-#### `GET /edges?fromRecord=N`
+#### `GET /game?fromRecord=N`
 
 Returns a binary body containing concatenated 3-byte records starting at record index N.
 
 For live streaming, the client can either:
 
-- Use Durable Streams SSE endpoint directly (preferred)
+- Use long-poll via the `@durable-streams/client`
 - Poll with increasing `fromRecord` values
 
 ---
@@ -976,7 +963,7 @@ As events stream in:
 
 ### 11.1 Single Game Per Deployment
 
-There is **one game per deployment**. The stream path (`boxes/edges`) is hardcoded.
+There is **one game per deployment**. The stream path (`/game`) is hardcoded.
 
 To start a new game:
 
@@ -1027,15 +1014,14 @@ A single writer DO serializes all accepted edges. This is fine for launch but is
 
 ---
 
-## 13) TanStack Start Application Structure
+## 13) Application Structure
 
 ### 13.1 Project Structure
 
 ```
 src/
-├── routes/
-│   ├── __root.tsx          # Root layout, team provider, quota provider
-│   └── index.tsx           # Game view (canvas, controls, quota UI)
+├── app.tsx                  # App shell + providers
+├── main.tsx                 # Vite entrypoint
 ├── components/
 │   ├── game/
 │   │   ├── GameCanvas.tsx      # Main game canvas with pan/zoom
@@ -1051,51 +1037,24 @@ src/
 │   └── layout/
 │       ├── Header.tsx          # Top bar with team/scores
 │       └── Footer.tsx          # Bottom bar with quota/controls
+├── contexts/
+│   ├── game-state-context.tsx  # Game state + stream integration
+│   ├── quota-context.tsx       # Quota sync + local storage
+│   └── team-context.tsx        # Team assignment + identity
 ├── hooks/
-│   ├── useGameState.ts         # Edge bitset, box owners, scores
+│   ├── useGameState.ts         # GameState accessor hook
 │   ├── useViewState.ts         # Pan/zoom state management
-│   ├── useQuota.ts             # localStorage quota with refill
 │   ├── usePanZoom.ts           # Touch/mouse pan-zoom gestures
-│   └── useGameStream.ts        # SSE connection to Durable Streams
+│   └── useGameStream.ts        # Durable Streams long-poll
 ├── lib/
 │   ├── edge-math.ts            # Edge ID ↔ (x,y) conversions
 │   ├── game-state.ts           # Fold algorithm, state derivation
 │   ├── hand-drawn.ts           # Wobble/bezier curve generation
-│   └── quota-storage.ts        # localStorage persistence
-├── styles/
-│   ├── global.css              # Reset, CSS variables, fonts
-│   ├── game.css                # Canvas container, layout
-│   ├── components.css          # Component styles
-│   └── mobile.css              # Responsive overrides
-└── server/
-    └── functions.ts            # TanStack Start server functions
-```
-
-### 13.2 Server Functions
-
-```typescript
-// src/server/functions.ts
-
-import { createServerFn } from "@tanstack/react-start"
-import { z } from "zod"
-
-// Fetch team assignment (sets cookie if needed)
-export const getTeam = createServerFn({ method: "GET" }).handler(
-  async ({ request }) => {
-    const cookie = request.headers.get("cookie")
-    // Parse and verify existing cookie, or assign new team
-    // Set cookie in response if new
-    return { team: "RED", teamId: 0 }
-  }
-)
-
-// Draw an edge
-export const drawEdge = createServerFn({ method: "POST" })
-  .validator(z.object({ edgeId: z.number() }))
-  .handler(async ({ data }) => {
-    // Forward to Cloudflare Worker → DO
-    // Return { ok: true } or { ok: false, code: '...' }
-  })
+│   └── stream-parser.ts        # 3-byte event parsing
+└── styles/
+    ├── global.css              # Reset, CSS variables, fonts
+    ├── game.css                # Canvas container, layout
+    └── mobile.css              # Responsive overrides
 ```
 
 ### 13.3 CSS Architecture

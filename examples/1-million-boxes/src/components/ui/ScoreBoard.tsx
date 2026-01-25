@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react"
-import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { TEAMS, TEAM_COLORS } from "../../../shared/teams"
 import { useQuota } from "../../contexts/quota-context"
-import type { TeamName } from "../../lib/teams"
+import type { TeamName } from "../../../shared/teams"
 import "./ScoreBoard.css"
 
 export interface ScoreBoardProps {

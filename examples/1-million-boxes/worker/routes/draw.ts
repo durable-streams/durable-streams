@@ -1,11 +1,11 @@
 import { Hono } from "hono"
 import { z } from "zod"
 import { parseIdentityCookie } from "../lib/identity-cookie"
-import { isValidEdgeId } from "../lib/edge-math"
-import { encodeEvent } from "../lib/stream-parser"
+import { isValidEdgeId } from "../../shared/edge-math"
+import { encodeEvent } from "../../shared/stream-parser"
 import { GAME_STREAM_PATH } from "../lib/config"
 import type { Bindings } from "../index"
-import type { GameEvent } from "../lib/game-state"
+import type { GameEvent } from "../../shared/game-state"
 
 export const drawRoutes = new Hono<{ Bindings: Bindings }>()
 
@@ -88,6 +88,7 @@ async function writeEdgeDirectly(
 drawRoutes.post(`/`, async (c) => {
   const secret = c.env.TEAM_COOKIE_SECRET || `dev-secret`
   const cookieHeader = c.req.header(`cookie`)
+  const allowFallback = c.env.NODE_ENV !== `production`
 
   // Parse combined identity cookie (playerId.teamId.hmac)
   const identity = await parseIdentityCookie(cookieHeader, secret)
@@ -127,6 +128,10 @@ drawRoutes.post(`/`, async (c) => {
   } catch (err) {
     // DO binding failed - fall back to direct write
     console.warn(`DO binding unavailable, using direct stream write:`, err)
+  }
+
+  if (!allowFallback) {
+    return c.json({ ok: false, code: `STREAM_ERROR` }, 503)
   }
 
   // Fallback: write directly to stream (development mode - no quota enforcement)

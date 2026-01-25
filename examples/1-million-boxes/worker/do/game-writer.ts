@@ -1,14 +1,14 @@
 import { DurableObject } from "cloudflare:workers"
-import { GameState } from "../lib/game-state"
-import { encodeEvent, parseStreamRecords } from "../lib/stream-parser"
-import { isValidEdgeId } from "../lib/edge-math"
+import { GameState } from "../../shared/game-state"
+import { encodeEvent, parseStreamRecords } from "../../shared/stream-parser"
+import { isValidEdgeId } from "../../shared/edge-math"
 import {
   GAME_STREAM_PATH,
   MAX_QUOTA,
   QUOTA_GC_INACTIVE_MS,
   QUOTA_REFILL_INTERVAL_MS,
 } from "../lib/config"
-import type { GameEvent } from "../lib/game-state"
+import type { GameEvent } from "../../shared/game-state"
 
 interface Env {
   DURABLE_STREAMS_URL: string
@@ -65,7 +65,7 @@ export class GameWriterDO extends DurableObject<Env> {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS player_quota (
         player_id TEXT PRIMARY KEY,
-        tokens REAL NOT NULL,
+        tokens INTEGER NOT NULL,
         last_active_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_last_active ON player_quota(last_active_at);
@@ -82,7 +82,12 @@ export class GameWriterDO extends DurableObject<Env> {
       this.initPromise = this.initialize()
     }
 
-    await this.initPromise
+    try {
+      await this.initPromise
+    } catch (err) {
+      this.initPromise = null
+      throw err
+    }
   }
 
   /**
@@ -91,40 +96,35 @@ export class GameWriterDO extends DurableObject<Env> {
   private async initialize(): Promise<void> {
     this.gameState = new GameState()
 
-    try {
-      // Fetch entire stream from Durable Streams server
-      const streamUrl = `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
-      const response = await fetch(streamUrl)
+    // Fetch entire stream from Durable Streams server
+    const streamUrl = `${this.env.DURABLE_STREAMS_URL}${GAME_STREAM_PATH}`
+    const response = await fetch(streamUrl)
 
-      if (response.ok) {
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        const events = parseStreamRecords(bytes)
+    if (response.ok) {
+      const bytes = new Uint8Array(await response.arrayBuffer())
+      const events = parseStreamRecords(bytes)
 
-        for (const event of events) {
-          this.gameState.applyEvent(event)
-        }
-
-        console.log(
-          `GameWriterDO initialized: ${this.gameState.getEdgesPlacedCount()} edges`
-        )
-      } else if (response.status === 404) {
-        // Stream doesn't exist yet - create it with PUT
-        console.log(`Creating game stream...`)
-        const createResponse = await fetch(streamUrl, {
-          method: `PUT`,
-          headers: { "Content-Type": `application/octet-stream` },
-        })
-        if (createResponse.ok) {
-          console.log(`GameWriterDO initialized: new stream created`)
-        } else {
-          console.error(`Failed to create stream: ${createResponse.status}`)
-        }
-      } else {
-        console.error(`Failed to fetch stream: ${response.status}`)
+      for (const event of events) {
+        this.gameState.applyEvent(event)
       }
-    } catch (err) {
-      console.error(`Failed to fetch stream during init:`, err)
-      // Continue with empty state - stream might not exist yet
+
+      console.log(
+        `GameWriterDO initialized: ${this.gameState.getEdgesPlacedCount()} edges`
+      )
+    } else if (response.status === 404) {
+      // Stream doesn't exist yet - create it with PUT
+      console.log(`Creating game stream...`)
+      const createResponse = await fetch(streamUrl, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+      })
+      if (createResponse.ok) {
+        console.log(`GameWriterDO initialized: new stream created`)
+      } else {
+        throw new Error(`Failed to create stream: ${createResponse.status}`)
+      }
+    } else {
+      throw new Error(`Failed to fetch stream: ${response.status}`)
     }
 
     this.ready = true
@@ -194,8 +194,9 @@ export class GameWriterDO extends DurableObject<Env> {
 
     // Calculate refilled tokens based on elapsed time
     const elapsed = now - row.last_active_at
-    const refills = elapsed / QUOTA_REFILL_INTERVAL_MS
-    const refilledTokens = Math.min(MAX_QUOTA, row.tokens + refills)
+    const refills = Math.floor(elapsed / QUOTA_REFILL_INTERVAL_MS)
+    const baseTokens = Math.floor(row.tokens)
+    const refilledTokens = Math.min(MAX_QUOTA, baseTokens + refills)
 
     return { tokens: refilledTokens, lastActiveAt: row.last_active_at }
   }
@@ -321,7 +322,8 @@ export class GameWriterDO extends DurableObject<Env> {
         ok: true,
         edgesPlaced: this.gameState?.getEdgesPlacedCount() ?? 0,
       })
-    } catch {
+    } catch (err) {
+      console.error(`Init failed:`, err)
       return Response.json({ ok: false, code: `INIT_FAILED` }, { status: 500 })
     }
   }

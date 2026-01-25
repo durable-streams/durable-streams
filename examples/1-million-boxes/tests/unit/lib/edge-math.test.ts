@@ -14,7 +14,7 @@ import {
   getBoxEdges,
   isHorizontal,
   isValidEdgeId,
-} from "./edge-math"
+} from "../../../shared/edge-math"
 
 describe(`edge-math constants`, () => {
   it(`has correct grid dimensions`, () => {

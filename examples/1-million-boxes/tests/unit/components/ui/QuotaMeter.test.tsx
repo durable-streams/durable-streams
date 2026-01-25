@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { useQuota } from "../../contexts/quota-context"
-import { QuotaMeter } from "./QuotaMeter"
+import { useQuota } from "../../../../src/contexts/quota-context"
+import { QuotaMeter } from "../../../../src/components/ui/QuotaMeter"
 
 // Mock the quota context
-vi.mock(`../../contexts/quota-context`, () => ({
+vi.mock(`../../../../src/contexts/quota-context`, () => ({
   useQuota: vi.fn(),
 }))
 const mockUseQuota = vi.mocked(useQuota)

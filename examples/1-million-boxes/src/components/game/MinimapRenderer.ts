@@ -1,4 +1,4 @@
-import { W } from "../../lib/edge-math"
+import { W } from "../../../shared/edge-math"
 import { DOT_SPACING } from "../../lib/config"
 import type { ViewState } from "../../hooks/useViewState"
 import type { BoxBitmap } from "../../lib/box-bitmap"

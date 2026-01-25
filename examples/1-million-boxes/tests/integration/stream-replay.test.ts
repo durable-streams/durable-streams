@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { GameState } from "../../src/lib/game-state"
+import { GameState } from "../../shared/game-state"
 import {
   StreamParser,
   encodeEvent,
   parseStreamRecords,
-} from "../../src/lib/stream-parser"
-import { EDGE_COUNT, getBoxEdges } from "../../src/lib/edge-math"
-import type { GameEvent } from "../../src/lib/game-state"
+} from "../../shared/stream-parser"
+import { EDGE_COUNT, getBoxEdges } from "../../shared/edge-math"
+import type { GameEvent } from "../../shared/game-state"
 
 describe(`Stream Replay Integration`, () => {
   describe(`replaying empty stream`, () => {

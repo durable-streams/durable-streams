@@ -5,7 +5,7 @@ import {
   TOTAL_BOX_COUNT,
   TOTAL_EDGE_COUNT,
   VERT_EDGE_COUNT,
-} from "./config"
+} from "./game-config"
 
 // Re-export grid dimensions with short aliases for use in this module
 export const W = GRID_WIDTH
@@ -31,6 +31,9 @@ export interface BoxCoords {
 
 /**
  * Convert an edge ID to its coordinates and orientation.
+ *
+ * Horizontal edges: edgeId = y*W + x (y from 0 to H, x from 0 to W-1)
+ * Vertical edges: edgeId = HORIZ_COUNT + y*(W+1) + x (y from 0 to H-1, x from 0 to W)
  */
 export function edgeIdToCoords(edgeId: number): EdgeCoords {
   if (edgeId < HORIZ_COUNT) {
@@ -71,6 +74,11 @@ export function isHorizontal(edgeId: number): boolean {
 
 /**
  * Get the boxes adjacent to an edge.
+ *
+ * - Horizontal edge at (x, y) borders boxes at (x, y-1) and (x, y)
+ * - Vertical edge at (x, y) borders boxes at (x-1, y) and (x, y)
+ *
+ * Returns 0-2 boxes depending on whether the edge is on a boundary.
  */
 export function getAdjacentBoxes(edgeId: number): Array<BoxCoords> {
   const boxes: Array<BoxCoords> = []

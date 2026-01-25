@@ -10,11 +10,11 @@ import {
   screenToWorld,
   worldToScreen,
 } from "../../lib/view-transform"
-import { H, W, edgeIdToCoords } from "../../lib/edge-math"
+import { H, W, edgeIdToCoords } from "../../../shared/edge-math"
 import { findNearestEdge } from "../../lib/edge-picker"
 import { getDebugConfig, subscribeDebugConfig } from "../../lib/debug-config"
 import { TouchFeedback, useTouchFeedback } from "../ui/TouchFeedback"
-import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { TEAMS, TEAM_COLORS } from "../../../shared/teams"
 import { renderBoxes } from "./BoxRenderer"
 import { renderEdges } from "./EdgeRenderer"
 import { renderDots } from "./DotRenderer"

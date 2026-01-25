@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { useGameStateContext } from "../../contexts/game-state-context"
-import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { TEAMS, TEAM_COLORS } from "../../../shared/teams"
 import { FIRST_TO_SCORE_TARGET, GAME_END_MODE } from "../../lib/config"
 import "./GameCompleteDialog.css"
 

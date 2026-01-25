@@ -1,5 +1,5 @@
-import { H, W, coordsToEdgeId } from "../../lib/edge-math"
-import { getTeamColor } from "../../lib/teams"
+import { H, W, coordsToEdgeId } from "../../../shared/edge-math"
+import { getTeamColor } from "../../../shared/teams"
 import {
   getScale,
   getVisibleBounds,
@@ -8,7 +8,7 @@ import {
 import { HOVERED_EDGE_COLOR } from "../../lib/config"
 import { renderGridPattern } from "./GridPatternCache"
 import type { ViewState } from "../../hooks/useViewState"
-import type { GameState } from "../../lib/game-state"
+import type { GameState } from "../../../shared/game-state"
 
 const PENDING_COLOR = `rgba(100, 100, 100, 0.6)`
 

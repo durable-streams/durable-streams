@@ -1,12 +1,12 @@
 import { render, screen } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
-import { TEAM_COLORS } from "../../lib/teams"
-import { useTeam } from "../../contexts/team-context"
-import { TeamBadge } from "./TeamBadge"
-import type { TeamName } from "../../lib/teams"
+import { TEAM_COLORS } from "../../../../shared/teams"
+import { useTeam } from "../../../../src/contexts/team-context"
+import { TeamBadge } from "../../../../src/components/ui/TeamBadge"
+import type { TeamName } from "../../../../shared/teams"
 
 // Mock the team context
-vi.mock(`../../contexts/team-context`, () => ({
+vi.mock(`../../../../src/contexts/team-context`, () => ({
   useTeam: vi.fn(),
 }))
 const mockUseTeam = vi.mocked(useTeam)
@@ -15,7 +15,6 @@ describe(`TeamBadge`, () => {
   it(`displays team name with proper capitalization`, () => {
     mockUseTeam.mockReturnValue({
       team: `RED`,
-      teamId: 0,
     })
 
     render(<TeamBadge />)
@@ -23,21 +22,9 @@ describe(`TeamBadge`, () => {
     expect(screen.getByTestId(`team-name`)).toHaveTextContent(`Red`)
   })
 
-  it(`displays team ID with hash prefix`, () => {
-    mockUseTeam.mockReturnValue({
-      team: `BLUE`,
-      teamId: 1,
-    })
-
-    render(<TeamBadge />)
-
-    expect(screen.getByTestId(`team-id`)).toHaveTextContent(`#1`)
-  })
-
   it(`displays correct color dot for RED team`, () => {
     mockUseTeam.mockReturnValue({
       team: `RED`,
-      teamId: 0,
     })
 
     render(<TeamBadge />)
@@ -49,7 +36,6 @@ describe(`TeamBadge`, () => {
   it(`displays correct color dot for BLUE team`, () => {
     mockUseTeam.mockReturnValue({
       team: `BLUE`,
-      teamId: 1,
     })
 
     render(<TeamBadge />)
@@ -61,7 +47,6 @@ describe(`TeamBadge`, () => {
   it(`displays correct color dot for GREEN team`, () => {
     mockUseTeam.mockReturnValue({
       team: `GREEN`,
-      teamId: 2,
     })
 
     render(<TeamBadge />)
@@ -73,7 +58,6 @@ describe(`TeamBadge`, () => {
   it(`displays correct color dot for YELLOW team`, () => {
     mockUseTeam.mockReturnValue({
       team: `YELLOW`,
-      teamId: 3,
     })
 
     render(<TeamBadge />)
@@ -83,20 +67,19 @@ describe(`TeamBadge`, () => {
   })
 
   it(`renders all team variations correctly`, () => {
-    const teams: Array<{ team: TeamName; teamId: number; display: string }> = [
-      { team: `RED`, teamId: 0, display: `Red` },
-      { team: `BLUE`, teamId: 1, display: `Blue` },
-      { team: `GREEN`, teamId: 2, display: `Green` },
-      { team: `YELLOW`, teamId: 3, display: `Yellow` },
+    const teams: Array<{ team: TeamName; display: string }> = [
+      { team: `RED`, display: `Red Team` },
+      { team: `BLUE`, display: `Blue Team` },
+      { team: `GREEN`, display: `Green Team` },
+      { team: `YELLOW`, display: `Yellow Team` },
     ]
 
-    for (const { team, teamId, display } of teams) {
-      mockUseTeam.mockReturnValue({ team, teamId })
+    for (const { team, display } of teams) {
+      mockUseTeam.mockReturnValue({ team })
 
       const { unmount } = render(<TeamBadge />)
 
       expect(screen.getByTestId(`team-name`)).toHaveTextContent(display)
-      expect(screen.getByTestId(`team-id`)).toHaveTextContent(`#${teamId}`)
       expect(screen.getByTestId(`team-color-dot`)).toHaveStyle({
         background: TEAM_COLORS[team].primary,
       })
@@ -108,7 +91,6 @@ describe(`TeamBadge`, () => {
   it(`has correct test IDs for accessibility`, () => {
     mockUseTeam.mockReturnValue({
       team: `RED`,
-      teamId: 0,
     })
 
     render(<TeamBadge />)
@@ -116,6 +98,5 @@ describe(`TeamBadge`, () => {
     expect(screen.getByTestId(`team-badge`)).toBeInTheDocument()
     expect(screen.getByTestId(`team-color-dot`)).toBeInTheDocument()
     expect(screen.getByTestId(`team-name`)).toBeInTheDocument()
-    expect(screen.getByTestId(`team-id`)).toBeInTheDocument()
   })
 })

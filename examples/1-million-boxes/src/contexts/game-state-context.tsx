@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useRef, useState } from "react"
-import { GameState } from "../lib/game-state"
+import { GameState } from "../../shared/game-state"
 import { BoxBitmap } from "../lib/box-bitmap"
 import { useGameStream } from "../hooks/useGameStream"
 import { useTeam } from "./team-context"
 import { useQuota } from "./quota-context"
-import type { GameEvent } from "../lib/game-state"
+import type { GameEvent } from "../../shared/game-state"
 import type { ReactNode } from "react"
 
 export interface RecentEvent {
@@ -268,6 +268,7 @@ export function GameStateProvider({ children }: GameStateProviderProps) {
               // Server says no quota - already synced above
               setError(`Quota exceeded, please wait`)
               break
+            case `NO_IDENTITY`:
             case `NO_TEAM`:
             case `NO_PLAYER`:
               refund() // Fallback refund if no server quota info

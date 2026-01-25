@@ -1,4 +1,17 @@
-import type { GameEvent } from "./game-state"
+import { isValidEdgeId } from "./edge-math"
+import type { GameEvent } from "./types"
+
+const RECORD_BYTES = 3
+const MAX_BUFFER_BYTES = RECORD_BYTES - 1
+
+function assertValidEvent(event: GameEvent): void {
+  if (!isValidEdgeId(event.edgeId)) {
+    throw new Error(`Invalid edgeId: ${event.edgeId}`)
+  }
+  if (!Number.isInteger(event.teamId) || event.teamId < 0 || event.teamId > 3) {
+    throw new Error(`Invalid teamId: ${event.teamId}`)
+  }
+}
 
 /**
  * Parse 3-byte records from binary stream data.
@@ -14,10 +27,10 @@ import type { GameEvent } from "./game-state"
  */
 export function parseStreamRecords(bytes: Uint8Array): Array<GameEvent> {
   const events: Array<GameEvent> = []
-  const recordCount = Math.floor(bytes.length / 3)
+  const recordCount = Math.floor(bytes.length / RECORD_BYTES)
 
   for (let i = 0; i < recordCount; i++) {
-    const offset = i * 3
+    const offset = i * RECORD_BYTES
 
     // Big-endian 24-bit packed value
     const packed =
@@ -41,6 +54,7 @@ export function parseStreamRecords(bytes: Uint8Array): Array<GameEvent> {
  * Stored as big-endian 24-bit value.
  */
 export function encodeEvent(event: GameEvent): Uint8Array {
+  assertValidEvent(event)
   const packed = (event.edgeId << 2) | event.teamId
   return new Uint8Array([
     (packed >> 16) & 0xff,
@@ -70,12 +84,15 @@ export class StreamParser {
     combined.set(chunk, this.buffer.length)
 
     // Parse complete records
-    const recordCount = Math.floor(combined.length / 3)
-    const completeBytes = recordCount * 3
+    const recordCount = Math.floor(combined.length / RECORD_BYTES)
+    const completeBytes = recordCount * RECORD_BYTES
     const events = parseStreamRecords(combined.subarray(0, completeBytes))
 
-    // Keep remainder in buffer
+    // Keep remainder in buffer (should be 0-2 bytes)
     this.buffer = combined.slice(completeBytes)
+    if (this.buffer.length > MAX_BUFFER_BYTES) {
+      throw new Error(`Stream parser buffer overflow`)
+    }
 
     return events
   }

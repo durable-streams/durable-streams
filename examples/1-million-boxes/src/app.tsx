@@ -4,7 +4,7 @@ import { QuotaProvider } from "./contexts/quota-context"
 import { GameStateProvider } from "./contexts/game-state-context"
 import { GamePage } from "./components/GamePage"
 import { DebugOverlay } from "./components/ui/DebugOverlay"
-import type { TeamName } from "./lib/teams"
+import type { TeamName } from "../shared/teams"
 import "./styles/global.css"
 
 export function App() {

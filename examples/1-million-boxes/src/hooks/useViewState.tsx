@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useState } from "react"
-import { H, W } from "../lib/edge-math"
+import { H, W } from "../../shared/edge-math"
 import {
   DEFAULT_ZOOM,
   DOT_SPACING,

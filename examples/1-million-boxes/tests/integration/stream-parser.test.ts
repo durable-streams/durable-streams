@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { StreamParser, encodeEvent, parseStreamRecords } from "./stream-parser"
-import type { GameEvent } from "./game-state"
+import {
+  StreamParser,
+  encodeEvent,
+  parseStreamRecords,
+} from "../../shared/stream-parser"
+import type { GameEvent } from "../../shared/game-state"
 
 describe(`parseStreamRecords`, () => {
   it(`parses empty array`, () => {
@@ -138,6 +142,18 @@ describe(`encodeEvent`, () => {
       expect(parsed).toHaveLength(1)
       expect(parsed[0]).toEqual(event)
     }
+  })
+
+  it(`rejects invalid edgeId`, () => {
+    expect(() => encodeEvent({ edgeId: -1, teamId: 0 })).toThrow(
+      /Invalid edgeId/
+    )
+  })
+
+  it(`rejects invalid teamId`, () => {
+    expect(() => encodeEvent({ edgeId: 0, teamId: 5 })).toThrow(
+      /Invalid teamId/
+    )
   })
 })
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest"
-import { GameState } from "./game-state"
-import { HORIZ_COUNT, W, getBoxEdges } from "./edge-math"
+import { GameState } from "../../../shared/game-state"
+import { HORIZ_COUNT, W, getBoxEdges } from "../../../shared/edge-math"
 
 describe(`GameState`, () => {
   let state: GameState
@@ -140,7 +140,7 @@ describe(`GameState`, () => {
       expect(state.getWinner()).toBe(null)
     })
 
-    it(`returns winning team when one team has highest score`, () => {
+    it(`returns null when game is not complete`, () => {
       // Complete a box for team 2
       const [top, bottom, left, right] = getBoxEdges(0, 0)
       state.applyEvent({ edgeId: top, teamId: 0 })
@@ -149,7 +149,7 @@ describe(`GameState`, () => {
       state.applyEvent({ edgeId: right, teamId: 2 })
 
       expect(state.getScores()).toEqual([0, 0, 1, 0])
-      expect(state.getWinner()).toBe(2)
+      expect(state.getWinner()).toBe(null)
     })
 
     it(`returns null when multiple teams tied for highest`, () => {

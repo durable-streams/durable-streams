@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { Dialog } from "@base-ui/react/dialog"
-import { TEAMS, TEAM_COLORS } from "../../lib/teams"
+import { TEAMS, TEAM_COLORS } from "../../../shared/teams"
 import { useTeam } from "../../contexts/team-context"
 import {
   MAX_QUOTA,
   QUOTA_REFILL_INTERVAL_MS,
   TOTAL_BOX_COUNT,
 } from "../../lib/config"
-import type { TeamName } from "../../lib/teams"
+import type { TeamName } from "../../../shared/teams"
 import "./AboutDialog.css"
 
 export interface AboutDialogProps {

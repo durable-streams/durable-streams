@@ -4,7 +4,7 @@ import {
   worldToScreen,
 } from "../../lib/view-transform"
 import type { ViewState } from "../../hooks/useViewState"
-import type { GameState } from "../../lib/game-state"
+import type { GameState } from "../../../shared/game-state"
 import type { BoxBitmap } from "../../lib/box-bitmap"
 
 /**

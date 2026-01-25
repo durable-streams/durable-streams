@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef } from "react"
 import { DurableStream } from "@durable-streams/client"
-import { StreamParser } from "../lib/stream-parser"
+import { StreamParser } from "../../shared/stream-parser"
 import { STREAM_PROXY_ENDPOINT, STREAM_RECONNECT_DELAY_MS } from "../lib/config"
 import type { StreamResponse } from "@durable-streams/client"
-import type { GameEvent } from "../lib/game-state"
+import type { GameEvent } from "../../shared/game-state"
 
 export interface UseGameStreamOptions {
   onEvents: (events: Array<GameEvent>, upToDate: boolean) => void

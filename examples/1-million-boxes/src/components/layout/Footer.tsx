@@ -1,7 +1,7 @@
 import { QuotaMeter } from "../ui/QuotaMeter"
 import { ZoomControls } from "../ui/ZoomControls"
 import { useTeam } from "../../contexts/team-context"
-import { TEAM_COLORS } from "../../lib/teams"
+import { TEAM_COLORS } from "../../../shared/teams"
 import "./Footer.css"
 
 export function Footer() {

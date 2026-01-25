@@ -1,4 +1,4 @@
-import { H, W, coordsToEdgeId } from "./edge-math"
+import { H, W, coordsToEdgeId } from "../../shared/edge-math"
 
 /**
  * Detect if the current device supports touch

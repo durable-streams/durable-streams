@@ -1,5 +1,5 @@
 import { useTeam } from "../../contexts/team-context"
-import { TEAM_COLORS } from "../../lib/teams"
+import { TEAM_COLORS } from "../../../shared/teams"
 import "./TeamBadge.css"
 
 export function TeamBadge() {
