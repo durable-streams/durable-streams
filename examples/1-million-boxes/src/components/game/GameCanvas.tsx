@@ -85,6 +85,10 @@ export function GameCanvas() {
   const touchStartPos = useRef<{ x: number; y: number } | null>(null)
   const touchMoved = useRef(false)
 
+  // Track mouse state for click vs drag detection
+  const mouseStartPos = useRef<{ x: number; y: number } | null>(null)
+  const mouseMoved = useRef(false)
+
   // Handle resize
   useEffect(() => {
     const container = containerRef.current
@@ -668,9 +672,26 @@ export function GameCanvas() {
       .filter((pop): pop is NonNullable<typeof pop> => pop !== null)
   }, [recentEvents, view, canvasSize])
 
-  // Handle mouse move for edge hover
+  // Handle mouse down - track position for click vs drag detection
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    mouseStartPos.current = { x: e.clientX, y: e.clientY }
+    mouseMoved.current = false
+  }, [])
+
+  // Handle mouse move for edge hover and drag detection
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Check if mouse has moved significantly during a drag (button pressed)
+      // Use a small threshold to avoid triggering on tiny movements
+      if (mouseStartPos.current && e.buttons > 0) {
+        const dx = e.clientX - mouseStartPos.current.x
+        const dy = e.clientY - mouseStartPos.current.y
+        const distance = Math.sqrt(dx * dx + dy * dy)
+        if (distance > 5) {
+          mouseMoved.current = true
+        }
+      }
+
       // Disable hover when game is complete
       if (isGameComplete) {
         setHoveredEdge(null)
@@ -709,6 +730,13 @@ export function GameCanvas() {
 
   // Handle click to place edge
   const handleClick = useCallback(() => {
+    // Skip if user was dragging (pan gesture)
+    if (mouseMoved.current) {
+      mouseStartPos.current = null
+      return
+    }
+    mouseStartPos.current = null
+
     // Disable drawing when game is complete
     if (isGameComplete) return
 
@@ -803,6 +831,7 @@ export function GameCanvas() {
         className="game-canvas"
         data-testid="game-canvas"
         style={{ width: canvasSize.width, height: canvasSize.height }}
+        onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => setHoveredEdge(null)}
         onClick={handleClick}
