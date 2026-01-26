@@ -42,13 +42,16 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "effect": "^3.19.15",
-    "@effect/platform": "^0.94.2",
-    "@effect/platform-node": "^0.104.1"
+  "peerDependencies": {
+    "effect": "^3.0.0",
+    "@effect/platform": "^0.70.0",
+    "@effect/platform-node": "^0.70.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "effect": "^3.19.15",
+    "@effect/platform": "^0.94.2",
+    "@effect/platform-node": "^0.104.1",
     "tsdown": "^0.9.0",
     "tsx": "^4.19.0",
     "typescript": "^5.0.0"
