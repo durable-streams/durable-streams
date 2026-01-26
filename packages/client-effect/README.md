@@ -68,21 +68,22 @@ Effect.runPromise(program.pipe(Effect.provide(DurableStreamClientLiveNode())))
 ### Creating Streams
 
 ```typescript
-yield* client.create(url, {
-  contentType: "application/json",
-  ttlSeconds: 3600, // Optional: auto-delete after 1 hour
-  body: JSON.stringify({ initial: "data" }), // Optional: initial data
-})
+yield *
+  client.create(url, {
+    contentType: "application/json",
+    ttlSeconds: 3600, // Optional: auto-delete after 1 hour
+    body: JSON.stringify({ initial: "data" }), // Optional: initial data
+  })
 ```
 
 ### Appending Data
 
 ```typescript
 // Simple append
-yield* client.append(url, JSON.stringify({ event: "data" }))
+yield * client.append(url, JSON.stringify({ event: "data" }))
 
 // With sequence number for ordering
-yield* client.append(url, data, { seq: "writer-1-001" })
+yield * client.append(url, data, { seq: "writer-1-001" })
 ```
 
 ### Reading Data
@@ -92,16 +93,16 @@ The `StreamSession` provides multiple consumption patterns:
 #### Accumulation (Promise-like)
 
 ```typescript
-const session = yield* client.stream<{ message: string }>(url)
+const session = yield * client.stream<{ message: string }>(url)
 
 // Accumulate all bytes until up-to-date
-const bytes = yield* session.body()
+const bytes = yield * session.body()
 
 // Accumulate all text until up-to-date
-const text = yield* session.text()
+const text = yield * session.text()
 
 // Accumulate all JSON items until up-to-date
-const items = yield* session.json()
+const items = yield * session.json()
 ```
 
 #### Streaming with Effect.Stream
@@ -109,24 +110,26 @@ const items = yield* session.json()
 ```typescript
 import { Stream } from "effect"
 
-const session = yield* client.stream<{ id: number }>(url)
+const session = yield * client.stream<{ id: number }>(url)
 
 // Stream of individual JSON items
 const jsonStream = session.jsonStream()
-yield* Stream.runForEach(jsonStream, (item) =>
-  Effect.log(`Received: ${item.id}`)
-)
+yield *
+  Stream.runForEach(jsonStream, (item) => Effect.log(`Received: ${item.id}`))
 
 // Stream of batches with metadata (offset, upToDate, cursor)
 const batchStream = session.jsonBatches()
-yield* Stream.runForEach(batchStream, (batch) =>
-  Effect.gen(function* () {
-    for (const item of batch.items) {
-      yield* Effect.log(`Item: ${item.id}`)
-    }
-    yield* Effect.log(`Offset: ${batch.offset}, Up-to-date: ${batch.upToDate}`)
-  })
-)
+yield *
+  Stream.runForEach(batchStream, (batch) =>
+    Effect.gen(function* () {
+      for (const item of batch.items) {
+        yield* Effect.log(`Item: ${item.id}`)
+      }
+      yield* Effect.log(
+        `Offset: ${batch.offset}, Up-to-date: ${batch.upToDate}`
+      )
+    })
+  )
 
 // Stream of byte chunks
 const byteStream = session.bodyStream()
@@ -140,21 +143,23 @@ const textStream = session.textStream()
 For high-throughput writes with exactly-once semantics:
 
 ```typescript
-const producer = yield* client.producer(url, "my-producer-id", {
-  maxBatchBytes: 1024 * 1024, // 1MB batches
-  maxInFlight: 5, // 5 concurrent batches
-  lingerMs: 5, // Wait 5ms for more messages
-})
+const producer =
+  yield *
+  client.producer(url, "my-producer-id", {
+    maxBatchBytes: 1024 * 1024, // 1MB batches
+    maxInFlight: 5, // 5 concurrent batches
+    lingerMs: 5, // Wait 5ms for more messages
+  })
 
 // Append data (waits for acknowledgment)
-yield* producer.append(JSON.stringify({ event: "click" }))
-yield* producer.append(JSON.stringify({ event: "scroll" }))
+yield * producer.append(JSON.stringify({ event: "click" }))
+yield * producer.append(JSON.stringify({ event: "scroll" }))
 
 // Flush pending batch and wait for all in-flight
-yield* producer.flush
+yield * producer.flush
 
 // Close producer (flushes first)
-yield* producer.close
+yield * producer.close
 ```
 
 **Why use IdempotentProducer?**
@@ -170,13 +175,13 @@ yield* producer.close
 
 The main service, accessed via `yield* DurableStreamClient`:
 
-| Method | Description |
-|--------|-------------|
-| `create(url, options?)` | Create a new stream |
-| `head(url, options?)` | Get stream metadata |
-| `delete(url, options?)` | Delete a stream |
-| `append(url, data, options?)` | Append data to a stream |
-| `stream(url, options?)` | Start a read session |
+| Method                                | Description                   |
+| ------------------------------------- | ----------------------------- |
+| `create(url, options?)`               | Create a new stream           |
+| `head(url, options?)`                 | Get stream metadata           |
+| `delete(url, options?)`               | Delete a stream               |
+| `append(url, data, options?)`         | Append data to a stream       |
+| `stream(url, options?)`               | Start a read session          |
 | `producer(url, producerId, options?)` | Create an idempotent producer |
 
 ### StreamSession
@@ -185,49 +190,49 @@ Returned by `client.stream()`:
 
 **Accumulation methods:**
 
-| Method | Return Type | Description |
-|--------|-------------|-------------|
-| `body()` | `Effect<Uint8Array>` | All bytes until up-to-date |
-| `text()` | `Effect<string>` | All text until up-to-date |
+| Method   | Return Type               | Description                     |
+| -------- | ------------------------- | ------------------------------- |
+| `body()` | `Effect<Uint8Array>`      | All bytes until up-to-date      |
+| `text()` | `Effect<string>`          | All text until up-to-date       |
 | `json()` | `Effect<T[], ParseError>` | All JSON items until up-to-date |
 
 **Streaming methods:**
 
-| Method | Return Type | Description |
-|--------|-------------|-------------|
-| `bodyStream()` | `Stream<ByteChunk>` | Stream of byte chunks with metadata |
-| `textStream()` | `Stream<string>` | Stream of text chunks |
-| `jsonStream()` | `Stream<T, ParseError>` | Stream of individual JSON items |
+| Method          | Return Type                    | Description                          |
+| --------------- | ------------------------------ | ------------------------------------ |
+| `bodyStream()`  | `Stream<ByteChunk>`            | Stream of byte chunks with metadata  |
+| `textStream()`  | `Stream<string>`               | Stream of text chunks                |
+| `jsonStream()`  | `Stream<T, ParseError>`        | Stream of individual JSON items      |
 | `jsonBatches()` | `Stream<Batch<T>, ParseError>` | Stream of JSON batches with metadata |
 
 **State properties:**
 
-| Property | Type | Description |
-|----------|------|-------------|
-| `offset` | `Effect<Offset>` | Current offset |
-| `upToDate` | `Effect<boolean>` | Whether caught up to stream head |
-| `status` | `number` | HTTP status from initial response |
-| `contentType` | `string \| undefined` | Content type of the stream |
+| Property      | Type                  | Description                       |
+| ------------- | --------------------- | --------------------------------- |
+| `offset`      | `Effect<Offset>`      | Current offset                    |
+| `upToDate`    | `Effect<boolean>`     | Whether caught up to stream head  |
+| `status`      | `number`              | HTTP status from initial response |
+| `contentType` | `string \| undefined` | Content type of the stream        |
 
 **Control:**
 
-| Method | Description |
-|--------|-------------|
+| Method     | Description        |
+| ---------- | ------------------ |
 | `cancel()` | Cancel the session |
 
 ### IdempotentProducer
 
 Returned by `client.producer()`:
 
-| Method/Property | Type | Description |
-|-----------------|------|-------------|
-| `append(data)` | `Effect<void, Error>` | Append data (waits for ack) |
-| `flush` | `Effect<void, Error>` | Send pending batch, wait for in-flight |
-| `close` | `Effect<void, Error>` | Flush and close producer |
-| `restart` | `Effect<void, Error>` | Increment epoch, reset sequence |
-| `epoch` | `Effect<number>` | Current epoch |
-| `nextSeq` | `Effect<number>` | Next sequence number |
-| `pendingCount` | `Effect<number>` | Messages in pending batch |
+| Method/Property | Type                  | Description                            |
+| --------------- | --------------------- | -------------------------------------- |
+| `append(data)`  | `Effect<void, Error>` | Append data (waits for ack)            |
+| `flush`         | `Effect<void, Error>` | Send pending batch, wait for in-flight |
+| `close`         | `Effect<void, Error>` | Flush and close producer               |
+| `restart`       | `Effect<void, Error>` | Increment epoch, reset sequence        |
+| `epoch`         | `Effect<number>`      | Current epoch                          |
+| `nextSeq`       | `Effect<number>`      | Next sequence number                   |
+| `pendingCount`  | `Effect<number>`      | Messages in pending batch              |
 
 ## Configuration
 
@@ -289,42 +294,42 @@ interface ProducerOptions {
 
 Control real-time behavior with the `live` option:
 
-| Value | Description |
-|-------|-------------|
-| `false` | Catch-up only, stop when up-to-date |
-| `true` | Auto-select best mode (SSE for JSON, long-poll for binary) |
-| `"long-poll"` | Explicit HTTP long-polling |
-| `"sse"` | Explicit Server-Sent Events |
+| Value         | Description                                                |
+| ------------- | ---------------------------------------------------------- |
+| `false`       | Catch-up only, stop when up-to-date                        |
+| `true`        | Auto-select best mode (SSE for JSON, long-poll for binary) |
+| `"long-poll"` | Explicit HTTP long-polling                                 |
+| `"sse"`       | Explicit Server-Sent Events                                |
 
 ```typescript
 // Catch-up only - stop when up-to-date
-const session = yield* client.stream(url, { live: false })
+const session = yield * client.stream(url, { live: false })
 
 // Live updates with auto-selection
-const session = yield* client.stream(url, { live: true })
+const session = yield * client.stream(url, { live: true })
 
 // Explicit SSE mode
-const session = yield* client.stream(url, { live: "sse" })
+const session = yield * client.stream(url, { live: "sse" })
 ```
 
 ## Error Handling
 
 All errors use Effect's `Schema.TaggedError` pattern with a `_tag` property:
 
-| Error | `_tag` | Description |
-|-------|--------|-------------|
-| `StreamNotFoundError` | `"StreamNotFoundError"` | Stream does not exist (404) |
-| `StreamConflictError` | `"StreamConflictError"` | Stream exists with different config (409) |
-| `ContentTypeMismatchError` | `"ContentTypeMismatchError"` | Content-type mismatch |
-| `InvalidOffsetError` | `"InvalidOffsetError"` | Invalid offset format |
-| `SequenceConflictError` | `"SequenceConflictError"` | Sequence regression |
-| `StaleEpochError` | `"StaleEpochError"` | Producer epoch is stale (403) |
-| `SequenceGapError` | `"SequenceGapError"` | Producer sequence gap (409) |
-| `ProducerClosedError` | `"ProducerClosedError"` | Producer is closed |
-| `HttpError` | `"HttpError"` | HTTP error with status |
-| `NetworkError` | `"NetworkError"` | Network failure |
-| `TimeoutError` | `"TimeoutError"` | Request timeout |
-| `ParseError` | `"ParseError"` | JSON parsing failed |
+| Error                      | `_tag`                       | Description                               |
+| -------------------------- | ---------------------------- | ----------------------------------------- |
+| `StreamNotFoundError`      | `"StreamNotFoundError"`      | Stream does not exist (404)               |
+| `StreamConflictError`      | `"StreamConflictError"`      | Stream exists with different config (409) |
+| `ContentTypeMismatchError` | `"ContentTypeMismatchError"` | Content-type mismatch                     |
+| `InvalidOffsetError`       | `"InvalidOffsetError"`       | Invalid offset format                     |
+| `SequenceConflictError`    | `"SequenceConflictError"`    | Sequence regression                       |
+| `StaleEpochError`          | `"StaleEpochError"`          | Producer epoch is stale (403)             |
+| `SequenceGapError`         | `"SequenceGapError"`         | Producer sequence gap (409)               |
+| `ProducerClosedError`      | `"ProducerClosedError"`      | Producer is closed                        |
+| `HttpError`                | `"HttpError"`                | HTTP error with status                    |
+| `NetworkError`             | `"NetworkError"`             | Network failure                           |
+| `TimeoutError`             | `"TimeoutError"`             | Request timeout                           |
+| `ParseError`               | `"ParseError"`               | JSON parsing failed                       |
 
 **Example error handling:**
 
@@ -347,10 +352,10 @@ const program = Effect.gen(function* () {
 
 ## Layers
 
-| Layer | Provides | Requires |
-|-------|----------|----------|
-| `DurableStreamClientLive(config?)` | `DurableStreamClient` | `DurableStreamsHttpClient` |
-| `DurableStreamClientLiveNode(config?)` | `DurableStreamClient` | Nothing (complete layer) |
+| Layer                                  | Provides              | Requires                   |
+| -------------------------------------- | --------------------- | -------------------------- |
+| `DurableStreamClientLive(config?)`     | `DurableStreamClient` | `DurableStreamsHttpClient` |
+| `DurableStreamClientLiveNode(config?)` | `DurableStreamClient` | Nothing (complete layer)   |
 
 **Basic usage (Node.js):**
 
@@ -366,14 +371,19 @@ Effect.runPromise(program.pipe(Effect.provide(DurableStreamClientLiveNode())))
 **Custom HTTP client:**
 
 ```typescript
-import { DurableStreamClientLive, DurableStreamsHttpClientLive } from "@durable-streams/client-effect"
+import {
+  DurableStreamClientLive,
+  DurableStreamsHttpClientLive,
+} from "@durable-streams/client-effect"
 
 const customLayer = DurableStreamClientLive().pipe(
-  Layer.provide(DurableStreamsHttpClientLive({
-    headers: {
-      Authorization: () => `Bearer ${getToken()}`,
-    },
-  }))
+  Layer.provide(
+    DurableStreamsHttpClientLive({
+      headers: {
+        Authorization: () => `Bearer ${getToken()}`,
+      },
+    })
+  )
 )
 ```
 
