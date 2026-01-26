@@ -1,7 +1,7 @@
 /**
  * Idempotent producer for exactly-once writes to a durable stream.
  */
-import { Deferred, Effect, Fiber, Queue, Ref } from "effect"
+import { Deferred, Effect, Fiber, Queue, Ref, Stream } from "effect"
 import {
   HttpError,
   InvalidProducerOptionsError,
@@ -39,7 +39,6 @@ interface ProducerState {
   closed: boolean
   epochClaimed: boolean
   seqState: Map<number, Map<number, SeqState>>
-  inFlightCount: number
 }
 
 /**
@@ -50,6 +49,7 @@ interface BatchTask {
   seq: number
   epoch: number
   totalBytes: number
+  completion: Deferred.Deferred<void, never>
 }
 
 /**
@@ -146,10 +146,14 @@ export const makeIdempotentProducer = (
       closed: false,
       epochClaimed: !autoClaim,
       seqState: new Map(),
-      inFlightCount: 0,
     })
 
     const sendQueue = yield* Queue.unbounded<BatchTask>()
+
+    // Track pending batches for zero-polling flush
+    const pendingBatches = yield* Ref.make<Set<Deferred.Deferred<void, never>>>(
+      new Set()
+    )
 
     // Get content type from a HEAD request (cached)
     const contentTypeRef = yield* Ref.make<string>(`application/octet-stream`)
@@ -352,11 +356,6 @@ export const makeIdempotentProducer = (
     // Process a single batch
     const processBatch = (batch: BatchTask): Effect.Effect<void> =>
       Effect.gen(function* () {
-        yield* Ref.update(stateRef, (s) => ({
-          ...s,
-          inFlightCount: s.inFlightCount + 1,
-        }))
-
         const contentType = yield* getContentType
         const result = yield* Effect.either(doSendBatch(batch, contentType))
 
@@ -376,42 +375,37 @@ export const makeIdempotentProducer = (
           }
         }
 
-        yield* Ref.update(stateRef, (s) => ({
-          ...s,
-          inFlightCount: s.inFlightCount - 1,
-        }))
+        // Signal batch completion and remove from pending set
+        yield* Deferred.succeed(batch.completion, undefined)
+        yield* Ref.update(pendingBatches, (s) => {
+          const newSet = new Set(s)
+          newSet.delete(batch.completion)
+          return newSet
+        })
       })
 
-    // Batch worker - processes batches with concurrency limit
-    const batchWorker = Effect.gen(function* () {
-      for (;;) {
-        const batch = yield* Queue.take(sendQueue)
-
-        // Check if we're at max concurrency
-        const state = yield* Ref.get(stateRef)
-        if (state.inFlightCount >= maxInFlight) {
-          // Wait until a slot is available
-          yield* Effect.yieldNow()
-        }
-
-        // Process batch in background (don't block queue)
-        yield* Effect.fork(processBatch(batch))
-      }
-    })
-
-    // Fork the batch worker
-    yield* Effect.forkDaemon(batchWorker)
+    // Process batches with Stream-based concurrency control
+    yield* Stream.fromQueue(sendQueue).pipe(
+      Stream.mapEffect(processBatch, { concurrency: maxInFlight }),
+      Stream.runDrain,
+      Effect.forkDaemon
+    )
 
     // Enqueue the current pending batch
     const enqueuePendingBatch = Effect.gen(function* () {
       const state = yield* Ref.get(stateRef)
       if (state.pendingMessages.length === 0) return
 
+      // Create completion Deferred at enqueue time (before any race conditions)
+      const completion = yield* Deferred.make<void, never>()
+      yield* Ref.update(pendingBatches, (s) => new Set(s).add(completion))
+
       const batch: BatchTask = {
         messages: [...state.pendingMessages],
         seq: state.nextSeq,
         epoch: state.epoch,
         totalBytes: state.pendingBytes,
+        completion,
       }
 
       yield* Ref.update(stateRef, (s) => ({
@@ -449,13 +443,12 @@ export const makeIdempotentProducer = (
       }
     })
 
-    // Wait for all in-flight batches to complete
-    const waitForInFlight = Effect.gen(function* () {
-      for (;;) {
-        const state = yield* Ref.get(stateRef)
-        if (state.inFlightCount === 0) break
-        yield* Effect.sleep(10)
-      }
+    // Wait for all in-flight batches to complete (zero-polling)
+    const waitForInFlight: Effect.Effect<void> = Effect.gen(function* () {
+      const pending = yield* Ref.get(pendingBatches)
+      yield* Effect.all([...pending].map(Deferred.await), {
+        concurrency: `unbounded`,
+      })
     })
 
     const append = (data: Uint8Array | string): Effect.Effect<void, Error> =>
