@@ -460,10 +460,14 @@ The timeout for long-polling is implementation-defined. Servers **MAY** accept a
 #### Request
 
 ```
-GET {stream-url}?offset=<offset>&live=sse
+GET {stream-url}?offset=<offset>&live=sse[&encoding=base64]
 ```
 
-Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Events (SSE) stream. **ONLY** valid for streams with `content-type: text/*` or `application/json` (the stream's configured content type). SSE responses **MUST** use `Content-Type: text/event-stream` in the HTTP response headers.
+Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Events (SSE) stream.
+
+SSE mode is valid by default only for streams whose configured `content-type` is `text/*` or `application/json`.
+For streams with any other `content-type`, clients **MUST** provide an explicit `encoding` parameter (see below).
+SSE responses **MUST** use `Content-Type: text/event-stream` in the HTTP response headers.
 
 #### Query Parameters
 
@@ -472,6 +476,14 @@ Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Eve
 
 - `live=sse` (required)
   - Indicates SSE streaming mode.
+
+- `encoding` (optional)
+  - Controls how stream bytes are represented in SSE `data` events when the stream's configured `content-type` is not compatible with native SSE delivery.
+  - When the stream's configured `content-type` is neither `text/*` nor `application/json`, clients **MUST** provide `encoding`.
+  - Supported values are extensible. Implementations that support `encoding` **MUST** support `encoding=base64`.
+    - Implementations **MAY** support additional values (e.g., `base64url`) as an extension.
+  - If `encoding` is provided with an unsupported value, servers **MUST** return `400 Bad Request`.
+  - If the stream's configured `content-type` is `text/*` or `application/json`, servers **MAY** ignore `encoding` and behave as the base protocol.
 
 #### Response Codes
 
@@ -488,10 +500,15 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
 
 - `data`: Emitted for each batch of data
   - Each line prefixed with `data:`
+  - When `encoding=base64` is used, the `data` event payload represents bytes encoded using base64 with padding (`=`) required.
+    - Servers **MAY** split the base64 text across multiple `data:` lines within the same SSE `data` event.
+    - Clients **MUST** concatenate the `data:` lines for the event (per SSE rules) and **MUST** remove all `\n` characters inserted between lines before base64-decoding.
+    - The resulting string (after removing `\n`) **MUST** be valid base64 text, including required padding at the end of the payload.
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
   - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
   - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - Implementations **MAY** include additional fields in the control event (e.g., `upToDate` as described in Section 6).
 
 **Example:**
 
@@ -501,6 +518,17 @@ data: [
 data: {"k":"v"},
 data: {"k":"w"},
 data: ]
+
+event: control
+data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
+```
+
+**Example (binary stream with `encoding=base64`):**
+
+```
+event: data
+data: AQIDBAUG
+data: BwgJCg==
 
 event: control
 data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
@@ -564,7 +592,8 @@ The protocol supports arbitrary MIME content types. Most content types operate a
 
 **Restriction:**
 
-- SSE mode (Section 5.7) **REQUIRES** `content-type: text/*` or `application/json`
+- SSE mode (Section 5.7) is valid by default only for streams with `content-type: text/*` or `application/json`.
+- For streams with any other `content-type`, SSE mode requires an explicit `encoding` parameter (e.g., `encoding=base64`) and the stream bytes are represented in SSE `data` events according to that encoding.
 
 Clients **MAY** use any content type for their streams, including:
 
