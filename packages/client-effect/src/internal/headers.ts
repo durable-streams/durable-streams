@@ -7,27 +7,27 @@ import type { DynamicValue, HeadersRecord, ParamsRecord } from "../types.js"
 /**
  * Resolve a dynamic value to its final string form.
  */
-export const resolveDynamicValue = Effect.fn(`resolveDynamicValue`)(
-  (value: DynamicValue<string> | undefined): Effect.Effect<string | undefined> => {
-    if (value === undefined) {
-      return Effect.succeed(undefined)
-    }
-
-    if (typeof value === `string`) {
-      return Effect.succeed(value)
-    }
-
-    if (typeof value === `function`) {
-      const result = value()
-      if (Effect.isEffect(result)) {
-        return result as Effect.Effect<string>
-      }
-      return Effect.succeed(result as string)
-    }
-
+export const resolveDynamicValue = Effect.fn(`resolveDynamicValue`)((
+  value: DynamicValue<string> | undefined
+): Effect.Effect<string | undefined> => {
+  if (value === undefined) {
     return Effect.succeed(undefined)
   }
-)
+
+  if (typeof value === `string`) {
+    return Effect.succeed(value)
+  }
+
+  if (typeof value === `function`) {
+    const result = value()
+    if (Effect.isEffect(result)) {
+      return result as Effect.Effect<string>
+    }
+    return Effect.succeed(result as string)
+  }
+
+  return Effect.succeed(undefined)
+})
 
 /**
  * Resolve all headers to static values.

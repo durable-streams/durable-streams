@@ -39,9 +39,7 @@ export interface SSEControlEvent {
 /**
  * Parse a single SSE event from lines.
  */
-const parseSSEEvent = (
-  lines: ReadonlyArray<string>
-): SSEEvent | null => {
+const parseSSEEvent = (lines: ReadonlyArray<string>): SSEEvent | null => {
   let eventType = `data`
   let data = ``
 
@@ -61,12 +59,14 @@ const parseSSEEvent = (
   if (eventType === `control`) {
     try {
       const parsed = JSON.parse(data) as Record<string, unknown>
-      const offset = typeof parsed[SSEFields.Offset] === `string`
-        ? parsed[SSEFields.Offset] as string
-        : undefined
-      const cursor = typeof parsed[SSEFields.Cursor] === `string`
-        ? parsed[SSEFields.Cursor] as string
-        : undefined
+      const offset =
+        typeof parsed[SSEFields.Offset] === `string`
+          ? (parsed[SSEFields.Offset] as string)
+          : undefined
+      const cursor =
+        typeof parsed[SSEFields.Cursor] === `string`
+          ? (parsed[SSEFields.Cursor] as string)
+          : undefined
       return {
         type: `control`,
         offset,
@@ -95,8 +95,7 @@ export const parseSSEStream = (
 
   return Stream.fromReadableStream(
     () => stream,
-    (error) =>
-      new SSEParseError({ message: `Stream error: ${String(error)}` })
+    (error) => new SSEParseError({ message: `Stream error: ${String(error)}` })
   ).pipe(
     Stream.mapConcat((chunk) => {
       buffer += decoder.decode(chunk, { stream: true })
@@ -139,8 +138,9 @@ export const findControlEvent = (
   stream: Stream.Stream<SSEEvent, SSEParseError>
 ): Effect.Effect<SSEControlEvent | null, SSEParseError> =>
   Stream.runHead(
-    Stream.filter(stream, (event): event is SSEControlEvent =>
-      event.type === `control`
+    Stream.filter(
+      stream,
+      (event): event is SSEControlEvent => event.type === `control`
     )
   ).pipe(Effect.map((opt) => Option.getOrNull(opt)))
 

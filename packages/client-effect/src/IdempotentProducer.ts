@@ -9,10 +9,7 @@ import {
   StaleEpochError,
 } from "./errors.js"
 import { DurableStreamsHttpClient } from "./HttpClient.js"
-import {
-  encodeBatchData,
-  type PendingMessage,
-} from "./internal/batching.js"
+import { encodeBatchData, type PendingMessage } from "./internal/batching.js"
 import { Headers, type ProducerOptions } from "./types.js"
 
 // =============================================================================
@@ -121,7 +118,9 @@ export const makeIdempotentProducer = (
     }
     if (maxBatchBytes <= 0) {
       return yield* Effect.fail(
-        new InvalidProducerOptionsError({ message: `maxBatchBytes must be > 0` })
+        new InvalidProducerOptionsError({
+          message: `maxBatchBytes must be > 0`,
+        })
       )
     }
     if (maxInFlight <= 0) {
@@ -157,9 +156,13 @@ export const makeIdempotentProducer = (
       if (cached !== `application/octet-stream`) return cached
 
       const headResult = yield* Effect.catchAll(
-        httpClient.head(url).pipe(
-          Effect.map((result) => result.contentType ?? `application/octet-stream`)
-        ),
+        httpClient
+          .head(url)
+          .pipe(
+            Effect.map(
+              (result) => result.contentType ?? `application/octet-stream`
+            )
+          ),
         () => Effect.succeed(`application/octet-stream`)
       )
 
@@ -252,7 +255,10 @@ export const makeIdempotentProducer = (
       })
 
     // Wait for sequence to complete using Deferred coordination
-    const waitForSeq = (epochVal: number, seq: number): Effect.Effect<void, Error> =>
+    const waitForSeq = (
+      epochVal: number,
+      seq: number
+    ): Effect.Effect<void, Error> =>
       Effect.gen(function* () {
         const state = yield* Ref.get(stateRef)
         const epochMap = state.seqState.get(epochVal)

@@ -17,7 +17,10 @@ import {
   type DurableStreamsHttpClientConfig,
   type DurableStreamsResponse,
 } from "./HttpClient.js"
-import { IdempotentProducer, makeIdempotentProducer } from "./IdempotentProducer.js"
+import {
+  IdempotentProducer,
+  makeIdempotentProducer,
+} from "./IdempotentProducer.js"
 import { resolveHeaders } from "./internal/headers.js"
 import { makeStreamSession } from "./StreamSession.js"
 import {
@@ -64,7 +67,10 @@ export class DurableStreamClient extends Context.Tag(
     readonly create: (
       url: string,
       options?: CreateOptions
-    ) => Effect.Effect<CreateResult, StreamConflictError | HttpError | NetworkError>
+    ) => Effect.Effect<
+      CreateResult,
+      StreamConflictError | HttpError | NetworkError
+    >
 
     /**
      * Get stream metadata via HEAD request.
@@ -72,7 +78,10 @@ export class DurableStreamClient extends Context.Tag(
     readonly head: (
       url: string,
       options?: { headers?: HeadersRecord; params?: ParamsRecord }
-    ) => Effect.Effect<HeadResult, StreamNotFoundError | HttpError | NetworkError>
+    ) => Effect.Effect<
+      HeadResult,
+      StreamNotFoundError | HttpError | NetworkError
+    >
 
     /**
      * Delete a stream.
@@ -132,8 +141,7 @@ const makeDurableStreamClient = (config: DurableStreamClientConfig = {}) =>
         Effect.gen(function* () {
           const headers: Record<string, string> = {}
 
-          const contentType =
-            options.contentType ?? config.defaultContentType
+          const contentType = options.contentType ?? config.defaultContentType
           if (contentType) {
             headers[`content-type`] = contentType
           }
@@ -328,11 +336,8 @@ const makeDurableStreamClient = (config: DurableStreamClientConfig = {}) =>
  */
 export const DurableStreamClientLive = (
   config: DurableStreamClientConfig = {}
-): Layer.Layer<
-  DurableStreamClient,
-  never,
-  DurableStreamsHttpClient
-> => Layer.effect(DurableStreamClient, makeDurableStreamClient(config))
+): Layer.Layer<DurableStreamClient, never, DurableStreamsHttpClient> =>
+  Layer.effect(DurableStreamClient, makeDurableStreamClient(config))
 
 /**
  * Complete layer that provides the Durable Streams client with HTTP client.

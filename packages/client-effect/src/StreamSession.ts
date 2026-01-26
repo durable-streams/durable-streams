@@ -95,9 +95,7 @@ export const makeStreamSession = <T>(
       )
 
     const textStream = (): Stream.Stream<string> =>
-      Stream.map(bodyStream(), (chunk) =>
-        new TextDecoder().decode(chunk.data)
-      )
+      Stream.map(bodyStream(), (chunk) => new TextDecoder().decode(chunk.data))
 
     // Parse JSON text, propagating ParseError on failure
     const parseJsonItems = (text: string): Effect.Effect<T[], ParseError> => {

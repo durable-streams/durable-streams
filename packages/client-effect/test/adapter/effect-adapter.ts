@@ -167,21 +167,61 @@ interface ReadChunk {
 }
 
 type TestResult =
-  | { type: `init`; success: true; clientName: string; clientVersion: string; features?: Record<string, boolean> }
+  | {
+      type: `init`
+      success: true
+      clientName: string
+      clientVersion: string
+      features?: Record<string, boolean>
+    }
   | { type: `create`; success: true; status: number; offset?: string }
   | { type: `connect`; success: true; status: number; offset?: string }
-  | { type: `append`; success: true; status: number; offset?: string; headersSent?: Record<string, string>; paramsSent?: Record<string, string> }
-  | { type: `idempotent-append`; success: true; status: number; offset?: string }
+  | {
+      type: `append`
+      success: true
+      status: number
+      offset?: string
+      headersSent?: Record<string, string>
+      paramsSent?: Record<string, string>
+    }
+  | {
+      type: `idempotent-append`
+      success: true
+      status: number
+      offset?: string
+    }
   | { type: `idempotent-append-batch`; success: true; status: number }
-  | { type: `read`; success: true; status: number; chunks: Array<ReadChunk>; offset?: string; upToDate?: boolean; headersSent?: Record<string, string>; paramsSent?: Record<string, string> }
-  | { type: `head`; success: true; status: number; offset?: string; contentType?: string }
+  | {
+      type: `read`
+      success: true
+      status: number
+      chunks: Array<ReadChunk>
+      offset?: string
+      upToDate?: boolean
+      headersSent?: Record<string, string>
+      paramsSent?: Record<string, string>
+    }
+  | {
+      type: `head`
+      success: true
+      status: number
+      offset?: string
+      contentType?: string
+    }
   | { type: `delete`; success: true; status: number }
   | { type: `shutdown`; success: true }
   | { type: `set-dynamic-header`; success: true }
   | { type: `set-dynamic-param`; success: true }
   | { type: `clear-dynamic`; success: true }
   | { type: `validate`; success: true }
-  | { type: `error`; success: false; commandType: string; status?: number; errorCode: string; message: string }
+  | {
+      type: `error`
+      success: false
+      commandType: string
+      status?: number
+      errorCode: string
+      message: string
+    }
 
 const ErrorCodes = {
   NETWORK_ERROR: `NETWORK_ERROR`,
@@ -396,11 +436,13 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
     case `append`: {
       const url = `${serverUrl}${command.path}`
 
-      const { headers: dynamicHdrs, values: headersSent } = resolveDynamicHeaders()
+      const { headers: dynamicHdrs, values: headersSent } =
+        resolveDynamicHeaders()
       const { values: paramsSent } = resolveDynamicParams()
 
       // Get content-type from cache or use default
-      const contentType = streamContentTypes.get(command.path) ?? `application/octet-stream`
+      const contentType =
+        streamContentTypes.get(command.path) ?? `application/octet-stream`
 
       const program = Effect.gen(function* () {
         const client = yield* DurableStreamClient
@@ -425,8 +467,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           success: true as const,
           status: 200,
           offset: head.offset,
-          headersSent: Object.keys(headersSent).length > 0 ? headersSent : undefined,
-          paramsSent: Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
+          headersSent:
+            Object.keys(headersSent).length > 0 ? headersSent : undefined,
+          paramsSent:
+            Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
         }
       })
 
@@ -443,7 +487,8 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
     case `read`: {
       const url = `${serverUrl}${command.path}`
-      const { headers: dynamicHdrs, values: headersSent } = resolveDynamicHeaders()
+      const { headers: dynamicHdrs, values: headersSent } =
+        resolveDynamicHeaders()
       const { values: paramsSent } = resolveDynamicParams()
 
       const live = command.live ?? false
@@ -457,14 +502,19 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const isJson = contentType?.includes(`application/json`) ?? false
 
         // Build URL with offset and live mode
-        const liveParam = isSSE ? `sse` : (live === `long-poll` ? `long-poll` : undefined)
+        const liveParam = isSSE
+          ? `sse`
+          : live === `long-poll`
+            ? `long-poll`
+            : undefined
         const fetchUrl = buildStreamUrl(url, command.offset ?? `-1`, liveParam)
 
         const response = yield* httpClient.get(fetchUrl, {
           headers: { ...dynamicHdrs, ...command.headers },
         })
 
-        let finalOffset = extractOffset(response.headers) ?? command.offset ?? `-1`
+        let finalOffset =
+          extractOffset(response.headers) ?? command.offset ?? `-1`
         let upToDate = isUpToDate(response.headers)
 
         if (isSSE) {
@@ -479,13 +529,25 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             const startTime = Date.now()
 
             try {
-              while (chunkCount < maxChunks && Date.now() - startTime < timeoutMs) {
+              while (
+                chunkCount < maxChunks &&
+                Date.now() - startTime < timeoutMs
+              ) {
                 const readPromise = reader.read()
-                const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
-                  setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs - (Date.now() - startTime))
+                const timeoutPromise = new Promise<{
+                  done: true
+                  value: undefined
+                }>((resolve) =>
+                  setTimeout(
+                    () => resolve({ done: true, value: undefined }),
+                    timeoutMs - (Date.now() - startTime)
+                  )
                 )
 
-                const { done, value } = await Promise.race([readPromise, timeoutPromise])
+                const { done, value } = await Promise.race([
+                  readPromise,
+                  timeoutPromise,
+                ])
 
                 if (done) break
 
@@ -514,8 +576,12 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
                   if (data) {
                     if (eventType === `control`) {
                       try {
-                        const parsed = JSON.parse(data) as Record<string, unknown>
-                        if (typeof parsed.offset === `string`) finalOffset = parsed.offset
+                        const parsed = JSON.parse(data) as Record<
+                          string,
+                          unknown
+                        >
+                        if (typeof parsed.offset === `string`)
+                          finalOffset = parsed.offset
                         upToDate = true
                       } catch {
                         // Ignore parse errors
@@ -576,8 +642,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           chunks,
           offset: finalOffset,
           upToDate,
-          headersSent: Object.keys(headersSent).length > 0 ? headersSent : undefined,
-          paramsSent: Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
+          headersSent:
+            Object.keys(headersSent).length > 0 ? headersSent : undefined,
+          paramsSent:
+            Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
         }
       })
 
@@ -589,7 +657,8 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         chunks: [] as Array<ReadChunk>,
         offset: command.offset ?? `-1`,
         upToDate: true,
-        headersSent: Object.keys(headersSent).length > 0 ? headersSent : undefined,
+        headersSent:
+          Object.keys(headersSent).length > 0 ? headersSent : undefined,
         paramsSent: Object.keys(paramsSent).length > 0 ? paramsSent : undefined,
       }
 
@@ -737,9 +806,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       })
 
       const exit = await Effect.runPromiseExit(
-        program.pipe(
-          Effect.provide(DurableStreamsHttpClientLive())
-        )
+        program.pipe(Effect.provide(DurableStreamsHttpClientLive()))
       )
 
       if (Exit.isSuccess(exit)) {
@@ -785,9 +852,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       })
 
       const exit = await Effect.runPromiseExit(
-        program.pipe(
-          Effect.provide(DurableStreamsHttpClientLive())
-        )
+        program.pipe(Effect.provide(DurableStreamsHttpClientLive()))
       )
 
       if (Exit.isSuccess(exit)) {
@@ -842,7 +907,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
 // Helper to check error _tag for Schema.TaggedError
 function hasTag(err: unknown, tag: string): boolean {
-  return typeof err === `object` && err !== null && `_tag` in err && err._tag === tag
+  return (
+    typeof err === `object` && err !== null && `_tag` in err && err._tag === tag
+  )
 }
 
 function errorResult(commandType: string, err: unknown): TestResult {

@@ -95,15 +95,12 @@ export class InvalidProducerOptionsError extends Schema.TaggedError<InvalidProdu
 /**
  * HTTP error with status and body.
  */
-export class HttpError extends Schema.TaggedError<HttpError>()(
-  `HttpError`,
-  {
-    status: Schema.Number,
-    statusText: Schema.String,
-    url: Schema.String,
-    body: Schema.optional(Schema.String),
-  }
-) {}
+export class HttpError extends Schema.TaggedError<HttpError>()(`HttpError`, {
+  status: Schema.Number,
+  statusText: Schema.String,
+  url: Schema.String,
+  body: Schema.optional(Schema.String),
+}) {}
 
 /**
  * Network error (connection refused, timeout, etc.).
@@ -128,10 +125,9 @@ export class TimeoutError extends Schema.TaggedError<TimeoutError>()(
 /**
  * Failed to parse JSON response.
  */
-export class ParseError extends Schema.TaggedError<ParseError>()(
-  `ParseError`,
-  { message: Schema.String }
-) {}
+export class ParseError extends Schema.TaggedError<ParseError>()(`ParseError`, {
+  message: Schema.String,
+}) {}
 
 /**
  * SSE event parsing error.

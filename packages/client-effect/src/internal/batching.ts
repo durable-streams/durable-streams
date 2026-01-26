@@ -67,7 +67,9 @@ export interface BatchQueue {
    * Returns when the message has been successfully sent.
    * Fails with ProducerClosedError if the queue is closed.
    */
-  readonly enqueue: (data: Uint8Array) => Effect.Effect<void, Error | ProducerClosedError>
+  readonly enqueue: (
+    data: Uint8Array
+  ) => Effect.Effect<void, Error | ProducerClosedError>
 
   /**
    * Force send any pending batch immediately.
@@ -204,7 +206,9 @@ export const makeBatchQueue = (
       }
     })
 
-    const enqueue = (data: Uint8Array): Effect.Effect<void, Error | ProducerClosedError> =>
+    const enqueue = (
+      data: Uint8Array
+    ): Effect.Effect<void, Error | ProducerClosedError> =>
       Effect.gen(function* () {
         const state = yield* Ref.get(stateRef)
         if (state.closed) {

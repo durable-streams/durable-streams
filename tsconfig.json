@@ -9,12 +9,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedDeclarations": true,
     "isolatedModules": true,
-    "lib": [
-      "DOM",
-      "DOM.Iterable",
-      "DOM.AsyncIterable",
-      "ES2022"
-    ],
+    "lib": ["DOM", "DOM.Iterable", "DOM.AsyncIterable", "ES2022"],
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -28,10 +23,7 @@
     "target": "ES2020",
     "noErrorTruncation": true
   },
-  "include": [
-    "packages/**/*.ts",
-    "packages/**/*.tsx"
-  ],
+  "include": ["packages/**/*.ts", "packages/**/*.tsx"],
   "exclude": [
     "node_modules",
     "**/dist/**",

@@ -47,15 +47,18 @@ export const DefaultRetryOptions: Required<RetryOptions> = {
 /**
  * Create a retry schedule with exponential backoff and jitter.
  */
-export const makeRetrySchedule = (
-  options: RetryOptions = {}
-) => {
+export const makeRetrySchedule = (options: RetryOptions = {}) => {
   const opts = { ...DefaultRetryOptions, ...options }
 
   // Exponential backoff with jitter, limited retries
-  return Schedule.exponential(Duration.millis(opts.initialDelayMs), opts.multiplier).pipe(
+  return Schedule.exponential(
+    Duration.millis(opts.initialDelayMs),
+    opts.multiplier
+  ).pipe(
     Schedule.jittered,
-    Schedule.whileOutput((duration) => Duration.lessThanOrEqualTo(duration, Duration.millis(opts.maxDelayMs))),
+    Schedule.whileOutput((duration) =>
+      Duration.lessThanOrEqualTo(duration, Duration.millis(opts.maxDelayMs))
+    ),
     Schedule.intersect(Schedule.recurs(opts.maxRetries))
   )
 }

@@ -82,29 +82,31 @@ import {
 import { Layer } from "effect"
 
 const store = makePersistentStreamStoreLayer().pipe(
-  Layer.provide(PersistencePostgres.layer({
-    host: "localhost",
-    port: 5432,
-    database: "durable_streams",
-    user: "postgres",
-    password: "password",
-  }))
+  Layer.provide(
+    PersistencePostgres.layer({
+      host: "localhost",
+      port: 5432,
+      database: "durable_streams",
+      user: "postgres",
+      password: "password",
+    })
+  )
 )
 ```
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `4437` | Server port |
-| `HOST` | `127.0.0.1` | Server host |
-| `STORE_BACKEND` | `memory` | Storage backend: `memory`, `persistent`, `lmdb`, `postgres` |
-| `LMDB_PATH` | `./data/streams` | Path for LMDB storage |
-| `PGHOST` | `localhost` | PostgreSQL host |
-| `PGPORT` | `5432` | PostgreSQL port |
-| `PGDATABASE` | `durable_streams` | PostgreSQL database |
-| `PGUSER` | `postgres` | PostgreSQL user |
-| `PGPASSWORD` | - | PostgreSQL password |
+| Variable        | Default           | Description                                                 |
+| --------------- | ----------------- | ----------------------------------------------------------- |
+| `PORT`          | `4437`            | Server port                                                 |
+| `HOST`          | `127.0.0.1`       | Server host                                                 |
+| `STORE_BACKEND` | `memory`          | Storage backend: `memory`, `persistent`, `lmdb`, `postgres` |
+| `LMDB_PATH`     | `./data/streams`  | Path for LMDB storage                                       |
+| `PGHOST`        | `localhost`       | PostgreSQL host                                             |
+| `PGPORT`        | `5432`            | PostgreSQL port                                             |
+| `PGDATABASE`    | `durable_streams` | PostgreSQL database                                         |
+| `PGUSER`        | `postgres`        | PostgreSQL user                                             |
+| `PGPASSWORD`    | -                 | PostgreSQL password                                         |
 
 ## Running Conformance Tests
 
@@ -165,7 +167,11 @@ pnpm test:run -- --client go
 Starts the HTTP server as an Effect.
 
 ```typescript
-import { runServer, ServerConfigService, StreamStoreLive } from "@durable-streams/server-effect"
+import {
+  runServer,
+  ServerConfigService,
+  StreamStoreLive,
+} from "@durable-streams/server-effect"
 import { Effect } from "effect"
 import { NodeRuntime } from "@effect/platform-node"
 
@@ -195,9 +201,12 @@ import { Effect } from "effect"
 const program = Effect.gen(function* () {
   const store = yield* StreamStoreService
   const stream = yield* store.create("/my-stream", {
-    contentType: "application/json"
+    contentType: "application/json",
   })
-  yield* store.append("/my-stream", new TextEncoder().encode('{"hello":"world"}'))
+  yield* store.append(
+    "/my-stream",
+    new TextEncoder().encode('{"hello":"world"}')
+  )
 })
 ```
 
@@ -215,10 +224,8 @@ import { Effect, Layer } from "effect"
 
 // With custom persistence backend
 const customStore = makePersistentStreamStoreLayer({
-  producerStateTtl: "7 days"
-}).pipe(
-  Layer.provide(Persistence.layerResultLmdb({ directory: "./my-data" }))
-)
+  producerStateTtl: "7 days",
+}).pipe(Layer.provide(Persistence.layerResultLmdb({ directory: "./my-data" })))
 ```
 
 ## License
