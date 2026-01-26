@@ -142,11 +142,9 @@ class DurableStreamsProvider {
   readonly doc: Y.Doc
   readonly synced: boolean
   readonly connected: boolean
-  readonly connecting: boolean
-  readonly status: ProviderStatus
 
   // Methods
-  connect(): void
+  connect(): Promise<void>
   disconnect(): void
   destroy(): void
 
