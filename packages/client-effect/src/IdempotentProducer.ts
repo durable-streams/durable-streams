@@ -19,12 +19,11 @@ import { Headers, type ProducerOptions } from "./types.js"
 // =============================================================================
 
 /**
- * State for sequence completion tracking.
+ * State for sequence completion tracking using Deferred for proper Effect coordination.
  */
 interface SeqState {
+  readonly deferred: Deferred.Deferred<void, Error>
   resolved: boolean
-  error?: Error
-  waiters: Array<(err?: Error) => void>
 }
 
 /**
@@ -164,88 +163,103 @@ export const makeIdempotentProducer = (
       epochVal: number,
       seq: number,
       error: Error | undefined
-    ) =>
-      Ref.update(stateRef, (state) => {
-        const seqState = new Map(state.seqState)
-        let epochMap = seqState.get(epochVal)
-        if (!epochMap) {
-          epochMap = new Map()
-          seqState.set(epochVal, epochMap)
-        }
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(stateRef)
+        const epochMap = state.seqState.get(epochVal)
+        const seqEntry = epochMap?.get(seq)
 
-        const seqEntry = epochMap.get(seq)
-        if (seqEntry) {
-          seqEntry.resolved = true
-          seqEntry.error = error
-          for (const waiter of seqEntry.waiters) {
-            waiter(error)
+        if (seqEntry && !seqEntry.resolved) {
+          // Complete the deferred
+          if (error) {
+            yield* Deferred.fail(seqEntry.deferred, error)
+          } else {
+            yield* Deferred.succeed(seqEntry.deferred, undefined)
           }
-          seqEntry.waiters = []
-        } else {
-          epochMap.set(seq, { resolved: true, error, waiters: [] })
         }
 
-        // Cleanup old entries
-        const cleanupThreshold = seq - maxInFlight * 3
-        if (cleanupThreshold > 0) {
-          for (const oldSeq of epochMap.keys()) {
-            if (oldSeq < cleanupThreshold) {
-              epochMap.delete(oldSeq)
+        // Update state to mark as resolved and cleanup old entries
+        yield* Ref.update(stateRef, (s) => {
+          const newSeqState = new Map(s.seqState)
+          let em = newSeqState.get(epochVal)
+          if (!em) {
+            em = new Map()
+            newSeqState.set(epochVal, em)
+          }
+
+          const entry = em.get(seq)
+          if (entry) {
+            entry.resolved = true
+          }
+
+          // Cleanup old entries
+          const cleanupThreshold = seq - maxInFlight * 3
+          if (cleanupThreshold > 0) {
+            for (const oldSeq of em.keys()) {
+              if (oldSeq < cleanupThreshold) {
+                em.delete(oldSeq)
+              }
             }
           }
-        }
 
-        return { ...state, seqState }
+          return { ...s, seqState: newSeqState }
+        })
       })
 
-    // Wait for sequence to complete
+    // Get or create a Deferred for a sequence
+    const getOrCreateSeqDeferred = (
+      epochVal: number,
+      seq: number
+    ): Effect.Effect<Deferred.Deferred<void, Error>> =>
+      Effect.gen(function* () {
+        const state = yield* Ref.get(stateRef)
+        const epochMap = state.seqState.get(epochVal)
+        const existing = epochMap?.get(seq)
+
+        if (existing) {
+          return existing.deferred
+        }
+
+        // Create new deferred
+        const deferred = yield* Deferred.make<void, Error>()
+
+        yield* Ref.update(stateRef, (s) => {
+          const newSeqState = new Map(s.seqState)
+          let em = newSeqState.get(epochVal)
+          if (!em) {
+            em = new Map()
+            newSeqState.set(epochVal, em)
+          }
+          // Check again in case another fiber created it
+          if (!em.has(seq)) {
+            em.set(seq, { deferred, resolved: false })
+          }
+          return { ...s, seqState: newSeqState }
+        })
+
+        // Return the deferred (might be the one we created or an existing one)
+        const updatedState = yield* Ref.get(stateRef)
+        return updatedState.seqState.get(epochVal)!.get(seq)!.deferred
+      })
+
+    // Wait for sequence to complete using Deferred coordination
     const waitForSeq = (epochVal: number, seq: number): Effect.Effect<void, Error> =>
-      Effect.async((resume) => {
-        Effect.runPromise(
-          Ref.get(stateRef).pipe(
-            Effect.flatMap((state) => {
-              const epochMap = state.seqState.get(epochVal)
-              const seqEntry = epochMap?.get(seq)
+      Effect.gen(function* () {
+        const state = yield* Ref.get(stateRef)
+        const epochMap = state.seqState.get(epochVal)
+        const seqEntry = epochMap?.get(seq)
 
-              if (seqEntry?.resolved) {
-                if (seqEntry.error) {
-                  resume(Effect.fail(seqEntry.error))
-                } else {
-                  resume(Effect.void)
-                }
-                return Effect.void
-              }
+        // Already resolved
+        if (seqEntry?.resolved) {
+          // Check if there was an error by awaiting the deferred
+          // (it will immediately return if already completed)
+          yield* Deferred.await(seqEntry.deferred)
+          return
+        }
 
-              // Add waiter
-              return Ref.update(stateRef, (s) => {
-                const seqState = new Map(s.seqState)
-                let em = seqState.get(epochVal)
-                if (!em) {
-                  em = new Map()
-                  seqState.set(epochVal, em)
-                }
-                const existing = em.get(seq)
-                if (existing) {
-                  existing.waiters.push((err) => {
-                    if (err) resume(Effect.fail(err))
-                    else resume(Effect.void)
-                  })
-                } else {
-                  em.set(seq, {
-                    resolved: false,
-                    waiters: [
-                      (err) => {
-                        if (err) resume(Effect.fail(err))
-                        else resume(Effect.void)
-                      },
-                    ],
-                  })
-                }
-                return { ...s, seqState }
-              })
-            })
-          )
-        )
+        // Get or create deferred and wait
+        const deferred = yield* getOrCreateSeqDeferred(epochVal, seq)
+        yield* Deferred.await(deferred)
       })
 
     // Send a batch to the server

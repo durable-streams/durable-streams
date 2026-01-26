@@ -3,6 +3,7 @@
  */
 
 import type { Effect, Stream } from "effect"
+import type { ParseError } from "./errors.js"
 
 // =============================================================================
 // Core Types
@@ -239,8 +240,9 @@ export interface StreamSession<T = unknown> {
 
   /**
    * Accumulate all JSON items until up-to-date.
+   * Returns ParseError if JSON parsing fails.
    */
-  readonly json: () => Effect.Effect<ReadonlyArray<T>>
+  readonly json: () => Effect.Effect<ReadonlyArray<T>, ParseError>
 
   /**
    * Stream of byte chunks.
@@ -254,13 +256,15 @@ export interface StreamSession<T = unknown> {
 
   /**
    * Stream of parsed JSON items.
+   * Emits ParseError if JSON parsing fails.
    */
-  readonly jsonStream: () => Stream.Stream<T>
+  readonly jsonStream: () => Stream.Stream<T, ParseError>
 
   /**
    * Stream of JSON batches with metadata.
+   * Emits ParseError if JSON parsing fails.
    */
-  readonly jsonBatches: () => Stream.Stream<Batch<T>>
+  readonly jsonBatches: () => Stream.Stream<Batch<T>, ParseError>
 
   /**
    * Cancel the session.

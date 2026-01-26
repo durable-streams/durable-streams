@@ -256,7 +256,8 @@ export const normalizeContentType = (
   contentType: string | undefined
 ): string => {
   if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
+  const mediaType = contentType.split(`;`)[0]
+  return mediaType ? mediaType.trim().toLowerCase() : ``
 }
 
 /**

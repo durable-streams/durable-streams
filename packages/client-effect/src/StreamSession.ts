@@ -1,7 +1,8 @@
 /**
  * Stream session for consuming data from a durable stream.
  */
-import { Effect, Option, Ref, Stream } from "effect"
+import { Effect, Ref, Stream } from "effect"
+import { ParseError } from "./errors.js"
 import {
   extractCursor,
   extractOffset,
@@ -25,6 +26,7 @@ interface SessionState {
   cursor: string | undefined
   upToDate: boolean
   cancelled: boolean
+  cachedBody: Uint8Array | null
 }
 
 // =============================================================================
@@ -57,6 +59,7 @@ export const makeStreamSession = <T>(
       cursor: initialCursor,
       upToDate: initialUpToDate,
       cancelled: false,
+      cachedBody: null,
     })
 
     const getOffset = Ref.get(stateRef).pipe(Effect.map((s) => s.offset))
@@ -65,10 +68,21 @@ export const makeStreamSession = <T>(
     const cancel = (): Effect.Effect<void> =>
       Ref.update(stateRef, (s) => ({ ...s, cancelled: true }))
 
+    // Get body with caching to prevent multiple reads
+    const getCachedBody = Effect.gen(function* () {
+      const state = yield* Ref.get(stateRef)
+      if (state.cachedBody !== null) {
+        return state.cachedBody
+      }
+      const body = yield* initialResponse.body
+      yield* Ref.update(stateRef, (s) => ({ ...s, cachedBody: body }))
+      return body
+    })
+
     const bodyStream = (): Stream.Stream<ByteChunk> =>
       Stream.fromEffect(
         Effect.gen(function* () {
-          const body = yield* initialResponse.body
+          const body = yield* getCachedBody
           const state = yield* Ref.get(stateRef)
           const chunk: ByteChunk = {
             data: body,
@@ -85,36 +99,52 @@ export const makeStreamSession = <T>(
         new TextDecoder().decode(chunk.data)
       )
 
-    const jsonStream = (): Stream.Stream<T> =>
-      Stream.mapConcat(bodyStream(), (chunk) => {
-        const text = new TextDecoder().decode(chunk.data)
-        if (!text.trim()) return []
-
-        try {
+    // Parse JSON text, propagating ParseError on failure
+    const parseJsonItems = (text: string): Effect.Effect<T[], ParseError> => {
+      if (!text.trim()) return Effect.succeed([])
+      return Effect.try({
+        try: () => {
           const parsed = JSON.parse(text) as T | T[]
           return Array.isArray(parsed) ? parsed : [parsed]
-        } catch {
-          return []
-        }
+        },
+        catch: (error) =>
+          new ParseError({
+            message: `Failed to parse JSON: ${error instanceof Error ? error.message : String(error)}. Input: ${text.slice(0, 100)}${text.length > 100 ? `...` : ``}`,
+          }),
+      })
+    }
+
+    const jsonStream = (): Stream.Stream<T, ParseError> =>
+      Stream.flatMap(bodyStream(), (chunk) => {
+        const text = new TextDecoder().decode(chunk.data)
+        return Stream.fromEffect(parseJsonItems(text)).pipe(
+          Stream.flatMap((items) => Stream.fromIterable(items))
+        )
       })
 
-    const jsonBatches = (): Stream.Stream<Batch<T>> =>
-      Stream.filterMap(bodyStream(), (chunk) => {
+    const jsonBatches = (): Stream.Stream<Batch<T>, ParseError> =>
+      Stream.flatMap(bodyStream(), (chunk) => {
         const text = new TextDecoder().decode(chunk.data)
-        if (!text.trim()) return Option.none()
+        if (!text.trim()) return Stream.empty
 
-        try {
-          const parsed = JSON.parse(text) as T | T[]
-          const items = Array.isArray(parsed) ? parsed : [parsed]
-          return Option.some({
-            items,
-            offset: chunk.offset,
-            upToDate: chunk.upToDate,
-            cursor: chunk.cursor,
+        return Stream.fromEffect(
+          Effect.try({
+            try: () => {
+              const parsed = JSON.parse(text) as T | T[]
+              const items = Array.isArray(parsed) ? parsed : [parsed]
+              return {
+                items,
+                offset: chunk.offset,
+                upToDate: chunk.upToDate,
+                cursor: chunk.cursor,
+              }
+            },
+            catch: (error) =>
+              new ParseError({
+                message: `Failed to parse JSON batch: ${error instanceof Error ? error.message : String(error)}. Input: ${text.slice(0, 100)}${text.length > 100 ? `...` : ``}`,
+              }),
           })
-        } catch {
-          return Option.none()
-        }
+        )
       })
 
     const body = (): Effect.Effect<Uint8Array> =>
@@ -139,7 +169,7 @@ export const makeStreamSession = <T>(
     const text = (): Effect.Effect<string> =>
       Effect.map(body(), (bytes) => new TextDecoder().decode(bytes))
 
-    const json = (): Effect.Effect<ReadonlyArray<T>> =>
+    const json = (): Effect.Effect<ReadonlyArray<T>, ParseError> =>
       Effect.gen(function* () {
         const items: T[] = []
         yield* Stream.runForEach(jsonStream(), (item) =>

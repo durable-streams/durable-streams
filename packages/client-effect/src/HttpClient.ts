@@ -163,13 +163,14 @@ const makeDurableStreamsHttpClient = (
       return parsed.toString()
     }
 
-    const executeRequest = (
-      options: RequestOptions
-    ): Effect.Effect<
-      DurableStreamsResponse,
-      HttpError | NetworkError | StreamNotFoundError | StreamConflictError
-    > =>
-      Effect.gen(function* () {
+    const executeRequest = Effect.fn(`DurableStreamsHttpClient.request`)(
+      (
+        options: RequestOptions
+      ): Effect.Effect<
+        DurableStreamsResponse,
+        HttpError | NetworkError | StreamNotFoundError | StreamConflictError
+      > =>
+        Effect.gen(function* () {
         // Resolve dynamic headers and params
         const resolvedHeaders = yield* resolveHeaders({
           ...config.headers,
@@ -194,7 +195,8 @@ const makeDurableStreamsHttpClient = (
           if (typeof options.body === `string`) {
             init.body = options.body
           } else {
-            // Fetch accepts Uint8Array directly in modern environments
+            // Uint8Array is BodyInit-compatible in modern runtimes
+            // but TypeScript's lib.dom.d.ts may not reflect this
             init.body = options.body as BodyInit
           }
         }
@@ -281,7 +283,9 @@ const makeDurableStreamsHttpClient = (
 
         // Capture body for later use
         const clonedResponse = response.clone()
-        const bodyStream = response.body!
+        // Handle null body (e.g., 204 No Content) with empty stream
+        const bodyStream =
+          response.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() })
 
         return {
           status: response.status,
@@ -296,6 +300,7 @@ const makeDurableStreamsHttpClient = (
           stream: bodyStream,
         }
       })
+    )
 
     return {
       request: executeRequest,
