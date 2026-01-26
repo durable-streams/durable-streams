@@ -10,23 +10,16 @@
  */
 
 import { createInterface } from "node:readline"
-import { Cause, Duration, Effect, Exit, Layer, Option, Stream } from "effect"
+import { Cause, Duration, Effect, Exit, Layer } from "effect"
 import {
   DurableStreamClient,
   DurableStreamsHttpClient,
   DurableStreamsHttpClientLive,
   DurableStreamClientLive,
   makeIdempotentProducer,
-  StreamNotFoundError,
-  StreamConflictError,
-  HttpError,
-  NetworkError,
-  StaleEpochError,
-  SequenceGapError,
-  ParseError,
-  parseSSEStream,
   buildStreamUrl,
   extractOffset,
+  isUpToDate,
 } from "../../src/index.js"
 
 // =============================================================================
@@ -472,34 +465,72 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         })
 
         let finalOffset = extractOffset(response.headers) ?? command.offset ?? `-1`
-        let upToDate = response.headers.has(`x-stream-up-to-date`)
+        let upToDate = isUpToDate(response.headers)
 
         if (isSSE) {
-          // SSE mode: parse SSE events from the stream
+          // SSE mode: parse SSE events from the stream with AbortController for proper cancellation
           const maxChunks = command.maxChunks ?? 100
-          let chunkCount = 0
 
-          yield* Stream.runForEach(
-            parseSSEStream(response.stream).pipe(
-              Stream.takeWhile(() => chunkCount < maxChunks)
-            ),
-            (event) =>
-              Effect.sync(() => {
-                if (event.type === `data` && event.data) {
-                  chunks.push({
-                    data: event.data,
-                    offset: finalOffset,
-                  })
-                  chunkCount++
-                } else if (event.type === `control`) {
-                  if (event.offset) finalOffset = event.offset
-                  upToDate = event.upToDate
+          yield* Effect.promise(async () => {
+            const reader = response.stream.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ``
+            let chunkCount = 0
+            const startTime = Date.now()
+
+            try {
+              while (chunkCount < maxChunks && Date.now() - startTime < timeoutMs) {
+                const readPromise = reader.read()
+                const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
+                  setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs - (Date.now() - startTime))
+                )
+
+                const { done, value } = await Promise.race([readPromise, timeoutPromise])
+
+                if (done) break
+
+                buffer += decoder.decode(value, { stream: true })
+
+                // Parse complete SSE events
+                const parts = buffer.split(`\n\n`)
+                buffer = parts.pop() ?? ``
+
+                for (const part of parts) {
+                  if (!part.trim()) continue
+
+                  const lines = part.split(`\n`)
+                  let eventType = `data`
+                  let data = ``
+
+                  for (const line of lines) {
+                    if (line.startsWith(`event:`)) {
+                      eventType = line.slice(6).trim()
+                    } else if (line.startsWith(`data:`)) {
+                      if (data) data += `\n`
+                      data += line.slice(5).trim()
+                    }
+                  }
+
+                  if (data) {
+                    if (eventType === `control`) {
+                      try {
+                        const parsed = JSON.parse(data) as Record<string, unknown>
+                        if (typeof parsed.offset === `string`) finalOffset = parsed.offset
+                        upToDate = true
+                      } catch {
+                        // Ignore parse errors
+                      }
+                    } else {
+                      chunks.push({ data, offset: finalOffset })
+                      chunkCount++
+                    }
+                  }
                 }
-              })
-          ).pipe(
-            Effect.timeout(Duration.millis(timeoutMs)),
-            Effect.catchAll(() => Effect.void)
-          )
+              }
+            } finally {
+              reader.releaseLock()
+            }
+          })
         } else if (!live) {
           // Non-live mode: read entire body
           if (isJson) {
