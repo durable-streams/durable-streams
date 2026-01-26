@@ -21,9 +21,9 @@ export const resolveDynamicValue = Effect.fn(`resolveDynamicValue`)((
   if (typeof value === `function`) {
     const result = value()
     if (Effect.isEffect(result)) {
-      return result as Effect.Effect<string>
+      return result
     }
-    return Effect.succeed(result as string)
+    return Effect.succeed(result)
   }
 
   return Effect.succeed(undefined)

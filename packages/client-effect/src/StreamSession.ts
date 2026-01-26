@@ -3,12 +3,8 @@
  */
 import { Effect, Ref, Stream } from "effect"
 import { ParseError } from "./errors.js"
-import {
-  extractCursor,
-  extractOffset,
-  isUpToDate,
-  type DurableStreamsResponse,
-} from "./HttpClient.js"
+import { extractCursor, extractOffset, isUpToDate } from "./HttpClient.js"
+import type { DurableStreamsResponse } from "./HttpClient.js"
 import type {
   Batch,
   ByteChunk,
@@ -98,11 +94,13 @@ export const makeStreamSession = <T>(
       Stream.map(bodyStream(), (chunk) => new TextDecoder().decode(chunk.data))
 
     // Parse JSON text, propagating ParseError on failure
-    const parseJsonItems = (text: string): Effect.Effect<T[], ParseError> => {
+    const parseJsonItems = (
+      text: string
+    ): Effect.Effect<Array<T>, ParseError> => {
       if (!text.trim()) return Effect.succeed([])
       return Effect.try({
         try: () => {
-          const parsed = JSON.parse(text) as T | T[]
+          const parsed = JSON.parse(text) as T | Array<T>
           return Array.isArray(parsed) ? parsed : [parsed]
         },
         catch: (error) =>
@@ -128,7 +126,7 @@ export const makeStreamSession = <T>(
         return Stream.fromEffect(
           Effect.try({
             try: () => {
-              const parsed = JSON.parse(text) as T | T[]
+              const parsed = JSON.parse(text) as T | Array<T>
               const items = Array.isArray(parsed) ? parsed : [parsed]
               return {
                 items,
@@ -147,7 +145,7 @@ export const makeStreamSession = <T>(
 
     const body = (): Effect.Effect<Uint8Array> =>
       Effect.gen(function* () {
-        const chunks: Uint8Array[] = []
+        const chunks: Array<Uint8Array> = []
         yield* Stream.runForEach(bodyStream(), (chunk) =>
           Effect.sync(() => {
             chunks.push(chunk.data)
@@ -169,7 +167,7 @@ export const makeStreamSession = <T>(
 
     const json = (): Effect.Effect<ReadonlyArray<T>, ParseError> =>
       Effect.gen(function* () {
-        const items: T[] = []
+        const items: Array<T> = []
         yield* Stream.runForEach(jsonStream(), (item) =>
           Effect.sync(() => {
             items.push(item)

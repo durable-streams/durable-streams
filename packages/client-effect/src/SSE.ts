@@ -99,7 +99,7 @@ export const parseSSEStream = (
   ).pipe(
     Stream.mapConcat((chunk) => {
       buffer += decoder.decode(chunk, { stream: true })
-      const events: SSEEvent[] = []
+      const events: Array<SSEEvent> = []
 
       // Split by double newline (SSE event separator)
       const parts = buffer.split(`\n\n`)
@@ -161,7 +161,7 @@ export const collectSSE = (
   stream: ReadableStream<Uint8Array>
 ): Effect.Effect<SSEResult, SSEParseError> =>
   Effect.gen(function* () {
-    const data: string[] = []
+    const data: Array<string> = []
     let offset: string | undefined
     let cursor: string | undefined
     let upToDate = false

@@ -1,16 +1,19 @@
 /**
  * Idempotent producer for exactly-once writes to a durable stream.
  */
-import { Context, Deferred, Effect, Fiber, Queue, Ref } from "effect"
+import { Deferred, Effect, Fiber, Queue, Ref } from "effect"
 import {
   HttpError,
   InvalidProducerOptionsError,
   ProducerClosedError,
   StaleEpochError,
 } from "./errors.js"
-import { DurableStreamsHttpClient } from "./HttpClient.js"
-import { encodeBatchData, type PendingMessage } from "./internal/batching.js"
-import { Headers, type ProducerOptions } from "./types.js"
+import { encodeBatchData } from "./internal/batching.js"
+import { Headers } from "./types.js"
+import type { Context } from "effect"
+import type { DurableStreamsHttpClient } from "./HttpClient.js"
+import type { PendingMessage } from "./internal/batching.js"
+import type { ProducerOptions } from "./types.js"
 
 // =============================================================================
 // Types
@@ -381,7 +384,7 @@ export const makeIdempotentProducer = (
 
     // Batch worker - processes batches with concurrency limit
     const batchWorker = Effect.gen(function* () {
-      while (true) {
+      for (;;) {
         const batch = yield* Queue.take(sendQueue)
 
         // Check if we're at max concurrency
@@ -448,7 +451,7 @@ export const makeIdempotentProducer = (
 
     // Wait for all in-flight batches to complete
     const waitForInFlight = Effect.gen(function* () {
-      while (true) {
+      for (;;) {
         const state = yield* Ref.get(stateRef)
         if (state.inFlightCount === 0) break
         yield* Effect.sleep(10)

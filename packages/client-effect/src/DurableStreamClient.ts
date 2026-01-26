@@ -2,41 +2,41 @@
  * Main client service for Durable Streams.
  */
 import { Context, Effect, Layer } from "effect"
-import type { ClientError } from "./errors.js"
 import {
+  DurableStreamsHttpClient,
+  DurableStreamsHttpClientLive,
+  buildStreamUrl,
+  extractOffset,
+} from "./HttpClient.js"
+import { makeIdempotentProducer } from "./IdempotentProducer.js"
+import { resolveHeaders } from "./internal/headers.js"
+import { makeStreamSession } from "./StreamSession.js"
+import { Headers } from "./types.js"
+import type {
+  ClientError,
   HttpError,
   NetworkError,
   StreamConflictError,
   StreamNotFoundError,
 } from "./errors.js"
-import {
-  buildStreamUrl,
-  DurableStreamsHttpClient,
-  DurableStreamsHttpClientLive,
-  extractOffset,
-  type DurableStreamsHttpClientConfig,
-  type DurableStreamsResponse,
+import type {
+  DurableStreamsHttpClientConfig,
+  DurableStreamsResponse,
 } from "./HttpClient.js"
-import {
-  IdempotentProducer,
-  makeIdempotentProducer,
-} from "./IdempotentProducer.js"
-import { resolveHeaders } from "./internal/headers.js"
-import { makeStreamSession } from "./StreamSession.js"
-import {
-  Headers,
-  type AppendOptions,
-  type AppendResult,
-  type CreateOptions,
-  type CreateResult,
-  type HeadResult,
-  type HeadersRecord,
-  type LiveMode,
-  type Offset,
-  type ParamsRecord,
-  type ProducerOptions,
-  type StreamOptions,
-  type StreamSession,
+import type { IdempotentProducer } from "./IdempotentProducer.js"
+import type {
+  AppendOptions,
+  AppendResult,
+  CreateOptions,
+  CreateResult,
+  HeadResult,
+  HeadersRecord,
+  LiveMode,
+  Offset,
+  ParamsRecord,
+  ProducerOptions,
+  StreamOptions,
+  StreamSession,
 } from "./types.js"
 
 // =============================================================================

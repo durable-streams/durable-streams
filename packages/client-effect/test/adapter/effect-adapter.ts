@@ -13,13 +13,13 @@ import { createInterface } from "node:readline"
 import { Cause, Duration, Effect, Exit, Layer } from "effect"
 import {
   DurableStreamClient,
+  DurableStreamClientLive,
   DurableStreamsHttpClient,
   DurableStreamsHttpClientLive,
-  DurableStreamClientLive,
-  makeIdempotentProducer,
   buildStreamUrl,
   extractOffset,
   isUpToDate,
+  makeIdempotentProducer,
 } from "../../src/index.js"
 
 // =============================================================================

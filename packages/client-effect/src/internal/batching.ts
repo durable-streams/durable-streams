@@ -127,7 +127,7 @@ export const makeBatchQueue = (
 
     // Start the send worker
     const sendWorker = Effect.gen(function* () {
-      while (true) {
+      for (;;) {
         const batch = yield* Queue.take(sendQueue)
 
         // Check if we're at max concurrency
@@ -199,7 +199,7 @@ export const makeBatchQueue = (
 
     // Wait for all in-flight batches to complete
     const waitForInFlight = Effect.gen(function* () {
-      while (true) {
+      for (;;) {
         const state = yield* Ref.get(stateRef)
         if (state.inFlightCount === 0) break
         yield* Effect.sleep(10)

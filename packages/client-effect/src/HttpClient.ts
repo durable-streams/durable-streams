@@ -9,16 +9,10 @@ import {
   StreamNotFoundError,
 } from "./errors.js"
 import { resolveHeaders, resolveParams } from "./internal/headers.js"
-import {
-  DefaultRetryOptions,
-  isRetryableStatus,
-  type RetryOptions,
-} from "./internal/retry.js"
-import {
-  Headers as ProtocolHeaders,
-  type HeadersRecord,
-  type ParamsRecord,
-} from "./types.js"
+import { DefaultRetryOptions, isRetryableStatus } from "./internal/retry.js"
+import { Headers as ProtocolHeaders } from "./types.js"
+import type { RetryOptions } from "./internal/retry.js"
+import type { HeadersRecord, ParamsRecord } from "./types.js"
 
 // =============================================================================
 // Service Definition
@@ -153,7 +147,7 @@ export class DurableStreamsHttpClient extends Context.Tag(
 const makeDurableStreamsHttpClient = (
   config: DurableStreamsHttpClientConfig = {}
 ) =>
-  Effect.gen(function* () {
+  Effect.sync(() => {
     const retryOpts = { ...DefaultRetryOptions, ...config.retry }
 
     const buildUrl = (url: string, params: Record<string, string>): string => {
@@ -209,6 +203,12 @@ const makeDurableStreamsHttpClient = (
             readonly response: Response
           }
 
+          const isRetryableError = (e: unknown): e is RetryableError =>
+            typeof e === `object` &&
+            e !== null &&
+            `_tag` in e &&
+            (e as { _tag: unknown })._tag === `RetryableError`
+
           // Execute with retry for retryable statuses
           const response = yield* Effect.retry(
             Effect.tryPromise({
@@ -235,26 +235,17 @@ const makeDurableStreamsHttpClient = (
             ),
             {
               schedule: Schedule.recurs(retryOpts.maxRetries),
-              while: (e): e is RetryableError =>
-                typeof e === `object` &&
-                e !== null &&
-                `_tag` in e &&
-                e._tag === `RetryableError`,
+              while: isRetryableError,
             }
           ).pipe(
             // Convert exhausted RetryableError to NetworkError
             Effect.mapError((e) => {
-              if (
-                typeof e === `object` &&
-                e !== null &&
-                `_tag` in e &&
-                e._tag === `RetryableError`
-              ) {
+              if (isRetryableError(e)) {
                 return new NetworkError({
-                  message: `Request failed after retries with status ${(e as RetryableError).status}`,
+                  message: `Request failed after retries with status ${e.status}`,
                 })
               }
-              return e as NetworkError
+              return e
             })
           )
 
