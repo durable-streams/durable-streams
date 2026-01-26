@@ -4,6 +4,7 @@
 import { Context, Deferred, Effect, Fiber, Queue, Ref } from "effect"
 import {
   HttpError,
+  InvalidProducerOptionsError,
   ProducerClosedError,
   StaleEpochError,
 } from "./errors.js"
@@ -114,16 +115,24 @@ export const makeIdempotentProducer = (
 
     // Validate inputs
     if (startEpoch < 0) {
-      return yield* Effect.fail(new Error(`epoch must be >= 0`))
+      return yield* Effect.fail(
+        new InvalidProducerOptionsError({ message: `epoch must be >= 0` })
+      )
     }
     if (maxBatchBytes <= 0) {
-      return yield* Effect.fail(new Error(`maxBatchBytes must be > 0`))
+      return yield* Effect.fail(
+        new InvalidProducerOptionsError({ message: `maxBatchBytes must be > 0` })
+      )
     }
     if (maxInFlight <= 0) {
-      return yield* Effect.fail(new Error(`maxInFlight must be > 0`))
+      return yield* Effect.fail(
+        new InvalidProducerOptionsError({ message: `maxInFlight must be > 0` })
+      )
     }
     if (lingerMs < 0) {
-      return yield* Effect.fail(new Error(`lingerMs must be >= 0`))
+      return yield* Effect.fail(
+        new InvalidProducerOptionsError({ message: `lingerMs must be >= 0` })
+      )
     }
 
     const stateRef = yield* Ref.make<ProducerState>({

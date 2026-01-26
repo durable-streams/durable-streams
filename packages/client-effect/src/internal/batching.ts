@@ -2,6 +2,7 @@
  * Queue-based batching utilities for the idempotent producer.
  */
 import { Deferred, Effect, Fiber, Queue, Ref } from "effect"
+import { ProducerClosedError } from "../errors.js"
 
 /**
  * A pending message in the batch queue.
@@ -64,8 +65,9 @@ export interface BatchQueue {
   /**
    * Enqueue a message for batching.
    * Returns when the message has been successfully sent.
+   * Fails with ProducerClosedError if the queue is closed.
    */
-  readonly enqueue: (data: Uint8Array) => Effect.Effect<void, Error>
+  readonly enqueue: (data: Uint8Array) => Effect.Effect<void, Error | ProducerClosedError>
 
   /**
    * Force send any pending batch immediately.
@@ -202,11 +204,11 @@ export const makeBatchQueue = (
       }
     })
 
-    const enqueue = (data: Uint8Array): Effect.Effect<void, Error> =>
+    const enqueue = (data: Uint8Array): Effect.Effect<void, Error | ProducerClosedError> =>
       Effect.gen(function* () {
         const state = yield* Ref.get(stateRef)
         if (state.closed) {
-          return yield* Effect.fail(new Error(`BatchQueue is closed`))
+          return yield* Effect.fail(new ProducerClosedError({}))
         }
 
         const deferred = yield* Deferred.make<void, Error>()

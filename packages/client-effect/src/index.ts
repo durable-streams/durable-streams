@@ -107,6 +107,7 @@ export {
   StaleEpochError,
   SequenceGapError,
   ProducerClosedError,
+  InvalidProducerOptionsError,
   HttpError,
   NetworkError,
   TimeoutError,

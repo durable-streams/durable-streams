@@ -80,6 +80,14 @@ export class ProducerClosedError extends Schema.TaggedError<ProducerClosedError>
   {}
 ) {}
 
+/**
+ * Invalid producer options.
+ */
+export class InvalidProducerOptionsError extends Schema.TaggedError<InvalidProducerOptionsError>()(
+  `InvalidProducerOptionsError`,
+  { message: Schema.String }
+) {}
+
 // =============================================================================
 // HTTP and Network Errors
 // =============================================================================
@@ -149,6 +157,7 @@ export type ClientError =
   | StaleEpochError
   | SequenceGapError
   | ProducerClosedError
+  | InvalidProducerOptionsError
   | HttpError
   | NetworkError
   | TimeoutError
