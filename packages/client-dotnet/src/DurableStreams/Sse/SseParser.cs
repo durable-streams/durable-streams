@@ -24,7 +24,8 @@ internal readonly record struct SseDataEvent(string Data);
 internal readonly record struct SseControlEvent(
     string StreamNextOffset,
     string? StreamCursor,
-    bool UpToDate);
+    bool UpToDate,
+    bool StreamClosed);
 
 /// <summary>
 /// Parser for Server-Sent Events stream.
@@ -152,10 +153,19 @@ internal sealed class SseParser : IDisposable
                 ? cursorProp.GetString()
                 : null;
 
+            var streamClosed = root.TryGetProperty("streamClosed", out var streamClosedProp) &&
+                               streamClosedProp.ValueKind == JsonValueKind.True;
+
             var upToDate = root.TryGetProperty("upToDate", out var upToDateProp) &&
                           upToDateProp.ValueKind == JsonValueKind.True;
 
-            return (SseEventType.Control, new SseControlEvent(streamNextOffset, streamCursor, upToDate));
+            // Closed streams are implicitly up-to-date
+            if (streamClosed)
+            {
+                upToDate = true;
+            }
+
+            return (SseEventType.Control, new SseControlEvent(streamNextOffset, streamCursor, upToDate, streamClosed));
         }
         catch (JsonException ex)
         {

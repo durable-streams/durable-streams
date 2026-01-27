@@ -530,7 +530,7 @@ class DurableStream:
                 body_str = (
                     data if isinstance(data, str) else data.decode("utf-8")
                 )
-                request_body = f"[{body_str}]".encode("utf-8")
+                request_body = f"[{body_str}]".encode()
             else:
                 request_body = encode_body(data)
 
@@ -629,6 +629,12 @@ class DurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:
@@ -750,6 +756,12 @@ class DurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:

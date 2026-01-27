@@ -188,11 +188,21 @@ public sealed class DurableStream
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                var streamClosed = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+                if (string.Equals(streamClosed, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new StreamClosedException(_url);
+                }
+
+                throw new DurableStreamException(
+                    "Sequence conflict", DurableStreamErrorCode.ConflictSeq, 409, _url);
+            }
+
             throw response.StatusCode switch
             {
                 HttpStatusCode.NotFound => new StreamNotFoundException(_url),
-                HttpStatusCode.Conflict => new DurableStreamException(
-                    "Sequence conflict", DurableStreamErrorCode.ConflictSeq, 409, _url),
                 _ => DurableStreamException.FromStatusCode((int)response.StatusCode, _url, body)
             };
         }

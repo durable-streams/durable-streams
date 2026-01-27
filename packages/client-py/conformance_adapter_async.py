@@ -28,6 +28,7 @@ from durable_streams import (
     FetchError,
     IdempotentProducer,
     SeqConflictError,
+    StreamClosedError,
     StreamExistsError,
     StreamNotFoundError,
     __version__,
@@ -47,6 +48,7 @@ ERROR_CODES = {
     "INTERNAL_ERROR": "INTERNAL_ERROR",
     "NOT_SUPPORTED": "NOT_SUPPORTED",
     "INVALID_ARGUMENT": "INVALID_ARGUMENT",
+    "STREAM_CLOSED": "STREAM_CLOSED",
 }
 
 # Global state
@@ -120,6 +122,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
         return ERROR_CODES["NOT_FOUND"], 404
     if isinstance(err, StreamExistsError):
         return ERROR_CODES["CONFLICT"], 409
+    if isinstance(err, StreamClosedError):
+        return ERROR_CODES["STREAM_CLOSED"], 409
     if isinstance(err, SeqConflictError):
         return ERROR_CODES["SEQUENCE_CONFLICT"], 409
     if isinstance(err, DurableStreamError):
@@ -131,6 +135,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
             return ERROR_CODES["INVALID_OFFSET"], 400
         if status == 404:
             return ERROR_CODES["NOT_FOUND"], 404
+        if code == "STREAM_CLOSED":
+            return ERROR_CODES["STREAM_CLOSED"], 409
         if status == 409:
             return ERROR_CODES["CONFLICT"], 409
         return ERROR_CODES["UNEXPECTED_STATUS"], status
@@ -206,12 +212,14 @@ async def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Create the stream
     headers = cmd.get("headers")
+    closed = cmd.get("closed", False)
     ds = await AsyncDurableStream.create(
         url,
         content_type=content_type,
         ttl_seconds=cmd.get("ttlSeconds"),
         expires_at=cmd.get("expiresAt"),
         headers=headers,
+        closed=closed,
     )
 
     # Cache content type
@@ -353,6 +361,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     final_offset = offset
     up_to_date = False
+    stream_closed = False
     status = 200  # Default status
 
     response = await astream(
@@ -366,6 +375,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         status = response.status
         final_offset = response.offset
         up_to_date = response.up_to_date
+        stream_closed = response.stream_closed
 
         # Check if JSON content type
         content_type = stream_content_types.get(cmd["path"])
@@ -387,6 +397,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     )
                 final_offset = response.offset
                 up_to_date = response.up_to_date
+                stream_closed = response.stream_closed
             else:
                 try:
                     data = await response.read_bytes()
@@ -399,6 +410,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                         )
                     final_offset = response.offset
                     up_to_date = response.up_to_date
+                    stream_closed = response.stream_closed
                 except Exception:
                     # Stream might be empty
                     pass
@@ -439,6 +451,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
         else:
             # For long-poll mode, read the response body directly instead of using
             # iteration (which continues forever in live modes). Read initial response,
@@ -495,6 +508,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
 
     result: dict[str, Any] = {
         "type": "read",
@@ -503,6 +517,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
+        "streamClosed": stream_closed,
     }
     if headers_sent:
         result["headersSent"] = headers_sent
@@ -529,6 +544,36 @@ async def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
         "status": 200,
         "offset": result.offset,
         "contentType": result.content_type,
+        "streamClosed": result.stream_closed,
+    }
+
+
+async def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle close command."""
+    url = f"{server_url}{cmd['path']}"
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    content_type = cmd.get("contentType")
+    headers = cmd.get("headers")
+
+    body: bytes | str | None = None
+    if data is not None:
+        if binary:
+            body = decode_base64(data)
+        else:
+            body = data
+
+    ds = AsyncDurableStream(url, headers=headers)
+    try:
+        result = await ds.close_stream(data=body, content_type=content_type)
+    finally:
+        await ds.aclose()
+
+    return {
+        "type": "close",
+        "success": True,
+        "status": 200,
+        "finalOffset": result.final_offset,
     }
 
 
@@ -897,6 +942,8 @@ async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return await handle_read(cmd)
         elif cmd_type == "head":
             return await handle_head(cmd)
+        elif cmd_type == "close":
+            return await handle_close(cmd)
         elif cmd_type == "delete":
             return await handle_delete(cmd)
         elif cmd_type == "shutdown":

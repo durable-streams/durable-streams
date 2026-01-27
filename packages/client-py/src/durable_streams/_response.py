@@ -591,6 +591,7 @@ class StreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
                 # Track if this batch had data
                 batch_had_data = len(buffered_data) > 0
@@ -1337,6 +1338,7 @@ class AsyncStreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
                 # Track if this batch had data
                 batch_had_data = len(buffered_data) > 0
