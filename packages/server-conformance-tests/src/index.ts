@@ -3687,6 +3687,264 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(received2).not.toContain(`message 1`)
       expect(received2).not.toContain(`message 2`)
     })
+
+    // ==========================================================================
+    // SSE Base64 Encoding Tests (Protocol Section 5.7)
+    // ==========================================================================
+
+    describe(`SSE Base64 Encoding`, () => {
+      test(`should require encoding parameter for binary content types`, async () => {
+        const streamPath = `/v1/stream/sse-base64-required-test-${Date.now()}`
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: new Uint8Array([0x01, 0x02, 0x03]),
+        })
+
+        // SSE request WITHOUT encoding parameter should fail
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(400)
+      })
+
+      test(`should reject encoding parameter for text/* content types`, async () => {
+        const streamPath = `/v1/stream/sse-base64-forbidden-text-test-${Date.now()}`
+
+        // Create stream with text/plain content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `hello world`,
+        })
+
+        // SSE request WITH encoding parameter for text should fail
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(400)
+      })
+
+      test(`should reject encoding parameter for application/json content type`, async () => {
+        const streamPath = `/v1/stream/sse-base64-forbidden-json-test-${Date.now()}`
+
+        // Create stream with application/json content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/json` },
+          body: JSON.stringify({ message: `hello` }),
+        })
+
+        // SSE request WITH encoding parameter for JSON should fail
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(400)
+      })
+
+      test(`should reject unsupported encoding values`, async () => {
+        const streamPath = `/v1/stream/sse-base64-unsupported-test-${Date.now()}`
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: new Uint8Array([0x01, 0x02, 0x03]),
+        })
+
+        // SSE request with unsupported encoding value should fail
+        const response = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=foo`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(400)
+      })
+
+      test(`should encode binary data as base64 in SSE data events`, async () => {
+        const streamPath = `/v1/stream/sse-base64-encode-test-${Date.now()}`
+
+        // Known bytes and their expected base64
+        const bytes = new Uint8Array([72, 101, 108, 108, 111]) // "Hello" in ASCII
+        const expectedBase64 = `SGVsbG8=`
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: bytes,
+        })
+
+        // SSE request WITH encoding=base64
+        const { response, received } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { untilContent: `event: control` }
+        )
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get(`content-type`)).toBe(`text/event-stream`)
+
+        // Parse SSE events and find the data event
+        const events = parseSSEEvents(received)
+        const dataEvents = events.filter((e) => e.type === `data`)
+
+        expect(dataEvents.length).toBeGreaterThan(0)
+
+        // The data should be base64-encoded
+        const dataContent = dataEvents[0]!.data
+        // Remove any newlines/carriage returns that may be present in multi-line base64
+        const cleanedData = dataContent.replace(/[\n\r]/g, ``)
+        expect(cleanedData).toBe(expectedBase64)
+
+        // Verify decoding produces original bytes
+        const decoded = Uint8Array.from(atob(cleanedData), (c) =>
+          c.charCodeAt(0)
+        )
+        expect(decoded).toEqual(bytes)
+      })
+
+      test(`should include stream-sse-data-encoding header in response`, async () => {
+        const streamPath = `/v1/stream/sse-base64-header-test-${Date.now()}`
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: new Uint8Array([0x01, 0x02, 0x03]),
+        })
+
+        // SSE request with encoding=base64
+        const { response } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { maxChunks: 1 }
+        )
+
+        expect(response.status).toBe(200)
+        // Per protocol: servers SHOULD include this header
+        expect(response.headers.get(`stream-sse-data-encoding`)).toBe(`base64`)
+      })
+
+      test(`should handle multi-line base64 data correctly`, async () => {
+        const streamPath = `/v1/stream/sse-base64-multiline-test-${Date.now()}`
+
+        // Create a larger payload (1KB) to reliably trigger multi-line splitting
+        // RFC 4648 recommends 76-character lines, so 1KB (~1365 base64 chars) will
+        // likely be split across multiple data: lines
+        const bytes = new Uint8Array(1024)
+        for (let i = 0; i < 1024; i++) {
+          bytes[i] = i % 256
+        }
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: bytes,
+        })
+
+        // SSE request with encoding=base64
+        const { response, received } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { untilContent: `event: control` }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Parse SSE events
+        const events = parseSSEEvents(received)
+        const dataEvents = events.filter((e) => e.type === `data`)
+
+        expect(dataEvents.length).toBeGreaterThan(0)
+
+        // Get the data content, which may span multiple data: lines
+        // The parseSSEEvents function joins data: lines with newlines
+        const dataContent = dataEvents[0]!.data
+
+        // Per protocol: clients MUST remove \n and \r before decoding
+        const cleanedData = dataContent.replace(/[\n\r]/g, ``)
+
+        // Should be valid base64 with length multiple of 4
+        expect(cleanedData.length % 4).toBe(0)
+
+        // Decode and verify
+        const decoded = Uint8Array.from(atob(cleanedData), (c) =>
+          c.charCodeAt(0)
+        )
+        expect(decoded).toEqual(bytes)
+      })
+
+      test(`should handle empty initial stream content without error`, async () => {
+        const streamPath = `/v1/stream/sse-base64-empty-test-${Date.now()}`
+
+        // Create stream with binary content type and empty initial body
+        // Note: Per protocol, POST with empty body is rejected, so we can only
+        // test empty streams via PUT. An empty stream has no data events.
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: new Uint8Array(0),
+        })
+
+        // SSE request with encoding=base64 should succeed for empty stream
+        const { response, received } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { untilContent: `upToDate` }
+        )
+
+        expect(response.status).toBe(200)
+        expect(response.headers.get(`stream-sse-data-encoding`)).toBe(`base64`)
+
+        // Parse SSE events - an empty stream should have no data events
+        // but should have a control event with upToDate
+        const events = parseSSEEvents(received)
+        const controlEvents = events.filter((e) => e.type === `control`)
+
+        expect(controlEvents.length).toBeGreaterThan(0)
+        const controlData = JSON.parse(controlEvents[0]!.data)
+        expect(controlData.upToDate).toBe(true)
+      })
+
+      test(`should not encode control events (remain JSON)`, async () => {
+        const streamPath = `/v1/stream/sse-base64-control-test-${Date.now()}`
+
+        // Create stream with binary content type
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/octet-stream` },
+          body: new Uint8Array([0x01, 0x02, 0x03]),
+        })
+
+        // SSE request with encoding=base64
+        const { response, received } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+          { untilContent: `event: control` }
+        )
+
+        expect(response.status).toBe(200)
+
+        // Parse SSE events
+        const events = parseSSEEvents(received)
+        const controlEvents = events.filter((e) => e.type === `control`)
+
+        expect(controlEvents.length).toBeGreaterThan(0)
+
+        // Control events should be valid JSON (not base64 encoded)
+        const controlEvent = controlEvents[0]!
+        const controlData = JSON.parse(controlEvent.data)
+
+        // Should have standard control event fields
+        expect(controlData).toHaveProperty(`streamNextOffset`)
+        expect(controlData).toHaveProperty(`streamCursor`)
+      })
+    })
   })
 
   // ============================================================================
