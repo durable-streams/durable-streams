@@ -160,6 +160,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           ttlSeconds: command.ttlSeconds,
           expiresAt: command.expiresAt,
           headers: command.headers,
+          closed: command.closed,
         })
 
         // Cache the content-type
@@ -326,6 +327,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const chunks: Array<ReadChunk> = []
         let finalOffset = command.offset ?? response.offset
         let upToDate = response.upToDate
+        let streamClosed = response.streamClosed
 
         // Collect chunks using body() for non-live mode or bodyStream() for live
         const maxChunks = command.maxChunks ?? 100
@@ -359,6 +361,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           }
           finalOffset = response.offset
           upToDate = response.upToDate
+          streamClosed = response.streamClosed
         } else {
           // For live mode, use subscribeBytes which provides per-chunk metadata
           const decoder = new TextDecoder()
@@ -405,6 +408,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
               finalOffset = chunk.offset
               upToDate = chunk.upToDate
+              streamClosed = chunk.streamClosed
 
               // For waitForUpToDate, stop when we've reached up-to-date
               if (command.waitForUpToDate && chunk.upToDate) {
@@ -435,6 +439,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
                   // For empty streams, capture the final upToDate from response
                   upToDate = response.upToDate
                   finalOffset = response.offset
+                  streamClosed = response.streamClosed
                   resolve()
                 }
               })
@@ -463,6 +468,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           chunks,
           offset: finalOffset,
           upToDate,
+          streamClosed,
           headersSent:
             Object.keys(headersSent).length > 0 ? headersSent : undefined,
           paramsSent:
@@ -492,6 +498,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           status: 200,
           offset: result.offset,
           contentType: result.contentType,
+          streamClosed: result.streamClosed,
           // Note: HeadResult from client doesn't expose TTL info currently
         }
       } catch (err) {
@@ -517,6 +524,34 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         }
       } catch (err) {
         return errorResult(`delete`, err)
+      }
+    }
+
+    case `close`: {
+      try {
+        const url = `${serverUrl}${command.path}`
+
+        // Get content-type from cache or use default
+        const contentType =
+          streamContentTypes.get(command.path) ?? `application/octet-stream`
+
+        const ds = new DurableStream({
+          url,
+          contentType: command.contentType ?? contentType,
+        })
+
+        const closeResult = await ds.close({
+          body: command.data,
+          contentType: command.contentType,
+        })
+
+        return {
+          type: `close`,
+          success: true,
+          finalOffset: closeResult.finalOffset,
+        }
+      } catch (err) {
+        return errorResult(`close`, err)
       }
     }
 

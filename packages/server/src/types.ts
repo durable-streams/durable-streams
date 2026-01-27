@@ -72,6 +72,22 @@ export interface Stream {
    * Maps producer ID to their epoch and sequence state.
    */
   producers?: Map<string, ProducerState>
+
+  /**
+   * Whether the stream is closed (no further appends permitted).
+   * Once set to true, this is permanent and durable.
+   */
+  closed?: boolean
+
+  /**
+   * The producer tuple that closed this stream (for idempotent close).
+   * If set, duplicate close requests with this tuple return 204.
+   */
+  closedBy?: {
+    producerId: string
+    epoch: number
+    seq: number
+  }
 }
 
 /**
@@ -202,6 +218,7 @@ export type ProducerValidationResult =
   | { status: `stale_epoch`; currentEpoch: number }
   | { status: `invalid_epoch_seq` }
   | { status: `sequence_gap`; expectedSeq: number; receivedSeq: number }
+  | { status: `stream_closed` }
 
 /**
  * Pending long-poll request.

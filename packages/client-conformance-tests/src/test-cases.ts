@@ -92,6 +92,8 @@ export interface CreateOperation {
   expiresAt?: string
   /** Custom headers */
   headers?: Record<string, string>
+  /** Create stream in closed state */
+  closed?: boolean
   /** Expected result */
   expect?: CreateExpectation
 }
@@ -248,6 +250,35 @@ export interface DeleteOperation {
   path: string
   headers?: Record<string, string>
   expect?: DeleteExpectation
+}
+
+/**
+ * Close a stream (no more appends allowed).
+ */
+export interface CloseOperation {
+  action: `close`
+  path: string
+  /** Optional final message to append */
+  data?: string
+  /** Content type for the final message */
+  contentType?: string
+  headers?: Record<string, string>
+  expect?: CloseExpectation
+}
+
+/**
+ * Close a stream via direct HTTP (bypasses client adapter).
+ * Used for testing server-side stream closure behavior.
+ */
+export interface ServerCloseOperation {
+  action: `server-close`
+  path: string
+  /** Optional body data */
+  data?: string
+  /** Content type for the body */
+  contentType?: string
+  headers?: Record<string, string>
+  expect?: ServerCloseExpectation
 }
 
 /**
@@ -470,6 +501,8 @@ export type TestOperation =
   | ReadOperation
   | HeadOperation
   | DeleteOperation
+  | CloseOperation
+  | ServerCloseOperation
   | WaitOperation
   | SetOperation
   | AssertOperation
@@ -556,6 +589,8 @@ export interface ReadExpectation extends BaseExpectation {
   maxChunks?: number
   /** Should be up-to-date after read */
   upToDate?: boolean
+  /** Whether the stream has been permanently closed */
+  streamClosed?: boolean
   /** Store final offset */
   storeOffsetAs?: string
   /** Store all data concatenated */
@@ -572,10 +607,24 @@ export interface HeadExpectation extends BaseExpectation {
   contentType?: string
   /** Should have an offset */
   hasOffset?: boolean
+  /** Whether the stream has been permanently closed */
+  streamClosed?: boolean
 }
 
 export interface DeleteExpectation extends BaseExpectation {
   status?: 200 | 204 | 404 | number
+}
+
+export interface CloseExpectation extends BaseExpectation {
+  /** Expected final offset after closing */
+  finalOffset?: string
+}
+
+export interface ServerCloseExpectation {
+  /** Expected HTTP status code */
+  status?: number
+  /** Expected final offset after closing */
+  finalOffset?: string
 }
 
 /**

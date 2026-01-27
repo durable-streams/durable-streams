@@ -22,6 +22,7 @@ export interface SSEControlEvent {
   streamNextOffset: Offset
   streamCursor?: string
   upToDate?: boolean
+  streamClosed?: boolean
 }
 
 export type SSEEvent = SSEDataEvent | SSEControlEvent
@@ -73,12 +74,14 @@ export async function* parseSSEStream(
                   streamNextOffset: Offset
                   streamCursor?: string
                   upToDate?: boolean
+                  streamClosed?: boolean
                 }
                 yield {
                   type: `control`,
                   streamNextOffset: control.streamNextOffset,
                   streamCursor: control.streamCursor,
                   upToDate: control.upToDate,
+                  streamClosed: control.streamClosed,
                 }
               } catch (err) {
                 // Control events contain critical offset data - don't silently ignore
@@ -123,12 +126,14 @@ export async function* parseSSEStream(
             streamNextOffset: Offset
             streamCursor?: string
             upToDate?: boolean
+            streamClosed?: boolean
           }
           yield {
             type: `control`,
             streamNextOffset: control.streamNextOffset,
             streamCursor: control.streamCursor,
             upToDate: control.upToDate,
+            streamClosed: control.streamClosed,
           }
         } catch (err) {
           const preview =

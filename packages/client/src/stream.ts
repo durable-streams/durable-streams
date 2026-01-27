@@ -10,10 +10,12 @@ import {
   DurableStreamError,
   InvalidSignalError,
   MissingStreamUrlError,
+  StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
 import {
   SSE_COMPATIBLE_CONTENT_TYPES,
+  STREAM_CLOSED_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
@@ -35,6 +37,8 @@ import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
 import type {
   AppendOptions,
+  CloseOptions,
+  CloseResult,
   CreateOptions,
   HeadResult,
   HeadersRecord,
@@ -204,6 +208,7 @@ export class DurableStream {
       ttlSeconds: opts.ttlSeconds,
       expiresAt: opts.expiresAt,
       body: opts.body,
+      closed: opts.closed,
     })
     return stream
   }
@@ -269,6 +274,8 @@ export class DurableStream {
     const offset = response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
     const etag = response.headers.get(`etag`) ?? undefined
     const cacheControl = response.headers.get(`cache-control`) ?? undefined
+    const streamClosed =
+      response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
 
     // Update instance contentType
     if (contentType) {
@@ -281,6 +288,7 @@ export class DurableStream {
       offset,
       etag,
       cacheControl,
+      streamClosed,
     }
   }
 
@@ -299,6 +307,9 @@ export class DurableStream {
     }
     if (opts?.expiresAt) {
       requestHeaders[STREAM_EXPIRES_AT_HEADER] = opts.expiresAt
+    }
+    if (opts?.closed) {
+      requestHeaders[STREAM_CLOSED_HEADER] = `true`
     }
 
     const body = encodeBody(opts?.body)
@@ -340,6 +351,84 @@ export class DurableStream {
     if (!response.ok) {
       await handleErrorResponse(response, this.url)
     }
+  }
+
+  /**
+   * Close the stream, optionally with a final message.
+   *
+   * After closing:
+   * - No further appends are permitted (server returns 409)
+   * - Readers can observe the closed state and treat it as EOF
+   * - The stream's data remains fully readable
+   *
+   * Closing is:
+   * - **Durable**: The closed state is persisted
+   * - **Monotonic**: Once closed, a stream cannot be reopened
+   *
+   * **Idempotency:**
+   * - `close()` without body: Idempotent — safe to call multiple times
+   * - `close({ body })` with body: NOT idempotent — throws `StreamClosedError`
+   *   if stream is already closed (use `IdempotentProducer.close()` for
+   *   idempotent close-with-body semantics)
+   *
+   * @returns CloseResult with the final offset
+   * @throws StreamClosedError if called with body on an already-closed stream
+   */
+  async close(opts?: CloseOptions): Promise<CloseResult> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    const contentType =
+      opts?.contentType ?? this.#options.contentType ?? this.contentType
+    if (contentType) {
+      requestHeaders[`content-type`] = contentType
+    }
+
+    // Always send Stream-Closed: true header for close operation
+    requestHeaders[STREAM_CLOSED_HEADER] = `true`
+
+    // For JSON mode with body, wrap in array
+    let body: BodyInit | undefined
+    if (opts?.body !== undefined) {
+      const isJson = normalizeContentType(contentType) === `application/json`
+      if (isJson) {
+        const bodyStr =
+          typeof opts.body === `string`
+            ? opts.body
+            : new TextDecoder().decode(opts.body)
+        body = `[${bodyStr}]`
+      } else {
+        body =
+          typeof opts.body === `string`
+            ? opts.body
+            : (opts.body as unknown as BodyInit)
+      }
+    }
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `POST`,
+      headers: requestHeaders,
+      body,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    // Check for 409 Conflict with Stream-Closed header
+    if (response.status === 409) {
+      const isClosed =
+        response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
+      if (isClosed) {
+        const finalOffset =
+          response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
+        throw new StreamClosedError(this.url, finalOffset)
+      }
+    }
+
+    if (!response.ok) {
+      await handleErrorResponse(response, this.url)
+    }
+
+    const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+
+    return { finalOffset }
   }
 
   /**
@@ -682,12 +771,13 @@ export class DurableStream {
         producer.append(chunk)
       },
       async close() {
-        await producer.flush()
+        // close() flushes pending and closes the stream (EOF)
         await producer.close()
         if (writeError) throw writeError // Causes pipeTo() to reject
       },
       abort(_reason) {
-        producer.close().catch((err) => {
+        // detach() stops the producer without closing the stream
+        producer.detach().catch((err) => {
           opts?.onError?.(err) // Report instead of swallowing
         })
       },

@@ -21,6 +21,7 @@ import {
 import type { Interface as ReadlineInterface } from "node:readline"
 import type {
   AppendResult,
+  CloseResult,
   ErrorResult,
   HeadResult,
   ReadResult,
@@ -273,6 +274,7 @@ async function executeOperation(
           ttlSeconds: op.ttlSeconds,
           expiresAt: op.expiresAt,
           headers: op.headers,
+          closed: op.closed,
         },
         commandTimeout
       )
@@ -544,6 +546,72 @@ async function executeOperation(
       }
 
       return { result }
+    }
+
+    case `close`: {
+      const path = resolveVariables(op.path, variables)
+
+      const result = await client.send(
+        {
+          type: `close`,
+          path,
+          data: op.data,
+          contentType: op.contentType,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(`  close ${path}: ${result.success ? `ok` : `failed`}`)
+      }
+
+      return { result }
+    }
+
+    case `server-close`: {
+      // Direct HTTP POST to server with Stream-Closed: true header
+      // Used for testing server-side stream closure behavior
+      const path = resolveVariables(op.path, variables)
+
+      try {
+        // Build headers including Stream-Closed
+        const headers: Record<string, string> = {
+          "Stream-Closed": `true`,
+          ...op.headers,
+        }
+
+        // Set content-type if body is provided
+        if (op.data && op.contentType) {
+          headers[`content-type`] = op.contentType
+        }
+
+        const response = await fetch(`${ctx.serverUrl}${path}`, {
+          method: `POST`,
+          body: op.data,
+          headers,
+        })
+
+        const status = response.status
+        const finalOffset =
+          response.headers.get(`Stream-Next-Offset`) ?? undefined
+
+        if (verbose) {
+          console.log(`  server-close ${path}: status=${status}`)
+        }
+
+        // Build result for expectation verification
+        const result: TestResult = {
+          type: `close`,
+          success: true,
+          finalOffset: finalOffset ?? ``,
+        }
+
+        return { result }
+      } catch (err) {
+        return {
+          error: `Server close failed: ${err instanceof Error ? err.message : String(err)}`,
+        }
+      }
     }
 
     case `wait`: {
@@ -884,6 +952,10 @@ function isHeadResult(result: TestResult): result is HeadResult {
   return result.type === `head` && result.success
 }
 
+function isCloseResult(result: TestResult): result is CloseResult {
+  return result.type === `close` && result.success
+}
+
 function isErrorResult(result: TestResult): result is ErrorResult {
   return result.type === `error` && !result.success
 }
@@ -973,6 +1045,27 @@ function validateExpectation(
   if (expect.upToDate !== undefined && isReadResult(result)) {
     if (result.upToDate !== expect.upToDate) {
       return `Expected upToDate=${expect.upToDate}, got ${result.upToDate}`
+    }
+  }
+
+  // Check streamClosed (for read results)
+  if (expect.streamClosed !== undefined && isReadResult(result)) {
+    if (result.streamClosed !== expect.streamClosed) {
+      return `Expected streamClosed=${expect.streamClosed}, got ${result.streamClosed}`
+    }
+  }
+
+  // Check streamClosed (for head results)
+  if (expect.streamClosed !== undefined && isHeadResult(result)) {
+    if (result.streamClosed !== expect.streamClosed) {
+      return `Expected streamClosed=${expect.streamClosed}, got ${result.streamClosed}`
+    }
+  }
+
+  // Check finalOffset (for close results)
+  if (expect.finalOffset !== undefined && isCloseResult(result)) {
+    if (result.finalOffset !== expect.finalOffset) {
+      return `Expected finalOffset=${expect.finalOffset}, got ${result.finalOffset}`
     }
   }
 

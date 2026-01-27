@@ -17,11 +17,12 @@ import {
   PRODUCER_ID_HEADER,
   PRODUCER_RECEIVED_SEQ_HEADER,
   PRODUCER_SEQ_HEADER,
+  STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
 import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
-import type { IdempotentProducerOptions, Offset } from "./types"
+import type { CloseResult, IdempotentProducerOptions, Offset } from "./types"
 
 /**
  * Error thrown when a producer's epoch is stale (zombie fencing).
@@ -318,11 +319,17 @@ export class IdempotentProducer {
   }
 
   /**
-   * Flush pending messages and close the producer.
+   * Stop the producer without closing the underlying stream.
    *
-   * After calling close(), further append() calls will throw.
+   * Use this when you want to:
+   * - Hand off writing to another producer
+   * - Keep the stream open for future writes
+   * - Stop this producer but not signal EOF to readers
+   *
+   * Flushes any pending messages before detaching.
+   * After calling detach(), further append() calls will throw.
    */
-  async close(): Promise<void> {
+  async detach(): Promise<void> {
     if (this.#closed) return
 
     this.#closed = true
@@ -330,8 +337,123 @@ export class IdempotentProducer {
     try {
       await this.flush()
     } catch {
-      // Ignore errors during close
+      // Ignore errors during detach
     }
+  }
+
+  /**
+   * Flush pending messages and close the underlying stream (EOF).
+   *
+   * This is the typical way to end a producer session. It:
+   * 1. Flushes all pending messages
+   * 2. Optionally appends a final message
+   * 3. Closes the stream (no further appends permitted)
+   *
+   * **Idempotent**: Unlike `DurableStream.close({ body })`, this method is
+   * idempotent even with a final message because it uses producer headers
+   * for deduplication. Safe to retry on network failures.
+   *
+   * @param finalMessage - Optional final message to append atomically with close
+   * @returns CloseResult with the final offset
+   */
+  async close(finalMessage?: Uint8Array | string): Promise<CloseResult> {
+    if (this.#closed) {
+      // Already closed - just do a close operation to get the final offset
+      return this.#doClose()
+    }
+
+    this.#closed = true
+
+    // Flush pending messages first
+    await this.flush()
+
+    // Close the stream with optional final message
+    return this.#doClose(finalMessage)
+  }
+
+  /**
+   * Actually close the stream with optional final message.
+   * Uses producer headers for idempotency.
+   */
+  async #doClose(finalMessage?: Uint8Array | string): Promise<CloseResult> {
+    const contentType = this.#stream.contentType ?? `application/octet-stream`
+    const isJson = normalizeContentType(contentType) === `application/json`
+
+    // Build body if final message is provided
+    let body: BodyInit | undefined
+    if (finalMessage !== undefined) {
+      const bodyBytes =
+        typeof finalMessage === `string`
+          ? new TextEncoder().encode(finalMessage)
+          : finalMessage
+
+      if (isJson) {
+        // For JSON mode, wrap in array
+        const jsonStr = new TextDecoder().decode(bodyBytes)
+        body = `[${jsonStr}]`
+      } else {
+        body = bodyBytes as unknown as BodyInit
+      }
+    }
+
+    // Capture the sequence number for this request (for retry safety)
+    // We only increment #nextSeq after a successful response
+    const seqForThisRequest = this.#nextSeq
+
+    // Build headers with producer info and Stream-Closed
+    const headers: Record<string, string> = {
+      "content-type": contentType,
+      [PRODUCER_ID_HEADER]: this.#producerId,
+      [PRODUCER_EPOCH_HEADER]: this.#epoch.toString(),
+      [PRODUCER_SEQ_HEADER]: seqForThisRequest.toString(),
+      [STREAM_CLOSED_HEADER]: `true`,
+    }
+
+    const response = await this.#fetchClient(this.#stream.url, {
+      method: `POST`,
+      headers,
+      body,
+      signal: this.#signal,
+    })
+
+    // Handle 204 (duplicate close - idempotent success)
+    if (response.status === 204) {
+      // Only increment seq on success (retry-safe)
+      this.#nextSeq = seqForThisRequest + 1
+      const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      return { finalOffset }
+    }
+
+    // Handle success
+    if (response.status === 200) {
+      // Only increment seq on success (retry-safe)
+      this.#nextSeq = seqForThisRequest + 1
+      const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      return { finalOffset }
+    }
+
+    // Handle errors
+    if (response.status === 403) {
+      // Stale epoch
+      const currentEpochStr = response.headers.get(PRODUCER_EPOCH_HEADER)
+      const currentEpoch = currentEpochStr
+        ? parseInt(currentEpochStr, 10)
+        : this.#epoch
+
+      if (this.#autoClaim) {
+        // Auto-claim: retry with epoch+1
+        const newEpoch = currentEpoch + 1
+        this.#epoch = newEpoch
+        this.#nextSeq = 1 // Reset sequence for new epoch
+        return this.#doClose(finalMessage)
+      }
+
+      throw new StaleEpochError(currentEpoch)
+    }
+
+    // Other errors
+    const error = await FetchError.fromResponse(response, this.#stream.url)
+    throw error
   }
 
   /**

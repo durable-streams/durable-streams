@@ -2,7 +2,8 @@
  * Shared utility functions for the Durable Streams client.
  */
 
-import { DurableStreamError } from "./error"
+import { STREAM_CLOSED_HEADER, STREAM_OFFSET_HEADER } from "./constants"
+import { DurableStreamError, StreamClosedError } from "./error"
 import type { HeadersRecord, MaybePromise } from "./types"
 
 /**
@@ -45,6 +46,14 @@ export async function handleErrorResponse(
   }
 
   if (status === 409) {
+    // Check if this is a stream closed error
+    const streamClosedHeader = response.headers.get(STREAM_CLOSED_HEADER)
+    if (streamClosedHeader === `true`) {
+      const finalOffset =
+        response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
+      throw new StreamClosedError(url, finalOffset)
+    }
+
     // Context-specific 409 messages
     const message =
       context?.operation === `create`

@@ -65,6 +65,10 @@ export type {
   HeadResult,
   LegacyLiveMode,
 
+  // Close types
+  CloseResult,
+  CloseOptions,
+
   // Idempotent producer types
   IdempotentProducerOptions,
   IdempotentAppendResult,
@@ -89,6 +93,7 @@ export {
   DurableStreamError,
   MissingStreamUrlError,
   InvalidSignalError,
+  StreamClosedError,
 } from "./error"
 
 // ============================================================================
@@ -110,6 +115,7 @@ export {
   STREAM_OFFSET_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_UP_TO_DATE_HEADER,
+  STREAM_CLOSED_HEADER,
   STREAM_SEQ_HEADER,
   STREAM_TTL_HEADER,
   STREAM_EXPIRES_AT_HEADER,
@@ -117,6 +123,7 @@ export {
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
   SSE_COMPATIBLE_CONTENT_TYPES,
+  SSE_CLOSED_FIELD,
   DURABLE_STREAM_PROTOCOL_QUERY_PARAMS,
   // Idempotent producer headers
   PRODUCER_ID_HEADER,
