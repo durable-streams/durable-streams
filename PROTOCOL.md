@@ -25,11 +25,13 @@ Copyright (c) 2025 ElectricSQL
 5. [HTTP Operations](#5-http-operations)
    - 5.1. [Create Stream](#51-create-stream)
    - 5.2. [Append to Stream](#52-append-to-stream)
-   - 5.3. [Delete Stream](#53-delete-stream)
-   - 5.4. [Stream Metadata](#54-stream-metadata)
-   - 5.5. [Read Stream - Catch-up](#55-read-stream---catch-up)
-   - 5.6. [Read Stream - Live (Long-poll)](#56-read-stream---live-long-poll)
-   - 5.7. [Read Stream - Live (SSE)](#57-read-stream---live-sse)
+     - 5.2.1. [Idempotent Producers](#521-idempotent-producers)
+   - 5.3. [Close Stream](#53-close-stream)
+   - 5.4. [Delete Stream](#54-delete-stream)
+   - 5.5. [Stream Metadata](#55-stream-metadata)
+   - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
+   - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
+   - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
 6. [Offsets](#6-offsets)
 7. [Content Types](#7-content-types)
 8. [Caching and Collapsing](#8-caching-and-collapsing)
@@ -68,7 +70,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Tail Offset**: The offset immediately after the last byte in the stream. This is the position where new appends will be written.
 
-**Closed Stream**: A stream that has been explicitly closed by a writer. Once closed, a stream is in a terminal state: no further appends are permitted, and readers can observe the closure as an end-of-stream (EOF) signal. Closure is durable and monotonic—once closed, a stream remains closed.
+**Closed Stream**: A stream that has been explicitly closed by a writer. Once closed, a stream is in a terminal state: no further appends are permitted, and readers can observe the closure as an end-of-stream (EOF) signal. Closure is durable and monotonic — once closed, a stream remains closed.
 
 ## 3. Protocol Overview
 
@@ -380,7 +382,31 @@ When a closed stream receives an append from an idempotent producer:
 - If the `(producerId, epoch, seq)` matches the request that closed the stream, return `204 No Content` (duplicate/idempotent success) with `Stream-Closed: true`
 - Otherwise, return `409 Conflict` with `Stream-Closed: true` (stream is closed, no further appends allowed)
 
-### 5.3. Delete Stream
+### 5.3. Close Stream
+
+To close a stream without appending data, send a POST request with `Stream-Closed: true` and an empty body:
+
+#### Request
+
+```
+POST {stream-url}
+Stream-Closed: true
+```
+
+#### Response Codes
+
+- `204 No Content`: Stream closed successfully (or already closed—idempotent)
+- `404 Not Found`: Stream does not exist
+- `405 Method Not Allowed` or `501 Not Implemented`: Append/close not supported for this stream
+
+#### Response Headers
+
+- `Stream-Next-Offset: <offset>`: The tail offset (unchanged, since no data was appended)
+- `Stream-Closed: true`: Confirms the stream is now closed
+
+This is the canonical "close-only" operation. For atomic "append final message and close", include a request body as described in Section 5.2.
+
+### 5.4. Delete Stream
 
 #### Request
 
@@ -398,7 +424,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Delete not supported for this stream
 
-### 5.4. Stream Metadata
+### 5.5. Stream Metadata
 
 #### Request
 
@@ -427,7 +453,7 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 
 Servers **SHOULD** make `HEAD` responses effectively non-cacheable, for example by returning `Cache-Control: no-store`. Servers **MAY** use `Cache-Control: private, max-age=0, must-revalidate` as an alternative, but `no-store` is recommended to avoid stale tail offsets and closure status.
 
-### 5.5. Read Stream - Catch-up
+### 5.6. Read Stream - Catch-up
 
 #### Request
 
@@ -457,14 +483,15 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
-- `Stream-Cursor: <cursor>` (optional)
-  - Cursor to echo on subsequent long-poll requests to improve CDN collapsing. Servers **MAY** include this on catch-up reads; it is **required** for live modes (see Sections 5.6, 5.7). Not needed when `Stream-Closed` is true.
+- `Stream-Cursor: <cursor>` (optional for catch-up, required for live modes)
+  - Cursor to echo on subsequent long-poll requests to improve CDN collapsing. Servers **MAY** include this on catch-up reads; it is **required** for live modes when the stream is open (see Sections 5.7, 5.8). Servers **MAY** omit it when `Stream-Closed` is true. Clients **MUST** tolerate its absence when `Stream-Closed` is present.
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
 - `Stream-Up-To-Date: true`
   - **MUST** be present and set to `true` when the response includes all data available in the stream at the time the response was generated (i.e., when the requested offset has reached the tail and no more data exists).
   - **SHOULD NOT** be present when returning partial data due to server-defined chunk size limits (when more data exists beyond what was returned).
   - Clients **MAY** use this header to determine when they have caught up and can transition to live tailing mode.
+  - **Important:** `Stream-Up-To-Date: true` does **NOT** imply EOF. More data may be appended in the future. Only `Stream-Closed: true` indicates that no more data will ever arrive.
 - `Stream-Closed: true`
   - **MUST** be present when the stream is closed **and** the client has reached the final offset **at the time the response is generated**. This includes:
     - Responses that return the final chunk of data, when the stream is already closed at response generation time, or
@@ -472,13 +499,13 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
   - When present, clients can conclude that no more data will ever be appended and treat this as EOF.
   - **SHOULD NOT** be present when returning partial data from a closed stream (when more data exists between the response and the final offset). In this case, `Stream-Closed: true` will be returned on a subsequent request that reaches the final offset.
   - **Timing note:** If a stream is closed **after** the final chunk was served (or cached), that chunk will not include `Stream-Closed: true`. Clients discover closure by requesting the next offset (`Stream-Next-Offset` from the previous response), which returns an empty body with `Stream-Closed: true`. This is the expected flow when closure occurs between chunk responses or when serving cached chunks.
-  - Clients that need to know closure status before reaching the tail **SHOULD** use `HEAD` (see Section 5.4).
+  - Clients that need to know closure status before reaching the tail **SHOULD** use `HEAD` (see Section 5.5).
 
 #### Response Body
 
 - Bytes from the stream starting at the specified offset, up to a server-defined maximum chunk size.
 
-### 5.6. Read Stream - Live (Long-poll)
+### 5.7. Read Stream - Live (Long-poll)
 
 #### Request
 
@@ -510,15 +537,25 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 200)
 
-- Same as catch-up reads (Section 5.5), plus:
+- Same as catch-up reads (Section 5.6), plus:
 - `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header unless `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). See Section 8.1.
-- `Stream-Closed: true`: **MUST** be present when the stream is closed (see Section 5.5 for semantics). A `204 No Content` with `Stream-Closed: true` indicates EOF.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 8.1.
+- `Stream-Closed: true`: **MUST** be present when the stream is closed (see Section 5.6 for semantics). A `204 No Content` with `Stream-Closed: true` indicates EOF.
+
+**EOF Signaling Across Modes:**
+
+Clients should treat **either** of the following as EOF, depending on the mode used:
+
+- **Catch-up mode**: `200 OK` with empty body and `Stream-Closed: true`
+- **Long-poll mode**: `204 No Content` with `Stream-Closed: true`
+- **SSE mode**: `control` event with `streamClosed: true`
+
+In all cases, `Stream-Closed` / `streamClosed` is the definitive EOF signal. The presence of `Stream-Up-To-Date` / `upToDate` alone does **not** indicate EOF—it only means the client has caught up with currently available data, but more may arrive.
 
 #### Stream Closure Behavior in Long-poll Mode
 
@@ -537,7 +574,7 @@ This ensures clients observing a closed stream do not have hanging connections w
 
 The timeout for long-polling is implementation-defined. Servers **MAY** accept a `timeout` query parameter (in seconds) as a future extension, but this is not required by the base protocol.
 
-### 5.7. Read Stream - Live (SSE)
+### 5.8. Read Stream - Live (SSE)
 
 #### Request
 
@@ -573,7 +610,7 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
   - **MUST** include `streamNextOffset`. See Section 8.1.
-  - **MUST** include `streamCursor` unless `streamClosed` is true (cursor is unnecessary when no reconnection is expected).
+  - **MUST** include `streamCursor` when the stream is open. Servers **MAY** omit `streamCursor` when `streamClosed` is true (cursor is unnecessary when no reconnection is expected).
   - **MUST** include `upToDate: true` when the client is caught up with all available data. Note: `streamClosed: true` implies `upToDate: true` (a closed stream at the final offset is by definition up-to-date), so `upToDate` **MAY** be omitted when `streamClosed` is true.
   - **MUST** include `streamClosed: true` when the stream is closed and all data up to the final offset has been sent.
   - Format: JSON object with offset, cursor (when applicable), up-to-date status, and optionally closed status. Field names use camelCase: `streamNextOffset`, `streamCursor`, `upToDate`, and `streamClosed`.
@@ -679,7 +716,7 @@ The protocol supports arbitrary MIME content types. Most content types operate a
 
 **Restriction:**
 
-- SSE mode (Section 5.7) **REQUIRES** `content-type: text/*` or `application/json`
+- SSE mode (Section 5.8) **REQUIRES** `content-type: text/*` or `application/json`
 
 Clients **MAY** use any content type for their streams, including:
 
