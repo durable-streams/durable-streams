@@ -27,6 +27,7 @@ from durable_streams import (
     FetchError,
     IdempotentProducer,
     SeqConflictError,
+    StreamClosedError,
     StreamExistsError,
     StreamNotFoundError,
     __version__,
@@ -130,6 +131,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
         return ERROR_CODES["CONFLICT"], 409
     if isinstance(err, SeqConflictError):
         return ERROR_CODES["SEQUENCE_CONFLICT"], 409
+    if isinstance(err, StreamClosedError):
+        return "STREAM_CLOSED", 409
     if isinstance(err, DurableStreamError):
         status = err.status
         code = err.code
@@ -224,12 +227,14 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Create the stream
     headers = cmd.get("headers")
+    closed = cmd.get("closed", False)
     ds = DurableStream.create(
         url,
         content_type=content_type,
         ttl_seconds=cmd.get("ttlSeconds"),
         expires_at=cmd.get("expiresAt"),
         headers=headers,
+        closed=closed,
     )
 
     # Cache content type
@@ -374,6 +379,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     final_offset = offset
     up_to_date = False
+    stream_closed = False
     status = 200  # Default status
 
     with stream(
@@ -386,6 +392,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         status = response.status
         final_offset = response.offset
         up_to_date = response.up_to_date
+        stream_closed = response.stream_closed
 
         if live is False:
             # For non-live mode, get all available data
@@ -414,6 +421,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     )
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
         elif is_sse:
             # For SSE mode, use iter_events() which yields StreamEvent objects for each
             # SSE data event, with metadata updated after control events.
@@ -451,6 +459,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
         else:
             # For long-poll mode, read the response body directly instead of using
             # iteration (which continues forever in live modes). Read initial response,
@@ -507,6 +516,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
 
     result: dict[str, Any] = {
         "type": "read",
@@ -515,6 +525,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
+        "streamClosed": stream_closed,
     }
     if headers_sent:
         result["headersSent"] = headers_sent
@@ -541,6 +552,7 @@ def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
         "status": 200,
         "offset": result.offset,
         "contentType": result.content_type,
+        "streamClosed": result.stream_closed,
     }
 
 
@@ -560,6 +572,28 @@ def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
         "success": True,
         "status": 200,
     }
+
+
+def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle close command."""
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    ds = DurableStream(url, content_type=content_type)
+    try:
+        result = ds.close_stream(
+            data=cmd.get("data"),
+            content_type=cmd.get("contentType"),
+        )
+        return {
+            "type": "close",
+            "success": True,
+            "finalOffset": result.final_offset,
+        }
+    finally:
+        ds.close()
 
 
 def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
@@ -990,6 +1024,8 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_head(cmd)
         elif cmd_type == "delete":
             return handle_delete(cmd)
+        elif cmd_type == "close":
+            return handle_close(cmd)
         elif cmd_type == "shutdown":
             return handle_shutdown(cmd)
         elif cmd_type == "benchmark":

@@ -10,6 +10,7 @@ from typing import Any, TypeVar, cast
 
 from durable_streams._errors import DurableStreamError
 from durable_streams._types import (
+    STREAM_CLOSED_HEADER,
     STREAM_CURSOR_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_UP_TO_DATE_HEADER,
@@ -27,21 +28,24 @@ class ResponseMetadata:
         next_offset: The next offset to read from
         cursor: Optional cursor for CDN collapsing
         up_to_date: Whether the response is at the current end of stream
+        stream_closed: Whether the stream has been closed (EOF)
         content_type: The content type of the response
     """
 
-    __slots__ = ("next_offset", "cursor", "up_to_date", "content_type")
+    __slots__ = ("next_offset", "cursor", "up_to_date", "stream_closed", "content_type")
 
     def __init__(
         self,
         next_offset: Offset | None = None,
         cursor: str | None = None,
         up_to_date: bool = False,
+        stream_closed: bool = False,
         content_type: str | None = None,
     ) -> None:
         self.next_offset = next_offset
         self.cursor = cursor
         self.up_to_date = up_to_date
+        self.stream_closed = stream_closed
         self.content_type = content_type
 
 
@@ -61,12 +65,16 @@ def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
     next_offset = lower_headers.get(STREAM_NEXT_OFFSET_HEADER.lower())
     cursor = lower_headers.get(STREAM_CURSOR_HEADER.lower())
     up_to_date = STREAM_UP_TO_DATE_HEADER.lower() in lower_headers
+    stream_closed = (
+        lower_headers.get(STREAM_CLOSED_HEADER.lower(), "").lower() == "true"
+    )
     content_type = lower_headers.get("content-type")
 
     return ResponseMetadata(
         next_offset=next_offset,
         cursor=cursor,
         up_to_date=up_to_date,
+        stream_closed=stream_closed,
         content_type=content_type,
     )
 
