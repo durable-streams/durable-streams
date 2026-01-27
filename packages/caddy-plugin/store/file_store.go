@@ -155,6 +155,7 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		TTLSeconds:    opts.TTLSeconds,
 		ExpiresAt:     opts.ExpiresAt,
 		CreatedAt:     time.Now(),
+		Closed:        opts.Closed, // Support creating stream in closed state
 	}
 
 	// Handle initial data
@@ -380,6 +381,28 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		return AppendResult{}, ErrStreamNotFound
 	}
 
+	// Check if stream is closed
+	if meta.Closed {
+		// Check if this is a duplicate of the closing request (idempotent producer)
+		if opts.HasAllProducerHeaders() && meta.ClosedBy != nil &&
+			meta.ClosedBy.ProducerId == opts.ProducerId &&
+			meta.ClosedBy.Epoch == *opts.ProducerEpoch &&
+			meta.ClosedBy.Seq == *opts.ProducerSeq {
+			// Idempotent success - duplicate of closing request
+			return AppendResult{
+				Offset:         meta.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        *opts.ProducerSeq,
+				StreamClosed:   true,
+			}, nil
+		}
+		// Stream is closed - reject append
+		return AppendResult{
+			Offset:       meta.CurrentOffset,
+			StreamClosed: true,
+		}, ErrStreamClosed
+	}
+
 	dirName := s.dirCache[path]
 
 	// Validate content type
@@ -438,11 +461,32 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		meta.Producers[opts.ProducerId] = producerState
 	}
 
+	// Handle stream closure if requested
+	streamClosed := false
+	if opts.Close {
+		meta.Closed = true
+		streamClosed = true
+		// Track which producer tuple closed the stream for idempotent duplicate detection
+		if opts.HasAllProducerHeaders() {
+			meta.ClosedBy = &ClosedByProducer{
+				ProducerId: opts.ProducerId,
+				Epoch:      *opts.ProducerEpoch,
+				Seq:        *opts.ProducerSeq,
+			}
+		}
+		// Notify pending long-polls that stream is closed
+		s.longPoll.notifyClosed(path)
+	}
+
 	// Persist to bbolt atomically
-	if producerState != nil {
+	if producerState != nil || opts.Close {
 		if err := s.metaStore.UpdateAppendState(path, newOffset, opts.Seq, opts.ProducerId, producerState); err != nil {
 			// Log error but don't fail - the file is the source of truth
 			// On recovery, we'll reconcile
+		}
+		// Also persist closed state
+		if opts.Close {
+			s.metaStore.SetClosed(path, true, meta.ClosedBy)
 		}
 	} else {
 		if err := s.metaStore.UpdateOffset(path, newOffset, opts.Seq); err != nil {
@@ -458,6 +502,7 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		Offset:         newOffset,
 		ProducerResult: producerResult,
 		LastSeq:        producerLastSeq,
+		StreamClosed:   streamClosed,
 	}, nil
 }
 
@@ -549,14 +594,23 @@ func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
 }
 
 // WaitForMessages waits for new messages
-func (s *FileStore) WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) ([]Message, bool, error) {
+func (s *FileStore) WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) ([]Message, bool, bool, error) {
+	// First check if stream is closed and client is at tail
+	s.metaCacheMu.RLock()
+	meta, ok := s.metaCache[path]
+	if ok && meta.Closed && offset.Equal(meta.CurrentOffset) {
+		s.metaCacheMu.RUnlock()
+		return nil, false, true, nil // streamClosed = true
+	}
+	s.metaCacheMu.RUnlock()
+
 	// First check if there are already messages
 	messages, _, err := s.Read(path, offset)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if len(messages) > 0 {
-		return messages, false, nil
+		return messages, false, false, nil
 	}
 
 	// No messages, set up wait
@@ -569,15 +623,68 @@ func (s *FileStore) WaitForMessages(ctx context.Context, path string, offset Off
 
 	select {
 	case <-ch:
+		// New data or closure available - check which
+		s.metaCacheMu.RLock()
+		meta, ok := s.metaCache[path]
+		if ok && meta.Closed {
+			// Stream was closed
+			currentOffset := meta.CurrentOffset
+			s.metaCacheMu.RUnlock()
+			// Check if there are any final messages
+			messages, _, err := s.Read(path, offset)
+			if err != nil {
+				return nil, false, false, err
+			}
+			// If no messages and client is at tail, stream is closed
+			if len(messages) == 0 && offset.Equal(currentOffset) {
+				return nil, false, true, nil
+			}
+			return messages, false, false, nil
+		}
+		s.metaCacheMu.RUnlock()
 		// New data available
 		messages, _, err := s.Read(path, offset)
-		return messages, false, err
+		return messages, false, false, err
 	case <-timer.C:
-		// Timeout
-		return nil, true, nil
+		// Timeout - check if stream was closed during wait
+		s.metaCacheMu.RLock()
+		meta, ok := s.metaCache[path]
+		streamClosed := ok && meta.Closed
+		s.metaCacheMu.RUnlock()
+		return nil, true, streamClosed, nil
 	case <-ctx.Done():
-		return nil, false, ctx.Err()
+		return nil, false, false, ctx.Err()
 	}
+}
+
+// CloseStream closes a stream without appending data
+func (s *FileStore) CloseStream(path string) (*CloseResult, error) {
+	s.metaCacheMu.Lock()
+	defer s.metaCacheMu.Unlock()
+
+	meta, ok := s.metaCache[path]
+	if !ok {
+		return nil, ErrStreamNotFound
+	}
+
+	// Check if stream has expired
+	if meta.IsExpired() {
+		return nil, ErrStreamNotFound
+	}
+
+	alreadyClosed := meta.Closed
+	meta.Closed = true
+
+	// Persist to bbolt
+	s.metaStore.SetClosed(path, true, nil)
+
+	// Notify pending long-polls that stream is closed
+	s.longPoll.notifyClosed(path)
+
+	return &CloseResult{
+		FinalOffset:   meta.CurrentOffset,
+		AlreadyClosed: alreadyClosed,
+	}, nil
 }
 
 // GetCurrentOffset returns the current tail offset

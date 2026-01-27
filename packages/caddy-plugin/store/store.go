@@ -18,6 +18,7 @@ var (
 	ErrInvalidOffset       = errors.New("invalid offset")
 	ErrEmptyJSONArray      = errors.New("empty JSON array not allowed")
 	ErrInvalidJSON         = errors.New("invalid JSON")
+	ErrStreamClosed        = errors.New("stream is closed")
 )
 
 // Producer validation errors
@@ -52,6 +53,13 @@ type AppendResult struct {
 	ExpectedSeq    int64 // Expected seq on gap error
 	ReceivedSeq    int64 // Received seq on gap error
 	LastSeq        int64 // Highest accepted seq (for duplicates and success)
+	StreamClosed   bool  // Stream is now closed (either by this request or previously)
+}
+
+// CloseResult contains the result of a close operation
+type CloseResult struct {
+	FinalOffset   Offset
+	AlreadyClosed bool
 }
 
 // Store is the interface for durable stream storage
@@ -79,7 +87,13 @@ type Store interface {
 	// Returns ErrInvalidEpochSeq if new epoch doesn't start at seq 0.
 	// Returns ErrProducerSeqGap if producer seq is greater than lastSeq + 1.
 	// Returns ErrPartialProducer if only some producer headers are provided.
+	// Returns ErrStreamClosed if stream is closed (unless opts.Close is true for close-only).
 	Append(path string, data []byte, opts AppendOptions) (AppendResult, error)
+
+	// CloseStream closes a stream without appending data.
+	// Returns the final offset and whether it was already closed.
+	// This is an idempotent operation - closing an already-closed stream succeeds.
+	CloseStream(path string) (*CloseResult, error)
 
 	// Read reads messages from a stream starting at the given offset.
 	// Returns messages, whether we're up to date (at tail), and any error.
@@ -87,10 +101,12 @@ type Store interface {
 	Read(path string, offset Offset) ([]Message, bool, error)
 
 	// WaitForMessages waits for new messages after the given offset.
-	// Returns when messages are available, timeout expires, or context is cancelled.
+	// Returns when messages are available, timeout expires, context is cancelled,
+	// or stream is closed.
 	// If messages exist at the offset, returns immediately.
 	// timedOut is true if we returned due to timeout with no messages.
-	WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) (messages []Message, timedOut bool, err error)
+	// streamClosed is true if the stream was closed during or before the wait.
+	WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) (messages []Message, timedOut bool, streamClosed bool, err error)
 
 	// GetCurrentOffset returns the current tail offset for a stream
 	GetCurrentOffset(path string) (Offset, error)
@@ -99,18 +115,27 @@ type Store interface {
 	Close() error
 }
 
+// ClosedByProducer tracks which producer closed the stream for idempotent duplicate detection
+type ClosedByProducer struct {
+	ProducerId string
+	Epoch      int64
+	Seq        int64
+}
+
 // CreateOptions contains options for creating a stream
 type CreateOptions struct {
 	ContentType string
 	TTLSeconds  *int64
 	ExpiresAt   *time.Time
 	InitialData []byte
+	Closed      bool // Create stream in closed state
 }
 
 // AppendOptions contains options for appending to a stream
 type AppendOptions struct {
 	Seq         string // Stream-Seq header value for coordination
 	ContentType string // Content-Type to validate against stream
+	Close       bool   // Close stream after append (Stream-Closed: true)
 
 	// Idempotent producer fields (all must be set together, or none)
 	ProducerId    string // Producer-Id header
@@ -144,6 +169,8 @@ type StreamMetadata struct {
 	ExpiresAt     *time.Time
 	CreatedAt     time.Time
 	Producers     map[string]*ProducerState // Producer ID -> state
+	Closed        bool                      // Stream is closed (no more appends allowed)
+	ClosedBy      *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
 }
 
 // IsExpired checks if the stream has expired based on TTL or ExpiresAt
@@ -186,6 +213,11 @@ func (m *StreamMetadata) ConfigMatches(opts CreateOptions) bool {
 		return false
 	}
 	if m.ExpiresAt != nil && opts.ExpiresAt != nil && !m.ExpiresAt.Equal(*opts.ExpiresAt) {
+		return false
+	}
+
+	// Closed status must match
+	if m.Closed != opts.Closed {
 		return false
 	}
 
