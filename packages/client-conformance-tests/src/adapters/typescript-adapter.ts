@@ -281,6 +281,23 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           live = false
         }
 
+        // Validate encoding parameter locally before making request
+        // Per protocol, clients MUST NOT provide encoding for text/* or application/json
+        if (command.encoding) {
+          const contentType = streamContentTypes.get(command.path)
+          if (contentType) {
+            const isTextOrJson =
+              contentType.startsWith(`text/`) ||
+              contentType.includes(`application/json`)
+            if (isTextOrJson) {
+              throw new DurableStreamError(
+                `encoding parameter must not be provided for text/* or application/json content types`,
+                `INVALID_ARGUMENT`
+              )
+            }
+          }
+        }
+
         // Create abort controller for timeout handling
         const abortController = new AbortController()
         const timeoutMs = command.timeoutMs ?? 5000
@@ -299,6 +316,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             live,
             headers: mergedHeaders,
             signal: abortController.signal,
+            encoding: command.encoding,
           })
         } catch (err) {
           clearTimeout(timeoutId)
@@ -456,6 +474,13 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         // Cancel the response to clean up
         response.cancel()
 
+        // Extract response headers (especially for SSE base64 encoding)
+        const responseHeaders: Record<string, string> = {}
+        const sseDataEncoding = response.headers.get(`stream-sse-data-encoding`)
+        if (sseDataEncoding) {
+          responseHeaders[`stream-sse-data-encoding`] = sseDataEncoding
+        }
+
         return {
           type: `read`,
           success: true,
@@ -463,6 +488,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           chunks,
           offset: finalOffset,
           upToDate,
+          headers:
+            Object.keys(responseHeaders).length > 0
+              ? responseHeaders
+              : undefined,
           headersSent:
             Object.keys(headersSent).length > 0 ? headersSent : undefined,
           paramsSent:
@@ -747,6 +776,8 @@ function errorResult(
       status = 400
     } else if (err.code === `PARSE_ERROR`) {
       errorCode = ErrorCodes.PARSE_ERROR
+    } else if (err.code === `INVALID_ARGUMENT`) {
+      errorCode = ErrorCodes.INVALID_ARGUMENT
     }
 
     return {
@@ -881,13 +912,22 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         // Create stream first
         const ds = await DurableStream.create({ url, contentType })
 
-        // Generate payload (using fill for speed - don't want to measure PRNG)
-        const payload = new Uint8Array(operation.size).fill(42)
+        // Generate payload based on content type
+        // For JSON streams, generate valid JSON; for binary, use raw bytes
+        const isJson =
+          contentType.split(`;`)[0]?.trim().toLowerCase() === `application/json`
+        const payload: Uint8Array | string = isJson
+          ? JSON.stringify({
+              size: operation.size,
+              data: `x`.repeat(operation.size),
+            })
+          : new Uint8Array(operation.size).fill(42)
 
         // Start reading before appending (to catch the data via live mode)
         const readPromise = (async () => {
           const res = await ds.stream({
             live: operation.live ?? `long-poll`,
+            encoding: operation.encoding,
           })
 
           // Wait for data

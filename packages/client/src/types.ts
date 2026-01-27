@@ -167,6 +167,14 @@ export interface StreamOptions {
    * @default true
    */
   warnOnHttp?: boolean
+
+  /**
+   * Encoding for SSE data events. Required for binary streams over SSE.
+   * Per protocol Section 5.7, binary content types require encoding=base64.
+   *
+   * @remarks Only 'base64' is supported. Must not be used with text/* or application/json.
+   */
+  encoding?: `base64`
 }
 
 /**
@@ -519,6 +527,7 @@ export type DurableStreamErrorCode =
   | `ALREADY_CONSUMED`
   | `ALREADY_CLOSED`
   | `PARSE_ERROR`
+  | `INVALID_ARGUMENT`
   | `UNKNOWN`
 
 /**

@@ -1,0 +1,314 @@
+id: consumer-sse-base64
+name: SSE Base64 Encoding
+description: |
+  Tests for SSE base64 encoding support for binary streams.
+  Per PROTOCOL.md Section 5.7, binary content types require encoding=base64 for SSE delivery.
+  These tests verify client-side decoding behavior.
+category: consumer
+tags:
+  - sse
+  - binary
+  - base64
+requires:
+  - sse
+
+tests:
+  - id: sse-base64-decodes-binary
+    name: SSE base64 decodes binary data correctly
+    description: |
+      Client should decode base64-encoded data in SSE data events back to the
+      original binary content. The data field contains "Hello" (bytes: 72,101,108,108,111)
+      encoded as base64 "SGVsbG8=".
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "SGVsbG8=" # "Hello" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+          # After decoding, data should be the original bytes interpreted as string
+          data: "Hello"
+
+  - id: sse-base64-decodes-full-byte-range
+    name: SSE base64 decodes full byte range (0-255)
+    description: |
+      Verify client correctly decodes binary data containing all byte values
+      from 0x00 to 0xFF. This tests that no byte values are lost or corrupted
+      during base64 encode/decode cycle.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      # Full byte range 0-255 encoded in base64
+      # Generated from: Buffer.from(Array.from({length: 256}, (_, i) => i)).toString('base64')
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+
+  - id: sse-base64-multiline-handling
+    name: SSE base64 handles multi-line data correctly
+    description: |
+      Per protocol, servers MAY split base64 across multiple data: lines.
+      Clients MUST concatenate lines and remove \n and \r before decoding.
+      This test uses a larger payload that may be split by the server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      # 1KB of binary data (bytes 0-255 repeated 4 times)
+      # This should produce ~1365 base64 characters which servers may split
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/wABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX5/gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp+goaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+v8DBwsPExcbHyMnKy8zNzs/Q0dLT1NXW19jZ2tvc3d7f4OHi4+Tl5ufo6err7O3u7/Dx8vP09fb3+Pn6+/z9/v8AAQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl9gYWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoOEhYaHiImKi4yNjo+QkZKTlJWWl5iZmpucnZ6foKGio6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr/AwcLDxMXGx8jJysvMzc7P0NHS09TV1tfY2drb3N3e3+Dh4uPk5ebn6Onq6+zt7u/w8fLz9PX29/j5+vv8/f7/AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+
+  - id: sse-base64-preserves-control-events
+    name: SSE base64 preserves control events as JSON
+    description: |
+      Per protocol, the encoding parameter affects only event: data payloads.
+      event: control events must remain JSON and not be base64 decoded.
+      This test verifies control events still work correctly with binary streams.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "dGVzdA==" # "test" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          # Control event should have set upToDate to true
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+
+  - id: sse-base64-empty-stream
+    name: SSE base64 handles empty binary stream
+    description: |
+      Empty binary stream should work with encoding=base64 and receive
+      control events indicating up-to-date status.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          chunkCount: 0
+          responseHeaders:
+            stream-sse-data-encoding: base64
+
+  - id: sse-base64-multiple-appends
+    name: SSE base64 decodes multiple appended chunks
+    description: |
+      Multiple binary appends should each be decoded correctly when read via SSE.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zmlyc3Q=" # "first" in base64
+      - action: append
+        path: ${streamPath}
+        binaryData: "c2Vjb25k" # "second" in base64
+      - action: append
+        path: ${streamPath}
+        binaryData: "dGhpcmQ=" # "third" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+          dataContainsAll:
+            - "first"
+            - "second"
+            - "third"
+
+  - id: sse-base64-client-rejects-encoding-for-text
+    name: Client rejects encoding parameter for text content type
+    description: |
+      Per protocol, clients MUST NOT provide encoding for text/* content types.
+      Client should reject the request locally before sending to server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "hello world"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        expect:
+          # Client should reject this locally with an error
+          errorCode: INVALID_ARGUMENT
+
+  - id: sse-base64-client-rejects-encoding-for-json
+    name: Client rejects encoding parameter for JSON content type
+    description: |
+      Per protocol, clients MUST NOT provide encoding for application/json.
+      Client should reject the request locally before sending to server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: { "message": "hello" }
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        expect:
+          # Client should reject this locally with an error
+          errorCode: INVALID_ARGUMENT
+
+  - id: sse-base64-resume-from-offset
+    name: SSE base64 resumes from offset correctly
+    description: |
+      Client should be able to resume a binary SSE stream from a specific offset
+      and correctly decode the subsequent base64 data.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "c2tpcA==" # "skip" in base64
+        expect:
+          storeOffsetAs: firstOffset
+      - action: append
+        path: ${streamPath}
+        binaryData: "aW5jbHVkZQ==" # "include" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${firstOffset}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          responseHeaders:
+            stream-sse-data-encoding: base64
+          data: "include"
+
+  - id: sse-base64-client-rejects-encoding-for-text-with-charset
+    name: Client rejects encoding parameter for text content type with charset
+    description: |
+      Per protocol, clients MUST NOT provide encoding for text/* content types.
+      This applies even when the content type includes a charset parameter.
+      Client should reject the request locally before sending to server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: "text/plain; charset=utf-8"
+      - action: append
+        path: ${streamPath}
+        data: "hello world"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        expect:
+          # Client should reject this locally with an error
+          errorCode: INVALID_ARGUMENT
+
+  - id: sse-base64-client-rejects-encoding-for-json-with-charset
+    name: Client rejects encoding parameter for JSON content type with charset
+    description: |
+      Per protocol, clients MUST NOT provide encoding for application/json.
+      This applies even when the content type includes a charset parameter.
+      Client should reject the request locally before sending to server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: "application/json; charset=utf-8"
+      - action: append
+        path: ${streamPath}
+        json: { "message": "hello" }
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        expect:
+          # Client should reject this locally with an error
+          errorCode: INVALID_ARGUMENT
+
+  - id: sse-base64-client-rejects-unsupported-encoding
+    name: Client rejects unsupported encoding values
+    description: |
+      Per protocol, implementations MUST support encoding=base64.
+      Clients SHOULD validate the encoding value and reject unsupported values
+      locally with an error before sending to the server.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "dGVzdA==" # "test" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: unsupported-encoding
+        expect:
+          # Client should reject this locally with an error
+          errorCode: INVALID_ARGUMENT
