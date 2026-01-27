@@ -5,6 +5,7 @@
  */
 
 import {
+  ENCODING_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
   STREAM_CURSOR_HEADER,
@@ -141,6 +142,12 @@ async function streamInternal<TJson = unknown>(
     fetchUrl.searchParams.set(LIVE_QUERY_PARAM, live)
   }
 
+  // Set encoding query param for SSE mode with binary streams
+  const encoding = options.encoding
+  if (encoding && live === `sse`) {
+    fetchUrl.searchParams.set(ENCODING_QUERY_PARAM, encoding)
+  }
+
   // Add custom params
   const params = await resolveParams(options.params)
   for (const [key, value] of Object.entries(params)) {
@@ -255,6 +262,10 @@ async function streamInternal<TJson = unknown>(
           if (cursor) {
             sseUrl.searchParams.set(`cursor`, cursor)
           }
+          // Preserve encoding parameter for SSE reconnections
+          if (encoding) {
+            sseUrl.searchParams.set(ENCODING_QUERY_PARAM, encoding)
+          }
 
           // Resolve params per-request (for dynamic values)
           const sseParams = await resolveParams(options.params)
@@ -293,5 +304,6 @@ async function streamInternal<TJson = unknown>(
     fetchNext,
     startSSE,
     sseResilience: options.sseResilience,
+    encoding,
   })
 }

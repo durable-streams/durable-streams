@@ -97,6 +97,12 @@ export const LIVE_QUERY_PARAM = `live`
  */
 export const CURSOR_QUERY_PARAM = `cursor`
 
+/**
+ * Query parameter for SSE data encoding.
+ * Values: "base64"
+ */
+export const ENCODING_QUERY_PARAM = `encoding`
+
 // ============================================================================
 // SSE Control Event Fields (camelCase per PROTOCOL.md Section 5.7)
 // ============================================================================
@@ -133,4 +139,5 @@ export const DURABLE_STREAM_PROTOCOL_QUERY_PARAMS: Array<string> = [
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
+  ENCODING_QUERY_PARAM,
 ]

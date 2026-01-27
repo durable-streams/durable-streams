@@ -74,6 +74,8 @@ export interface StreamResponseConfig {
   ) => Promise<Response>
   /** SSE resilience options */
   sseResilience?: SSEResilienceOptions
+  /** Encoding for SSE data events (e.g., 'base64' for binary streams) */
+  encoding?: `base64`
 }
 
 /**
@@ -125,6 +127,9 @@ export class StreamResponseImpl<
   #consecutiveShortSSEConnections = 0
   #sseFallbackToLongPoll = false
 
+  // --- SSE Encoding State ---
+  #encoding?: `base64`
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -161,6 +166,9 @@ export class StreamResponseImpl<
       backoffMaxDelay: config.sseResilience?.backoffMaxDelay ?? 5000,
       logWarnings: config.sseResilience?.logWarnings ?? true,
     }
+
+    // Store encoding for SSE data decoding
+    this.#encoding = config.encoding
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -390,6 +398,7 @@ export class StreamResponseImpl<
   /**
    * Create a synthetic Response from SSE data with proper headers.
    * Includes offset/cursor/upToDate in headers so subscribers can read them.
+   * When encoding=base64, decodes the data from base64 to raw bytes.
    */
   #createSSESyntheticResponse(
     data: string,
@@ -407,7 +416,48 @@ export class StreamResponseImpl<
     if (upToDate) {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
+
+    // Decode base64 data if encoding is set
+    if (this.#encoding === `base64`) {
+      // Per protocol: remove all \n and \r before decoding
+      const cleanedData = data.replace(/[\n\r]/g, ``)
+      // Decode base64 to bytes
+      const decodedBytes = this.#decodeBase64(cleanedData)
+      return new Response(decodedBytes, { status: 200, headers })
+    }
+
     return new Response(data, { status: 200, headers })
+  }
+
+  /**
+   * Decode a base64 string to Uint8Array.
+   * Works in both browser and Node.js environments.
+   */
+  #decodeBase64(base64: string): Uint8Array {
+    // Handle empty string
+    if (!base64) {
+      return new Uint8Array(0)
+    }
+
+    try {
+      // Use atob in browser, Buffer in Node.js
+      if (typeof atob === `function`) {
+        const binaryString = atob(base64)
+        const bytes = new Uint8Array(binaryString.length)
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i)
+        }
+        return bytes
+      } else {
+        // Node.js environment
+        return new Uint8Array(Buffer.from(base64, `base64`))
+      }
+    } catch (err) {
+      throw new DurableStreamError(
+        `Failed to decode base64 SSE data: ${err instanceof Error ? err.message : String(err)}`,
+        `PARSE_ERROR`
+      )
+    }
   }
 
   /**

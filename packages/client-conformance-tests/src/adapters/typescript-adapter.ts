@@ -284,6 +284,16 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         // Validate encoding parameter locally before making request
         // Per protocol, clients MUST NOT provide encoding for text/* or application/json
         if (command.encoding) {
+          // Validate encoding value is supported (only 'base64' is supported)
+          // Cast to string for runtime validation since test YAML may send arbitrary values
+          const encodingValue = command.encoding as string
+          if (encodingValue !== `base64`) {
+            throw new DurableStreamError(
+              `unsupported encoding value: ${encodingValue}. Only 'base64' is supported.`,
+              `INVALID_ARGUMENT`
+            )
+          }
+
           const contentType = streamContentTypes.get(command.path)
           if (contentType) {
             const isTextOrJson =
