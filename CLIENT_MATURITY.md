@@ -87,21 +87,19 @@ Widespread usage in production environments with a track record of stability.
 | **TypeScript** | 3 - Production-Proven | [@durable-streams/client](https://www.npmjs.com/package/@durable-streams/client)              | 110/110     | Reference implementation. 1.5+ years production use at Electric. |
 | **Python**     | 2 - Expert-Reviewed   | [durable-streams](https://pypi.org/project/durable-streams/)                                  | 110/110     | Async and sync APIs. Reviewed for Pythonic patterns.             |
 | **Go**         | 2 - Expert-Reviewed   | [client-go](https://pkg.go.dev/github.com/durable-streams/durable-streams/packages/client-go) | 110/110     | Google Cloud style API. Zero external dependencies.              |
-| **Java**       | 1 - Vibe-Engineered   | [durable-streams-java](https://github.com/Clickin/durable-streams-java)                       | TBD         | Community contribution. Framework adapters included.             |
+| **Java**       | 1 - Vibe-Engineered   | [client-java](./packages/client-java)                                                         | TBD         | Community contribution. Framework adapters included.             |
+| **C#/.NET**    | 1 - Vibe-Engineered   | [client-dotnet](./packages/client-dotnet)                                                     | TBD         | .NET Standard 2.0+ compatible.                                   |
+| **Elixir**     | 1 - Vibe-Engineered   | [client-elixir](./packages/client-elixir)                                                     | TBD         | OTP-friendly design with GenServer support.                      |
+| **PHP**        | 1 - Vibe-Engineered   | [client-php](./packages/client-php)                                                           | TBD         | PSR-compatible HTTP client integration.                          |
+| **Ruby**       | 1 - Vibe-Engineered   | [client-rb](./packages/client-rb)                                                             | TBD         | Idiomatic Ruby API with streaming support.                       |
+| **Rust**       | 1 - Vibe-Engineered   | [client-rust](./packages/client-rust)                                                         | TBD         | Async-first with tokio runtime support.                          |
+| **Swift**      | 1 - Vibe-Engineered   | [client-swift](./packages/client-swift)                                                       | TBD         | iOS/macOS native with async/await support.                       |
 
 ### Planned Clients
 
-Based on analysis of client library adoption across Kafka, Redis Streams, NATS, Pulsar, and Kinesis ecosystems:
-
-| Language    | Priority | Rationale                                                                                                        |
-| ----------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| **Rust**    | High     | Systems programming crowd, signals "serious infrastructure." NATS has official support, growing Kafka community. |
-| **C#/.NET** | High     | ~29% professional usage, every major streaming platform has official support. Microsoft/Azure ecosystem.         |
-| **Ruby**    | Medium   | ~5% web apps, strong in DevOps/infrastructure tooling. Good for ops scripts consuming streams.                   |
-| **PHP**     | Medium   | Powers 75%+ of server-side web. Large surface area for webhook-to-stream and legacy integration.                 |
-| **Elixir**  | Medium   | NATS has official support. Strong fit for real-time/concurrent systems (Erlang/OTP).                             |
-| **Swift**   | Lower    | iOS/macOS native. Mobile-first sync scenarios.                                                                   |
-| **Kotlin**  | Lower    | Interops with Java, but separate client could provide better ergonomics.                                         |
+| Language   | Priority | Rationale                                                                |
+| ---------- | -------- | ------------------------------------------------------------------------ |
+| **Kotlin** | Lower    | Interops with Java, but separate client could provide better ergonomics. |
 
 ---
 

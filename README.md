@@ -81,6 +81,27 @@ go get github.com/durable-streams/durable-streams/packages/client-go
 
 # Python
 pip install durable-streams
+
+# Rust
+cargo add durable-streams
+
+# C# / .NET
+dotnet add package DurableStreams
+
+# Java
+# See packages/client-java for Maven/Gradle coordinates
+
+# Ruby
+gem install durable_streams
+
+# PHP
+composer require durable-streams/client
+
+# Elixir
+# Add {:durable_streams, "~> 0.1"} to mix.exs deps
+
+# Swift
+# Add package dependency in Package.swift
 ```
 
 ### Server binary
