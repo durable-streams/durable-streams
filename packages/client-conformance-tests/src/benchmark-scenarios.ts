@@ -252,7 +252,7 @@ export const readThroughputScenario: BenchmarkScenario = {
 export const sseLatencyScenario: BenchmarkScenario = {
   id: `streaming-sse-latency`,
   name: `SSE First Event Latency`,
-  description: `Measure time to receive first event via SSE`,
+  description: `Measure time to receive first event via SSE (JSON)`,
   category: `streaming`,
   requires: [`sse`],
   config: {
@@ -273,6 +273,56 @@ export const sseLatencyScenario: BenchmarkScenario = {
   }),
 }
 
+export const sseBase64LatencyScenario: BenchmarkScenario = {
+  id: `streaming-sse-base64-latency`,
+  name: `SSE Base64 First Event Latency`,
+  description: `Measure time to receive first event via SSE with base64 encoding (binary)`,
+  category: `streaming`,
+  requires: [`sse`],
+  config: {
+    warmupIterations: 3,
+    measureIterations: 20,
+    messageSize: 100,
+  },
+  criteria: {
+    maxP50Ms: 100,
+    maxP99Ms: 500,
+  },
+  createOperation: (ctx) => ({
+    op: `roundtrip`,
+    path: `${ctx.basePath}/sse-base64-latency-${ctx.iteration}`,
+    size: 100,
+    live: `sse`,
+    contentType: `application/octet-stream`, // Binary content type
+    encoding: `base64`, // Requires base64 encoding for SSE
+  }),
+}
+
+export const sseBase64LargePayloadScenario: BenchmarkScenario = {
+  id: `streaming-sse-base64-large`,
+  name: `SSE Base64 Large Payload (64KB)`,
+  description: `Measure SSE base64 overhead with larger binary payloads`,
+  category: `streaming`,
+  requires: [`sse`],
+  config: {
+    warmupIterations: 2,
+    measureIterations: 10,
+    messageSize: 65536, // 64KB
+  },
+  criteria: {
+    maxP50Ms: 200,
+    maxP99Ms: 1000,
+  },
+  createOperation: (ctx) => ({
+    op: `roundtrip`,
+    path: `${ctx.basePath}/sse-base64-large-${ctx.iteration}`,
+    size: 65536,
+    live: `sse`,
+    contentType: `application/octet-stream`,
+    encoding: `base64`,
+  }),
+}
+
 // =============================================================================
 // All Scenarios
 // =============================================================================
@@ -289,6 +339,8 @@ export const allScenarios: Array<BenchmarkScenario> = [
   readThroughputScenario,
   // Streaming
   sseLatencyScenario,
+  sseBase64LatencyScenario,
+  sseBase64LargePayloadScenario,
 ]
 
 export const scenariosByCategory: Record<

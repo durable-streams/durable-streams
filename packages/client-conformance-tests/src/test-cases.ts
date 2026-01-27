@@ -216,6 +216,8 @@ export interface ReadOperation {
   offset?: string
   /** Live mode */
   live?: false | `long-poll` | `sse`
+  /** SSE data encoding for binary streams (required for non-text/json content types) */
+  encoding?: `base64`
   /** Timeout for long-poll in ms */
   timeoutMs?: number
   /** Maximum chunks to read */
@@ -564,6 +566,8 @@ export interface ReadExpectation extends BaseExpectation {
   headersSent?: Record<string, string>
   /** Expected params that were sent (for dynamic param testing) */
   paramsSent?: Record<string, string>
+  /** Expected response headers from server */
+  responseHeaders?: Record<string, string>
 }
 
 export interface HeadExpectation extends BaseExpectation {

@@ -122,6 +122,8 @@ export interface ReadCommand {
   offset?: string
   /** Live mode: false for catch-up only, true for auto-select, "long-poll" or "sse" for explicit */
   live?: false | true | `long-poll` | `sse`
+  /** SSE data encoding for binary streams (required for non-text/json content types) */
+  encoding?: `base64`
   /** Timeout for long-poll in milliseconds */
   timeoutMs?: number
   /** Maximum number of chunks to read (for testing) */
@@ -298,6 +300,8 @@ export interface BenchmarkRoundtripOp {
   live?: `long-poll` | `sse`
   /** Content type for SSE compatibility */
   contentType?: string
+  /** SSE data encoding for binary content types */
+  encoding?: `base64`
 }
 
 export interface BenchmarkCreateOp {

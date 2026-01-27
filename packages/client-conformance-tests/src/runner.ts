@@ -455,6 +455,7 @@ async function executeOperation(
             path,
             offset,
             live: op.live,
+            encoding: op.encoding,
             timeoutMs: op.timeoutMs,
             maxChunks: op.maxChunks,
             waitForUpToDate: op.waitForUpToDate,
@@ -479,6 +480,7 @@ async function executeOperation(
           path,
           offset,
           live: op.live,
+          encoding: op.encoding,
           timeoutMs: op.timeoutMs,
           maxChunks: op.maxChunks,
           waitForUpToDate: op.waitForUpToDate,
@@ -987,6 +989,25 @@ function validateExpectation(
   if (expect.minChunks !== undefined && isReadResult(result)) {
     if (result.chunks.length < (expect.minChunks as number)) {
       return `Expected at least ${expect.minChunks} chunks, got ${result.chunks.length}`
+    }
+  }
+
+  // Check responseHeaders (for verifying server response headers)
+  // Note: HTTP headers are case-insensitive, so we normalize both sides
+  if (expect.responseHeaders !== undefined && isReadResult(result)) {
+    const expectedHeaders = expect.responseHeaders as Record<string, string>
+    const actualHeaders = result.headers ?? {}
+    // Normalize actual headers to lowercase keys for comparison
+    const normalizedActual: Record<string, string> = {}
+    for (const [k, v] of Object.entries(actualHeaders)) {
+      normalizedActual[k.toLowerCase()] = v
+    }
+
+    for (const [key, expectedValue] of Object.entries(expectedHeaders)) {
+      const actualValue = normalizedActual[key.toLowerCase()]
+      if (actualValue !== expectedValue) {
+        return `Expected response header ${key}="${expectedValue}", got "${actualValue ?? `undefined`}"`
+      }
     }
   }
 
