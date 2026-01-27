@@ -418,6 +418,8 @@ class AsyncDurableStream:
         resolved_headers[STREAM_CLOSED_HEADER] = "true"
 
         ct = content_type or self._content_type
+        if ct:
+            resolved_headers["content-type"] = ct
         request_body: bytes | None = None
         if data is not None:
             if is_json_content_type(ct):

@@ -154,10 +154,14 @@ internal sealed class SseParser : IDisposable
                 : null;
 
             var streamClosed = root.TryGetProperty("streamClosed", out var streamClosedProp) &&
-                               streamClosedProp.ValueKind == JsonValueKind.True;
+                               (streamClosedProp.ValueKind == JsonValueKind.True ||
+                                (streamClosedProp.ValueKind == JsonValueKind.String &&
+                                 string.Equals(streamClosedProp.GetString(), "true", StringComparison.OrdinalIgnoreCase)));
 
             var upToDate = root.TryGetProperty("upToDate", out var upToDateProp) &&
-                          upToDateProp.ValueKind == JsonValueKind.True;
+                          (upToDateProp.ValueKind == JsonValueKind.True ||
+                           (upToDateProp.ValueKind == JsonValueKind.String &&
+                            string.Equals(upToDateProp.GetString(), "true", StringComparison.OrdinalIgnoreCase)));
 
             // Closed streams are implicitly up-to-date
             if (streamClosed)

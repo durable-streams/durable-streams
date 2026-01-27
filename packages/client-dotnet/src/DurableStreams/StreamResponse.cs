@@ -435,7 +435,7 @@ public sealed class StreamResponse : IAsyncDisposable
                 {
                     _cursor = controlEvt.StreamCursor;
                 }
-                _upToDate = controlEvt.UpToDate;
+                _upToDate = controlEvt.UpToDate || controlEvt.StreamClosed;
 
                 // Reset reconnect backoff on successful data
                 _sseReconnectAttempts = 0;
