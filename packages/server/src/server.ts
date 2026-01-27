@@ -35,6 +35,10 @@ const SSE_UP_TO_DATE_FIELD = `upToDate`
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
+const ENCODING_QUERY_PARAM = `encoding`
+
+// SSE data encoding header (Protocol Section 5.7)
+const STREAM_SSE_DATA_ENCODING_HEADER = `Stream-SSE-Data-Encoding`
 
 /**
  * Encode data for SSE format.
@@ -52,6 +56,17 @@ function encodeSSEData(payload: string): string {
   // Order matters: \r\n must be matched before \r alone
   const lines = payload.split(/\r\n|\r|\n/)
   return lines.map((line) => `data:${line}`).join(`\n`) + `\n\n`
+}
+
+/**
+ * Check if a content type is SSE-native (can be sent as-is without encoding).
+ * Per Protocol Section 5.7: text/* and application/json are SSE-native.
+ */
+function isSSENativeContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false
+  const mimeType = contentType.split(`;`)[0]?.trim().toLowerCase()
+  if (!mimeType) return false
+  return mimeType.startsWith(`text/`) || mimeType === `application/json`
 }
 
 /**
@@ -426,7 +441,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-SSE-Data-Encoding, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -728,9 +743,37 @@ export class DurableStreamTestServer {
 
     // Handle SSE mode
     if (live === `sse`) {
+      // Parse encoding parameter for SSE base64 support (Protocol Section 5.7)
+      const encoding = url.searchParams.get(ENCODING_QUERY_PARAM) ?? undefined
+      const isSSENative = isSSENativeContentType(stream.contentType)
+
+      // Validate encoding vs content-type
+      if (isSSENative && encoding !== undefined) {
+        // text/* and application/json don't need encoding, reject if provided
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(
+          `encoding parameter not allowed for text/* or application/json content types`
+        )
+        return
+      }
+
+      if (!isSSENative && encoding === undefined) {
+        // Binary content types require encoding for SSE
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`encoding=base64 required for binary content types in SSE mode`)
+        return
+      }
+
+      if (encoding !== undefined && encoding !== `base64`) {
+        // Only base64 encoding is supported
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`unsupported encoding: only base64 is supported`)
+        return
+      }
+
       // For SSE with offset=now, convert to actual tail offset
       const sseOffset = offset === `now` ? stream.currentOffset : offset!
-      await this.handleSSE(path, stream, sseOffset, cursor, res)
+      await this.handleSSE(path, stream, sseOffset, cursor, encoding, res)
       return
     }
 
@@ -874,20 +917,28 @@ export class DurableStreamTestServer {
     stream: ReturnType<StreamStore[`get`]>,
     initialOffset: string,
     cursor: string | undefined,
+    encoding: string | undefined,
     res: ServerResponse
   ): Promise<void> {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
-    // Set SSE headers (explicitly including security headers for clarity)
-    res.writeHead(200, {
+    // Build SSE headers (explicitly including security headers for clarity)
+    const sseHeaders: Record<string, string> = {
       "content-type": `text/event-stream`,
       "cache-control": `no-cache`,
       connection: `keep-alive`,
       "access-control-allow-origin": `*`,
       "x-content-type-options": `nosniff`,
       "cross-origin-resource-policy": `cross-origin`,
-    })
+    }
+
+    // Add data encoding header when base64 encoding is used (Protocol Section 5.7)
+    if (encoding === `base64`) {
+      sseHeaders[STREAM_SSE_DATA_ENCODING_HEADER.toLowerCase()] = `base64`
+    }
+
+    res.writeHead(200, sseHeaders)
 
     // Check for injected SSE event (for testing SSE parsing)
     const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
@@ -920,9 +971,12 @@ export class DurableStreamTestServer {
 
       // Send data events for each message
       for (const message of messages) {
-        // Format data based on content type
+        // Format data based on content type and encoding
         let dataPayload: string
-        if (isJsonStream) {
+        if (encoding === `base64`) {
+          // Base64 encode the raw binary data (Protocol Section 5.7)
+          dataPayload = Buffer.from(message.data).toString(`base64`)
+        } else if (isJsonStream) {
           // Use formatResponse to get properly formatted JSON (strips trailing commas)
           const jsonBytes = this.store.formatResponse(path, [message])
           dataPayload = decoder.decode(jsonBytes)

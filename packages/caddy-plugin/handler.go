@@ -2,6 +2,7 @@ package durablestreams
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,9 @@ const (
 	HeaderProducerSeq         = "Producer-Seq"
 	HeaderProducerExpectedSeq = "Producer-Expected-Seq"
 	HeaderProducerReceivedSeq = "Producer-Received-Seq"
+
+	// SSE encoding header
+	HeaderStreamSSEDataEncoding = "Stream-SSE-Data-Encoding"
 )
 
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
@@ -44,7 +48,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-SSE-Data-Encoding, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -246,12 +250,31 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
+		// Parse and validate encoding parameter for SSE
+		encoding := query.Get("encoding")
+		isNative := isSSENativeContentType(meta.ContentType)
+
+		if isNative {
+			// SSE-native content types (text/*, application/json) must NOT have encoding
+			if encoding != "" {
+				return newHTTPError(http.StatusBadRequest, "encoding parameter not allowed for text/* or application/json content types")
+			}
+		} else {
+			// Non-native content types MUST have encoding=base64
+			if encoding == "" {
+				return newHTTPError(http.StatusBadRequest, "encoding=base64 required for binary content types in SSE mode")
+			}
+			if encoding != "base64" {
+				return newHTTPError(http.StatusBadRequest, "unsupported encoding: only base64 is supported")
+			}
+		}
+
 		// For SSE with offset=now, convert to actual tail offset
 		sseOffset := offset
 		if offset.IsNow() {
 			sseOffset = meta.CurrentOffset
 		}
-		return h.handleSSE(w, r, path, sseOffset, cursor)
+		return h.handleSSE(w, r, path, sseOffset, cursor, encoding)
 	}
 
 	// For offset=now, convert to actual tail offset
@@ -441,16 +464,10 @@ func generateResponseCursor(clientCursor string) string {
 }
 
 // handleSSE handles Server-Sent Events streaming
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string) error {
+func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string, encoding string) error {
 	meta, err := h.store.Get(path)
 	if err != nil {
 		return err
-	}
-
-	// Validate content type for SSE (must be text/* or application/json)
-	ct := strings.ToLower(store.ExtractMediaType(meta.ContentType))
-	if !strings.HasPrefix(ct, "text/") && ct != "application/json" {
-		return newHTTPError(http.StatusBadRequest, "SSE mode requires text/* or application/json content type")
 	}
 
 	// Set SSE headers
@@ -458,6 +475,11 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Add encoding header when base64 encoding is used
+	if encoding == "base64" {
+		w.Header().Set(HeaderStreamSSEDataEncoding, "base64")
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -489,20 +511,34 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 			}
 
 			if len(messages) > 0 {
-				// Send data event
-				body, _ := h.formatResponse(path, messages, meta.ContentType)
-				fmt.Fprintf(w, "event: data\n")
-				// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
-				// Note: Per SSE spec, we don't add a space after "data:" because clients
-				// strip exactly one leading space. Adding one would cause data starting
-				// with spaces to lose an extra space character.
-				for _, line := range sseLineTerminators.Split(string(body), -1) {
-					fmt.Fprintf(w, "data:%s\n", line)
-				}
-				fmt.Fprintf(w, "\n")
+				if encoding == "base64" {
+					// For base64 encoding, send one data event per message (Protocol Section 5.7)
+					for _, msg := range messages {
+						body := base64.StdEncoding.EncodeToString(msg.Data)
+						fmt.Fprintf(w, "event: data\n")
+						// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+						for _, line := range sseLineTerminators.Split(body, -1) {
+							fmt.Fprintf(w, "data:%s\n", line)
+						}
+						fmt.Fprintf(w, "\n")
+						currentOffset = msg.Offset
+					}
+				} else {
+					// For non-base64, format all messages together and send as single data event
+					body, _ := h.formatResponse(path, messages, meta.ContentType)
+					fmt.Fprintf(w, "event: data\n")
+					// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+					// Note: Per SSE spec, we don't add a space after "data:" because clients
+					// strip exactly one leading space. Adding one would cause data starting
+					// with spaces to lose an extra space character.
+					for _, line := range sseLineTerminators.Split(string(body), -1) {
+						fmt.Fprintf(w, "data:%s\n", line)
+					}
+					fmt.Fprintf(w, "\n")
 
-				// Update current offset
-				currentOffset = messages[len(messages)-1].Offset
+					// Update current offset
+					currentOffset = messages[len(messages)-1].Offset
+				}
 
 				// Generate cursor with collision handling
 				responseCursor := generateResponseCursor(cursor)
@@ -771,4 +807,11 @@ func parseTTL(s string) (int64, error) {
 	}
 
 	return ttl, nil
+}
+
+// isSSENativeContentType checks if a content type can be streamed natively via SSE
+// (text/* or application/json, which don't require base64 encoding)
+func isSSENativeContentType(contentType string) bool {
+	ct := strings.ToLower(store.ExtractMediaType(contentType))
+	return strings.HasPrefix(ct, "text/") || ct == "application/json"
 }
