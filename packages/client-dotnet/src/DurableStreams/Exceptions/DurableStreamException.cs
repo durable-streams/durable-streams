@@ -45,7 +45,10 @@ public enum DurableStreamErrorCode
     Timeout,
 
     /// <summary>Failed to parse response (JSON or SSE).</summary>
-    ParseError
+    ParseError,
+
+    /// <summary>Stream is closed (409 with Stream-Closed header).</summary>
+    StreamClosed
 }
 
 /// <summary>
@@ -172,5 +175,19 @@ public class SequenceGapException : DurableStreamException
     {
         ExpectedSeq = expectedSeq;
         ReceivedSeq = receivedSeq;
+    }
+}
+
+/// <summary>
+/// Thrown when attempting to append to a closed stream.
+/// </summary>
+public class StreamClosedException : DurableStreamException
+{
+    /// <summary>
+    /// Creates a new StreamClosedException.
+    /// </summary>
+    public StreamClosedException(string url)
+        : base($"Stream is closed: {url}", DurableStreamErrorCode.StreamClosed, 409, url)
+    {
     }
 }

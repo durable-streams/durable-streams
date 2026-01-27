@@ -23,6 +23,9 @@ internal static class Headers
     public const string ProducerSeq = "Producer-Seq";
     public const string ProducerExpectedSeq = "Producer-Expected-Seq";
     public const string ProducerReceivedSeq = "Producer-Received-Seq";
+
+    // Stream closure header
+    public const string StreamClosed = "Stream-Closed";
 }
 
 /// <summary>
