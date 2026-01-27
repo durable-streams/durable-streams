@@ -36,6 +36,14 @@ module DurableStreams
     end
   end
 
+  # Stream is closed - no more appends allowed (409 with Stream-Closed)
+  class StreamClosedError < Error
+    def initialize(url: nil, **opts)
+      message = url ? "Stream is closed: #{url}" : "Stream is closed"
+      super(message, url: url, status: 409, code: "STREAM_CLOSED", **opts)
+    end
+  end
+
   # Content type mismatch (409)
   class ContentTypeMismatchError < Error
     def initialize(url: nil, expected: nil, actual: nil, **opts)

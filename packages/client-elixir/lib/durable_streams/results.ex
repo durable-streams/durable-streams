@@ -46,12 +46,30 @@ defmodule DurableStreams.HeadResult do
 
   - `next_offset` - Current tail offset of the stream
   - `content_type` - Content type of the stream
+  - `stream_closed` - Whether the stream has been closed (no more appends allowed)
   """
 
-  defstruct [:next_offset, :content_type]
+  defstruct [:next_offset, :content_type, stream_closed: false]
 
   @type t :: %__MODULE__{
           next_offset: String.t(),
-          content_type: String.t() | nil
+          content_type: String.t() | nil,
+          stream_closed: boolean()
+        }
+end
+
+defmodule DurableStreams.CloseResult do
+  @moduledoc """
+  Result of closing a stream.
+
+  ## Fields
+
+  - `final_offset` - The final offset after closing (position after any appended data)
+  """
+
+  defstruct [:final_offset]
+
+  @type t :: %__MODULE__{
+          final_offset: String.t()
         }
 end

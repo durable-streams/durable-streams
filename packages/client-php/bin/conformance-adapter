@@ -20,6 +20,7 @@ use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Exception\StreamNotFoundException;
 use DurableStreams\Exception\StreamExistsException;
 use DurableStreams\Exception\SeqConflictException;
+use DurableStreams\Exception\StreamClosedException;
 
 use function DurableStreams\stream;
 use function DurableStreams\version;
@@ -36,6 +37,7 @@ const ERROR_PARSE = 'PARSE_ERROR';
 const ERROR_INTERNAL = 'INTERNAL_ERROR';
 const ERROR_NOT_SUPPORTED = 'NOT_SUPPORTED';
 const ERROR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
+const ERROR_STREAM_CLOSED = 'STREAM_CLOSED';
 
 // Global state
 $serverUrl = '';
@@ -100,6 +102,9 @@ function mapErrorCode(Throwable $e): array {
     }
     if ($e instanceof StreamExistsException) {
         return [ERROR_CONFLICT, 409];
+    }
+    if ($e instanceof StreamClosedException) {
+        return [ERROR_STREAM_CLOSED, 409];
     }
     if ($e instanceof SeqConflictException) {
         return [ERROR_SEQ_CONFLICT, 409];
@@ -183,6 +188,7 @@ function handleCreate(array $cmd): array {
 
     $url = $serverUrl . $cmd['path'];
     $contentType = $cmd['contentType'] ?? 'application/octet-stream';
+    $closed = $cmd['closed'] ?? false;
 
     // Check if stream already exists
     $alreadyExists = false;
@@ -201,6 +207,7 @@ function handleCreate(array $cmd): array {
         $cmd['ttlSeconds'] ?? null,
         $cmd['expiresAt'] ?? null,
         $sharedClient,
+        $closed,
     );
 
     // Cache content type
@@ -387,6 +394,15 @@ function handleRead(array $cmd): array {
     $upToDate = $response->isUpToDate();
     $status = $response->getStatus();
 
+    // Check stream closed status
+    $streamClosed = false;
+    try {
+        $headResult = DurableStream::headStatic($url, null, $sharedClient);
+        $streamClosed = $headResult->streamClosed;
+    } catch (Throwable $e) {
+        // Ignore errors - streamClosed defaults to false
+    }
+
     $result = [
         'type' => 'read',
         'success' => true,
@@ -394,6 +410,7 @@ function handleRead(array $cmd): array {
         'chunks' => $chunks,
         'offset' => $finalOffset,
         'upToDate' => $upToDate,
+        'streamClosed' => $streamClosed,
     ];
 
     if (!empty($headersSent)) {
@@ -422,6 +439,29 @@ function handleHead(array $cmd): array {
         'status' => 200,
         'offset' => $result->offset,
         'contentType' => $result->contentType,
+        'streamClosed' => $result->streamClosed,
+    ];
+}
+
+function handleClose(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $cmd['contentType'] ?? $streamContentTypes[$cmd['path']] ?? 'application/octet-stream';
+
+    // Decode data if provided
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
+
+    $ds = new DurableStream($url, $contentType, $cmd['headers'] ?? [], $sharedClient);
+    $result = $ds->closeStream($data, $contentType);
+
+    return [
+        'type' => 'close',
+        'success' => true,
+        'finalOffset' => $result->finalOffset,
     ];
 }
 
@@ -792,6 +832,7 @@ function handleCommand(array $cmd): array {
             'append' => handleAppend($cmd),
             'read' => handleRead($cmd),
             'head' => handleHead($cmd),
+            'close' => handleClose($cmd),
             'delete' => handleDelete($cmd),
             'shutdown' => handleShutdown($cmd),
             'set-dynamic-header' => handleSetDynamicHeader($cmd),

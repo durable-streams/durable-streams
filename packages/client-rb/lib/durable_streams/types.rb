@@ -13,17 +13,33 @@ module DurableStreams
   PRODUCER_SEQ_HEADER = "producer-seq"
   PRODUCER_EXPECTED_SEQ_HEADER = "producer-expected-seq"
   PRODUCER_RECEIVED_SEQ_HEADER = "producer-received-seq"
+  STREAM_CLOSED_HEADER = "stream-closed"
 
   # Result from HEAD request
   # next_offset: The tail offset (position after last byte, where next append goes)
-  HeadResult = Struct.new(:exists, :content_type, :next_offset, :etag, :cache_control, keyword_init: true) do
+  # stream_closed: Whether the stream has been closed (no more appends allowed)
+  HeadResult = Struct.new(:exists, :content_type, :next_offset, :etag, :cache_control, :stream_closed, keyword_init: true) do
     def initialize(**)
       super
+      self.stream_closed = false if stream_closed.nil?
       freeze
     end
 
     def exists?
       exists
+    end
+
+    def closed?
+      stream_closed
+    end
+  end
+
+  # Result from close operation
+  # final_offset: The final offset after closing (position after any appended data)
+  CloseResult = Struct.new(:final_offset, keyword_init: true) do
+    def initialize(**)
+      super
+      freeze
     end
   end
 

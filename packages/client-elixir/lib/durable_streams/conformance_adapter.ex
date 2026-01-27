@@ -138,6 +138,7 @@ defmodule DurableStreams.ConformanceAdapter do
     content_type = explicit_content_type || "application/octet-stream"
     ttl_seconds = cmd["ttlSeconds"]
     expires_at = cmd["expiresAt"]
+    closed = cmd["closed"] || false
     headers = cmd["headers"] || %{}
 
     stream =
@@ -149,6 +150,7 @@ defmodule DurableStreams.ConformanceAdapter do
       [content_type: content_type, headers: headers]
       |> maybe_add_opt(:ttl_seconds, ttl_seconds)
       |> maybe_add_opt(:expires_at, expires_at)
+      |> maybe_add_opt(:closed, if(closed, do: true, else: nil))
 
     # Check if exists first
     already_exists =
@@ -312,6 +314,12 @@ defmodule DurableStreams.ConformanceAdapter do
     # Read chunks - first try to catch initial errors
     case read_chunks(stream, opts, max_chunks, wait_for_up_to_date, live_mode, is_json_stream) do
       {:ok, chunks, final_offset, up_to_date, status} ->
+        # Check stream closed status via HEAD
+        stream_closed = case Stream.head(stream) do
+          {:ok, %{stream_closed: closed}} -> closed
+          _ -> false
+        end
+
         result =
           %{
             "type" => "read",
@@ -319,7 +327,8 @@ defmodule DurableStreams.ConformanceAdapter do
             "status" => status,
             "chunks" => chunks,
             "offset" => final_offset,
-            "upToDate" => up_to_date
+            "upToDate" => up_to_date,
+            "streamClosed" => stream_closed
           }
           |> maybe_add_headers_sent(resolved_headers)
           |> maybe_add_params_sent(resolved_params)
@@ -341,13 +350,14 @@ defmodule DurableStreams.ConformanceAdapter do
     stream = Client.stream(state.client, path)
 
     case Stream.head(stream, headers: headers) do
-      {:ok, %{next_offset: offset, content_type: content_type}} ->
+      {:ok, %{next_offset: offset, content_type: content_type, stream_closed: stream_closed}} ->
         result = %{
           "type" => "head",
           "success" => true,
           "status" => 200,
           "offset" => offset,
-          "contentType" => content_type
+          "contentType" => content_type,
+          "streamClosed" => stream_closed
         }
 
         {result, state}
@@ -357,6 +367,51 @@ defmodule DurableStreams.ConformanceAdapter do
 
       {:error, reason} ->
         {map_error("head", reason), state}
+    end
+  end
+
+  defp handle_command(%{"type" => "close"} = cmd, state) do
+    path = cmd["path"]
+    data = cmd["data"]
+    binary = cmd["binary"] || false
+    content_type = cmd["contentType"] || state.stream_content_types[path] || "application/octet-stream"
+    headers = cmd["headers"] || %{}
+
+    # Decode base64 if binary
+    data =
+      if binary && data do
+        Base.decode64!(data)
+      else
+        data
+      end
+
+    stream =
+      state.client
+      |> Client.stream(path)
+      |> Stream.set_content_type(content_type)
+
+    opts =
+      [headers: headers]
+      |> maybe_add_opt(:data, data)
+      |> maybe_add_opt(:content_type, content_type)
+
+    case Stream.close(stream, opts) do
+      {:ok, %{final_offset: final_offset}} ->
+        result = %{
+          "type" => "close",
+          "success" => true,
+          "finalOffset" => final_offset
+        }
+        {result, state}
+
+      {:error, :stream_closed} ->
+        {map_error("close", :stream_closed, path), state}
+
+      {:error, :not_found} ->
+        {map_error("close", :not_found, path), state}
+
+      {:error, reason} ->
+        {map_error("close", reason), state}
     end
   end
 
@@ -1024,6 +1079,14 @@ defmodule DurableStreams.ConformanceAdapter do
     else
       error_result(cmd_type, "CONFLICT", "Conflict: #{msg}", 409)
     end
+  end
+
+  defp map_error(cmd_type, :stream_closed) do
+    error_result(cmd_type, "STREAM_CLOSED", "Stream is closed", 409)
+  end
+
+  defp map_error(cmd_type, :stream_closed, path) when is_binary(path) do
+    error_result(cmd_type, "STREAM_CLOSED", "Stream is closed: #{path}", 409)
   end
 
   defp map_error(cmd_type, {:stale_epoch, epoch}) do

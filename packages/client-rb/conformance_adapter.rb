@@ -32,6 +32,7 @@ module ErrorCode
   PARSE_ERROR = "PARSE_ERROR"
   INTERNAL_ERROR = "INTERNAL_ERROR"
   NOT_SUPPORTED = "NOT_SUPPORTED"
+  STREAM_CLOSED = "STREAM_CLOSED"
 end
 
 # Global state
@@ -90,6 +91,8 @@ def map_error_code(err)
     [ErrorCode::NOT_FOUND, 404]
   when DurableStreams::StreamExistsError
     [ErrorCode::CONFLICT, 409]
+  when DurableStreams::StreamClosedError
+    [ErrorCode::STREAM_CLOSED, 409]
   when DurableStreams::SeqConflictError
     [ErrorCode::SEQUENCE_CONFLICT, 409]
   when DurableStreams::BadRequestError
@@ -150,6 +153,7 @@ end
 def handle_create(cmd)
   url = "#{$server_url}#{cmd["path"]}"
   content_type = cmd["contentType"] || "application/octet-stream"
+  closed = cmd["closed"] || false
 
   # Check if stream already exists
   already_exists = false
@@ -168,7 +172,8 @@ def handle_create(cmd)
     content_type: content_type,
     ttl_seconds: cmd["ttlSeconds"],
     expires_at: cmd["expiresAt"],
-    headers: headers
+    headers: headers,
+    closed: closed
   )
 
   # Cache content type
@@ -381,13 +386,23 @@ def handle_read(cmd)
     up_to_date = true
   end
 
+  # Check stream closed status by doing a HEAD request
+  stream_closed = false
+  begin
+    head_result = stream.head
+    stream_closed = head_result.stream_closed
+  rescue StandardError
+    # Ignore errors - stream_closed defaults to false
+  end
+
   result = {
     "type" => "read",
     "success" => true,
     "status" => status,
     "chunks" => chunks,
     "offset" => final_offset,
-    "upToDate" => up_to_date
+    "upToDate" => up_to_date,
+    "streamClosed" => stream_closed
   }
   result["headersSent"] = headers_sent unless headers_sent.empty?
   result["paramsSent"] = params_sent unless params_sent.empty?
@@ -409,7 +424,32 @@ def handle_head(cmd)
     "success" => true,
     "status" => 200,
     "offset" => result.next_offset,
-    "contentType" => result.content_type
+    "contentType" => result.content_type,
+    "streamClosed" => result.stream_closed
+  }
+end
+
+def handle_close(cmd)
+  url = "#{$server_url}#{cmd["path"]}"
+
+  # Get content type from cache or default
+  content_type = cmd["contentType"] || $stream_content_types[cmd["path"]] || "application/octet-stream"
+
+  headers = cmd["headers"] || {}
+  stream = DurableStreams::Stream.new(url, content_type: content_type, headers: headers)
+
+  # Decode data if provided
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  result = stream.close_stream(data: data, content_type: content_type)
+
+  {
+    "type" => "close",
+    "success" => true,
+    "finalOffset" => result.final_offset
   }
 end
 
@@ -780,6 +820,7 @@ def handle_command(cmd)
     when "append" then handle_append(cmd)
     when "read" then handle_read(cmd)
     when "head" then handle_head(cmd)
+    when "close" then handle_close(cmd)
     when "delete" then handle_delete(cmd)
     when "shutdown" then handle_shutdown(cmd)
     when "benchmark" then handle_benchmark(cmd)

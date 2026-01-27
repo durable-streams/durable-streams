@@ -51,12 +51,13 @@ module DurableStreams
     # @param content_type [Symbol, String] Content type (:json, :bytes, or MIME type)
     # @param context [Context] Configuration context
     # @param headers [Hash] Additional headers
+    # @param closed [Boolean] Create stream as immediately closed (default: false)
     # @return [Stream]
     def self.create(url, content_type:, context: DurableStreams.default_context, headers: {}, ttl_seconds: nil,
-                    expires_at: nil, body: nil, **options)
+                    expires_at: nil, body: nil, closed: false, **options)
       ct = normalize_content_type(content_type)
       stream = new(url, context: context, content_type: ct, headers: headers, **options)
-      stream.create_stream(content_type: ct, ttl_seconds: ttl_seconds, expires_at: expires_at, body: body)
+      stream.create_stream(content_type: ct, ttl_seconds: ttl_seconds, expires_at: expires_at, body: body, closed: closed)
       stream
     end
 
@@ -104,7 +105,8 @@ module DurableStreams
         content_type: response["content-type"],
         next_offset: response[STREAM_NEXT_OFFSET_HEADER],
         etag: response["etag"],
-        cache_control: response["cache-control"]
+        cache_control: response["cache-control"],
+        stream_closed: response[STREAM_CLOSED_HEADER]&.downcase == "true"
       )
     end
 
@@ -129,13 +131,15 @@ module DurableStreams
     # @param ttl_seconds [Integer, nil] Time-to-live in seconds
     # @param expires_at [String, nil] Absolute expiry time (RFC3339)
     # @param body [String, nil] Optional initial body
-    def create_stream(content_type: nil, ttl_seconds: nil, expires_at: nil, body: nil)
+    # @param closed [Boolean] Create stream as immediately closed (default: false)
+    def create_stream(content_type: nil, ttl_seconds: nil, expires_at: nil, body: nil, closed: false)
       headers = resolved_headers
 
       ct = content_type || @content_type
       headers["content-type"] = ct if ct
       headers[STREAM_TTL_HEADER] = ttl_seconds.to_s if ttl_seconds
       headers[STREAM_EXPIRES_AT_HEADER] = expires_at if expires_at
+      headers[STREAM_CLOSED_HEADER] = "true" if closed
 
       response = @transport.request(:put, @url, headers: headers, body: body)
 
@@ -164,6 +168,48 @@ module DurableStreams
       return if response.success? || response.status == 204
 
       raise DurableStreams.error_from_status(response.status, url: @url, headers: response.headers)
+    end
+
+    # Close the stream (no more appends allowed)
+    # @param data [String, nil] Optional final data to append before closing
+    # @param content_type [String, nil] Content type for the final data
+    # @return [CloseResult]
+    def close_stream(data: nil, content_type: nil)
+      headers = resolved_headers
+      headers[STREAM_CLOSED_HEADER] = "true"
+
+      ct = content_type || @content_type
+      headers["content-type"] = ct if ct
+
+      # For JSON streams, wrap data in array if needed
+      body = if data && DurableStreams.json_content_type?(ct)
+               "[#{data}]"
+             else
+               data
+             end
+
+      response = @transport.request(:post, @url, headers: headers, body: body)
+
+      # 204 means idempotent close (already closed)
+      if response.status == 204
+        next_offset = response[STREAM_NEXT_OFFSET_HEADER]
+        return CloseResult.new(final_offset: next_offset)
+      end
+
+      # 409 with Stream-Closed header means trying to append to closed stream
+      if response.status == 409 && response[STREAM_CLOSED_HEADER]&.downcase == "true"
+        raise StreamClosedError.new(url: @url)
+      end
+
+      unless response.success?
+        raise DurableStreams.error_from_status(response.status, url: @url, body: response.body,
+                                               headers: response.headers)
+      end
+
+      next_offset = response[STREAM_NEXT_OFFSET_HEADER]
+      raise FetchError.new("Server did not return #{STREAM_NEXT_OFFSET_HEADER} header", url: @url) unless next_offset
+
+      CloseResult.new(final_offset: next_offset)
     end
 
     # --- Write Operations ---
