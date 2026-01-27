@@ -628,8 +628,21 @@ export class StreamResponseImpl<
       return this.#processSSEDataEvent(event.data, sseEventIterator)
     }
 
-    // Control event without preceding data - update state and continue
+    // Control event without preceding data - update state
     this.#updateStateFromSSEControl(event)
+
+    // For upToDate control events, yield an empty response so subscribers
+    // can detect they've caught up (important for empty streams)
+    if (event.upToDate) {
+      const emptyResponse = this.#createSSESyntheticResponse(
+        ``,
+        event.streamNextOffset,
+        event.streamCursor,
+        true
+      )
+      return { type: `response`, response: emptyResponse }
+    }
+
     return { type: `continue` }
   }
 
