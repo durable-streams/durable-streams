@@ -24,6 +24,9 @@ pub enum StreamError {
     #[error("sequence conflict")]
     SeqConflict,
 
+    #[error("stream is closed")]
+    StreamClosed,
+
     #[error("offset gone (retention/compaction): {offset}")]
     OffsetGone { offset: String },
 
@@ -112,6 +115,7 @@ impl StreamError {
             StreamError::ServerError { status, .. } => Some(*status),
             StreamError::OffsetGone { .. } => Some(410),
             StreamError::SeqConflict => Some(409),
+            StreamError::StreamClosed => Some(409),
             _ => None,
         }
     }
@@ -122,6 +126,7 @@ impl StreamError {
             StreamError::NotFound { .. } => "NOT_FOUND",
             StreamError::Conflict => "CONFLICT",
             StreamError::SeqConflict => "SEQUENCE_CONFLICT",
+            StreamError::StreamClosed => "STREAM_CLOSED",
             StreamError::OffsetGone { .. } => "INVALID_OFFSET",
             StreamError::BadRequest { .. } => "INVALID_OFFSET",
             StreamError::Unauthorized => "UNAUTHORIZED",

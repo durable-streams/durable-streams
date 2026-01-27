@@ -4,6 +4,7 @@ import com.durablestreams.exception.*;
 import com.durablestreams.internal.RetryPolicy;
 import com.durablestreams.internal.sse.SSEStreamingReader;
 import com.durablestreams.model.*;
+import com.durablestreams.model.CloseResult;
 
 import java.io.*;
 import java.net.URI;
@@ -121,7 +122,21 @@ public final class DurableStream implements AutoCloseable {
      */
     public void create(String url, String contentType, Duration ttl, Instant expiresAt)
             throws DurableStreamException {
-        HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt);
+        create(url, contentType, ttl, expiresAt, false);
+    }
+
+    /**
+     * Create a stream with full options.
+     *
+     * @param url Stream URL
+     * @param contentType MIME type (e.g., "application/json")
+     * @param ttl Time-to-live duration
+     * @param expiresAt Absolute expiration time
+     * @param closed Create stream as immediately closed
+     */
+    public void create(String url, String contentType, Duration ttl, Instant expiresAt, boolean closed)
+            throws DurableStreamException {
+        HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt, closed);
         executeWithRetry(request, "create", response -> parseCreateResponse(response, url));
     }
 
@@ -179,6 +194,27 @@ public final class DurableStream implements AutoCloseable {
     public void delete(String url) throws DurableStreamException {
         HttpRequest request = buildDeleteRequest(url);
         executeWithRetry(request, "delete", response -> parseDeleteResponse(response, url));
+    }
+
+    // ==================== Close ====================
+
+    /**
+     * Close a stream (no more appends allowed).
+     */
+    public CloseResult close(String url) throws DurableStreamException {
+        return close(url, null, null);
+    }
+
+    /**
+     * Close a stream with optional final data.
+     *
+     * @param url Stream URL
+     * @param data Optional final data to append before closing
+     * @param contentType Content type for the final data
+     */
+    public CloseResult close(String url, byte[] data, String contentType) throws DurableStreamException {
+        HttpRequest request = buildCloseRequest(url, data, contentType);
+        return executeWithRetry(request, "close", response -> parseCloseResponse(response, url));
     }
 
     // ==================== Read ====================
@@ -353,6 +389,10 @@ public final class DurableStream implements AutoCloseable {
     }
 
     private HttpRequest buildCreateRequest(String url, String contentType, Duration ttl, Instant expiresAt) {
+        return buildCreateRequest(url, contentType, ttl, expiresAt, false);
+    }
+
+    private HttpRequest buildCreateRequest(String url, String contentType, Duration ttl, Instant expiresAt, boolean closed) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(buildUrlWithParams(url)))
                 .method("PUT", HttpRequest.BodyPublishers.noBody())
@@ -369,8 +409,51 @@ public final class DurableStream implements AutoCloseable {
         if (expiresAt != null) {
             builder.header("Stream-Expires-At", expiresAt.toString());
         }
+        if (closed) {
+            builder.header("Stream-Closed", "true");
+        }
 
         return builder.build();
+    }
+
+    private HttpRequest buildCloseRequest(String url, byte[] data, String contentType) {
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(buildUrlWithParams(url)))
+                .timeout(Duration.ofSeconds(30));
+
+        resolveHeaders().forEach(builder::header);
+        builder.header("Stream-Closed", "true");
+
+        String ct = contentType != null ? contentType : getCachedContentType(url);
+        if (ct == null) {
+            ct = "application/octet-stream";
+        }
+        builder.header("Content-Type", ct);
+
+        if (data != null && data.length > 0) {
+            // For JSON streams, wrap data in array
+            byte[] body;
+            if (ct.toLowerCase().contains("application/json")) {
+                body = wrapInJsonArray(data);
+            } else {
+                body = data;
+            }
+            builder.POST(HttpRequest.BodyPublishers.ofByteArray(body));
+        } else {
+            builder.POST(HttpRequest.BodyPublishers.noBody());
+        }
+
+        return builder.build();
+    }
+
+    private byte[] wrapInJsonArray(byte[] data) {
+        byte[] prefix = "[".getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "]".getBytes(StandardCharsets.UTF_8);
+        byte[] result = new byte[prefix.length + data.length + suffix.length];
+        System.arraycopy(prefix, 0, result, 0, prefix.length);
+        System.arraycopy(data, 0, result, prefix.length, data.length);
+        System.arraycopy(suffix, 0, result, prefix.length + data.length, suffix.length);
+        return result;
     }
 
     private HttpRequest buildAppendRequest(String url, byte[] data, Long seq) {
@@ -536,6 +619,8 @@ public final class DurableStream implements AutoCloseable {
             String ttlStr = response.headers().firstValue("Stream-TTL").orElse(null);
             String expiresStr = response.headers().firstValue("Stream-Expires-At").orElse(null);
             String etag = response.headers().firstValue("ETag").orElse(null);
+            String streamClosedStr = response.headers().firstValue("Stream-Closed").orElse(null);
+            boolean streamClosed = "true".equalsIgnoreCase(streamClosedStr);
 
             cacheContentType(url, contentType);
 
@@ -547,12 +632,33 @@ public final class DurableStream implements AutoCloseable {
                     nextOffset != null ? Offset.of(nextOffset) : null,
                     ttl,
                     expiresAt,
-                    etag
+                    etag,
+                    streamClosed
             );
         } else if (status == 404) {
             throw new StreamNotFoundException(url);
         } else {
             throw new DurableStreamException("Head failed with status: " + status, status);
+        }
+    }
+
+    private CloseResult parseCloseResponse(HttpResponse<byte[]> response, String url) throws DurableStreamException {
+        int status = response.statusCode();
+
+        // 204 means idempotent close (already closed)
+        if (status == 200 || status == 204) {
+            String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse("-1");
+            return new CloseResult(Offset.of(nextOffset));
+        } else if (status == 409) {
+            String streamClosedStr = response.headers().firstValue("Stream-Closed").orElse(null);
+            if ("true".equalsIgnoreCase(streamClosedStr)) {
+                throw new StreamClosedException(url);
+            }
+            throw new SequenceConflictException("unknown", "unknown");
+        } else if (status == 404) {
+            throw new StreamNotFoundException(url);
+        } else {
+            throw new DurableStreamException("Close failed with status: " + status, status);
         }
     }
 

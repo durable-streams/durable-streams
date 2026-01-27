@@ -2,7 +2,9 @@ package com.durablestreams;
 
 import com.durablestreams.exception.*;
 import com.durablestreams.exception.ParseErrorException;
+import com.durablestreams.exception.StreamClosedException;
 import com.durablestreams.model.*;
+import com.durablestreams.model.CloseResult;
 
 import java.io.*;
 import java.time.Duration;
@@ -69,6 +71,8 @@ public class ConformanceAdapter {
                 return handleHead(cmd);
             case "delete":
                 return handleDelete(cmd);
+            case "close":
+                return handleClose(cmd);
             case "connect":
                 return handleConnect(cmd);
             case "idempotent-append":
@@ -120,6 +124,7 @@ public class ConformanceAdapter {
         String contentType = (String) cmd.get("contentType");
         Number ttlSecondsNum = (Number) cmd.get("ttlSeconds");
         Long ttlSeconds = ttlSecondsNum != null ? ttlSecondsNum.longValue() : null;
+        Boolean closed = (Boolean) cmd.get("closed");
 
         Duration ttl = ttlSeconds != null ? Duration.ofSeconds(ttlSeconds) : null;
 
@@ -134,7 +139,7 @@ public class ConformanceAdapter {
                 // Stream doesn't exist, we'll create it
             }
 
-            client.create(url, contentType, ttl, null);
+            client.create(url, contentType, ttl, null, Boolean.TRUE.equals(closed));
             Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -382,6 +387,15 @@ public class ConformanceAdapter {
                 }
             }
 
+            // Check stream closed status via HEAD
+            boolean streamClosed = false;
+            try {
+                Metadata headMeta = client.head(url);
+                streamClosed = headMeta.isStreamClosed();
+            } catch (DurableStreamException ignored) {
+                // Ignore errors - streamClosed defaults to false
+            }
+
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "read");
             result.put("success", true);
@@ -389,6 +403,7 @@ public class ConformanceAdapter {
             result.put("chunks", chunks);
             result.put("offset", finalOffset);  // Always return offset
             result.put("upToDate", upToDate);
+            result.put("streamClosed", streamClosed);
             // Capture what dynamic headers/params were sent with this request
             Map<String, String> headersSent = new LinkedHashMap<>();
             Map<String, String> paramsSent = new LinkedHashMap<>();
@@ -455,11 +470,49 @@ public class ConformanceAdapter {
             if (meta.getContentType() != null) {
                 result.put("contentType", meta.getContentType());
             }
+            result.put("streamClosed", meta.isStreamClosed());
             return result;
         } catch (StreamNotFoundException e) {
             return errorResult("head", "NOT_FOUND", e.getMessage(), 404);
         } catch (DurableStreamException e) {
             return errorResult("head", errorCodeFromException(e), e.getMessage(),
+                    e.getStatusCode().orElse(500));
+        }
+    }
+
+    private static Map<String, Object> handleClose(Map<String, Object> cmd) {
+        String path = (String) cmd.get("path");
+        String data = (String) cmd.get("data");
+        Boolean binary = (Boolean) cmd.get("binary");
+        String contentType = (String) cmd.get("contentType");
+
+        String url = serverUrl + path;
+
+        byte[] bytes = null;
+        if (data != null) {
+            if (Boolean.TRUE.equals(binary)) {
+                bytes = Base64.getDecoder().decode(data);
+            } else {
+                bytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+
+        try {
+            CloseResult closeResult = client.close(url, bytes, contentType);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("type", "close");
+            result.put("success", true);
+            if (closeResult.getFinalOffset() != null) {
+                result.put("finalOffset", closeResult.getFinalOffset().getValue());
+            }
+            return result;
+        } catch (StreamClosedException e) {
+            return errorResult("close", "STREAM_CLOSED", e.getMessage(), 409);
+        } catch (StreamNotFoundException e) {
+            return errorResult("close", "NOT_FOUND", e.getMessage(), 404);
+        } catch (DurableStreamException e) {
+            return errorResult("close", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
         }
     }
@@ -879,6 +932,7 @@ public class ConformanceAdapter {
     private static String errorCodeFromException(DurableStreamException e) {
         if (e instanceof StreamNotFoundException) return "NOT_FOUND";
         if (e instanceof StreamExistsException) return "CONFLICT";
+        if (e instanceof StreamClosedException) return "STREAM_CLOSED";
         if (e instanceof SequenceConflictException) return "SEQUENCE_CONFLICT";
         if (e instanceof StaleEpochException) return "STALE_EPOCH";
         if (e instanceof OffsetGoneException) return "INVALID_OFFSET";

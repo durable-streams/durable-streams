@@ -24,6 +24,7 @@ pub(crate) const HEADER_PRODUCER_ID: &str = "producer-id";
 pub(crate) const HEADER_PRODUCER_EPOCH: &str = "producer-epoch";
 pub(crate) const HEADER_PRODUCER_SEQ: &str = "producer-seq";
 pub(crate) const HEADER_PRODUCER_EXPECTED_SEQ: &str = "producer-expected-seq";
+pub(crate) const HEADER_STREAM_CLOSED: &str = "stream-closed";
 
 /// Maximum retries for transient errors on append operations
 const MAX_APPEND_RETRIES: u32 = 3;
@@ -109,6 +110,11 @@ impl DurableStream {
 
         for (key, value) in &options.headers {
             req = req.header(key.as_str(), value.as_str());
+        }
+
+        // Add closed header if specified
+        if options.closed {
+            req = req.header(HEADER_STREAM_CLOSED, "true");
         }
 
         // Add initial data if provided
@@ -286,12 +292,20 @@ impl DurableStream {
                     .and_then(|v| v.to_str().ok())
                     .map(|s| s.to_string());
 
+                let stream_closed = resp
+                    .headers()
+                    .get(HEADER_STREAM_CLOSED)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+
                 Ok(HeadResponse {
                     next_offset,
                     content_type,
                     ttl,
                     expires_at,
                     etag,
+                    stream_closed,
                 })
             }
             404 => Err(StreamError::NotFound {
@@ -328,6 +342,84 @@ impl DurableStream {
             404 => Err(StreamError::NotFound {
                 url: self.url.clone(),
             }),
+            _ => Err(StreamError::from_status(status, &self.url)),
+        }
+    }
+
+    /// Close the stream (no more appends allowed).
+    pub async fn close(&self) -> Result<CloseResponse, StreamError> {
+        self.close_with(CloseOptions::default()).await
+    }
+
+    /// Close the stream with options.
+    pub async fn close_with(&self, options: CloseOptions) -> Result<CloseResponse, StreamError> {
+        let content_type = options
+            .content_type
+            .as_deref()
+            .or(self.content_type.as_deref())
+            .unwrap_or("application/octet-stream");
+
+        let mut req = self.client.inner.post(&self.url);
+
+        // Add custom headers
+        let client_headers = self.client.get_headers();
+        for (key, value) in client_headers.iter() {
+            req = req.header(key.clone(), value.clone());
+        }
+
+        for (key, value) in &options.headers {
+            req = req.header(key.as_str(), value.as_str());
+        }
+
+        req = req.header(HEADER_STREAM_CLOSED, "true");
+        req = req.header(HEADER_CONTENT_TYPE, content_type);
+
+        // Add data if provided
+        if let Some(data) = options.data {
+            // For JSON streams, wrap data in array
+            let body = if content_type.to_lowercase().contains("application/json") {
+                let mut wrapped = Vec::with_capacity(data.len() + 2);
+                wrapped.push(b'[');
+                wrapped.extend_from_slice(&data);
+                wrapped.push(b']');
+                Bytes::from(wrapped)
+            } else {
+                data
+            };
+            req = req.body(body);
+        }
+
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+
+        match status {
+            200 | 204 => {
+                let final_offset = resp
+                    .headers()
+                    .get(HEADER_STREAM_OFFSET)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| Offset::parse(s))
+                    .unwrap_or(Offset::Beginning);
+
+                Ok(CloseResponse { final_offset })
+            }
+            404 => Err(StreamError::NotFound {
+                url: self.url.clone(),
+            }),
+            409 => {
+                let stream_closed = resp
+                    .headers()
+                    .get(HEADER_STREAM_CLOSED)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+
+                if stream_closed {
+                    Err(StreamError::StreamClosed)
+                } else {
+                    Err(StreamError::SeqConflict)
+                }
+            }
             _ => Err(StreamError::from_status(status, &self.url)),
         }
     }
@@ -387,6 +479,7 @@ pub struct CreateOptions {
     pub expires_at: Option<String>,
     pub headers: Vec<(String, String)>,
     pub initial_data: Option<Bytes>,
+    pub closed: bool,
 }
 
 impl CreateOptions {
@@ -416,6 +509,11 @@ impl CreateOptions {
 
     pub fn initial_data(mut self, data: impl Into<Bytes>) -> Self {
         self.initial_data = Some(data.into());
+        self
+    }
+
+    pub fn closed(mut self, closed: bool) -> Self {
+        self.closed = closed;
         self
     }
 }
@@ -501,4 +599,42 @@ pub struct HeadResponse {
     pub ttl: Option<Duration>,
     pub expires_at: Option<String>,
     pub etag: Option<String>,
+    pub stream_closed: bool,
+}
+
+/// Response from a close operation.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct CloseResponse {
+    pub final_offset: Offset,
+}
+
+/// Options for closing a stream.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct CloseOptions {
+    pub data: Option<Bytes>,
+    pub content_type: Option<String>,
+    pub headers: Vec<(String, String)>,
+}
+
+impl CloseOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn data(mut self, data: impl Into<Bytes>) -> Self {
+        self.data = Some(data.into());
+        self
+    }
+
+    pub fn content_type(mut self, ct: impl Into<String>) -> Self {
+        self.content_type = Some(ct.into());
+        self
+    }
+
+    pub fn header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((key.into(), value.into()));
+        self
+    }
 }

@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use durable_streams::{
-    AppendOptions, Client, CreateOptions, LiveMode, Offset, StreamError,
+    AppendOptions, Client, CloseOptions, CreateOptions, LiveMode, Offset, StreamError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +31,7 @@ struct Command {
     content_type: Option<String>,
     ttl_seconds: Option<u64>,
     expires_at: Option<String>,
+    closed: Option<bool>,
     // Append fields
     data: Option<String>,
     binary: Option<bool>,
@@ -108,6 +109,10 @@ struct Result {
     chunks: Option<Vec<ReadChunk>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     up_to_date: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stream_closed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_offset: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,6 +227,7 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
         "append" => handle_append(state, cmd).await,
         "read" => handle_read(state, cmd).await,
         "head" => handle_head(state, cmd).await,
+        "close" => handle_close(state, cmd).await,
         "delete" => handle_delete(state, cmd).await,
         "benchmark" => handle_benchmark(state, cmd).await,
         "set-dynamic-header" => handle_set_dynamic_header(state, cmd).await,
@@ -291,6 +297,10 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
 
     if let Some(expires) = cmd.expires_at {
         options = options.expires_at(expires);
+    }
+
+    if cmd.closed.unwrap_or(false) {
+        options = options.closed(true);
     }
 
     if let Some(headers) = cmd.headers {
@@ -542,6 +552,12 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                 }
             }
 
+            // Check stream closed status via HEAD
+            let stream_closed = match stream.head().await {
+                Ok(meta) => meta.stream_closed,
+                Err(_) => false,
+            };
+
             let mut res = Result {
                 result_type: "read".to_string(),
                 success: true,
@@ -549,6 +565,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                 chunks: Some(chunks_result),
                 offset: Some(final_offset),
                 up_to_date: Some(up_to_date),
+                stream_closed: Some(stream_closed),
                 ..Default::default()
             };
 
@@ -579,9 +596,47 @@ async fn handle_head(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
             status: Some(200),
             offset: Some(meta.next_offset.to_string()),
             content_type: meta.content_type,
+            stream_closed: Some(meta.stream_closed),
             ..Default::default()
         },
         Err(e) => stream_error_result("head", e),
+    }
+}
+
+async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let guard = state.lock().await;
+    let app_state = guard.as_ref().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let stream = app_state.client.stream(&path);
+
+    // Get data
+    let data: Option<Bytes> = if cmd.binary.unwrap_or(false) {
+        cmd.data.map(|d| {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, d)
+                .unwrap_or_default()
+                .into()
+        })
+    } else {
+        cmd.data.map(|d| d.into())
+    };
+
+    let mut options = CloseOptions::new();
+    if let Some(d) = data {
+        options = options.data(d);
+    }
+    if let Some(ct) = cmd.content_type {
+        options = options.content_type(ct);
+    }
+
+    match stream.close_with(options).await {
+        Ok(result) => Result {
+            result_type: "close".to_string(),
+            success: true,
+            final_offset: Some(result.final_offset.to_string()),
+            ..Default::default()
+        },
+        Err(e) => stream_error_result("close", e),
     }
 }
 
@@ -1167,6 +1222,8 @@ impl Default for Result {
             content_type: None,
             chunks: None,
             up_to_date: None,
+            stream_closed: None,
+            final_offset: None,
             cursor: None,
             headers: None,
             command_type: None,
