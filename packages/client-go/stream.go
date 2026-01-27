@@ -18,6 +18,7 @@ const (
 	headerStreamOffset   = "Stream-Next-Offset"
 	headerStreamCursor   = "Stream-Cursor"
 	headerStreamUpToDate = "Stream-Up-To-Date"
+	headerStreamClosed   = "Stream-Closed"
 	headerStreamSeq      = "Stream-Seq"
 	headerStreamTTL      = "Stream-TTL"
 	headerStreamExpires  = "Stream-Expires-At"
@@ -72,6 +73,15 @@ type Metadata struct {
 
 	// ETag for conditional requests.
 	ETag string
+
+	// StreamClosed indicates whether the stream has been closed (EOF).
+	StreamClosed bool
+}
+
+// CloseResult contains the response from a close operation.
+type CloseResult struct {
+	// FinalOffset is the tail offset after closing the stream.
+	FinalOffset Offset
 }
 
 // AppendResult contains the response from an append operation.
@@ -116,6 +126,9 @@ func (s *Stream) Create(ctx context.Context, opts ...CreateOption) error {
 	}
 	if !cfg.expiresAt.IsZero() {
 		req.Header.Set(headerStreamExpires, cfg.expiresAt.Format(time.RFC3339))
+	}
+	if cfg.closed {
+		req.Header.Set(headerStreamClosed, "true")
 	}
 
 	// Custom headers
@@ -281,6 +294,101 @@ func (s *Stream) Delete(ctx context.Context, opts ...DeleteOption) error {
 	}
 }
 
+// Close closes the stream, optionally with a final message.
+//
+// After closing:
+//   - No further appends are permitted (server returns 409)
+//   - Readers can observe the closed state and treat it as EOF
+//   - The stream's data remains fully readable
+//
+// Closing is:
+//   - Durable: The closed state is persisted
+//   - Monotonic: Once closed, a stream cannot be reopened
+//   - Idempotent (without body): Safe to call multiple times
+//
+// Example:
+//
+//	result, err := stream.Close(ctx)
+//	result, err := stream.Close(ctx, WithCloseData([]byte("final")))
+func (s *Stream) Close(ctx context.Context, opts ...CloseOption) (*CloseResult, error) {
+	cfg := &closeConfig{}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+
+	var body io.Reader
+	var contentLength int64
+	if len(cfg.data) > 0 {
+		// For JSON streams, wrap in array
+		contentType := cfg.contentType
+		if contentType == "" {
+			contentType = s.contentType
+		}
+		if contentType == "application/json" {
+			wrapped := []byte("[")
+			wrapped = append(wrapped, cfg.data...)
+			wrapped = append(wrapped, ']')
+			body = bytes.NewReader(wrapped)
+			contentLength = int64(len(wrapped))
+		} else {
+			body = bytes.NewReader(cfg.data)
+			contentLength = int64(len(cfg.data))
+		}
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url, body)
+	if err != nil {
+		return nil, newStreamError("close", s.url, 0, err)
+	}
+
+	// Set headers
+	req.Header.Set(headerStreamClosed, "true")
+	if contentLength > 0 {
+		req.ContentLength = contentLength
+	}
+
+	contentType := cfg.contentType
+	if contentType == "" {
+		contentType = s.contentType
+	}
+	if contentType != "" {
+		req.Header.Set(headerContentType, contentType)
+	}
+
+	// Custom headers
+	for k, v := range cfg.headers {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := s.client.httpClient.Do(req)
+	if err != nil {
+		return nil, newStreamError("close", s.url, 0, err)
+	}
+	defer resp.Body.Close()
+
+	io.Copy(io.Discard, resp.Body)
+
+	// Check for 409 Conflict with Stream-Closed header (stream was already closed)
+	if resp.StatusCode == http.StatusConflict {
+		isClosed := resp.Header.Get(headerStreamClosed) == "true"
+		if isClosed {
+			return nil, newStreamError("close", s.url, resp.StatusCode, ErrStreamClosed)
+		}
+		return nil, newStreamError("close", s.url, resp.StatusCode, ErrSeqConflict)
+	}
+
+	switch resp.StatusCode {
+	case http.StatusOK, http.StatusNoContent:
+		return &CloseResult{
+			FinalOffset: Offset(resp.Header.Get(headerStreamOffset)),
+		}, nil
+	case http.StatusNotFound:
+		return nil, newStreamError("close", s.url, resp.StatusCode, ErrStreamNotFound)
+	default:
+		return nil, newStreamError("close", s.url, resp.StatusCode, errorFromStatus(resp.StatusCode))
+	}
+}
+
 // Head returns stream metadata without reading content.
 //
 // Example:
@@ -313,9 +421,10 @@ func (s *Stream) Head(ctx context.Context, opts ...HeadOption) (*Metadata, error
 	switch resp.StatusCode {
 	case http.StatusOK:
 		meta := &Metadata{
-			ContentType: resp.Header.Get(headerContentType),
-			NextOffset:  Offset(resp.Header.Get(headerStreamOffset)),
-			ETag:        resp.Header.Get(headerETag),
+			ContentType:  resp.Header.Get(headerContentType),
+			NextOffset:   Offset(resp.Header.Get(headerStreamOffset)),
+			ETag:         resp.Header.Get(headerETag),
+			StreamClosed: resp.Header.Get(headerStreamClosed) == "true",
 		}
 
 		// Cache content type

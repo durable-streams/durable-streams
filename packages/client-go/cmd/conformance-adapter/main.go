@@ -39,6 +39,7 @@ type Command struct {
 	ContentType string `json:"contentType,omitempty"`
 	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
 	ExpiresAt   string `json:"expiresAt,omitempty"`
+	Closed      bool   `json:"closed,omitempty"`
 	// Append fields
 	Data   string `json:"data,omitempty"`
 	Binary bool   `json:"binary,omitempty"`
@@ -97,9 +98,11 @@ type Result struct {
 	Features      *Features         `json:"features,omitempty"`
 	Status        int               `json:"status,omitempty"`
 	Offset        string            `json:"offset,omitempty"`
+	FinalOffset   string            `json:"finalOffset,omitempty"`
 	ContentType   string            `json:"contentType,omitempty"`
 	Chunks        []ReadChunk       `json:"chunks"`
 	UpToDate      bool              `json:"upToDate"`
+	StreamClosed  bool              `json:"streamClosed,omitempty"`
 	Cursor        string            `json:"cursor,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	CommandType   string            `json:"commandType,omitempty"`
@@ -259,6 +262,8 @@ func handleCommand(cmd Command) Result {
 		return handleHead(cmd)
 	case "delete":
 		return handleDelete(cmd)
+	case "close":
+		return handleClose(cmd)
 	case "benchmark":
 		return handleBenchmark(cmd)
 	case "set-dynamic-header":
@@ -335,6 +340,9 @@ func handleCreate(cmd Command) Result {
 	}
 	if len(cmd.Headers) > 0 {
 		opts = append(opts, durablestreams.WithCreateHeaders(cmd.Headers))
+	}
+	if cmd.Closed {
+		opts = append(opts, durablestreams.WithClosed())
 	}
 
 	err := stream.Create(ctx, opts...)
@@ -520,6 +528,7 @@ func handleRead(cmd Command) Result {
 
 	var finalOffset string
 	upToDate := false
+	streamClosed := false
 	status := 200 // Default status
 
 	// Check if this is a JSON stream
@@ -572,6 +581,7 @@ func handleRead(cmd Command) Result {
 
 		finalOffset = string(chunk.NextOffset)
 		upToDate = chunk.UpToDate
+		streamClosed = chunk.StreamClosed
 
 		// For waitForUpToDate, stop when we've reached up-to-date
 		if cmd.WaitForUpToDate && chunk.UpToDate {
@@ -594,12 +604,13 @@ func handleRead(cmd Command) Result {
 	}
 
 	res := Result{
-		Type:     "read",
-		Success:  true,
-		Status:   status,
-		Chunks:   chunks,
-		Offset:   finalOffset,
-		UpToDate: upToDate,
+		Type:         "read",
+		Success:      true,
+		Status:       status,
+		Chunks:       chunks,
+		Offset:       finalOffset,
+		UpToDate:     upToDate,
+		StreamClosed: streamClosed,
 	}
 	if len(headersSent) > 0 {
 		res.HeadersSent = headersSent
@@ -627,11 +638,12 @@ func handleHead(cmd Command) Result {
 	}
 
 	return Result{
-		Type:        "head",
-		Success:     true,
-		Status:      200,
-		Offset:      string(meta.NextOffset),
-		ContentType: meta.ContentType,
+		Type:         "head",
+		Success:      true,
+		Status:       200,
+		Offset:       string(meta.NextOffset),
+		ContentType:  meta.ContentType,
+		StreamClosed: meta.StreamClosed,
 	}
 }
 
@@ -658,6 +670,39 @@ func handleDelete(cmd Command) Result {
 		Type:    "delete",
 		Success: true,
 		Status:  200,
+	}
+}
+
+func handleClose(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	stream := client.Stream(cmd.Path)
+
+	// Get content type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	stream.SetContentType(contentType)
+
+	var opts []durablestreams.CloseOption
+	if cmd.Data != "" {
+		opts = append(opts, durablestreams.WithCloseData([]byte(cmd.Data)))
+	}
+	if cmd.ContentType != "" {
+		opts = append(opts, durablestreams.WithCloseContentType(cmd.ContentType))
+	}
+
+	result, err := stream.Close(ctx, opts...)
+	if err != nil {
+		return errorResult("close", err)
+	}
+
+	return Result{
+		Type:        "close",
+		Success:     true,
+		FinalOffset: string(result.FinalOffset),
 	}
 }
 
@@ -914,6 +959,9 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 	}
 	if errors.Is(err.Err, durablestreams.ErrSeqConflict) {
 		return "SEQUENCE_CONFLICT"
+	}
+	if errors.Is(err.Err, durablestreams.ErrStreamClosed) {
+		return "STREAM_CLOSED"
 	}
 	if errors.Is(err.Err, durablestreams.ErrOffsetGone) {
 		return "INVALID_OFFSET"

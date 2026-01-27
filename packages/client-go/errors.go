@@ -35,6 +35,9 @@ var (
 	// ErrAlreadyClosed indicates the iterator has already been closed.
 	ErrAlreadyClosed = errors.New("durablestreams: iterator already closed")
 
+	// ErrStreamClosed indicates an attempt to append to a closed stream (409).
+	ErrStreamClosed = errors.New("durablestreams: stream is closed")
+
 	// ErrBadRequest indicates a malformed request (400).
 	ErrBadRequest = errors.New("durablestreams: bad request")
 )
