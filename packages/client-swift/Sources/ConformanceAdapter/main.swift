@@ -45,6 +45,7 @@ struct Command: Codable {
     var operationId: String?
     var target: ValidationTarget?
     var maxBatchBytes: Int?
+    var closed: Bool?
 }
 
 struct ValidationTarget: Codable {
@@ -121,6 +122,8 @@ struct Result: Codable {
     var headersSent: [String: String]?
     var paramsSent: [String: String]?
     var operationId: String?
+    var streamClosed: Bool?
+    var finalOffset: String?
 }
 
 struct Features: Codable {
@@ -331,6 +334,8 @@ func handleCommand(_ cmd: Command) async -> Result {
         return await handleRead(cmd)
     case "head":
         return await handleHead(cmd)
+    case "close":
+        return await handleClose(cmd)
     case "delete":
         return await handleDelete(cmd)
     case "shutdown":
@@ -398,6 +403,7 @@ func handleCreate(_ cmd: Command) async -> Result {
     }
 
     let contentType = cmd.contentType ?? "application/octet-stream"
+    let closed = cmd.closed ?? false
 
     // Build headers
     let dynamicHeaders = await state.resolveDynamicHeaders()
@@ -417,6 +423,7 @@ func handleCreate(_ cmd: Command) async -> Result {
             contentType: contentType,
             ttlSeconds: cmd.ttlSeconds,
             expiresAt: cmd.expiresAt,
+            closed: closed,
             config: DurableStream.Configuration(headers: allHeaders)
         )
 
@@ -926,6 +933,12 @@ func handleRead(_ cmd: Command) async -> Result {
         }
     }
 
+    // Get stream closed status via head
+    var streamClosedStatus = false
+    if let headInfo = try? await DurableStream.head(url: url) {
+        streamClosedStatus = headInfo.streamClosed
+    }
+
     return Result(
         type: "read",
         success: true,
@@ -935,7 +948,8 @@ func handleRead(_ cmd: Command) async -> Result {
         upToDate: lastUpToDate,
         cursor: lastCursor,
         headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams,
+        streamClosed: streamClosedStatus
     )
 }
 
@@ -1060,6 +1074,12 @@ func handleSSERead(
 
     let results = await accumulator.getResults()
 
+    // Get stream closed status via head
+    var streamClosedStatus = false
+    if let headInfo = try? await DurableStream.head(url: url) {
+        streamClosedStatus = headInfo.streamClosed
+    }
+
     return Result(
         type: "read",
         success: true,
@@ -1069,7 +1089,8 @@ func handleSSERead(
         upToDate: results.upToDate,
         cursor: results.cursor,
         headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
-        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
+        paramsSent: dynamicParams.isEmpty ? nil : dynamicParams,
+        streamClosed: streamClosedStatus
     )
 }
 
@@ -1110,7 +1131,64 @@ func handleHead(_ cmd: Command) async -> Result {
             success: true,
             status: 200,
             offset: info.offset?.rawValue,
-            contentType: info.contentType
+            contentType: info.contentType,
+            streamClosed: info.streamClosed
+        )
+    } catch let error as DurableStreamError {
+        return mapError(cmd.type, error)
+    } catch {
+        return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+    }
+}
+
+// MARK: - Close (uses DurableStream.close)
+
+func handleClose(_ cmd: Command) async -> Result {
+    guard let path = cmd.path else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Missing path")
+    }
+
+    let serverURL = await state.serverURL
+    guard let url = URL(string: serverURL + path) else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    }
+
+    // Decode data
+    var bodyData: Data? = nil
+    if let dataStr = cmd.data, !dataStr.isEmpty {
+        if cmd.binary == true {
+            guard let decoded = Data(base64Encoded: dataStr) else {
+                return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid base64 data")
+            }
+            bodyData = decoded
+        } else {
+            bodyData = Data(dataStr.utf8)
+        }
+    }
+
+    let contentType = cmd.contentType ?? "application/octet-stream"
+
+    // Build headers
+    var allHeaders: HeadersRecord = [:]
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+
+    do {
+        let result = try await DurableStream.close(
+            url: url,
+            data: bodyData,
+            contentType: contentType,
+            config: DurableStream.Configuration(headers: allHeaders)
+        )
+
+        return Result(
+            type: "close",
+            success: true,
+            status: 200,
+            finalOffset: result.finalOffset.rawValue
         )
     } catch let error as DurableStreamError {
         return mapError(cmd.type, error)
@@ -1521,6 +1599,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "NETWORK_ERROR"
     case .parseError:
         errorCode = "PARSE_ERROR"
+    case .streamClosed:
+        errorCode = "STREAM_CLOSED"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }
