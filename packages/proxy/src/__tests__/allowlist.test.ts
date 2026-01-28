@@ -29,8 +29,6 @@ describe(`allowlist validation`, () => {
 
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-exact-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/api/test`,
       body: {},
     })
@@ -44,8 +42,6 @@ describe(`allowlist validation`, () => {
 
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-wildcard-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat/completions`,
       body: {},
     })
@@ -56,8 +52,6 @@ describe(`allowlist validation`, () => {
   it(`blocks URLs not in allowlist`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-blocked-${Date.now()}`,
       upstreamUrl: `https://evil.hacker.com/steal-data`,
       body: {},
     })
@@ -71,8 +65,6 @@ describe(`allowlist validation`, () => {
   it(`blocks URLs with similar but non-matching domains`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-similar-${Date.now()}`,
       upstreamUrl: `https://api.openai.com.evil.com/v1/chat`,
       body: {},
     })
@@ -83,29 +75,26 @@ describe(`allowlist validation`, () => {
   it(`validates URL format before allowlist check`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-invalid-${Date.now()}`,
       upstreamUrl: `not-a-valid-url`,
       body: {},
     })
 
-    expect(result.status).toBe(400)
+    // Invalid URLs are rejected by validateUpstreamUrl → 403
+    expect(result.status).toBe(403)
     expect((result.body as { error: { code: string } }).error.code).toBe(
-      `INVALID_UPSTREAM`
+      `UPSTREAM_NOT_ALLOWED`
     )
   })
 
   it(`blocks URLs with different schemes`, async () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `allowlist-scheme-${Date.now()}`,
       upstreamUrl: `ftp://api.openai.com/v1/chat`,
       body: {},
     })
 
-    // FTP is not a valid scheme
-    expect(result.status).toBe(400)
+    // FTP is rejected by validateUpstreamUrl → 403
+    expect(result.status).toBe(403)
   })
 })
 
@@ -115,8 +104,6 @@ describe(`allowlist pattern matching`, () => {
 
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `pattern-depth-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/a/b/c/d/e/f/g`,
       body: {},
     })
@@ -130,8 +117,6 @@ describe(`allowlist pattern matching`, () => {
     // Should match https://api.anthropic.com/v1/*
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `pattern-single-${Date.now()}`,
       upstreamUrl: `https://api.anthropic.com/v1/messages`,
       body: {},
     })
@@ -146,8 +131,6 @@ describe(`allowlist pattern matching`, () => {
     // Should match http://localhost:*/**
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `pattern-port-${Date.now()}`,
       upstreamUrl: `http://localhost:9999/any/path`,
       body: {},
     })
@@ -159,8 +142,6 @@ describe(`allowlist pattern matching`, () => {
     // Should match https://*.example.com/api/**
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `pattern-subdomain-${Date.now()}`,
       upstreamUrl: `https://sub.example.com/api/v1/test`,
       body: {},
     })
@@ -173,8 +154,6 @@ describe(`allowlist pattern matching`, () => {
     // *.example.com should NOT match example.com (no subdomain)
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `pattern-no-subdomain-${Date.now()}`,
       upstreamUrl: `https://example.com/api/v1/test`,
       body: {},
     })
@@ -189,8 +168,6 @@ describe(`security: URL normalization`, () => {
     // https://api.openai.com:443/** should match https://api.openai.com/**
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `norm-port-443-${Date.now()}`,
       upstreamUrl: `https://api.openai.com:443/v1/chat`,
       body: {},
     })
@@ -203,8 +180,6 @@ describe(`security: URL normalization`, () => {
     // HTTPS://API.OPENAI.COM/** should match https://api.openai.com/**
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `norm-case-${Date.now()}`,
       upstreamUrl: `https://API.OPENAI.COM/v1/chat`,
       body: {},
     })

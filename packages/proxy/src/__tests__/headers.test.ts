@@ -1,7 +1,7 @@
 /**
  * Tests for header forwarding behavior.
  *
- * The proxy should forward most headers to upstream while filtering
+ * The proxy should forward upstream-prefixed headers and filter
  * out hop-by-hop headers and certain sensitive headers.
  */
 
@@ -19,13 +19,11 @@ afterAll(async () => {
 })
 
 describe(`header forwarding`, () => {
-  it(`forwards Authorization header to upstream`, async () => {
+  it(`forwards Upstream-Authorization header to upstream as Authorization`, async () => {
     ctx.upstream.setResponse({ status: 200, body: `ok` })
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `headers-auth-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
       headers: {
@@ -48,8 +46,6 @@ describe(`header forwarding`, () => {
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `headers-content-type-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: { test: true },
       headers: {
@@ -70,8 +66,6 @@ describe(`header forwarding`, () => {
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `headers-custom-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
       headers: {
@@ -94,8 +88,6 @@ describe(`header forwarding`, () => {
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `headers-no-host-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
@@ -106,20 +98,20 @@ describe(`header forwarding`, () => {
     const lastRequest = ctx.upstream.getLastRequest()
     expect(lastRequest).toBeDefined()
     // Host should be the upstream host, not the proxy port
-    // The proxy uses random ports, so we just check the request was made
   })
 
   it(`does not forward Connection header to upstream`, async () => {
     ctx.upstream.setResponse({ status: 200, body: `ok` })
 
-    const url = new URL(`/v1/proxy/chat`, ctx.urls.proxy)
-    url.searchParams.set(`stream_key`, `headers-no-conn-${Date.now()}`)
-    url.searchParams.set(`upstream`, ctx.urls.upstream + `/v1/chat`)
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+    url.searchParams.set(`secret`, `test-secret-key-for-development`)
 
     await fetch(url.toString(), {
       method: `POST`,
       headers: {
         "Content-Type": `application/json`,
+        "Upstream-URL": ctx.urls.upstream + `/v1/chat`,
+        "Upstream-Method": `POST`,
         Connection: `keep-alive`,
       },
       body: `{}`,
@@ -130,7 +122,6 @@ describe(`header forwarding`, () => {
 
     const lastRequest = ctx.upstream.getLastRequest()
     // Connection header should be filtered or set by the HTTP client
-    // The key point is we don't blindly forward it
     expect(lastRequest).toBeDefined()
   })
 
@@ -145,8 +136,6 @@ describe(`header forwarding`, () => {
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `headers-body-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: requestBody,
     })
@@ -165,7 +154,7 @@ describe(`header forwarding`, () => {
 
 describe(`CORS headers`, () => {
   it(`returns CORS headers on OPTIONS request`, async () => {
-    const response = await fetch(`${ctx.urls.proxy}/v1/proxy/chat`, {
+    const response = await fetch(`${ctx.urls.proxy}/v1/proxy`, {
       method: `OPTIONS`,
     })
 
@@ -180,7 +169,7 @@ describe(`CORS headers`, () => {
   })
 
   it(`returns CORS headers on error responses`, async () => {
-    const url = new URL(`/v1/proxy/chat`, ctx.urls.proxy)
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     // Missing required params should return error with CORS headers
 
     const response = await fetch(url.toString(), {
@@ -189,7 +178,7 @@ describe(`CORS headers`, () => {
       body: `{}`,
     })
 
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(401)
     expect(response.headers.get(`access-control-allow-origin`)).toBe(`*`)
   })
 })

@@ -3,16 +3,21 @@
  *
  * Provides a fetch-like API that automatically persists stream credentials
  * and can resume interrupted streams.
+ *
+ * Design principle: everything the caller passes is "aimed at upstream".
+ * The client transparently converts `Authorization` -> `Upstream-Authorization`
+ * and `method` -> `Upstream-Method` when sending to the proxy.
  */
 
+import { stream } from "@durable-streams/client"
 import {
-  createScopeFromUrl,
+  extractExpiresFromUrl,
+  extractStreamIdFromUrl,
   getDefaultStorage,
-  isExpired,
+  isUrlExpired,
   loadCredentials,
   removeCredentials,
   saveCredentials,
-  updateOffset,
 } from "./storage"
 import type {
   DurableFetch,
@@ -28,28 +33,6 @@ import type {
 const DEFAULT_PREFIX = `durable-streams:`
 
 /**
- * Extract the service name from a proxy URL.
- * Expected format: .../v1/proxy/{service}
- */
-function getServiceName(proxyUrlObj: URL): string {
-  const match = proxyUrlObj.pathname.match(/\/v1\/proxy\/([^/]+)\/?$/)
-  if (!match) {
-    throw new Error(
-      `Invalid proxy URL: expected format /v1/proxy/{service}, got ${proxyUrlObj.pathname}`
-    )
-  }
-  return match[1]!
-}
-
-/**
- * Get the prefix before /v1/proxy (for deployments mounted under a subpath).
- * e.g., /api/durable/v1/proxy/chat -> /api/durable
- */
-function getProxyPrefix(proxyUrlObj: URL): string {
-  return proxyUrlObj.pathname.replace(/\/v1\/proxy\/[^/]+\/?$/, ``)
-}
-
-/**
  * Create a durable fetch wrapper.
  *
  * This wrapper:
@@ -63,14 +46,15 @@ function getProxyPrefix(proxyUrlObj: URL): string {
  * @example
  * ```typescript
  * const durableFetch = createDurableFetch({
- *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
- *   storage: localStorage,
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy',
+ *   proxyAuthorization: 'service-secret',
  * })
  *
  * const response = await durableFetch('https://api.openai.com/v1/chat/completions', {
  *   method: 'POST',
+ *   headers: { Authorization: `Bearer ${openaiKey}` },
  *   body: JSON.stringify({ messages, stream: true }),
- *   stream_key: 'conversation-123',
+ *   requestId: 'conversation-123', // optional, for resumability
  * })
  *
  * // Read the streaming response
@@ -85,277 +69,244 @@ function getProxyPrefix(proxyUrlObj: URL): string {
 export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
   const {
     proxyUrl,
+    proxyAuthorization,
+    autoResume = true,
     storage = getDefaultStorage(),
     fetch: fetchFn = fetch,
     storagePrefix = DEFAULT_PREFIX,
-    autoResume = true,
   } = options
 
-  // Parse and validate the proxy URL
-  const proxyUrlObj = new URL(proxyUrl)
-  const serviceName = getServiceName(proxyUrlObj)
-  const proxyPrefix = getProxyPrefix(proxyUrlObj)
-  const storageScope = createScopeFromUrl(proxyUrl)
+  // Normalize trailing slash
+  const normalizedProxyUrl = proxyUrl.replace(/\/+$/, ``)
 
   return async (
-    input: RequestInfo | URL,
+    upstreamUrl: string | URL,
     init?: DurableFetchRequestOptions
   ): Promise<DurableResponse> => {
-    if (!init?.stream_key) {
-      throw new Error(`stream_key is required for durable fetch requests`)
-    }
+    const {
+      method = `POST`,
+      requestId,
+      headers: userHeaders,
+      body,
+      signal,
+    } = init ?? {}
 
-    const { stream_key, _isResume, ...fetchInit } = init
-    const upstreamUrl = typeof input === `string` ? input : input.toString()
+    const upstream =
+      typeof upstreamUrl === `string` ? upstreamUrl : upstreamUrl.toString()
 
-    // Check for existing credentials (for resume)
-    const existingCredentials = loadCredentials(
-      storage,
-      storagePrefix,
-      storageScope,
-      stream_key
-    )
+    // --- Resume path ---
+    if (requestId && autoResume) {
+      const existing = loadCredentials(
+        storage,
+        storagePrefix,
+        normalizedProxyUrl,
+        requestId
+      )
 
-    if (
-      existingCredentials &&
-      !isExpired(existingCredentials) &&
-      autoResume &&
-      !_isResume
-    ) {
-      // Try to resume from existing stream
-      try {
-        return await readFromStream(
-          fetchFn,
-          proxyUrlObj,
-          proxyPrefix,
-          serviceName,
-          existingCredentials,
-          stream_key,
-          storage,
-          storagePrefix,
-          storageScope,
-          true
-        )
-      } catch {
-        // Resume failed, fall through to create new stream
-        removeCredentials(storage, storagePrefix, storageScope, stream_key)
+      if (existing && !isUrlExpired(existing)) {
+        try {
+          return await readFromStream(fetchFn, existing, true)
+        } catch {
+          removeCredentials(
+            storage,
+            storagePrefix,
+            normalizedProxyUrl,
+            requestId
+          )
+        }
       }
     }
 
-    // Create a new stream through the proxy
-    const createUrl = new URL(proxyUrl)
-    createUrl.searchParams.set(`stream_key`, stream_key)
-    createUrl.searchParams.set(`upstream`, upstreamUrl)
+    // --- Create path: POST {proxyUrl} ---
+    const createUrl = new URL(normalizedProxyUrl)
+    createUrl.searchParams.set(`secret`, proxyAuthorization)
+
+    // Normalize user headers into a plain object
+    const normalized = normalizeHeaders(userHeaders)
+
+    // Build proxy request headers:
+    //  - Upstream-URL, Upstream-Method from our args
+    //  - Authorization from user -> Upstream-Authorization
+    //  - Everything else forwarded as-is
+    const proxyHeaders: Record<string, string> = {
+      "Upstream-URL": upstream,
+      "Upstream-Method": method,
+    }
+
+    for (const [key, value] of Object.entries(normalized)) {
+      const lower = key.toLowerCase()
+      if (lower === `authorization`) {
+        // Relabel: user's Authorization -> Upstream-Authorization
+        proxyHeaders[`Upstream-Authorization`] = value
+      } else if (lower === `host`) {
+        // Skip Host - the proxy sets its own
+        continue
+      } else {
+        proxyHeaders[key] = value
+      }
+    }
 
     const createResponse = await fetchFn(createUrl.toString(), {
-      ...fetchInit,
       method: `POST`,
+      headers: proxyHeaders,
+      body,
+      signal,
     })
 
+    // Handle errors
     if (!createResponse.ok) {
+      if (createResponse.status === 502) {
+        const upstreamStatus = createResponse.headers.get(`Upstream-Status`)
+        const errorBody = await createResponse.text()
+        throw new Error(`Upstream error (${upstreamStatus}): ${errorBody}`)
+      }
       const errorBody = await createResponse.text().catch(() => ``)
       throw new Error(
         `Failed to create stream: ${createResponse.status} ${errorBody}`
       )
     }
 
-    // Extract the stream path and read token from headers
-    const streamPath = createResponse.headers.get(`Durable-Streams-Path`)
-    const readToken = createResponse.headers.get(`Durable-Streams-Read-Token`)
-
-    if (!streamPath || !readToken) {
-      throw new Error(`Missing stream path or read token in response headers`)
+    // Extract Location header (pre-signed URL)
+    const locationHeader = createResponse.headers.get(`Location`)
+    if (!locationHeader) {
+      throw new Error(`Missing Location header in create response`)
     }
 
-    // Save credentials for future resume
+    const streamUrl = new URL(locationHeader, normalizedProxyUrl).toString()
+    const streamId = extractStreamIdFromUrl(streamUrl)
+    const expiresAt = extractExpiresFromUrl(streamUrl)
+    const upstreamContentType =
+      createResponse.headers.get(`Upstream-Content-Type`) ?? undefined
+
     const credentials: StreamCredentials = {
-      path: streamPath,
-      readToken,
+      streamUrl,
+      streamId,
       offset: `-1`,
+      upstreamContentType,
       createdAt: Date.now(),
+      expiresAt,
     }
-    saveCredentials(
-      storage,
-      storagePrefix,
-      storageScope,
-      stream_key,
-      credentials
-    )
 
-    // Now read from the stream
-    return readFromStream(
-      fetchFn,
-      proxyUrlObj,
-      proxyPrefix,
-      serviceName,
-      credentials,
-      stream_key,
-      storage,
-      storagePrefix,
-      storageScope,
-      false
-    )
+    if (requestId) {
+      saveCredentials(
+        storage,
+        storagePrefix,
+        normalizedProxyUrl,
+        requestId,
+        credentials
+      )
+    }
+
+    // --- Read from stream using @durable-streams/client ---
+    return readFromStream(fetchFn, credentials, false)
   }
 }
 
 /**
- * Read from a durable stream.
+ * Normalize headers from various formats into a plain object.
+ */
+function normalizeHeaders(
+  headers: HeadersInit | undefined
+): Record<string, string> {
+  if (!headers) return {}
+  if (headers instanceof Headers) {
+    const obj: Record<string, string> = {}
+    headers.forEach((value, key) => {
+      obj[key] = value
+    })
+    return obj
+  }
+  if (Array.isArray(headers)) {
+    const obj: Record<string, string> = {}
+    for (const [key, value] of headers) {
+      obj[key] = value
+    }
+    return obj
+  }
+  return { ...headers }
+}
+
+/**
+ * Read from a stream using @durable-streams/client stream().
+ *
+ * The pre-signed URL already contains expires/signature for auth.
+ * We delegate to the DS client which handles reconnection, SSE parsing, etc.
  */
 async function readFromStream(
   fetchFn: typeof fetch,
-  proxyUrlObj: URL,
-  proxyPrefix: string,
-  serviceName: string,
   credentials: StreamCredentials,
-  streamKey: string,
-  storage: ReturnType<typeof getDefaultStorage>,
-  storagePrefix: string,
-  storageScope: string,
   wasResumed: boolean
 ): Promise<DurableResponse> {
-  // Build the read URL: {prefix}/v1/proxy/{service}/streams/{key}
-  const readUrl = new URL(
-    `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}`,
-    proxyUrlObj.origin
-  )
-  readUrl.searchParams.set(`offset`, credentials.offset)
-  readUrl.searchParams.set(`live`, `sse`)
-
-  const response = await fetchFn(readUrl.toString(), {
-    headers: {
-      Authorization: `Bearer ${credentials.readToken}`,
-      Accept: `text/event-stream`,
-    },
+  // Use @durable-streams/client stream() function
+  const streamResponse = await stream({
+    url: credentials.streamUrl,
+    offset: credentials.offset === `-1` ? undefined : credentials.offset,
+    fetch: fetchFn,
+    live: true, // Follow until stream closes
   })
 
-  if (!response.ok) {
-    throw new Error(`Failed to read stream: ${response.status}`)
-  }
+  // Bridge: wrap DS client's bodyStream() into a Response
+  const bodyStream = streamResponse.bodyStream()
 
-  // Create a wrapped response that tracks offset updates
-  const originalBody = response.body
-  let transformedBody: ReadableStream<Uint8Array> | null = null
-
-  if (originalBody) {
-    transformedBody = trackOffsetUpdates(
-      originalBody,
-      storage,
-      storagePrefix,
-      storageScope,
-      streamKey
-    )
-  }
-
-  // Create a response-like object with our properties
-  const durableResponse: DurableResponse = new Response(transformedBody, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: response.headers,
-  }) as DurableResponse
-
-  // Add durable stream properties
-  durableResponse.durableStreamPath = credentials.path
-  durableResponse.durableStreamOffset = credentials.offset
-  durableResponse.wasResumed = wasResumed
-
-  return durableResponse
-}
-
-/**
- * Create a transform stream that tracks offset updates from SSE events.
- *
- * SSE format includes an optional `id:` field that contains the offset.
- * We parse this to track our position for resume capability.
- */
-function trackOffsetUpdates(
-  body: ReadableStream<Uint8Array>,
-  storage: ReturnType<typeof getDefaultStorage>,
-  storagePrefix: string,
-  storageScope: string,
-  streamKey: string
-): ReadableStream<Uint8Array> {
-  const decoder = new TextDecoder()
-  let buffer = ``
-
-  return new ReadableStream<Uint8Array>({
+  const readableBody = new ReadableStream<Uint8Array>({
     async start(controller) {
-      const reader = body.getReader()
-
       try {
-        for (;;) {
-          const { done, value } = await reader.read()
-
-          if (done) {
-            controller.close()
-            break
-          }
-
-          // Pass through the data
-          controller.enqueue(value)
-
-          // Parse SSE events to track offset from id: field
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split(`\n`)
-
-          // Keep the last incomplete line in the buffer
-          buffer = lines.pop() ?? ``
-
-          for (const line of lines) {
-            // SSE id: field contains the offset
-            if (line.startsWith(`id:`)) {
-              const offset = line.slice(3).trim()
-              if (offset) {
-                updateOffset(
-                  storage,
-                  storagePrefix,
-                  storageScope,
-                  streamKey,
-                  offset
-                )
-              }
-            }
-          }
+        for await (const chunk of bodyStream) {
+          controller.enqueue(chunk)
         }
+        controller.close()
       } catch (error) {
         controller.error(error)
       }
     },
   })
+
+  // Build response headers:
+  //  - Set Content-Type from Upstream-Content-Type (relabel)
+  //  - Forward non-internal headers from the underlying response
+  const responseHeaders = new Headers()
+  responseHeaders.set(
+    `Content-Type`,
+    credentials.upstreamContentType ?? `application/octet-stream`
+  )
+
+  streamResponse.headers.forEach((value, key) => {
+    const lower = key.toLowerCase()
+    if (lower.startsWith(`stream-`) || lower === `content-type`) {
+      return // Skip DS-internal and content-type (we use the relabeled one)
+    }
+    responseHeaders.set(key, value)
+  })
+
+  const response = new Response(readableBody, {
+    status: 200,
+    headers: responseHeaders,
+  }) as DurableResponse
+
+  response.streamId = credentials.streamId
+  response.streamUrl = credentials.streamUrl
+  response.offset = streamResponse.offset
+  response.upstreamContentType = credentials.upstreamContentType
+  response.wasResumed = wasResumed
+
+  return response
 }
 
 /**
- * Create an abort function for a stream.
- *
- * @param proxyUrl - The proxy URL (e.g., https://api.example.com/v1/proxy/chat)
- * @param streamKey - The stream key
- * @param readToken - The read token for authorization
- * @param fetchFn - Optional fetch implementation
+ * Create an abort function for a proxy stream.
+ * Uses the pre-signed URL with ?action=abort via PATCH.
  */
 export function createAbortFn(
-  proxyUrl: string,
-  streamKey: string,
-  readToken: string,
+  streamUrl: string,
   fetchFn: typeof fetch = fetch
 ): () => Promise<void> {
   return async () => {
-    const proxyUrlObj = new URL(proxyUrl)
-    const serviceName = getServiceName(proxyUrlObj)
-    const proxyPrefix = getProxyPrefix(proxyUrlObj)
+    const abortUrl = new URL(streamUrl)
+    abortUrl.searchParams.set(`action`, `abort`)
 
-    // Build abort URL: {prefix}/v1/proxy/{service}/streams/{key}/abort
-    const abortUrl = new URL(
-      `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}/abort`,
-      proxyUrlObj.origin
-    )
+    const response = await fetchFn(abortUrl.toString(), { method: `PATCH` })
 
-    const response = await fetchFn(abortUrl.toString(), {
-      method: `POST`,
-      headers: {
-        Authorization: `Bearer ${readToken}`,
-      },
-    })
-
-    if (!response.ok) {
+    if (!response.ok && response.status !== 204) {
       const body = await response.text().catch(() => ``)
       throw new Error(`Abort request failed: ${response.status} ${body}`)
     }

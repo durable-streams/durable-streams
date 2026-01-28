@@ -2,21 +2,19 @@
  * Integration tests using the actual client library.
  *
  * These tests verify that the client library correctly interacts with the proxy server.
- * They would have caught bugs like the URL construction issue.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   createAbortFn,
   createDurableFetch,
-  createScopeFromUrl,
   createStorageKey,
-  isExpired,
+  isUrlExpired,
   loadCredentials,
 } from "../client"
 import { createDurableAdapter } from "../transports/tanstack"
 import { createAIStreamingResponse, createTestContext } from "./harness"
-import type { DurableFetch } from "../client/types"
+import type { DurableFetch, StreamCredentials } from "../client/types"
 
 const ctx = createTestContext()
 
@@ -39,6 +37,8 @@ function createMemoryStorage(): Storage {
   }
 }
 
+const TEST_SECRET = `test-secret-key-for-development`
+
 beforeAll(async () => {
   await ctx.setup()
 })
@@ -50,19 +50,19 @@ afterAll(async () => {
 describe(`createDurableFetch client integration`, () => {
   let durableFetch: DurableFetch
   let storage: Storage
+  const proxyUrl = () => `${ctx.urls.proxy}/v1/proxy`
 
   beforeEach(() => {
     storage = createMemoryStorage()
     durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
       storage,
       autoResume: false, // Disable for clearer test behavior
     })
   })
 
-  it(`creates a stream and gets correct headers`, async () => {
-    const streamKey = `client-test-${Date.now()}`
-
+  it(`creates a stream and returns response with stream properties`, async () => {
     // Set up mock upstream response
     ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
@@ -70,51 +70,69 @@ describe(`createDurableFetch client integration`, () => {
       method: `POST`,
       headers: { "Content-Type": `application/json` },
       body: JSON.stringify({ messages: [{ role: `user`, content: `Hi` }] }),
-      stream_key: streamKey,
     })
 
     expect(response.ok).toBe(true)
-    expect(response.durableStreamPath).toBeDefined()
-    expect(response.durableStreamPath).toContain(
-      `/v1/streams/chat/${streamKey}`
-    )
+    expect(response.streamId).toBeDefined()
+    expect(response.streamUrl).toBeDefined()
     expect(response.wasResumed).toBe(false)
   })
 
-  it(`stores credentials in storage`, async () => {
-    const streamKey = `storage-test-${Date.now()}`
+  it(`stores credentials in storage when requestId is provided`, async () => {
+    const requestId = `storage-test-${Date.now()}`
 
     ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
 
     const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId,
     })
 
     expect(response.ok).toBe(true)
 
     // Verify credentials were stored
-    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
-    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
+    const normalizedUrl = proxyUrl()
+    const storageKey = createStorageKey(
+      `durable-streams:`,
+      normalizedUrl,
+      requestId
+    )
     const storedData = storage.getItem(storageKey)
     expect(storedData).toBeDefined()
 
-    const credentials = JSON.parse(storedData!)
-    expect(credentials.path).toContain(`/v1/streams/chat/`)
-    expect(credentials.readToken).toBeDefined()
+    const credentials = JSON.parse(storedData!) as StreamCredentials
+    expect(credentials.streamUrl).toBeDefined()
+    expect(credentials.streamId).toBeDefined()
     expect(credentials.offset).toBe(`-1`)
+    expect(credentials.expiresAt).toBeGreaterThan(0)
+  })
+
+  it(`does not store credentials when requestId is not provided`, async () => {
+    ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
+
+    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+      // No requestId
+    })
+
+    expect(response.ok).toBe(true)
+
+    // Storage should be empty (no requestId = no persistence)
+    expect(storage.length).toBe(0)
   })
 
   it(`marks resumed responses correctly`, async () => {
-    const streamKey = `resume-test-${Date.now()}`
+    const requestId = `resume-test-${Date.now()}`
 
     // Create initial stream
     ctx.upstream.setResponse(createAIStreamingResponse([`Part 1`]))
 
     // Enable auto-resume for this test
     const resumableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
       storage,
       autoResume: true,
     })
@@ -122,7 +140,7 @@ describe(`createDurableFetch client integration`, () => {
     const response1 = await resumableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId,
     })
 
     expect(response1.ok).toBe(true)
@@ -131,11 +149,11 @@ describe(`createDurableFetch client integration`, () => {
     // Wait for stream to complete
     await new Promise((r) => setTimeout(r, 200))
 
-    // Second request with same stream_key should resume
+    // Second request with same requestId should resume
     const response2 = await resumableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId,
     })
 
     expect(response2.ok).toBe(true)
@@ -145,21 +163,21 @@ describe(`createDurableFetch client integration`, () => {
 
 describe(`createAbortFn client integration`, () => {
   let storage: Storage
+  const proxyUrl = () => `${ctx.urls.proxy}/v1/proxy`
 
   beforeEach(() => {
     storage = createMemoryStorage()
   })
 
   it(`aborts an in-progress stream`, async () => {
-    const streamKey = `abort-test-${Date.now()}`
-
     // Set up a slow streaming response
     ctx.upstream.setResponse(
       createAIStreamingResponse([`Chunk 1`, `Chunk 2`, `Chunk 3`], 500) // 500ms delay
     )
 
     const durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
       storage,
       autoResume: false,
     })
@@ -167,37 +185,26 @@ describe(`createAbortFn client integration`, () => {
     const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId: `abort-test-${Date.now()}`,
     })
 
     expect(response.ok).toBe(true)
+    expect(response.streamUrl).toBeDefined()
 
-    // Get credentials from storage
-    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
-    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
-    const storedData = storage.getItem(storageKey)
-    expect(storedData).toBeDefined()
-    const credentials = JSON.parse(storedData!)
-
-    // Create abort function using the client library
-    const abort = createAbortFn(
-      `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
-    )
+    // Create abort function using the pre-signed stream URL
+    const abort = createAbortFn(response.streamUrl!)
 
     // Abort the stream - should not throw
     await abort()
   })
 
   it(`handles aborting already-completed streams`, async () => {
-    const streamKey = `abort-complete-test-${Date.now()}`
-
     // Fast response that completes quickly
     ctx.upstream.setResponse(createAIStreamingResponse([`Done`]))
 
     const durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
       storage,
       autoResume: false,
     })
@@ -205,7 +212,7 @@ describe(`createAbortFn client integration`, () => {
     const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId: `abort-complete-test-${Date.now()}`,
     })
 
     expect(response.ok).toBe(true)
@@ -213,136 +220,27 @@ describe(`createAbortFn client integration`, () => {
     // Wait for stream to complete
     await new Promise((r) => setTimeout(r, 200))
 
-    // Get credentials
-    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
-    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
-    const storedData = storage.getItem(storageKey)
-    const credentials = JSON.parse(storedData!)
-
     // Abort should succeed even though stream is complete (idempotent)
-    const abort = createAbortFn(
-      `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
-    )
-
-    await abort()
-  })
-})
-
-describe(`client URL construction`, () => {
-  it(`constructs correct read URL - would fail with old buggy code`, async () => {
-    const storage = createMemoryStorage()
-
-    // This test verifies the URL construction fix
-    // The client should construct: /v1/proxy/{service}/streams/{key}
-    // NOT the old buggy: /v1/proxy/v1/proxy/{service}/{key}
-
-    const durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
-      storage,
-      autoResume: false,
-    })
-
-    const streamKey = `url-test-${Date.now()}`
-
-    ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
-
-    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
-      method: `POST`,
-      body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
-    })
-
-    // If URL construction is wrong, this would fail with 404
-    expect(response.ok).toBe(true)
-    expect(response.durableStreamPath).toContain(
-      `/v1/streams/chat/${streamKey}`
-    )
-  })
-
-  it(`abort URL construction works correctly`, async () => {
-    const storage = createMemoryStorage()
-    const streamKey = `abort-url-test-${Date.now()}`
-
-    ctx.upstream.setResponse(createAIStreamingResponse([`Test`], 500))
-
-    const durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
-      storage,
-      autoResume: false,
-    })
-
-    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
-      method: `POST`,
-      body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
-    })
-
-    expect(response.ok).toBe(true)
-
-    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
-    const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
-    const storedData = storage.getItem(storageKey)
-    const credentials = JSON.parse(storedData!)
-
-    // This would fail with 404 if abort URL is constructed wrong
-    const abort = createAbortFn(
-      `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
-    )
-
+    const abort = createAbortFn(response.streamUrl!)
     await abort()
   })
 })
 
 describe(`client unit: storage key scoping`, () => {
   it(`creates different keys for different proxy URLs`, () => {
-    const streamKey = `test-stream`
+    const requestId = `test-stream`
     const prefix = `durable-streams:`
 
-    const scope1 = createScopeFromUrl(
-      `https://proxy1.example.com/v1/proxy/chat`
-    )
-    const scope2 = createScopeFromUrl(
-      `https://proxy2.example.com/v1/proxy/chat`
-    )
+    const scope1 = `https://proxy1.example.com/v1/proxy`
+    const scope2 = `https://proxy2.example.com/v1/proxy`
 
-    const key1 = createStorageKey(prefix, scope1, streamKey)
-    const key2 = createStorageKey(prefix, scope2, streamKey)
+    const key1 = createStorageKey(prefix, scope1, requestId)
+    const key2 = createStorageKey(prefix, scope2, requestId)
 
-    // Keys should be different even with same streamKey
+    // Keys should be different even with same requestId
     expect(key1).not.toBe(key2)
     expect(key1).toContain(`proxy1.example.com`)
     expect(key2).toContain(`proxy2.example.com`)
-  })
-
-  it(`creates different keys for different services on same proxy`, () => {
-    const streamKey = `test-stream`
-    const prefix = `durable-streams:`
-
-    const scope1 = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
-    const scope2 = createScopeFromUrl(
-      `https://proxy.example.com/v1/proxy/embeddings`
-    )
-
-    const key1 = createStorageKey(prefix, scope1, streamKey)
-    const key2 = createStorageKey(prefix, scope2, streamKey)
-
-    // Keys should be different even with same streamKey and host
-    expect(key1).not.toBe(key2)
-    expect(key1).toContain(`/chat`)
-    expect(key2).toContain(`/embeddings`)
-  })
-
-  it(`scope includes full path for uniqueness`, () => {
-    const scope = createScopeFromUrl(
-      `https://api.example.com/custom/path/v1/proxy/chat`
-    )
-
-    // Should include the full origin + pathname
-    expect(scope).toBe(`https://api.example.com/custom/path/v1/proxy/chat`)
   })
 })
 
@@ -350,12 +248,14 @@ describe(`client unit: custom storage prefix`, () => {
   it(`uses custom storagePrefix when configured`, async () => {
     const storage = createMemoryStorage()
     const customPrefix = `my-app:`
-    const streamKey = `prefix-test-${Date.now()}`
+    const requestId = `prefix-test-${Date.now()}`
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy`
 
     ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
 
     const durableFetch = createDurableFetch({
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl,
+      proxyAuthorization: TEST_SECRET,
       storage,
       storagePrefix: customPrefix,
       autoResume: false,
@@ -364,21 +264,20 @@ describe(`client unit: custom storage prefix`, () => {
     const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId,
     })
 
     expect(response.ok).toBe(true)
 
     // Verify credentials were stored with custom prefix
-    const scope = createScopeFromUrl(`${ctx.urls.proxy}/v1/proxy/chat`)
-    const expectedKey = `${customPrefix}${scope}:${streamKey}`
+    const expectedKey = `${customPrefix}${proxyUrl}:${requestId}`
     const storedData = storage.getItem(expectedKey)
 
     expect(storedData).toBeDefined()
     expect(storedData).not.toBeNull()
 
     // Default prefix should NOT have data
-    const defaultKey = `durable-streams:${scope}:${streamKey}`
+    const defaultKey = `durable-streams:${proxyUrl}:${requestId}`
     expect(storage.getItem(defaultKey)).toBeNull()
   })
 })
@@ -388,9 +287,10 @@ describe(`client unit: TanStack adapter concurrent streams`, () => {
     const storage = createMemoryStorage()
 
     const adapter = createDurableAdapter(ctx.urls.upstream + `/v1/chat`, {
-      proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
       storage,
-      getStreamKey: (_msgs, data) => {
+      getRequestId: (_msgs, data) => {
         const d = data as { streamId?: string } | undefined
         return d?.streamId ?? `default`
       },
@@ -413,48 +313,49 @@ describe(`client unit: TanStack adapter concurrent streams`, () => {
     expect(conn2.stream).toBeDefined()
 
     // Both streams should be active - abort should work
-    // (This tests that the Map-based tracking doesn't lose the first stream)
     await adapter.abort()
   })
 })
 
-describe(`client unit: token expiration`, () => {
-  it(`isExpired returns false for fresh credentials`, () => {
-    const credentials = {
-      path: `/v1/streams/chat/test`,
-      readToken: `token`,
+describe(`client unit: URL expiration`, () => {
+  it(`isUrlExpired returns false for fresh credentials`, () => {
+    const credentials: StreamCredentials = {
+      streamUrl: `http://example.com/v1/proxy/abc?expires=${Math.floor(Date.now() / 1000) + 3600}&signature=sig`,
+      streamId: `abc`,
       offset: `-1`,
       createdAt: Date.now(),
+      expiresAt: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
     }
 
-    expect(isExpired(credentials)).toBe(false)
+    expect(isUrlExpired(credentials)).toBe(false)
   })
 
-  it(`isExpired returns true for old credentials`, () => {
-    const credentials = {
-      path: `/v1/streams/chat/test`,
-      readToken: `token`,
+  it(`isUrlExpired returns true for expired credentials`, () => {
+    const credentials: StreamCredentials = {
+      streamUrl: `http://example.com/v1/proxy/abc?expires=${Math.floor(Date.now() / 1000) - 3600}&signature=sig`,
+      streamId: `abc`,
       offset: `-1`,
-      createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago
+      createdAt: Date.now() - 2 * 3600 * 1000,
+      expiresAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago
     }
 
-    expect(isExpired(credentials)).toBe(true)
+    expect(isUrlExpired(credentials)).toBe(true)
   })
 
   it(`auto-resume skips expired credentials and creates new stream`, async () => {
     const storage = createMemoryStorage()
-    const streamKey = `expired-test-${Date.now()}`
+    const requestId = `expired-test-${Date.now()}`
+    const proxyUrl = `${ctx.urls.proxy}/v1/proxy`
 
     // Manually insert expired credentials
-    const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
-    const scope = createScopeFromUrl(proxyUrl)
-    const storageKey = `durable-streams:${scope}:${streamKey}`
+    const storageKey = `durable-streams:${proxyUrl}:${requestId}`
 
-    const expiredCredentials = {
-      path: `/v1/streams/chat/${streamKey}`,
-      readToken: `old-token`,
+    const expiredCredentials: StreamCredentials = {
+      streamUrl: `${ctx.urls.proxy}/v1/proxy/old-stream-id?expires=${Math.floor(Date.now() / 1000) - 3600}&signature=sig`,
+      streamId: `old-stream-id`,
       offset: `100`,
-      createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago (expired)
+      createdAt: Date.now() - 2 * 3600 * 1000,
+      expiresAt: Math.floor(Date.now() / 1000) - 3600, // expired
     }
     storage.setItem(storageKey, JSON.stringify(expiredCredentials))
 
@@ -463,6 +364,7 @@ describe(`client unit: token expiration`, () => {
 
     const durableFetch = createDurableFetch({
       proxyUrl,
+      proxyAuthorization: TEST_SECRET,
       storage,
       autoResume: true,
     })
@@ -470,25 +372,28 @@ describe(`client unit: token expiration`, () => {
     const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
       method: `POST`,
       body: JSON.stringify({ messages: [] }),
-      stream_key: streamKey,
+      requestId,
     })
 
     expect(response.ok).toBe(true)
     // Should NOT be a resume - should have created new stream
     expect(response.wasResumed).toBe(false)
 
-    // Credentials should be updated with fresh timestamp
-    const newCredentials = JSON.parse(storage.getItem(storageKey)!)
+    // Credentials should be updated with fresh data
+    const newCredentials = JSON.parse(
+      storage.getItem(storageKey)!
+    ) as StreamCredentials
     expect(newCredentials.createdAt).toBeGreaterThan(
       expiredCredentials.createdAt
     )
+    expect(newCredentials.streamId).not.toBe(`old-stream-id`)
   })
 })
 
 describe(`client unit: credentials persistence`, () => {
   it(`loadCredentials returns null for non-existent key`, () => {
     const storage = createMemoryStorage()
-    const scope = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
+    const scope = `https://proxy.example.com/v1/proxy`
 
     const credentials = loadCredentials(
       storage,
@@ -502,7 +407,7 @@ describe(`client unit: credentials persistence`, () => {
 
   it(`loadCredentials returns null for malformed JSON`, () => {
     const storage = createMemoryStorage()
-    const scope = createScopeFromUrl(`https://proxy.example.com/v1/proxy/chat`)
+    const scope = `https://proxy.example.com/v1/proxy`
     const key = `durable-streams:${scope}:test-key`
 
     storage.setItem(key, `not valid json`)

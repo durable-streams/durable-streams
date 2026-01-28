@@ -93,11 +93,11 @@ function parseAllowlistPattern(pattern: string): AllowlistPattern {
     }
   }
 
-  // Parse port from host
-  const portMatch = hostPart.match(/^(.+):(\d+)$/)
+  // Parse port from host (supports numeric ports and * wildcard)
+  const portMatch = hostPart.match(/^(.+):(\d+|\*)$/)
   if (portMatch) {
     hostname = portMatch[1]!
-    port = portMatch[2]!
+    port = portMatch[2] === `*` ? null : portMatch[2]!
   } else {
     hostname = hostPart
     port = null // Any port

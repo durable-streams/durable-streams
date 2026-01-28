@@ -14,13 +14,13 @@ export { createDurableFetch, createAbortFn } from "./durable-fetch"
 export {
   MemoryStorage,
   getDefaultStorage,
-  createScopeFromUrl,
   createStorageKey,
   saveCredentials,
   loadCredentials,
   removeCredentials,
-  updateOffset,
-  isExpired,
+  isUrlExpired,
+  extractStreamIdFromUrl,
+  extractExpiresFromUrl,
 } from "./storage"
 
 // Types
