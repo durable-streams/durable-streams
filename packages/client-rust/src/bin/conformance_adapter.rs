@@ -644,6 +644,7 @@ async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Res
         cmd.data.map(|d| d.into())
     };
 
+    let has_data = data.is_some();
     let mut options = CloseOptions::new();
     if let Some(d) = data {
         options = options.data(d);
@@ -653,7 +654,7 @@ async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Res
         .or_else(|| app_state.stream_content_types.get(&path).cloned());
     if let Some(ct) = content_type {
         stream.set_content_type(ct.clone());
-        if data.is_some() {
+        if has_data {
             options = options.content_type(ct);
         }
     }
