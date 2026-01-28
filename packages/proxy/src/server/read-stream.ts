@@ -1,13 +1,13 @@
 /**
  * Handler for reading proxy streams.
  *
- * GET /v1/proxy/{service}/streams/{key}?offset=-1&live=...
+ * GET /v1/proxy/:streamId
  *
  * Proxies read requests to the underlying durable streams server.
- * Requires a valid read token for authentication.
+ * Supports pre-signed URL authentication or service JWT.
  */
 
-import { authorizeStreamRequest } from "./tokens"
+import { validatePreSignedUrl, validateServiceJwt } from "./tokens"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -17,38 +17,72 @@ import type { ProxyServerOptions } from "./types"
  *
  * @param req - The incoming HTTP request
  * @param res - The server response
- * @param serviceName - The service name from the URL path
- * @param streamKey - The stream key from the URL path
+ * @param streamId - The stream ID from the URL path
  * @param options - Proxy server options
+ * @param contentTypeStore - Map of stream IDs to upstream content types
  */
 export async function handleReadStream(
   req: IncomingMessage,
   res: ServerResponse,
-  serviceName: string,
-  streamKey: string,
-  options: ProxyServerOptions
+  streamId: string,
+  options: ProxyServerOptions,
+  contentTypeStore: Map<string, string>
 ): Promise<void> {
-  // Authorize the request
-  const auth = authorizeStreamRequest(
-    req.headers.authorization,
-    options.jwtSecret,
-    serviceName,
-    streamKey
-  )
+  const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
-  if (!auth.ok) {
-    sendError(res, auth.status, auth.code, auth.message)
-    return
+  // Authentication: try pre-signed URL first, then fall back to service JWT
+  const expires = url.searchParams.get(`expires`)
+  const signature = url.searchParams.get(`signature`)
+
+  if (expires && signature) {
+    // Validate pre-signed URL
+    const result = validatePreSignedUrl(
+      streamId,
+      expires,
+      signature,
+      options.jwtSecret
+    )
+
+    if (!result.ok) {
+      const { code } = result
+      sendError(
+        res,
+        401,
+        code,
+        code === `SIGNATURE_EXPIRED`
+          ? `Pre-signed URL has expired`
+          : `Invalid signature`
+      )
+      return
+    }
+  } else {
+    // Fall back to service JWT
+    const auth = validateServiceJwt(
+      url.searchParams.get(`secret`),
+      req.headers.authorization,
+      options.jwtSecret
+    )
+
+    if (!auth.ok) {
+      const { code } = auth
+      sendError(
+        res,
+        401,
+        code,
+        code === `MISSING_SECRET`
+          ? `Authentication required`
+          : `Invalid credentials`
+      )
+      return
+    }
   }
 
   // Build the durable streams URL
-  const incomingUrl = new URL(req.url ?? ``, `http://${req.headers.host}`)
-  const dsUrl = new URL(auth.streamPath, options.durableStreamsUrl)
+  const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)
 
   // Forward query parameters
-  const offset = incomingUrl.searchParams.get(`offset`)
-  const live = incomingUrl.searchParams.get(`live`)
-  const cursor = incomingUrl.searchParams.get(`cursor`)
+  const offset = url.searchParams.get(`offset`)
+  const live = url.searchParams.get(`live`)
 
   if (offset) {
     dsUrl.searchParams.set(`offset`, offset)
@@ -56,43 +90,59 @@ export async function handleReadStream(
   if (live) {
     dsUrl.searchParams.set(`live`, live)
   }
-  if (cursor) {
-    dsUrl.searchParams.set(`cursor`, cursor)
-  }
 
   try {
     // Proxy the request to the durable streams server
     const dsResponse = await fetch(dsUrl.toString(), {
       method: `GET`,
       headers: {
-        Accept: req.headers.accept ?? `text/event-stream`,
+        Accept: req.headers.accept ?? `*/*`,
       },
     })
 
-    // Forward response status and headers
+    // Build response headers
     const responseHeaders: Record<string, string> = {}
 
-    // Copy relevant headers from durable streams response
-    const headersToCopy = [
-      `content-type`,
+    // Copy Stream-* headers from durable stream
+    const streamHeaders = [
       `stream-next-offset`,
-      `stream-cursor`,
       `stream-up-to-date`,
-      `cache-control`,
-      `etag`,
+      `stream-total-size`,
+      `stream-write-units`,
+      `stream-closed`,
+      `stream-expires-at`,
     ]
 
-    for (const header of headersToCopy) {
+    for (const header of streamHeaders) {
       const value = dsResponse.headers.get(header)
       if (value) {
         responseHeaders[header] = value
       }
     }
 
-    // Set CORS headers
-    responseHeaders[`access-control-allow-origin`] = `*`
-    responseHeaders[`access-control-expose-headers`] =
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date`
+    // Copy content-type from durable stream
+    const contentType = dsResponse.headers.get(`content-type`)
+    if (contentType) {
+      responseHeaders[`content-type`] = contentType
+    }
+
+    // Add Upstream-Content-Type from content type store
+    const upstreamContentType = contentTypeStore.get(streamId)
+    if (upstreamContentType) {
+      responseHeaders[`Upstream-Content-Type`] = upstreamContentType
+    }
+
+    // CORS headers
+    responseHeaders[`Access-Control-Allow-Origin`] = `*`
+    responseHeaders[`Access-Control-Expose-Headers`] = [
+      `Stream-Next-Offset`,
+      `Stream-Up-To-Date`,
+      `Stream-Total-Size`,
+      `Stream-Write-Units`,
+      `Stream-Closed`,
+      `Stream-Expires-At`,
+      `Upstream-Content-Type`,
+    ].join(`, `)
 
     res.writeHead(dsResponse.status, responseHeaders)
 

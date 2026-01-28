@@ -1,432 +1,243 @@
 /**
- * Upstream connection management.
+ * Upstream connection management and body piping.
  *
- * Handles the lifecycle of connections to upstream servers (OpenAI, Anthropic, etc.)
- * and streams their responses to durable storage.
+ * Handles the lifecycle of connections to upstream servers and streams
+ * their response bodies to durable storage with batching.
  */
 
-import type { ControlMessage, UpstreamConnection } from "./types"
+import type { UpstreamConnection } from "./types"
 
 /**
  * Registry of active upstream connections.
- * Keyed by stream path for lookup on abort requests.
+ * Keyed by stream ID for lookup on abort requests.
  */
 const activeConnections = new Map<string, UpstreamConnection>()
 
 /**
  * Register an active upstream connection.
  *
- * @param path - The durable stream path
+ * @param streamId - The stream ID
  * @param connection - The connection state
  */
 export function registerConnection(
-  path: string,
+  streamId: string,
   connection: UpstreamConnection
 ): void {
-  activeConnections.set(path, connection)
+  activeConnections.set(streamId, connection)
 }
 
 /**
  * Unregister an upstream connection.
  *
- * @param path - The durable stream path
+ * @param streamId - The stream ID
  */
-export function unregisterConnection(path: string): void {
-  activeConnections.delete(path)
+export function unregisterConnection(streamId: string): void {
+  activeConnections.delete(streamId)
 }
 
 /**
- * Get an active connection by path.
+ * Get an active connection by stream ID.
  *
- * @param path - The durable stream path
+ * @param streamId - The stream ID
  * @returns The connection if found, undefined otherwise
  */
-export function getConnection(path: string): UpstreamConnection | undefined {
-  return activeConnections.get(path)
+export function getConnection(
+  streamId: string
+): UpstreamConnection | undefined {
+  return activeConnections.get(streamId)
 }
 
 /**
  * Abort an active connection.
  *
- * @param path - The durable stream path
- * @returns True if connection was found and aborted, false if not found
+ * @param streamId - The stream ID
  */
-export function abortConnection(path: string): boolean {
-  const connection = activeConnections.get(path)
-  if (!connection) {
-    return false
-  }
-
-  if (!connection.aborted && !connection.completed) {
-    connection.aborted = true
+export function abortConnection(streamId: string): void {
+  const connection = activeConnections.get(streamId)
+  if (connection?.abortController) {
     connection.abortController.abort()
   }
-
-  return true
+  // Always clear the reference (idempotent)
+  activeConnections.delete(streamId)
 }
 
 /**
- * Create a control message for stream completion.
+ * Options for piping upstream response body to durable storage.
  */
-export function createCompleteMessage(): ControlMessage {
-  return { type: `close`, reason: `complete` }
-}
-
-/**
- * Create a control message for stream abort.
- */
-export function createAbortMessage(): ControlMessage {
-  return { type: `close`, reason: `aborted` }
-}
-
-/**
- * Create a control message for upstream errors.
- */
-export function createErrorMessage(
-  code: string,
-  status?: number,
-  message?: string
-): ControlMessage {
-  return {
-    type: `close`,
-    reason: `error`,
-    error: { code, status, message },
-  }
-}
-
-/**
- * Options for streaming upstream response to durable storage.
- */
-export interface StreamUpstreamOptions {
-  /** URL of the upstream service */
-  upstreamUrl: string
-  /** HTTP method (default: POST) */
-  method?: string
-  /** Headers to send to upstream */
-  headers: Record<string, string>
-  /** Request body */
-  body?: Buffer | string
+export interface PipeUpstreamOptions {
   /** URL of the durable streams server */
   durableStreamsUrl: string
-  /** Path to the durable stream */
-  streamPath: string
-  /** Content type for the stream */
-  contentType?: string
-  /** Idle timeout in milliseconds */
-  idleTimeoutMs?: number
-  /** Maximum response size in bytes */
-  maxResponseBytes?: number
+  /** The stream ID */
+  streamId: string
   /** AbortSignal for cancellation */
   signal: AbortSignal
-  /** Callback when streaming completes */
-  onComplete?: (offset: string) => void
-  /** Callback when an error occurs */
-  onError?: (error: Error) => void
+  /** Size threshold for flushing batches (default: 4KB) */
+  batchSizeThreshold?: number
+  /** Time threshold for flushing batches in ms (default: 50ms) */
+  batchTimeThreshold?: number
+  /** Inactivity timeout in ms (default: 10 minutes) */
+  inactivityTimeout?: number
 }
 
 /**
- * Stream an upstream response to durable storage.
- *
- * This function:
- * 1. Makes a request to the upstream URL
- * 2. Streams the response body to the durable streams server
- * 3. Appends a control message on completion/error/abort
- *
- * @param options - Streaming options
+ * Concatenate multiple Uint8Arrays into one.
  */
-export async function streamUpstreamToStorage(
-  options: StreamUpstreamOptions
+function concatUint8Arrays(arrays: Array<Uint8Array>): Uint8Array {
+  const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0)
+  const result = new Uint8Array(totalLength)
+  let offset = 0
+  for (const arr of arrays) {
+    result.set(arr, offset)
+    offset += arr.length
+  }
+  return result
+}
+
+/**
+ * Pipe an upstream response body to durable storage.
+ *
+ * Implements batching and inactivity timeout per spec:
+ * - Flush when 4KB accumulated OR 50ms since first chunk in batch
+ * - 10 minute inactivity timeout
+ * - Mark stream closed when body ends
+ * - On abort: flush accumulated data but don't close stream
+ *
+ * @param body - The response body stream
+ * @param options - Piping options
+ */
+export async function pipeUpstreamBody(
+  body: ReadableStream<Uint8Array>,
+  options: PipeUpstreamOptions
 ): Promise<void> {
   const {
-    upstreamUrl,
-    method = `POST`,
-    headers,
-    body,
     durableStreamsUrl,
-    streamPath,
-    contentType = `text/event-stream`,
-    idleTimeoutMs = 300000,
-    maxResponseBytes = 100 * 1024 * 1024, // 100MB default
+    streamId,
     signal,
-    onComplete,
-    onError,
+    batchSizeThreshold = 4096, // 4KB
+    batchTimeThreshold = 50, // 50ms
+    inactivityTimeout = 600000, // 10 minutes
   } = options
 
-  let totalBytes = 0
-  let idleTimer: ReturnType<typeof setTimeout> | null = null
-  let lastOffset = ``
-  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null
-  let idleTimedOut = false
+  const streamPath = `/v1/streams/${streamId}`
 
-  const resetIdleTimer = () => {
-    if (idleTimer) {
-      clearTimeout(idleTimer)
+  let buffer: Array<Uint8Array> = []
+  let bufferSize = 0
+  let batchStartTime: number | null = null
+  let inactivityTimer: ReturnType<typeof setTimeout> | null = null
+  let inactivityTimedOut = false
+
+  const reader = body.getReader()
+
+  const resetInactivityTimer = () => {
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer)
     }
-    idleTimer = setTimeout(() => {
-      idleTimedOut = true
-      // Cancel the reader to exit the read loop
-      if (activeReader) {
-        activeReader.cancel(`Idle timeout exceeded`).catch(() => {
-          // Ignore cancel errors
-        })
-      }
-      onError?.(new Error(`Idle timeout exceeded`))
-    }, idleTimeoutMs)
+    inactivityTimer = setTimeout(() => {
+      inactivityTimedOut = true
+      reader.cancel(`Inactivity timeout`).catch(() => {
+        // Ignore cancel errors
+      })
+    }, inactivityTimeout)
   }
 
-  const clearIdleTimer = () => {
-    if (idleTimer) {
-      clearTimeout(idleTimer)
-      idleTimer = null
+  const clearInactivityTimer = () => {
+    if (inactivityTimer) {
+      clearTimeout(inactivityTimer)
+      inactivityTimer = null
     }
+  }
+
+  const flush = async (): Promise<void> => {
+    if (bufferSize === 0) return
+
+    const data = concatUint8Arrays(buffer)
+    buffer = []
+    bufferSize = 0
+    batchStartTime = null
+
+    // POST to underlying stream
+    const url = new URL(streamPath, durableStreamsUrl)
+    await fetch(url.toString(), {
+      method: `POST`,
+      headers: {
+        "Content-Type": `application/octet-stream`,
+      },
+      body: data as unknown as BodyInit,
+    })
+  }
+
+  const closeStream = async (): Promise<void> => {
+    // Mark the stream as closed
+    const url = new URL(streamPath, durableStreamsUrl)
+    await fetch(url.toString(), {
+      method: `POST`,
+      headers: {
+        "Stream-Closed": `true`,
+        "Content-Length": `0`,
+      },
+    })
   }
 
   try {
-    // Make upstream request - convert Buffer to Uint8Array for fetch compatibility
-    let requestBody: BodyInit | undefined
-    if (body !== undefined) {
-      if (Buffer.isBuffer(body)) {
-        requestBody = new Uint8Array(body) as unknown as BodyInit
-      } else {
-        // body is string
-        requestBody = body
-      }
-    }
-    const upstreamResponse = await fetch(upstreamUrl, {
-      method,
-      headers,
-      body: requestBody,
-      signal,
-      redirect: `manual`,
-    })
-
-    // Block redirects to prevent SSRF bypass - allowlist only validates initial URL
-    if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
-      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-        type: `close`,
-        reason: `error`,
-        error: {
-          code: `REDIRECT_NOT_ALLOWED`,
-          status: upstreamResponse.status,
-          message: `Upstream redirects are not allowed`,
-        },
-      })
-      return
-    }
-
-    // Check for upstream errors
-    if (!upstreamResponse.ok) {
-      const errorBody = await upstreamResponse.text().catch(() => ``)
-      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-        type: `close`,
-        reason: `error`,
-        error: {
-          code: `UPSTREAM_ERROR`,
-          status: upstreamResponse.status,
-          message: errorBody.slice(0, 500), // Truncate long error messages
-        },
-      })
-      return
-    }
-
-    // Stream the response body to durable storage
-    const reader = upstreamResponse.body?.getReader()
-    activeReader = reader ?? null
-    if (!reader) {
-      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-        type: `close`,
-        reason: `error`,
-        error: { code: `NO_RESPONSE_BODY` },
-      })
-      return
-    }
-
-    resetIdleTimer()
+    resetInactivityTimer()
 
     for (;;) {
       const { done, value } = await reader.read()
 
       if (done) {
+        // Stream completed - flush remaining and close
+        clearInactivityTimer()
+        await flush()
+        await closeStream()
         break
       }
 
       if (signal.aborted) {
-        reader.cancel()
+        // Aborted - flush but do NOT close (data remains readable)
+        clearInactivityTimer()
+        await flush()
         break
       }
 
-      // Check size limit
-      totalBytes += value.length
-      if (totalBytes > maxResponseBytes) {
-        reader.cancel()
-        await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-          type: `close`,
-          reason: `error`,
-          error: {
-            code: `RESPONSE_TOO_LARGE`,
-            message: `Response exceeded ${maxResponseBytes} bytes`,
-          },
-        })
-        return
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Set by timeout callback
+      if (inactivityTimedOut) {
+        // Inactivity timeout - flush but do NOT close
+        clearInactivityTimer()
+        await flush()
+        break
       }
 
-      // Reset idle timer on data received
-      resetIdleTimer()
+      // Accumulate chunk
+      buffer.push(value)
+      bufferSize += value.length
+      if (!batchStartTime) {
+        batchStartTime = Date.now()
+      }
+      resetInactivityTimer()
 
-      // Append chunk to durable stream
-      lastOffset = await appendToStream(
-        durableStreamsUrl,
-        streamPath,
-        contentType,
-        value
-      )
-    }
-
-    clearIdleTimer()
-
-    // Append completion control message
-    if (signal.aborted) {
-      await appendControlMessage(
-        durableStreamsUrl,
-        streamPath,
-        contentType,
-        createAbortMessage()
-      )
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- set by setTimeout callback
-    } else if (idleTimedOut) {
-      // Idle timeout - append error control message (not complete)
-      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-        type: `close`,
-        reason: `error`,
-        error: { code: `IDLE_TIMEOUT`, message: `Idle timeout exceeded` },
-      })
-    } else {
-      await appendControlMessage(
-        durableStreamsUrl,
-        streamPath,
-        contentType,
-        createCompleteMessage()
-      )
-      onComplete?.(lastOffset)
+      // Flush on size or time threshold
+      if (
+        bufferSize >= batchSizeThreshold ||
+        Date.now() - batchStartTime >= batchTimeThreshold
+      ) {
+        await flush()
+      }
     }
   } catch (error) {
-    clearIdleTimer()
+    clearInactivityTimer()
 
-    if (signal.aborted) {
-      // Aborted - append abort control message
-      await appendControlMessage(
-        durableStreamsUrl,
-        streamPath,
-        contentType,
-        createAbortMessage()
-      ).catch((appendError) => {
-        console.error(`Failed to append abort control message:`, {
-          streamPath,
-          error:
-            appendError instanceof Error ? appendError.message : appendError,
-        })
-      })
-    } else {
-      // Real error - append error control message
-      const message =
-        error instanceof Error ? error.message : `Unknown upstream error`
-      await appendControlMessage(durableStreamsUrl, streamPath, contentType, {
-        type: `close`,
-        reason: `error`,
-        error: { code: `UPSTREAM_ERROR`, message },
-      }).catch((appendError) => {
-        console.error(`Failed to append error control message:`, {
-          streamPath,
-          error:
-            appendError instanceof Error ? appendError.message : appendError,
-        })
-      })
-      onError?.(error instanceof Error ? error : new Error(String(error)))
+    // Try to flush any accumulated data
+    try {
+      await flush()
+    } catch {
+      // Ignore flush errors on error path
     }
-  }
-}
 
-/**
- * Append data to a durable stream.
- *
- * @param baseUrl - Base URL of the durable streams server
- * @param path - Stream path
- * @param contentType - Content type of the data
- * @param data - Data to append
- * @returns The new offset after appending
- */
-async function appendToStream(
-  baseUrl: string,
-  path: string,
-  contentType: string,
-  data: Uint8Array
-): Promise<string> {
-  const url = new URL(path, baseUrl)
-
-  const response = await fetch(url, {
-    method: `POST`,
-    headers: {
-      "Content-Type": contentType,
-    },
-    body: data as unknown as BodyInit,
-  })
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => ``)
-    throw new Error(
-      `Failed to append to stream: ${response.status} ${errorText}`
-    )
-  }
-
-  return response.headers.get(`Stream-Next-Offset`) ?? ``
-}
-
-/**
- * Append a control message to a durable stream.
- *
- * Control messages are formatted according to the stream's content type:
- * - For SSE streams (text/event-stream): as an SSE event
- * - For JSON streams: as a JSON array
- * - For other types: as plain JSON
- */
-async function appendControlMessage(
-  baseUrl: string,
-  path: string,
-  contentType: string,
-  message: ControlMessage
-): Promise<void> {
-  const url = new URL(path, baseUrl)
-
-  let body: string
-  let actualContentType: string
-
-  // Format control message based on stream content type
-  if (contentType.includes(`text/event-stream`)) {
-    // Format as SSE event
-    body = `event: control\ndata: ${JSON.stringify(message)}\n\n`
-    actualContentType = `text/event-stream`
-  } else if (contentType.includes(`application/json`)) {
-    // Format as JSON array for JSON mode
-    body = JSON.stringify([message])
-    actualContentType = `application/json`
-  } else {
-    // Default to plain JSON with matching content type
-    body = JSON.stringify(message)
-    actualContentType = contentType
-  }
-
-  const response = await fetch(url, {
-    method: `POST`,
-    headers: {
-      "Content-Type": actualContentType,
-    },
-    body,
-  })
-
-  if (!response.ok) {
-    const errorText = await response.text().catch(() => ``)
-    throw new Error(
-      `Failed to append control message: ${response.status} ${errorText}`
-    )
+    // Don't close stream on error - data remains readable up to this point
+    // Rethrow so caller knows about the error
+    throw error
+  } finally {
+    clearInactivityTimer()
+    reader.releaseLock()
   }
 }

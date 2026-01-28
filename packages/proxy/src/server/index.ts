@@ -1,7 +1,7 @@
 /**
  * Durable Proxy Server
  *
- * A proxy server that sits between clients and upstream AI services,
+ * A proxy server that sits between clients and upstream services,
  * persisting response streams to durable storage for resumability.
  *
  * @packageDocumentation
@@ -30,8 +30,8 @@ export const DEFAULT_PORT = 4440
  *   durableStreamsUrl: 'http://localhost:4437',
  *   jwtSecret: 'your-secret-key',
  *   allowlist: [
- *     'https://api.openai.com/**',
- *     'https://api.anthropic.com/**',
+ *     'https://api.openai.com/*',
+ *     'https://api.anthropic.com/*',
  *   ],
  * })
  *
@@ -78,7 +78,7 @@ export async function createProxyServer(
     url,
     stop: async () => {
       // Destroy all active connections (needed for SSE streams that stay open)
-      for (const socket of activeSockets) {
+      for (const socket of Array.from(activeSockets)) {
         socket.destroy()
       }
       activeSockets.clear()
@@ -100,23 +100,17 @@ export async function createProxyServer(
 export type {
   ProxyServerOptions,
   ProxyServer,
-  ControlMessage,
-  ControlError,
   UpstreamConnection,
-  RequestContext,
-  CreateStreamOptions,
-  CreateStreamResponse,
-  ReadTokenPayload,
 } from "./types"
 
 // Re-export utilities
 export {
-  generateReadToken,
-  validateReadToken,
+  generatePreSignedUrl,
+  validatePreSignedUrl,
+  validateServiceJwt,
   extractBearerToken,
-  authorizeStreamRequest,
 } from "./tokens"
-export type { AuthResult } from "./tokens"
+export type { PreSignedUrlResult, ServiceJwtResult } from "./tokens"
 export {
   createAllowlistValidator,
   validateUpstreamUrl,

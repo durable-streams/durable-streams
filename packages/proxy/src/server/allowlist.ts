@@ -2,70 +2,17 @@
  * Upstream URL allowlist validation.
  *
  * The proxy only forwards requests to explicitly allowed upstream URLs.
- * Patterns support glob-style wildcards for flexible configuration.
+ * Uses URLPattern-style matching with regex-based component matchers.
  */
 
 /**
- * Check if a character is a special glob character.
+ * Parsed allowlist pattern with regex matchers for each URL component.
  */
-function isGlobSpecial(char: string): boolean {
-  return char === `*` || char === `?` || char === `[` || char === `]`
-}
-
-/**
- * Convert a glob pattern to a regular expression.
- *
- * Supports:
- * - `*` - matches any characters (non-greedy)
- * - `?` - matches exactly one character
- * - `**` - matches any path segment(s)
- * - Character escaping with backslash
- *
- * @param pattern - The glob pattern
- * @returns A RegExp that matches the pattern
- */
-function globToRegex(pattern: string): RegExp {
-  let regex = `^`
-  let i = 0
-
-  while (i < pattern.length) {
-    const char = pattern[i]
-    const nextChar = pattern[i + 1]
-
-    if (char === `\\`) {
-      // Escape sequence - include next character literally
-      if (nextChar !== undefined) {
-        regex += escapeRegExp(nextChar)
-        i += 2
-      } else {
-        regex += `\\\\`
-        i++
-      }
-    } else if (char === `*` && nextChar === `*`) {
-      // ** matches anything including path separators
-      regex += `.*`
-      i += 2
-    } else if (char === `*`) {
-      // * matches anything except path separators
-      regex += `[^/]*`
-      i++
-    } else if (char === `?`) {
-      // ? matches exactly one character (not /)
-      regex += `[^/]`
-      i++
-    } else if (isGlobSpecial(char!)) {
-      // Escape other glob characters
-      regex += `\\` + char
-      i++
-    } else {
-      // Regular character - escape if it's a regex special char
-      regex += escapeRegExp(char!)
-      i++
-    }
-  }
-
-  regex += `$`
-  return new RegExp(regex, `i`) // Case-insensitive matching
+interface AllowlistPattern {
+  protocol: RegExp
+  hostname: RegExp
+  port: string | null // null = any port, empty string = default port
+  pathname: RegExp
 }
 
 /**
@@ -76,17 +23,139 @@ function escapeRegExp(str: string): string {
 }
 
 /**
+ * Convert a glob pattern segment to a regex pattern.
+ * Handles `*` as wildcard (matches any characters except path separators).
+ */
+function globSegmentToRegex(segment: string): string {
+  // Handle ** (match anything) - not typically used in hostname but support it
+  if (segment === `**`) {
+    return `.*`
+  }
+
+  // Handle wildcards within segment
+  const parts = segment.split(`*`)
+  return parts.map(escapeRegExp).join(`[^/]*`)
+}
+
+/**
+ * Parse an allowlist pattern into component matchers.
+ *
+ * Pattern syntax:
+ * - `api.example.com` - match hostname, any protocol, any port, any path
+ * - `https://api.example.com` - match https only
+ * - `api.example.com:8080` - match specific port
+ * - `api.example.com/v1/*` - match specific path prefix
+ * - `*.example.com` - wildcard hostname
+ *
+ * @param pattern - The allowlist pattern string
+ * @returns Parsed pattern with regex matchers
+ */
+function parseAllowlistPattern(pattern: string): AllowlistPattern {
+  let protocol: RegExp
+  let hostname: string
+  let port: string | null = null // null means any port
+  let pathname: string
+
+  // Check if pattern has explicit protocol
+  const protocolMatch = pattern.match(/^(https?):\/\/(.+)$/)
+  if (protocolMatch) {
+    protocol = new RegExp(`^${protocolMatch[1]}:$`, `i`)
+    pattern = protocolMatch[2]!
+  } else {
+    // Match either http or https
+    protocol = /^https?:$/i
+  }
+
+  // Split into host and path parts
+  const pathIndex = pattern.indexOf(`/`)
+  let hostPart: string
+  if (pathIndex === -1) {
+    hostPart = pattern
+    pathname = `.*` // Match any path
+  } else {
+    hostPart = pattern.slice(0, pathIndex)
+    const pathPart = pattern.slice(pathIndex)
+
+    // Convert path glob to regex
+    if (pathPart === `/*` || pathPart === `/**`) {
+      pathname = `.*`
+    } else if (pathPart.endsWith(`/*`)) {
+      // /v1/* matches /v1 and /v1/anything
+      const prefix = escapeRegExp(pathPart.slice(0, -2))
+      pathname = `${prefix}(/.*)?`
+    } else if (pathPart.endsWith(`/**`)) {
+      // /v1/** matches /v1 and /v1/anything recursively
+      const prefix = escapeRegExp(pathPart.slice(0, -3))
+      pathname = `${prefix}(/.*)?`
+    } else {
+      // Exact path match
+      pathname = escapeRegExp(pathPart)
+    }
+  }
+
+  // Parse port from host
+  const portMatch = hostPart.match(/^(.+):(\d+)$/)
+  if (portMatch) {
+    hostname = portMatch[1]!
+    port = portMatch[2]!
+  } else {
+    hostname = hostPart
+    port = null // Any port
+  }
+
+  // Convert hostname glob to regex
+  let hostnameRegex: string
+  if (hostname.startsWith(`*.`)) {
+    // *.example.com matches any subdomain
+    const baseDomain = escapeRegExp(hostname.slice(2))
+    hostnameRegex = `.*\\.${baseDomain}`
+  } else if (hostname.includes(`*`)) {
+    // General wildcard in hostname
+    hostnameRegex = globSegmentToRegex(hostname)
+  } else {
+    // Exact hostname match
+    hostnameRegex = escapeRegExp(hostname)
+  }
+
+  return {
+    protocol,
+    hostname: new RegExp(`^${hostnameRegex}$`, `i`),
+    port,
+    pathname: new RegExp(`^${pathname}$`),
+  }
+}
+
+/**
+ * Get the default port for a protocol.
+ */
+function getDefaultPort(protocol: string): string {
+  if (protocol === `https:`) return `443`
+  if (protocol === `http:`) return `80`
+  return ``
+}
+
+/**
+ * Normalize port for comparison.
+ * Returns empty string for default ports.
+ */
+function normalizePort(port: string, protocol: string): string {
+  if (!port) return ``
+  if (port === getDefaultPort(protocol)) return ``
+  return port
+}
+
+/**
  * Create an allowlist validator from a list of patterns.
  *
- * @param patterns - Array of URL patterns (glob-style wildcards supported)
+ * @param patterns - Array of URL patterns
  * @returns A function that validates URLs against the allowlist
  *
  * @example
  * ```typescript
  * const isAllowed = createAllowlistValidator([
- *   'https://api.openai.com/**',
- *   'https://api.anthropic.com/**',
- *   'https://*.example.com/api/*'
+ *   'https://api.openai.com/*',
+ *   'https://api.anthropic.com/*',
+ *   '*.example.com/api/*'
  * ])
  *
  * isAllowed('https://api.openai.com/v1/chat/completions') // true
@@ -101,65 +170,62 @@ export function createAllowlistValidator(
     return () => false
   }
 
-  const regexes = patterns.map(globToRegex)
+  const parsedPatterns = patterns.map(parseAllowlistPattern)
 
   return (url: string): boolean => {
-    // Canonicalize URL to prevent bypass via alternate representations
-    const normalized = normalizeUrlForAllowlist(url)
-    if (!normalized) {
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
       return false
     }
 
-    return regexes.some((regex) => regex.test(normalized))
-  }
-}
-
-/**
- * Normalize a URL to canonical form for allowlist comparison.
- *
- * This prevents bypass via:
- * - Default ports (https://example.com:443 vs https://example.com)
- * - Case variations in hostname
- * - Trailing slashes
- * - URL encoding tricks
- *
- * @param url - The URL to normalize
- * @returns Normalized URL string, or null if invalid
- */
-function normalizeUrlForAllowlist(url: string): string | null {
-  try {
-    const parsed = new URL(url)
-
-    // Build canonical URL:
-    // - Protocol is already lowercase from URL parser
-    // - Host is already lowercase from URL parser
-    // - Remove default ports (URL parser includes them in origin if explicit)
-    let normalized = `${parsed.protocol}//${parsed.hostname}`
-
-    // Only include port if non-default
-    if (parsed.port) {
-      const isDefaultPort =
-        (parsed.protocol === `https:` && parsed.port === `443`) ||
-        (parsed.protocol === `http:` && parsed.port === `80`)
-      if (!isDefaultPort) {
-        normalized += `:${parsed.port}`
-      }
+    // Only allow http/https
+    if (parsed.protocol !== `http:` && parsed.protocol !== `https:`) {
+      return false
     }
 
-    // Add pathname (URL parser normalizes .. and other path components)
-    normalized += parsed.pathname
+    // Must have hostname
+    if (!parsed.hostname) {
+      return false
+    }
 
-    // Remove trailing slashes for consistent matching
-    normalized = normalized.replace(/\/+$/, ``)
+    // Normalize port (strip default ports)
+    const normalizedPort = normalizePort(parsed.port, parsed.protocol)
 
-    return normalized
-  } catch {
-    return null
+    // Check each pattern
+    for (const pattern of parsedPatterns) {
+      // Protocol must match
+      if (!pattern.protocol.test(parsed.protocol)) {
+        continue
+      }
+
+      // Hostname must match
+      if (!pattern.hostname.test(parsed.hostname)) {
+        continue
+      }
+
+      // Port must match (pattern.port === null means any port is allowed)
+      if (pattern.port !== null) {
+        if (pattern.port !== normalizedPort) {
+          continue
+        }
+      }
+
+      // Pathname must match (ignoring query and fragment)
+      if (!pattern.pathname.test(parsed.pathname)) {
+        continue
+      }
+
+      return true
+    }
+
+    return false
   }
 }
 
 /**
- * Validate that a URL is well-formed and uses HTTPS.
+ * Validate that a URL is well-formed and uses HTTP or HTTPS.
  *
  * @param url - The URL to validate
  * @returns The parsed URL if valid, null if invalid
@@ -168,8 +234,13 @@ export function validateUpstreamUrl(url: string): URL | null {
   try {
     const parsed = new URL(url)
 
-    // Only allow HTTPS in production
+    // Only allow HTTP/HTTPS
     if (parsed.protocol !== `https:` && parsed.protocol !== `http:`) {
+      return null
+    }
+
+    // Must have hostname
+    if (!parsed.hostname) {
       return null
     }
 
@@ -180,40 +251,8 @@ export function validateUpstreamUrl(url: string): URL | null {
 }
 
 /**
- * Validate a path segment (service name or stream key) for safety.
- *
- * Rejects values that could enable path traversal attacks:
- * - Contains `/` or `\` (directory separators)
- * - Contains `..` (parent directory reference)
- * - Contains URL-encoded versions of the above
- * - Is empty or only whitespace
- *
- * @param segment - The path segment to validate
- * @returns True if safe, false if potentially malicious
- */
-export function isValidPathSegment(segment: string): boolean {
-  if (!segment || segment.trim().length === 0) {
-    return false
-  }
-
-  // Decode any URL encoding to catch %2f, %2e%2e, etc.
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(segment)
-  } catch {
-    // Invalid encoding - reject
-    return false
-  }
-
-  // Check for path traversal patterns in both original and decoded form
-  const dangerous = /[/\\]|\.\./.test(segment) || /[/\\]|\.\./.test(decoded)
-
-  return !dangerous
-}
-
-/**
  * Headers that should NOT be forwarded to upstream.
- * These are hop-by-hop headers or headers that should be set by the proxy.
+ * These are hop-by-hop headers or headers managed by the proxy.
  */
 export const HOP_BY_HOP_HEADERS: Set<string> = new Set([
   `connection`,
@@ -221,22 +260,34 @@ export const HOP_BY_HOP_HEADERS: Set<string> = new Set([
   `proxy-authenticate`,
   `proxy-authorization`,
   `te`,
-  `trailers`,
+  `trailer`,
   `transfer-encoding`,
   `upgrade`,
   `host`,
+  `authorization`,
   `accept-encoding`, // We handle compression ourselves
   `content-length`, // Will be set based on actual body
 ])
 
 /**
- * Filter headers for forwarding to upstream.
+ * Headers that are proxy-specific and should not be forwarded.
+ */
+const PROXY_HEADERS: Set<string> = new Set([
+  `upstream-url`,
+  `upstream-authorization`,
+  `upstream-method`,
+])
+
+/**
+ * Filter and transform headers for forwarding to upstream.
  *
  * @param headers - The incoming request headers
+ * @param upstreamHostname - The hostname of the upstream server
  * @returns Headers safe to forward to upstream
  */
 export function filterHeadersForUpstream(
-  headers: Record<string, string | Array<string> | undefined>
+  headers: Record<string, string | Array<string> | undefined>,
+  upstreamHostname: string
 ): Record<string, string> {
   const filtered: Record<string, string> = {}
 
@@ -248,6 +299,11 @@ export function filterHeadersForUpstream(
       continue
     }
 
+    // Skip proxy-specific headers
+    if (PROXY_HEADERS.has(lowerKey)) {
+      continue
+    }
+
     // Skip undefined values
     if (value === undefined) {
       continue
@@ -255,6 +311,18 @@ export function filterHeadersForUpstream(
 
     // Join array values with comma
     filtered[key] = Array.isArray(value) ? value.join(`, `) : value
+  }
+
+  // Set Host header to upstream hostname
+  filtered[`Host`] = upstreamHostname
+
+  // Transform Upstream-Authorization to Authorization
+  const upstreamAuth =
+    headers[`upstream-authorization`] ?? headers[`Upstream-Authorization`]
+  if (upstreamAuth !== undefined) {
+    filtered[`Authorization`] = Array.isArray(upstreamAuth)
+      ? upstreamAuth.join(`, `)
+      : upstreamAuth
   }
 
   return filtered

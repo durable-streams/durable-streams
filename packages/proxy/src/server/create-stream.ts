@@ -1,165 +1,270 @@
 /**
  * Handler for creating proxy streams.
  *
- * POST /v1/proxy/{service}?stream_key=...&upstream=...
+ * POST /v1/proxy
  *
  * Creates a new durable stream and begins proxying the upstream response.
  */
 
-import { generateReadToken } from "./tokens"
+import { randomUUID } from "node:crypto"
+import { generatePreSignedUrl, validateServiceJwt } from "./tokens"
+import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
 import {
-  filterHeadersForUpstream,
-  isValidPathSegment,
-  validateUpstreamUrl,
-} from "./allowlist"
-import {
+  pipeUpstreamBody,
   registerConnection,
-  streamUpstreamToStorage,
   unregisterConnection,
 } from "./upstream"
 import { sendError } from "./response"
-import type { CreateStreamResponse, ProxyServerOptions } from "./types"
+import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
+
+/**
+ * Allowed upstream methods per spec.
+ */
+const ALLOWED_METHODS = new Set([`GET`, `POST`, `PUT`, `PATCH`, `DELETE`])
+
+/**
+ * Maximum error body size to read from upstream.
+ */
+const MAX_ERROR_BODY_SIZE = 64 * 1024 // 64KB
+
+/**
+ * Upstream request timeout in milliseconds.
+ */
+const UPSTREAM_TIMEOUT_MS = 60000 // 60 seconds
+
+/**
+ * Collect request body as a Buffer.
+ */
+async function collectRequestBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Array<Buffer> = []
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer)
+  }
+  return Buffer.concat(chunks)
+}
+
+/**
+ * Read response body up to a maximum size.
+ */
+async function readResponseBody(
+  response: Response,
+  maxSize: number
+): Promise<Buffer> {
+  const reader = response.body?.getReader()
+  if (!reader) {
+    return Buffer.alloc(0)
+  }
+
+  const chunks: Array<Uint8Array> = []
+  let totalSize = 0
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      chunks.push(value)
+      totalSize += value.length
+
+      if (totalSize >= maxSize) {
+        break
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  // Concatenate and truncate if needed
+  const result = Buffer.concat(chunks)
+  return result.subarray(0, Math.min(result.length, maxSize))
+}
 
 /**
  * Handle a create stream request.
  *
  * @param req - The incoming HTTP request
  * @param res - The server response
- * @param serviceName - The service name from the URL path
  * @param options - Proxy server options
  * @param isAllowed - Function to validate upstream URLs
+ * @param contentTypeStore - Map to store upstream content types
  */
 export async function handleCreateStream(
   req: IncomingMessage,
   res: ServerResponse,
-  serviceName: string,
   options: ProxyServerOptions,
-  isAllowed: (url: string) => boolean
+  isAllowed: (url: string) => boolean,
+  contentTypeStore: Map<string, string>
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
-  // Extract query parameters
-  const streamKey = url.searchParams.get(`stream_key`)
-  const upstream = url.searchParams.get(`upstream`)
+  // Step 1: Authentication - validate service JWT
+  const auth = validateServiceJwt(
+    url.searchParams.get(`secret`),
+    req.headers.authorization,
+    options.jwtSecret
+  )
 
-  // Validate service name (from URL path)
-  if (!isValidPathSegment(serviceName)) {
+  if (!auth.ok) {
+    const { code } = auth
     sendError(
       res,
-      400,
-      `INVALID_SERVICE_NAME`,
-      `service name contains invalid characters`
+      401,
+      code,
+      code === `MISSING_SECRET`
+        ? `Service authentication required`
+        : `Invalid service credentials`
     )
     return
   }
 
-  // Validate required parameters
-  if (!streamKey) {
+  // Step 2: Validate required headers
+  const upstreamUrl = req.headers[`upstream-url`]
+  if (!upstreamUrl || Array.isArray(upstreamUrl)) {
     sendError(
       res,
       400,
-      `MISSING_STREAM_KEY`,
-      `stream_key query parameter is required`
+      `MISSING_UPSTREAM_URL`,
+      `Upstream-URL header is required`
     )
     return
   }
 
-  // Validate stream key format
-  if (!isValidPathSegment(streamKey)) {
+  const upstreamMethod = req.headers[`upstream-method`]
+  if (!upstreamMethod || Array.isArray(upstreamMethod)) {
     sendError(
       res,
       400,
-      `INVALID_STREAM_KEY`,
-      `stream_key contains invalid characters`
+      `MISSING_UPSTREAM_METHOD`,
+      `Upstream-Method header is required`
     )
     return
   }
 
-  if (!upstream) {
+  // Step 3: Validate method
+  const method = upstreamMethod.toUpperCase()
+  if (!ALLOWED_METHODS.has(method)) {
     sendError(
       res,
       400,
-      `MISSING_UPSTREAM`,
-      `upstream query parameter is required`
+      `INVALID_ACTION`,
+      `Upstream-Method must be one of: GET, POST, PUT, PATCH, DELETE`
     )
     return
   }
 
-  // Validate upstream URL
-  const upstreamUrl = validateUpstreamUrl(upstream)
-  if (!upstreamUrl) {
-    sendError(res, 400, `INVALID_UPSTREAM`, `upstream is not a valid URL`)
+  // Step 4: Validate upstream URL and check allowlist
+  const parsedUrl = validateUpstreamUrl(upstreamUrl)
+  if (!parsedUrl) {
+    sendError(res, 403, `UPSTREAM_NOT_ALLOWED`, `Invalid upstream URL`)
     return
   }
 
-  // Check allowlist
-  if (!isAllowed(upstream)) {
+  if (!isAllowed(upstreamUrl)) {
     sendError(
       res,
       403,
       `UPSTREAM_NOT_ALLOWED`,
-      `upstream URL is not in the allowlist`
+      `Upstream URL is not in allowlist`
     )
     return
   }
 
-  // Build the durable stream path
-  const streamPath = `/v1/streams/${serviceName}/${streamKey}`
-  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
+  // Step 5: Generate stream ID (UUIDv4)
+  const streamId = randomUUID()
 
-  // Collect request body
-  const bodyChunks: Array<Buffer> = []
-  for await (const chunk of req) {
-    bodyChunks.push(chunk as Buffer)
-  }
-  const body = Buffer.concat(bodyChunks)
-
-  // Filter headers for upstream
-  const headers = filterHeadersForUpstream(
-    req.headers as Record<string, string | Array<string> | undefined>
+  // Step 6: Prepare upstream request
+  const upstreamHeaders = filterHeadersForUpstream(
+    req.headers as Record<string, string | Array<string> | undefined>,
+    parsedUrl.hostname
   )
 
-  // Determine content type for the stream (from upstream response, default to text/event-stream for AI)
-  const contentType = `text/event-stream`
+  // Collect request body
+  const body = await collectRequestBody(req)
+
+  // Step 7: Fetch upstream with timeout
+  const abortController = new AbortController()
+  const timeoutId = setTimeout(
+    () => abortController.abort(),
+    UPSTREAM_TIMEOUT_MS
+  )
+
+  let upstreamResponse: Response
+  try {
+    upstreamResponse = await fetch(upstreamUrl, {
+      method,
+      headers: upstreamHeaders,
+      body: body.length > 0 ? (body as unknown as BodyInit) : undefined,
+      signal: abortController.signal,
+      redirect: `manual`,
+    })
+    clearTimeout(timeoutId)
+  } catch (error) {
+    clearTimeout(timeoutId)
+
+    if (error instanceof Error && error.name === `AbortError`) {
+      sendError(
+        res,
+        504,
+        `UPSTREAM_TIMEOUT`,
+        `Upstream server did not respond in time`
+      )
+      return
+    }
+
+    // Other fetch errors
+    const message = error instanceof Error ? error.message : `Unknown error`
+    sendError(res, 502, `UPSTREAM_ERROR`, message)
+    return
+  }
+
+  // Step 8: Handle upstream response status
+
+  // 3xx Redirect - not allowed
+  if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+    sendError(res, 400, `REDIRECT_NOT_ALLOWED`, `Proxy cannot follow redirects`)
+    return
+  }
+
+  // 4xx/5xx Error - pass through with Upstream-Status header
+  if (!upstreamResponse.ok) {
+    const errorBody = await readResponseBody(
+      upstreamResponse,
+      MAX_ERROR_BODY_SIZE
+    )
+
+    res.writeHead(502, {
+      "Content-Type":
+        upstreamResponse.headers.get(`content-type`) ?? `text/plain`,
+      "Upstream-Status": String(upstreamResponse.status),
+    })
+    res.end(errorBody)
+    return
+  }
+
+  // Step 9: Create durable stream (2xx success path)
+  const upstreamContentType =
+    upstreamResponse.headers.get(`content-type`) ?? `application/octet-stream`
+
+  // Store upstream content type for GET/HEAD responses
+  contentTypeStore.set(streamId, upstreamContentType)
+
+  // Create stream on underlying durable streams server
+  const streamPath = `/v1/streams/${streamId}`
+  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
 
   try {
-    // Create the durable stream first
     const createResponse = await fetch(fullStreamUrl.toString(), {
       method: `PUT`,
       headers: {
-        "Content-Type": contentType,
+        "Content-Type": `application/octet-stream`,
         "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
       },
     })
 
-    // Check response status:
-    // - 201: New stream created
-    // - 200: Stream already exists (idempotent PUT)
-    // - 409: Stream exists with different config
-    if (createResponse.status === 200) {
-      // Stream already exists - treat as conflict for the proxy
-      sendError(
-        res,
-        409,
-        `STREAM_EXISTS`,
-        `A stream with this key already exists`
-      )
-      return
-    }
-
-    if (createResponse.status === 409) {
-      sendError(
-        res,
-        409,
-        `STREAM_EXISTS`,
-        `A stream with this key already exists with different configuration`
-      )
-      return
-    }
-
     if (!createResponse.ok) {
       const errorText = await createResponse.text().catch(() => ``)
+      contentTypeStore.delete(streamId)
       sendError(
         res,
         502,
@@ -168,57 +273,56 @@ export async function handleCreateStream(
       )
       return
     }
-
-    // Generate read token
-    const readToken = generateReadToken(
-      streamPath,
-      options.jwtSecret,
-      options.streamTtlSeconds ?? 86400
-    )
-
-    // Set up the upstream connection
-    const abortController = new AbortController()
-    registerConnection(streamPath, {
-      abortController,
-      streamKey,
-      startedAt: Date.now(),
-      currentOffset: ``,
-      completed: false,
-      aborted: false,
-    })
-
-    // Start streaming upstream to storage (non-blocking)
-    // Use .finally() to ensure connection is always unregistered,
-    // regardless of how the streaming ends (complete, error, abort, early return)
-    streamUpstreamToStorage({
-      upstreamUrl: upstream,
-      method: req.method ?? `POST`,
-      headers,
-      body: body.length > 0 ? body : undefined,
-      durableStreamsUrl: options.durableStreamsUrl,
-      streamPath,
-      contentType,
-      idleTimeoutMs: options.idleTimeoutMs,
-      maxResponseBytes: options.maxResponseBytes,
-      signal: abortController.signal,
-    }).finally(() => {
-      unregisterConnection(streamPath)
-    })
-
-    // Return the stream path and read token immediately
-    const response: CreateStreamResponse = {
-      path: streamPath,
-      readToken,
-    }
-
-    res.writeHead(201, {
-      "Content-Type": `application/json`,
-      "Durable-Streams-Path": streamPath,
-      "Durable-Streams-Read-Token": readToken,
-    })
-    res.end(JSON.stringify(response))
   } catch (error) {
+    contentTypeStore.delete(streamId)
     const message = error instanceof Error ? error.message : `Unknown error`
-    sendError(res, 500, `INTERNAL_ERROR`, message)
+    sendError(res, 502, `STORAGE_ERROR`, `Failed to create stream: ${message}`)
+    return
+  }
+
+  // Step 10: Generate pre-signed URL and respond
+  const expiresAt =
+    Math.floor(Date.now() / 1000) + (options.urlExpirationSeconds ?? 86400)
+  const origin = `http://${req.headers.host}`
+  const location = generatePreSignedUrl(
+    origin,
+    streamId,
+    options.jwtSecret,
+    expiresAt
+  )
+
+  res.writeHead(201, {
+    Location: location,
+    "Upstream-Content-Type": upstreamContentType,
+    "Access-Control-Expose-Headers": `Location, Upstream-Content-Type`,
+  })
+  res.end() // No body
+
+  // Step 11: Start background piping
+  registerConnection(streamId, {
+    abortController,
+    streamId,
+    startedAt: Date.now(),
+  })
+
+  // Pipe in background (don't await)
+  if (upstreamResponse.body) {
+    pipeUpstreamBody(upstreamResponse.body, {
+      durableStreamsUrl: options.durableStreamsUrl,
+      streamId,
+      signal: abortController.signal,
+    })
+      .catch((error) => {
+        console.error(
+          `Error piping upstream body for stream ${streamId}:`,
+          error
+        )
+      })
+      .finally(() => {
+        unregisterConnection(streamId)
+      })
+  } else {
+    // No body - unregister immediately
+    unregisterConnection(streamId)
   }
 }
