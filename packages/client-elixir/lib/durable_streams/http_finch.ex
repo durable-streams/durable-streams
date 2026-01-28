@@ -64,6 +64,7 @@ defmodule DurableStreams.HTTP.Finch do
       timeout = Keyword.get(opts, :timeout, 30_000)
       halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
       halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
+      encoding = Keyword.get(opts, :encoding)
       request = Finch.build(:get, url, headers)
 
       initial_acc = %{
@@ -76,7 +77,8 @@ defmodule DurableStreams.HTTP.Finch do
         error: nil,
         on_event: on_event,
         halt_on_up_to_date: halt_on_up_to_date,
-        halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
+        halt_on_up_to_date_immediate: halt_on_up_to_date_immediate,
+        encoding: encoding
       }
 
       # Use Finch.stream_while for SSE - it supports {:cont, acc} / {:halt, acc} returns
@@ -224,15 +226,19 @@ defmodule DurableStreams.HTTP.Finch do
 
   defp deliver_event(%{type: "data", data: data, id: id}, acc) do
     # Data event - deliver to callback
+    # Decode base64 if encoding is set
+    decoded_data = decode_sse_data(data, acc.encoding)
     next_offset = id || acc.next_offset
-    acc.on_event.({:event, data, next_offset, acc.up_to_date})
+    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
     %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
   end
 
   defp deliver_event(%{type: "message", data: data, id: id}, acc) do
     # Default SSE event type is "message" - treat as data
+    # Decode base64 if encoding is set
+    decoded_data = decode_sse_data(data, acc.encoding)
     next_offset = id || acc.next_offset
-    acc.on_event.({:event, data, next_offset, acc.up_to_date})
+    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
     %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
   end
 
@@ -299,6 +305,20 @@ defmodule DurableStreams.HTTP.Finch do
   end
 
   defp parse_control_data(_), do: {:error, :invalid_control}
+
+  # Decode SSE data based on encoding
+  # If encoding is "base64", decode the data from base64
+  # Otherwise, return data as-is
+  defp decode_sse_data(data, "base64") when is_binary(data) do
+    # Remove any newlines/carriage returns per SSE protocol
+    cleaned = String.replace(data, ~r/[\n\r]/, "")
+    case Base.decode64(cleaned) do
+      {:ok, decoded} -> decoded
+      :error -> data  # If decoding fails, return original data
+    end
+  end
+
+  defp decode_sse_data(data, _encoding), do: data
 
   defp get_header(headers, name) do
     name_lower = String.downcase(name)

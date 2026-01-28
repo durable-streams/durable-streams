@@ -380,6 +380,7 @@ defmodule DurableStreams.Stream do
   - `:live` - Live mode: false, :long_poll, or :sse
   - `:timeout` - Timeout in milliseconds
   - `:headers` - Additional headers
+  - `:encoding` - Encoding for SSE data events (e.g., "base64" for binary streams)
   """
   @spec read(t(), keyword()) :: {:ok, read_chunk()} | {:error, term()}
   def read(%__MODULE__{} = stream, opts \\ []) do
@@ -389,19 +390,22 @@ defmodule DurableStreams.Stream do
     extra_headers = Keyword.get(opts, :headers, %{})
     halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
     halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
+    encoding = Keyword.get(opts, :encoding)
 
     # Use Finch for true SSE streaming when available
     is_sse = live == :sse or live == "sse"
     if is_sse and DurableStreams.HTTP.Finch.available?() do
-      read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate)
+      read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding)
     else
       read_httpc(stream, offset, live, timeout, extra_headers)
     end
   end
 
   # SSE streaming using Finch (true incremental delivery)
-  defp read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate) do
+  defp read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding \\ nil) do
     query_params = [{"offset", offset}, {"live", "sse"}]
+    # Add encoding parameter for base64 binary streams
+    query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
     url_with_query = url(stream) <> "?" <> URI.encode_query(query_params)
 
     headers =
@@ -422,7 +426,8 @@ defmodule DurableStreams.Stream do
     sse_opts = [
       timeout: timeout,
       halt_on_up_to_date: halt_on_up_to_date,
-      halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
+      halt_on_up_to_date_immediate: halt_on_up_to_date_immediate,
+      encoding: encoding
     ]
     case DurableStreams.HTTP.Finch.stream_sse(url_with_query, headers, sse_opts, on_event) do
       {:ok, %{next_offset: final_offset, up_to_date: up_to_date}} ->
