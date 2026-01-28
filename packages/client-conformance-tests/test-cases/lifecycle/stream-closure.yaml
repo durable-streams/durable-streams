@@ -553,3 +553,31 @@ tests:
         path: ${streamPath}
         expect:
           streamClosed: true
+
+  - id: idempotent-producer-close-conflict
+    name: Different producer closing already-closed stream fails
+    description: When a different producer tries to close an already-closed stream, it should fail with STREAM_CLOSED
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "content"
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+    operations:
+      # Different producer tries to close - should fail
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-2
+        expect:
+          status: 409
+          errorCode: STREAM_CLOSED
+      # Stream should still be closed (by producer-1)
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
