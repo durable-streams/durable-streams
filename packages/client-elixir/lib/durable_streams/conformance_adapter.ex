@@ -1156,18 +1156,10 @@ defmodule DurableStreams.ConformanceAdapter do
   end
 
   defp do_idempotent_close(stream, data, content_type, producer_id, epoch, seq, auto_claim, state, path) do
-    headers =
-      [
-        {"stream-closed", "true"},
-        {"producer-id", producer_id},
-        {"producer-epoch", to_string(epoch)},
-        {"producer-seq", to_string(seq)}
-      ] ++ if(data, do: [{"content-type", content_type}], else: [])
-
     body =
       cond do
         is_nil(data) ->
-          nil
+          ""
 
         String.starts_with?(String.downcase(content_type), "application/json") ->
           "[#{data}]"
@@ -1176,10 +1168,15 @@ defmodule DurableStreams.ConformanceAdapter do
           data
       end
 
-    case HTTP.request(:post, Stream.url(stream), headers, body, timeout: stream.client.timeout) do
-      {:ok, status, resp_headers, _body} when status in [200, 204] ->
-        final_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+    opts = [
+      producer_id: producer_id,
+      epoch: epoch,
+      producer_seq: seq,
+      headers: %{"stream-closed" => "true"}
+    ]
 
+    case Stream.append(stream, body, opts) do
+      {:ok, append_result} ->
         new_state =
           state
           |> drop_producer_epochs(path, producer_id)
@@ -1190,36 +1187,23 @@ defmodule DurableStreams.ConformanceAdapter do
           "type" => "idempotent-producer-close",
           "success" => true,
           "status" => 200,
-          "finalOffset" => final_offset
+          "finalOffset" => append_result.next_offset
         }
 
         {result, new_state}
 
-      {:ok, 403, resp_headers, _body} when auto_claim ->
-        new_epoch = parse_epoch(HTTP.get_header(resp_headers, "producer-epoch")) + 1
+      {:error, {:stale_epoch, server_epoch}} when auto_claim ->
+        new_epoch = parse_epoch(server_epoch) + 1
         do_idempotent_close(stream, data, content_type, producer_id, new_epoch, 0, false, state, path)
 
-      {:ok, 404, _headers, _body} ->
+      {:error, :not_found} ->
         {map_error("idempotent-close", :not_found, path), state}
 
-      {:ok, 409, resp_headers, body} ->
-        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+      {:error, :stream_closed} ->
+        {map_error("idempotent-close", :stream_closed, path), state}
 
-        if stream_closed do
-          {map_error("idempotent-close", :stream_closed, path), state}
-        else
-          expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
-          received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
-
-          if expected_seq do
-            {map_error("idempotent-close", {:sequence_gap, expected_seq, received_seq}), state}
-          else
-            {map_error("idempotent-close", {:conflict, body}), state}
-          end
-        end
-
-      {:ok, status, _headers, body} ->
-        {map_error("idempotent-close", {:unexpected_status, status, body}), state}
+      {:error, {:sequence_gap, expected_seq, received_seq}} ->
+        {map_error("idempotent-close", {:sequence_gap, expected_seq, received_seq}), state}
 
       {:error, reason} ->
         {map_error("idempotent-close", reason), state}
