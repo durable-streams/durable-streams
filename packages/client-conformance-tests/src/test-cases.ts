@@ -211,6 +211,55 @@ export interface IdempotentAppendBatchExpectation extends BaseExpectation {
 }
 
 /**
+ * Close a stream via IdempotentProducer (uses producer headers for idempotency).
+ */
+export interface IdempotentCloseOperation {
+  action: `idempotent-close`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  /** Optional final message to append atomically with close */
+  data?: string
+  /** Auto-claim epoch on 403 */
+  autoClaim?: boolean
+  headers?: Record<string, string>
+  expect?: IdempotentCloseExpectation
+}
+
+/**
+ * Expectation for idempotent-close operation.
+ */
+export interface IdempotentCloseExpectation extends BaseExpectation {
+  /** Store the final offset */
+  storeOffsetAs?: string
+  /** Expected finalOffset */
+  finalOffset?: string
+}
+
+/**
+ * Detach an IdempotentProducer (stop without closing stream).
+ */
+export interface IdempotentDetachOperation {
+  action: `idempotent-detach`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch?: number
+  headers?: Record<string, string>
+  expect?: IdempotentDetachExpectation
+}
+
+/**
+ * Expectation for idempotent-detach operation.
+ */
+export interface IdempotentDetachExpectation extends BaseExpectation {
+  // No specific expectations beyond status
+}
+
+/**
  * Read from a stream.
  */
 export interface ReadOperation {
@@ -500,6 +549,8 @@ export type TestOperation =
   | AppendBatchOperation
   | IdempotentAppendOperation
   | IdempotentAppendBatchOperation
+  | IdempotentCloseOperation
+  | IdempotentDetachOperation
   | ReadOperation
   | HeadOperation
   | DeleteOperation

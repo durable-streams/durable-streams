@@ -444,6 +444,55 @@ async function executeOperation(
       return { result }
     }
 
+    case `idempotent-close`: {
+      const path = resolveVariables(op.path, variables)
+      const data = op.data ? resolveVariables(op.data, variables) : undefined
+
+      const result = await client.send(
+        {
+          type: `idempotent-close`,
+          path,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          data,
+          autoClaim: op.autoClaim ?? false,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-close ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
+    case `idempotent-detach`: {
+      const path = resolveVariables(op.path, variables)
+
+      const result = await client.send(
+        {
+          type: `idempotent-detach`,
+          path,
+          producerId: op.producerId,
+          epoch: op.epoch ?? 0,
+          headers: op.headers,
+        },
+        commandTimeout
+      )
+
+      if (verbose) {
+        console.log(
+          `  idempotent-detach ${path}: ${result.success ? `ok` : `failed`}`
+        )
+      }
+
+      return { result }
+    }
+
     case `read`: {
       const path = resolveVariables(op.path, variables)
       const offset = op.offset

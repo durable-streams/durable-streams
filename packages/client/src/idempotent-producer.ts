@@ -139,6 +139,7 @@ export class IdempotentProducer {
   readonly #queue: queueAsPromised<BatchTask>
   readonly #maxInFlight: number
   #closed = false
+  #closeResult: CloseResult | null = null
 
   // When autoClaim is true, we must wait for the first batch to complete
   // before allowing pipelining (to know what epoch was claimed)
@@ -358,8 +359,14 @@ export class IdempotentProducer {
    */
   async close(finalMessage?: Uint8Array | string): Promise<CloseResult> {
     if (this.#closed) {
-      // Already closed - just do a close operation to get the final offset
-      return this.#doClose()
+      // Already closed - return cached result for idempotency
+      if (this.#closeResult) {
+        return this.#closeResult
+      }
+      // If no cached result (shouldn't happen), fetch the final offset
+      const result = await this.#doClose()
+      this.#closeResult = result
+      return result
     }
 
     this.#closed = true
@@ -368,7 +375,9 @@ export class IdempotentProducer {
     await this.flush()
 
     // Close the stream with optional final message
-    return this.#doClose(finalMessage)
+    const result = await this.#doClose(finalMessage)
+    this.#closeResult = result
+    return result
   }
 
   /**

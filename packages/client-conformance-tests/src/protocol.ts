@@ -117,6 +117,38 @@ export interface IdempotentAppendBatchCommand {
 }
 
 /**
+ * Close a stream via IdempotentProducer (uses producer headers for idempotency).
+ */
+export interface IdempotentCloseCommand {
+  type: `idempotent-close`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Optional final message to append atomically with close */
+  data?: string
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
+ * Detach an IdempotentProducer (stop without closing stream).
+ */
+export interface IdempotentDetachCommand {
+  type: `idempotent-detach`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
  * Read from a stream (GET request).
  */
 export interface ReadCommand {
@@ -367,6 +399,8 @@ export type TestCommand =
   | AppendCommand
   | IdempotentAppendCommand
   | IdempotentAppendBatchCommand
+  | IdempotentCloseCommand
+  | IdempotentDetachCommand
   | ReadCommand
   | HeadCommand
   | DeleteCommand
@@ -492,6 +526,26 @@ export interface IdempotentAppendBatchResult {
   status: number
   /** Server's highest accepted sequence for this (stream, producerId, epoch) - returned in Producer-Seq header */
   producerSeq?: number
+}
+
+/**
+ * Successful idempotent-close result.
+ */
+export interface IdempotentCloseResult {
+  type: `idempotent-close`
+  success: true
+  status: number
+  /** Final stream offset after close */
+  finalOffset?: string
+}
+
+/**
+ * Successful idempotent-detach result.
+ */
+export interface IdempotentDetachResult {
+  type: `idempotent-detach`
+  success: true
+  status: number
 }
 
 /**
@@ -661,6 +715,8 @@ export type TestResult =
   | AppendResult
   | IdempotentAppendResult
   | IdempotentAppendBatchResult
+  | IdempotentCloseResult
+  | IdempotentDetachResult
   | ReadResult
   | HeadResult
   | DeleteResult
@@ -733,6 +789,8 @@ export const ErrorCodes = {
   NOT_FOUND: `NOT_FOUND`,
   /** Sequence number conflict (409) */
   SEQUENCE_CONFLICT: `SEQUENCE_CONFLICT`,
+  /** Stream is closed (409 with Stream-Closed header) */
+  STREAM_CLOSED: `STREAM_CLOSED`,
   /** Invalid offset format */
   INVALID_OFFSET: `INVALID_OFFSET`,
   /** Server returned unexpected status */

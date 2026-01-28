@@ -15,6 +15,7 @@ import {
   DurableStreamError,
   FetchError,
   IdempotentProducer,
+  StreamClosedError,
   stream,
 } from "@durable-streams/client"
 import {
@@ -39,6 +40,53 @@ let serverUrl = ``
 
 // Track content-type per stream path for append operations
 const streamContentTypes = new Map<string, string>()
+
+// Track IdempotentProducer instances to maintain state across operations
+// Key: "path|producerId|epoch"
+const producerCache = new Map<string, IdempotentProducer>()
+
+function getProducerCacheKey(
+  path: string,
+  producerId: string,
+  epoch: number
+): string {
+  return `${path}|${producerId}|${epoch}`
+}
+
+function getOrCreateProducer(
+  path: string,
+  producerId: string,
+  epoch: number,
+  autoClaim: boolean = false
+): IdempotentProducer {
+  const key = getProducerCacheKey(path, producerId, epoch)
+  let producer = producerCache.get(key)
+  if (!producer) {
+    const contentType =
+      streamContentTypes.get(path) ?? `application/octet-stream`
+    const ds = new DurableStream({
+      url: `${serverUrl}${path}`,
+      contentType,
+    })
+    producer = new IdempotentProducer(ds, producerId, {
+      epoch,
+      autoClaim,
+      maxInFlight: 1,
+      lingerMs: 0, // Send immediately for testing
+    })
+    producerCache.set(key, producer)
+  }
+  return producer
+}
+
+function removeProducerFromCache(
+  path: string,
+  producerId: string,
+  epoch: number
+): void {
+  const key = getProducerCacheKey(path, producerId, epoch)
+  producerCache.delete(key)
+}
 
 // Dynamic headers/params state
 interface DynamicValue {
@@ -123,6 +171,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       streamContentTypes.clear()
       dynamicHeaders.clear()
       dynamicParams.clear()
+      producerCache.clear()
       return {
         type: `init`,
         success: true,
@@ -601,39 +650,23 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
     case `idempotent-append`: {
       try {
-        const url = `${serverUrl}${command.path}`
+        const producer = getOrCreateProducer(
+          command.path,
+          command.producerId,
+          command.epoch,
+          command.autoClaim
+        )
 
-        // Get content-type from cache or use default
-        const contentType =
-          streamContentTypes.get(command.path) ?? `application/octet-stream`
+        // append() is fire-and-forget (synchronous), then flush() sends the batch
+        // Data is already pre-serialized, pass directly to append()
+        producer.append(command.data)
+        await producer.flush()
+        // Don't detach - keep producer for subsequent operations
 
-        const ds = new DurableStream({
-          url,
-          contentType,
-        })
-
-        const producer = new IdempotentProducer(ds, command.producerId, {
-          epoch: command.epoch,
-          autoClaim: command.autoClaim,
-          maxInFlight: 1,
-          lingerMs: 0, // Send immediately for testing
-        })
-
-        try {
-          // append() is fire-and-forget (synchronous), then flush() sends the batch
-          // Data is already pre-serialized, pass directly to append()
-          producer.append(command.data)
-          await producer.flush()
-          await producer.close()
-
-          return {
-            type: `idempotent-append`,
-            success: true,
-            status: 200,
-          }
-        } catch (err) {
-          await producer.close()
-          throw err
+        return {
+          type: `idempotent-append`,
+          success: true,
+          status: 200,
         }
       } catch (err) {
         return errorResult(`idempotent-append`, err)
@@ -676,7 +709,8 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
           // flush() sends the batch and waits for completion
           await producer.flush()
-          await producer.close()
+          // Use detach() to stop producer without closing the stream
+          await producer.detach()
 
           return {
             type: `idempotent-append-batch`,
@@ -684,11 +718,61 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             status: 200,
           }
         } catch (err) {
-          await producer.close()
+          await producer.detach()
           throw err
         }
       } catch (err) {
         return errorResult(`idempotent-append-batch`, err)
+      }
+    }
+
+    case `idempotent-close`: {
+      try {
+        const producer = getOrCreateProducer(
+          command.path,
+          command.producerId,
+          command.epoch,
+          command.autoClaim
+        )
+
+        // Close the stream with optional final message
+        const result = await producer.close(command.data)
+
+        // Keep producer in cache - subsequent close() calls should be idempotent
+        // The producer's internal #closed flag will handle idempotency
+
+        return {
+          type: `idempotent-close`,
+          success: true,
+          status: 200,
+          finalOffset: result.finalOffset,
+        }
+      } catch (err) {
+        return errorResult(`idempotent-close`, err)
+      }
+    }
+
+    case `idempotent-detach`: {
+      try {
+        const producer = getOrCreateProducer(
+          command.path,
+          command.producerId,
+          command.epoch
+        )
+
+        // Detach the producer without closing the stream
+        await producer.detach()
+
+        // Remove from cache since producer is detached
+        removeProducerFromCache(command.path, command.producerId, command.epoch)
+
+        return {
+          type: `idempotent-detach`,
+          success: true,
+          status: 200,
+        }
+      } catch (err) {
+        return errorResult(`idempotent-detach`, err)
       }
     }
 
@@ -764,6 +848,18 @@ function errorResult(
   commandType: TestCommand[`type`],
   err: unknown
 ): TestResult {
+  // Handle StreamClosedError specifically
+  if (err instanceof StreamClosedError) {
+    return {
+      type: `error`,
+      success: false,
+      commandType,
+      status: 409,
+      errorCode: ErrorCodes.STREAM_CLOSED,
+      message: err.message,
+    }
+  }
+
   if (err instanceof DurableStreamError) {
     let errorCode: ErrorCode = ErrorCodes.INTERNAL_ERROR
     let status: number | undefined
@@ -777,6 +873,9 @@ function errorResult(
       status = 409
     } else if (err.code === `CONFLICT_SEQ`) {
       errorCode = ErrorCodes.SEQUENCE_CONFLICT
+      status = 409
+    } else if (err.code === `STREAM_CLOSED`) {
+      errorCode = ErrorCodes.STREAM_CLOSED
       status = 409
     } else if (err.code === `BAD_REQUEST`) {
       errorCode = ErrorCodes.INVALID_OFFSET
@@ -802,8 +901,12 @@ function errorResult(
     if (err.status === 404) {
       errorCode = ErrorCodes.NOT_FOUND
     } else if (err.status === 409) {
-      // Check for sequence conflict vs general conflict
-      if (msg.includes(`sequence`)) {
+      // Check for stream closed header first
+      const streamClosedHeader =
+        err.headers[`stream-closed`] ?? err.headers[`Stream-Closed`]
+      if (streamClosedHeader?.toLowerCase() === `true`) {
+        errorCode = ErrorCodes.STREAM_CLOSED
+      } else if (msg.includes(`sequence`)) {
         errorCode = ErrorCodes.SEQUENCE_CONFLICT
       } else {
         errorCode = ErrorCodes.CONFLICT
