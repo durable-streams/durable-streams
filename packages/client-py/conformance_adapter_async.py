@@ -1004,8 +1004,8 @@ async def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
             )
             producer._next_seq = next_seq
 
-        result = await producer.close_stream(data=body)
-        producer_stream_closed[producer_key] = True
+            result = await producer.close_stream(data=body)
+            producer_stream_closed[producer_key] = True
 
             final_epoch = producer.epoch
             final_key = (cmd["path"], producer_id, final_epoch)
