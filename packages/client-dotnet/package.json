@@ -7,6 +7,6 @@
     "build": "dotnet build -c Release",
     "test": "dotnet test",
     "publish:adapter": "dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter",
-    "conformance": "pnpm publish:adapter && pnpm --filter @durable-streams/client-conformance-tests exec tsx src/cli.ts --run ./adapter/conformance-adapter"
+    "conformance": "pnpm publish:adapter && pnpm --filter @durable-streams/client-conformance-tests exec tsx src/cli.ts --run ../client-dotnet/adapter/conformance-adapter"
   }
 }
