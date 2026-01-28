@@ -212,10 +212,6 @@ fn main() {
 
         let result = rt.block_on(handle_command(&state, cmd));
         let output = serde_json::to_string(&result).unwrap();
-        // Escape U+2028 and U+2029 for JSON-lines compatibility with JavaScript parsers
-        let output = output
-            .replace('\u{2028}', "\\u2028")
-            .replace('\u{2029}', "\\u2029");
         println!("{}", output);
         stdout.lock().flush().unwrap();
 
