@@ -75,13 +75,7 @@ npm install @durable-streams/cli      # Development & testing CLI
 
 ### Other languages
 
-```bash
-# Go
-go get github.com/durable-streams/durable-streams/packages/client-go
-
-# Python
-pip install durable-streams
-```
+Client libraries for Go, Python, Elixir, .NET, Swift, PHP, Java, Rust, and Ruby are available in the [packages/](./packages/) directory. See the [Client Libraries](#client-libraries) section below for details.
 
 ### Server binary
 
@@ -97,12 +91,32 @@ For production use, download the Caddy-based server binary from [GitHub releases
 
 This monorepo contains:
 
-- **[@durable-streams/client](./packages/client)** - TypeScript client with full read/write support and automatic batching
+### Client Libraries
+
+| Package                                          | Language   | Description                                   |
+| ------------------------------------------------ | ---------- | --------------------------------------------- |
+| **[@durable-streams/client](./packages/client)** | TypeScript | Reference client with full read/write support |
+| **[client-py](./packages/client-py)**            | Python     | Python client library                         |
+| **[client-go](./packages/client-go)**            | Go         | Go client library                             |
+| **[client-elixir](./packages/client-elixir)**    | Elixir     | Elixir client library                         |
+| **[client-dotnet](./packages/client-dotnet)**    | C#/.NET    | .NET client library                           |
+| **[client-swift](./packages/client-swift)**      | Swift      | Swift client library                          |
+| **[client-php](./packages/client-php)**          | PHP        | PHP client library                            |
+| **[client-java](./packages/client-java)**        | Java       | Java client library                           |
+| **[client-rust](./packages/client-rust)**        | Rust       | Rust client library                           |
+| **[client-rb](./packages/client-rb)**            | Ruby       | Ruby client library                           |
+
+### Server & Tools
+
 - **[@durable-streams/server](./packages/server)** - Node.js reference server implementation
+- **[caddy-plugin](./packages/caddy-plugin)** - Production Caddy server plugin
 - **[@durable-streams/cli](./packages/cli)** - Command-line tool
 - **[Test UI](./examples/test-ui)** - Visual web interface for testing and exploring streams
+
+### Testing & Benchmarks
+
 - **[@durable-streams/server-conformance-tests](./packages/server-conformance-tests)** - Server protocol compliance tests (124 tests)
-- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (110 tests)
+- **[@durable-streams/client-conformance-tests](./packages/client-conformance-tests)** - Client protocol compliance tests (221 tests)
 - **[@durable-streams/benchmarks](./packages/benchmarks)** - Performance benchmarking suite
 
 ## Try It Out Locally
@@ -511,7 +525,7 @@ The protocol is designed to support implementations in any language or platform.
 
 Client implementations need only support standard HTTP requests and offset tracking.
 
-We encourage implementations in other languages and environments (Go, Rust, Python, Java, C#, Swift, Kotlin, etc.). Use the conformance test suite to verify protocol compliance:
+This monorepo includes client libraries for 10 languages: TypeScript, Python, Go, Elixir, .NET, Swift, PHP, Java, Rust, and Ruby. All pass the conformance test suite. Use the test suite to verify your own implementations:
 
 ```typescript
 import { runConformanceTests } from "@durable-streams/server-conformance-tests"
@@ -539,13 +553,15 @@ See [@durable-streams/server](./packages/server) for more details.
 
 ### Community implementations
 
-**Go**
+We welcome community implementations! If you've built a Durable Streams client or server, please open a PR to add it here.
 
-- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): A client and server implementation with full conformance test coverage.
+**Go (External)**
 
-**Java**
+- [ahimsalabs/durable-streams-go](https://github.com/ahimsalabs/durable-streams-go): An alternative Go client and server implementation.
 
-- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): A client and server and famous framework adapters with full conformance test coverage.
+**Java (External)**
+
+- [Clickin/durable-streams-java](https://github.com/Clickin/durable-streams-java): An alternative Java client with framework adapters.
 
 ## CLI Tool
 

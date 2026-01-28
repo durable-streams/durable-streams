@@ -21,6 +21,13 @@ Durable Streams is a protocol and set of implementations for persistent, resumab
 | `client`                   | TypeScript | Reference client library                |
 | `client-py`                | Python     | Python client library                   |
 | `client-go`                | Go         | Go client library                       |
+| `client-elixir`            | Elixir     | Elixir client library                   |
+| `client-dotnet`            | C#/.NET    | .NET client library                     |
+| `client-swift`             | Swift      | Swift client library                    |
+| `client-php`               | PHP        | PHP client library                      |
+| `client-java`              | Java       | Java client library                     |
+| `client-rust`              | Rust       | Rust client library                     |
+| `client-rb`                | Ruby       | Ruby client library                     |
 | `caddy-plugin`             | Go         | Production server (Caddy plugin)        |
 | `server`                   | TypeScript | Development server (not for production) |
 | `client-conformance-tests` | TypeScript | Cross-language client test suite        |
@@ -52,7 +59,7 @@ pnpm build
 ### Architecture
 
 ```
-Client (TS/Python/Go)
+Client (TS/Python/Go/Elixir/.NET/Swift/PHP/Java/Rust/Ruby)
         │
         ▼ HTTP
 ┌───────────────────┐
