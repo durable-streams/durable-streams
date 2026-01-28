@@ -458,6 +458,10 @@ func handleCreate(_ cmd: Command) async -> Result {
         contentType = providedContentType
     } else if let cachedContentType = await state.getContentType(path: path) {
         contentType = cachedContentType
+    } else if let cachedHandle = await state.getHandle(path: path),
+              let handleContentType = await cachedHandle.contentType {
+        await state.setContentType(path: path, contentType: handleContentType)
+        contentType = handleContentType
     } else {
         contentType = "application/octet-stream"
     }
