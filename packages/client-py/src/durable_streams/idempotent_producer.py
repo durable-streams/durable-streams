@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 
 from durable_streams._errors import DurableStreamError, FetchError
-from durable_streams._types import Offset
+from durable_streams._types import Offset, STREAM_CLOSED_HEADER
 
 # Producer header constants
 PRODUCER_ID_HEADER = "Producer-Id"
@@ -336,6 +336,124 @@ class IdempotentProducer:
 
         with contextlib.suppress(Exception):
             await self.flush()
+
+    async def close_stream(
+        self,
+        data: str | bytes | None = None,
+        *,
+        seq: int | None = None,
+    ) -> IdempotentAppendResult:
+        """
+        Close the stream using producer headers, optionally with a final message.
+
+        This is idempotent when called with the same (producerId, epoch, seq).
+        """
+        # Ensure pending batches are flushed before closing
+        await self.flush()
+
+        close_seq = seq if seq is not None else self._next_seq
+        if seq is None:
+            self._next_seq += 1
+
+        epoch = self._epoch
+        try:
+            result = await self._do_send_close(data, close_seq, epoch)
+
+            if not self._epoch_claimed:
+                self._epoch_claimed = True
+
+            self._signal_seq_complete(epoch, close_seq, None)
+            return result
+        except Exception as e:
+            self._signal_seq_complete(epoch, close_seq, e)
+            if self._on_error is not None:
+                self._on_error(e)
+            raise
+
+    async def _do_send_close(
+        self, data: str | bytes | None, seq: int, epoch: int
+    ) -> IdempotentAppendResult:
+        """
+        Send a close request with producer headers and Stream-Closed: true.
+        """
+        is_json = _normalize_content_type(self._content_type) == "application/json"
+
+        if data is None:
+            body = b""
+        else:
+            if is_json:
+                json_str = data.decode("utf-8") if isinstance(data, bytes) else data
+                body = f"[{json_str}]".encode("utf-8")
+            else:
+                body = data if isinstance(data, bytes) else data.encode("utf-8")
+
+        headers = {
+            PRODUCER_ID_HEADER: self._producer_id,
+            PRODUCER_EPOCH_HEADER: str(epoch),
+            PRODUCER_SEQ_HEADER: str(seq),
+            STREAM_CLOSED_HEADER: "true",
+        }
+        if data is not None:
+            headers["content-type"] = self._content_type
+
+        response = await self._client.post(
+            self._url,
+            content=body,
+            headers=headers,
+        )
+
+        if response.status_code == 204:
+            return IdempotentAppendResult(offset="", duplicate=True)
+
+        if response.status_code == 200:
+            result_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+            return IdempotentAppendResult(offset=result_offset, duplicate=False)
+
+        if response.status_code == 403:
+            current_epoch_str = response.headers.get(PRODUCER_EPOCH_HEADER)
+            current_epoch = int(current_epoch_str) if current_epoch_str else epoch
+
+            if self._auto_claim:
+                new_epoch = current_epoch + 1
+                self._epoch = new_epoch
+                self._next_seq = 1
+                return await self._do_send_close(data, 0, new_epoch)
+
+            raise StaleEpochError(current_epoch)
+
+        if response.status_code == 409:
+            stream_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if stream_closed:
+                return IdempotentAppendResult(offset="", duplicate=True)
+
+            expected_seq_str = response.headers.get(PRODUCER_EXPECTED_SEQ_HEADER)
+            expected_seq = int(expected_seq_str) if expected_seq_str else 0
+
+            if expected_seq < seq:
+                for s in range(expected_seq, seq):
+                    await self._wait_for_seq(epoch, s)
+                return await self._do_send_close(data, seq, epoch)
+
+            received_seq_str = response.headers.get(PRODUCER_RECEIVED_SEQ_HEADER)
+            received_seq = int(received_seq_str) if received_seq_str else seq
+            raise SequenceGapError(expected_seq, received_seq)
+
+        if response.status_code == 400:
+            text = response.text
+            raise DurableStreamError(
+                f"{text or 'Bad request'}: {self._url}",
+                code="BAD_REQUEST",
+                status=400,
+            )
+
+        text = response.text
+        raise DurableStreamError(
+            f"{text or 'Request failed'}: {self._url}",
+            code="UNEXPECTED_STATUS",
+            status=response.status_code,
+        )
 
         if self._owns_client:
             await self._client.aclose()
