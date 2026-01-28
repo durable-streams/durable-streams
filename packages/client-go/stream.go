@@ -498,7 +498,7 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 	// Validate encoding is only used with live=sse (Protocol Section 5.7)
 	var initErr error
 	if cfg.encoding != "" && cfg.live != LiveModeSSE {
-		initErr = newStreamError("read", s.url, 0, fmt.Errorf("encoding parameter is only valid with live='sse'"))
+		initErr = newStreamError("read", s.url, 400, fmt.Errorf("encoding parameter is only valid with live='sse'"))
 	}
 
 	return &ChunkIterator{

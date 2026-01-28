@@ -383,3 +383,44 @@ tests:
           status: 400
           messageContains:
             - encoding
+
+  # SSE reconnection test - verifies decoder state resets properly
+  - id: sse-base64-reconnect-decoding
+    name: SSE base64 decoding works after reconnect
+    description: |
+      After SSE connection closes and client reconnects from last offset,
+      base64 decoding should work correctly without corruption from
+      any previous decoder state.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zmlyc3Q=" # "first"
+        expect:
+          storeOffsetAs: firstOffset
+      - action: append
+        path: ${streamPath}
+        binaryData: "c2Vjb25k" # "second"
+    operations:
+      # First read - gets "first", stops after 1 chunk
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        maxChunks: 1
+        expect:
+          minChunks: 1
+          dataContains: "first"
+      # Second read - reconnects from offset, should decode "second" correctly
+      - action: read
+        path: ${streamPath}
+        offset: ${firstOffset}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          dataContains: "second"
+          upToDate: true
