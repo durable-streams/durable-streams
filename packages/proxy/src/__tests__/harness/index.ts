@@ -23,6 +23,7 @@ export {
   createStream,
   readStream,
   abortStream,
+  deleteStream,
   collectStreamChunks,
   parseSSEEvents,
   waitFor,
@@ -32,4 +33,6 @@ export {
   type ReadStreamResult,
   type AbortStreamOptions,
   type AbortStreamResult,
+  type DeleteStreamOptions,
+  type DeleteStreamResult,
 } from "./test-client"

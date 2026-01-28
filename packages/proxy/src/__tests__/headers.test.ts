@@ -19,18 +19,15 @@ afterAll(async () => {
 })
 
 describe(`header forwarding`, () => {
-  it(`forwards Authorization header to upstream`, async () => {
+  it(`forwards Upstream-Authorization header to upstream as Authorization`, async () => {
     ctx.upstream.setResponse({ status: 200, body: `ok` })
 
     await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `headers-auth-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      upstreamAuth: `Bearer sk-test-token-12345`,
       body: {},
-      headers: {
-        Authorization: `Bearer sk-test-token-12345`,
-      },
     })
 
     // Wait for async upstream request to be made
@@ -49,7 +46,6 @@ describe(`header forwarding`, () => {
     await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `headers-content-type-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: { test: true },
       headers: {
@@ -71,7 +67,6 @@ describe(`header forwarding`, () => {
     await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `headers-custom-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
       headers: {
@@ -95,7 +90,6 @@ describe(`header forwarding`, () => {
     await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `headers-no-host-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
@@ -113,13 +107,12 @@ describe(`header forwarding`, () => {
     ctx.upstream.setResponse({ status: 200, body: `ok` })
 
     const url = new URL(`/v1/proxy/chat`, ctx.urls.proxy)
-    url.searchParams.set(`stream_key`, `headers-no-conn-${Date.now()}`)
-    url.searchParams.set(`upstream`, ctx.urls.upstream + `/v1/chat`)
 
     await fetch(url.toString(), {
       method: `POST`,
       headers: {
         "Content-Type": `application/json`,
+        "Upstream-URL": ctx.urls.upstream + `/v1/chat`,
         Connection: `keep-alive`,
       },
       body: `{}`,
@@ -146,7 +139,6 @@ describe(`header forwarding`, () => {
     await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `headers-body-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: requestBody,
     })
@@ -181,7 +173,7 @@ describe(`CORS headers`, () => {
 
   it(`returns CORS headers on error responses`, async () => {
     const url = new URL(`/v1/proxy/chat`, ctx.urls.proxy)
-    // Missing required params should return error with CORS headers
+    // Missing required Upstream-URL header should return error with CORS headers
 
     const response = await fetch(url.toString(), {
       method: `POST`,

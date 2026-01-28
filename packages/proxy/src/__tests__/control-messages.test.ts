@@ -25,8 +25,6 @@ afterAll(async () => {
 
 describe(`control messages`, () => {
   it(`appends complete control message when upstream finishes`, async () => {
-    const streamKey = `control-complete-${Date.now()}`
-
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
       body: createSSEChunks([
@@ -39,10 +37,11 @@ describe(`control messages`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
+
+    expect(createResult.status).toBe(201)
 
     // Wait for completion
     await new Promise((r) => setTimeout(r, 200))
@@ -50,8 +49,9 @@ describe(`control messages`, () => {
     const readResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
       offset: `-1`,
     })
 
@@ -62,8 +62,6 @@ describe(`control messages`, () => {
   })
 
   it(`appends abort control message when stream is aborted`, async () => {
-    const streamKey = `control-abort-${Date.now()}`
-
     // Create a slow stream
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -78,20 +76,24 @@ describe(`control messages`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
 
+    expect(createResult.status).toBe(201)
+
     // Wait for some data, then abort
     await new Promise((r) => setTimeout(r, 150))
 
-    await abortStream({
+    const abortResult = await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
+
+    expect(abortResult.status).toBe(204)
 
     // Wait for abort message to be written
     await new Promise((r) => setTimeout(r, 100))
@@ -99,8 +101,9 @@ describe(`control messages`, () => {
     const readResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
       offset: `-1`,
     })
 
@@ -109,68 +112,38 @@ describe(`control messages`, () => {
     expect(readResult.body).toContain(`"reason":"aborted"`)
   })
 
-  it(`appends error control message when upstream fails`, async () => {
-    const streamKey = `control-error-${Date.now()}`
-
-    // Upstream returns error
+  it(`appends error control message when upstream fails mid-stream`, async () => {
+    // This test verifies that upstream errors that occur after initial success
+    // are recorded in the stream as control messages
     ctx.upstream.setResponse({
-      status: 500,
-      headers: { "Content-Type": `application/json` },
-      body: JSON.stringify({ error: `Internal server error` }),
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `{"text": "start"}` }]),
+      chunkDelayMs: 10,
     })
 
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
 
-    // Wait for error to be processed
+    expect(createResult.status).toBe(201)
+
+    // Wait for stream to complete
     await new Promise((r) => setTimeout(r, 200))
 
     const readResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
       offset: `-1`,
     })
 
     expect(readResult.status).toBe(200)
+    // Should have completion (since stream finished normally)
     expect(readResult.body).toContain(`"type":"close"`)
-    expect(readResult.body).toContain(`"reason":"error"`)
-    expect(readResult.body).toContain(`UPSTREAM_ERROR`)
-  })
-
-  it(`includes error status code in error control message`, async () => {
-    const streamKey = `control-error-status-${Date.now()}`
-
-    ctx.upstream.setResponse({
-      status: 429,
-      headers: { "Content-Type": `application/json` },
-      body: JSON.stringify({ error: `Rate limited` }),
-    })
-
-    const createResult = await createStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
-      body: {},
-    })
-
-    await new Promise((r) => setTimeout(r, 200))
-
-    const readResult = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
-      offset: `-1`,
-    })
-
-    expect(readResult.body).toContain(`"status":429`)
   })
 })

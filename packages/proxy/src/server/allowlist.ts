@@ -230,6 +230,16 @@ export const HOP_BY_HOP_HEADERS: Set<string> = new Set([
 ])
 
 /**
+ * Headers that are proxy-specific and should NOT be forwarded to upstream.
+ * These are used by the proxy for configuration.
+ */
+export const PROXY_HEADERS: Set<string> = new Set([
+  `upstream-url`,
+  `upstream-method`,
+  `upstream-authorization`,
+])
+
+/**
  * Filter headers for forwarding to upstream.
  *
  * @param headers - The incoming request headers
@@ -245,6 +255,11 @@ export function filterHeadersForUpstream(
 
     // Skip hop-by-hop headers
     if (HOP_BY_HOP_HEADERS.has(lowerKey)) {
+      continue
+    }
+
+    // Skip proxy-specific headers (these are for proxy configuration only)
+    if (PROXY_HEADERS.has(lowerKey)) {
       continue
     }
 

@@ -105,11 +105,22 @@ export type {
   UpstreamConnection,
   RequestContext,
   CreateStreamOptions,
-  CreateStreamResponse,
+  CreateStreamResult,
   ReadTokenPayload,
 } from "./types"
 
-// Re-export utilities
+// Re-export pre-signed URL utilities (RFC v1.1)
+export {
+  generatePresignedPath,
+  generateSignature,
+  validatePresignedUrl,
+} from "./presigned-urls"
+export type { PresignedUrlResult } from "./presigned-urls"
+
+// Re-export stream ID generation (RFC v1.1)
+export { generateStreamId, isValidStreamId } from "./stream-id"
+
+// Re-export JWT utilities (deprecated, kept for backward compatibility)
 export {
   generateReadToken,
   validateReadToken,
@@ -117,10 +128,14 @@ export {
   authorizeStreamRequest,
 } from "./tokens"
 export type { AuthResult } from "./tokens"
+
+// Re-export allowlist utilities
 export {
   createAllowlistValidator,
   validateUpstreamUrl,
   filterHeadersForUpstream,
   HOP_BY_HOP_HEADERS,
 } from "./allowlist"
+
+// Re-export response utilities
 export { sendError, sendJson } from "./response"

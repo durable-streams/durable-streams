@@ -17,12 +17,16 @@ export interface DurableStorage {
 
 /**
  * Stored credentials for resuming a stream.
+ *
+ * RFC v1.1: Uses pre-signed URLs instead of Bearer tokens.
  */
 export interface StreamCredentials {
-  /** The stream path on the proxy */
-  path: string
-  /** The read token for authentication */
-  readToken: string
+  /** The server-generated stream ID (UUIDv7) */
+  streamId: string
+  /** Pre-signed URL expiration timestamp (Unix seconds) */
+  expires: string
+  /** Pre-signed URL signature (HMAC) */
+  signature: string
   /** The last known offset */
   offset: string
   /** When this stream was created */
@@ -49,7 +53,7 @@ export interface DurableFetchOptions {
  * Options for a durable fetch request.
  */
 export interface DurableFetchRequestOptions extends RequestInit {
-  /** Unique key for this stream (required for resumability) */
+  /** Unique key for this stream used for local storage (required for resumability) */
   stream_key: string
   /** Whether this is a resume request (internal use) */
   _isResume?: boolean
@@ -59,8 +63,8 @@ export interface DurableFetchRequestOptions extends RequestInit {
  * Extended Response with durable stream properties.
  */
 export interface DurableResponse extends Response {
-  /** The stream path for this response */
-  durableStreamPath?: string
+  /** The server-generated stream ID */
+  durableStreamId?: string
   /** The current offset in the stream */
   durableStreamOffset?: string
   /** Whether this response was resumed from a previous session */

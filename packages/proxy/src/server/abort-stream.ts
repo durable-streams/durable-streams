@@ -1,14 +1,15 @@
 /**
  * Handler for aborting proxy streams.
  *
- * POST /v1/proxy/{service}/streams/{key}/abort
+ * PATCH /v1/proxy/{service}/{stream_id}?action=abort&expires=...&signature=...
  *
  * Aborts an in-progress upstream connection and marks the stream as aborted.
+ * Uses pre-signed URL for authentication.
  */
 
-import { authorizeStreamRequest } from "./tokens"
+import { validatePresignedUrl } from "./presigned-urls"
 import { abortConnection, getConnection } from "./upstream"
-import { sendError, sendJson } from "./response"
+import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
@@ -18,22 +19,31 @@ import type { IncomingMessage, ServerResponse } from "node:http"
  * @param req - The incoming HTTP request
  * @param res - The server response
  * @param serviceName - The service name from the URL path
- * @param streamKey - The stream key from the URL path
+ * @param streamId - The stream ID from the URL path
  * @param options - Proxy server options
  */
 export function handleAbortStream(
   req: IncomingMessage,
   res: ServerResponse,
   serviceName: string,
-  streamKey: string,
+  streamId: string,
   options: ProxyServerOptions
 ): void {
-  // Authorize the request
-  const auth = authorizeStreamRequest(
-    req.headers.authorization,
-    options.jwtSecret,
+  const incomingUrl = new URL(req.url ?? ``, `http://${req.headers.host}`)
+
+  // Check action parameter
+  const action = incomingUrl.searchParams.get(`action`)
+  if (action !== `abort`) {
+    sendError(res, 400, `INVALID_ACTION`, `Unknown action: ${action}`)
+    return
+  }
+
+  // Validate pre-signed URL
+  const auth = validatePresignedUrl(
+    incomingUrl,
     serviceName,
-    streamKey
+    streamId,
+    options.jwtSecret
   )
 
   if (!auth.ok) {
@@ -41,19 +51,18 @@ export function handleAbortStream(
     return
   }
 
+  // Build stream path for connection lookup
+  const streamPath = `/v1/streams/${serviceName}/${streamId}`
+
   // Check if there's an active connection
-  const connection = getConnection(auth.streamPath)
+  const connection = getConnection(streamPath)
 
-  if (!connection || connection.completed) {
-    sendJson(res, 200, { status: `already_completed` })
-    return
+  // Abort is idempotent - always return 204
+  if (connection && !connection.completed && !connection.aborted) {
+    abortConnection(streamPath)
   }
 
-  if (connection.aborted) {
-    sendJson(res, 200, { status: `already_aborted` })
-    return
-  }
-
-  abortConnection(auth.streamPath)
-  sendJson(res, 200, { status: `aborted` })
+  // Return 204 No Content (idempotent)
+  res.writeHead(204)
+  res.end()
 }

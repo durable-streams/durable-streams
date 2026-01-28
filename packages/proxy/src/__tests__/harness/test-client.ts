@@ -13,10 +13,12 @@ export interface CreateStreamOptions {
   proxyUrl: string
   /** Service name for the proxy route */
   serviceName: string
-  /** Unique stream key */
-  streamKey: string
   /** Upstream URL to proxy */
   upstreamUrl: string
+  /** Upstream HTTP method (default: POST) */
+  upstreamMethod?: string
+  /** Authorization to forward to upstream */
+  upstreamAuth?: string
   /** Request body */
   body?: string | object
   /** Request headers */
@@ -33,10 +35,16 @@ export interface CreateStreamResult {
   headers: Headers
   /** Response body (parsed as JSON if applicable) */
   body: unknown
-  /** The stream path if successful */
-  streamPath?: string
-  /** The read token if successful */
-  readToken?: string
+  /** The Location header (pre-signed URL path) */
+  location?: string
+  /** Upstream content type from response headers */
+  upstreamContentType?: string
+  /** Parsed stream ID from Location header */
+  streamId?: string
+  /** Parsed expires from Location header */
+  expires?: string
+  /** Parsed signature from Location header */
+  signature?: string
 }
 
 /**
@@ -48,22 +56,29 @@ export async function createStream(
   const {
     proxyUrl,
     serviceName,
-    streamKey,
     upstreamUrl,
+    upstreamMethod = `POST`,
+    upstreamAuth,
     body,
     headers = {},
   } = options
 
   const url = new URL(`/v1/proxy/${serviceName}`, proxyUrl)
-  url.searchParams.set(`stream_key`, streamKey)
-  url.searchParams.set(`upstream`, upstreamUrl)
+
+  const requestHeaders: Record<string, string> = {
+    "Content-Type": `application/json`,
+    "Upstream-URL": upstreamUrl,
+    "Upstream-Method": upstreamMethod,
+    ...headers,
+  }
+
+  if (upstreamAuth) {
+    requestHeaders[`Upstream-Authorization`] = upstreamAuth
+  }
 
   const response = await fetch(url.toString(), {
     method: `POST`,
-    headers: {
-      "Content-Type": `application/json`,
-      ...headers,
-    },
+    headers: requestHeaders,
     body: body
       ? typeof body === `string`
         ? body
@@ -80,12 +95,37 @@ export async function createStream(
     responseBody = await response.text()
   }
 
+  const location = response.headers.get(`Location`) ?? undefined
+  const upstreamContentType =
+    response.headers.get(`Upstream-Content-Type`) ?? undefined
+
+  // Parse Location header to extract streamId, expires, signature
+  let streamId: string | undefined
+  let expires: string | undefined
+  let signature: string | undefined
+
+  if (location) {
+    // Location format: /v1/proxy/{service}/{stream_id}?expires=...&signature=...
+    const locationUrl = new URL(location, proxyUrl)
+    const pathMatch = locationUrl.pathname.match(
+      /^\/v1\/proxy\/[^/]+\/([^/?]+)$/
+    )
+    if (pathMatch) {
+      streamId = pathMatch[1]
+    }
+    expires = locationUrl.searchParams.get(`expires`) ?? undefined
+    signature = locationUrl.searchParams.get(`signature`) ?? undefined
+  }
+
   return {
     status: response.status,
     headers: response.headers,
     body: responseBody,
-    streamPath: response.headers.get(`Durable-Streams-Path`) ?? undefined,
-    readToken: response.headers.get(`Durable-Streams-Read-Token`) ?? undefined,
+    location,
+    upstreamContentType,
+    streamId,
+    expires,
+    signature,
   }
 }
 
@@ -97,10 +137,12 @@ export interface ReadStreamOptions {
   proxyUrl: string
   /** Service name */
   serviceName: string
-  /** Stream key */
-  streamKey: string
-  /** Read token */
-  readToken: string
+  /** Stream ID */
+  streamId: string
+  /** Pre-signed URL expires timestamp */
+  expires: string
+  /** Pre-signed URL signature */
+  signature: string
   /** Starting offset (default: -1) */
   offset?: string
   /** Live mode (default: none) */
@@ -136,14 +178,17 @@ export async function readStream(
   const {
     proxyUrl,
     serviceName,
-    streamKey,
-    readToken,
+    streamId,
+    expires,
+    signature,
     offset = `-1`,
     live,
     cursor,
   } = options
 
-  const url = new URL(`/v1/proxy/${serviceName}/streams/${streamKey}`, proxyUrl)
+  const url = new URL(`/v1/proxy/${serviceName}/${streamId}`, proxyUrl)
+  url.searchParams.set(`expires`, expires)
+  url.searchParams.set(`signature`, signature)
   url.searchParams.set(`offset`, offset)
   if (live) {
     url.searchParams.set(`live`, live)
@@ -154,7 +199,6 @@ export async function readStream(
 
   const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${readToken}`,
       Accept: live === `sse` ? `text/event-stream` : `*/*`,
     },
   })
@@ -179,10 +223,12 @@ export interface AbortStreamOptions {
   proxyUrl: string
   /** Service name */
   serviceName: string
-  /** Stream key */
-  streamKey: string
-  /** Read token */
-  readToken: string
+  /** Stream ID */
+  streamId: string
+  /** Pre-signed URL expires timestamp */
+  expires: string
+  /** Pre-signed URL signature */
+  signature: string
 }
 
 /**
@@ -193,8 +239,6 @@ export interface AbortStreamResult {
   status: number
   /** Response headers */
   headers: Headers
-  /** Response body */
-  body: unknown
 }
 
 /**
@@ -203,26 +247,67 @@ export interface AbortStreamResult {
 export async function abortStream(
   options: AbortStreamOptions
 ): Promise<AbortStreamResult> {
-  const { proxyUrl, serviceName, streamKey, readToken } = options
+  const { proxyUrl, serviceName, streamId, expires, signature } = options
 
-  const url = new URL(
-    `/v1/proxy/${serviceName}/streams/${streamKey}/abort`,
-    proxyUrl
-  )
+  const url = new URL(`/v1/proxy/${serviceName}/${streamId}`, proxyUrl)
+  url.searchParams.set(`action`, `abort`)
+  url.searchParams.set(`expires`, expires)
+  url.searchParams.set(`signature`, signature)
 
   const response = await fetch(url.toString(), {
-    method: `POST`,
-    headers: {
-      Authorization: `Bearer ${readToken}`,
-    },
+    method: `PATCH`,
   })
-
-  const body = await response.json()
 
   return {
     status: response.status,
     headers: response.headers,
-    body,
+  }
+}
+
+/**
+ * Options for deleting a stream.
+ */
+export interface DeleteStreamOptions {
+  /** Proxy server URL */
+  proxyUrl: string
+  /** Service name */
+  serviceName: string
+  /** Stream ID */
+  streamId: string
+  /** Service token for authentication */
+  serviceToken: string
+}
+
+/**
+ * Result of deleting a stream.
+ */
+export interface DeleteStreamResult {
+  /** HTTP status code */
+  status: number
+  /** Response headers */
+  headers: Headers
+}
+
+/**
+ * Delete a stream through the proxy.
+ */
+export async function deleteStream(
+  options: DeleteStreamOptions
+): Promise<DeleteStreamResult> {
+  const { proxyUrl, serviceName, streamId, serviceToken } = options
+
+  const url = new URL(`/v1/proxy/${serviceName}/${streamId}`, proxyUrl)
+
+  const response = await fetch(url.toString(), {
+    method: `DELETE`,
+    headers: {
+      Authorization: `Bearer ${serviceToken}`,
+    },
+  })
+
+  return {
+    status: response.status,
+    headers: response.headers,
   }
 }
 

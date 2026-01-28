@@ -1,7 +1,7 @@
 /**
  * Tests for reading streams through the proxy.
  *
- * GET /v1/proxy/{service}/streams/{key}?offset=-1&live=...
+ * GET /v1/proxy/{service}/{stream_id}?offset=-1&expires=...&signature=...&live=...
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -23,12 +23,12 @@ afterAll(async () => {
 })
 
 describe(`stream reading`, () => {
-  let streamPath: string
-  let readToken: string
+  let streamId: string
+  let expires: string
+  let signature: string
 
   beforeEach(async () => {
     // Create a fresh stream for each test
-    const streamKey = `read-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
       body: createSSEChunks([
@@ -41,75 +41,88 @@ describe(`stream reading`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat/completions`,
       body: { messages: [] },
     })
 
     expect(result.status).toBe(201)
-    streamPath = result.streamPath!
-    readToken = result.readToken!
+    streamId = result.streamId!
+    expires = result.expires!
+    signature = result.signature!
 
     // Wait for upstream to complete
     await new Promise((r) => setTimeout(r, 100))
   })
 
-  it(`returns 401 when no authorization header is provided`, async () => {
-    const url = new URL(`/v1/proxy/chat/streams/some-key`, ctx.urls.proxy)
+  it(`returns 401 when signature is missing`, async () => {
+    const url = new URL(`/v1/proxy/chat/${streamId}`, ctx.urls.proxy)
     url.searchParams.set(`offset`, `-1`)
+    url.searchParams.set(`expires`, expires)
+    // Missing signature
 
     const response = await fetch(url.toString())
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_TOKEN`)
+    expect(body.error.code).toBe(`MISSING_SIGNATURE`)
   })
 
-  it(`returns 401 when token is invalid`, async () => {
+  it(`returns 401 when signature is invalid`, async () => {
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `some-key`,
-      readToken: `invalid-token`,
+      streamId,
+      expires,
+      signature: `invalid-signature`,
       offset: `-1`,
     })
 
     expect(result.status).toBe(401)
   })
 
-  it(`returns 403 when token is for a different stream`, async () => {
-    // Create a second stream to get a valid token for it
-    const otherKey = `other-stream-${Date.now()}`
+  it(`returns 401 when URL has expired`, async () => {
+    const result = await readStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      streamId,
+      expires: `1000000000`, // Year 2001 (expired)
+      signature, // Signature won't match with different expires anyway
+      offset: `-1`,
+    })
+
+    expect(result.status).toBe(401)
+  })
+
+  it(`returns 403 when signature is for a different stream`, async () => {
+    // Create a second stream to get a valid signature for it
     ctx.upstream.setResponse({ body: `other` })
     const otherResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: otherKey,
       upstreamUrl: ctx.urls.upstream + `/api`,
       body: {},
     })
 
-    // Try to read first stream with second stream's token
-    const streamKey = streamPath.split(`/`).pop()!
+    // Try to read first stream with second stream's signature
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: otherResult.readToken!, // Wrong token
+      streamId,
+      expires: otherResult.expires!,
+      signature: otherResult.signature!, // Wrong signature (for other stream)
       offset: `-1`,
     })
 
-    expect(result.status).toBe(403)
+    expect(result.status).toBe(401)
   })
 
-  it(`reads stream data with valid token`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
+  it(`reads stream data with valid pre-signed URL`, async () => {
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamId,
+      expires,
+      signature,
       offset: `-1`,
     })
 
@@ -119,13 +132,12 @@ describe(`stream reading`, () => {
   })
 
   it(`returns next offset header`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamId,
+      expires,
+      signature,
       offset: `-1`,
     })
 
@@ -135,14 +147,13 @@ describe(`stream reading`, () => {
   })
 
   it(`supports reading from a specific offset`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     // First read to get the tail offset
     const firstResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamId,
+      expires,
+      signature,
       offset: `-1`,
     })
 
@@ -152,8 +163,9 @@ describe(`stream reading`, () => {
     const secondResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamId,
+      expires,
+      signature,
       offset: firstResult.nextOffset!,
     })
 
@@ -162,13 +174,12 @@ describe(`stream reading`, () => {
   })
 
   it(`includes CORS headers in response`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamId,
+      expires,
+      signature,
       offset: `-1`,
     })
 
@@ -181,8 +192,6 @@ describe(`stream reading`, () => {
 
 describe(`stream reading - offset=-1 replay`, () => {
   it(`reads from beginning when offset is -1`, async () => {
-    const streamKey = `replay-test-${Date.now()}`
-
     // Create stream with known content
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -197,7 +206,6 @@ describe(`stream reading - offset=-1 replay`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
@@ -208,8 +216,9 @@ describe(`stream reading - offset=-1 replay`, () => {
     const result = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
       offset: `-1`,
     })
 

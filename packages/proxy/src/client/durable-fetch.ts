@@ -3,6 +3,8 @@
  *
  * Provides a fetch-like API that automatically persists stream credentials
  * and can resume interrupted streams.
+ *
+ * RFC v1.1: Uses pre-signed URLs instead of Bearer tokens for authentication.
  */
 
 import {
@@ -50,12 +52,43 @@ function getProxyPrefix(proxyUrlObj: URL): string {
 }
 
 /**
+ * Parse the Location header to extract stream credentials.
+ *
+ * Location format: /v1/proxy/{service}/{stream_id}?expires=...&signature=...
+ */
+function parseLocationHeader(
+  location: string,
+  baseUrl: URL
+): { streamId: string; expires: string; signature: string } | null {
+  try {
+    const locationUrl = new URL(location, baseUrl.origin)
+    const pathMatch = locationUrl.pathname.match(
+      /\/v1\/proxy\/[^/]+\/([^/?]+)$/
+    )
+    if (!pathMatch) {
+      return null
+    }
+    const streamId = pathMatch[1]!
+    const expires = locationUrl.searchParams.get(`expires`)
+    const signature = locationUrl.searchParams.get(`signature`)
+    if (!expires || !signature) {
+      return null
+    }
+    return { streamId, expires, signature }
+  } catch {
+    return null
+  }
+}
+
+/**
  * Create a durable fetch wrapper.
  *
  * This wrapper:
  * 1. Routes requests through the proxy server
  * 2. Persists stream credentials for resumability
  * 3. Automatically resumes streams after disconnection
+ *
+ * RFC v1.1: Uses pre-signed URLs for authentication instead of Bearer tokens.
  *
  * @param options - Configuration options
  * @returns A fetch-like function with durable stream support
@@ -122,34 +155,63 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       autoResume &&
       !_isResume
     ) {
-      // Try to resume from existing stream
-      try {
-        return await readFromStream(
-          fetchFn,
-          proxyUrlObj,
-          proxyPrefix,
-          serviceName,
-          existingCredentials,
-          stream_key,
-          storage,
-          storagePrefix,
-          storageScope,
-          true
-        )
-      } catch {
-        // Resume failed, fall through to create new stream
+      // Check if pre-signed URL has expired
+      const expiresAt = parseInt(existingCredentials.expires, 10)
+      if (Date.now() / 1000 < expiresAt) {
+        // Try to resume from existing stream
+        try {
+          return await readFromStream(
+            fetchFn,
+            proxyUrlObj,
+            proxyPrefix,
+            serviceName,
+            existingCredentials,
+            stream_key,
+            storage,
+            storagePrefix,
+            storageScope,
+            true
+          )
+        } catch {
+          // Resume failed, fall through to create new stream
+          removeCredentials(storage, storagePrefix, storageScope, stream_key)
+        }
+      } else {
+        // Pre-signed URL expired, remove credentials
         removeCredentials(storage, storagePrefix, storageScope, stream_key)
       }
     }
 
     // Create a new stream through the proxy
+    // RFC v1.1: Use headers instead of query params
     const createUrl = new URL(proxyUrl)
-    createUrl.searchParams.set(`stream_key`, stream_key)
-    createUrl.searchParams.set(`upstream`, upstreamUrl)
+
+    // Build headers for the create request
+    const createHeaders: Record<string, string> = {
+      "Upstream-URL": upstreamUrl,
+    }
+
+    // Forward Content-Type if present
+    if (fetchInit.headers) {
+      const headers = new Headers(fetchInit.headers)
+      const contentType = headers.get(`Content-Type`)
+      if (contentType) {
+        createHeaders[`Content-Type`] = contentType
+      }
+      // Forward Authorization as Upstream-Authorization
+      const authorization = headers.get(`Authorization`)
+      if (authorization) {
+        createHeaders[`Upstream-Authorization`] = authorization
+      }
+    }
 
     const createResponse = await fetchFn(createUrl.toString(), {
       ...fetchInit,
       method: `POST`,
+      headers: {
+        ...createHeaders,
+        ...fetchInit.headers,
+      },
     })
 
     if (!createResponse.ok) {
@@ -159,18 +221,22 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       )
     }
 
-    // Extract the stream path and read token from headers
-    const streamPath = createResponse.headers.get(`Durable-Streams-Path`)
-    const readToken = createResponse.headers.get(`Durable-Streams-Read-Token`)
+    // RFC v1.1: Extract credentials from Location header
+    const location = createResponse.headers.get(`Location`)
+    if (!location) {
+      throw new Error(`Missing Location header in response`)
+    }
 
-    if (!streamPath || !readToken) {
-      throw new Error(`Missing stream path or read token in response headers`)
+    const parsed = parseLocationHeader(location, proxyUrlObj)
+    if (!parsed) {
+      throw new Error(`Invalid Location header format: ${location}`)
     }
 
     // Save credentials for future resume
     const credentials: StreamCredentials = {
-      path: streamPath,
-      readToken,
+      streamId: parsed.streamId,
+      expires: parsed.expires,
+      signature: parsed.signature,
       offset: `-1`,
       createdAt: Date.now(),
     }
@@ -213,17 +279,18 @@ async function readFromStream(
   storageScope: string,
   wasResumed: boolean
 ): Promise<DurableResponse> {
-  // Build the read URL: {prefix}/v1/proxy/{service}/streams/{key}
+  // Build the read URL: {prefix}/v1/proxy/{service}/{stream_id}?offset=...&expires=...&signature=...
   const readUrl = new URL(
-    `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}`,
+    `${proxyPrefix}/v1/proxy/${serviceName}/${credentials.streamId}`,
     proxyUrlObj.origin
   )
   readUrl.searchParams.set(`offset`, credentials.offset)
+  readUrl.searchParams.set(`expires`, credentials.expires)
+  readUrl.searchParams.set(`signature`, credentials.signature)
   readUrl.searchParams.set(`live`, `sse`)
 
   const response = await fetchFn(readUrl.toString(), {
     headers: {
-      Authorization: `Bearer ${credentials.readToken}`,
       Accept: `text/event-stream`,
     },
   })
@@ -254,7 +321,7 @@ async function readFromStream(
   }) as DurableResponse
 
   // Add durable stream properties
-  durableResponse.durableStreamPath = credentials.path
+  durableResponse.durableStreamId = credentials.streamId
   durableResponse.durableStreamOffset = credentials.offset
   durableResponse.wasResumed = wasResumed
 
@@ -326,15 +393,19 @@ function trackOffsetUpdates(
 /**
  * Create an abort function for a stream.
  *
+ * RFC v1.1: Uses PATCH with pre-signed URL instead of POST with Bearer token.
+ *
  * @param proxyUrl - The proxy URL (e.g., https://api.example.com/v1/proxy/chat)
- * @param streamKey - The stream key
- * @param readToken - The read token for authorization
+ * @param streamId - The server-generated stream ID
+ * @param expires - The pre-signed URL expiration timestamp
+ * @param signature - The pre-signed URL signature
  * @param fetchFn - Optional fetch implementation
  */
 export function createAbortFn(
   proxyUrl: string,
-  streamKey: string,
-  readToken: string,
+  streamId: string,
+  expires: string,
+  signature: string,
   fetchFn: typeof fetch = fetch
 ): () => Promise<void> {
   return async () => {
@@ -342,20 +413,21 @@ export function createAbortFn(
     const serviceName = getServiceName(proxyUrlObj)
     const proxyPrefix = getProxyPrefix(proxyUrlObj)
 
-    // Build abort URL: {prefix}/v1/proxy/{service}/streams/{key}/abort
+    // Build abort URL: {prefix}/v1/proxy/{service}/{stream_id}?action=abort&expires=...&signature=...
     const abortUrl = new URL(
-      `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}/abort`,
+      `${proxyPrefix}/v1/proxy/${serviceName}/${streamId}`,
       proxyUrlObj.origin
     )
+    abortUrl.searchParams.set(`action`, `abort`)
+    abortUrl.searchParams.set(`expires`, expires)
+    abortUrl.searchParams.set(`signature`, signature)
 
     const response = await fetchFn(abortUrl.toString(), {
-      method: `POST`,
-      headers: {
-        Authorization: `Bearer ${readToken}`,
-      },
+      method: `PATCH`,
     })
 
-    if (!response.ok) {
+    // RFC v1.1: 204 No Content on success (idempotent)
+    if (!response.ok && response.status !== 204) {
       const body = await response.text().catch(() => ``)
       throw new Error(`Abort request failed: ${response.status} ${body}`)
     }

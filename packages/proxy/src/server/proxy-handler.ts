@@ -2,21 +2,30 @@
  * Main request router for the proxy server.
  *
  * Routes requests to the appropriate handlers based on URL path and method.
+ *
+ * Routes:
+ *   POST   /v1/proxy/{service}                    → Create stream
+ *   GET    /v1/proxy/{service}/{stream_id}        → Read stream (pre-signed URL)
+ *   PATCH  /v1/proxy/{service}/{stream_id}        → Abort stream (pre-signed URL, ?action=abort)
+ *   DELETE /v1/proxy/{service}/{stream_id}        → Delete stream (service token)
  */
 
 import { handleCreateStream } from "./create-stream"
 import { handleReadStream } from "./read-stream"
 import { handleAbortStream } from "./abort-stream"
+import { handleDeleteStream } from "./delete-stream"
 import { createAllowlistValidator } from "./allowlist"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
 /**
  * URL pattern matchers for proxy routes.
+ *
+ * CREATE: POST /v1/proxy/{service}
+ * STREAM: GET/PATCH/DELETE /v1/proxy/{service}/{stream_id}
  */
 const CREATE_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)$/
-const READ_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)\/streams\/([^/]+)$/
-const ABORT_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)\/streams\/([^/]+)\/abort$/
+const STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)\/([^/?]+)$/
 
 /**
  * Create the main request handler for the proxy server.
@@ -39,15 +48,15 @@ export function createProxyHandler(
     res.setHeader(`Access-Control-Allow-Origin`, `*`)
     res.setHeader(
       `Access-Control-Allow-Methods`,
-      `GET, POST, PUT, DELETE, OPTIONS`
+      `GET, POST, PATCH, DELETE, OPTIONS`
     )
     res.setHeader(
       `Access-Control-Allow-Headers`,
-      `Content-Type, Authorization, Accept`
+      `Content-Type, Authorization, Accept, Upstream-URL, Upstream-Method, Upstream-Authorization`
     )
     res.setHeader(
       `Access-Control-Expose-Headers`,
-      `Durable-Streams-Path, Durable-Streams-Read-Token, Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date`
+      `Location, Upstream-Content-Type, Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date`
     )
 
     // Handle preflight requests
@@ -58,7 +67,7 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy/{service}?stream_key=...&upstream=...
+      // Route: POST /v1/proxy/{service}
       // Creates a new stream and starts proxying upstream response
       const createMatch = path.match(CREATE_STREAM_PATTERN)
       if (createMatch && method === `POST`) {
@@ -67,24 +76,29 @@ export function createProxyHandler(
         return
       }
 
-      // Route: POST /v1/proxy/{service}/streams/{key}/abort
-      // Aborts an in-progress stream
-      const abortMatch = path.match(ABORT_STREAM_PATTERN)
-      if (abortMatch && method === `POST`) {
-        const serviceName = abortMatch[1]!
-        const streamKey = abortMatch[2]!
-        handleAbortStream(req, res, serviceName, streamKey, options)
-        return
-      }
+      // Route: GET/PATCH/DELETE /v1/proxy/{service}/{stream_id}
+      const streamMatch = path.match(STREAM_PATTERN)
+      if (streamMatch) {
+        const serviceName = streamMatch[1]!
+        const streamId = streamMatch[2]!
 
-      // Route: GET /v1/proxy/{service}/streams/{key}?offset=...&live=...
-      // Reads from an existing stream
-      const readMatch = path.match(READ_STREAM_PATTERN)
-      if (readMatch && method === `GET`) {
-        const serviceName = readMatch[1]!
-        const streamKey = readMatch[2]!
-        await handleReadStream(req, res, serviceName, streamKey, options)
-        return
+        // GET: Read from stream
+        if (method === `GET`) {
+          await handleReadStream(req, res, serviceName, streamId, options)
+          return
+        }
+
+        // PATCH: Abort stream (with ?action=abort)
+        if (method === `PATCH`) {
+          handleAbortStream(req, res, serviceName, streamId, options)
+          return
+        }
+
+        // DELETE: Delete stream
+        if (method === `DELETE`) {
+          await handleDeleteStream(req, res, serviceName, streamId, options)
+          return
+        }
       }
 
       // Health check endpoint

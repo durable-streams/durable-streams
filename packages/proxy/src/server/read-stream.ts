@@ -1,13 +1,13 @@
 /**
  * Handler for reading proxy streams.
  *
- * GET /v1/proxy/{service}/streams/{key}?offset=-1&live=...
+ * GET /v1/proxy/{service}/{stream_id}?expires=...&signature=...&offset=-1&live=...
  *
  * Proxies read requests to the underlying durable streams server.
- * Requires a valid read token for authentication.
+ * Requires a valid pre-signed URL for authentication.
  */
 
-import { authorizeStreamRequest } from "./tokens"
+import { validatePresignedUrl } from "./presigned-urls"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -18,22 +18,24 @@ import type { ProxyServerOptions } from "./types"
  * @param req - The incoming HTTP request
  * @param res - The server response
  * @param serviceName - The service name from the URL path
- * @param streamKey - The stream key from the URL path
+ * @param streamId - The stream ID from the URL path
  * @param options - Proxy server options
  */
 export async function handleReadStream(
   req: IncomingMessage,
   res: ServerResponse,
   serviceName: string,
-  streamKey: string,
+  streamId: string,
   options: ProxyServerOptions
 ): Promise<void> {
-  // Authorize the request
-  const auth = authorizeStreamRequest(
-    req.headers.authorization,
-    options.jwtSecret,
+  const incomingUrl = new URL(req.url ?? ``, `http://${req.headers.host}`)
+
+  // Validate pre-signed URL
+  const auth = validatePresignedUrl(
+    incomingUrl,
     serviceName,
-    streamKey
+    streamId,
+    options.jwtSecret
   )
 
   if (!auth.ok) {
@@ -42,10 +44,10 @@ export async function handleReadStream(
   }
 
   // Build the durable streams URL
-  const incomingUrl = new URL(req.url ?? ``, `http://${req.headers.host}`)
-  const dsUrl = new URL(auth.streamPath, options.durableStreamsUrl)
+  const streamPath = `/v1/streams/${serviceName}/${streamId}`
+  const dsUrl = new URL(streamPath, options.durableStreamsUrl)
 
-  // Forward query parameters
+  // Forward query parameters (except signature params)
   const offset = incomingUrl.searchParams.get(`offset`)
   const live = incomingUrl.searchParams.get(`live`)
   const cursor = incomingUrl.searchParams.get(`cursor`)

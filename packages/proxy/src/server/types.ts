@@ -12,7 +12,7 @@ export interface ProxyServerOptions {
   durableStreamsUrl: string
   /** Allowlist of upstream URL patterns (glob-style patterns supported) */
   allowlist?: Array<string>
-  /** Secret key for signing JWT read tokens */
+  /** Secret key for signing pre-signed URLs (also used for JWT tokens in legacy mode) */
   jwtSecret: string
   /** TTL for streams in seconds (default: 86400 = 24 hours) */
   streamTtlSeconds?: number
@@ -20,6 +20,8 @@ export interface ProxyServerOptions {
   maxResponseBytes?: number
   /** Idle timeout for upstream connections in milliseconds (default: 300000 = 5 min) */
   idleTimeoutMs?: number
+  /** Service token for DELETE operations (optional) */
+  serviceToken?: string
 }
 
 /**
@@ -45,8 +47,8 @@ export interface ControlError {
 export interface UpstreamConnection {
   /** The AbortController for canceling the upstream request */
   abortController: AbortController
-  /** The stream key this connection is associated with */
-  streamKey: string
+  /** The stream ID this connection is associated with */
+  streamId: string
   /** Timestamp when the connection started */
   startedAt: number
   /** Current offset in the durable stream */
@@ -71,12 +73,12 @@ export interface RequestContext {
  * Options for creating a new proxy stream.
  */
 export interface CreateStreamOptions {
-  /** Unique key for this stream */
-  streamKey: string
-  /** URL of the upstream service to proxy */
-  upstream: string
-  /** HTTP method for the upstream request */
-  method?: string
+  /** URL of the upstream service to proxy (from Upstream-URL header) */
+  upstreamUrl: string
+  /** HTTP method for the upstream request (from Upstream-Method header, default: POST) */
+  upstreamMethod?: string
+  /** Authorization to forward to upstream (from Upstream-Authorization header) */
+  upstreamAuth?: string
   /** Headers to forward to upstream */
   headers?: Record<string, string>
   /** Request body to send to upstream */
@@ -84,17 +86,22 @@ export interface CreateStreamOptions {
 }
 
 /**
- * Response from creating a proxy stream.
+ * Internal state for a created proxy stream.
  */
-export interface CreateStreamResponse {
-  /** Path to read the stream from */
-  path: string
-  /** JWT token for reading the stream */
-  readToken: string
+export interface CreateStreamResult {
+  /** The generated stream ID */
+  streamId: string
+  /** Path to the stream (for internal use) */
+  streamPath: string
+  /** Pre-signed URL path for the Location header */
+  locationPath: string
+  /** Content-Type from upstream response */
+  upstreamContentType: string
 }
 
 /**
  * JWT payload for read tokens.
+ * @deprecated Use pre-signed URLs instead. This is kept for backward compatibility.
  */
 export interface ReadTokenPayload {
   /** Stream path */

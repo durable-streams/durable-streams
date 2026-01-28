@@ -30,7 +30,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-exact-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/api/test`,
       body: {},
     })
@@ -45,7 +44,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-wildcard-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/chat/completions`,
       body: {},
     })
@@ -57,7 +55,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-blocked-${Date.now()}`,
       upstreamUrl: `https://evil.hacker.com/steal-data`,
       body: {},
     })
@@ -72,7 +69,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-similar-${Date.now()}`,
       upstreamUrl: `https://api.openai.com.evil.com/v1/chat`,
       body: {},
     })
@@ -84,7 +80,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-invalid-${Date.now()}`,
       upstreamUrl: `not-a-valid-url`,
       body: {},
     })
@@ -99,7 +94,6 @@ describe(`allowlist validation`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `allowlist-scheme-${Date.now()}`,
       upstreamUrl: `ftp://api.openai.com/v1/chat`,
       body: {},
     })
@@ -116,7 +110,6 @@ describe(`allowlist pattern matching`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `pattern-depth-${Date.now()}`,
       upstreamUrl: ctx.urls.upstream + `/v1/a/b/c/d/e/f/g`,
       body: {},
     })
@@ -131,7 +124,6 @@ describe(`allowlist pattern matching`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `pattern-single-${Date.now()}`,
       upstreamUrl: `https://api.anthropic.com/v1/messages`,
       body: {},
     })
@@ -147,7 +139,6 @@ describe(`allowlist pattern matching`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `pattern-port-${Date.now()}`,
       upstreamUrl: `http://localhost:9999/any/path`,
       body: {},
     })
@@ -160,7 +151,6 @@ describe(`allowlist pattern matching`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `pattern-subdomain-${Date.now()}`,
       upstreamUrl: `https://sub.example.com/api/v1/test`,
       body: {},
     })
@@ -174,7 +164,6 @@ describe(`allowlist pattern matching`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `pattern-no-subdomain-${Date.now()}`,
       upstreamUrl: `https://example.com/api/v1/test`,
       body: {},
     })
@@ -190,7 +179,6 @@ describe(`security: URL normalization`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `norm-port-443-${Date.now()}`,
       upstreamUrl: `https://api.openai.com:443/v1/chat`,
       body: {},
     })
@@ -204,7 +192,6 @@ describe(`security: URL normalization`, () => {
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey: `norm-case-${Date.now()}`,
       upstreamUrl: `https://API.OPENAI.COM/v1/chat`,
       body: {},
     })

@@ -3,6 +3,8 @@
  *
  * This adapter integrates with TanStack's AI utilities
  * to provide transparent reconnection for streaming responses.
+ *
+ * RFC v1.1: Uses pre-signed URLs instead of Bearer tokens.
  */
 
 import {
@@ -148,7 +150,8 @@ export function createDurableAdapter(
       }
 
       // Set up abort function for this stream
-      if (response.durableStreamPath) {
+      // RFC v1.1: Use pre-signed URL credentials instead of Bearer token
+      if (response.durableStreamId) {
         const credentials = loadCredentials(
           storage,
           storagePrefix,
@@ -158,7 +161,13 @@ export function createDurableAdapter(
         if (credentials) {
           abortFns.set(
             streamKey,
-            createAbortFn(proxyUrl, streamKey, credentials.readToken, fetchFn)
+            createAbortFn(
+              proxyUrl,
+              credentials.streamId,
+              credentials.expires,
+              credentials.signature,
+              fetchFn
+            )
           )
           currentStreamKey = streamKey
         }

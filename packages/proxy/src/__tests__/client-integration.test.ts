@@ -2,7 +2,7 @@
  * Integration tests using the actual client library.
  *
  * These tests verify that the client library correctly interacts with the proxy server.
- * They would have caught bugs like the URL construction issue.
+ * RFC v1.1: Uses pre-signed URLs instead of Bearer tokens.
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -16,7 +16,7 @@ import {
 } from "../client"
 import { createDurableAdapter } from "../transports/tanstack"
 import { createAIStreamingResponse, createTestContext } from "./harness"
-import type { DurableFetch } from "../client/types"
+import type { DurableFetch, StreamCredentials } from "../client/types"
 
 const ctx = createTestContext()
 
@@ -60,7 +60,7 @@ describe(`createDurableFetch client integration`, () => {
     })
   })
 
-  it(`creates a stream and gets correct headers`, async () => {
+  it(`creates a stream and gets correct response properties`, async () => {
     const streamKey = `client-test-${Date.now()}`
 
     // Set up mock upstream response
@@ -74,9 +74,10 @@ describe(`createDurableFetch client integration`, () => {
     })
 
     expect(response.ok).toBe(true)
-    expect(response.durableStreamPath).toBeDefined()
-    expect(response.durableStreamPath).toContain(
-      `/v1/streams/chat/${streamKey}`
+    // RFC v1.1: Response now has durableStreamId (UUIDv7) instead of durableStreamPath
+    expect(response.durableStreamId).toBeDefined()
+    expect(response.durableStreamId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     )
     expect(response.wasResumed).toBe(false)
   })
@@ -100,9 +101,14 @@ describe(`createDurableFetch client integration`, () => {
     const storedData = storage.getItem(storageKey)
     expect(storedData).toBeDefined()
 
-    const credentials = JSON.parse(storedData!)
-    expect(credentials.path).toContain(`/v1/streams/chat/`)
-    expect(credentials.readToken).toBeDefined()
+    const credentials = JSON.parse(storedData!) as StreamCredentials
+    // RFC v1.1: Storage now contains streamId, expires, signature instead of path/readToken
+    expect(credentials.streamId).toBeDefined()
+    expect(credentials.streamId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+    )
+    expect(credentials.expires).toBeDefined()
+    expect(credentials.signature).toBeDefined()
     expect(credentials.offset).toBe(`-1`)
   })
 
@@ -177,13 +183,15 @@ describe(`createAbortFn client integration`, () => {
     const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
     const storedData = storage.getItem(storageKey)
     expect(storedData).toBeDefined()
-    const credentials = JSON.parse(storedData!)
+    const credentials = JSON.parse(storedData!) as StreamCredentials
 
     // Create abort function using the client library
+    // RFC v1.1: Uses streamId, expires, signature instead of streamKey, readToken
     const abort = createAbortFn(
       `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
+      credentials.streamId,
+      credentials.expires,
+      credentials.signature
     )
 
     // Abort the stream - should not throw
@@ -217,13 +225,14 @@ describe(`createAbortFn client integration`, () => {
     const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
     const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
     const storedData = storage.getItem(storageKey)
-    const credentials = JSON.parse(storedData!)
+    const credentials = JSON.parse(storedData!) as StreamCredentials
 
     // Abort should succeed even though stream is complete (idempotent)
     const abort = createAbortFn(
       `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
+      credentials.streamId,
+      credentials.expires,
+      credentials.signature
     )
 
     await abort()
@@ -231,12 +240,8 @@ describe(`createAbortFn client integration`, () => {
 })
 
 describe(`client URL construction`, () => {
-  it(`constructs correct read URL - would fail with old buggy code`, async () => {
+  it(`constructs correct read URL with pre-signed params`, async () => {
     const storage = createMemoryStorage()
-
-    // This test verifies the URL construction fix
-    // The client should construct: /v1/proxy/{service}/streams/{key}
-    // NOT the old buggy: /v1/proxy/v1/proxy/{service}/{key}
 
     const durableFetch = createDurableFetch({
       proxyUrl: `${ctx.urls.proxy}/v1/proxy/chat`,
@@ -256,8 +261,9 @@ describe(`client URL construction`, () => {
 
     // If URL construction is wrong, this would fail with 404
     expect(response.ok).toBe(true)
-    expect(response.durableStreamPath).toContain(
-      `/v1/streams/chat/${streamKey}`
+    // RFC v1.1: Response now has UUIDv7 stream ID
+    expect(response.durableStreamId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     )
   })
 
@@ -284,13 +290,14 @@ describe(`client URL construction`, () => {
     const proxyUrl = `${ctx.urls.proxy}/v1/proxy/chat`
     const storageKey = `durable-streams:${createScopeFromUrl(proxyUrl)}:${streamKey}`
     const storedData = storage.getItem(storageKey)
-    const credentials = JSON.parse(storedData!)
+    const credentials = JSON.parse(storedData!) as StreamCredentials
 
     // This would fail with 404 if abort URL is constructed wrong
     const abort = createAbortFn(
       `${ctx.urls.proxy}/v1/proxy/chat`,
-      streamKey,
-      credentials.readToken
+      credentials.streamId,
+      credentials.expires,
+      credentials.signature
     )
 
     await abort()
@@ -420,9 +427,11 @@ describe(`client unit: TanStack adapter concurrent streams`, () => {
 
 describe(`client unit: token expiration`, () => {
   it(`isExpired returns false for fresh credentials`, () => {
-    const credentials = {
-      path: `/v1/streams/chat/test`,
-      readToken: `token`,
+    // RFC v1.1: Credentials now use streamId, expires, signature
+    const credentials: StreamCredentials = {
+      streamId: `01234567-89ab-7cde-8f01-234567890abc`,
+      expires: String(Math.floor(Date.now() / 1000) + 3600),
+      signature: `test-signature`,
       offset: `-1`,
       createdAt: Date.now(),
     }
@@ -431,9 +440,10 @@ describe(`client unit: token expiration`, () => {
   })
 
   it(`isExpired returns true for old credentials`, () => {
-    const credentials = {
-      path: `/v1/streams/chat/test`,
-      readToken: `token`,
+    const credentials: StreamCredentials = {
+      streamId: `01234567-89ab-7cde-8f01-234567890abc`,
+      expires: String(Math.floor(Date.now() / 1000) + 3600),
+      signature: `test-signature`,
       offset: `-1`,
       createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago
     }
@@ -450,9 +460,10 @@ describe(`client unit: token expiration`, () => {
     const scope = createScopeFromUrl(proxyUrl)
     const storageKey = `durable-streams:${scope}:${streamKey}`
 
-    const expiredCredentials = {
-      path: `/v1/streams/chat/${streamKey}`,
-      readToken: `old-token`,
+    const expiredCredentials: StreamCredentials = {
+      streamId: `01234567-89ab-7cde-8f01-234567890abc`,
+      expires: String(Math.floor(Date.now() / 1000) - 3600), // Expired 1 hour ago
+      signature: `old-signature`,
       offset: `100`,
       createdAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago (expired)
     }
@@ -477,11 +488,15 @@ describe(`client unit: token expiration`, () => {
     // Should NOT be a resume - should have created new stream
     expect(response.wasResumed).toBe(false)
 
-    // Credentials should be updated with fresh timestamp
-    const newCredentials = JSON.parse(storage.getItem(storageKey)!)
+    // Credentials should be updated with fresh data
+    const newCredentials = JSON.parse(
+      storage.getItem(storageKey)!
+    ) as StreamCredentials
     expect(newCredentials.createdAt).toBeGreaterThan(
       expiredCredentials.createdAt
     )
+    // Stream ID should be different (new stream)
+    expect(newCredentials.streamId).not.toBe(expiredCredentials.streamId)
   })
 })
 

@@ -1,7 +1,7 @@
 /**
  * Tests for aborting streams through the proxy.
  *
- * POST /v1/proxy/{service}/streams/{key}/abort
+ * PATCH /v1/proxy/{service}/{stream_id}?action=abort&expires=...&signature=...
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -24,32 +24,56 @@ afterAll(async () => {
 })
 
 describe(`stream abort`, () => {
-  it(`returns 401 when no authorization header is provided`, async () => {
-    const url = new URL(`/v1/proxy/chat/streams/some-key/abort`, ctx.urls.proxy)
+  it(`returns 401 when pre-signed URL is missing signature`, async () => {
+    const url = new URL(`/v1/proxy/chat/some-stream-id`, ctx.urls.proxy)
+    url.searchParams.set(`action`, `abort`)
+    url.searchParams.set(
+      `expires`,
+      String(Math.floor(Date.now() / 1000) + 3600)
+    )
+    // Missing signature
 
     const response = await fetch(url.toString(), {
-      method: `POST`,
+      method: `PATCH`,
     })
 
     expect(response.status).toBe(401)
-    const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_TOKEN`)
   })
 
-  it(`returns 401 when token is invalid`, async () => {
-    const result = await abortStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `some-key`,
-      readToken: `invalid-token`,
+  it(`returns 401 when signature is invalid`, async () => {
+    // First create a valid stream
+    ctx.upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `test` }]),
+      chunkDelayMs: 100,
     })
 
-    expect(result.status).toBe(401)
+    const createResult = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(createResult.status).toBe(201)
+
+    // Try to abort with invalid signature
+    const url = new URL(
+      `/v1/proxy/chat/${createResult.streamId}`,
+      ctx.urls.proxy
+    )
+    url.searchParams.set(`action`, `abort`)
+    url.searchParams.set(`expires`, createResult.expires!)
+    url.searchParams.set(`signature`, `invalid-signature`)
+
+    const response = await fetch(url.toString(), {
+      method: `PATCH`,
+    })
+
+    expect(response.status).toBe(401)
   })
 
-  it(`returns 200 for already completed streams (idempotent)`, async () => {
-    const streamKey = `abort-completed-${Date.now()}`
-
+  it(`returns 204 for already completed streams (idempotent)`, async () => {
     // Create a stream that completes quickly
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -59,31 +83,28 @@ describe(`stream abort`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
 
+    expect(createResult.status).toBe(201)
+
     // Wait for stream to complete
     await new Promise((r) => setTimeout(r, 100))
 
-    // Abort should succeed idempotently
+    // Abort should succeed idempotently with 204
     const result = await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
 
-    expect(result.status).toBe(200)
-    expect((result.body as { status: string }).status).toMatch(
-      /already_completed|already_aborted/
-    )
+    expect(result.status).toBe(204)
   })
 
-  it(`returns 200 when aborting an in-progress stream`, async () => {
-    const streamKey = `abort-progress-${Date.now()}`
-
+  it(`returns 204 when aborting an in-progress stream`, async () => {
     // Create a slow stream
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -98,26 +119,25 @@ describe(`stream abort`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
+
+    expect(createResult.status).toBe(201)
 
     // Abort immediately
     const result = await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
 
-    expect(result.status).toBe(200)
-    expect((result.body as { status: string }).status).toBe(`aborted`)
+    expect(result.status).toBe(204)
   })
 
-  it(`is idempotent - multiple aborts return 200`, async () => {
-    const streamKey = `abort-idempotent-${Date.now()}`
-
+  it(`is idempotent - multiple aborts return 204`, async () => {
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
       body: createSSEChunks(
@@ -131,36 +151,34 @@ describe(`stream abort`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
+
+    expect(createResult.status).toBe(201)
 
     // First abort
     const firstAbort = await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
-    expect(firstAbort.status).toBe(200)
+    expect(firstAbort.status).toBe(204)
 
-    // Second abort should also succeed
+    // Second abort should also succeed with 204
     const secondAbort = await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
-    expect(secondAbort.status).toBe(200)
-    expect((secondAbort.body as { status: string }).status).toBe(
-      `already_aborted`
-    )
+    expect(secondAbort.status).toBe(204)
   })
 
   it(`preserves data written before abort`, async () => {
-    const streamKey = `abort-preserve-${Date.now()}`
-
     // Create a stream with some chunks, then we'll abort
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -179,10 +197,11 @@ describe(`stream abort`, () => {
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
+
+    expect(createResult.status).toBe(201)
 
     // Wait for some data to be written
     await new Promise((r) => setTimeout(r, 200))
@@ -191,21 +210,59 @@ describe(`stream abort`, () => {
     await abortStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
     })
+
+    // Wait for abort to complete
+    await new Promise((r) => setTimeout(r, 100))
 
     // Read what was written - should have some data
     const readResult = await readStream({
       proxyUrl: ctx.urls.proxy,
       serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamId: createResult.streamId!,
+      expires: createResult.expires!,
+      signature: createResult.signature!,
       offset: `-1`,
     })
 
     expect(readResult.status).toBe(200)
     // Should have at least the first few chunks
     expect(readResult.body).toContain(`"chunk": 1`)
+  })
+
+  it(`returns 400 when action is not abort`, async () => {
+    ctx.upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `test` }]),
+    })
+
+    const createResult = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      serviceName: `chat`,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat`,
+      body: {},
+    })
+
+    expect(createResult.status).toBe(201)
+
+    // Try PATCH with invalid action
+    const url = new URL(
+      `/v1/proxy/chat/${createResult.streamId}`,
+      ctx.urls.proxy
+    )
+    url.searchParams.set(`action`, `invalid`)
+    url.searchParams.set(`expires`, createResult.expires!)
+    url.searchParams.set(`signature`, createResult.signature!)
+
+    const response = await fetch(url.toString(), {
+      method: `PATCH`,
+    })
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error.code).toBe(`INVALID_ACTION`)
   })
 })
