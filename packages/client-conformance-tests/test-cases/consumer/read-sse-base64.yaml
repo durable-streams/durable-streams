@@ -779,6 +779,7 @@ tests:
         live: sse
         encoding: base64
         waitForUpToDate: true
+        timeoutMs: 10000
         expect:
           minChunks: 1
           upToDate: true
