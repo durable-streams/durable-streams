@@ -508,3 +508,277 @@ tests:
             - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             - "0123456789"
             - "abcdefghijklmnopqrstuvwxyz"
+
+  # Null byte handling (Gap 6)
+  - id: sse-base64-single-null-byte
+    name: SSE base64 handles single null byte
+    description: |
+      A single 0x00 byte must survive base64 round-trip. This catches
+      C-string termination bugs and JS typed-array edge cases.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AA==" # single 0x00 byte
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  # Live streaming with base64 (Gap 9)
+  - id: sse-base64-live-streaming
+    name: SSE base64 receives live data
+    description: |
+      SSE stream with base64 encoding should receive data appended after
+      the connection is established, not just historical data.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "aW5pdGlhbA==" # "initial"
+        expect:
+          storeOffsetAs: offset
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${offset}
+        live: sse
+        encoding: base64
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      - action: wait
+        ms: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "live-update"
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: "live-update"
+          minChunks: 1
+
+  # RFC 4648 Section 10 test vectors (Gap 10)
+  - id: sse-base64-rfc4648-1byte
+    name: SSE base64 RFC 4648 vector - 1 byte (double padding)
+    description: RFC 4648 canonical vector for "f" (1 byte, double == padding)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zg==" # "f"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: "f"
+
+  - id: sse-base64-rfc4648-2byte
+    name: SSE base64 RFC 4648 vector - 2 bytes (single padding)
+    description: RFC 4648 canonical vector for "fo" (2 bytes, single = padding)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zm8=" # "fo"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: "fo"
+
+  - id: sse-base64-rfc4648-3byte
+    name: SSE base64 RFC 4648 vector - 3 bytes (no padding)
+    description: RFC 4648 canonical vector for "foo" (3 bytes, no padding)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zm9v" # "foo"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: "foo"
+
+  - id: sse-base64-rfc4648-6byte
+    name: SSE base64 RFC 4648 vector - 6 bytes (multi-block)
+    description: RFC 4648 canonical vector for "foobar" (6 bytes, multi-block boundary, no padding)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zm9vYmFy" # "foobar"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: "foobar"
+
+  # Content-type variations (Gap 11)
+  - id: sse-base64-content-type-protobuf
+    name: SSE base64 works with application/x-protobuf streams
+    description: |
+      Binary streams with content type application/x-protobuf should
+      work with base64 encoding, catching implementations that hardcode
+      application/octet-stream checks.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/x-protobuf
+      - action: append
+        path: ${streamPath}
+        binaryData: "CAYSBG5hbWU=" # protobuf-like bytes
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-content-type-image
+    name: SSE base64 works with image/png streams
+    description: |
+      Binary streams with content type image/png should work with
+      base64 encoding.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: image/png
+      - action: append
+        path: ${streamPath}
+        binaryData: "iVBORw0KGgo=" # PNG magic bytes (truncated)
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  # Offset=now with base64 (Gap 17)
+  - id: sse-base64-offset-now
+    name: SSE base64 works with offset=now
+    description: |
+      Starting an SSE read with offset=now and encoding=base64 should
+      skip historical data and receive only new live data.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "aGlzdG9yaWNhbA==" # "historical"
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: "now"
+        live: sse
+        encoding: base64
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      - action: wait
+        ms: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "new-data"
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: "new-data"
+          minChunks: 1
+
+  # Many small messages (Gap 12)
+  - id: sse-base64-many-small-messages
+    name: SSE base64 handles many small binary messages
+    description: |
+      Ten small 3-byte binary payloads should all be decoded correctly,
+      catching decoder performance issues and event boundary bugs.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID" # bytes: 1, 2, 3
+      - action: append
+        path: ${streamPath}
+        binaryData: "BAUG" # bytes: 4, 5, 6
+      - action: append
+        path: ${streamPath}
+        binaryData: "BwgJ" # bytes: 7, 8, 9
+      - action: append
+        path: ${streamPath}
+        binaryData: "CgsM" # bytes: 10, 11, 12
+      - action: append
+        path: ${streamPath}
+        binaryData: "DQ4P" # bytes: 13, 14, 15
+      - action: append
+        path: ${streamPath}
+        binaryData: "EBEW" # bytes: 16, 17, 22
+      - action: append
+        path: ${streamPath}
+        binaryData: "ExQV" # bytes: 19, 20, 21
+      - action: append
+        path: ${streamPath}
+        binaryData: "FhcY" # bytes: 22, 23, 24
+      - action: append
+        path: ${streamPath}
+        binaryData: "GRob" # bytes: 25, 26, 27
+      - action: append
+        path: ${streamPath}
+        binaryData: "HB0e" # bytes: 28, 29, 30
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true

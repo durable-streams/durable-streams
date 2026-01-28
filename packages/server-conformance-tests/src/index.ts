@@ -4004,6 +4004,103 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(decoded[3]).toBe(0xff) // high byte
       expect(decoded[4]).toBe(0xfe) // high byte
     })
+
+    test(`should accept encoding=base64 for application/x-protobuf streams`, async () => {
+      const streamPath = `/v1/stream/sse-base64-protobuf-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/x-protobuf` },
+        body: new Uint8Array([0x08, 0x06, 0x12, 0x04, 0x6e, 0x61, 0x6d, 0x65]),
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      const events = parseSSEEvents(received)
+      const dataEvents = events.filter((e) => e.type === `data`)
+
+      expect(dataEvents.length).toBe(1)
+
+      const base64Data = dataEvents[0]!.data.replace(/[\n\r\s]/g, ``)
+      const decoded = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0))
+
+      expect(decoded.length).toBe(8)
+      expect(decoded[0]).toBe(0x08)
+      expect(decoded[7]).toBe(0x65)
+    })
+
+    test(`should accept encoding=base64 for image/png streams`, async () => {
+      const streamPath = `/v1/stream/sse-base64-image-${Date.now()}`
+
+      // PNG magic header bytes
+      const pngHeader = new Uint8Array([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      ])
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `image/png` },
+        body: pngHeader,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      const events = parseSSEEvents(received)
+      const dataEvents = events.filter((e) => e.type === `data`)
+
+      expect(dataEvents.length).toBe(1)
+
+      const base64Data = dataEvents[0]!.data.replace(/[\n\r\s]/g, ``)
+      const decoded = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0))
+
+      expect(decoded.length).toBe(8)
+      expect(decoded[0]).toBe(0x89) // PNG magic byte
+      expect(decoded[1]).toBe(0x50) // 'P'
+      expect(decoded[2]).toBe(0x4e) // 'N'
+      expect(decoded[3]).toBe(0x47) // 'G'
+    })
+
+    test(`should handle offset=now with encoding=base64 for binary streams`, async () => {
+      const streamPath = `/v1/stream/sse-base64-offset-now-${Date.now()}`
+
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: new Uint8Array([0x01, 0x02, 0x03]),
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=now&live=sse&encoding=base64`,
+        { untilContent: `"upToDate"` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Should have control event with upToDate:true
+      const controlMatch = received.match(
+        /event: control\s*\n\s*data:({[^}]+})/
+      )
+      expect(controlMatch).toBeDefined()
+      if (controlMatch && controlMatch[1]) {
+        const controlData = JSON.parse(controlMatch[1])
+        expect(controlData[`upToDate`]).toBe(true)
+      }
+
+      // Should NOT contain historical data events (offset=now skips existing data)
+      const events = parseSSEEvents(received)
+      const dataEvents = events.filter((e) => e.type === `data`)
+      expect(dataEvents.length).toBe(0)
+    })
   })
 
   // ============================================================================
