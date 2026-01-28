@@ -1467,7 +1467,18 @@ func handleClose(_ cmd: Command) async -> Result {
         }
     }
 
-    let contentType = cmd.contentType ?? "application/octet-stream"
+    let contentType: String
+    if let providedContentType = cmd.contentType {
+        contentType = providedContentType
+    } else if let cachedContentType = await state.getContentType(path: path) {
+        contentType = cachedContentType
+    } else if let cachedHandle = await state.getHandle(path: path),
+              let handleContentType = await cachedHandle.contentType {
+        await state.setContentType(path: path, contentType: handleContentType)
+        contentType = handleContentType
+    } else {
+        contentType = "application/octet-stream"
+    }
 
     // Build headers/params
     let dynamicHeaders = await state.resolveDynamicHeaders()
