@@ -935,7 +935,7 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
         )
         try:
             seq_key = (cmd["path"], producer_id, epoch)
-        next_seq = producer_seq if producer_seq is not None else 0
+            next_seq = producer_seq if producer_seq is not None else 0
             producer._next_seq = next_seq
 
             # append() is fire-and-forget (synchronous), adds to pending batch
