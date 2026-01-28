@@ -77,6 +77,8 @@ export interface StreamResponseConfig {
   ) => Promise<Response>
   /** SSE resilience options */
   sseResilience?: SSEResilienceOptions
+  /** Encoding for SSE data events */
+  encoding?: `base64`
 }
 
 /**
@@ -129,6 +131,9 @@ export class StreamResponseImpl<
   #consecutiveShortSSEConnections = 0
   #sseFallbackToLongPoll = false
 
+  // --- SSE Encoding State ---
+  #encoding?: `base64`
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -166,6 +171,9 @@ export class StreamResponseImpl<
       backoffMaxDelay: config.sseResilience?.backoffMaxDelay ?? 5000,
       logWarnings: config.sseResilience?.logWarnings ?? true,
     }
+
+    // Initialize SSE encoding
+    this.#encoding = config.encoding
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -407,6 +415,48 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Decode base64 string to Uint8Array.
+   * Per protocol: concatenate data lines, remove \n and \r, then decode.
+   */
+  #decodeBase64(base64Str: string): Uint8Array {
+    // Remove all newlines and carriage returns per protocol
+    const cleaned = base64Str.replace(/[\n\r]/g, ``)
+
+    // Empty string is valid
+    if (cleaned.length === 0) {
+      return new Uint8Array(0)
+    }
+
+    // Validate length is multiple of 4
+    if (cleaned.length % 4 !== 0) {
+      throw new DurableStreamError(
+        `Invalid base64 data: length ${cleaned.length} is not a multiple of 4`,
+        `PARSE_ERROR`
+      )
+    }
+
+    try {
+      // Use atob for browser, Buffer for Node.js
+      if (typeof atob === `function`) {
+        const binaryStr = atob(cleaned)
+        const bytes = new Uint8Array(binaryStr.length)
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i)
+        }
+        return bytes
+      } else {
+        // Node.js environment
+        return new Uint8Array(Buffer.from(cleaned, `base64`))
+      }
+    } catch (err) {
+      throw new DurableStreamError(
+        `Failed to decode base64 data: ${err instanceof Error ? err.message : String(err)}`,
+        `PARSE_ERROR`
+      )
+    }
+  }
+
+  /**
    * Create a synthetic Response from SSE data with proper headers.
    * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
    */
@@ -430,7 +480,22 @@ export class StreamResponseImpl<
     if (streamClosed) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
-    return new Response(data, { status: 200, headers })
+
+    // Decode base64 if encoding is used
+    let body: BodyInit
+    if (this.#encoding === `base64`) {
+      const decoded = this.#decodeBase64(data)
+      // Use underlying ArrayBuffer for cross-platform BodyInit compatibility
+      // Cast is safe because atob/Buffer.from never produces SharedArrayBuffer
+      body = decoded.buffer.slice(
+        decoded.byteOffset,
+        decoded.byteOffset + decoded.byteLength
+      ) as ArrayBuffer
+    } else {
+      body = data
+    }
+
+    return new Response(body, { status: 200, headers })
   }
 
   /**

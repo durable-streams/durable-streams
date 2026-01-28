@@ -167,6 +167,17 @@ export interface StreamOptions {
    * @default true
    */
   warnOnHttp?: boolean
+
+  /**
+   * Encoding for SSE data events.
+   * Required for binary streams (content-type not text/* or application/json).
+   * MUST NOT be provided for text or JSON streams.
+   *
+   * When set to 'base64', the client will:
+   * - Add ?encoding=base64 to SSE requests
+   * - Decode base64-encoded data events before processing
+   */
+  encoding?: `base64`
 }
 
 /**
