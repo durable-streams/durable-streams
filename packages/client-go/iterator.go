@@ -85,6 +85,9 @@ type ChunkIterator struct {
 	sseParser   *sse.Parser
 	sseResponse *http.Response
 	ssePending  *Chunk // Pending chunk from SSE data event
+
+	// initErr holds any validation error from Read() to be returned on first Next()
+	initErr error
 }
 
 // Next returns the next chunk of bytes from the stream.
@@ -112,6 +115,11 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 	if it.doneOnce {
 		it.mu.Unlock()
 		return nil, Done
+	}
+	// Return any validation error from Read()
+	if it.initErr != nil {
+		it.mu.Unlock()
+		return nil, it.initErr
 	}
 	it.mu.Unlock()
 

@@ -263,21 +263,11 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	}
 }
 
-// TestHTTPModeIgnoresEncoding tests that HTTP mode (non-SSE) doesn't add encoding param
-func TestHTTPModeIgnoresEncoding(t *testing.T) {
-	responseData := []byte("response data")
-
+// TestEncodingRequiresSSEMode tests that encoding parameter is only valid with SSE mode
+func TestEncodingRequiresSSEMode(t *testing.T) {
+	// Server should never be called since validation happens before request
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify no encoding query param in non-SSE mode
-		if r.URL.Query().Get("encoding") != "" {
-			t.Error("unexpected encoding query param in HTTP mode")
-		}
-
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Stream-Next-Offset", "100")
-		w.Header().Set("Stream-Up-To-Date", "true")
-		w.WriteHeader(http.StatusOK)
-		w.Write(responseData)
+		t.Error("server should not be called when encoding validation fails")
 	}))
 	defer server.Close()
 
@@ -287,17 +277,18 @@ func TestHTTPModeIgnoresEncoding(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Read with encoding option but no live mode (should be ignored)
+	// Read with encoding option but no live mode (should error)
 	it := stream.Read(ctx, WithEncoding("base64"))
 	defer it.Close()
 
-	chunk, err := it.Next()
-	if err != nil && err != Done {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := it.Next()
+	if err == nil {
+		t.Fatal("expected error when using encoding without SSE mode")
 	}
 
-	if !bytes.Equal(chunk.Data, responseData) {
-		t.Errorf("got data %v, want %v", chunk.Data, responseData)
+	// Verify error message mentions the issue
+	if !strings.Contains(err.Error(), "encoding") || !strings.Contains(err.Error(), "sse") {
+		t.Errorf("error should mention encoding and sse, got: %v", err)
 	}
 }
 

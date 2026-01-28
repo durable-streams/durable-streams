@@ -392,13 +392,26 @@ defmodule DurableStreams.Stream do
     halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
     encoding = Keyword.get(opts, :encoding)
 
-    # Use Finch for true SSE streaming when available
+    # Validate encoding is only used with live=:sse (Protocol Section 5.7)
     is_sse = live == :sse or live == "sse"
-    if is_sse and DurableStreams.HTTP.Finch.available?() do
+    if encoding != nil and not is_sse do
+      {:error, {:bad_request, "encoding parameter is only valid with live=:sse"}}
+    else
+      read_impl(stream, offset, live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding, is_sse)
+    end
+  end
+
+  defp read_impl(stream, offset, _live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding, true = _is_sse) do
+    # Use Finch for true SSE streaming when available
+    if DurableStreams.HTTP.Finch.available?() do
       read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding)
     else
-      read_httpc(stream, offset, live, timeout, extra_headers)
+      read_httpc(stream, offset, :sse, timeout, extra_headers)
     end
+  end
+
+  defp read_impl(stream, offset, live, timeout, extra_headers, _halt_on_up_to_date, _halt_on_up_to_date_immediate, _encoding, false = _is_sse) do
+    read_httpc(stream, offset, live, timeout, extra_headers)
   end
 
   # SSE streaming using Finch (true incremental delivery)
