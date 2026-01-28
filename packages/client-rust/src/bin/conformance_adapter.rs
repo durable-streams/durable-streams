@@ -631,7 +631,7 @@ async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Res
     let app_state = guard.as_ref().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     // Get data
     let data: Option<Bytes> = if cmd.binary.unwrap_or(false) {
