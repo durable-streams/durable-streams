@@ -1,8 +1,8 @@
-# DRAFT: The Durable Streams Protocol
+# The Durable Streams Protocol
 
 **Document:** Durable Streams Protocol  
-**Version:** 1.0  
-**Date:** 2025-01-XX  
+**Version:** 1.0
+**Date:** 2026-01-24
 **Author:** ElectricSQL
 
 ---
@@ -13,7 +13,7 @@ This document specifies the Durable Streams Protocol, an HTTP-based protocol for
 
 ## Copyright Notice
 
-Copyright (c) 2025 ElectricSQL
+Copyright (c) 2026 ElectricSQL
 
 ## Table of Contents
 
@@ -815,6 +815,6 @@ This document requests registration of the following HTTP headers in the "Perman
 
 **Full Copyright Statement**
 
-Copyright (c) 2025 ElectricSQL
+Copyright (c) 2026 Electric DB Inc (Trading as ElectricSQL)
 
 This document and the information contained herein are provided on an "AS IS" basis. ElectricSQL disclaims all warranties, express or implied, including but not limited to any warranty that the use of the information herein will not infringe any rights or any implied warranties of merchantability or fitness for a particular purpose.
