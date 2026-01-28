@@ -194,17 +194,21 @@ final class DurableStream
      * @param LiveMode $live Live mode
      * @param array<string, string> $extraHeaders Additional headers
      * @param float|null $timeout Timeout in seconds
+     * @param string|null $encoding Encoding for SSE data (e.g., 'base64'). Only valid with live=SSE.
+     * @throws Exception\DurableStreamException If encoding is provided without live=SSE
      */
     public function read(
         string $offset = '-1',
         LiveMode $live = LiveMode::Off,
         array $extraHeaders = [],
         ?float $timeout = null,
+        ?string $encoding = null,
     ): StreamResponse {
         return stream([
             'url' => $this->url,
             'offset' => $offset,
             'live' => $live,
+            'encoding' => $encoding,
             'headers' => array_merge($this->headers, $extraHeaders),
             'client' => $this->client,
             'timeout' => $timeout,

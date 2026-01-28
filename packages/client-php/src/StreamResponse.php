@@ -8,6 +8,9 @@ use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Internal\HttpClientInterface;
 use DurableStreams\Internal\HttpResponse;
+use DurableStreams\Internal\SSEParser;
+use DurableStreams\Internal\SSEEventType;
+use DurableStreams\Internal\SSEStreamHandle;
 use Generator;
 use IteratorAggregate;
 use LogicException;
@@ -39,6 +42,7 @@ final class StreamResponse implements IteratorAggregate
      * @param string $url Stream URL
      * @param string $initialOffset Starting offset
      * @param LiveMode $liveMode Live mode
+     * @param string|null $encoding Encoding for SSE data (e.g., 'base64')
      * @param array<string, string|callable> $headers Request headers (values can be callables)
      * @param HttpClientInterface $client HTTP client
      * @param float $timeout Request timeout
@@ -48,6 +52,7 @@ final class StreamResponse implements IteratorAggregate
         private readonly string $url,
         string $initialOffset,
         private readonly LiveMode $liveMode,
+        private readonly ?string $encoding,
         array $headers,
         private HttpClientInterface $client,
         private float $timeout,
@@ -175,6 +180,11 @@ final class StreamResponse implements IteratorAggregate
             $query['cursor'] = $this->cursor;
         }
 
+        // Add encoding parameter for SSE mode
+        if ($this->encoding !== null && $this->liveMode === LiveMode::SSE) {
+            $query['encoding'] = $this->encoding;
+        }
+
         $url .= '?' . http_build_query($query);
 
         // Resolve dynamic headers
@@ -241,6 +251,12 @@ final class StreamResponse implements IteratorAggregate
      */
     public function chunks(): Generator
     {
+        // Use SSE-specific iteration for SSE mode
+        if ($this->liveMode === LiveMode::SSE) {
+            yield from $this->chunksSSE();
+            return;
+        }
+
         // Initial fetch
         $response = $this->fetch();
         $this->updateFromResponse($response);
@@ -294,6 +310,111 @@ final class StreamResponse implements IteratorAggregate
                 status: $response->status,
                 cursor: $this->cursor,
             );
+        }
+    }
+
+    /**
+     * Iterate over SSE events as chunks.
+     *
+     * @return Generator<int, StreamChunk>
+     */
+    private function chunksSSE(): Generator
+    {
+        // Build SSE URL
+        $query = [];
+        $query['offset'] = $this->offset;
+        $query['live'] = 'sse';
+
+        if ($this->cursor !== null) {
+            $query['cursor'] = $this->cursor;
+        }
+
+        if ($this->encoding !== null) {
+            $query['encoding'] = $this->encoding;
+        }
+
+        $sseUrl = $this->url . '?' . http_build_query($query);
+
+        // Resolve dynamic headers
+        $resolvedHeaders = $this->resolveHeaders();
+
+        // Open SSE stream
+        $stream = $this->client->openStream($sseUrl, $resolvedHeaders, $this->timeout);
+        $parser = new SSEParser($stream);
+
+        $pendingData = null;
+        $this->status = 200; // SSE always starts with 200
+
+        try {
+            while (!$this->cancelled) {
+                $event = $parser->next();
+
+                if ($event === null) {
+                    // EOF - stream ended
+                    break;
+                }
+
+                if ($event->type === SSEEventType::Data) {
+                    // Buffer data, wait for control event to get offset
+                    $data = $event->data;
+
+                    // Decode base64 if encoding is set
+                    if ($this->encoding === 'base64' && $data !== null) {
+                        // Remove any newlines inserted between base64 lines per protocol spec
+                        $data = str_replace(["\n", "\r"], '', $data);
+                        $decoded = base64_decode($data, true);
+                        if ($decoded === false) {
+                            throw new DurableStreamException(
+                                'Failed to decode base64 SSE data',
+                                'PARSE_ERROR'
+                            );
+                        }
+                        $data = $decoded;
+                    }
+
+                    if ($pendingData === null) {
+                        $pendingData = $data;
+                    } else {
+                        $pendingData .= $data;
+                    }
+                } elseif ($event->type === SSEEventType::Control) {
+                    // Update state from control event
+                    if ($event->streamNextOffset !== null) {
+                        $this->offset = $event->streamNextOffset;
+                    }
+                    if ($event->streamCursor !== null) {
+                        $this->cursor = $event->streamCursor;
+                    }
+                    $this->upToDate = $event->upToDate;
+
+                    // If we have pending data, yield it
+                    if ($pendingData !== null) {
+                        yield new StreamChunk(
+                            data: $pendingData,
+                            offset: $this->offset,
+                            upToDate: $this->upToDate,
+                            status: 200,
+                            cursor: $this->cursor,
+                        );
+                        $pendingData = null;
+                    } elseif ($event->upToDate) {
+                        // Control event without data but with upToDate signal
+                        yield new StreamChunk(
+                            data: null,
+                            offset: $this->offset,
+                            upToDate: true,
+                            status: 200,
+                            cursor: $this->cursor,
+                        );
+                    }
+                }
+            }
+        } finally {
+            if ($stream instanceof \DurableStreams\Internal\SSEStreamHandle) {
+                $stream->close();
+            } elseif (is_resource($stream)) {
+                fclose($stream);
+            }
         }
     }
 
