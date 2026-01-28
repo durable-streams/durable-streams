@@ -216,16 +216,15 @@ Servers **MUST** return `404 Not Found` if the snapshot does not exist (e.g., de
 
 ```
 GET {document-url}?offset=<offset>&live=long-poll
-GET {document-url}?offset=<offset>&live=sse&encoding=base64
+GET {document-url}?offset=<offset>&live=sse
 ```
 
 #### Query Parameters
 
-| Parameter  | Required    | Description                                                                                                                  |
-| ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `offset`   | No          | Cursor position. Use `snapshot` for discovery (Section 5.1), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
-| `live`     | No          | `long-poll` for long-polling, `sse` for Server-Sent Events. Omit for catch-up reads.                                         |
-| `encoding` | Conditional | **MUST** be `base64` when `live=sse`. Required for binary streams per [PROTOCOL].                                            |
+| Parameter | Required | Description                                                                                                                  |
+| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `offset`  | No       | Cursor position. Use `snapshot` for discovery (Section 5.1), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
+| `live`    | No       | `long-poll` for long-polling, `sse` for Server-Sent Events. Omit for catch-up reads.                                         |
 
 #### Response Headers
 
@@ -250,9 +249,9 @@ When long-poll mode is requested, the connection stays open until:
 
 If timeout expires with no new data, server **MUST** return `204 No Content` with `Stream-Next-Offset` and `Stream-Up-To-Date: true` headers.
 
-#### SSE Mode (`live=sse&encoding=base64`)
+#### SSE Mode (`live=sse`)
 
-When SSE mode is requested, the server returns updates via Server-Sent Events with base64-encoded payloads:
+When SSE mode is requested, the server returns updates via Server-Sent Events. Since this protocol uses `application/octet-stream` for binary data, SSE payloads are base64-encoded per [PROTOCOL]:
 
 ```
 Content-Type: text/event-stream
@@ -308,7 +307,7 @@ Awareness streams are scoped to the document path. Two documents (`/docs/a` and 
 #### Request (SSE)
 
 ```
-GET {document-url}?awareness=default&offset=now&live=sse&encoding=base64
+GET {document-url}?awareness=default&offset=now&live=sse
 ```
 
 #### Request (Long-Poll)
@@ -563,7 +562,7 @@ Client                                    Server
 Client                                    Server
   │                                         │
   │ GET /docs/my-doc?awareness=default      │
-  │     &offset=now&live=sse&encoding=base64│
+  │     &offset=now&live=sse                │
   │────────────────────────────────────────>│
   │                                         │
   │ (SSE stream - no history, live only)    │
@@ -700,7 +699,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `updates.read-from-offset`    | GET updates with offset returns updates from that position             |
 | `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                       |
 | `updates.live-long-poll`      | GET with `live=long-poll` holds connection, receives new updates       |
-| `updates.live-sse`            | GET with `live=sse&encoding=base64` returns SSE stream with updates    |
+| `updates.live-sse`            | GET with `live=sse` returns SSE stream with base64-encoded updates     |
 | `updates.live-timeout`        | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds |
 | `doc.path-with-slashes`       | Document paths containing forward slashes work correctly               |
 
@@ -711,7 +710,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `awareness.lazy-creation`      | Awareness stream created on first access                                                       |
 | `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                               |
 | `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                     |
-| `awareness.live-sse`           | Awareness with `live=sse&encoding=base64` returns SSE stream                                   |
+| `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream with base64-encoded updates                       |
 | `awareness.write`              | POST to `?awareness=<name>` appends to awareness stream, returns 204 with `Stream-Next-Offset` |
 | `awareness.broadcast`          | POST awareness delivered to SSE subscribers in real-time                                       |
 | `awareness.ttl`                | Awareness stream expires after 1 hour                                                          |
