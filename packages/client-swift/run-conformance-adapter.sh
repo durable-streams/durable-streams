@@ -34,7 +34,7 @@ DOCKER_ARGS=(-i --rm -e DOCKER_HOST_REWRITE=1)
 
 if [ "$(uname -s)" = "Linux" ]; then
   # Use host network to avoid iptables/NAT dependencies in minimal environments.
-  DOCKER_ARGS+=(--network=host --add-host=host.docker.internal:host-gateway)
+  DOCKER_ARGS+=(--network=host)
 else
   DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
 fi
