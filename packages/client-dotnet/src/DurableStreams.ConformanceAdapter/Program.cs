@@ -427,7 +427,7 @@ async Task<object> HandleRead(JsonElement root)
         var streamClosedStatus = false;
         try
         {
-            var metadata = await stream.HeadAsync(cts.Token);
+            var metadata = await stream.HeadAsync();
             streamClosedStatus = metadata.StreamClosed;
         }
         catch
