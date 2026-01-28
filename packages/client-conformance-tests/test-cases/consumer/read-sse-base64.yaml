@@ -209,3 +209,51 @@ tests:
         expect:
           minChunks: 1
           upToDate: true
+
+  # Validation tests for encoding parameter restrictions (Protocol Section 5.7)
+  - id: sse-base64-encoding-requires-sse-catchup
+    name: Encoding parameter rejected without live=sse (catch-up mode)
+    description: |
+      Per Protocol Section 5.7, the encoding parameter is only valid with live=sse.
+      Clients SHOULD validate this constraint locally and reject the request.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        encoding: base64
+        expect:
+          status: 400
+          messageContains:
+            - encoding
+
+  - id: sse-base64-encoding-requires-sse-longpoll
+    name: Encoding parameter rejected with live=long-poll
+    description: |
+      Per Protocol Section 5.7, the encoding parameter is only valid with live=sse.
+      Using encoding with long-poll mode should fail.
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: long-poll
+        encoding: base64
+        timeoutMs: 1000
+        expect:
+          status: 400
+          messageContains:
+            - encoding
