@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use durable_streams::{
-    AppendOptions, Client, CloseOptions, CreateOptions, LiveMode, Offset, StreamError,
+    AppendOptions, Client, CloseOptions, CreateOptions, LiveMode, Offset, Producer, StreamError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -180,6 +180,7 @@ struct AppState {
     stream_content_types: HashMap<String, String>,
     dynamic_headers: HashMap<String, DynamicValue>,
     dynamic_params: HashMap<String, DynamicValue>,
+    producers: HashMap<String, Producer>,
 }
 
 fn main() {
@@ -235,6 +236,8 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
         "clear-dynamic" => handle_clear_dynamic(state, cmd).await,
         "idempotent-append" => handle_idempotent_append(state, cmd).await,
         "idempotent-append-batch" => handle_idempotent_append_batch(state, cmd).await,
+        "idempotent-close" => handle_idempotent_close(state, cmd).await,
+        "idempotent-detach" => handle_idempotent_detach(state, cmd).await,
         "validate" => handle_validate(cmd),
         "shutdown" => Result {
             result_type: "shutdown".to_string(),
@@ -258,6 +261,7 @@ async fn handle_init(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         stream_content_types: HashMap::new(),
         dynamic_headers: HashMap::new(),
         dynamic_params: HashMap::new(),
+        producers: HashMap::new(),
     });
 
     Result {
@@ -282,7 +286,11 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
+
+    if let Some(ct) = app_state.stream_content_types.get(&path) {
+        stream.set_content_type(ct.clone());
+    }
 
     let content_type = cmd.content_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
@@ -301,6 +309,17 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
 
     if cmd.closed.unwrap_or(false) {
         options = options.closed(true);
+    }
+
+    if let Some(data) = cmd.data.clone() {
+        let body: Bytes = if cmd.binary.unwrap_or(false) {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+                .unwrap_or_default()
+                .into()
+        } else {
+            data.into()
+        };
+        options = options.initial_data(body);
     }
 
     if let Some(headers) = cmd.headers {
@@ -626,6 +645,7 @@ async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Res
         options = options.data(d);
     }
     if let Some(ct) = cmd.content_type {
+        stream.set_content_type(ct.clone());
         options = options.content_type(ct);
     }
 
@@ -740,15 +760,18 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
     let epoch = cmd.epoch.unwrap_or(0) as u64;
     let auto_claim = cmd.auto_claim.unwrap_or(false);
 
-    let stream = app_state.client.stream(&url);
-    let producer = stream
-        .producer(&producer_id)
-        .epoch(epoch)
-        .auto_claim(auto_claim)
-        .max_in_flight(1)
-        .linger(Duration::ZERO)
-        .content_type(&content_type)
-        .build();
+    let key = format!("{}|{}", path, producer_id);
+    let producer = app_state.producers.entry(key).or_insert_with(|| {
+        let stream = app_state.client.stream(&url);
+        stream
+            .producer(&producer_id)
+            .epoch(epoch)
+            .auto_claim(auto_claim)
+            .max_in_flight(1)
+            .linger(Duration::ZERO)
+            .content_type(&content_type)
+            .build()
+    });
 
     let data = cmd.data.unwrap_or_default();
 
@@ -838,6 +861,78 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
 
     Result {
         result_type: "idempotent-append-batch".to_string(),
+        success: true,
+        status: Some(200),
+        ..Default::default()
+    }
+}
+
+async fn handle_idempotent_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let mut guard = state.lock().await;
+    let app_state = guard.as_mut().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let url = format!("{}{}", app_state.server_url, path);
+
+    let content_type = app_state
+        .stream_content_types
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let producer_id = cmd.producer_id.unwrap_or_default();
+    let epoch = cmd.epoch.unwrap_or(0) as u64;
+    let auto_claim = cmd.auto_claim.unwrap_or(false);
+
+    let key = format!("{}|{}", path, producer_id);
+    let producer = app_state.producers.entry(key).or_insert_with(|| {
+        let stream = app_state.client.stream(&url);
+        stream
+            .producer(&producer_id)
+            .epoch(epoch)
+            .auto_claim(auto_claim)
+            .max_in_flight(1)
+            .linger(Duration::ZERO)
+            .content_type(&content_type)
+            .build()
+    });
+
+    let data: Option<Bytes> = if cmd.binary.unwrap_or(false) {
+        cmd.data.map(|d| {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, d)
+                .unwrap_or_default()
+                .into()
+        })
+    } else {
+        cmd.data.map(|d| d.into())
+    };
+
+    match producer.close_stream(data).await {
+        Ok(result) => Result {
+            result_type: "idempotent-close".to_string(),
+            success: true,
+            status: Some(200),
+            final_offset: Some(result.next_offset.to_string()),
+            ..Default::default()
+        },
+        Err(e) => producer_error_result("idempotent-close", e),
+    }
+}
+
+async fn handle_idempotent_detach(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let mut guard = state.lock().await;
+    let app_state = guard.as_mut().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let producer_id = cmd.producer_id.unwrap_or_default();
+
+    let key = format!("{}|{}", path, producer_id);
+    if let Some(producer) = app_state.producers.remove(&key) {
+        let _ = producer.close().await;
+    }
+
+    Result {
+        result_type: "idempotent-detach".to_string(),
         success: true,
         status: Some(200),
         ..Default::default()
@@ -1192,6 +1287,7 @@ fn stream_error_result(cmd_type: &str, err: StreamError) -> Result {
 fn producer_error_result(cmd_type: &str, err: durable_streams::ProducerError) -> Result {
     let (code, status) = match &err {
         durable_streams::ProducerError::Closed => ("CLOSED", None),
+        durable_streams::ProducerError::StreamClosed => ("STREAM_CLOSED", Some(409)),
         durable_streams::ProducerError::StaleEpoch { .. } => ("STALE_EPOCH", Some(403)),
         durable_streams::ProducerError::SequenceGap { .. } => ("SEQUENCE_GAP", Some(409)),
         durable_streams::ProducerError::Stream { .. } => ("STREAM_ERROR", None),

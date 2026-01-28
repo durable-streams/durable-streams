@@ -160,6 +160,9 @@ pub enum ProducerError {
     #[error("producer is closed")]
     Closed,
 
+    #[error("stream is closed")]
+    StreamClosed,
+
     #[error("stale epoch: server has epoch {server_epoch}, we have {our_epoch}")]
     StaleEpoch { server_epoch: u64, our_epoch: u64 },
 
@@ -183,8 +186,11 @@ impl From<reqwest::Error> for ProducerError {
 
 impl From<StreamError> for ProducerError {
     fn from(err: StreamError) -> Self {
-        ProducerError::Stream {
-            message: err.to_string(),
+        match err {
+            StreamError::StreamClosed => ProducerError::StreamClosed,
+            other => ProducerError::Stream {
+                message: other.to_string(),
+            },
         }
     }
 }
