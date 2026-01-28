@@ -60,7 +60,7 @@ interface HttpClientInterface
      * @param string $url Full URL
      * @param array<string, string> $headers Request headers
      * @param float|null $timeout Override default timeout
-     * @return SSEStreamHandle|resource The SSE stream handle
+     * @return SSEStreamHandle The SSE stream handle
      * @throws \DurableStreams\Exception\DurableStreamException On connection errors
      */
     public function openStream(string $url, array $headers = [], ?float $timeout = null): SSEStreamHandle;

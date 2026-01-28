@@ -410,11 +410,7 @@ final class StreamResponse implements IteratorAggregate
                 }
             }
         } finally {
-            if ($stream instanceof \DurableStreams\Internal\SSEStreamHandle) {
-                $stream->close();
-            } elseif (is_resource($stream)) {
-                fclose($stream);
-            }
+            $stream->close();
         }
     }
 

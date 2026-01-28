@@ -393,6 +393,7 @@ final class SSEStreamHandle
             }
 
             // Get the status code as soon as headers are done
+            // @phpstan-ignore booleanNot.alwaysTrue (modified by HEADERFUNCTION callback)
             if ($headersDone && !$headersReceived) {
                 $headersReceived = true;
                 $statusCode = (int)curl_getinfo($handle, CURLINFO_HTTP_CODE);
@@ -463,6 +464,7 @@ final class SSEStreamHandle
 
         // Poll for more data
         $startTime = microtime(true);
+        // @phpstan-ignore booleanAnd.alwaysTrue, booleanNot.alwaysTrue (buffer modified by WRITEFUNCTION callback)
         while ($this->buffer === '' && !$this->finished) {
             $running = null;
             $status = curl_multi_exec($this->multi, $running);
@@ -487,6 +489,7 @@ final class SSEStreamHandle
                 break;
             }
 
+            // @phpstan-ignore booleanAnd.rightAlwaysTrue (buffer modified by WRITEFUNCTION callback)
             if ($this->buffer === '' && $status === CURLM_OK && $running) {
                 // Wait for activity
                 curl_multi_select($this->multi, 0.01);
@@ -494,6 +497,7 @@ final class SSEStreamHandle
         }
 
         // Return any buffered data
+        // @phpstan-ignore notIdentical.alwaysFalse (buffer modified by WRITEFUNCTION callback)
         if ($this->buffer !== '') {
             $data = substr($this->buffer, 0, $length);
             $this->buffer = substr($this->buffer, strlen($data));
