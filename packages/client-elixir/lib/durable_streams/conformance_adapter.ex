@@ -6,7 +6,7 @@ defmodule DurableStreams.ConformanceAdapter do
   """
 
   require Logger
-  alias DurableStreams.{Client, Stream, Writer, JSON}
+  alias DurableStreams.{Client, Stream, Writer, JSON, HTTP}
 
   @client_name "durable-streams-elixir"
   @client_version "0.1.0"
@@ -18,7 +18,9 @@ defmodule DurableStreams.ConformanceAdapter do
       :client,
       :stream_content_types,
       :dynamic_headers,
-      :dynamic_params
+      :dynamic_params,
+      :producer_next_seq,
+      :producer_stream_closed
     ]
   end
 
@@ -40,7 +42,9 @@ defmodule DurableStreams.ConformanceAdapter do
     state = %State{
       stream_content_types: %{},
       dynamic_headers: %{},
-      dynamic_params: %{}
+      dynamic_params: %{},
+      producer_next_seq: %{},
+      producer_stream_closed: %{}
     }
 
     # Set UTF-8 encoding for stdin/stdout
@@ -111,7 +115,9 @@ defmodule DurableStreams.ConformanceAdapter do
         client: client,
         stream_content_types: %{},
         dynamic_headers: %{},
-        dynamic_params: %{}
+        dynamic_params: %{},
+        producer_next_seq: %{},
+        producer_stream_closed: %{}
     }
 
     result = %{
@@ -140,6 +146,15 @@ defmodule DurableStreams.ConformanceAdapter do
     expires_at = cmd["expiresAt"]
     closed = cmd["closed"] || false
     headers = cmd["headers"] || %{}
+    data = cmd["data"]
+    binary = cmd["binary"] || false
+
+    data =
+      if data && binary do
+        Base.decode64!(data)
+      else
+        data
+      end
 
     stream =
       state.client
@@ -151,6 +166,7 @@ defmodule DurableStreams.ConformanceAdapter do
       |> maybe_add_opt(:ttl_seconds, ttl_seconds)
       |> maybe_add_opt(:expires_at, expires_at)
       |> maybe_add_opt(:closed, if(closed, do: true, else: nil))
+      |> maybe_add_opt(:data, data)
 
     # Check if exists first
     already_exists =
@@ -423,7 +439,22 @@ defmodule DurableStreams.ConformanceAdapter do
 
     case Stream.delete(stream, headers: headers) do
       :ok ->
-        new_state = %{state | stream_content_types: Map.delete(state.stream_content_types, path)}
+        new_producer_next_seq =
+          state.producer_next_seq
+          |> Enum.reject(fn {{p, _pid, _epoch}, _} -> p == path end)
+          |> Map.new()
+
+        new_producer_stream_closed =
+          state.producer_stream_closed
+          |> Enum.reject(fn {{p, _pid}, _} -> p == path end)
+          |> Map.new()
+
+        new_state = %{
+          state
+          | stream_content_types: Map.delete(state.stream_content_types, path),
+            producer_next_seq: new_producer_next_seq,
+            producer_stream_closed: new_producer_stream_closed
+        }
 
         result = %{
           "type" => "delete",
@@ -455,7 +486,10 @@ defmodule DurableStreams.ConformanceAdapter do
       |> Client.stream(path)
       |> Stream.set_content_type(content_type)
 
-    do_idempotent_append(stream, data, producer_id, epoch, 0, auto_claim, state)
+    seq_key = {path, producer_id, epoch}
+    seq = Map.get(state.producer_next_seq, seq_key, 0)
+
+    do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state, path)
   end
 
   defp handle_command(%{"type" => "idempotent-append-batch"} = cmd, state) do
@@ -477,6 +511,62 @@ defmodule DurableStreams.ConformanceAdapter do
     is_json = String.starts_with?(String.downcase(content_type), "application/json")
 
     do_idempotent_batch(stream, items, producer_id, epoch, auto_claim, is_json, state)
+  end
+
+  defp handle_command(%{"type" => type} = cmd, state) when type in ["idempotent-close", "idempotent-producer-close"] do
+    path = cmd["path"]
+    producer_id = cmd["producerId"]
+    epoch = cmd["epoch"] || 0
+    auto_claim = cmd["autoClaim"] || false
+    data = cmd["data"]
+    binary = cmd["binary"] || false
+
+    data =
+      if data && binary do
+        Base.decode64!(data)
+      else
+        data
+      end
+
+    content_type = cmd["contentType"] || state.stream_content_types[path] || "application/octet-stream"
+
+    stream =
+      state.client
+      |> Client.stream(path)
+      |> Stream.set_content_type(content_type)
+
+    producer_key = {path, producer_id}
+    if Map.get(state.producer_stream_closed, producer_key, false) do
+      result = %{
+        "type" => "idempotent-producer-close",
+        "success" => true,
+        "status" => 200
+      }
+
+      {result, state}
+    else
+      seq_key = {path, producer_id, epoch}
+      seq = Map.get(state.producer_next_seq, seq_key, 0)
+      do_idempotent_close(stream, data, content_type, producer_id, epoch, seq, auto_claim, state, path)
+    end
+  end
+
+  defp handle_command(%{"type" => "idempotent-detach"} = cmd, state) do
+    path = cmd["path"]
+    producer_id = cmd["producerId"]
+
+    new_state =
+      state
+      |> drop_producer_epochs(path, producer_id)
+      |> update_in([:producer_stream_closed], &Map.delete(&1, {path, producer_id}))
+
+    result = %{
+      "type" => "idempotent-detach",
+      "success" => true,
+      "status" => 200
+    }
+
+    {result, new_state}
   end
 
   defp handle_command(%{"type" => "set-dynamic-header"} = cmd, state) do
@@ -927,7 +1017,7 @@ defmodule DurableStreams.ConformanceAdapter do
 
   # Helper functions (grouped here to avoid warnings about non-grouped clauses)
 
-  defp do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state) do
+  defp do_idempotent_append(stream, data, producer_id, epoch, seq, auto_claim, state, path) do
     opts = [
       producer_id: producer_id,
       epoch: epoch,
@@ -936,17 +1026,22 @@ defmodule DurableStreams.ConformanceAdapter do
 
     case Stream.append(stream, data, opts) do
       {:ok, _result} ->
+        new_state =
+          state
+          |> drop_producer_epochs(path, producer_id)
+          |> put_in([:producer_next_seq, {path, producer_id, epoch}], seq + 1)
+
         result = %{
           "type" => "idempotent-append",
           "success" => true,
           "status" => 200
         }
-        {result, state}
+        {result, new_state}
 
       {:error, {:stale_epoch, server_epoch}} when auto_claim ->
         # Auto-claim: retry with server_epoch + 1
         new_epoch = parse_epoch(server_epoch) + 1
-        do_idempotent_append(stream, data, producer_id, new_epoch, 0, false, state)
+        do_idempotent_append(stream, data, producer_id, new_epoch, 0, false, state, path)
 
       {:error, reason} ->
         {map_error("idempotent-append", reason), state}
@@ -960,6 +1055,15 @@ defmodule DurableStreams.ConformanceAdapter do
       {n, ""} -> n
       _ -> 0
     end
+  end
+
+  defp drop_producer_epochs(state, path, producer_id) do
+    filtered =
+      state.producer_next_seq
+      |> Enum.reject(fn {{p, pid, _epoch}, _} -> p == path and pid == producer_id end)
+      |> Map.new()
+
+    %{state | producer_next_seq: filtered}
   end
 
   defp parse_live_mode("sse"), do: :sse
@@ -1048,6 +1152,79 @@ defmodule DurableStreams.ConformanceAdapter do
         {:error, reason} ->
           {map_error("idempotent-append-batch", reason), state}
       end
+    end
+  end
+
+  defp do_idempotent_close(stream, data, content_type, producer_id, epoch, seq, auto_claim, state, path) do
+    headers =
+      [
+        {"stream-closed", "true"},
+        {"producer-id", producer_id},
+        {"producer-epoch", to_string(epoch)},
+        {"producer-seq", to_string(seq)}
+      ]
+      |> maybe_add_header("content-type", if(data, do: content_type, else: nil))
+      |> add_extra_headers(stream.client.default_headers)
+
+    body =
+      cond do
+        is_nil(data) ->
+          nil
+
+        String.starts_with?(String.downcase(content_type), "application/json") ->
+          "[#{data}]"
+
+        true ->
+          data
+      end
+
+    case HTTP.request(:post, Stream.url(stream), headers, body, timeout: stream.client.timeout) do
+      {:ok, status, resp_headers, _body} when status in [200, 204] ->
+        final_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+
+        new_state =
+          state
+          |> drop_producer_epochs(path, producer_id)
+          |> put_in([:producer_next_seq, {path, producer_id, epoch}], seq + 1)
+          |> put_in([:producer_stream_closed, {path, producer_id}], true)
+
+        result = %{
+          "type" => "idempotent-producer-close",
+          "success" => true,
+          "status" => 200,
+          "finalOffset" => final_offset
+        }
+
+        {result, new_state}
+
+      {:ok, 403, resp_headers, _body} when auto_claim ->
+        new_epoch = parse_epoch(HTTP.get_header(resp_headers, "producer-epoch")) + 1
+        do_idempotent_close(stream, data, content_type, producer_id, new_epoch, 0, false, state, path)
+
+      {:ok, 404, _headers, _body} ->
+        {map_error("idempotent-close", :not_found, path), state}
+
+      {:ok, 409, resp_headers, body} ->
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+
+        if stream_closed do
+          {map_error("idempotent-close", :stream_closed, path), state}
+        else
+          expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
+          received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
+
+          if expected_seq do
+            {map_error("idempotent-close", {:sequence_gap, expected_seq, received_seq}), state}
+          else
+            {map_error("idempotent-close", {:conflict, body}), state}
+          end
+        end
+
+      {:ok, status, _headers, body} ->
+        {map_error("idempotent-close", {:unexpected_status, status, body}), state}
+
+      {:error, reason} ->
+        {map_error("idempotent-close", reason), state}
     end
   end
 

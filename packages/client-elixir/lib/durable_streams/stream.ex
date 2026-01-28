@@ -121,6 +121,7 @@ defmodule DurableStreams.Stream do
   - `:expires_at` - Absolute expiry time (ISO 8601 string)
   - `:headers` - Additional headers
   - `:closed` - Create stream as immediately closed (default: false)
+  - `:data` - Optional initial data to write (JSON strings are wrapped in an array)
   """
   @spec create(t(), keyword()) :: {:ok, t()} | {:error, term()}
   def create(%__MODULE__{} = stream, opts \\ []) do
@@ -128,17 +129,30 @@ defmodule DurableStreams.Stream do
     ttl_seconds = Keyword.get(opts, :ttl_seconds)
     expires_at = Keyword.get(opts, :expires_at)
     closed = Keyword.get(opts, :closed, false)
+    data = Keyword.get(opts, :data)
     extra_headers = Keyword.get(opts, :headers, %{})
 
     headers =
       [{"content-type", content_type}]
       |> maybe_add_header("stream-ttl", ttl_seconds && to_string(ttl_seconds))
       |> maybe_add_header("stream-expires-at", expires_at)
-      |> maybe_add_header("stream-closed", closed && "true")
+      |> maybe_add_header("stream-closed", if(closed, do: "true", else: nil))
       |> add_extra_headers(stream.client.default_headers)
       |> add_extra_headers(extra_headers)
 
-    case HTTP.request(:put, url(stream), headers, nil, timeout: stream.client.timeout) do
+    body =
+      cond do
+        is_nil(data) ->
+          nil
+
+        is_json_content_type?(content_type) ->
+          "[#{data}]"
+
+        true ->
+          data
+      end
+
+    case HTTP.request(:put, url(stream), headers, body, timeout: stream.client.timeout) do
       {:ok, status, _resp_headers, _body} when status in [200, 201] ->
         {:ok, %{stream | content_type: content_type}}
 
@@ -251,7 +265,8 @@ defmodule DurableStreams.Stream do
       {:ok, 409, resp_headers, _body} ->
         stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
         if stream_closed do
-          {:error, :stream_closed}
+          final_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+          {:ok, %CloseResult{final_offset: final_offset}}
         else
           {:error, {:conflict, "Stream conflict"}}
         end
@@ -334,13 +349,18 @@ defmodule DurableStreams.Stream do
         {:error, {:stale_epoch, epoch}}
 
       {:ok, 409, resp_headers, body} ->
-        expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
-        received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
-
-        if expected_seq do
-          {:error, {:sequence_gap, expected_seq, received_seq}}
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+        if stream_closed do
+          {:error, :stream_closed}
         else
-          {:error, {:conflict, body}}
+          expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
+          received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
+
+          if expected_seq do
+            {:error, {:sequence_gap, expected_seq, received_seq}}
+          else
+            {:error, {:conflict, body}}
+          end
         end
 
       {:ok, status, _headers, body} ->
