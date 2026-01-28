@@ -30,8 +30,13 @@ fi
 
 # Run the adapter interactively (-i for stdin, no -t since we don't need a tty)
 # DOCKER_HOST_REWRITE=1 tells the adapter to replace localhost with host.docker.internal
-# On Linux, add host.docker.internal mapping for Docker <-> host access
-exec docker run -i --rm \
-  --add-host=host.docker.internal:host-gateway \
-  -e DOCKER_HOST_REWRITE=1 \
-  "$IMAGE_TAG"
+DOCKER_ARGS=(-i --rm -e DOCKER_HOST_REWRITE=1)
+
+if [ "$(uname -s)" = "Linux" ]; then
+  # Use host network to avoid iptables/NAT dependencies in minimal environments.
+  DOCKER_ARGS+=(--network=host --add-host=host.docker.internal:host-gateway)
+else
+  DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
+fi
+
+exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_TAG"
