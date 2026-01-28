@@ -22,10 +22,14 @@ else
 fi
 IMAGE_TAG="swift-conformance-adapter:${SOURCES_HASH:0:12}"
 
-# Check if image exists
+# Check if image exists, fall back to latest if present.
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-    echo "Building Swift conformance adapter Docker image..." >&2
-    docker build -t "$IMAGE_TAG" -t swift-conformance-adapter:latest "$SCRIPT_DIR" >&2
+    if docker image inspect swift-conformance-adapter:latest >/dev/null 2>&1; then
+        IMAGE_TAG="swift-conformance-adapter:latest"
+    else
+        echo "Building Swift conformance adapter Docker image..." >&2
+        docker build -t "$IMAGE_TAG" -t swift-conformance-adapter:latest "$SCRIPT_DIR" >&2
+    fi
 fi
 
 # Run the adapter interactively (-i for stdin, no -t since we don't need a tty)
