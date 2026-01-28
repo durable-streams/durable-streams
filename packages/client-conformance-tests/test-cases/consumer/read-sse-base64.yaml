@@ -31,6 +31,132 @@ tests:
           minChunks: 1
           upToDate: true
 
+  # Data integrity verification tests
+  - id: sse-base64-data-integrity-simple
+    name: SSE base64 data integrity - simple text
+    description: Verify decoded data matches original content exactly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "SGVsbG8gV29ybGQ=" # "Hello World" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: "Hello World"
+
+  - id: sse-base64-data-integrity-multiline
+    name: SSE base64 data integrity - multiline text
+    description: Verify multiline text content decodes correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        # "Line 1\nLine 2\nLine 3" in base64
+        binaryData: "TGluZSAxCkxpbmUgMgpMaW5lIDM="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          dataContains: "Line 1"
+          dataContainsAll:
+            - "Line 1"
+            - "Line 2"
+            - "Line 3"
+
+  - id: sse-base64-data-integrity-multiple-appends
+    name: SSE base64 data integrity - multiple appends
+    description: Verify multiple appends are decoded and concatenated correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "Zmlyc3Q=" # "first" in base64
+      - action: append
+        path: ${streamPath}
+        binaryData: "c2Vjb25k" # "second" in base64
+      - action: append
+        path: ${streamPath}
+        binaryData: "dGhpcmQ=" # "third" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          dataContainsAll:
+            - "first"
+            - "second"
+            - "third"
+
+  - id: sse-base64-data-integrity-ascii
+    name: SSE base64 data integrity - ASCII printable characters
+    description: Verify all printable ASCII characters (32-126) decode correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        # All printable ASCII chars: space through tilde
+        # " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+        binaryData: "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj9AQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5ent8fX4="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          dataContainsAll:
+            - "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            - "abcdefghijklmnopqrstuvwxyz"
+            - "0123456789"
+
+  - id: sse-base64-data-integrity-json-like
+    name: SSE base64 data integrity - JSON-like content
+    description: Verify JSON-like binary content is preserved through base64 encoding
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        # {"key":"value","num":42} in base64
+        binaryData: "eyJrZXkiOiJ2YWx1ZSIsIm51bSI6NDJ9"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+          data: '{"key":"value","num":42}'
+
   - id: sse-base64-empty-payload
     name: SSE handles empty base64 payload
     description: Empty binary data should be encoded as empty base64 and decoded correctly

@@ -1344,17 +1344,25 @@ func handleSSERead(
                     upToDate: control.upToDate ?? false
                 )
             } else if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
-                // For base64 encoding, the data is already decoded by the library
-                // Convert decoded binary data back to base64 for the test harness
+                // The client library has already decoded base64 if encoding=base64 was used.
+                // The data is now in ISO-8859-1 encoding (raw bytes as string).
+                // We need to return it to the test runner:
+                // - If valid UTF-8, return as string
+                // - If not valid UTF-8, base64 encode for transport
                 if encoding == "base64" {
-                    // The data is in ISO-8859-1 encoding (raw bytes as string)
-                    // Convert back to Data and then to base64 for the test harness
+                    // Convert from ISO-8859-1 string back to raw bytes
                     if let rawData = event.data.data(using: .isoLatin1) {
-                        await accumulator.addChunk(ReadChunk(
-                            data: rawData.base64EncodedString(),
-                            binary: true,
-                            offset: currentOffset.rawValue
-                        ))
+                        // Try to convert to UTF-8 string
+                        if let utf8String = String(data: rawData, encoding: .utf8) {
+                            await accumulator.addChunk(ReadChunk(data: utf8String, offset: currentOffset.rawValue))
+                        } else {
+                            // Not valid UTF-8, encode as base64 for transport
+                            await accumulator.addChunk(ReadChunk(
+                                data: rawData.base64EncodedString(),
+                                binary: true,
+                                offset: currentOffset.rawValue
+                            ))
+                        }
                     } else {
                         await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
                     }

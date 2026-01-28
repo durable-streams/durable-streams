@@ -831,9 +831,11 @@ export class DurableStream {
       const isSSECompatible = SSE_COMPATIBLE_CONTENT_TYPES.some((prefix) =>
         this.contentType!.startsWith(prefix)
       )
-      if (!isSSECompatible) {
+      // Allow SSE for binary content types if encoding is provided (e.g., base64)
+      if (!isSSECompatible && !options.encoding) {
         throw new DurableStreamError(
-          `SSE is not supported for content-type: ${this.contentType}`,
+          `SSE is not supported for content-type: ${this.contentType}. ` +
+            `For binary streams, use encoding='base64'.`,
           `SSE_NOT_SUPPORTED`,
           400
         )
@@ -862,6 +864,7 @@ export class DurableStream {
       offset: options?.offset,
       live: options?.live,
       json: options?.json,
+      encoding: options?.encoding,
       onError: options?.onError ?? this.#onError,
       warnOnHttp: options?.warnOnHttp ?? this.#options.warnOnHttp,
     })

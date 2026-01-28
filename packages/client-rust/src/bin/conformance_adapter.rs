@@ -534,25 +534,29 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                         }
 
                         if !chunk.data.is_empty() {
-                            // For binary data (when using encoding=base64), return as base64
-                            let (data_str, is_binary) = if cmd.encoding.as_deref() == Some("base64") {
-                                // Re-encode as base64 for the test runner
-                                let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
-                                (encoded, true)
-                            } else {
-                                let data_str = String::from_utf8_lossy(&chunk.data).to_string();
-
-                                // Validate JSON for JSON streams
-                                if is_json_stream {
-                                    if let Err(e) = serde_json::from_str::<Value>(&data_str) {
-                                        return error_result(
-                                            "read",
-                                            "PARSE_ERROR",
-                                            &format!("Invalid JSON in stream response: {}", e),
-                                        );
+                            // The client library has already decoded base64 if encoding=base64 was used.
+                            // We need to return the data to the test runner:
+                            // - If valid UTF-8, return as string
+                            // - If not valid UTF-8, base64 encode for transport
+                            let (data_str, is_binary) = match String::from_utf8(chunk.data.clone()) {
+                                Ok(s) => {
+                                    // Valid UTF-8 - validate JSON for JSON streams
+                                    if is_json_stream {
+                                        if let Err(e) = serde_json::from_str::<Value>(&s) {
+                                            return error_result(
+                                                "read",
+                                                "PARSE_ERROR",
+                                                &format!("Invalid JSON in stream response: {}", e),
+                                            );
+                                        }
                                     }
+                                    (s, false)
                                 }
-                                (data_str, false)
+                                Err(_) => {
+                                    // Not valid UTF-8 - encode as base64 for transport
+                                    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
+                                    (encoded, true)
+                                }
                             };
 
                             chunks_result.push(ReadChunk {
