@@ -15,6 +15,7 @@ var jsonOptions = new JsonSerializerOptions
 // State
 DurableStreamClient? client = null;
 var streamContentTypes = new Dictionary<string, string>();
+var producers = new Dictionary<(string path, string producerId), IdempotentProducer>();
 var dynamicHeaders = new Dictionary<string, Func<string>>();
 var dynamicParams = new Dictionary<string, Func<string>>();
 var dynamicCounters = new Dictionary<string, int>();
@@ -46,12 +47,14 @@ while ((line = await reader.ReadLineAsync()) != null)
             "delete" => await HandleDelete(root),
             "idempotent-append" => await HandleIdempotentAppend(root),
             "idempotent-append-batch" => await HandleIdempotentAppendBatch(root),
+            "idempotent-close" => await HandleIdempotentClose(root),
+            "idempotent-detach" => await HandleIdempotentDetach(root),
             "validate" => HandleValidate(root),
             "set-dynamic-header" => HandleSetDynamicHeader(root),
             "set-dynamic-param" => HandleSetDynamicParam(root),
             "clear-dynamic" => HandleClearDynamic(),
             "benchmark" => await HandleBenchmark(root),
-            "shutdown" => HandleShutdown(),
+            "shutdown" => await HandleShutdown(),
             _ => CreateError(type ?? "unknown", "NOT_SUPPORTED", $"Unknown command type: {type}")
         };
 
@@ -73,6 +76,9 @@ while ((line = await reader.ReadLineAsync()) != null)
 async Task<object> HandleInit(JsonElement root)
 {
     var serverUrl = root.GetProperty("serverUrl").GetString()!;
+
+    await CloseAllProducersAsync();
+    producers.Clear();
 
     // When running in Docker on macOS, localhost/127.0.0.1 URLs need to be rewritten
     // to host.docker.internal to reach the host machine
@@ -119,8 +125,6 @@ async Task<object> HandleCreate(JsonElement root)
     var closed = GetOptionalBool(root, "closed") ?? false;
     var dataStr = GetOptionalString(root, "data");
     var binary = GetOptionalBool(root, "binary");
-    var headers = GetHeaders(root);
-
     try
     {
         var stream = client.GetStream(path);
@@ -624,7 +628,7 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
             stream.ContentType = ct;
         }
 
-        var producer = stream.CreateProducer(producerId, new IdempotentProducerOptions
+        var producer = GetOrCreateProducer(stream, path, producerId, new IdempotentProducerOptions
         {
             Epoch = epoch,
             AutoClaim = autoClaim,
@@ -632,13 +636,9 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
             Linger = TimeSpan.Zero
         });
 
-        await using (producer)
-        {
-            // Data is already pre-serialized, just pass it through
-            producer.Append(data);
-
-            await producer.FlushAsync();
-        }
+        // Data is already pre-serialized, just pass it through
+        producer.Append(data);
+        await producer.FlushAsync();
 
         return new
         {
@@ -760,6 +760,88 @@ async Task<object> HandleIdempotentAppendBatch(JsonElement root)
     {
         return CreateErrorFromException("idempotent-append-batch", ex);
     }
+}
+
+async Task<object> HandleIdempotentClose(JsonElement root)
+{
+    if (client == null) return CreateError("idempotent-close", "INTERNAL_ERROR", "Client not initialized");
+
+    var path = root.GetProperty("path").GetString()!;
+    var dataStr = GetOptionalString(root, "data");
+    var binary = GetOptionalBool(root, "binary");
+    var producerId = root.GetProperty("producerId").GetString()!;
+    var epoch = root.GetProperty("epoch").GetInt32();
+    var autoClaim = root.GetProperty("autoClaim").GetBoolean();
+    var headers = GetHeaders(root);
+
+    try
+    {
+        var stream = client.GetStream(path);
+
+        if (streamContentTypes.TryGetValue(path, out var ct))
+        {
+            stream.ContentType = ct;
+        }
+
+        var producer = GetOrCreateProducer(stream, path, producerId, new IdempotentProducerOptions
+        {
+            Epoch = epoch,
+            AutoClaim = autoClaim,
+            MaxInFlight = 1,
+            Linger = TimeSpan.Zero
+        });
+
+        ReadOnlyMemory<byte> data = default;
+        if (!string.IsNullOrEmpty(dataStr))
+        {
+            data = binary == true
+                ? Convert.FromBase64String(dataStr)
+                : Encoding.UTF8.GetBytes(dataStr);
+        }
+
+        var result = await producer.CloseStreamAsync(data);
+
+        return new
+        {
+            type = "idempotent-close",
+            success = true,
+            status = 200,
+            finalOffset = result.NextOffset?.ToString()
+        };
+    }
+    catch (StreamClosedException)
+    {
+        return new
+        {
+            type = "error",
+            success = false,
+            commandType = "idempotent-close",
+            errorCode = "STREAM_CLOSED",
+            status = 409,
+            message = "Stream is already closed"
+        };
+    }
+    catch (Exception ex)
+    {
+        return CreateErrorFromException("idempotent-close", ex);
+    }
+}
+
+async Task<object> HandleIdempotentDetach(JsonElement root)
+{
+    if (client == null) return CreateError("idempotent-detach", "INTERNAL_ERROR", "Client not initialized");
+
+    var path = root.GetProperty("path").GetString()!;
+    var producerId = root.GetProperty("producerId").GetString()!;
+
+    await DetachProducerAsync(path, producerId);
+
+    return new
+    {
+        type = "idempotent-detach",
+        success = true,
+        status = 200
+    };
 }
 
 object HandleSetDynamicHeader(JsonElement root)
@@ -1158,13 +1240,49 @@ async Task<object> BenchmarkThroughputRead(JsonElement op)
     };
 }
 
-object HandleShutdown()
+async Task<object> HandleShutdown()
 {
+    await CloseAllProducersAsync();
     client?.Dispose();
     return new { type = "shutdown", success = true };
 }
 
 // Helper functions
+IdempotentProducer GetOrCreateProducer(
+    DurableStream stream,
+    string path,
+    string producerId,
+    IdempotentProducerOptions options)
+{
+    var key = (path, producerId);
+    if (producers.TryGetValue(key, out var existing))
+    {
+        return existing;
+    }
+
+    var producer = stream.CreateProducer(producerId, options);
+    producers[key] = producer;
+    return producer;
+}
+
+async Task DetachProducerAsync(string path, string producerId)
+{
+    var key = (path, producerId);
+    if (producers.Remove(key, out var producer))
+    {
+        await producer.DisposeAsync();
+    }
+}
+
+async Task CloseAllProducersAsync()
+{
+    foreach (var producer in producers.Values)
+    {
+        await producer.DisposeAsync();
+    }
+    producers.Clear();
+}
+
 string? GetOptionalString(JsonElement root, string name)
 {
     return root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String
