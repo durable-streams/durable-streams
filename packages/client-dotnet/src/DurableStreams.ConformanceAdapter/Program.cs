@@ -360,6 +360,7 @@ async Task<object> HandleRead(JsonElement root)
 
         var chunks = new List<object>();
         var chunkCount = 0;
+        var stoppedForMaxChunks = false;
         // Use response's initial offset as default (important for offset=now)
         string? finalOffset = response.Offset.ToString();
         bool upToDate = response.UpToDate;
@@ -412,7 +413,11 @@ async Task<object> HandleRead(JsonElement root)
                     chunkCount++;
                 }
 
-                if (chunkCount >= maxChunks) break;
+                if (chunkCount >= maxChunks)
+                {
+                    stoppedForMaxChunks = true;
+                    break;
+                }
                 if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
                 if (upToDate && waitForUpToDate) break;
             }
@@ -436,6 +441,11 @@ async Task<object> HandleRead(JsonElement root)
 
         // Get stream closed status from response, fallback to HEAD if needed
         var streamClosedStatus = response.StreamClosed;
+        if (stoppedForMaxChunks)
+        {
+            // We intentionally stopped early; do not report streamClosed yet.
+            streamClosedStatus = false;
+        }
 
         return new
         {
