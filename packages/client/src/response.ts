@@ -436,17 +436,16 @@ export class StreamResponseImpl<
     }
 
     try {
-      // Use atob for browser, Buffer for Node.js
-      if (typeof atob === `function`) {
+      // Prefer Buffer (native C++ in Node) over atob (requires JS charCodeAt loop)
+      if (typeof Buffer !== `undefined`) {
+        return new Uint8Array(Buffer.from(cleaned, `base64`))
+      } else {
         const binaryStr = atob(cleaned)
         const bytes = new Uint8Array(binaryStr.length)
         for (let i = 0; i < binaryStr.length; i++) {
           bytes[i] = binaryStr.charCodeAt(i)
         }
         return bytes
-      } else {
-        // Node.js environment
-        return new Uint8Array(Buffer.from(cleaned, `base64`))
       }
     } catch (err) {
       throw new DurableStreamError(

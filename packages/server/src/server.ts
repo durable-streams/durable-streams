@@ -1122,7 +1122,6 @@ export class DurableStreamTestServer {
       // Update currentOffset for next iteration (use controlOffset for consistency)
       currentOffset = controlOffset
 
-
       // If caught up, wait for new messages
       if (upToDate) {
         // Check if stream was closed during processing (before wait)
