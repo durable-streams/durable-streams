@@ -2,7 +2,9 @@ package com.durablestreams;
 
 import com.durablestreams.exception.*;
 import com.durablestreams.exception.ParseErrorException;
+import com.durablestreams.exception.StreamClosedException;
 import com.durablestreams.model.*;
+import com.durablestreams.model.CloseResult;
 
 import java.io.*;
 import java.time.Duration;
@@ -69,12 +71,18 @@ public class ConformanceAdapter {
                 return handleHead(cmd);
             case "delete":
                 return handleDelete(cmd);
+            case "close":
+                return handleClose(cmd);
             case "connect":
                 return handleConnect(cmd);
             case "idempotent-append":
                 return handleIdempotentAppend(cmd);
             case "idempotent-append-batch":
                 return handleIdempotentAppendBatch(cmd);
+            case "idempotent-close":
+                return handleIdempotentClose(cmd);
+            case "idempotent-detach":
+                return handleIdempotentDetach(cmd);
             case "set-dynamic-header":
                 return handleSetDynamicHeader(cmd);
             case "set-dynamic-param":
@@ -94,6 +102,15 @@ public class ConformanceAdapter {
 
     private static Map<String, Object> handleInit(Map<String, Object> cmd) {
         serverUrl = (String) cmd.get("serverUrl");
+
+        producers.values().forEach(producer -> {
+            try {
+                producer.close();
+            } catch (DurableStreamException ignored) {
+                // Ignore close errors during re-init
+            }
+        });
+        producers.clear();
 
         // Create client
         client = DurableStream.builder().build();
@@ -120,6 +137,9 @@ public class ConformanceAdapter {
         String contentType = (String) cmd.get("contentType");
         Number ttlSecondsNum = (Number) cmd.get("ttlSeconds");
         Long ttlSeconds = ttlSecondsNum != null ? ttlSecondsNum.longValue() : null;
+        Boolean closed = (Boolean) cmd.get("closed");
+        String data = (String) cmd.get("data");
+        Boolean binary = (Boolean) cmd.get("binary");
 
         Duration ttl = ttlSeconds != null ? Duration.ofSeconds(ttlSeconds) : null;
 
@@ -134,7 +154,16 @@ public class ConformanceAdapter {
                 // Stream doesn't exist, we'll create it
             }
 
-            client.create(url, contentType, ttl, null);
+            byte[] initialData = null;
+            if (data != null) {
+                if (Boolean.TRUE.equals(binary)) {
+                    initialData = Base64.getDecoder().decode(data);
+                } else {
+                    initialData = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+
+            client.create(url, contentType, ttl, null, Boolean.TRUE.equals(closed), initialData);
             Metadata meta = client.head(url);
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -286,6 +315,23 @@ public class ConformanceAdapter {
         }
 
         String url = serverUrl + path;
+
+        // Evaluate dynamic headers/params ONCE for this command
+        Map<String, String> headersSent = new LinkedHashMap<>();
+        Map<String, String> paramsSent = new LinkedHashMap<>();
+        for (Map.Entry<String, DynamicValue> entry : dynamicHeaders.entrySet()) {
+            String value = entry.getValue().getValue();
+            headersSent.put(entry.getKey(), value);
+            final String capturedValue = value;
+            client.setDynamicHeader(entry.getKey(), () -> capturedValue);
+        }
+        for (Map.Entry<String, DynamicValue> entry : dynamicParams.entrySet()) {
+            String value = entry.getValue().getValue();
+            paramsSent.put(entry.getKey(), value);
+            final String capturedValue = value;
+            client.setDynamicParam(entry.getKey(), () -> capturedValue);
+        }
+
         try {
             List<Map<String, Object>> chunks = new ArrayList<>();
             // Initialize with the request offset
@@ -382,6 +428,15 @@ public class ConformanceAdapter {
                 }
             }
 
+            // Check stream closed status via HEAD
+            boolean streamClosed = false;
+            try {
+                Metadata headMeta = client.head(url);
+                streamClosed = headMeta.isStreamClosed();
+            } catch (DurableStreamException ignored) {
+                // Ignore errors - streamClosed defaults to false
+            }
+
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("type", "read");
             result.put("success", true);
@@ -389,15 +444,7 @@ public class ConformanceAdapter {
             result.put("chunks", chunks);
             result.put("offset", finalOffset);  // Always return offset
             result.put("upToDate", upToDate);
-            // Capture what dynamic headers/params were sent with this request
-            Map<String, String> headersSent = new LinkedHashMap<>();
-            Map<String, String> paramsSent = new LinkedHashMap<>();
-            for (Map.Entry<String, DynamicValue> entry : dynamicHeaders.entrySet()) {
-                headersSent.put(entry.getKey(), entry.getValue().getLastValue());
-            }
-            for (Map.Entry<String, DynamicValue> entry : dynamicParams.entrySet()) {
-                paramsSent.put(entry.getKey(), entry.getValue().getLastValue());
-            }
+            result.put("streamClosed", streamClosed);
             if (!headersSent.isEmpty()) {
                 result.put("headersSent", headersSent);
             }
@@ -435,6 +482,14 @@ public class ConformanceAdapter {
                 return errorResult("read", errorCode, de.getMessage(), statusCode);
             }
             throw e;
+        } finally {
+            // Restore original dynamic suppliers for next command
+            for (Map.Entry<String, DynamicValue> entry : dynamicHeaders.entrySet()) {
+                client.setDynamicHeader(entry.getKey(), entry.getValue()::getValue);
+            }
+            for (Map.Entry<String, DynamicValue> entry : dynamicParams.entrySet()) {
+                client.setDynamicParam(entry.getKey(), entry.getValue()::getValue);
+            }
         }
     }
 
@@ -455,11 +510,49 @@ public class ConformanceAdapter {
             if (meta.getContentType() != null) {
                 result.put("contentType", meta.getContentType());
             }
+            result.put("streamClosed", meta.isStreamClosed());
             return result;
         } catch (StreamNotFoundException e) {
             return errorResult("head", "NOT_FOUND", e.getMessage(), 404);
         } catch (DurableStreamException e) {
             return errorResult("head", errorCodeFromException(e), e.getMessage(),
+                    e.getStatusCode().orElse(500));
+        }
+    }
+
+    private static Map<String, Object> handleClose(Map<String, Object> cmd) {
+        String path = (String) cmd.get("path");
+        String data = (String) cmd.get("data");
+        Boolean binary = (Boolean) cmd.get("binary");
+        String contentType = (String) cmd.get("contentType");
+
+        String url = serverUrl + path;
+
+        byte[] bytes = null;
+        if (data != null) {
+            if (Boolean.TRUE.equals(binary)) {
+                bytes = Base64.getDecoder().decode(data);
+            } else {
+                bytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+
+        try {
+            CloseResult closeResult = client.close(url, bytes, contentType);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("type", "close");
+            result.put("success", true);
+            if (closeResult.getFinalOffset() != null) {
+                result.put("finalOffset", closeResult.getFinalOffset().getValue());
+            }
+            return result;
+        } catch (StreamClosedException e) {
+            return errorResult("close", "STREAM_CLOSED", e.getMessage(), 409);
+        } catch (StreamNotFoundException e) {
+            return errorResult("close", "NOT_FOUND", e.getMessage(), 404);
+        } catch (DurableStreamException e) {
+            return errorResult("close", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
         }
     }
@@ -523,7 +616,14 @@ public class ConformanceAdapter {
                 .maxBatchBytes(1024)
                 .build();
 
-        try (IdempotentProducer producer = client.producer(serverUrl + path, producerId, config)) {
+        try {
+            String key = path + "|" + producerId;
+            IdempotentProducer producer = producers.get(key);
+            if (producer == null) {
+                producer = client.producer(serverUrl + path, producerId, config);
+                producers.put(key, producer);
+            }
+
             producer.append(data);
             producer.flush();
 
@@ -576,6 +676,75 @@ public class ConformanceAdapter {
             return errorResult("idempotent-append-batch", errorCodeFromException(e), e.getMessage(),
                     e.getStatusCode().orElse(500));
         }
+    }
+
+    private static Map<String, Object> handleIdempotentClose(Map<String, Object> cmd) {
+        String path = (String) cmd.get("path");
+        String producerId = (String) cmd.get("producerId");
+        Number epochNum = (Number) cmd.get("epoch");
+        long epoch = epochNum != null ? epochNum.longValue() : 0;
+        Boolean autoClaim = (Boolean) cmd.get("autoClaim");
+        String data = (String) cmd.get("data");
+        Boolean binary = (Boolean) cmd.get("binary");
+
+        IdempotentProducer.Config config = IdempotentProducer.Config.builder()
+                .epoch(epoch)
+                .autoClaim(Boolean.TRUE.equals(autoClaim))
+                .lingerMs(0)
+                .maxBatchBytes(1024)
+                .build();
+
+        try {
+            String key = path + "|" + producerId;
+            IdempotentProducer producer = producers.get(key);
+            if (producer == null) {
+                producer = client.producer(serverUrl + path, producerId, config);
+                producers.put(key, producer);
+            }
+
+            byte[] dataBytes = null;
+            if (data != null) {
+                if (Boolean.TRUE.equals(binary)) {
+                    dataBytes = Base64.getDecoder().decode(data);
+                } else {
+                    dataBytes = data.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                }
+            }
+
+            producer.closeStream(dataBytes);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("type", "idempotent-close");
+            result.put("success", true);
+            result.put("status", 200);
+            return result;
+        } catch (StreamClosedException e) {
+            return errorResult("idempotent-close", "STREAM_CLOSED", e.getMessage(), 409);
+        } catch (DurableStreamException e) {
+            return errorResult("idempotent-close", errorCodeFromException(e), e.getMessage(),
+                    e.getStatusCode().orElse(500));
+        }
+    }
+
+    private static Map<String, Object> handleIdempotentDetach(Map<String, Object> cmd) {
+        String path = (String) cmd.get("path");
+        String producerId = (String) cmd.get("producerId");
+
+        String key = path + "|" + producerId;
+        IdempotentProducer producer = producers.remove(key);
+        if (producer != null) {
+            try {
+                producer.close();
+            } catch (DurableStreamException ignored) {
+                // Ignore errors during detach
+            }
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("type", "idempotent-detach");
+        result.put("success", true);
+        result.put("status", 200);
+        return result;
     }
 
     private static Map<String, Object> handleSetDynamicHeader(Map<String, Object> cmd) {
@@ -879,6 +1048,7 @@ public class ConformanceAdapter {
     private static String errorCodeFromException(DurableStreamException e) {
         if (e instanceof StreamNotFoundException) return "NOT_FOUND";
         if (e instanceof StreamExistsException) return "CONFLICT";
+        if (e instanceof StreamClosedException) return "STREAM_CLOSED";
         if (e instanceof SequenceConflictException) return "SEQUENCE_CONFLICT";
         if (e instanceof StaleEpochException) return "STALE_EPOCH";
         if (e instanceof OffsetGoneException) return "INVALID_OFFSET";

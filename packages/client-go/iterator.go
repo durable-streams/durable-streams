@@ -23,6 +23,10 @@ type Chunk struct {
 	// UpToDate is true if this chunk ends at stream head.
 	UpToDate bool
 
+	// StreamClosed is true if the stream has been closed (EOF).
+	// When true, no more data will ever be appended.
+	StreamClosed bool
+
 	// Cursor for CDN collapsing (automatically propagated by iterator).
 	Cursor string
 
@@ -61,6 +65,10 @@ type ChunkIterator struct {
 
 	// UpToDate is true when the iterator has caught up to stream head.
 	UpToDate bool
+
+	// StreamClosed is true when the stream has been closed (EOF).
+	// When true, no more data will ever be appended.
+	StreamClosed bool
 
 	// Cursor is the current cursor value (for debugging/advanced use).
 	// The iterator propagates this automatically; most users can ignore it.
@@ -161,6 +169,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
 		upToDate := resp.Header.Get(headerStreamUpToDate) == "true"
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
 		etag := resp.Header.Get(headerETag)
 
 		// Update iterator state
@@ -170,6 +179,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.Offset = nextOffset
 		it.Cursor = cursor
 		it.UpToDate = upToDate
+		it.StreamClosed = streamClosed
 
 		// If up to date and not in live mode, mark as done for next call
 		if upToDate && it.live == LiveModeNone {
@@ -178,12 +188,13 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.mu.Unlock()
 
 		return &Chunk{
-			NextOffset: nextOffset,
-			Data:       data,
-			UpToDate:   upToDate,
-			Cursor:     cursor,
-			ETag:       etag,
-			StatusCode: http.StatusOK,
+			NextOffset:   nextOffset,
+			Data:         data,
+			UpToDate:     upToDate,
+			StreamClosed: streamClosed,
+			Cursor:       cursor,
+			ETag:         etag,
+			StatusCode:   http.StatusOK,
 		}, nil
 
 	case http.StatusNoContent:
@@ -191,6 +202,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
 		upToDate := resp.Header.Get(headerStreamUpToDate) == "true"
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
 
 		it.mu.Lock()
 		if nextOffset != "" {
@@ -202,6 +214,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 			it.Cursor = cursor
 		}
 		it.UpToDate = upToDate
+		it.StreamClosed = streamClosed
 
 		// In non-live mode, 204 means we're done
 		if it.live == LiveModeNone {
@@ -213,11 +226,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 
 		// In live mode, return empty chunk and continue
 		return &Chunk{
-			NextOffset: nextOffset,
-			Data:       nil,
-			UpToDate:   upToDate,
-			Cursor:     cursor,
-			StatusCode: http.StatusNoContent,
+			NextOffset:   nextOffset,
+			Data:         nil,
+			UpToDate:     upToDate,
+			StreamClosed: streamClosed,
+			Cursor:       cursor,
+			StatusCode:   http.StatusNoContent,
 		}, nil
 
 	case http.StatusNotModified:
@@ -231,11 +245,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		}
 		// Return empty chunk
 		return &Chunk{
-			NextOffset: it.offset,
-			Data:       nil,
-			UpToDate:   it.UpToDate,
-			Cursor:     it.cursor,
-			StatusCode: http.StatusNotModified,
+			NextOffset:   it.offset,
+			Data:         nil,
+			UpToDate:     it.UpToDate,
+			StreamClosed: it.StreamClosed,
+			Cursor:       it.cursor,
+			StatusCode:   http.StatusNotModified,
 		}, nil
 
 	case http.StatusNotFound:
@@ -321,6 +336,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 				it.Cursor = e.StreamCursor
 			}
 			it.UpToDate = e.UpToDate
+			it.StreamClosed = e.StreamClosed
 
 			// If we have pending data, complete and return it
 			if it.ssePending != nil {
@@ -328,6 +344,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 				chunk.NextOffset = Offset(e.StreamNextOffset)
 				chunk.Cursor = e.StreamCursor
 				chunk.UpToDate = e.UpToDate
+				chunk.StreamClosed = e.StreamClosed
 				chunk.StatusCode = http.StatusOK // SSE is always over 200
 				it.ssePending = nil
 				it.mu.Unlock()
@@ -335,13 +352,14 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 			}
 			it.mu.Unlock()
 
-			// Control event without data (e.g., up-to-date signal)
-			if e.UpToDate {
+			// Control event without data (e.g., up-to-date signal or closed stream)
+			if e.UpToDate || e.StreamClosed {
 				return &Chunk{
-					NextOffset: Offset(e.StreamNextOffset),
-					Cursor:     e.StreamCursor,
-					UpToDate:   true,
-					StatusCode: http.StatusOK, // SSE is always over 200
+					NextOffset:   Offset(e.StreamNextOffset),
+					Cursor:       e.StreamCursor,
+					UpToDate:     e.UpToDate,
+					StreamClosed: e.StreamClosed,
+					StatusCode:   http.StatusOK, // SSE is always over 200
 				}, nil
 			}
 		}

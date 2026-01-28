@@ -30,6 +30,7 @@ final class IdempotentProducer
 {
     private int $epoch;
     private int $nextSeq = 0;
+    private bool $streamClosed = false;
 
     /** @var array<array{data: mixed, seq: int, epoch: int}> */
     private array $pendingBatches = [];
@@ -66,6 +67,7 @@ final class IdempotentProducer
         ?string $contentType = null,
         ?HttpClientInterface $client = null,
         ?LoggerInterface $logger = null,
+        int $nextSeq = 0,
     ) {
         if ($epoch < 0) {
             throw new \InvalidArgumentException('epoch must be >= 0');
@@ -76,6 +78,9 @@ final class IdempotentProducer
         if ($maxBatchItems <= 0) {
             throw new \InvalidArgumentException('maxBatchItems must be > 0');
         }
+        if ($nextSeq < 0) {
+            throw new \InvalidArgumentException('nextSeq must be >= 0');
+        }
 
         $this->epoch = $epoch;
         $this->autoClaim = $autoClaim;
@@ -84,6 +89,7 @@ final class IdempotentProducer
         $this->contentType = $contentType;
         $this->client = $client ?? new HttpClient();
         $this->logger = $logger;
+        $this->nextSeq = $nextSeq;
     }
 
     /**
@@ -371,6 +377,82 @@ final class IdempotentProducer
      */
     public function close(): void
     {
+        $this->closeStream();
+    }
+
+    /**
+     * Close the stream using producer headers (idempotent).
+     *
+     * @param string|null $data Optional final data to append before closing
+     */
+    public function closeStream(?string $data = null): void
+    {
+        if ($this->streamClosed) {
+            return;
+        }
+
         $this->flush();
+
+        $seq = $this->nextSeq;
+
+        $maxAttempts = 3;
+        $lastException = null;
+        for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+            try {
+                $this->doSendClose($data, $seq, $this->epoch);
+                $this->nextSeq = $seq + 1;
+                $this->streamClosed = true;
+                return;
+            } catch (DurableStreamException $e) {
+                $lastException = $e;
+
+                // Handle stale epoch
+                if ($e->getHttpStatus() === 403) {
+                    $currentEpoch = $this->parseEpochHeader($e->getHeaders());
+
+                    if ($this->autoClaim) {
+                        $this->epoch = $currentEpoch + 1;
+                        $seq = 0;
+                        continue;
+                    }
+
+                    throw new StaleEpochException($currentEpoch, $e);
+                }
+
+                // Sequence conflicts should be surfaced to the caller
+                if ($e instanceof SeqConflictException) {
+                    throw $e;
+                }
+
+                throw $e;
+            }
+        }
+
+        if ($lastException !== null) {
+            throw $lastException;
+        }
+    }
+
+    /**
+     * Send the close request with producer headers.
+     */
+    private function doSendClose(?string $data, int $seq, int $epoch): void
+    {
+        $headers = [
+            'Producer-Id' => $this->producerId,
+            'Producer-Epoch' => (string)$epoch,
+            'Producer-Seq' => (string)$seq,
+            'Stream-Closed' => 'true',
+        ];
+
+        $contentType = $this->contentType ?? 'application/json';
+        $headers['Content-Type'] = $contentType;
+
+        $body = $data ?? '';
+        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+            $body = '[' . $data . ']';
+        }
+
+        $this->client->post($this->url, $body, $headers);
     }
 }

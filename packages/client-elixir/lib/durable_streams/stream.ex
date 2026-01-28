@@ -32,7 +32,7 @@ defmodule DurableStreams.Stream do
 
   require Logger
 
-  alias DurableStreams.{Client, HTTP, ReadChunk, AppendResult, HeadResult}
+  alias DurableStreams.{Client, HTTP, ReadChunk, AppendResult, HeadResult, CloseResult}
 
   defstruct [:client, :path, :content_type, :extra_headers]
 
@@ -120,22 +120,39 @@ defmodule DurableStreams.Stream do
   - `:ttl_seconds` - Time-to-live in seconds
   - `:expires_at` - Absolute expiry time (ISO 8601 string)
   - `:headers` - Additional headers
+  - `:closed` - Create stream as immediately closed (default: false)
+  - `:data` - Optional initial data to write (JSON strings are wrapped in an array)
   """
   @spec create(t(), keyword()) :: {:ok, t()} | {:error, term()}
   def create(%__MODULE__{} = stream, opts \\ []) do
     content_type = Keyword.get(opts, :content_type, stream.content_type || "application/octet-stream")
     ttl_seconds = Keyword.get(opts, :ttl_seconds)
     expires_at = Keyword.get(opts, :expires_at)
+    closed = Keyword.get(opts, :closed, false)
+    data = Keyword.get(opts, :data)
     extra_headers = Keyword.get(opts, :headers, %{})
 
     headers =
       [{"content-type", content_type}]
       |> maybe_add_header("stream-ttl", ttl_seconds && to_string(ttl_seconds))
       |> maybe_add_header("stream-expires-at", expires_at)
+      |> maybe_add_header("stream-closed", if(closed, do: "true", else: nil))
       |> add_extra_headers(stream.client.default_headers)
       |> add_extra_headers(extra_headers)
 
-    case HTTP.request(:put, url(stream), headers, nil, timeout: stream.client.timeout) do
+    body =
+      cond do
+        is_nil(data) ->
+          nil
+
+        is_json_content_type?(content_type) ->
+          "[#{data}]"
+
+        true ->
+          data
+      end
+
+    case HTTP.request(:put, url(stream), headers, body, timeout: stream.client.timeout) do
       {:ok, status, _resp_headers, _body} when status in [200, 201] ->
         {:ok, %{stream | content_type: content_type}}
 
@@ -168,8 +185,9 @@ defmodule DurableStreams.Stream do
           offset -> offset
         end
         content_type = HTTP.get_header(resp_headers, "content-type")
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
 
-        {:ok, %HeadResult{next_offset: next_offset, content_type: normalize_content_type(content_type)}}
+        {:ok, %HeadResult{next_offset: next_offset, content_type: normalize_content_type(content_type), stream_closed: stream_closed}}
 
       {:ok, 404, _headers, _body} ->
         {:error, :not_found}
@@ -207,6 +225,78 @@ defmodule DurableStreams.Stream do
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  @doc """
+  Close the stream permanently (no more appends allowed).
+
+  ## Options
+
+  - `:data` - Optional final data to append before closing
+  - `:content_type` - Content type for the final data
+  - `:headers` - Additional headers
+  """
+  @spec close(t(), keyword()) :: {:ok, CloseResult.t()} | {:error, term()}
+  def close(%__MODULE__{} = stream, opts \\ []) do
+    data = Keyword.get(opts, :data)
+    content_type = Keyword.get(opts, :content_type, stream.content_type || "application/octet-stream")
+    extra_headers = Keyword.get(opts, :headers, %{})
+
+    headers =
+      [{"stream-closed", "true"}, {"content-type", content_type}]
+      |> add_extra_headers(stream.client.default_headers)
+      |> add_extra_headers(extra_headers)
+
+    # For JSON streams, wrap data in array if provided
+    body = if data && is_json_content_type?(content_type) do
+      "[#{data}]"
+    else
+      data
+    end
+
+    case HTTP.request(:post, url(stream), headers, body, timeout: stream.client.timeout) do
+      {:ok, status, resp_headers, _body} when status in [200, 204] ->
+        final_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+        {:ok, %CloseResult{final_offset: final_offset}}
+
+      {:ok, 404, _headers, _body} ->
+        {:error, :not_found}
+
+      {:ok, 409, resp_headers, _body} ->
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+        if stream_closed do
+          final_offset = HTTP.get_header(resp_headers, "stream-next-offset") || "-1"
+          {:ok, %CloseResult{final_offset: final_offset}}
+        else
+          {:error, {:conflict, "Stream conflict"}}
+        end
+
+      {:ok, status, _headers, body} ->
+        {:error, {:unexpected_status, status, body}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Close the stream permanently, raising on error.
+
+  See `close/2` for options.
+  """
+  @spec close!(t(), keyword()) :: CloseResult.t()
+  def close!(%__MODULE__{} = stream, opts \\ []) do
+    case close(stream, opts) do
+      {:ok, result} -> result
+      {:error, reason} -> raise "Failed to close stream: #{inspect(reason)}"
+    end
+  end
+
+  # Helper to check if content type is JSON
+  defp is_json_content_type?(nil), do: false
+  defp is_json_content_type?(content_type) do
+    normalized = content_type |> String.split(";") |> List.first() |> String.trim() |> String.downcase()
+    normalized == "application/json" or String.ends_with?(normalized, "+json")
   end
 
   @doc """
@@ -259,13 +349,18 @@ defmodule DurableStreams.Stream do
         {:error, {:stale_epoch, epoch}}
 
       {:ok, 409, resp_headers, body} ->
-        expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
-        received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
-
-        if expected_seq do
-          {:error, {:sequence_gap, expected_seq, received_seq}}
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+        if stream_closed do
+          {:error, :stream_closed}
         else
-          {:error, {:conflict, body}}
+          expected_seq = HTTP.get_header(resp_headers, "producer-expected-seq")
+          received_seq = HTTP.get_header(resp_headers, "producer-received-seq")
+
+          if expected_seq do
+            {:error, {:sequence_gap, expected_seq, received_seq}}
+          else
+            {:error, {:conflict, body}}
+          end
         end
 
       {:ok, status, _headers, body} ->

@@ -34,6 +34,7 @@ type ControlEvent struct {
 	StreamNextOffset string `json:"streamNextOffset"`
 	StreamCursor     string `json:"streamCursor,omitempty"`
 	UpToDate         bool   `json:"upToDate,omitempty"`
+	StreamClosed     bool   `json:"streamClosed,omitempty"`
 }
 
 func (ControlEvent) eventType() string { return "control" }

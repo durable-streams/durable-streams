@@ -3,7 +3,7 @@
 use crate::error::{ProducerError, StreamError};
 use crate::stream::{
     DurableStream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH, HEADER_PRODUCER_EXPECTED_SEQ,
-    HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_OFFSET,
+    HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_CLOSED, HEADER_STREAM_OFFSET,
 };
 use crate::types::Offset;
 use bytes::Bytes;
@@ -136,6 +136,7 @@ impl ProducerBuilder {
                 batch_bytes: 0,
                 closed: false,
                 epoch_claimed: !self.auto_claim,
+                stream_closed: false,
                 batch_started_at: None,
             })),
             config: Arc::new(ProducerConfig {
@@ -178,6 +179,7 @@ struct ProducerState {
     batch_bytes: usize,
     closed: bool,
     epoch_claimed: bool,
+    stream_closed: bool,
     /// When the first item was added to the current pending batch
     batch_started_at: Option<Instant>,
 }
@@ -335,6 +337,57 @@ impl Producer {
         state.closed = true;
 
         Ok(())
+    }
+
+    /// Close the stream using producer headers, optionally with a final message.
+    pub async fn close_stream(&self, data: Option<Bytes>) -> Result<AppendReceipt, ProducerError> {
+        self.flush().await?;
+
+        let (epoch, seq, content_type, already_closed) = {
+            let mut state = self.state.lock();
+            if state.closed {
+                return Err(ProducerError::Closed);
+            }
+            if state.stream_closed {
+                return Ok(AppendReceipt {
+                    next_offset: Offset::Beginning,
+                    duplicate: true,
+                });
+            }
+
+            let seq = state.next_seq;
+            state.next_seq += 1;
+            let epoch = state.epoch;
+            state.epoch_claimed = true;
+            (epoch, seq, self.config.content_type.clone(), false)
+        };
+
+        if already_closed {
+            return Ok(AppendReceipt {
+                next_offset: Offset::Beginning,
+                duplicate: true,
+            });
+        }
+
+        let result = do_send_close_with_retry(
+            &self.stream,
+            &self.producer_id,
+            &content_type,
+            data,
+            seq,
+            epoch,
+            self.config.auto_claim,
+            &self.state,
+            0,
+        )
+        .await;
+
+        if result.is_ok() {
+            let mut state = self.state.lock();
+            state.stream_closed = true;
+        }
+
+        result
     }
 
     /// Get the current epoch.
@@ -632,6 +685,151 @@ async fn do_send_batch_with_retry(
             }
 
             // Give up after max retries
+            let expected = resp
+                .headers()
+                .get(HEADER_PRODUCER_EXPECTED_SEQ)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+
+            Err(ProducerError::SequenceGap {
+                expected,
+                received: seq,
+            })
+        }
+        _ => Err(ProducerError::Stream {
+            message: StreamError::from_status(status, &stream.url).to_string(),
+        }),
+    }
+}
+
+async fn do_send_close_with_retry(
+    stream: &DurableStream,
+    producer_id: &str,
+    content_type: &str,
+    data: Option<Bytes>,
+    seq: u64,
+    epoch: u64,
+    auto_claim: bool,
+    state: &Arc<Mutex<ProducerState>>,
+    retry_count: u32,
+) -> Result<AppendReceipt, ProducerError> {
+    const MAX_409_RETRIES: u32 = 10;
+
+    let data = data.unwrap_or_else(Bytes::new);
+    let has_data = !data.is_empty();
+    let body = if has_data {
+        if content_type.to_lowercase().contains("application/json") {
+            let mut wrapped = Vec::with_capacity(data.len() + 2);
+            wrapped.push(b'[');
+            wrapped.extend_from_slice(&data);
+            wrapped.push(b']');
+            Bytes::from(wrapped)
+        } else {
+            data.clone()
+        }
+    } else {
+        Bytes::new()
+    };
+
+    let mut req = stream
+        .client
+        .inner
+        .post(&stream.url)
+        .header(HEADER_CONTENT_TYPE, content_type)
+        .header(HEADER_PRODUCER_ID, producer_id)
+        .header(HEADER_PRODUCER_EPOCH, epoch.to_string())
+        .header(HEADER_PRODUCER_SEQ, seq.to_string())
+        .header(HEADER_STREAM_CLOSED, "true");
+
+    if !body.is_empty() {
+        req = req.body(body);
+    }
+
+    let resp = req.send().await?;
+    let status = resp.status().as_u16();
+
+    match status {
+        200 => {
+            let offset = resp
+                .headers()
+                .get(HEADER_STREAM_OFFSET)
+                .and_then(|v| v.to_str().ok())
+                .map(Offset::parse)
+                .unwrap_or(Offset::Beginning);
+
+            Ok(AppendReceipt {
+                next_offset: offset,
+                duplicate: false,
+            })
+        }
+        204 => Ok(AppendReceipt {
+            next_offset: Offset::Beginning,
+            duplicate: true,
+        }),
+        403 => {
+            let server_epoch = resp
+                .headers()
+                .get(HEADER_PRODUCER_EPOCH)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(epoch);
+
+            if auto_claim {
+                let new_epoch = server_epoch + 1;
+                {
+                    let mut s = state.lock();
+                    s.epoch = new_epoch;
+                    s.next_seq = 1; // This request uses seq 0
+                    s.epoch_claimed = false;
+                }
+                return Box::pin(do_send_close_with_retry(
+                    stream,
+                    producer_id,
+                    content_type,
+                    if has_data { Some(data.clone()) } else { None },
+                    0,
+                    new_epoch,
+                    auto_claim,
+                    state,
+                    0,
+                ))
+                .await;
+            }
+
+            Err(ProducerError::StaleEpoch {
+                server_epoch,
+                our_epoch: epoch,
+            })
+        }
+        409 => {
+            let stream_closed = resp
+                .headers()
+                .get(HEADER_STREAM_CLOSED)
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if stream_closed {
+                return Err(ProducerError::StreamClosed);
+            }
+
+            if retry_count < MAX_409_RETRIES {
+                let delay_ms = 10 * (1 << retry_count.min(6));
+                sleep(Duration::from_millis(delay_ms)).await;
+                return Box::pin(do_send_close_with_retry(
+                    stream,
+                    producer_id,
+                    content_type,
+                    if has_data { Some(data.clone()) } else { None },
+                    seq,
+                    epoch,
+                    auto_claim,
+                    state,
+                    retry_count + 1,
+                ))
+                .await;
+            }
+
             let expected = resp
                 .headers()
                 .get(HEADER_PRODUCER_EXPECTED_SEQ)

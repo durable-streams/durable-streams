@@ -216,7 +216,7 @@ jobs:
         run: dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
 
       - name: Run C# conformance tests
-        run: pnpm --filter @durable-streams/client-conformance-tests test:run ../client-dotnet/adapter/conformance-adapter
+        run: pnpm --filter @durable-streams/client-conformance-tests exec tsx src/cli.ts --run ../client-dotnet/adapter/conformance-adapter
 
   # Build Caddy binary - runs in parallel with other jobs
   build-caddy:

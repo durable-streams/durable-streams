@@ -13,14 +13,21 @@ public final class Metadata {
     private final Duration ttl;
     private final Instant expiresAt;
     private final String etag;
+    private final boolean streamClosed;
 
     public Metadata(String contentType, Offset nextOffset, Duration ttl,
                     Instant expiresAt, String etag) {
+        this(contentType, nextOffset, ttl, expiresAt, etag, false);
+    }
+
+    public Metadata(String contentType, Offset nextOffset, Duration ttl,
+                    Instant expiresAt, String etag, boolean streamClosed) {
         this.contentType = contentType;
         this.nextOffset = nextOffset;
         this.ttl = ttl;
         this.expiresAt = expiresAt;
         this.etag = etag;
+        this.streamClosed = streamClosed;
     }
 
     public String getContentType() {
@@ -43,6 +50,10 @@ public final class Metadata {
         return Optional.ofNullable(etag);
     }
 
+    public boolean isStreamClosed() {
+        return streamClosed;
+    }
+
     @Override
     public String toString() {
         return "Metadata{" +
@@ -51,6 +62,7 @@ public final class Metadata {
                ", ttl=" + ttl +
                ", expiresAt=" + expiresAt +
                ", etag='" + etag + '\'' +
+               ", streamClosed=" + streamClosed +
                '}';
     }
 }

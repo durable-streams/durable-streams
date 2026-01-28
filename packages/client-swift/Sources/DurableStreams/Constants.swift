@@ -37,6 +37,9 @@ enum Headers {
 
     /// Response header for received sequence (on 409 conflict)
     static let producerReceivedSeq = "Producer-Received-Seq"
+
+    /// Request/Response header indicating stream is closed (EOF)
+    static let streamClosed = "Stream-Closed"
 }
 
 /// Query parameter names used by the Durable Streams protocol.

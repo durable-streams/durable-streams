@@ -23,6 +23,7 @@ public sealed class IdempotentProducer : IAsyncDisposable
     private int _nextSeq;
     private int _inFlight;
     private bool _closed;
+    private bool _streamClosed;
     private bool _epochClaimed;
     private Timer? _lingerTimer;
     private List<PendingMessage> _pendingBatch = [];
@@ -399,6 +400,132 @@ public sealed class IdempotentProducer : IAsyncDisposable
         }
     }
 
+    private async Task<AppendResult> DoSendCloseAsync(
+        ReadOnlyMemory<byte> data,
+        int seq,
+        int epoch,
+        CancellationToken cancellationToken)
+    {
+        var isJson = HttpHelpers.IsJsonContentType(_stream.ContentType ?? _options.ContentType);
+        byte[]? rentedBuffer = null;
+        int bodyLength = 0;
+
+        try
+        {
+            if (!data.IsEmpty)
+            {
+                if (isJson)
+                {
+                    using var ms = new MemoryStream();
+                    using (var writer = new Utf8JsonWriter(ms))
+                    {
+                        writer.WriteStartArray();
+                        writer.WriteRawValue(data.Span);
+                        writer.WriteEndArray();
+                    }
+
+                    bodyLength = (int)ms.Length;
+                    rentedBuffer = ArrayPool<byte>.Shared.Rent(bodyLength);
+                    ms.Position = 0;
+                    ms.Read(rentedBuffer, 0, bodyLength);
+                }
+                else
+                {
+                    bodyLength = data.Length;
+                    rentedBuffer = ArrayPool<byte>.Shared.Rent(bodyLength);
+                    data.Span.CopyTo(rentedBuffer.AsSpan(0, bodyLength));
+                }
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, _stream.Url);
+            await _stream.Client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
+
+            request.Headers.TryAddWithoutValidation(Headers.ProducerId, _producerId);
+            request.Headers.TryAddWithoutValidation(Headers.ProducerEpoch, epoch.ToString());
+            request.Headers.TryAddWithoutValidation(Headers.ProducerSeq, seq.ToString());
+            request.Headers.TryAddWithoutValidation(Headers.StreamClosed, "true");
+
+            if (!data.IsEmpty)
+            {
+                var contentType = _stream.ContentType ?? _options.ContentType ?? ContentTypes.OctetStream;
+                request.Content = new ByteArrayContent(rentedBuffer!, 0, bodyLength);
+                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+            }
+
+            using var response = await _stream.Client.HttpClient
+                .SendAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+
+            switch (response.StatusCode)
+            {
+                case HttpStatusCode.OK:
+                {
+                    var offsetHeader = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
+                    Offset? offset = offsetHeader == null ? null : new Offset(offsetHeader);
+                    return new AppendResult(offset, false);
+                }
+                case HttpStatusCode.NoContent:
+                    return new AppendResult(null, true);
+                case HttpStatusCode.Forbidden:
+                {
+                    var currentEpoch = HttpHelpers.GetIntHeader(response, Headers.ProducerEpoch) ?? epoch;
+                    if (_options.AutoClaim)
+                    {
+                        var newEpoch = currentEpoch + 1;
+                        lock (_stateLock)
+                        {
+                            _epoch = newEpoch;
+                            _nextSeq = 1;
+                        }
+                        return await DoSendCloseAsync(data, 0, newEpoch, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    throw new StaleEpochException(currentEpoch, _stream.Url);
+                }
+                case HttpStatusCode.Conflict:
+                {
+                    var streamClosed = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+                    if (string.Equals(streamClosed, "true", StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new StreamClosedException(_stream.Url);
+                    }
+
+                    var expectedSeq = HttpHelpers.GetIntHeader(response, Headers.ProducerExpectedSeq) ?? 0;
+                    var receivedSeq = HttpHelpers.GetIntHeader(response, Headers.ProducerReceivedSeq) ?? seq;
+
+                    if (expectedSeq < seq)
+                    {
+                        for (var s = expectedSeq; s < seq; s++)
+                        {
+                            var error = await WaitForSeqAsync(epoch, s, cancellationToken).ConfigureAwait(false);
+                            if (error != null)
+                            {
+                                throw error;
+                            }
+                        }
+                        return await DoSendCloseAsync(data, seq, epoch, cancellationToken).ConfigureAwait(false);
+                    }
+
+                    throw new SequenceGapException(expectedSeq, receivedSeq, _stream.Url);
+                }
+                case HttpStatusCode.NotFound:
+                    throw new StreamNotFoundException(_stream.Url);
+                default:
+                {
+                    var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+                    throw DurableStreamException.FromStatusCode((int)response.StatusCode, _stream.Url, body);
+                }
+            }
+        }
+        finally
+        {
+            if (rentedBuffer != null)
+            {
+                ArrayPool<byte>.Shared.Return(rentedBuffer);
+            }
+        }
+    }
+
     private void SignalSeqComplete(int epoch, int seq, Exception? error)
     {
         TaskCompletionSource<Exception?>? tcs;
@@ -490,6 +617,54 @@ public sealed class IdempotentProducer : IAsyncDisposable
         finally
         {
             _flushLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Close the stream using producer headers, optionally with a final message.
+    /// </summary>
+    public async Task<AppendResult> CloseStreamAsync(
+        ReadOnlyMemory<byte> data = default,
+        CancellationToken cancellationToken = default)
+    {
+        if (_closed)
+        {
+            throw new DurableStreamException("Producer is closed",
+                DurableStreamErrorCode.AlreadyClosed, null, _stream.Url);
+        }
+
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        int seq;
+        int epoch;
+        lock (_stateLock)
+        {
+            if (_streamClosed)
+            {
+                return new AppendResult(null, true);
+            }
+
+            seq = _nextSeq;
+            epoch = _epoch;
+            _nextSeq++;
+        }
+
+        try
+        {
+            var result = await DoSendCloseAsync(data, seq, epoch, cancellationToken).ConfigureAwait(false);
+            lock (_stateLock)
+            {
+                _epochClaimed = true;
+                _streamClosed = true;
+            }
+            SignalSeqComplete(epoch, seq, null);
+            return result;
+        }
+        catch (Exception ex)
+        {
+            SignalSeqComplete(epoch, seq, ex);
+            RaiseError(ex, epoch, seq, seq, data.IsEmpty ? 0 : 1);
+            throw;
         }
     }
 

@@ -89,6 +89,7 @@ class StreamResponse(Generic[T]):
         self._consumed_by: str | None = None
         self._closed = False
         self._up_to_date = False
+        self._stream_closed = False
 
         # Response metadata (updated on each response)
         self._headers = dict(response.headers)
@@ -119,6 +120,7 @@ class StreamResponse(Generic[T]):
         if meta.cursor:
             self._cursor = meta.cursor
         self._up_to_date = meta.up_to_date
+        self._stream_closed = meta.stream_closed
         if meta.content_type and not self._content_type:
             self._content_type = meta.content_type
 
@@ -179,6 +181,11 @@ class StreamResponse(Generic[T]):
     def up_to_date(self) -> bool:
         """Whether we've caught up to the stream head."""
         return self._up_to_date
+
+    @property
+    def stream_closed(self) -> bool:
+        """Whether the stream has been closed (EOF)."""
+        return self._stream_closed
 
     @property
     def start_offset(self) -> Offset:
@@ -584,6 +591,7 @@ class StreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
                 # Track if this batch had data
                 batch_had_data = len(buffered_data) > 0
@@ -878,6 +886,7 @@ class AsyncStreamResponse(Generic[T]):
         self._consumed_by: str | None = None
         self._closed = False
         self._up_to_date = False
+        self._stream_closed = False
 
         # Response metadata (updated on each response)
         self._headers = dict(response.headers)
@@ -907,6 +916,7 @@ class AsyncStreamResponse(Generic[T]):
         if meta.cursor:
             self._cursor = meta.cursor
         self._up_to_date = meta.up_to_date
+        self._stream_closed = meta.stream_closed
         if meta.content_type and not self._content_type:
             self._content_type = meta.content_type
 
@@ -961,6 +971,11 @@ class AsyncStreamResponse(Generic[T]):
     @property
     def up_to_date(self) -> bool:
         return self._up_to_date
+
+    @property
+    def stream_closed(self) -> bool:
+        """Whether the stream has been closed (EOF)."""
+        return self._stream_closed
 
     @property
     def start_offset(self) -> Offset:
@@ -1323,6 +1338,7 @@ class AsyncStreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
                 # Track if this batch had data
                 batch_had_data = len(buffered_data) > 0

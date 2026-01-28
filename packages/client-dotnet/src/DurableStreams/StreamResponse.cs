@@ -26,6 +26,7 @@ public sealed class StreamResponse : IAsyncDisposable
     private Offset _offset;
     private string? _cursor;
     private bool _upToDate;
+    private bool _streamClosed;
     private bool _initialized;
     private bool _disposed;
     private bool _consumed;
@@ -71,6 +72,11 @@ public sealed class StreamResponse : IAsyncDisposable
     /// </summary>
     public bool UpToDate => _upToDate;
 
+    /// <summary>
+    /// Whether the stream is closed (EOF).
+    /// </summary>
+    public bool StreamClosed => _streamClosed;
+
     internal StreamResponse(
         DurableStream stream,
         StreamOptions options,
@@ -86,6 +92,7 @@ public sealed class StreamResponse : IAsyncDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         StartOffset = _offset;
+        _streamClosed = false;
     }
 
     /// <summary>
@@ -122,6 +129,11 @@ public sealed class StreamResponse : IAsyncDisposable
             }
 
             yield return chunk.Value;
+
+            if (_streamClosed)
+            {
+                break;
+            }
 
             if (_upToDate && _options.Live == LiveMode.Off)
             {
@@ -286,6 +298,7 @@ public sealed class StreamResponse : IAsyncDisposable
             var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
             var cursor = HttpHelpers.GetHeader(response, Headers.StreamCursor);
             var upToDate = HttpHelpers.GetBoolHeader(response, Headers.StreamUpToDate);
+            var streamClosed = HttpHelpers.GetBoolHeader(response, Headers.StreamClosed);
 
             if (nextOffset != null)
             {
@@ -295,7 +308,8 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 _cursor = cursor;
             }
-            _upToDate = upToDate;
+            _streamClosed = _streamClosed || streamClosed;
+            _upToDate = upToDate || _streamClosed;
 
             // Update content type if present
             var contentType = HttpHelpers.GetHeader(response, Headers.ContentType);
@@ -380,6 +394,13 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 _stream.ContentType = contentType;
             }
+
+            // Closed streams should be treated as up-to-date even before control event
+            if (HttpHelpers.GetBoolHeader(_currentResponse, Headers.StreamClosed))
+            {
+                _streamClosed = true;
+                _upToDate = true;
+            }
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -435,7 +456,8 @@ public sealed class StreamResponse : IAsyncDisposable
                 {
                     _cursor = controlEvt.StreamCursor;
                 }
-                _upToDate = controlEvt.UpToDate;
+                _streamClosed = _streamClosed || controlEvt.StreamClosed;
+                _upToDate = _upToDate || controlEvt.UpToDate || _streamClosed;
 
                 // Reset reconnect backoff on successful data
                 _sseReconnectAttempts = 0;
