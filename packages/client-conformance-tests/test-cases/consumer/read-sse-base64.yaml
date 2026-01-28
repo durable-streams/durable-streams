@@ -385,6 +385,54 @@ tests:
           messageContains:
             - encoding
 
+  - id: sse-base64-encoding-rejected-for-text-streams
+    name: Encoding parameter rejected for text/* streams
+    description: |
+      Per Protocol Section 5.7, if the stream's configured content-type is text/*
+      or application/json, clients MUST NOT provide encoding. Servers MUST treat
+      this as invalid parameters and return 400 Bad Request.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "Hello World"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          status: 400
+          messageContains:
+            - encoding
+
+  - id: sse-base64-encoding-rejected-for-json-streams
+    name: Encoding parameter rejected for application/json streams
+    description: |
+      Per Protocol Section 5.7, if the stream's configured content-type is text/*
+      or application/json, clients MUST NOT provide encoding. Servers MUST treat
+      this as invalid parameters and return 400 Bad Request.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        data: '{"message": "hello"}'
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          status: 400
+          messageContains:
+            - encoding
+
   # SSE reconnection test - verifies decoder state resets properly
   - id: sse-base64-reconnect-decoding
     name: SSE base64 decoding works after reconnect

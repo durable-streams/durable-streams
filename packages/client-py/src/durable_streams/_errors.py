@@ -306,8 +306,12 @@ def error_from_status(
     details = body
 
     if status == 400:
+        # Include body in message if available for better error context
+        message = f"Bad request: {url}"
+        if details:
+            message = f"{message} - {details}"
         return DurableStreamError(
-            f"Bad request: {url}",
+            message,
             status=400,
             code="BAD_REQUEST",
             details=details,
