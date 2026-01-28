@@ -908,6 +908,8 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	url := serverURL + cmd.Path
+
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
@@ -938,10 +940,11 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 		MaxBatchBytes: maxBatchBytes,
 		ContentType:   contentType,
 	}
-	producer, err := getProducer(cmd, cfg)
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, cfg)
 	if err != nil {
 		return errorResult("idempotent-append-batch", err)
 	}
+	defer producer.Close()
 
 	// Queue all items using Append (non-blocking, no channels)
 	// Data is already pre-serialized, pass directly to Append()
