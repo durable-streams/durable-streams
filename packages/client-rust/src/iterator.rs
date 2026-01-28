@@ -424,9 +424,16 @@ impl ChunkIterator {
                 self.next_sse_chunk().await
             }
             400 => {
-                // SSE not supported - fall back to long-poll
-                self.live = LiveMode::LongPoll;
-                self.next_http(Some("long-poll")).await
+                // If encoding was provided, return the error (invalid encoding for content type)
+                // Otherwise, SSE not supported - fall back to long-poll
+                if self.encoding.is_some() {
+                    Err(StreamError::BadRequest {
+                        message: "encoding parameter not allowed for text/* or application/json streams".to_string(),
+                    })
+                } else {
+                    self.live = LiveMode::LongPoll;
+                    self.next_http(Some("long-poll")).await
+                }
             }
             404 => Err(StreamError::NotFound {
                 url: self.stream.url.clone(),
