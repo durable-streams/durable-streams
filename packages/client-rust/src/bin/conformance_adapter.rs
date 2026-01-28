@@ -610,7 +610,7 @@ async fn handle_head(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let app_state = guard.as_ref().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     match stream.head().await {
         Ok(meta) => Result {
