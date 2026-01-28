@@ -829,7 +829,7 @@ public actor DurableStream {
                                             .replacingOccurrences(of: "\n", with: "")
                                             .replacingOccurrences(of: "\r", with: "")
 
-                                        if let decodedData = Data(base64Encoded: cleanedData) {
+                                        if let decodedData = Data(base64Encoded: cleanedData, options: .ignoreUnknownCharacters) {
                                             // Convert decoded bytes to string for the event
                                             // Use ISO-8859-1 to preserve all byte values
                                             if let decodedString = String(data: decodedData, encoding: .isoLatin1) {
@@ -924,7 +924,8 @@ private struct SSEEventBuilder {
 
     mutating func parseLine(_ line: String) {
         if line.hasPrefix("event:") {
-            event = stripLeadingSpace(String(line.dropFirst(6)))
+            // Trim trailing whitespace for event type (not part of SSE spec, but defensive)
+            event = stripLeadingSpace(String(line.dropFirst(6))).trimmingCharacters(in: .whitespaces)
         } else if line.hasPrefix("data:") {
             data.append(stripLeadingSpace(String(line.dropFirst(5))))
         } else if line.hasPrefix("id:") {
