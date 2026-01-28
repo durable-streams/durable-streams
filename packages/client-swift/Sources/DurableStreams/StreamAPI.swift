@@ -83,7 +83,7 @@ public func stream(
 public func stream(_ options: StreamOptions) async throws -> StreamResponse {
     // Validate encoding is only used with live=sse (Protocol Section 5.7)
     if options.encoding != nil && options.live != .sse {
-        throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live=sse")
+        throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live='sse'")
     }
 
     let httpClient = HTTPClient(

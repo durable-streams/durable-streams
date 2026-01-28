@@ -337,7 +337,7 @@ public actor DurableStream {
     ) async throws -> StreamResponse {
         // Validate encoding is only used with live=sse (Protocol Section 5.7)
         if encoding != nil && live != .sse {
-            throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live=sse")
+            throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live='sse'")
         }
 
         var params: [String: String] = [

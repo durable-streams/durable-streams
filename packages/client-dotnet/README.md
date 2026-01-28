@@ -152,6 +152,31 @@ LiveMode.LongPoll  // HTTP polling with server timeout
 LiveMode.Sse       // Server-Sent Events persistent connection
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `Encoding` option:
+
+```csharp
+var stream = await client.CreateStreamAsync("/my-binary-stream", new CreateStreamOptions
+{
+    ContentType = "application/octet-stream"
+});
+
+await using var response = await stream.StreamAsync(new StreamOptions
+{
+    Live = LiveMode.Sse,
+    Encoding = "base64"
+});
+
+await foreach (var chunk in response.ReadBytesAsync())
+{
+    // chunk.Data is byte[] - automatically decoded from base64
+    ProcessBinaryData(chunk.Data);
+}
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ## API Reference
 
 ### DurableStreamClient

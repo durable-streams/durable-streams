@@ -71,7 +71,7 @@ export async function stream<TJson = unknown>(
   // Validate encoding is only used with live='sse' (Protocol Section 5.7)
   if (options.encoding && options.live !== `sse`) {
     throw new DurableStreamError(
-      `Invalid stream options: encoding parameter is only valid with live='sse'`,
+      `encoding parameter is only valid with live='sse'`,
       `BAD_REQUEST`
     )
   }

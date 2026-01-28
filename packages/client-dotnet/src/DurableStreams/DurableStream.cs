@@ -358,7 +358,7 @@ public sealed class DurableStream
         if (options.Encoding != null && options.Live != LiveMode.Sse)
         {
             throw new DurableStreamException(
-                "encoding parameter is only valid with live=sse",
+                "encoding parameter is only valid with live='sse'",
                 DurableStreamErrorCode.BadRequest,
                 400,
                 _url);

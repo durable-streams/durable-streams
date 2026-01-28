@@ -274,7 +274,7 @@ module DurableStreams
     def read(offset: "-1", live: false, format: :auto, cursor: nil, encoding: nil, &block)
       # Validate encoding is only used with live=sse (Protocol Section 5.7)
       if encoding && live != :sse
-        raise BadRequestError.new("encoding parameter is only valid with live: :sse", url: @url)
+        raise BadRequestError.new("encoding parameter is only valid with live='sse'", url: @url)
       end
 
       reader = create_reader(offset: offset, live: live, format: format, cursor: cursor, encoding: encoding)

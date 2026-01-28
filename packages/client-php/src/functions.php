@@ -42,7 +42,7 @@ function stream(array $options): StreamResponse
     // Validate encoding is only used with live=sse (Protocol Section 5.7)
     if ($encoding !== null && $live !== LiveMode::SSE) {
         throw new DurableStreamException(
-            'encoding parameter is only valid with live=sse',
+            "encoding parameter is only valid with live='sse'",
             'BAD_REQUEST'
         );
     }

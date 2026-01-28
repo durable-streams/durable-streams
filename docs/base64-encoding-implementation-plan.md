@@ -51,6 +51,11 @@ This document describes the implementation plan for adding base64 encoding suppo
 | Step 13: Java Client Implementation      | ✅ Complete |
 | Step 14: Rust Client Implementation      | ✅ Complete |
 | Step 15: Ruby Client Implementation      | ✅ Complete |
+| Step 16: Error Message Consistency       | ✅ Complete |
+| Step 17: SSE Reconnection Test           | ⏳ Pending  |
+| Step 18: Large Payload Test              | ⏳ Pending  |
+| Step 19: Invalid Base64 Handling (Opt)   | ⏳ Pending  |
+| Step 20: Create Changesets               | ⏳ Pending  |
 
 ## Implementation Order
 
@@ -141,6 +146,36 @@ Step 15: Ruby Client Implementation ✅
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires live: :sse
    └── Verify: Client conformance tests pass
+
+Step 16: Error Message Consistency ✅
+   ├── Standardize validation error message across all clients
+   ├── Use: "encoding parameter is only valid with live='sse'"
+   ├── Update all 10 client implementations (Swift pending)
+   └── Verify: Client conformance tests pass
+
+Step 17: SSE Reconnection Test ⏳
+   ├── Add test: sse-base64-reconnect-decoding
+   ├── Verify base64 decoding works after SSE reconnect
+   ├── Ensure decoder state resets properly on new connection
+   └── Verify: All client conformance tests pass
+
+Step 18: Large Payload Test ⏳
+   ├── Add test: sse-base64-large-payload-multiline
+   ├── Test 64KB+ payload that triggers multi-line base64 splits
+   ├── May require test framework enhancement for binaryDataSize
+   └── Verify: All client conformance tests pass
+
+Step 19: Invalid Base64 Handling (Optional) ⏳
+   ├── Add test: sse-base64-invalid-data-error
+   ├── Requires fault injection to send malformed base64
+   ├── Verify client surfaces PARSE_ERROR for invalid base64
+   └── Optional: implement if fault injection is available
+
+Step 20: Create Changesets ⏳
+   ├── Create changeset for @durable-streams/client (patch)
+   ├── Create changeset for @durable-streams/server (patch)
+   ├── Create changesets for all other client packages (patch)
+   └── Verify: pnpm changeset status
 ```
 
 ## Step 1: Server Conformance Tests
@@ -228,7 +263,7 @@ Changes to `handleRead()` and `handleSSE()`:
 | client-conformance-tests | `src/runner.ts`                            | Pass `encoding`                         |
 | client-conformance-tests | `src/adapters/typescript-adapter.ts`       | Pass `encoding`                         |
 | client-conformance-tests | `test-cases/consumer/read-sse.yaml`        | Update existing test                    |
-| client-conformance-tests | `test-cases/consumer/read-sse-base64.yaml` | New test file                           |
+| client-conformance-tests | `test-cases/consumer/read-sse-base64.yaml` | New test file + reconnection test       |
 
 ## Client Implementation Details
 
@@ -253,3 +288,191 @@ Each client implementation follows the same pattern:
 | client-java   | Java       | ✅ Complete |
 | client-rust   | Rust       | ✅ Complete |
 | client-rb     | Ruby       | ✅ Complete |
+
+## Step 16: Error Message Consistency
+
+**Purpose:** Standardize the validation error message for "encoding requires SSE" across all 10 client implementations for consistency.
+
+**Standard error message:** `"encoding parameter is only valid with live='sse'"`
+
+**Files to update:**
+
+| Package       | File                             | Current Message (approximate) |
+| ------------- | -------------------------------- | ----------------------------- |
+| client        | `src/stream-api.ts`              | Check current implementation  |
+| client-py     | `src/durable_streams/stream.py`  | Check current implementation  |
+| client-go     | `stream.go`                      | Check current implementation  |
+| client-elixir | `lib/durable_streams/stream.ex`  | Check current implementation  |
+| client-dotnet | `src/DurableStream.cs`           | Check current implementation  |
+| client-swift  | `Sources/DurableStreams/*.swift` | Check current implementation  |
+| client-php    | `src/Stream.php`                 | Check current implementation  |
+| client-java   | `src/.../DurableStream.java`     | Check current implementation  |
+| client-rust   | `src/stream.rs`                  | Check current implementation  |
+| client-rb     | `lib/durable_streams/stream.rb`  | Check current implementation  |
+
+**Verification:** Run client conformance tests - the `messageContains` assertions in validation tests should pass with the standardized message.
+
+## Step 17: SSE Reconnection Test
+
+**File:** `packages/client-conformance-tests/test-cases/consumer/read-sse-base64.yaml`
+
+**Purpose:** Verify that base64 decoding works correctly after an SSE connection drops and reconnects using `streamNextOffset`. This catches issues where decoder state isn't properly reset on reconnection.
+
+**New test case:**
+
+```yaml
+- id: sse-base64-reconnect-decoding
+  name: SSE base64 decoding works after reconnect
+  description: |
+    After SSE connection closes and client reconnects from last offset,
+    base64 decoding should work correctly without corruption from
+    any previous decoder state.
+  setup:
+    - action: create
+      as: streamPath
+      contentType: application/octet-stream
+    - action: append
+      path: ${streamPath}
+      binaryData: "Zmlyc3Q=" # "first"
+      expect:
+        storeOffsetAs: firstOffset
+    - action: append
+      path: ${streamPath}
+      binaryData: "c2Vjb25k" # "second"
+  operations:
+    # First read - gets "first", stops after 1 chunk
+    - action: read
+      path: ${streamPath}
+      live: sse
+      encoding: base64
+      maxChunks: 1
+      expect:
+        minChunks: 1
+        dataContains: "first"
+    # Second read - reconnects from offset, should decode "second" correctly
+    - action: read
+      path: ${streamPath}
+      offset: ${firstOffset}
+      live: sse
+      encoding: base64
+      waitForUpToDate: true
+      expect:
+        minChunks: 1
+        dataContains: "second"
+        upToDate: true
+```
+
+## Step 18: Large Payload Test
+
+**File:** `packages/client-conformance-tests/test-cases/consumer/read-sse-base64.yaml`
+
+**Purpose:** Verify that large binary payloads (64KB+) that may be split across multiple `data:` lines in SSE are correctly concatenated and decoded. Per protocol: "Servers MAY split the base64 text across multiple `data:` lines within the same SSE `data` event."
+
+**Prerequisites:** May require test framework enhancement to support `binaryDataSize` parameter for generating large binary payloads, or use a pre-encoded large base64 string.
+
+**New test case:**
+
+```yaml
+- id: sse-base64-large-payload-multiline
+  name: SSE handles large base64 payload with line splits
+  description: |
+    Large binary payloads (64KB+) may be split across multiple data: lines.
+    Client must concatenate lines and remove \n\r before decoding per protocol.
+  setup:
+    - action: create
+      as: streamPath
+      contentType: application/octet-stream
+    - action: append
+      path: ${streamPath}
+      # 64KB of binary data - will produce ~87KB of base64 text
+      # Servers may split this across multiple data: lines
+      binaryDataSize: 65536
+  operations:
+    - action: read
+      path: ${streamPath}
+      live: sse
+      encoding: base64
+      waitForUpToDate: true
+      timeoutMs: 10000
+      expect:
+        minChunks: 1
+        upToDate: true
+        # Verify decoded size matches original
+        dataSize: 65536
+```
+
+## Step 19: Invalid Base64 Handling (Optional)
+
+**File:** `packages/client-conformance-tests/test-cases/consumer/read-sse-base64.yaml`
+
+**Purpose:** Verify that clients properly handle malformed base64 data from the server by surfacing a `PARSE_ERROR` rather than silently corrupting data or crashing.
+
+**Prerequisites:** Requires fault injection capability in the test framework to make the server send intentionally malformed base64 data.
+
+**Status:** Optional - implement only if fault injection support is available.
+
+**Proposed test case (requires fault injection):**
+
+```yaml
+- id: sse-base64-invalid-data-error
+  name: Client returns PARSE_ERROR for invalid base64
+  description: |
+    When server sends malformed base64 (illegal characters, wrong padding),
+    client should surface a PARSE_ERROR rather than corrupting data.
+  setup:
+    - action: create
+      as: streamPath
+      contentType: application/octet-stream
+  operations:
+    - action: read
+      path: ${streamPath}
+      live: sse
+      encoding: base64
+      faultInjection:
+        type: malformed-base64
+        # Send data with illegal characters: "!!!invalid!!!"
+        data: "ISEhaW52YWxpZCEhIQ=="
+      expect:
+        errorCode: PARSE_ERROR
+        messageContains:
+          - base64
+```
+
+**Alternative approach:** If fault injection is not feasible, this could be tested via unit tests in each client implementation rather than conformance tests.
+
+## Step 20: Create Changesets
+
+**Purpose:** Create changesets for all packages modified by this feature so changes are included in releases and CHANGELOGs are updated.
+
+**Reference:** Per CLAUDE.md: "All packages are pre-1.0. Use `patch` for changesets, not `minor`, unless it's a breaking change."
+
+**Command:** `pnpm changeset`
+
+**Packages requiring changesets (all patch):**
+
+| Package                   | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| `@durable-streams/client` | Add `encoding` option for SSE with binary streams |
+| `@durable-streams/server` | Add base64 encoding support for SSE               |
+| `client-py`               | Add `encoding` option for SSE with binary streams |
+| `client-go`               | Add `WithEncoding()` option for SSE               |
+| `client-elixir`           | Add `:encoding` option for SSE                    |
+| `client-dotnet`           | Add `encoding` option for SSE                     |
+| `client-swift`            | Add `encoding` option for SSE                     |
+| `client-php`              | Add `encoding` option for SSE                     |
+| `client-java`             | Add `encoding` option for SSE                     |
+| `client-rust`             | Add `encoding` option for SSE                     |
+| `client-rb`               | Add `encoding` option for SSE                     |
+
+**Changeset message template:**
+
+```
+feat: add base64 encoding support for SSE with binary streams
+
+Added `encoding: 'base64'` option for reading binary streams via SSE.
+Per Protocol Section 5.7, this is required for content types other than
+text/* or application/json. The client validates that encoding is only
+used with live='sse' and decodes base64 data events automatically.
+```
+
+**Verification:** `pnpm changeset status`

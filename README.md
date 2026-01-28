@@ -374,6 +374,46 @@ In JSON mode:
 - Reads return JSON arrays of all messages
 - Ideal for structured event streams
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option to transmit data safely over the text-based SSE protocol:
+
+```typescript
+// TypeScript
+const stream = await DurableStream.create({
+  url: "https://your-server.com/v1/stream/my-binary-stream",
+  contentType: "application/octet-stream",
+})
+
+const response = await stream.read({
+  live: "sse",
+  encoding: "base64",
+})
+
+response.subscribe((chunk) => {
+  console.log(chunk.data) // Uint8Array - automatically decoded from base64
+})
+```
+
+```python
+# Python
+for chunk in stream.read(live="sse", encoding="base64"):
+    print(chunk.data)  # bytes - automatically decoded from base64
+```
+
+```go
+// Go
+iter := stream.Read(ctx,
+    durable.WithLive(durable.LiveModeSSE),
+    durable.WithEncoding("base64"),
+)
+for iter.Next() {
+    fmt.Println(iter.Data()) // []byte - automatically decoded
+}
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ## Offset Semantics
 
 Offsets are opaque tokens that identify positions within a stream:

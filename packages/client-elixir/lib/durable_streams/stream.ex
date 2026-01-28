@@ -395,7 +395,7 @@ defmodule DurableStreams.Stream do
     # Validate encoding is only used with live=:sse (Protocol Section 5.7)
     is_sse = live == :sse or live == "sse"
     if encoding != nil and not is_sse do
-      {:error, {:bad_request, "encoding parameter is only valid with live=:sse"}}
+      {:error, {:bad_request, "encoding parameter is only valid with live='sse'"}}
     else
       read_impl(stream, offset, live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding, is_sse)
     end

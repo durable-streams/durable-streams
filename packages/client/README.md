@@ -265,6 +265,28 @@ const res = await stream({ url, live: "long-poll" })
 const res = await stream({ url, live: "sse" })
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
+
+```typescript
+const stream = await DurableStream.create({
+  url: "https://streams.example.com/my-binary-stream",
+  contentType: "application/octet-stream",
+})
+
+const response = await stream.read({
+  live: "sse",
+  encoding: "base64",
+})
+
+response.subscribe((chunk) => {
+  console.log(chunk.data) // Uint8Array - automatically decoded from base64
+})
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ### Headers and Params
 
 Headers and params support both static values and functions (sync or async) for dynamic values like authentication tokens.

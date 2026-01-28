@@ -55,7 +55,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
         // Validate encoding is only used with live=sse (Protocol Section 5.7)
         if (encoding != null && this.liveMode != LiveMode.SSE) {
             this.validationError = new DurableStreamException(
-                    "encoding parameter is only valid with live=sse", 400);
+                    "encoding parameter is only valid with live='sse'", 400);
         }
     }
 

@@ -140,7 +140,7 @@ impl ReadBuilder {
         // Validate encoding is only used with live=sse (Protocol Section 5.7)
         if self.encoding.is_some() && self.live != LiveMode::Sse {
             return Err(StreamError::BadRequest {
-                message: "encoding parameter is only valid with live=sse".to_string(),
+                message: "encoding parameter is only valid with live='sse'".to_string(),
             });
         }
 
