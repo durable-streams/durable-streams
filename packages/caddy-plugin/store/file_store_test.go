@@ -353,7 +353,7 @@ func TestFileStore_LongPoll(t *testing.T) {
 	var messages []Message
 	var timedOut bool
 	go func() {
-		messages, timedOut, _ = store.WaitForMessages(context.Background(), "/test", ZeroOffset, 5*time.Second)
+		messages, timedOut, _, _ = store.WaitForMessages(context.Background(), "/test", ZeroOffset, 5*time.Second)
 		close(done)
 	}()
 
@@ -393,7 +393,7 @@ func TestFileStore_LongPollTimeout(t *testing.T) {
 	offset, _ := store.GetCurrentOffset("/test")
 
 	// Long-poll at tail with short timeout
-	messages, timedOut, err := store.WaitForMessages(context.Background(), "/test", offset, 100*time.Millisecond)
+	messages, timedOut, _, err := store.WaitForMessages(context.Background(), "/test", offset, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("WaitForMessages failed: %v", err)
 	}

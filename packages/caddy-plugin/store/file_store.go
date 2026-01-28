@@ -478,15 +478,11 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		s.longPoll.notifyClosed(path)
 	}
 
-	// Persist to bbolt atomically
+	// Persist to bbolt atomically (including closed state if requested)
 	if producerState != nil || opts.Close {
-		if err := s.metaStore.UpdateAppendState(path, newOffset, opts.Seq, opts.ProducerId, producerState); err != nil {
+		if err := s.metaStore.UpdateAppendState(path, newOffset, opts.Seq, opts.ProducerId, producerState, opts.Close, meta.ClosedBy); err != nil {
 			// Log error but don't fail - the file is the source of truth
 			// On recovery, we'll reconcile
-		}
-		// Also persist closed state
-		if opts.Close {
-			s.metaStore.SetClosed(path, true, meta.ClosedBy)
 		}
 	} else {
 		if err := s.metaStore.UpdateOffset(path, newOffset, opts.Seq); err != nil {
@@ -684,6 +680,106 @@ func (s *FileStore) CloseStream(path string) (*CloseResult, error) {
 	return &CloseResult{
 		FinalOffset:   meta.CurrentOffset,
 		AlreadyClosed: alreadyClosed,
+	}, nil
+}
+
+// CloseStreamWithProducer closes a stream without appending data, using producer headers.
+func (s *FileStore) CloseStreamWithProducer(path string, opts CloseProducerOptions) (*CloseProducerResult, error) {
+	// Acquire per-producer lock for serialization
+	producerLock := s.getProducerLock(path, opts.ProducerId)
+	producerLock.Lock()
+	defer producerLock.Unlock()
+
+	s.metaCacheMu.Lock()
+	defer s.metaCacheMu.Unlock()
+
+	meta, ok := s.metaCache[path]
+	if !ok {
+		return nil, ErrStreamNotFound
+	}
+
+	// Check if stream has expired
+	if meta.IsExpired() {
+		return nil, ErrStreamNotFound
+	}
+
+	// If already closed, check if this is a duplicate of the closing request
+	if meta.Closed {
+		if meta.ClosedBy != nil &&
+			meta.ClosedBy.ProducerId == opts.ProducerId &&
+			meta.ClosedBy.Epoch == opts.ProducerEpoch &&
+			meta.ClosedBy.Seq == opts.ProducerSeq {
+			return &CloseProducerResult{
+				FinalOffset:    meta.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        opts.ProducerSeq,
+				StreamClosed:   true,
+				AlreadyClosed:  true,
+			}, nil
+		}
+
+		return &CloseProducerResult{
+			FinalOffset:   meta.CurrentOffset,
+			StreamClosed:  true,
+			AlreadyClosed: true,
+		}, ErrStreamClosed
+	}
+
+	// Validate producer state
+	appendOpts := AppendOptions{
+		ProducerId:    opts.ProducerId,
+		ProducerEpoch: &opts.ProducerEpoch,
+		ProducerSeq:   &opts.ProducerSeq,
+	}
+	result, newState, err := s.validateProducer(meta, appendOpts)
+	if err != nil {
+		return &CloseProducerResult{
+			FinalOffset:    meta.CurrentOffset,
+			ProducerResult: result.ProducerResult,
+			CurrentEpoch:   result.CurrentEpoch,
+			ExpectedSeq:    result.ExpectedSeq,
+			ReceivedSeq:    result.ReceivedSeq,
+			LastSeq:        result.LastSeq,
+			StreamClosed:   meta.Closed,
+		}, err
+	}
+
+	if result.ProducerResult == ProducerResultDuplicate {
+		return &CloseProducerResult{
+			FinalOffset:    meta.CurrentOffset,
+			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        result.LastSeq,
+			StreamClosed:   meta.Closed,
+			AlreadyClosed:  meta.Closed,
+		}, nil
+	}
+
+	// Accept: commit producer state and close stream
+	if meta.Producers == nil {
+		meta.Producers = make(map[string]*ProducerState)
+	}
+	meta.Producers[opts.ProducerId] = newState
+	meta.Closed = true
+	meta.ClosedBy = &ClosedByProducer{
+		ProducerId: opts.ProducerId,
+		Epoch:      opts.ProducerEpoch,
+		Seq:        opts.ProducerSeq,
+	}
+
+	// Persist producer state + closed state atomically
+	if err := s.metaStore.UpdateAppendState(path, meta.CurrentOffset, "", opts.ProducerId, newState, true, meta.ClosedBy); err != nil {
+		// Log error but don't fail - file is the source of truth
+	}
+
+	// Notify pending long-polls that stream is closed
+	s.longPoll.notifyClosed(path)
+
+	return &CloseProducerResult{
+		FinalOffset:    meta.CurrentOffset,
+		ProducerResult: result.ProducerResult,
+		LastSeq:        result.LastSeq,
+		StreamClosed:   true,
+		AlreadyClosed:  false,
 	}, nil
 }
 

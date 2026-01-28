@@ -299,8 +299,8 @@ func (s *BboltMetadataStore) UpdateOffset(path string, offset Offset, lastSeq st
 	})
 }
 
-// UpdateAppendState updates offset, lastSeq, and producer state atomically
-func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastSeq string, producerId string, producerState *ProducerState) error {
+// UpdateAppendState updates offset, lastSeq, producer state, and optionally closed state atomically
+func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastSeq string, producerId string, producerState *ProducerState, closed bool, closedBy *ClosedByProducer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -341,6 +341,18 @@ func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastS
 				Epoch:       producerState.Epoch,
 				LastSeq:     producerState.LastSeq,
 				LastUpdated: producerState.LastUpdated,
+			}
+		}
+
+		// Update closed state if requested
+		if closed {
+			bm.Closed = true
+			if closedBy != nil {
+				bm.ClosedBy = &bboltClosedByProducer{
+					ProducerId: closedBy.ProducerId,
+					Epoch:      closedBy.Epoch,
+					Seq:        closedBy.Seq,
+				}
 			}
 		}
 

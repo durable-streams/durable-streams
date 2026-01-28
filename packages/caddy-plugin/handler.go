@@ -676,9 +676,86 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return newHTTPError(http.StatusBadRequest, "failed to read body")
 	}
 
+	// Extract producer headers early (used for close-only and append)
+	producerId := r.Header.Get(HeaderProducerId)
+	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
+	producerSeqStr := r.Header.Get(HeaderProducerSeq)
+
+	hasProducerHeaders := producerId != "" || producerEpochStr != "" || producerSeqStr != ""
+	hasAllProducerHeaders := producerId != "" && producerEpochStr != "" && producerSeqStr != ""
+
+	// Validate producer headers - all or none
+	if hasProducerHeaders && !hasAllProducerHeaders {
+		return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
+	}
+
+	var producerEpoch *int64
+	var producerSeq *int64
+	if hasAllProducerHeaders {
+		// Validate Producer-Epoch
+		if !isValidIntegerString(producerEpochStr) {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+		}
+		epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+		}
+		producerEpoch = &epoch
+
+		// Validate Producer-Seq
+		if !isValidIntegerString(producerSeqStr) {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+		}
+		seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+		}
+		producerSeq = &seq
+	}
+
 	// Handle close-only request (empty body with Stream-Closed: true)
 	if len(body) == 0 && closeStream {
 		// Close-only - Content-Type validation is skipped per protocol Section 5.2
+		if hasAllProducerHeaders {
+			result, err := h.store.CloseStreamWithProducer(path, store.CloseProducerOptions{
+				ProducerId:    producerId,
+				ProducerEpoch: *producerEpoch,
+				ProducerSeq:   *producerSeq,
+			})
+			if err != nil {
+				if errors.Is(err, store.ErrStreamNotFound) {
+					return newHTTPError(http.StatusNotFound, "stream not found")
+				}
+				if errors.Is(err, store.ErrStaleEpoch) {
+					w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(result.CurrentEpoch, 10))
+					http.Error(w, "producer epoch is stale", http.StatusForbidden)
+					return nil
+				}
+				if errors.Is(err, store.ErrInvalidEpochSeq) {
+					return newHTTPError(http.StatusBadRequest, "new epoch must start at sequence 0")
+				}
+				if errors.Is(err, store.ErrProducerSeqGap) {
+					w.Header().Set(HeaderProducerExpectedSeq, strconv.FormatInt(result.ExpectedSeq, 10))
+					w.Header().Set(HeaderProducerReceivedSeq, strconv.FormatInt(result.ReceivedSeq, 10))
+					http.Error(w, "producer sequence gap detected", http.StatusConflict)
+					return nil
+				}
+				if errors.Is(err, store.ErrStreamClosed) {
+					w.Header().Set(HeaderStreamClosed, "true")
+					http.Error(w, "stream is closed", http.StatusConflict)
+					return nil
+				}
+				return err
+			}
+
+			w.Header().Set(HeaderStreamNextOffset, result.FinalOffset.String())
+			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(*producerEpoch, 10))
+			w.Header().Set(HeaderProducerSeq, strconv.FormatInt(result.LastSeq, 10))
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		}
+
 		result, err := h.store.CloseStream(path)
 		if err != nil {
 			if errors.Is(err, store.ErrStreamNotFound) {
@@ -714,38 +791,10 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		Close:       closeStream,
 	}
 
-	// Extract producer headers
-	producerId := r.Header.Get(HeaderProducerId)
-	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
-	producerSeqStr := r.Header.Get(HeaderProducerSeq)
-
-	// Parse producer headers if any are present
-	if producerId != "" || producerEpochStr != "" || producerSeqStr != "" {
+	if hasAllProducerHeaders {
 		opts.ProducerId = producerId
-
-		if producerEpochStr != "" {
-			// Validate format: must be a valid integer (no floats, no trailing chars)
-			if !isValidIntegerString(producerEpochStr) {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
-			}
-			epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
-			if err != nil {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
-			}
-			opts.ProducerEpoch = &epoch
-		}
-
-		if producerSeqStr != "" {
-			// Validate format: must be a valid integer (no floats, no trailing chars)
-			if !isValidIntegerString(producerSeqStr) {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
-			}
-			seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
-			if err != nil {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
-			}
-			opts.ProducerSeq = &seq
-		}
+		opts.ProducerEpoch = producerEpoch
+		opts.ProducerSeq = producerSeq
 	}
 
 	result, err := h.store.Append(path, body, opts)

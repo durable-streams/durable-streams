@@ -62,6 +62,25 @@ type CloseResult struct {
 	AlreadyClosed bool
 }
 
+// CloseProducerOptions contains producer headers for close-only operations.
+type CloseProducerOptions struct {
+	ProducerId    string
+	ProducerEpoch int64
+	ProducerSeq   int64
+}
+
+// CloseProducerResult contains the result of a close-only operation with producer headers.
+type CloseProducerResult struct {
+	FinalOffset    Offset
+	ProducerResult ProducerResult
+	CurrentEpoch   int64 // Current epoch on stale epoch error
+	ExpectedSeq    int64 // Expected seq on gap error
+	ReceivedSeq    int64 // Received seq on gap error
+	LastSeq        int64 // Highest accepted seq (for duplicates and success)
+	StreamClosed   bool  // Stream is now closed
+	AlreadyClosed  bool  // Stream was already closed
+}
+
 // Store is the interface for durable stream storage
 type Store interface {
 	// Create creates a new stream. Returns ErrStreamExists if stream exists with
@@ -94,6 +113,10 @@ type Store interface {
 	// Returns the final offset and whether it was already closed.
 	// This is an idempotent operation - closing an already-closed stream succeeds.
 	CloseStream(path string) (*CloseResult, error)
+
+	// CloseStreamWithProducer closes a stream without appending data, using producer headers
+	// for idempotent sequencing. Returns the final offset and producer validation result.
+	CloseStreamWithProducer(path string, opts CloseProducerOptions) (*CloseProducerResult, error)
 
 	// Read reads messages from a stream starting at the given offset.
 	// Returns messages, whether we're up to date (at tail), and any error.
