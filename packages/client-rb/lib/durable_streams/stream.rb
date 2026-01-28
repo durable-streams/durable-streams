@@ -141,7 +141,13 @@ module DurableStreams
       headers[STREAM_EXPIRES_AT_HEADER] = expires_at if expires_at
       headers[STREAM_CLOSED_HEADER] = "true" if closed
 
-      response = @transport.request(:put, @url, headers: headers, body: body)
+      body_to_send = if body && DurableStreams.json_content_type?(ct)
+                       "[#{body}]"
+                     else
+                       body
+                     end
+
+      response = @transport.request(:put, @url, headers: headers, body: body_to_send)
 
       if response.status == 409
         raise StreamExistsError.new(url: @url)
@@ -192,13 +198,14 @@ module DurableStreams
 
       # 204 means idempotent close (already closed)
       if response.status == 204
-        next_offset = response[STREAM_NEXT_OFFSET_HEADER]
+        next_offset = response[STREAM_NEXT_OFFSET_HEADER] || "-1"
         return CloseResult.new(final_offset: next_offset)
       end
 
-      # 409 with Stream-Closed header means trying to append to closed stream
+      # 409 with Stream-Closed header means already closed - treat as idempotent success
       if response.status == 409 && response[STREAM_CLOSED_HEADER]&.downcase == "true"
-        raise StreamClosedError.new(url: @url)
+        next_offset = response[STREAM_NEXT_OFFSET_HEADER] || "-1"
+        return CloseResult.new(final_offset: next_offset)
       end
 
       unless response.success?
@@ -417,6 +424,10 @@ module DurableStreams
       response = @transport.request(:post, @url, headers: headers, body: body)
 
       if response.status == 409
+        if response[STREAM_CLOSED_HEADER]&.downcase == "true"
+          raise StreamClosedError.new(url: @url)
+        end
+
         raise SeqConflictError.new(url: @url)
       end
 

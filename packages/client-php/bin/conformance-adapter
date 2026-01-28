@@ -611,7 +611,7 @@ function handleIdempotentAppend(array $cmd): array {
 }
 
 function handleIdempotentAppendBatch(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq;
+    global $serverUrl, $streamContentTypes, $sharedClient;
 
     $path = $cmd['path'];
     $url = $serverUrl . $path;
@@ -622,8 +622,7 @@ function handleIdempotentAppendBatch(array $cmd): array {
     // Data is already pre-serialized, pass directly to enqueue()
     $items = $cmd['items'];
 
-    $seqKey = producerSeqKey($path, $producerId, $epoch);
-    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
+    $nextSeq = isset($cmd['producerSeq']) ? (int)$cmd['producerSeq'] : 0;
 
     $producer = new IdempotentProducer(
         url: $url,
@@ -640,11 +639,6 @@ function handleIdempotentAppendBatch(array $cmd): array {
     }
 
     $producer->flush();
-
-    $finalEpoch = $producer->getEpoch();
-    $finalSeq = $producer->getSeq();
-    dropProducerEpochs($path, $producerId);
-    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
 
     return [
         'type' => 'idempotent-append-batch',
@@ -689,7 +683,7 @@ function handleIdempotentClose(array $cmd): array {
         nextSeq: $nextSeq,
     );
 
-    $producer->close($data);
+    $producer->closeStream($data);
 
     $finalEpoch = $producer->getEpoch();
     $finalSeq = $producer->getSeq();

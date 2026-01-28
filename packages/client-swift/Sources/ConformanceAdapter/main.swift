@@ -155,6 +155,8 @@ actor AdapterState {
     var streamContentTypes: [String: String] = [:]
     var dynamicHeaders: [String: DynamicValue] = [:]
     var dynamicParams: [String: DynamicValue] = [:]
+    var producerNextSeq: [String: Int] = [:]
+    var producerStreamClosed: Set<String> = []
     var backgroundOps: [String: Task<Result, Never>] = [:]
     var opCounter: Int = 0
 
@@ -192,6 +194,8 @@ actor AdapterState {
         serverURL = url
         streamHandles.removeAll()
         streamContentTypes.removeAll()
+        producerNextSeq.removeAll()
+        producerStreamClosed.removeAll()
     }
 
     func setContentType(path: String, contentType: String) {
@@ -229,6 +233,49 @@ actor AdapterState {
     func clearDynamic() {
         dynamicHeaders.removeAll()
         dynamicParams.removeAll()
+    }
+
+    func producerSeqKey(path: String, producerId: String, epoch: Int) -> String {
+        "\(path)|\(producerId)|\(epoch)"
+    }
+
+    func producerKey(path: String, producerId: String) -> String {
+        "\(path)|\(producerId)"
+    }
+
+    func nextSeq(path: String, producerId: String, epoch: Int) -> Int {
+        producerNextSeq[producerSeqKey(path: path, producerId: producerId, epoch: epoch)] ?? 0
+    }
+
+    func setNextSeq(path: String, producerId: String, epoch: Int, nextSeq: Int) {
+        producerNextSeq[producerSeqKey(path: path, producerId: producerId, epoch: epoch)] = nextSeq
+    }
+
+    func dropProducerEpochs(path: String, producerId: String) {
+        let prefix = "\(path)|\(producerId)|"
+        for key in producerNextSeq.keys where key.hasPrefix(prefix) {
+            producerNextSeq.removeValue(forKey: key)
+        }
+    }
+
+    func markProducerClosed(path: String, producerId: String) {
+        producerStreamClosed.insert(producerKey(path: path, producerId: producerId))
+    }
+
+    func isProducerClosed(path: String, producerId: String) -> Bool {
+        producerStreamClosed.contains(producerKey(path: path, producerId: producerId))
+    }
+
+    func clearProducer(path: String, producerId: String) {
+        producerStreamClosed.remove(producerKey(path: path, producerId: producerId))
+    }
+
+    func clearProducerForPath(path: String) {
+        let prefix = "\(path)|"
+        for key in producerNextSeq.keys where key.hasPrefix(prefix) {
+            producerNextSeq.removeValue(forKey: key)
+        }
+        producerStreamClosed = Set(producerStreamClosed.filter { !$0.hasPrefix(prefix) })
     }
 
     func resolveDynamicHeaders() -> [String: String] {
@@ -330,6 +377,10 @@ func handleCommand(_ cmd: Command) async -> Result {
         return await handleIdempotentAppend(cmd)
     case "idempotent-append-batch":
         return await handleIdempotentAppendBatch(cmd)
+    case "idempotent-close":
+        return await handleIdempotentClose(cmd)
+    case "idempotent-detach":
+        return await handleIdempotentDetach(cmd)
     case "read":
         return await handleRead(cmd)
     case "head":
@@ -405,8 +456,21 @@ func handleCreate(_ cmd: Command) async -> Result {
     let contentType = cmd.contentType ?? "application/octet-stream"
     let closed = cmd.closed ?? false
 
+    // Decode data if provided
+    let bodyData: Data?
+    if let data = cmd.data {
+        if cmd.binary == true {
+            bodyData = Data(base64Encoded: data)
+        } else {
+            bodyData = Data(data.utf8)
+        }
+    } else {
+        bodyData = nil
+    }
+
     // Build headers
     let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
     var allHeaders: HeadersRecord = [:]
     for (key, value) in dynamicHeaders {
         allHeaders[key] = .static(value)
@@ -417,14 +481,21 @@ func handleCreate(_ cmd: Command) async -> Result {
         }
     }
 
+    // Build params
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
+
     do {
         let handle = try await DurableStream.create(
             url: url,
             contentType: contentType,
             ttlSeconds: cmd.ttlSeconds,
             expiresAt: cmd.expiresAt,
+            data: bodyData,
             closed: closed,
-            config: DurableStream.Configuration(headers: allHeaders)
+            config: DurableStream.Configuration(headers: allHeaders, params: allParams)
         )
 
         await state.setContentType(path: path, contentType: contentType)
@@ -437,7 +508,9 @@ func handleCreate(_ cmd: Command) async -> Result {
             type: "create",
             success: true,
             status: 201,
-            offset: info.offset?.rawValue
+            offset: info.offset?.rawValue,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
         )
     } catch let error as DurableStreamError {
         return mapError(cmd.type, error)
@@ -458,18 +531,27 @@ func handleConnect(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    // Build headers
+    // Build headers/params
+    let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
     var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
     if let cmdHeaders = cmd.headers {
         for (key, value) in cmdHeaders {
             allHeaders[key] = .static(value)
         }
     }
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
 
     do {
         let handle = try await DurableStream.connect(
             url: url,
-            config: DurableStream.Configuration(headers: allHeaders)
+            config: DurableStream.Configuration(headers: allHeaders, params: allParams)
         )
 
         // Get content type from the handle
@@ -486,7 +568,9 @@ func handleConnect(_ cmd: Command) async -> Result {
             type: "connect",
             success: true,
             status: 200,
-            offset: info.offset?.rawValue
+            offset: info.offset?.rawValue,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
         )
     } catch let error as DurableStreamError {
         return mapError(cmd.type, error)
@@ -548,6 +632,14 @@ func handleAppend(_ cmd: Command) async -> Result {
         }
     }
 
+    // Build params for the request
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
+
+    let usePerRequestConfig = !dynamicHeaders.isEmpty || !dynamicParams.isEmpty || !(cmd.headers?.isEmpty ?? true)
+
     // Retry loop for transient errors
     var retryCount = 0
     let maxRetries = 3
@@ -556,12 +648,17 @@ func handleAppend(_ cmd: Command) async -> Result {
         do {
             // Get or create handle
             let handle: DurableStream
-            if let cached = await state.getHandle(path: path) {
+            if usePerRequestConfig {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
+                )
+            } else if let cached = await state.getHandle(path: path) {
                 handle = cached
             } else {
                 handle = try await DurableStream.connect(
                     url: url,
-                    config: DurableStream.Configuration(headers: allHeaders)
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
                 )
                 await state.cacheHandle(path: path, handle: handle)
             }
@@ -647,6 +744,10 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
     var currentEpoch = cmd.epoch ?? 0
     let autoClaim = cmd.autoClaim ?? false
     var epochRetries = autoClaim ? 3 : 0
+    var seq = await state.nextSeq(path: path, producerId: producerId, epoch: currentEpoch)
+    if let providedSeq = cmd.seq {
+        seq = providedSeq
+    }
 
     while true {
         do {
@@ -663,9 +764,12 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
                 bodyData,
                 producerId: producerId,
                 epoch: currentEpoch,
-                seq: cmd.seq ?? 0,
+                seq: seq,
                 contentType: contentType
             )
+
+            await state.dropProducerEpochs(path: path, producerId: producerId)
+            await state.setNextSeq(path: path, producerId: producerId, epoch: currentEpoch, nextSeq: seq + 1)
 
             return Result(
                 type: "idempotent-append",
@@ -682,6 +786,7 @@ func handleIdempotentAppend(_ cmd: Command) async -> Result {
                 } else {
                     currentEpoch += 1
                 }
+                seq = 0
                 epochRetries -= 1
                 continue
             }
@@ -763,6 +868,158 @@ func handleIdempotentAppendBatch(_ cmd: Command) async -> Result {
     }
 }
 
+// MARK: - Idempotent Close (uses stream.appendWithProducer + Stream-Closed header)
+
+func handleIdempotentClose(_ cmd: Command) async -> Result {
+    guard let path = cmd.path, let producerId = cmd.producerId else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Missing required fields")
+    }
+
+    let serverURL = await state.serverURL
+    guard let url = URL(string: serverURL + path) else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
+    }
+
+    let contentType: String
+    if let providedContentType = cmd.contentType {
+        contentType = providedContentType
+    } else if let cachedContentType = await state.getContentType(path: path) {
+        contentType = cachedContentType
+    } else {
+        contentType = "application/octet-stream"
+    }
+    let isJSON = contentType.normalizedContentType() == "application/json"
+
+    // Decode data
+    let rawData: Data
+    if let data = cmd.data {
+        if cmd.binary == true {
+            guard let decoded = Data(base64Encoded: data) else {
+                return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid base64 data")
+            }
+            rawData = decoded
+        } else {
+            rawData = Data(data.utf8)
+        }
+    } else {
+        rawData = Data()
+    }
+
+    // Wrap JSON data in array if needed
+    let bodyData: Data
+    if isJSON && !rawData.isEmpty {
+        var arrayData = Data("[".utf8)
+        arrayData.append(rawData)
+        arrayData.append(Data("]".utf8))
+        bodyData = arrayData
+    } else {
+        bodyData = rawData
+    }
+
+    let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
+    var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
+    if let cmdHeaders = cmd.headers {
+        for (key, value) in cmdHeaders {
+            allHeaders[key] = .static(value)
+        }
+    }
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
+
+    let usePerRequestConfig = !dynamicHeaders.isEmpty || !dynamicParams.isEmpty || !(cmd.headers?.isEmpty ?? true)
+
+    // If this producer already closed the stream, return idempotent success
+    if await state.isProducerClosed(path: path, producerId: producerId) {
+        return Result(type: "idempotent-close", success: true, status: 200)
+    }
+
+    var currentEpoch = cmd.epoch ?? 0
+    var seq = await state.nextSeq(path: path, producerId: producerId, epoch: currentEpoch)
+    if let providedSeq = cmd.seq {
+        seq = providedSeq
+    }
+
+    let autoClaim = cmd.autoClaim ?? false
+    var epochRetries = autoClaim ? 3 : 0
+
+    while true {
+        do {
+            let handle: DurableStream
+            if usePerRequestConfig {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
+                )
+            } else if let cached = await state.getHandle(path: path) {
+                handle = cached
+            } else {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
+                )
+                await state.cacheHandle(path: path, handle: handle)
+            }
+
+            let result = try await handle.appendWithProducer(
+                bodyData,
+                producerId: producerId,
+                epoch: currentEpoch,
+                seq: seq,
+                contentType: contentType,
+                additionalHeaders: ["Stream-Closed": "true"]
+            )
+
+            await state.dropProducerEpochs(path: path, producerId: producerId)
+            await state.setNextSeq(path: path, producerId: producerId, epoch: currentEpoch, nextSeq: seq + 1)
+            await state.markProducerClosed(path: path, producerId: producerId)
+
+            return Result(
+                type: "idempotent-close",
+                success: true,
+                status: 200,
+                headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+                paramsSent: dynamicParams.isEmpty ? nil : dynamicParams,
+                finalOffset: result.offset.rawValue
+            )
+        } catch let error as DurableStreamError where error.code == .staleEpoch {
+            if autoClaim && epochRetries > 0 {
+                if let details = error.details, let epochStr = details["currentEpoch"], let serverEpoch = Int(epochStr) {
+                    currentEpoch = serverEpoch + 1
+                } else {
+                    currentEpoch += 1
+                }
+                seq = 0
+                epochRetries -= 1
+                continue
+            }
+            return errorResult(cmd.type, "STALE_EPOCH", "Stale epoch", status: 403)
+        } catch let error as DurableStreamError {
+            return mapError(cmd.type, error)
+        } catch {
+            return errorResult(cmd.type, "NETWORK_ERROR", error.localizedDescription)
+        }
+    }
+}
+
+// MARK: - Idempotent Detach
+
+func handleIdempotentDetach(_ cmd: Command) async -> Result {
+    guard let path = cmd.path, let producerId = cmd.producerId else {
+        return errorResult(cmd.type, "INTERNAL_ERROR", "Missing required fields")
+    }
+
+    await state.dropProducerEpochs(path: path, producerId: producerId)
+    await state.clearProducer(path: path, producerId: producerId)
+
+    return Result(type: "idempotent-detach", success: true, status: 200)
+}
+
 // MARK: - Read (uses stream.read or streaming APIs)
 
 func handleRead(_ cmd: Command) async -> Result {
@@ -815,6 +1072,14 @@ func handleRead(_ cmd: Command) async -> Result {
         }
     }
 
+    // Build params
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
+
+    let usePerRequestConfig = !dynamicHeaders.isEmpty || !dynamicParams.isEmpty || !(cmd.headers?.isEmpty ?? true)
+
     // For SSE mode, use the SSE streaming API
     if liveMode == .sse {
         return await handleSSERead(
@@ -827,6 +1092,8 @@ func handleRead(_ cmd: Command) async -> Result {
             dynamicHeaders: dynamicHeaders,
             dynamicParams: dynamicParams,
             headers: allHeaders,
+            params: allParams,
+            usePerRequestConfig: usePerRequestConfig,
             path: path
         )
     }
@@ -851,12 +1118,17 @@ func handleRead(_ cmd: Command) async -> Result {
         do {
             // Get or create handle
             let handle: DurableStream
-            if let cached = await state.getHandle(path: path) {
+            if usePerRequestConfig {
+                handle = try await DurableStream.connect(
+                    url: url,
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
+                )
+            } else if let cached = await state.getHandle(path: path) {
                 handle = cached
             } else {
                 handle = try await DurableStream.connect(
                     url: url,
-                    config: DurableStream.Configuration(headers: allHeaders)
+                    config: DurableStream.Configuration(headers: allHeaders, params: allParams)
                 )
                 await state.cacheHandle(path: path, handle: handle)
             }
@@ -993,6 +1265,8 @@ func handleSSERead(
     dynamicHeaders: [String: String],
     dynamicParams: [String: String],
     headers: HeadersRecord,
+    params: ParamsRecord,
+    usePerRequestConfig: Bool,
     path: String
 ) async -> Result {
     let accumulator = SSEAccumulator(startOffset: offset)
@@ -1002,12 +1276,17 @@ func handleSSERead(
         // Use cached handle if available to avoid extra HEAD request
         // that could consume injected faults
         let handle: DurableStream
-        if let cached = await state.getHandle(path: path) {
+        if usePerRequestConfig {
+            handle = try await DurableStream.connect(
+                url: url,
+                config: DurableStream.Configuration(headers: headers, params: params)
+            )
+        } else if let cached = await state.getHandle(path: path) {
             handle = cached
         } else {
             handle = try await DurableStream.connect(
                 url: url,
-                config: DurableStream.Configuration(headers: headers)
+                config: DurableStream.Configuration(headers: headers, params: params)
             )
             await state.cacheHandle(path: path, handle: handle)
         }
@@ -1112,18 +1391,27 @@ func handleHead(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    // Build headers
+    // Build headers/params
+    let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
     var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
     if let cmdHeaders = cmd.headers {
         for (key, value) in cmdHeaders {
             allHeaders[key] = .static(value)
         }
     }
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
 
     do {
         let info = try await DurableStream.head(
             url: url,
-            config: DurableStream.Configuration(headers: allHeaders)
+            config: DurableStream.Configuration(headers: allHeaders, params: allParams)
         )
 
         return Result(
@@ -1132,6 +1420,8 @@ func handleHead(_ cmd: Command) async -> Result {
             status: 200,
             offset: info.offset?.rawValue,
             contentType: info.contentType,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams,
             streamClosed: info.streamClosed
         )
     } catch let error as DurableStreamError {
@@ -1168,12 +1458,21 @@ func handleClose(_ cmd: Command) async -> Result {
 
     let contentType = cmd.contentType ?? "application/octet-stream"
 
-    // Build headers
+    // Build headers/params
+    let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
     var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
     if let cmdHeaders = cmd.headers {
         for (key, value) in cmdHeaders {
             allHeaders[key] = .static(value)
         }
+    }
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
     }
 
     do {
@@ -1181,13 +1480,15 @@ func handleClose(_ cmd: Command) async -> Result {
             url: url,
             data: bodyData,
             contentType: contentType,
-            config: DurableStream.Configuration(headers: allHeaders)
+            config: DurableStream.Configuration(headers: allHeaders, params: allParams)
         )
 
         return Result(
             type: "close",
             success: true,
             status: 200,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams,
             finalOffset: result.finalOffset.rawValue
         )
     } catch let error as DurableStreamError {
@@ -1209,26 +1510,38 @@ func handleDelete(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    // Build headers
+    // Build headers/params
+    let dynamicHeaders = await state.resolveDynamicHeaders()
+    let dynamicParams = await state.resolveDynamicParams()
     var allHeaders: HeadersRecord = [:]
+    for (key, value) in dynamicHeaders {
+        allHeaders[key] = .static(value)
+    }
     if let cmdHeaders = cmd.headers {
         for (key, value) in cmdHeaders {
             allHeaders[key] = .static(value)
         }
     }
+    var allParams: ParamsRecord = [:]
+    for (key, value) in dynamicParams {
+        allParams[key] = .static(value)
+    }
 
     do {
         try await DurableStream.delete(
             url: url,
-            config: DurableStream.Configuration(headers: allHeaders)
+            config: DurableStream.Configuration(headers: allHeaders, params: allParams)
         )
 
         await state.removeHandle(path: path)
+        await state.clearProducerForPath(path: path)
 
         return Result(
             type: "delete",
             success: true,
-            status: 200
+            status: 200,
+            headersSent: dynamicHeaders.isEmpty ? nil : dynamicHeaders,
+            paramsSent: dynamicParams.isEmpty ? nil : dynamicParams
         )
     } catch let error as DurableStreamError {
         return mapError(cmd.type, error)

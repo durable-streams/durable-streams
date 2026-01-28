@@ -30,5 +30,8 @@ fi
 
 # Run the adapter interactively (-i for stdin, no -t since we don't need a tty)
 # DOCKER_HOST_REWRITE=1 tells the adapter to replace localhost with host.docker.internal
-# This is needed on macOS where --network host doesn't work (uses a VM)
-exec docker run -i --rm -e DOCKER_HOST_REWRITE=1 "$IMAGE_TAG"
+# On Linux, add host.docker.internal mapping for Docker <-> host access
+exec docker run -i --rm \
+  --add-host=host.docker.internal:host-gateway \
+  -e DOCKER_HOST_REWRITE=1 \
+  "$IMAGE_TAG"

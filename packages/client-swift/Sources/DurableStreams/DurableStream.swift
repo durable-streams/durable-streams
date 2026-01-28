@@ -78,6 +78,7 @@ public actor DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
         closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
@@ -101,10 +102,24 @@ public actor DurableStream {
             headers[Headers.streamClosed] = "true"
         }
 
+        // Prepare body - wrap in JSON array if needed
+        var body: Data? = nil
+        if let inputData = data {
+            if contentType.isJSONContentType {
+                var arrayData = Data("[".utf8)
+                arrayData.append(inputData)
+                arrayData.append(Data("]".utf8))
+                body = arrayData
+            } else {
+                body = inputData
+            }
+        }
+
         let request = await httpClient.buildRequest(
             url: url,
             method: "PUT",
             headers: headers,
+            body: body,
             timeout: config.timeout
         )
 
@@ -161,6 +176,7 @@ public actor DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
         closed: Bool = false,
         handleConfig: HandleConfiguration
     ) async throws -> DurableStream {
@@ -169,6 +185,7 @@ public actor DurableStream {
             contentType: contentType,
             ttlSeconds: ttlSeconds,
             expiresAt: expiresAt,
+            data: data,
             closed: closed,
             config: Configuration(from: handleConfig)
         )
@@ -287,7 +304,8 @@ public actor DurableStream {
         case 409:
             // Check if stream was already closed
             if metadata.streamClosed {
-                throw DurableStreamError.streamClosed(url: url)
+                let finalOffset = metadata.offset ?? Offset(rawValue: "-1")
+                return CloseResult(finalOffset: finalOffset)
             }
             let body = String(data: responseData, encoding: .utf8)
             throw DurableStreamError.conflict(message: body ?? "Conflict")
@@ -593,6 +611,9 @@ public actor DurableStream {
             return AppendResult(offset: offset, isDuplicate: isDuplicate)
 
         case 409:
+            if metadata.streamClosed {
+                throw DurableStreamError.streamClosed(url: url)
+            }
             throw DurableStreamError(code: .conflictSeq, message: "Sequence conflict", status: 409)
 
         default:
@@ -616,15 +637,15 @@ public actor DurableStream {
         producerId: String,
         epoch: Int,
         seq: Int,
-        contentType: String? = nil
+        contentType: String? = nil,
+        additionalHeaders: [String: String] = [:]
     ) async throws -> AppendResult {
         let ct = contentType ?? self.contentType ?? "application/octet-stream"
 
-        let headers: [String: String] = [
-            Headers.producerId: producerId,
-            Headers.producerEpoch: String(epoch),
-            Headers.producerSeq: String(seq)
-        ]
+        var headers = additionalHeaders
+        headers[Headers.producerId] = producerId
+        headers[Headers.producerEpoch] = String(epoch)
+        headers[Headers.producerSeq] = String(seq)
 
         let request = await httpClient.buildRequest(
             url: url,
@@ -652,6 +673,9 @@ public actor DurableStream {
             throw DurableStreamError.forbidden(message: "Stale epoch")
 
         case 409:
+            if metadata.streamClosed {
+                throw DurableStreamError.streamClosed(url: url)
+            }
             if let expected = metadata.producerExpectedSeq, let received = metadata.producerReceivedSeq {
                 throw DurableStreamError.sequenceGap(expected: expected, received: received)
             }
@@ -895,13 +919,14 @@ extension DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
         closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
         guard let url = URL(string: urlString) else {
             fatalError("Invalid URL string: \(urlString)")
         }
-        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, closed: closed, config: config)
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, data: data, closed: closed, config: config)
     }
 
     /// Create a new stream from a URL string (throwing version).
@@ -911,13 +936,14 @@ extension DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
         closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
         guard let url = URL(string: urlString) else {
             throw DurableStreamError.badRequest(message: "Invalid URL string: \(urlString)")
         }
-        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, closed: closed, config: config)
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, data: data, closed: closed, config: config)
     }
 
     /// Connect to an existing stream from a URL string.
