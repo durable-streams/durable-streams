@@ -1154,9 +1154,11 @@ func handleRead(_ cmd: Command) async -> Result {
                 await state.cacheHandle(path: path, handle: handle)
             }
 
+            // Pass encoding to trigger validation (should fail if encoding provided without SSE)
             let result = try await handle.read(
                 offset: currentOffset,
                 live: liveMode,
+                encoding: cmd.encoding,
                 headers: [:]  // Already in config
             )
 
