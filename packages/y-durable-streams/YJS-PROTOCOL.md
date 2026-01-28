@@ -215,15 +215,17 @@ Servers **MUST** return `404 Not Found` if the snapshot does not exist (e.g., de
 #### Request
 
 ```
-GET {document-url}?offset=<offset>&live=true
+GET {document-url}?offset=<offset>&live=long-poll
+GET {document-url}?offset=<offset>&live=sse&encoding=base64
 ```
 
 #### Query Parameters
 
-| Parameter | Required | Description                                                                                                                  |
-| --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `offset`  | No       | Cursor position. Use `snapshot` for discovery (Section 5.1), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
-| `live`    | No       | Set to `true` for long-polling. Server picks optimal transport. Omit for catch-up reads.                                     |
+| Parameter  | Required    | Description                                                                                                                  |
+| ---------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `offset`   | No          | Cursor position. Use `snapshot` for discovery (Section 5.1), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
+| `live`     | No          | `long-poll` for long-polling, `sse` for Server-Sent Events. Omit for catch-up reads.                                         |
+| `encoding` | Conditional | **MUST** be `base64` when `live=sse`. Required for binary streams per [PROTOCOL].                                            |
 
 #### Response Headers
 
@@ -238,13 +240,34 @@ Raw binary stream with lib0 framing (Section 7).
 Content-Type: application/octet-stream
 ```
 
-When `live=true`, the connection stays open until:
+#### Long-Poll Mode (`live=long-poll`)
+
+When long-poll mode is requested, the connection stays open until:
 
 - 60 seconds elapsed (client **SHOULD** reconnect with new offset)
 - New updates arrive (response completes with data, client reconnects)
 - Server closes for other reasons
 
 If timeout expires with no new data, server **MUST** return `204 No Content` with `Stream-Next-Offset` and `Stream-Up-To-Date: true` headers.
+
+#### SSE Mode (`live=sse&encoding=base64`)
+
+When SSE mode is requested, the server returns updates via Server-Sent Events with base64-encoded payloads:
+
+```
+Content-Type: text/event-stream
+Stream-SSE-Data-Encoding: base64
+
+event: data
+data: <base64-encoded lib0-framed updates>
+
+event: control
+data: {"streamNextOffset":"4783","streamCursor":"abc"}
+```
+
+The base64 payload, after decoding, contains lib0-framed updates identical to the long-poll response body. Clients **MUST** decode the base64, then parse lib0 frames as described in Section 7.3.
+
+Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
 
 ### 5.4. Write Update
 
@@ -272,7 +295,7 @@ The `Stream-Next-Offset` header contains the new tail offset after the append.
 
 ### 5.5. Awareness Subscribe
 
-Awareness streams use **SSE (Server-Sent Events)** for real-time delivery. When `live=true` is set on an awareness request, the server uses SSE transport because it better suits the rapid, ephemeral nature of cursor updates.
+Awareness streams support both long-poll and SSE transports, using the same `live` parameter as document streams. SSE is often preferred for awareness due to its lower latency for rapid cursor updates.
 
 Awareness is accessed via the `awareness` query parameter on the same document URL:
 
@@ -282,20 +305,27 @@ Awareness is accessed via the `awareness` query parameter on the same document U
 
 Awareness streams are scoped to the document path. Two documents (`/docs/a` and `/docs/b`) have completely separate awareness streams, even if they use the same name.
 
-#### Request
+#### Request (SSE)
 
 ```
-GET {document-url}?awareness=default&offset=now&live=true
+GET {document-url}?awareness=default&offset=now&live=sse&encoding=base64
+```
+
+#### Request (Long-Poll)
+
+```
+GET {document-url}?awareness=default&offset=now&live=long-poll
 ```
 
 The `offset=now` sentinel (per [PROTOCOL]) means "start from current tail position, don't replay history." Awareness is ephemeral; clients only care about live updates.
 
-#### Response
+#### Response (SSE)
 
 Server-Sent Events stream per the Durable Streams Protocol format.
 
 ```
 Content-Type: text/event-stream
+Stream-SSE-Data-Encoding: base64
 
 event: data
 data: <base64-encoded awareness update>
@@ -304,7 +334,11 @@ event: control
 data: {"streamNextOffset":"abc123","streamCursor":"1000"}
 ```
 
-Per [PROTOCOL], the server closes SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
+Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
+
+#### Response (Long-Poll)
+
+Same as document updates (Section 5.3). Returns binary awareness data with `Content-Type: application/octet-stream`.
 
 ### 5.6. Awareness Broadcast
 
@@ -406,9 +440,16 @@ while (decoding.hasContent(decoder)) {
 
 The server acts as a pass-through for framed updates, storing exactly what clients send.
 
-### 7.5. Efficiency
+### 7.5. Efficiency and Transport Selection
 
-This binary framing avoids the ~33% overhead of base64 encoding that SSE would require for binary data. For a typical collaborative editing session with many small updates, the variable-length encoding keeps framing overhead minimal.
+Binary framing minimizes per-update overhead. Transport selection affects latency and bandwidth:
+
+| Transport   | Latency                      | Bandwidth                | Use Case                                    |
+| ----------- | ---------------------------- | ------------------------ | ------------------------------------------- |
+| Long-poll   | Higher (polling interval)    | Lower (raw bytes)        | Bandwidth-constrained, infrequent updates   |
+| SSE         | Lower (push-based)           | ~33% higher (base64)     | Real-time collaboration, frequent updates   |
+
+For typical collaborative editing with frequent small updates, SSE often provides better perceived responsiveness despite the bandwidth overhead. Developers **MAY** choose the transport that best fits their application's constraints.
 
 ## 8. Compaction
 
@@ -467,7 +508,8 @@ Client                                    Server
   │                                         │
   │ Apply snapshot to Y.Doc                 │
   │                                         │
-  │ GET /docs/my-doc?offset=4783&live=true  │
+  │ GET /docs/my-doc?offset=4783            │
+  │     &live=long-poll                     │
   │────────────────────────────────────────>│
   │                                         │
   │ (long-poll for new updates)             │
@@ -492,7 +534,8 @@ Client                                    Server
   │ Stream-Next-Offset: <offset>            │
   │<────────────────────────────────────────│
   │                                         │
-  │ GET /docs/my-doc?offset=<offset>&live=true
+  │ GET /docs/my-doc?offset=<offset>        │
+  │     &live=long-poll                     │
   │────────────────────────────────────────>│
 ```
 
@@ -520,7 +563,7 @@ Client                                    Server
 Client                                    Server
   │                                         │
   │ GET /docs/my-doc?awareness=default      │
-  │     &offset=now&live=true               │
+  │     &offset=now&live=sse&encoding=base64│
   │────────────────────────────────────────>│
   │                                         │
   │ (SSE stream - no history, live only)    │
@@ -656,7 +699,8 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `write.multiple-rapid-bursts` | Multiple bursts of rapid writes are correctly stored and synced        |
 | `updates.read-from-offset`    | GET updates with offset returns updates from that position             |
 | `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                       |
-| `updates.live-polling`        | GET with `live=true` holds connection, receives new updates            |
+| `updates.live-long-poll`      | GET with `live=long-poll` holds connection, receives new updates       |
+| `updates.live-sse`            | GET with `live=sse&encoding=base64` returns SSE stream with updates    |
 | `updates.live-timeout`        | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds |
 | `doc.path-with-slashes`       | Document paths containing forward slashes work correctly               |
 
@@ -665,7 +709,9 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | Test                           | Description                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------- |
 | `awareness.lazy-creation`      | Awareness stream created on first access                                                       |
-| `awareness.offset-now`         | GET with `offset=now&live=true` skips history per protocol                                     |
+| `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                               |
+| `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                     |
+| `awareness.live-sse`           | Awareness with `live=sse&encoding=base64` returns SSE stream                                   |
 | `awareness.write`              | POST to `?awareness=<name>` appends to awareness stream, returns 204 with `Stream-Next-Offset` |
 | `awareness.broadcast`          | POST awareness delivered to SSE subscribers in real-time                                       |
 | `awareness.ttl`                | Awareness stream expires after 1 hour                                                          |
