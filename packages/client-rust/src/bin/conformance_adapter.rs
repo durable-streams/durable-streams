@@ -648,9 +648,14 @@ async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Res
     if let Some(d) = data {
         options = options.data(d);
     }
-    if let Some(ct) = cmd.content_type {
+    let content_type = cmd
+        .content_type
+        .or_else(|| app_state.stream_content_types.get(&path).cloned());
+    if let Some(ct) = content_type {
         stream.set_content_type(ct.clone());
-        options = options.content_type(ct);
+        if data.is_some() {
+            options = options.content_type(ct);
+        }
     }
 
     match stream.close_with(options).await {
