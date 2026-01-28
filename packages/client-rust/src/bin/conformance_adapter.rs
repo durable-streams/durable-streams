@@ -538,7 +538,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                             // We need to return the data to the test runner:
                             // - If valid UTF-8, return as string
                             // - If not valid UTF-8, base64 encode for transport
-                            let (data_str, is_binary) = match String::from_utf8(chunk.data.clone()) {
+                            let (data_str, is_binary) = match String::from_utf8(chunk.data.to_vec()) {
                                 Ok(s) => {
                                     // Valid UTF-8 - validate JSON for JSON streams
                                     if is_json_stream {
