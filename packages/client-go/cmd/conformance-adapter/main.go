@@ -55,6 +55,7 @@ type Command struct {
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
 	MaxChunks       int    `json:"maxChunks,omitempty"`
 	WaitForUpToDate bool   `json:"waitForUpToDate,omitempty"`
+	Encoding        string `json:"encoding,omitempty"` // "base64" for binary SSE
 	// Benchmark fields
 	IterationID string              `json:"iterationId,omitempty"`
 	Operation   *BenchmarkOperation `json:"operation,omitempty"`
@@ -571,6 +572,9 @@ func handleRead(cmd Command) Result {
 	}
 	if len(mergedHeaders) > 0 {
 		opts = append(opts, durablestreams.WithReadHeaders(mergedHeaders))
+	}
+	if cmd.Encoding != "" {
+		opts = append(opts, durablestreams.WithEncoding(cmd.Encoding))
 	}
 
 	it := stream.Read(ctx, opts...)

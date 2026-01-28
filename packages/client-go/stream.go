@@ -26,6 +26,11 @@ const (
 	headerIfMatch        = "If-Match"
 )
 
+// Query parameter names
+const (
+	encodingQueryParam = "encoding"
+)
+
 // Stream represents a durable stream handle.
 // It is a lightweight, reusable object - not a persistent connection.
 //
@@ -499,13 +504,14 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 		cursor:   cfg.cursor,
 		headers:  cfg.headers,
 		timeout:  cfg.timeout,
+		encoding: cfg.encoding,
 		Offset:   cfg.offset,
 		UpToDate: false,
 	}
 }
 
 // buildReadURL constructs the URL for a read request with query parameters.
-func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string) string {
+func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string, encoding string) string {
 	u, err := url.Parse(s.url)
 	if err != nil {
 		return s.url
@@ -531,6 +537,11 @@ func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string) strin
 	// Add cursor for CDN collapsing
 	if cursor != "" {
 		q.Set("cursor", cursor)
+	}
+
+	// Add encoding for SSE with binary streams
+	if encoding != "" && live == LiveModeSSE {
+		q.Set(encodingQueryParam, encoding)
 	}
 
 	u.RawQuery = q.Encode()
