@@ -41,7 +41,8 @@ This document describes the implementation plan for adding base64 encoding suppo
 | Step 3: CI Configuration                 | ✅ Complete |
 | Step 4: TypeScript Server Implementation | ✅ Complete |
 | Step 5: TypeScript Client Implementation | ✅ Complete |
-| Step 6: Client Conformance Tests         | Pending     |
+| Step 6: Client Conformance Tests         | ✅ Complete |
+| Step 7: Encoding Validation Hardening    | Pending     |
 
 ## Implementation Order
 
@@ -73,11 +74,19 @@ Step 5: TypeScript Client Implementation
    ├── Verify: pnpm vitest run --project client
    └── Verify: cd packages/client-conformance-tests && pnpm tsx src/cli.ts --run ts
 
-Step 6: Client Conformance Tests
+Step 6: Client Conformance Tests ✅
    ├── Add encoding field to types
    ├── Write new test cases
    ├── Verify: pnpm build && pnpm typecheck && pnpm lint
    └── Verify: Tests PASS with TypeScript client
+
+Step 7: Encoding Validation Hardening
+   ├── Document in PROTOCOL.md that encoding is only valid with live=sse
+   ├── Add server conformance tests for encoding with non-SSE modes
+   ├── Update TypeScript client to validate encoding requires live='sse'
+   ├── Update Python client to validate encoding requires live='sse'
+   ├── Verify: pnpm build && pnpm typecheck && pnpm lint
+   └── Verify: All conformance tests pass
 ```
 
 ## Step 1: Server Conformance Tests
@@ -166,3 +175,40 @@ Changes to `handleRead()` and `handleSSE()`:
 | client-conformance-tests | `src/adapters/typescript-adapter.ts`       | Pass `encoding`                         |
 | client-conformance-tests | `test-cases/consumer/read-sse.yaml`        | Update existing test                    |
 | client-conformance-tests | `test-cases/consumer/read-sse-base64.yaml` | New test file                           |
+
+## Step 7: Encoding Validation Hardening
+
+**Issue identified during code review:** The `encoding` parameter is only meaningful for SSE mode, but servers currently silently ignore it for catch-up and long-poll modes. This can lead to confusing behavior where users expect base64-encoded data but receive raw bytes.
+
+### 7.1 Protocol Documentation
+
+**File:** `PROTOCOL.md`
+
+Add explicit statement in Section 5.7 that the `encoding` parameter is only valid when `live=sse`. Servers MUST return 400 Bad Request if `encoding` is provided without `live=sse`.
+
+### 7.2 Server Conformance Tests
+
+**File:** `packages/server-conformance-tests/src/index.ts`
+
+**New tests:**
+
+| Test                                                           | Expected Result |
+| -------------------------------------------------------------- | --------------- |
+| `should return 400 for encoding parameter without live mode`   | 400             |
+| `should return 400 for encoding parameter with live=long-poll` | 400             |
+
+### 7.3 Client Validation
+
+**Files to modify:**
+
+| Package   | File                             | Change                                                    |
+| --------- | -------------------------------- | --------------------------------------------------------- |
+| client    | `src/stream-api.ts`              | Throw error if `encoding` specified without `live: 'sse'` |
+| client-py | `src/durable_streams/stream.py`  | Raise error if `encoding` specified without `live='sse'`  |
+| client-py | `src/durable_streams/astream.py` | Raise error if `encoding` specified without `live='sse'`  |
+
+### 7.4 Rationale
+
+- **Fail-fast behavior:** Users get immediate feedback when misconfiguring the API
+- **Consistent contract:** Both client and server enforce the same rules
+- **Protocol compliance:** Aligns with protocol spec that encoding is SSE-specific

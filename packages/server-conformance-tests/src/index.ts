@@ -3768,6 +3768,46 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(400)
     })
 
+    test(`should return 400 for encoding parameter without live mode (catch-up)`, async () => {
+      const streamPath = `/v1/stream/catchup-with-encoding-${Date.now()}`
+
+      // Create stream with binary content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: new Uint8Array([0x01, 0x02, 0x03]),
+      })
+
+      // Catch-up request (no live param) with encoding parameter should fail
+      // encoding is only valid with live=sse per Protocol Section 5.7
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=-1&encoding=base64`,
+        { method: `GET` }
+      )
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should return 400 for encoding parameter with live=long-poll`, async () => {
+      const streamPath = `/v1/stream/longpoll-with-encoding-${Date.now()}`
+
+      // Create stream with binary content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: new Uint8Array([0x01, 0x02, 0x03]),
+      })
+
+      // Long-poll request with encoding parameter should fail
+      // encoding is only valid with live=sse per Protocol Section 5.7
+      const response = await fetch(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll&encoding=base64`,
+        { method: `GET` }
+      )
+
+      expect(response.status).toBe(400)
+    })
+
     test(`should accept encoding=base64 for binary streams and return base64 encoded data`, async () => {
       const streamPath = `/v1/stream/sse-binary-base64-${Date.now()}`
 

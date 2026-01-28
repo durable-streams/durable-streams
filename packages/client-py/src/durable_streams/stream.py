@@ -85,6 +85,14 @@ def stream(
         ...     for item in res.iter_json():
         ...         print(item)
     """
+    # Validate encoding is only used with live='sse' (Protocol Section 5.7)
+    if encoding is not None and live != "sse":
+        from ._errors import SSEEncodingError
+
+        raise SSEEncodingError(
+            "encoding parameter is only valid with live='sse'"
+        )
+
     # Use provided client or create a new one
     own_client = client is None
     http_client = client or httpx.Client(timeout=timeout or 30.0)

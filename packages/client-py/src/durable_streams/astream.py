@@ -204,6 +204,14 @@ def astream(
         ...     async for item in res.iter_json():
         ...         print(item)
     """
+    # Validate encoding is only used with live='sse' (Protocol Section 5.7)
+    if encoding is not None and live != "sse":
+        from ._errors import SSEEncodingError
+
+        raise SSEEncodingError(
+            "encoding parameter is only valid with live='sse'"
+        )
+
     return AsyncStreamSession(
         url,
         offset=offset,

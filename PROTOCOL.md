@@ -618,6 +618,7 @@ If a non-default encoding is requested (i.e., the request includes `encoding` an
 
 - `encoding`
   - Controls how stream bytes are represented in SSE `data` events when the stream's configured `content-type` is not compatible with native SSE delivery.
+  - **The `encoding` parameter is only valid when `live=sse`.** If `encoding` is provided without `live=sse` (i.e., in catch-up mode or with `live=long-poll`), servers **MUST** return `400 Bad Request`. Clients **SHOULD** validate this constraint locally and **MAY** reject the request with an error before sending it to the server.
   - When the stream's configured `content-type` is neither `text/*` nor `application/json`, clients **MUST** provide `encoding`. If `encoding` is omitted in this case, servers **MUST** return `400 Bad Request`. Clients **SHOULD** validate that `encoding` is provided when requesting SSE for streams with non-text content types and **MAY** reject the request locally with an error before sending it to the server.
   - Supported values are extensible. Implementations that support `encoding` **MUST** support `encoding=base64`.
     - Implementations **MAY** support additional values (e.g., `base64url`) as an extension.
@@ -627,7 +628,7 @@ If a non-default encoding is requested (i.e., the request includes `encoding` an
 #### Response Codes
 
 - `200 OK`: Streaming body (SSE format)
-- `400 Bad Request`: Content type incompatible with SSE (including missing required `encoding`) or invalid parameters
+- `400 Bad Request`: Content type incompatible with SSE, missing required `encoding`, `encoding` provided without `live=sse`, or other invalid parameters
 - `404 Not Found`: Stream does not exist
 - `429 Too Many Requests`: Rate limit exceeded
 
