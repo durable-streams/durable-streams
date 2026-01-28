@@ -292,6 +292,10 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
         stream.set_content_type(ct.clone());
     }
 
+    if let Some(ct) = app_state.stream_content_types.get(&path) {
+        stream.set_content_type(ct.clone());
+    }
+
     let content_type = cmd.content_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
     // Check if stream already exists
@@ -353,7 +357,7 @@ async fn handle_connect(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     match stream.head().await {
         Ok(meta) => {
