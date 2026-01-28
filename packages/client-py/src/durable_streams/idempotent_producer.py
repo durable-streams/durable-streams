@@ -17,8 +17,8 @@ from typing import Any
 
 import httpx
 
-from durable_streams._errors import DurableStreamError, FetchError, StreamClosedError
 from durable_streams._types import Offset, STREAM_CLOSED_HEADER
+from durable_streams._errors import DurableStreamError, FetchError, StreamClosedError
 
 # Producer header constants
 PRODUCER_ID_HEADER = "Producer-Id"
@@ -388,7 +388,7 @@ class IdempotentProducer:
         else:
             if is_json:
                 json_str = data.decode("utf-8") if isinstance(data, bytes) else data
-                body = f"[{json_str}]".encode("utf-8")
+                body = f"[{json_str}]".encode()
             else:
                 body = data if isinstance(data, bytes) else data.encode("utf-8")
 
