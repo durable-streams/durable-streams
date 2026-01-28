@@ -3,6 +3,7 @@
 use crate::error::StreamError;
 use crate::stream::{DurableStream, HEADER_STREAM_CURSOR, HEADER_STREAM_OFFSET, HEADER_STREAM_UP_TO_DATE};
 use crate::types::{LiveMode, Offset};
+use base64::Engine;
 use bytes::Bytes;
 use std::time::Duration;
 
@@ -56,6 +57,7 @@ pub struct ReadBuilder {
     timeout: Duration,
     headers: Vec<(String, String)>,
     cursor: Option<String>,
+    encoding: Option<String>,
 }
 
 impl ReadBuilder {
@@ -67,6 +69,7 @@ impl ReadBuilder {
             timeout: Duration::from_secs(30),
             headers: Vec::new(),
             cursor: None,
+            encoding: None,
         }
     }
 
@@ -108,22 +111,52 @@ impl ReadBuilder {
         self
     }
 
+    /// Set the encoding for SSE mode with binary streams.
+    ///
+    /// Per Protocol Section 5.7, the encoding parameter is only valid with `live=sse`.
+    /// Currently only "base64" is supported.
+    ///
+    /// # Example
+    /// ```ignore
+    /// stream.read()
+    ///     .live(LiveMode::Sse)
+    ///     .encoding("base64")
+    ///     .build()
+    /// ```
+    pub fn encoding(mut self, encoding: impl Into<String>) -> Self {
+        self.encoding = Some(encoding.into());
+        self
+    }
+
     /// Build the ChunkIterator.
     ///
     /// No network request is made until `next_chunk()` is called.
-    pub fn build(self) -> ChunkIterator {
-        ChunkIterator {
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(StreamError::BadRequest)` if encoding is specified without `LiveMode::Sse`,
+    /// per Protocol Section 5.7.
+    pub fn build(self) -> Result<ChunkIterator, StreamError> {
+        // Validate encoding is only used with live=sse (Protocol Section 5.7)
+        if self.encoding.is_some() && self.live != LiveMode::Sse {
+            return Err(StreamError::BadRequest {
+                message: "encoding parameter is only valid with live=sse".to_string(),
+            });
+        }
+
+        Ok(ChunkIterator {
             stream: self.stream,
             offset: self.offset,
             live: self.live,
             timeout: self.timeout,
             headers: self.headers,
             cursor: self.cursor,
+            encoding: self.encoding,
             up_to_date: false,
             closed: false,
             done: false,
             sse_state: None,
-        }
+        })
     }
 }
 
@@ -135,6 +168,7 @@ pub struct ChunkIterator {
     timeout: Duration,
     headers: Vec<(String, String)>,
     cursor: Option<String>,
+    encoding: Option<String>,
     up_to_date: bool,
     closed: bool,
     done: bool,
@@ -196,7 +230,7 @@ impl ChunkIterator {
     async fn next_http(&mut self, live_param: Option<&str>) -> Result<Option<Chunk>, StreamError> {
         let url = self
             .stream
-            .build_read_url(&self.offset, live_param, self.cursor.as_deref());
+            .build_read_url(&self.offset, live_param, self.cursor.as_deref(), None);
 
         let mut req = self.stream.client.inner.get(&url);
 
@@ -344,7 +378,7 @@ impl ChunkIterator {
         // Establish SSE connection
         let url = self
             .stream
-            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref());
+            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref(), self.encoding.as_deref());
 
         let mut req = self
             .stream
@@ -488,9 +522,41 @@ impl ChunkIterator {
                                 }
                             }
                             Some("data") | Some("message") | None => {
-                                // Data event - return immediately
+                                // Data event - decode base64 if encoding is set
+                                let chunk_data = if self.encoding.as_deref() == Some("base64") {
+                                    // Per protocol: remove \n and \r before decoding
+                                    let cleaned: String = data.chars()
+                                        .filter(|c| *c != '\n' && *c != '\r')
+                                        .collect();
+
+                                    // Empty string is valid
+                                    if cleaned.is_empty() {
+                                        Bytes::new()
+                                    } else {
+                                        // Validate length is multiple of 4
+                                        if cleaned.len() % 4 != 0 {
+                                            return Err(StreamError::ParseError(format!(
+                                                "Invalid base64 data: length {} is not a multiple of 4",
+                                                cleaned.len()
+                                            )));
+                                        }
+
+                                        match base64::engine::general_purpose::STANDARD.decode(&cleaned) {
+                                            Ok(decoded) => Bytes::from(decoded),
+                                            Err(e) => {
+                                                return Err(StreamError::ParseError(format!(
+                                                    "Failed to decode base64 data: {}",
+                                                    e
+                                                )));
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    Bytes::from(data)
+                                };
+
                                 return Ok(Some(Chunk {
-                                    data: Bytes::from(data),
+                                    data: chunk_data,
                                     next_offset: self.offset.clone(),
                                     up_to_date: self.up_to_date,
                                     cursor: self.cursor.clone(),

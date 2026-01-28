@@ -47,6 +47,7 @@ struct Command {
     live: Option<Value>,
     max_chunks: Option<usize>,
     wait_for_up_to_date: Option<bool>,
+    encoding: Option<String>,
     // Benchmark fields
     iteration_id: Option<String>,
     operation: Option<BenchmarkOperation>,
@@ -486,6 +487,11 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         builder = builder.offset(Offset::parse(offset));
     }
 
+    // Add encoding for SSE with binary streams
+    if let Some(encoding) = &cmd.encoding {
+        builder = builder.encoding(encoding.clone());
+    }
+
     // Merge dynamic headers with command headers
     for (k, v) in &headers_sent {
         builder = builder.header(k.clone(), v.clone());
@@ -504,7 +510,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let mut up_to_date = false;
     let mut status = 200u16;
 
-    match Ok(builder.build()) {
+    match builder.build() {
         Ok(mut iter) => {
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -528,22 +534,30 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                         }
 
                         if !chunk.data.is_empty() {
-                            let data_str = String::from_utf8_lossy(&chunk.data).to_string();
+                            // For binary data (when using encoding=base64), return as base64
+                            let (data_str, is_binary) = if cmd.encoding.as_deref() == Some("base64") {
+                                // Re-encode as base64 for the test runner
+                                let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
+                                (encoded, true)
+                            } else {
+                                let data_str = String::from_utf8_lossy(&chunk.data).to_string();
 
-                            // Validate JSON for JSON streams
-                            if is_json_stream {
-                                if let Err(e) = serde_json::from_str::<Value>(&data_str) {
-                                    return error_result(
-                                        "read",
-                                        "PARSE_ERROR",
-                                        &format!("Invalid JSON in stream response: {}", e),
-                                    );
+                                // Validate JSON for JSON streams
+                                if is_json_stream {
+                                    if let Err(e) = serde_json::from_str::<Value>(&data_str) {
+                                        return error_result(
+                                            "read",
+                                            "PARSE_ERROR",
+                                            &format!("Invalid JSON in stream response: {}", e),
+                                        );
+                                    }
                                 }
-                            }
+                                (data_str, false)
+                            };
 
                             chunks_result.push(ReadChunk {
                                 data: data_str,
-                                binary: None,
+                                binary: if is_binary { Some(true) } else { None },
                                 offset: Some(chunk.next_offset.to_string()),
                             });
                         }
@@ -1067,8 +1081,9 @@ async fn benchmark_read(app_state: &AppState, op: &BenchmarkOperation) -> (i64, 
     }
 
     let start = Instant::now();
-    let mut iter = builder.build();
-    let _ = iter.next_chunk().await;
+    if let Ok(mut iter) = builder.build() {
+        let _ = iter.next_chunk().await;
+    }
     (start.elapsed().as_nanos() as i64, None)
 }
 
@@ -1102,11 +1117,13 @@ async fn benchmark_roundtrip(app_state: &AppState, op: &BenchmarkOperation) -> (
                 _ => LiveMode::LongPoll,
             };
 
-            let mut iter = stream.read()
+            if let Ok(mut iter) = stream.read()
                 .offset(Offset::parse(&prev_offset))
                 .live(live_mode)
-                .build();
-            let _ = iter.next_chunk().await;
+                .build()
+            {
+                let _ = iter.next_chunk().await;
+            }
         }
     }
 
@@ -1179,8 +1196,7 @@ async fn benchmark_throughput_read(app_state: &AppState, op: &BenchmarkOperation
     let mut total_bytes = 0;
     let mut count = 0;
 
-    let mut iter = stream.read().offset(Offset::Beginning).build();
-    {
+    if let Ok(mut iter) = stream.read().offset(Offset::Beginning).build() {
         loop {
             match iter.next_chunk().await {
                 Ok(Some(chunk)) => {
