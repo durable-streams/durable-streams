@@ -1162,9 +1162,7 @@ defmodule DurableStreams.ConformanceAdapter do
         {"producer-id", producer_id},
         {"producer-epoch", to_string(epoch)},
         {"producer-seq", to_string(seq)}
-      ]
-      |> maybe_add_header("content-type", if(data, do: content_type, else: nil))
-      |> add_extra_headers(stream.client.default_headers)
+      ] ++ if(data, do: [{"content-type", content_type}], else: [])
 
     body =
       cond do
