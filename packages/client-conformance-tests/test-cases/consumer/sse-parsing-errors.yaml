@@ -17,6 +17,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "test-data"
@@ -44,6 +45,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "data-before-error"
@@ -71,6 +73,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "actual-data"
@@ -98,6 +101,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "expected-data"

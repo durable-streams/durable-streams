@@ -158,6 +158,8 @@ export interface ReadCommand {
   offset?: string
   /** Live mode: false for catch-up only, true for auto-select, "long-poll" or "sse" for explicit */
   live?: false | true | `long-poll` | `sse`
+  /** Encoding for SSE data events (required for binary streams in SSE mode) */
+  encoding?: `base64`
   /** Timeout for long-poll in milliseconds */
   timeoutMs?: number
   /** Maximum number of chunks to read (for testing) */

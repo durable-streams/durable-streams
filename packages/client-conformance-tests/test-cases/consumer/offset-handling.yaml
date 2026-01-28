@@ -121,6 +121,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
     operations:
       # SSE with offset=now on empty stream
       - action: read
@@ -217,6 +218,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "historicalsse"
@@ -366,6 +368,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "old"

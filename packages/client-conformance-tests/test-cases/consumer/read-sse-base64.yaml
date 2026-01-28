@@ -1,0 +1,211 @@
+id: consumer-sse-base64
+name: SSE Base64 Encoding
+description: Tests for base64 encoding of binary data in SSE mode (Protocol Section 5.7)
+category: consumer
+tags:
+  - sse
+  - base64
+  - binary
+  - encoding
+requires:
+  - sse
+
+tests:
+  - id: sse-base64-basic
+    name: SSE decodes base64 binary data
+    description: Client should decode base64-encoded SSE data events for binary streams
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "SGVsbG8gV29ybGQ=" # "Hello World" in base64
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-empty-payload
+    name: SSE handles empty base64 payload
+    description: Empty binary data should be encoded as empty base64 and decoded correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "" # empty payload
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+
+  - id: sse-base64-special-bytes
+    name: SSE handles special binary bytes
+    description: Binary data with null bytes, 0xFF, and other special values should round-trip correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AP/+/fw=" # bytes: 0x00, 0xFF, 0xFE, 0xFD, 0xFC
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-large-payload
+    name: SSE handles large base64 payload
+    description: Large binary payloads should be encoded and decoded correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        # 1KB of repeated pattern (base64 of 0x00-0xFF repeated ~4 times)
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-multiple-chunks
+    name: SSE handles multiple base64 chunks
+    description: Multiple binary appends should each be decoded correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQID" # bytes: 1, 2, 3
+      - action: append
+        path: ${streamPath}
+        binaryData: "BAUG" # bytes: 4, 5, 6
+      - action: append
+        path: ${streamPath}
+        binaryData: "BwgJ" # bytes: 7, 8, 9
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-resume-from-offset
+    name: SSE base64 resumes from offset correctly
+    description: Reading from a specific offset should work with base64 encoding
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAAA" # skip this
+        expect:
+          storeOffsetAs: skipOffset
+      - action: append
+        path: ${streamPath}
+        binaryData: "//8=" # include this (0xFF, 0xFF)
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${skipOffset}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-up-to-date
+    name: SSE base64 signals up-to-date
+    description: SSE with base64 encoding should signal when caught up to head
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "AQIDBA==" # bytes: 1, 2, 3, 4
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          minChunks: 1
+
+  - id: sse-base64-padding-variations
+    name: SSE handles base64 padding variations
+    description: Base64 with different padding (=, ==, no padding) should decode correctly
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        binaryData: "YQ==" # 'a' - 2 padding chars
+      - action: append
+        path: ${streamPath}
+        binaryData: "YWI=" # 'ab' - 1 padding char
+      - action: append
+        path: ${streamPath}
+        binaryData: "YWJj" # 'abc' - no padding
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
+
+  - id: sse-base64-all-byte-values
+    name: SSE handles all byte values 0-255
+    description: All possible byte values should round-trip correctly through base64
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+      - action: append
+        path: ${streamPath}
+        # All bytes 0x00-0xFF encoded as base64
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        encoding: base64
+        waitForUpToDate: true
+        expect:
+          minChunks: 1
+          upToDate: true
