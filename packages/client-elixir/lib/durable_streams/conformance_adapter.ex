@@ -6,7 +6,7 @@ defmodule DurableStreams.ConformanceAdapter do
   """
 
   require Logger
-  alias DurableStreams.{Client, Stream, Writer, JSON, HTTP}
+  alias DurableStreams.{Client, Stream, Writer, JSON}
 
   @client_name "durable-streams-elixir"
   @client_version "0.1.0"
@@ -555,10 +555,9 @@ defmodule DurableStreams.ConformanceAdapter do
     path = cmd["path"]
     producer_id = cmd["producerId"]
 
-    new_state =
-      state
-      |> drop_producer_epochs(path, producer_id)
-      |> update_in([:producer_stream_closed], &Map.delete(&1, {path, producer_id}))
+    base_state = drop_producer_epochs(state, path, producer_id)
+    updated_closed = Map.delete(base_state.producer_stream_closed, {path, producer_id})
+    new_state = %{base_state | producer_stream_closed: updated_closed}
 
     result = %{
       "type" => "idempotent-detach",
@@ -1026,10 +1025,9 @@ defmodule DurableStreams.ConformanceAdapter do
 
     case Stream.append(stream, data, opts) do
       {:ok, _result} ->
-        new_state =
-          state
-          |> drop_producer_epochs(path, producer_id)
-          |> put_in([:producer_next_seq, {path, producer_id, epoch}], seq + 1)
+        base_state = drop_producer_epochs(state, path, producer_id)
+        updated_next_seq = Map.put(base_state.producer_next_seq, {path, producer_id, epoch}, seq + 1)
+        new_state = %{base_state | producer_next_seq: updated_next_seq}
 
         result = %{
           "type" => "idempotent-append",
@@ -1177,11 +1175,14 @@ defmodule DurableStreams.ConformanceAdapter do
 
     case Stream.append(stream, body, opts) do
       {:ok, append_result} ->
-        new_state =
-          state
-          |> drop_producer_epochs(path, producer_id)
-          |> put_in([:producer_next_seq, {path, producer_id, epoch}], seq + 1)
-          |> put_in([:producer_stream_closed, {path, producer_id}], true)
+        base_state = drop_producer_epochs(state, path, producer_id)
+        updated_next_seq = Map.put(base_state.producer_next_seq, {path, producer_id, epoch}, seq + 1)
+        updated_closed = Map.put(base_state.producer_stream_closed, {path, producer_id}, true)
+        new_state = %{
+          base_state
+          | producer_next_seq: updated_next_seq,
+            producer_stream_closed: updated_closed
+        }
 
         result = %{
           "type" => "idempotent-producer-close",
