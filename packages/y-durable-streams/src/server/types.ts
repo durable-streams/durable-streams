@@ -6,40 +6,6 @@
  */
 
 /**
- * Index document for a Yjs document.
- * This is the main entry point for syncing - clients fetch this first
- * to discover where to read snapshots and updates.
- */
-export interface YjsIndex {
-  /**
-   * The snapshot stream ID, or null if no snapshot exists yet.
-   * Format: "snapshots/{uuid}" for the snapshot stream path suffix.
-   */
-  snapshot_stream: string | null
-
-  /**
-   * The updates stream ID where new updates are written.
-   * Format: "updates-{number}" e.g., "updates-001".
-   */
-  updates_stream: string
-
-  /**
-   * The offset to start reading updates from.
-   * "-1" means read from the beginning of the updates stream.
-   * After compaction, this is the full padded offset string from the server.
-   */
-  update_offset: string
-}
-
-/**
- * Response from writing an update to a document.
- */
-export interface YjsWriteResponse {
-  /** The offset assigned to this update in the updates stream */
-  offset: string
-}
-
-/**
  * Configuration options for the Yjs server.
  */
 export interface YjsServerOptions {
@@ -76,8 +42,11 @@ export interface YjsServerOptions {
  * Internal state for tracking document metadata.
  */
 export interface YjsDocumentState {
-  /** Current index for the document */
-  index: YjsIndex
+  /**
+   * Current snapshot offset, or null if no snapshot exists yet.
+   * When set, the snapshot is available at ?offset={snapshotOffset}_snapshot
+   */
+  snapshotOffset: string | null
 
   /** Cumulative size of updates since last compaction (bytes) */
   updatesSizeBytes: number
@@ -93,20 +62,26 @@ export interface YjsDocumentState {
  * Result from a compaction operation.
  */
 export interface CompactionResult {
-  /** The new snapshot stream ID */
-  newSnapshotStream: string
-
-  /** The updates stream ID (unchanged - we don't rotate streams) */
-  newUpdatesStream: string
+  /** The offset at which the snapshot was taken */
+  snapshotOffset: string
 
   /** Size of the new snapshot in bytes */
   snapshotSizeBytes: number
 
-  /** Old snapshot stream ID (to be deleted), or null if first compaction */
-  oldSnapshotStream: string | null
+  /** Previous snapshot offset (to be deleted), or null if first compaction */
+  oldSnapshotOffset: string | null
+}
 
-  /** Old updates stream ID, or null (we don't delete the updates stream) */
-  oldUpdatesStream: string | null
+/**
+ * Index entry stored in the internal index stream.
+ * Each compaction appends a new entry with the current snapshot offset.
+ */
+export interface YjsIndexEntry {
+  /** The snapshot offset (used to construct the snapshot key) */
+  snapshotOffset: string
+
+  /** Timestamp when the snapshot was created */
+  createdAt: number
 }
 
 /**
@@ -116,63 +91,162 @@ export interface YjsDocument {
   /** Service identifier */
   service: string
 
-  /** Document identifier */
-  docId: string
+  /** Document path (can include forward slashes) */
+  docPath: string
 
   /** Current document state */
   state: YjsDocumentState
 }
 
 /**
- * Headers used by the Yjs protocol layer.
+ * Headers used by the Yjs protocol layer (lowercase per protocol spec).
  */
 export const YJS_HEADERS = {
   /** Content offset for the next read */
-  STREAM_NEXT_OFFSET: `Stream-Next-Offset`,
+  STREAM_NEXT_OFFSET: `stream-next-offset`,
 
   /** Whether the client is caught up */
-  STREAM_UP_TO_DATE: `Stream-Up-To-Date`,
+  STREAM_UP_TO_DATE: `stream-up-to-date`,
+
+  /** Cursor for CDN collapsing */
+  STREAM_CURSOR: `stream-cursor`,
 } as const
 
 /**
  * Stream path builders for consistent path generation.
+ * All operations use the same document URL with query parameters.
+ *
+ * Internal streams use `.` prefixed segments (e.g., `.updates`, `.index`, `.snapshots`)
+ * which are safe from user collisions since document paths reject `.` characters.
  */
 export const YjsStreamPaths = {
   /**
    * Get the base path for a document.
+   * docPath can include forward slashes (e.g., "project/chapter-1").
    */
-  docBase(service: string, docId: string): string {
-    return `/v1/stream/yjs/${service}/docs/${docId}`
+  doc(service: string, docPath: string): string {
+    return `/v1/yjs/${service}/docs/${docPath}`
   },
 
   /**
-   * Get the path for the index stream.
+   * Get the underlying DS stream path for document updates.
+   * Uses `.updates` suffix to avoid collisions with user document paths.
    */
-  index(service: string, docId: string): string {
-    return `${this.docBase(service, docId)}/index`
+  dsStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.updates`
   },
 
   /**
-   * Get the path for an updates stream.
+   * Get the internal index stream path for a document.
+   * This stream stores snapshot offsets and is used internally by the server.
+   * Uses `.index` suffix to avoid collisions with user document paths.
    */
-  updates(service: string, docId: string, streamId: string): string {
-    return `${this.docBase(service, docId)}/updates/${streamId}`
+  indexStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.index`
   },
 
   /**
-   * Get the path for a snapshot stream.
+   * Get the snapshot stream path for a given offset.
+   * Uses `.snapshots` prefix to avoid collisions with user document paths.
    */
-  snapshot(service: string, docId: string, snapshotId: string): string {
-    return `${this.docBase(service, docId)}/snapshots/${snapshotId}`
+  snapshotStream(
+    service: string,
+    docPath: string,
+    snapshotKey: string
+  ): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.snapshots/${snapshotKey}`
   },
 
   /**
-   * Get the path for an awareness stream.
-   * Supports optional suffix for multiple awareness streams per document.
-   * @param suffix Optional suffix like "-admin" for /awareness-admin
+   * Get the awareness stream path for a given name.
+   * Uses `.awareness` prefix to avoid collisions with user document paths.
    */
-  awareness(service: string, docId: string, suffix?: string): string {
-    const base = `${this.docBase(service, docId)}/awareness`
-    return suffix ? `${base}${suffix}` : base
+  awarenessStream(service: string, docPath: string, name: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/${name}`
+  },
+
+  /**
+   * Get the snapshot storage key for a given offset.
+   */
+  snapshotKey(offset: string): string {
+    return `${offset}_snapshot`
+  },
+
+  /**
+   * Parse a snapshot offset from a snapshot key (e.g., "4782_snapshot" -> "4782").
+   * Returns null if not a valid snapshot key.
+   */
+  parseSnapshotOffset(key: string): string | null {
+    const match = key.match(/^(.+)_snapshot$/)
+    return match ? match[1]! : null
+  },
+} as const
+
+/**
+ * Error codes for Yjs protocol errors.
+ */
+export type YjsErrorCode =
+  | `INVALID_REQUEST`
+  | `UNAUTHORIZED`
+  | `SNAPSHOT_NOT_FOUND`
+  | `DOCUMENT_NOT_FOUND`
+  | `OFFSET_EXPIRED`
+  | `RATE_LIMITED`
+
+/**
+ * Error response format.
+ */
+export interface YjsError {
+  error: {
+    code: YjsErrorCode
+    message: string
+  }
+}
+
+/**
+ * Path normalization utilities.
+ */
+export const PathUtils = {
+  /**
+   * Validate and normalize a document path.
+   * - URL-decodes the path first
+   * - Rejects paths with ".." or "." segments
+   * - Collapses double slashes
+   * - Returns null if path is invalid
+   */
+  normalize(path: string): string | null {
+    // URL-decode the path to catch encoded path traversal attempts
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(path)
+    } catch {
+      return null // Invalid URL encoding
+    }
+
+    // Collapse double slashes
+    const normalized = decoded.replace(/\/+/g, `/`)
+
+    // Remove leading/trailing slashes for segment analysis
+    const trimmed = normalized.replace(/^\/|\/$/g, ``)
+
+    // Check for invalid segments
+    const segments = trimmed.split(`/`)
+    for (const segment of segments) {
+      if (segment === `..` || segment === `.`) {
+        return null
+      }
+    }
+
+    // Validate characters: [a-zA-Z0-9_-/]
+    if (!/^[a-zA-Z0-9_\-/]*$/.test(normalized)) {
+      return null
+    }
+
+    // Check max length
+    if (normalized.length > 256) {
+      return null
+    }
+
+    return normalized
   },
 } as const

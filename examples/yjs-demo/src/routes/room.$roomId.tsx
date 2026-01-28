@@ -183,11 +183,20 @@ function CollaborativeEditor() {
   const editorContainerRef = useRef<HTMLDivElement>(null)
   const editorViewRef = useRef<EditorView | null>(null)
   const [_editorReady, setEditorReady] = useState(false)
+  // Track if we've ever synced - once synced, don't show loading again
+  const [hasEverSynced, setHasEverSynced] = useState(false)
+
+  // Track initial sync
+  useEffect(() => {
+    if (isSynced && !hasEverSynced) {
+      setHasEverSynced(true)
+    }
+  }, [isSynced, hasEverSynced])
 
   // Only create editor after synced (not just connected)
   useEffect(() => {
     if (!editorContainerRef.current) return
-    if (!isSynced) return // Wait until synced with server
+    if (!hasEverSynced) return // Wait until initial sync complete
     if (editorViewRef.current) return // Already created
 
     // Get Y.Text for document content
@@ -253,7 +262,7 @@ function CollaborativeEditor() {
         setEditorReady(false)
       }
     }
-  }, [doc, awareness, isSynced])
+  }, [doc, awareness, hasEverSynced])
 
   if (error) {
     return (
@@ -274,7 +283,8 @@ function CollaborativeEditor() {
     )
   }
 
-  const showLoading = isLoading || !isSynced
+  // Only show loading during initial sync, not on every update
+  const showLoading = isLoading || !hasEverSynced
 
   return (
     <div className="editor-container">
@@ -282,10 +292,12 @@ function CollaborativeEditor() {
         <div className="editor-status">
           {isLoading ? (
             <span className="status loading">Loading...</span>
+          ) : !hasEverSynced ? (
+            <span className="status connecting">Connecting...</span>
           ) : isSynced ? (
             <span className="status synced">Synced</span>
           ) : (
-            <span className="status connecting">Connecting...</span>
+            <span className="status syncing">Syncing...</span>
           )}
         </div>
         <div className="editor-toolbar">

@@ -8,12 +8,11 @@ export { YjsServer } from "./yjs-server"
 export { Compactor } from "./compaction"
 
 export type {
-  YjsIndex,
-  YjsWriteResponse,
   YjsServerOptions,
   YjsDocumentState,
   CompactionResult,
   YjsDocument,
+  YjsIndexEntry,
 } from "./types"
 
 export { YjsStreamPaths, YJS_HEADERS } from "./types"
