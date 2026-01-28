@@ -333,8 +333,8 @@ def handle_read(cmd)
 
   begin
     if live == false
-      # Catch-up mode
-      reader = stream.read(offset: offset, live: false, format: format)
+      # Catch-up mode - pass encoding to trigger validation (should fail if encoding provided)
+      reader = stream.read(offset: offset, live: false, format: format, encoding: encoding)
 
       if is_json
         reader.each_batch do |batch|
@@ -403,8 +403,8 @@ def handle_read(cmd)
       status = reader.status || 200
       reader.close
     else
-      # Long-poll mode
-      reader = stream.read(offset: offset, live: :long_poll, format: format)
+      # Long-poll mode - pass encoding to trigger validation (should fail if encoding provided)
+      reader = stream.read(offset: offset, live: :long_poll, format: format, encoding: encoding)
       chunk_count = 0
 
       Timeout.timeout(timeout_ms / 1000.0) do
