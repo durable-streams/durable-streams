@@ -57,16 +57,16 @@ Yjs is a CRDT library for building collaborative applications that requires infr
 The Durable Streams Yjs Protocol extends the Durable Streams Protocol [PROTOCOL] by providing Yjs-specific semantics over HTTP. Instead of WebSocket broadcast, clients:
 
 1. POST updates to an HTTP endpoint (appended to stream)
-2. GET updates with long-polling (cursor-based, resumable)
+2. GET updates via long-poll or SSE (cursor-based, resumable)
 3. Reconnect from last offset on disconnect
 
 This approach works with standard HTTP infrastructure (load balancers, CDNs, edge networks) without WebSocket complexity.
 
 The protocol is designed to be:
 
-- **HTTP-native**: Uses standard HTTP methods with long-polling for real-time updates
+- **HTTP-native**: Uses standard HTTP methods with long-poll or SSE for real-time updates
 - **Transparent compaction**: Server automatically compacts documents when updates exceed size thresholds
-- **Awareness-enabled**: Supports ephemeral presence streams via SSE on the same URL path
+- **Awareness-enabled**: Supports ephemeral presence streams on the same URL path
 - **Resumable**: Clients can reconnect from any offset without data loss
 
 ## 2. Terminology
@@ -81,7 +81,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Snapshot URL**: A URL with offset format `{offset}_snapshot` where `{offset}` is the stream position when the snapshot was taken.
 
-**Awareness Stream**: An ephemeral stream for real-time presence data (cursors, selections, user status) accessed via the `awareness` query parameter. Awareness streams use SSE transport.
+**Awareness Stream**: An ephemeral stream for real-time presence data (cursors, selections, user status) accessed via the `awareness` query parameter.
 
 **Update**: A Yjs binary update representing changes to a document. Updates are appended to the document stream.
 
@@ -91,9 +91,9 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 The Yjs Protocol operates on durable streams as specified in [PROTOCOL]. Each Yjs document is a single stream at a URL path, with the following Yjs-specific behaviors:
 
-1. **Document updates** are appended via POST and read via GET with long-polling
+1. **Document updates** are appended via POST and read via GET
 2. **Snapshots** provide compacted document state, discovered via `offset=snapshot`
-3. **Awareness** uses SSE streams accessed via the `awareness` query parameter
+3. **Awareness** streams are accessed via the `awareness` query parameter
 4. **Compaction** happens automatically when updates exceed a size threshold
 
 The protocol uses `Content-Type: application/octet-stream` for all document operations. Updates are binary Yjs data, and read responses use lib0 framing (Section 7).
@@ -181,8 +181,6 @@ Cache-Control: private, max-age=5
 When a snapshot exists, the server **MUST** redirect to the snapshot URL. When no snapshot exists, the server **MUST** redirect to `offset=-1` which uses standard Durable Streams behavior (read from beginning).
 
 Both responses **SHOULD** include `Cache-Control: private, max-age=5` to reduce load during rapid reconnects while ensuring clients receive reasonably fresh snapshot state.
-
-**Note:** Clients **MAY** use `offset=-1` directly to read from the beginning of the stream without snapshot discovery. This bypasses any existing snapshot and reads all updates from the start.
 
 ### 5.2. Read Snapshot
 
@@ -294,7 +292,7 @@ The `Stream-Next-Offset` header contains the new tail offset after the append.
 
 ### 5.5. Awareness Subscribe
 
-Awareness streams support both long-poll and SSE transports, using the same `live` parameter as document streams. SSE is often preferred for awareness due to its lower latency for rapid cursor updates.
+Awareness streams support both long-poll and SSE transports, using the same `live` parameter as document streams.
 
 Awareness is accessed via the `awareness` query parameter on the same document URL:
 
@@ -448,7 +446,7 @@ Binary framing minimizes per-update overhead. Transport selection affects latenc
 | Long-poll   | Higher (polling interval)    | Lower (raw bytes)        | Bandwidth-constrained, infrequent updates   |
 | SSE         | Lower (push-based)           | ~33% higher (base64)     | Real-time collaboration, frequent updates   |
 
-For typical collaborative editing with frequent small updates, SSE often provides better perceived responsiveness despite the bandwidth overhead. Developers **MAY** choose the transport that best fits their application's constraints.
+Developers **MAY** choose the transport that best fits their application's constraints.
 
 ## 8. Compaction
 
@@ -508,10 +506,10 @@ Client                                    Server
   │ Apply snapshot to Y.Doc                 │
   │                                         │
   │ GET /docs/my-doc?offset=4783            │
-  │     &live=long-poll                     │
+  │     &live=<long-poll|sse>               │
   │────────────────────────────────────────>│
   │                                         │
-  │ (long-poll for new updates)             │
+  │ (subscribe to new updates)              │
 ```
 
 For a new document (no snapshot):
@@ -534,7 +532,7 @@ Client                                    Server
   │<────────────────────────────────────────│
   │                                         │
   │ GET /docs/my-doc?offset=<offset>        │
-  │     &live=long-poll                     │
+  │     &live=<long-poll|sse>               │
   │────────────────────────────────────────>│
 ```
 
@@ -553,7 +551,7 @@ Client                                    Server
   │ Stream-Next-Offset: 4783                │
   │<────────────────────────────────────────│
   │                                         │
-  │ (Other clients receive via long-poll)   │
+  │ (Other clients receive via live stream) │
 ```
 
 ### 9.3. Awareness
@@ -562,10 +560,10 @@ Client                                    Server
 Client                                    Server
   │                                         │
   │ GET /docs/my-doc?awareness=default      │
-  │     &offset=now&live=sse                │
+  │     &offset=now&live=<long-poll|sse>    │
   │────────────────────────────────────────>│
   │                                         │
-  │ (SSE stream - no history, live only)    │
+  │ (live stream - no history, live only)   │
   │                                         │
   │ POST /docs/my-doc?awareness=default     │
   │ <awareness update>                      │
@@ -574,7 +572,7 @@ Client                                    Server
   │ 204 No Content                          │
   │ Stream-Next-Offset: <offset>            │
   │                                         │
-  │ (Broadcast to other SSE subscribers)    │
+  │ (Broadcast to other subscribers)        │
 ```
 
 ## 10. Error Handling
