@@ -275,6 +275,7 @@ async function executeOperation(
           expiresAt: op.expiresAt,
           headers: op.headers,
           closed: op.closed,
+          data: op.data,
         },
         commandTimeout
       )

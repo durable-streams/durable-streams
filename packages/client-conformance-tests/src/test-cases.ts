@@ -94,6 +94,8 @@ export interface CreateOperation {
   headers?: Record<string, string>
   /** Create stream in closed state */
   closed?: boolean
+  /** Initial body data to include on creation */
+  data?: string
   /** Expected result */
   expect?: CreateExpectation
 }

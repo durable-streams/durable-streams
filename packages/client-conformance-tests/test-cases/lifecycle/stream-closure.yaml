@@ -137,10 +137,29 @@ tests:
           streamClosed: true
 
   - id: create-closed-stream-with-body
-    name: Create closed stream with initial content
-    description: Client should be able to create and close a stream with body content
+    name: Create closed stream with initial content (one request)
+    description: Client should be able to create a closed stream with body in a single request
     operations:
-      # Create stream and immediately close with body (atomic append + close)
+      # Create stream with data + closed in one request
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        data: "initial-content"
+        closed: true
+        expect:
+          status: 201
+      # Verify the content is preserved and stream is closed
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "initial-content"
+          streamClosed: true
+
+  - id: create-then-close-with-body
+    name: Create stream then close with final content (two requests)
+    description: Client should be able to create a stream, then close it with final content
+    operations:
       - action: create
         as: streamPath
         contentType: text/plain
@@ -148,7 +167,7 @@ tests:
           status: 201
       - action: close
         path: ${streamPath}
-        data: "initial-content"
+        data: "final-content"
         expect:
           status: 200
       # Verify the content is preserved and stream is closed
@@ -156,7 +175,7 @@ tests:
         path: ${streamPath}
         live: false
         expect:
-          data: "initial-content"
+          data: "final-content"
           streamClosed: true
 
   - id: append-to-closed-stream-fails

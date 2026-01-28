@@ -43,6 +43,8 @@ export interface CreateCommand {
   headers?: Record<string, string>
   /** Create the stream in closed state */
   closed?: boolean
+  /** Initial body data to include on creation */
+  data?: string
 }
 
 /**

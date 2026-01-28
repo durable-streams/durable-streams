@@ -161,6 +161,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           expiresAt: command.expiresAt,
           headers: command.headers,
           closed: command.closed,
+          body: command.data,
         })
 
         // Cache the content-type
