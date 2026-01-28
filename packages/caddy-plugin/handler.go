@@ -253,6 +253,11 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	cursor := query.Get("cursor")
 	encoding := query.Get("encoding")
 
+	// Validate encoding parameter is only valid with live=sse (Protocol Section 5.7)
+	if encoding != "" && liveMode != "sse" {
+		return newHTTPError(http.StatusBadRequest, "encoding parameter is only valid with live=sse")
+	}
+
 	// Validate long-poll requires offset
 	if liveMode == "long-poll" && !offsetProvided {
 		return newHTTPError(http.StatusBadRequest, "offset required for long-poll mode")

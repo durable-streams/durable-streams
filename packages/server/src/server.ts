@@ -750,6 +750,13 @@ export class DurableStreamTestServer {
       return
     }
 
+    // Validate encoding parameter is only valid with live=sse (Protocol Section 5.7)
+    if (encoding && live !== `sse`) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`encoding parameter is only valid with live=sse`)
+      return
+    }
+
     // Validate encoding parameter for SSE mode (Protocol Section 5.7)
     if (live === `sse`) {
       const ct = stream.contentType?.toLowerCase().split(`;`)[0]?.trim() ?? ``
