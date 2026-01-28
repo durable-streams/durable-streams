@@ -283,7 +283,8 @@ export async function handleCreateStream(
   // Step 10: Generate pre-signed URL and respond
   const expiresAt =
     Math.floor(Date.now() / 1000) + (options.urlExpirationSeconds ?? 86400)
-  const origin = `http://${req.headers.host}`
+  const proto = req.headers[`x-forwarded-proto`] ?? `http`
+  const origin = `${proto}://${req.headers.host}`
   const location = generatePreSignedUrl(
     origin,
     streamId,
@@ -312,11 +313,27 @@ export async function handleCreateStream(
       streamId,
       signal: abortController.signal,
     })
-      .catch((error) => {
+      .catch(async (error) => {
         console.error(
           `Error piping upstream body for stream ${streamId}:`,
           error
         )
+        // Attempt to close the stream so readers don't hang indefinitely
+        try {
+          const closeUrl = new URL(
+            `/v1/streams/${streamId}`,
+            options.durableStreamsUrl
+          )
+          await fetch(closeUrl.toString(), {
+            method: `POST`,
+            headers: {
+              "Stream-Closed": `true`,
+              "Content-Length": `0`,
+            },
+          })
+        } catch {
+          // Best-effort close
+        }
       })
       .finally(() => {
         unregisterConnection(streamId)

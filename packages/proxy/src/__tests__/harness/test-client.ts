@@ -246,6 +246,105 @@ export async function abortStream(
 }
 
 /**
+ * Options for a HEAD stream request.
+ */
+export interface HeadStreamOptions {
+  /** Proxy server URL */
+  proxyUrl: string
+  /** The stream ID */
+  streamId: string
+  /** Service secret (default: test secret) */
+  secret?: string
+}
+
+/**
+ * Result of a HEAD stream request.
+ */
+export interface HeadStreamResult {
+  /** HTTP status code */
+  status: number
+  /** Response headers */
+  headers: Headers
+}
+
+/**
+ * Get stream metadata via HEAD.
+ */
+export async function headStream(
+  options: HeadStreamOptions
+): Promise<HeadStreamResult> {
+  const { proxyUrl, streamId, secret = TEST_SECRET } = options
+
+  const url = new URL(`/v1/proxy/${streamId}`, proxyUrl)
+  url.searchParams.set(`secret`, secret)
+
+  const response = await fetch(url.toString(), {
+    method: `HEAD`,
+  })
+
+  return {
+    status: response.status,
+    headers: response.headers,
+  }
+}
+
+/**
+ * Options for a DELETE stream request.
+ */
+export interface DeleteStreamOptions {
+  /** Proxy server URL */
+  proxyUrl: string
+  /** The stream ID */
+  streamId: string
+  /** Service secret (default: test secret) */
+  secret?: string
+}
+
+/**
+ * Result of a DELETE stream request.
+ */
+export interface DeleteStreamResult {
+  /** HTTP status code */
+  status: number
+  /** Response headers */
+  headers: Headers
+  /** Response body */
+  body: unknown
+}
+
+/**
+ * Delete a stream via the proxy.
+ */
+export async function deleteStream(
+  options: DeleteStreamOptions
+): Promise<DeleteStreamResult> {
+  const { proxyUrl, streamId, secret = TEST_SECRET } = options
+
+  const url = new URL(`/v1/proxy/${streamId}`, proxyUrl)
+  url.searchParams.set(`secret`, secret)
+
+  const response = await fetch(url.toString(), {
+    method: `DELETE`,
+  })
+
+  let body: unknown = null
+  if (response.status !== 204) {
+    const contentType = response.headers.get(`content-type`) ?? ``
+    if (contentType.includes(`application/json`)) {
+      body = await response.json()
+    } else {
+      body = await response.text()
+    }
+  }
+
+  return {
+    status: response.status,
+    headers: response.headers,
+    body,
+  }
+}
+
+/**
  * Collect all chunks from a streaming response.
  */
 export async function collectStreamChunks(

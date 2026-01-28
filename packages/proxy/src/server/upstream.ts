@@ -157,25 +157,35 @@ export async function pipeUpstreamBody(
 
     // POST to underlying stream
     const url = new URL(streamPath, durableStreamsUrl)
-    await fetch(url.toString(), {
+    const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
         "Content-Type": `application/octet-stream`,
       },
       body: data as unknown as BodyInit,
     })
+
+    if (!response.ok) {
+      throw new Error(
+        `Failed to flush data to stream ${streamId}: ${response.status}`
+      )
+    }
   }
 
   const closeStream = async (): Promise<void> => {
     // Mark the stream as closed
     const url = new URL(streamPath, durableStreamsUrl)
-    await fetch(url.toString(), {
+    const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
         "Stream-Closed": `true`,
         "Content-Length": `0`,
       },
     })
+
+    if (!response.ok) {
+      console.error(`Failed to close stream ${streamId}: ${response.status}`)
+    }
   }
 
   try {

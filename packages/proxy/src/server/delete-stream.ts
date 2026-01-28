@@ -60,10 +60,14 @@ export async function handleDeleteStream(
   const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)
 
   try {
-    await fetch(dsUrl.toString(), { method: `DELETE` })
-    // Ignore errors - idempotent (stream may not exist)
-  } catch {
-    // Ignore errors - idempotent
+    const dsResponse = await fetch(dsUrl.toString(), { method: `DELETE` })
+    if (!dsResponse.ok && dsResponse.status !== 404) {
+      console.error(
+        `Failed to delete stream ${streamId} from storage: ${dsResponse.status}`
+      )
+    }
+  } catch (error) {
+    console.error(`Error deleting stream ${streamId} from storage:`, error)
   }
 
   // 204 No Content

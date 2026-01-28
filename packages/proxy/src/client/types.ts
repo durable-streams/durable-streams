@@ -27,10 +27,10 @@ export interface StreamCredentials {
   offset: string
   /** Original upstream content type */
   upstreamContentType?: string
-  /** When this stream was created */
-  createdAt: number
+  /** When this stream was created (Unix timestamp in milliseconds) */
+  createdAtMs: number
   /** When the pre-signed URL expires (Unix timestamp in seconds) */
-  expiresAt: number
+  expiresAtSecs: number
 }
 
 /**

@@ -105,7 +105,7 @@ describe(`createDurableFetch client integration`, () => {
     expect(credentials.streamUrl).toBeDefined()
     expect(credentials.streamId).toBeDefined()
     expect(credentials.offset).toBe(`-1`)
-    expect(credentials.expiresAt).toBeGreaterThan(0)
+    expect(credentials.expiresAtSecs).toBeGreaterThan(0)
   })
 
   it(`does not store credentials when requestId is not provided`, async () => {
@@ -323,8 +323,8 @@ describe(`client unit: URL expiration`, () => {
       streamUrl: `http://example.com/v1/proxy/abc?expires=${Math.floor(Date.now() / 1000) + 3600}&signature=sig`,
       streamId: `abc`,
       offset: `-1`,
-      createdAt: Date.now(),
-      expiresAt: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
+      createdAtMs: Date.now(),
+      expiresAtSecs: Math.floor(Date.now() / 1000) + 3600, // 1 hour from now
     }
 
     expect(isUrlExpired(credentials)).toBe(false)
@@ -335,8 +335,8 @@ describe(`client unit: URL expiration`, () => {
       streamUrl: `http://example.com/v1/proxy/abc?expires=${Math.floor(Date.now() / 1000) - 3600}&signature=sig`,
       streamId: `abc`,
       offset: `-1`,
-      createdAt: Date.now() - 2 * 3600 * 1000,
-      expiresAt: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago
+      createdAtMs: Date.now() - 2 * 3600 * 1000,
+      expiresAtSecs: Math.floor(Date.now() / 1000) - 3600, // 1 hour ago
     }
 
     expect(isUrlExpired(credentials)).toBe(true)
@@ -354,8 +354,8 @@ describe(`client unit: URL expiration`, () => {
       streamUrl: `${ctx.urls.proxy}/v1/proxy/old-stream-id?expires=${Math.floor(Date.now() / 1000) - 3600}&signature=sig`,
       streamId: `old-stream-id`,
       offset: `100`,
-      createdAt: Date.now() - 2 * 3600 * 1000,
-      expiresAt: Math.floor(Date.now() / 1000) - 3600, // expired
+      createdAtMs: Date.now() - 2 * 3600 * 1000,
+      expiresAtSecs: Math.floor(Date.now() / 1000) - 3600, // expired
     }
     storage.setItem(storageKey, JSON.stringify(expiredCredentials))
 
@@ -383,8 +383,8 @@ describe(`client unit: URL expiration`, () => {
     const newCredentials = JSON.parse(
       storage.getItem(storageKey)!
     ) as StreamCredentials
-    expect(newCredentials.createdAt).toBeGreaterThan(
-      expiredCredentials.createdAt
+    expect(newCredentials.createdAtMs).toBeGreaterThan(
+      expiredCredentials.createdAtMs
     )
     expect(newCredentials.streamId).not.toBe(`old-stream-id`)
   })

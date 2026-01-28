@@ -106,13 +106,24 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       if (existing && !isUrlExpired(existing)) {
         try {
           return await readFromStream(fetchFn, existing, true)
-        } catch {
+        } catch (error) {
           removeCredentials(
             storage,
             storagePrefix,
             normalizedProxyUrl,
             requestId
           )
+          // Only fall through to create for expected resume failures
+          // (network errors, 404 stale stream). Rethrow unexpected errors.
+          const isExpected =
+            error instanceof TypeError || // network/fetch errors
+            (error instanceof Error &&
+              (error.message.includes(`404`) ||
+                error.message.includes(`not found`) ||
+                error.name === `AbortError`))
+          if (!isExpected) {
+            throw error
+          }
         }
       }
     }
@@ -183,8 +194,8 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       streamId,
       offset: `-1`,
       upstreamContentType,
-      createdAt: Date.now(),
-      expiresAt,
+      createdAtMs: Date.now(),
+      expiresAtSecs: expiresAt,
     }
 
     if (requestId) {
@@ -306,7 +317,7 @@ export function createAbortFn(
 
     const response = await fetchFn(abortUrl.toString(), { method: `PATCH` })
 
-    if (!response.ok && response.status !== 204) {
+    if (!response.ok) {
       const body = await response.text().catch(() => ``)
       throw new Error(`Abort request failed: ${response.status} ${body}`)
     }

@@ -173,6 +173,7 @@ export async function handleReadStream(
       const message = error instanceof Error ? error.message : `Unknown error`
       sendError(res, 502, `UPSTREAM_ERROR`, message)
     } else {
+      console.error(`Error streaming response for ${streamId}:`, error)
       res.end()
     }
   }

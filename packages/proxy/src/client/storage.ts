@@ -100,7 +100,7 @@ export function removeCredentials(
  * Check if a stream's pre-signed URL has expired.
  */
 export function isUrlExpired(credentials: StreamCredentials): boolean {
-  return Date.now() > credentials.expiresAt * 1000
+  return Date.now() > credentials.expiresAtSecs * 1000
 }
 
 /**
