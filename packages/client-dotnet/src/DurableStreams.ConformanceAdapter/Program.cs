@@ -117,18 +117,29 @@ async Task<object> HandleCreate(JsonElement root)
     var ttlSeconds = GetOptionalInt(root, "ttlSeconds");
     var expiresAt = GetOptionalString(root, "expiresAt");
     var closed = GetOptionalBool(root, "closed") ?? false;
+    var dataStr = GetOptionalString(root, "data");
+    var binary = GetOptionalBool(root, "binary");
     var headers = GetHeaders(root);
 
     try
     {
         var stream = client.GetStream(path);
+        byte[]? initialData = null;
+        if (!string.IsNullOrEmpty(dataStr))
+        {
+            initialData = binary == true
+                ? Convert.FromBase64String(dataStr)
+                : Encoding.UTF8.GetBytes(dataStr);
+        }
+
         var result = await stream.CreateAsync(new CreateStreamOptions
         {
             ContentType = contentType,
             Ttl = ttlSeconds.HasValue ? TimeSpan.FromSeconds(ttlSeconds.Value) : null,
             ExpiresAt = expiresAt != null ? DateTimeOffset.Parse(expiresAt) : null,
             Headers = headers,
-            Closed = closed
+            Closed = closed,
+            InitialData = initialData
         });
         var statusCode = result == CreateStreamResult.Created ? 201 : 200;
 
@@ -425,18 +436,6 @@ async Task<object> HandleRead(JsonElement root)
 
         // Get stream closed status from response, fallback to HEAD if needed
         var streamClosedStatus = response.StreamClosed;
-        if (!streamClosedStatus)
-        {
-            try
-            {
-                var metadata = await stream.HeadAsync();
-                streamClosedStatus = metadata.StreamClosed;
-            }
-            catch
-            {
-                // Ignore errors when getting stream closed status
-            }
-        }
 
         return new
         {
