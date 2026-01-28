@@ -72,6 +72,11 @@ public sealed class StreamResponse : IAsyncDisposable
     /// </summary>
     public bool UpToDate => _upToDate;
 
+    /// <summary>
+    /// Whether the stream is closed (EOF).
+    /// </summary>
+    public bool StreamClosed => _streamClosed;
+
     internal StreamResponse(
         DurableStream stream,
         StreamOptions options,

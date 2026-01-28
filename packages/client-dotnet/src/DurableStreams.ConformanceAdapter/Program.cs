@@ -423,16 +423,19 @@ async Task<object> HandleRead(JsonElement root)
         // Return 204 for long-poll with no data
         var status = (live == LiveMode.LongPoll && chunks.Count == 0) ? 204 : 200;
 
-        // Get stream closed status via head
-        var streamClosedStatus = false;
-        try
+        // Get stream closed status from response, fallback to HEAD if needed
+        var streamClosedStatus = response.StreamClosed;
+        if (!streamClosedStatus)
         {
-            var metadata = await stream.HeadAsync();
-            streamClosedStatus = metadata.StreamClosed;
-        }
-        catch
-        {
-            // Ignore errors when getting stream closed status
+            try
+            {
+                var metadata = await stream.HeadAsync();
+                streamClosedStatus = metadata.StreamClosed;
+            }
+            catch
+            {
+                // Ignore errors when getting stream closed status
+            }
         }
 
         return new
