@@ -45,12 +45,12 @@ This document describes the implementation plan for adding base64 encoding suppo
 | Step 7: Python Client Implementation     | ✅ Complete |
 | Step 8: Go Client Implementation         | ✅ Complete |
 | Step 9: Elixir Client Implementation     | ✅ Complete |
-| Step 10: .NET Client Implementation      | Pending     |
-| Step 11: Swift Client Implementation     | Pending     |
-| Step 12: PHP Client Implementation       | Pending     |
-| Step 13: Java Client Implementation      | Pending     |
-| Step 14: Rust Client Implementation      | Pending     |
-| Step 15: Ruby Client Implementation      | Pending     |
+| Step 10: .NET Client Implementation      | ✅ Complete |
+| Step 11: Swift Client Implementation     | ✅ Complete |
+| Step 12: PHP Client Implementation       | ✅ Complete |
+| Step 13: Java Client Implementation      | ✅ Complete |
+| Step 14: Rust Client Implementation      | ✅ Complete |
+| Step 15: Ruby Client Implementation      | ✅ Complete |
 
 ## Implementation Order
 
@@ -106,37 +106,37 @@ Step 9: Elixir Client Implementation ✅
    ├── Add validation: encoding requires live=:sse
    └── Verify: Client conformance tests pass
 
-Step 10: .NET Client Implementation
+Step 10: .NET Client Implementation ✅
    ├── Add encoding option to Read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires live=sse
    └── Verify: Client conformance tests pass
 
-Step 11: Swift Client Implementation
+Step 11: Swift Client Implementation ✅
    ├── Add encoding option to read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires live=.sse
    └── Verify: Client conformance tests pass
 
-Step 12: PHP Client Implementation
+Step 12: PHP Client Implementation ✅
    ├── Add encoding option to read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires live='sse'
    └── Verify: Client conformance tests pass
 
-Step 13: Java Client Implementation
+Step 13: Java Client Implementation ✅
    ├── Add encoding option to read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires LiveMode.SSE
    └── Verify: Client conformance tests pass
 
-Step 14: Rust Client Implementation
+Step 14: Rust Client Implementation ✅
    ├── Add encoding option to read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires LiveMode::Sse
    └── Verify: Client conformance tests pass
 
-Step 15: Ruby Client Implementation
+Step 15: Ruby Client Implementation ✅
    ├── Add encoding option to read() method
    ├── Add base64 decoding for SSE data events
    ├── Add validation: encoding requires live: :sse
@@ -247,9 +247,9 @@ Each client implementation follows the same pattern:
 | client-py     | Python     | ✅ Complete |
 | client-go     | Go         | ✅ Complete |
 | client-elixir | Elixir     | ✅ Complete |
-| client-dotnet | .NET       | Pending     |
-| client-swift  | Swift      | Pending     |
-| client-php    | PHP        | Pending     |
-| client-java   | Java       | Pending     |
-| client-rust   | Rust       | Pending     |
-| client-rb     | Ruby       | Pending     |
+| client-dotnet | .NET       | ✅ Complete |
+| client-swift  | Swift      | ✅ Complete |
+| client-php    | PHP        | ✅ Complete |
+| client-java   | Java       | ✅ Complete |
+| client-rust   | Rust       | ✅ Complete |
+| client-rb     | Ruby       | ✅ Complete |
