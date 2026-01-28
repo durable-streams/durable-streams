@@ -50,6 +50,7 @@ final class DurableStream
      * @param string|null $expiresAt Optional absolute expiry (ISO 8601)
      * @param HttpClientInterface|null $client HTTP client to use
      * @param bool $closed Whether to create stream as immediately closed
+     * @param string|null $data Optional initial data to write
      * @return self
      */
     public static function create(
@@ -60,6 +61,7 @@ final class DurableStream
         ?string $expiresAt = null,
         ?HttpClientInterface $client = null,
         bool $closed = false,
+        ?string $data = null,
     ): self {
         $httpClient = $client ?? new HttpClient();
 
@@ -79,7 +81,12 @@ final class DurableStream
             $requestHeaders['Stream-Closed'] = 'true';
         }
 
-        $httpClient->put($url, $requestHeaders);
+        $body = $data;
+        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+            $body = '[' . $data . ']';
+        }
+
+        $httpClient->put($url, $requestHeaders, $body);
 
         return new self($url, $contentType, $headers, $httpClient);
     }
@@ -271,12 +278,23 @@ final class DurableStream
         $headers['Content-Type'] = $ct;
 
         // For JSON streams, wrap data in array if provided
-        $body = $data;
+        $body = $data ?? '';
         if ($data !== null && str_contains(strtolower($ct), 'application/json')) {
             $body = '[' . $data . ']';
         }
 
-        $response = $this->client->post($this->url, $body, $headers);
+        try {
+            $response = $this->client->post($this->url, $body, $headers);
+        } catch (StreamClosedException) {
+            // Idempotent close - stream already closed
+            $finalOffset = '-1';
+            try {
+                $finalOffset = $this->head()->offset;
+            } catch (DurableStreamException) {
+                // Ignore head errors; keep default offset
+            }
+            return new CloseResult(finalOffset: $finalOffset);
+        }
 
         // 204 means idempotent close (already closed)
         if ($response->status === 204) {

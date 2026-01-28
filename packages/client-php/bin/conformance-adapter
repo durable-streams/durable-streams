@@ -43,6 +43,8 @@ const ERROR_STREAM_CLOSED = 'STREAM_CLOSED';
 $serverUrl = '';
 $streamContentTypes = [];
 $sharedClient = null;
+$producerNextSeq = [];
+$producerStreamClosed = [];
 
 // Dynamic headers/params state
 $dynamicHeaders = [];
@@ -65,6 +67,39 @@ class DynamicValue {
             'token' => $this->tokenValue ?? '',
             default => '',
         };
+    }
+}
+
+function producerSeqKey(string $path, string $producerId, int $epoch): string {
+    return "{$path}|{$producerId}|{$epoch}";
+}
+
+function producerKey(string $path, string $producerId): string {
+    return "{$path}|{$producerId}";
+}
+
+function dropProducerEpochs(string $path, string $producerId): void {
+    global $producerNextSeq;
+    $prefix = "{$path}|{$producerId}|";
+    foreach (array_keys($producerNextSeq) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerNextSeq[$key]);
+        }
+    }
+}
+
+function clearProducerForPath(string $path): void {
+    global $producerNextSeq, $producerStreamClosed;
+    $prefix = "{$path}|";
+    foreach (array_keys($producerNextSeq) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerNextSeq[$key]);
+        }
+    }
+    foreach (array_keys($producerStreamClosed) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerStreamClosed[$key]);
+        }
     }
 }
 
@@ -157,12 +192,14 @@ function errorResult(string $commandType, Throwable $e): array {
 }
 
 function handleInit(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient, $dynamicHeaders, $dynamicParams;
+    global $serverUrl, $streamContentTypes, $sharedClient, $dynamicHeaders, $dynamicParams, $producerNextSeq, $producerStreamClosed;
 
     $serverUrl = $cmd['serverUrl'];
     $streamContentTypes = [];
     $dynamicHeaders = [];
     $dynamicParams = [];
+    $producerNextSeq = [];
+    $producerStreamClosed = [];
     $sharedClient = new HttpClient(timeout: 30.0);
 
     return [
@@ -189,6 +226,10 @@ function handleCreate(array $cmd): array {
     $url = $serverUrl . $cmd['path'];
     $contentType = $cmd['contentType'] ?? 'application/octet-stream';
     $closed = $cmd['closed'] ?? false;
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
 
     // Check if stream already exists
     $alreadyExists = false;
@@ -208,6 +249,7 @@ function handleCreate(array $cmd): array {
         $cmd['expiresAt'] ?? null,
         $sharedClient,
         $closed,
+        $data,
     );
 
     // Cache content type
@@ -472,6 +514,7 @@ function handleDelete(array $cmd): array {
     DurableStream::deleteStatic($url, $cmd['headers'] ?? null, $sharedClient);
 
     unset($streamContentTypes[$cmd['path']]);
+    clearProducerForPath($cmd['path']);
 
     return [
         'type' => 'delete',
@@ -525,25 +568,40 @@ function handleClearDynamic(array $cmd): array {
 }
 
 function handleIdempotentAppend(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient;
+    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq;
 
-    $url = $serverUrl . $cmd['path'];
-    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $streamContentTypes[$path] ?? 'application/json';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
 
     // Data is already pre-serialized, pass directly to enqueue()
     $data = $cmd['data'];
+    if ($cmd['binary'] ?? false) {
+        $data = base64_decode($data);
+    }
+
+    $seqKey = producerSeqKey($path, $producerId, $epoch);
+    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
 
     $producer = new IdempotentProducer(
         url: $url,
-        producerId: $cmd['producerId'],
-        epoch: $cmd['epoch'] ?? 0,
+        producerId: $producerId,
+        epoch: $epoch,
         autoClaim: $cmd['autoClaim'] ?? false,
         contentType: $contentType,
         client: $sharedClient,
+        nextSeq: $nextSeq,
     );
 
     $producer->enqueue($data);
     $producer->flush();
+
+    $finalEpoch = $producer->getEpoch();
+    $finalSeq = $producer->getSeq();
+    dropProducerEpochs($path, $producerId);
+    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
 
     return [
         'type' => 'idempotent-append',
@@ -553,21 +611,28 @@ function handleIdempotentAppend(array $cmd): array {
 }
 
 function handleIdempotentAppendBatch(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient;
+    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq;
 
-    $url = $serverUrl . $cmd['path'];
-    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $streamContentTypes[$path] ?? 'application/json';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
 
     // Data is already pre-serialized, pass directly to enqueue()
     $items = $cmd['items'];
 
+    $seqKey = producerSeqKey($path, $producerId, $epoch);
+    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
+
     $producer = new IdempotentProducer(
         url: $url,
-        producerId: $cmd['producerId'],
-        epoch: $cmd['epoch'] ?? 0,
+        producerId: $producerId,
+        epoch: $epoch,
         autoClaim: $cmd['autoClaim'] ?? false,
         contentType: $contentType,
         client: $sharedClient,
+        nextSeq: $nextSeq,
     );
 
     foreach ($items as $item) {
@@ -576,8 +641,80 @@ function handleIdempotentAppendBatch(array $cmd): array {
 
     $producer->flush();
 
+    $finalEpoch = $producer->getEpoch();
+    $finalSeq = $producer->getSeq();
+    dropProducerEpochs($path, $producerId);
+    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
+
     return [
         'type' => 'idempotent-append-batch',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleIdempotentClose(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq, $producerStreamClosed;
+
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $cmd['contentType'] ?? $streamContentTypes[$path] ?? 'application/octet-stream';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
+
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
+
+    $producerKey = producerKey($path, $producerId);
+    if (!empty($producerStreamClosed[$producerKey])) {
+        return [
+            'type' => 'idempotent-close',
+            'success' => true,
+            'status' => 200,
+        ];
+    }
+
+    $seqKey = producerSeqKey($path, $producerId, $epoch);
+    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
+
+    $producer = new IdempotentProducer(
+        url: $url,
+        producerId: $producerId,
+        epoch: $epoch,
+        autoClaim: $cmd['autoClaim'] ?? false,
+        contentType: $contentType,
+        client: $sharedClient,
+        nextSeq: $nextSeq,
+    );
+
+    $producer->close($data);
+
+    $finalEpoch = $producer->getEpoch();
+    $finalSeq = $producer->getSeq();
+    dropProducerEpochs($path, $producerId);
+    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
+    $producerStreamClosed[$producerKey] = true;
+
+    return [
+        'type' => 'idempotent-close',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleIdempotentDetach(array $cmd): array {
+    global $producerNextSeq, $producerStreamClosed;
+
+    $path = $cmd['path'];
+    $producerId = $cmd['producerId'];
+
+    dropProducerEpochs($path, $producerId);
+    unset($producerStreamClosed[producerKey($path, $producerId)]);
+
+    return [
+        'type' => 'idempotent-detach',
         'success' => true,
         'status' => 200,
     ];
@@ -840,6 +977,8 @@ function handleCommand(array $cmd): array {
             'clear-dynamic' => handleClearDynamic($cmd),
             'idempotent-append' => handleIdempotentAppend($cmd),
             'idempotent-append-batch' => handleIdempotentAppendBatch($cmd),
+            'idempotent-close' => handleIdempotentClose($cmd),
+            'idempotent-detach' => handleIdempotentDetach($cmd),
             'benchmark' => handleBenchmark($cmd),
             'validate' => handleValidate($cmd),
             default => [
