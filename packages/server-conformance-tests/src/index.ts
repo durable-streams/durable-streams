@@ -3649,19 +3649,23 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       // First SSE connection - get initial data and offset
+      // Wait for upToDate to ensure we receive all messages (control events
+      // are sent after each data event, so we need the last one with upToDate)
       let lastOffset: string | null = null
       const { response: response1, received: received1 } = await fetchSSE(
         `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
-        { untilContent: `event: control` }
+        { untilContent: `upToDate` }
       )
 
       expect(response1.status).toBe(200)
 
-      // Extract offset from control event
-      const controlLine = received1
+      // Extract offset from the LAST control event (with upToDate)
+      // Control events are sent after each data event per protocol section 5.7
+      const controlLines = received1
         .split(`\n`)
-        .find((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
-      const controlPayload = controlLine!.slice(`data:`.length)
+        .filter((l) => l.startsWith(`data:`) && l.includes(`streamNextOffset`))
+      const lastControlLine = controlLines[controlLines.length - 1]
+      const controlPayload = lastControlLine!.slice(`data:`.length)
       lastOffset = JSON.parse(controlPayload)[`streamNextOffset`]
 
       expect(lastOffset).toBeDefined()

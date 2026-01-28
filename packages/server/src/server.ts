@@ -1031,8 +1031,12 @@ export class DurableStreamTestServer {
       // Read current messages from offset
       const { messages, upToDate } = this.store.read(path, currentOffset)
 
-      // Send data events for each message
-      for (const message of messages) {
+      // Send data event + control event for each message (Protocol Section 5.7)
+      // Control event is emitted after EVERY data event for immediate delivery
+      for (let i = 0; i < messages.length; i++) {
+        const message = messages[i]
+        const isLastMessage = i === messages.length - 1
+
         // Format data based on content type and encoding
         let dataPayload: string
         if (encoding === `base64`) {
@@ -1046,12 +1050,31 @@ export class DurableStreamTestServer {
           dataPayload = decoder.decode(message.data)
         }
 
-        // Send data event - encode multiline payloads per SSE spec
-        // Each line in the payload needs its own "data:" prefix
-        res.write(`event: data\n`)
-        res.write(encodeSSEData(dataPayload))
-
         currentOffset = message.offset
+
+        // Send control event immediately after each data event
+        // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+        const responseCursor = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
+        const controlData: Record<string, string | boolean> = {
+          [SSE_OFFSET_FIELD]: message.offset,
+          [SSE_CURSOR_FIELD]: responseCursor,
+        }
+
+        // Include upToDate flag only on last message when caught up to head
+        if (isLastMessage && upToDate) {
+          controlData[SSE_UP_TO_DATE_FIELD] = true
+        }
+
+        // Combine data and control events into single write for immediate delivery
+        const ssePayload =
+          `event: data\n` +
+          encodeSSEData(dataPayload) +
+          `event: control\n` +
+          encodeSSEData(JSON.stringify(controlData))
+        res.write(ssePayload)
       }
 
       // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset
@@ -1098,6 +1121,7 @@ export class DurableStreamTestServer {
 
       // Update currentOffset for next iteration (use controlOffset for consistency)
       currentOffset = controlOffset
+
 
       // If caught up, wait for new messages
       if (upToDate) {
@@ -1159,8 +1183,10 @@ export class DurableStreamTestServer {
             [SSE_CURSOR_FIELD]: keepAliveCursor,
             [SSE_UP_TO_DATE_FIELD]: true, // Still caught up after timeout
           }
-          res.write(`event: control\n`)
-          res.write(encodeSSEData(JSON.stringify(keepAliveData)))
+          // Single write for keep-alive control event
+          res.write(
+            `event: control\n` + encodeSSEData(JSON.stringify(keepAliveData))
+          )
         }
         // Loop will continue and read new messages
       }

@@ -492,9 +492,16 @@ export class DurableStream {
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
     // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
-    const bodyStr =
-      typeof body === `string` ? body : new TextDecoder().decode(body)
-    const encodedBody: BodyInit = isJson ? `[${bodyStr}]` : bodyStr
+    let encodedBody: BodyInit
+    if (isJson) {
+      // JSON mode: decode as UTF-8 string and wrap in array
+      const bodyStr =
+        typeof body === `string` ? body : new TextDecoder().decode(body)
+      encodedBody = `[${bodyStr}]`
+    } else {
+      // Binary mode: preserve raw bytes (fetch API accepts Uint8Array)
+      encodedBody = typeof body === `string` ? body : body
+    }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
       method: `POST`,
@@ -611,11 +618,43 @@ export class DurableStream {
       )
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      // For byte mode: concatenate all chunks as a string
-      const strings = batch.map((m) =>
-        typeof m.data === `string` ? m.data : new TextDecoder().decode(m.data)
-      )
-      batchedBody = strings.join(``)
+      // For byte mode: preserve original data types
+      // - Strings are concatenated as strings (for text/* content types)
+      // - Uint8Arrays are concatenated as binary (for application/octet-stream)
+      // - Mixed types: convert all to binary to avoid data corruption
+      const hasUint8Array = batch.some((m) => m.data instanceof Uint8Array)
+      const hasString = batch.some((m) => typeof m.data === `string`)
+
+      if (hasUint8Array && !hasString) {
+        // All binary: concatenate Uint8Arrays
+        const chunks = batch.map((m) => m.data as Uint8Array)
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+        const combined = new Uint8Array(totalLength)
+        let offset = 0
+        for (const chunk of chunks) {
+          combined.set(chunk, offset)
+          offset += chunk.length
+        }
+        batchedBody = combined
+      } else if (hasString && !hasUint8Array) {
+        // All strings: concatenate as string
+        batchedBody = batch.map((m) => m.data as string).join(``)
+      } else {
+        // Mixed types: convert strings to binary and concatenate
+        // This preserves binary data integrity
+        const encoder = new TextEncoder()
+        const chunks = batch.map((m) =>
+          typeof m.data === `string` ? encoder.encode(m.data) : m.data
+        )
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+        const combined = new Uint8Array(totalLength)
+        let offset = 0
+        for (const chunk of chunks) {
+          combined.set(chunk, offset)
+          offset += chunk.length
+        }
+        batchedBody = combined
+      }
     }
 
     // Combine signals: stream-level signal + any per-message signals

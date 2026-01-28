@@ -214,11 +214,19 @@ async function streamInternal<TJson = unknown>(
     (contentType?.includes(`application/json`) ?? false)
 
   // Validate encoding + content-type compatibility (per Protocol Section 5.7)
+  // Skip validation for SSE responses (content-type is text/event-stream, not the stream's actual type)
+  // DurableStream.stream() validates encoding against the stream's content-type before calling this function
+  const isSSEResponse = contentType?.includes(`text/event-stream`)
   const isTextCompatible =
     contentType?.startsWith(`text/`) ||
     contentType?.includes(`application/json`)
 
-  if (live === `sse` && options.encoding && isTextCompatible) {
+  if (
+    live === `sse` &&
+    options.encoding &&
+    isTextCompatible &&
+    !isSSEResponse
+  ) {
     throw new DurableStreamError(
       `encoding option must not be provided for text/* or application/json streams (got ${contentType})`,
       `BAD_REQUEST`
@@ -226,7 +234,13 @@ async function streamInternal<TJson = unknown>(
   }
 
   // Validate that encoding is required for binary streams with SSE
-  if (live === `sse` && !options.encoding && !isTextCompatible) {
+  // Skip for SSE responses - the server handles this validation
+  if (
+    live === `sse` &&
+    !options.encoding &&
+    !isTextCompatible &&
+    !isSSEResponse
+  ) {
     throw new DurableStreamError(
       `SSE mode is not compatible with content type: ${contentType}. ` +
         `SSE is only supported for text/* or application/json streams. ` +

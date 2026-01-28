@@ -385,12 +385,15 @@ async def _astream_internal(
             raise
 
     # Check SSE compatibility after response headers are available
+    # Skip validation for SSE responses (content-type is text/event-stream, not the stream's actual type)
+    # DurableStream.read() validates encoding against the stream's content-type before calling this function
     if is_sse:
         content_type = response.headers.get("content-type")
+        is_sse_response = content_type and "text/event-stream" in content_type
         is_text_compatible = is_sse_compatible_content_type(content_type)
 
         # Validate encoding + content-type compatibility (per Protocol Section 5.7)
-        if encoding and is_text_compatible:
+        if encoding and is_text_compatible and not is_sse_response:
             await response.aclose()
             raise SSEEncodingError(
                 f"encoding option must not be provided for text/* or application/json "
@@ -398,7 +401,7 @@ async def _astream_internal(
             )
 
         # Without encoding, SSE only works with text-compatible content types
-        if not encoding and not is_text_compatible:
+        if not encoding and not is_text_compatible and not is_sse_response:
             await response.aclose()
             raise SSENotSupportedError(
                 f"SSE mode is not compatible with content type: {content_type}. "
