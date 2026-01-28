@@ -228,6 +228,11 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     # Create the stream
     headers = cmd.get("headers")
     closed = cmd.get("closed", False)
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    body: bytes | str | None = None
+    if data is not None:
+        body = decode_base64(data) if binary else data
     ds = DurableStream.create(
         url,
         content_type=content_type,
@@ -235,6 +240,7 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
         expires_at=cmd.get("expiresAt"),
         headers=headers,
         closed=closed,
+        body=body,
     )
 
     # Cache content type
@@ -380,6 +386,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     final_offset = offset
     up_to_date = False
     stream_closed = False
+    stopped_for_max_chunks = False
     status = 200  # Default status
 
     with stream(
@@ -409,6 +416,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                             "offset": response.offset,
                         }
                     )
+                    if len(chunks) >= max_chunks:
+                        stopped_for_max_chunks = True
             else:
                 # Use byte reading for non-JSON content
                 data = response.read_bytes()
@@ -419,6 +428,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                             "offset": response.offset,
                         }
                     )
+                    if len(chunks) >= max_chunks:
+                        stopped_for_max_chunks = True
             final_offset = response.offset
             up_to_date = response.up_to_date
             stream_closed = response.stream_closed
@@ -443,6 +454,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
+                        stopped_for_max_chunks = True
                         break
 
                     # For waitForUpToDate: stop when upToDate becomes True AND
@@ -504,6 +516,9 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                                 }
                             )
                             chunk_count += 1
+                            if chunk_count >= max_chunks:
+                                stopped_for_max_chunks = True
+                                break
 
                         final_offset = response.offset
                         up_to_date = response.up_to_date
@@ -525,7 +540,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
-        "streamClosed": stream_closed,
+        "streamClosed": False if stopped_for_max_chunks else stream_closed,
     }
     if headers_sent:
         result["headersSent"] = headers_sent

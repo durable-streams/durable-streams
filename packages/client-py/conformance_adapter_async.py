@@ -213,12 +213,18 @@ async def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     # Create the stream
     headers = cmd.get("headers")
     closed = cmd.get("closed", False)
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    body: bytes | str | None = None
+    if data is not None:
+        body = decode_base64(data) if binary else data
     ds = await AsyncDurableStream.create(
         url,
         content_type=content_type,
         ttl_seconds=cmd.get("ttlSeconds"),
         expires_at=cmd.get("expiresAt"),
         headers=headers,
+        body=body,
         closed=closed,
     )
 
@@ -362,6 +368,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     final_offset = offset
     up_to_date = False
     stream_closed = False
+    stopped_for_max_chunks = False
     status = 200  # Default status
 
     response = await astream(
@@ -395,6 +402,8 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                             "offset": response.offset,
                         }
                     )
+                    if len(chunks) >= max_chunks:
+                        stopped_for_max_chunks = True
                 final_offset = response.offset
                 up_to_date = response.up_to_date
                 stream_closed = response.stream_closed
@@ -408,6 +417,8 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                                 "offset": response.offset,
                             }
                         )
+                        if len(chunks) >= max_chunks:
+                            stopped_for_max_chunks = True
                     final_offset = response.offset
                     up_to_date = response.up_to_date
                     stream_closed = response.stream_closed
@@ -435,6 +446,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
+                        stopped_for_max_chunks = True
                         break
 
                     # For waitForUpToDate: stop when upToDate becomes True AND
@@ -496,6 +508,9 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                                 }
                             )
                             chunk_count += 1
+                            if chunk_count >= max_chunks:
+                                stopped_for_max_chunks = True
+                                break
 
                         final_offset = response.offset
                         up_to_date = response.up_to_date
@@ -517,7 +532,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
-        "streamClosed": stream_closed,
+        "streamClosed": False if stopped_for_max_chunks else stream_closed,
     }
     if headers_sent:
         result["headersSent"] = headers_sent
@@ -553,7 +568,7 @@ async def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
     url = f"{server_url}{cmd['path']}"
     data = cmd.get("data")
     binary = cmd.get("binary", False)
-    content_type = cmd.get("contentType")
+    content_type = cmd.get("contentType") or stream_content_types.get(cmd["path"])
     headers = cmd.get("headers")
 
     body: bytes | str | None = None
@@ -563,7 +578,7 @@ async def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
         else:
             body = data
 
-    ds = AsyncDurableStream(url, headers=headers)
+    ds = AsyncDurableStream(url, headers=headers, content_type=content_type)
     try:
         result = await ds.close_stream(data=body, content_type=content_type)
     finally:
