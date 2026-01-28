@@ -29,14 +29,16 @@ if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
 fi
 
 # Run the adapter interactively (-i for stdin, no -t since we don't need a tty)
-# DOCKER_HOST_REWRITE=1 tells the adapter to replace localhost with host.docker.internal
-DOCKER_ARGS=(-i --rm -e DOCKER_HOST_REWRITE=1)
+DOCKER_ARGS=(-i --rm)
+DOCKER_ENV=()
 
 if [ "$(uname -s)" = "Linux" ]; then
   # Use host network to avoid iptables/NAT dependencies in minimal environments.
   DOCKER_ARGS+=(--network=host)
 else
+  # Rewrite localhost to host.docker.internal on platforms without host networking.
   DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
+  DOCKER_ENV+=(-e DOCKER_HOST_REWRITE=1)
 fi
 
-exec docker run "${DOCKER_ARGS[@]}" "$IMAGE_TAG"
+exec docker run "${DOCKER_ARGS[@]}" "${DOCKER_ENV[@]}" "$IMAGE_TAG"
