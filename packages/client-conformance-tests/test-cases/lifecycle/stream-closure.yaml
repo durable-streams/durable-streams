@@ -138,19 +138,25 @@ tests:
 
   - id: create-closed-stream-with-body
     name: Create closed stream with initial content
-    description: Client should be able to create a closed stream with body content
+    description: Client should be able to create and close a stream with body content
     operations:
+      # Create stream and immediately close with body (atomic append + close)
       - action: create
         as: streamPath
         contentType: text/plain
-        closed: true
         expect:
           status: 201
-      # Append some data via direct server call if body on create isn't supported
-      # For now, test that a closed stream can be created and verified
-      - action: head
+      - action: close
         path: ${streamPath}
+        data: "initial-content"
         expect:
+          status: 200
+      # Verify the content is preserved and stream is closed
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "initial-content"
           streamClosed: true
 
   - id: append-to-closed-stream-fails
@@ -391,6 +397,7 @@ tests:
         maxChunks: 1
         live: false
         expect:
+          streamClosed: false
           storeOffsetAs: partialOffset
       # Read from partial offset to end - should now show streamClosed
       - action: read
