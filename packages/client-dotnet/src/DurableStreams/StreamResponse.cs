@@ -441,7 +441,30 @@ public sealed class StreamResponse : IAsyncDisposable
             if (type == SseEventType.Data)
             {
                 var dataEvt = (SseDataEvent)eventObj;
-                _pendingSseData = (_pendingSseData ?? "") + dataEvt.Data;
+
+                // Decode base64 if encoding is set (Protocol Section 5.7)
+                if (_options.Encoding == "base64")
+                {
+                    try
+                    {
+                        var decodedBytes = Convert.FromBase64String(dataEvt.Data);
+                        var decodedStr = Encoding.UTF8.GetString(decodedBytes);
+                        _pendingSseData = (_pendingSseData ?? "") + decodedStr;
+                    }
+                    catch (FormatException ex)
+                    {
+                        throw new DurableStreamException(
+                            $"Failed to decode base64 SSE data: {ex.Message}",
+                            DurableStreamErrorCode.ParseError,
+                            null,
+                            _stream.Url,
+                            ex);
+                    }
+                }
+                else
+                {
+                    _pendingSseData = (_pendingSseData ?? "") + dataEvt.Data;
+                }
             }
             else if (type == SseEventType.Control)
             {
@@ -493,6 +516,12 @@ public sealed class StreamResponse : IAsyncDisposable
         if (_cursor != null)
         {
             queryParams[QueryParams.Cursor] = _cursor;
+        }
+
+        // Add encoding for SSE with binary streams
+        if (_options.Encoding != null && _options.Live == LiveMode.Sse)
+        {
+            queryParams[QueryParams.Encoding] = _options.Encoding;
         }
 
         _url = HttpHelpers.BuildUrl(_stream.Url, queryParams);

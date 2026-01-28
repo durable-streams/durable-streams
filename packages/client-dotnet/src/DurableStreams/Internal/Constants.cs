@@ -47,4 +47,5 @@ internal static class QueryParams
     public const string Offset = "offset";
     public const string Live = "live";
     public const string Cursor = "cursor";
+    public const string Encoding = "encoding";
 }

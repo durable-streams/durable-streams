@@ -354,6 +354,16 @@ public sealed class DurableStream
     {
         options ??= new StreamOptions();
 
+        // Validate encoding is only used with live=sse (Protocol Section 5.7)
+        if (options.Encoding != null && options.Live != LiveMode.Sse)
+        {
+            throw new DurableStreamException(
+                "encoding parameter is only valid with live=sse",
+                DurableStreamErrorCode.BadRequest,
+                400,
+                _url);
+        }
+
         // Build initial request
         var queryParams = new Dictionary<string, string?>
         {
@@ -373,6 +383,12 @@ public sealed class DurableStream
         if (options.Cursor != null)
         {
             queryParams[QueryParams.Cursor] = options.Cursor;
+        }
+
+        // Add encoding for SSE with binary streams
+        if (options.Encoding != null && options.Live == LiveMode.Sse)
+        {
+            queryParams[QueryParams.Encoding] = options.Encoding;
         }
 
         var url = HttpHelpers.BuildUrl(_url, queryParams);
