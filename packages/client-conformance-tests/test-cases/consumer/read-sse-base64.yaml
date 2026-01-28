@@ -391,6 +391,7 @@ tests:
       Per Protocol Section 5.7, if the stream's configured content-type is text/*
       or application/json, clients MUST NOT provide encoding. Servers MUST treat
       this as invalid parameters and return 400 Bad Request.
+      Clients MAY validate this locally before making the request.
     setup:
       - action: create
         as: streamPath
@@ -406,8 +407,6 @@ tests:
         waitForUpToDate: true
         expect:
           status: 400
-          messageContains:
-            - encoding
 
   - id: sse-base64-encoding-rejected-for-json-streams
     name: Encoding parameter rejected for application/json streams
@@ -415,6 +414,7 @@ tests:
       Per Protocol Section 5.7, if the stream's configured content-type is text/*
       or application/json, clients MUST NOT provide encoding. Servers MUST treat
       this as invalid parameters and return 400 Bad Request.
+      Clients MAY validate this locally before making the request.
     setup:
       - action: create
         as: streamPath
@@ -430,8 +430,6 @@ tests:
         waitForUpToDate: true
         expect:
           status: 400
-          messageContains:
-            - encoding
 
   # SSE reconnection test - verifies decoder state resets properly
   - id: sse-base64-reconnect-decoding
