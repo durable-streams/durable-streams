@@ -499,8 +499,16 @@ export class DurableStream {
         typeof body === `string` ? body : new TextDecoder().decode(body)
       encodedBody = `[${bodyStr}]`
     } else {
-      // Binary mode: preserve raw bytes (fetch API accepts Uint8Array)
-      encodedBody = typeof body === `string` ? body : body
+      // Binary mode: preserve raw bytes
+      // Use ArrayBuffer for cross-platform BodyInit compatibility
+      if (typeof body === `string`) {
+        encodedBody = body
+      } else {
+        encodedBody = body.buffer.slice(
+          body.byteOffset,
+          body.byteOffset + body.byteLength
+        ) as ArrayBuffer
+      }
     }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {

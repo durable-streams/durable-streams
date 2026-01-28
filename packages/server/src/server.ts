@@ -1034,7 +1034,7 @@ export class DurableStreamTestServer {
       // Send data event + control event for each message (Protocol Section 5.7)
       // Control event is emitted after EVERY data event for immediate delivery
       for (let i = 0; i < messages.length; i++) {
-        const message = messages[i]
+        const message = messages[i]!
         const isLastMessage = i === messages.length - 1
 
         // Format data based on content type and encoding
