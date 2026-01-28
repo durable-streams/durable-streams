@@ -42,7 +42,15 @@ This document describes the implementation plan for adding base64 encoding suppo
 | Step 4: TypeScript Server Implementation | ✅ Complete |
 | Step 5: TypeScript Client Implementation | ✅ Complete |
 | Step 6: Client Conformance Tests         | ✅ Complete |
-| Step 7: Encoding Validation Hardening    | Pending     |
+| Step 7: Python Client Implementation     | ✅ Complete |
+| Step 8: Go Client Implementation         | ✅ Complete |
+| Step 9: Elixir Client Implementation     | ✅ Complete |
+| Step 10: .NET Client Implementation      | Pending     |
+| Step 11: Swift Client Implementation     | Pending     |
+| Step 12: PHP Client Implementation       | Pending     |
+| Step 13: Java Client Implementation      | Pending     |
+| Step 14: Rust Client Implementation      | Pending     |
+| Step 15: Ruby Client Implementation      | Pending     |
 
 ## Implementation Order
 
@@ -80,13 +88,59 @@ Step 6: Client Conformance Tests ✅
    ├── Verify: pnpm build && pnpm typecheck && pnpm lint
    └── Verify: Tests PASS with TypeScript client
 
-Step 7: Encoding Validation Hardening
-   ├── Document in PROTOCOL.md that encoding is only valid with live=sse
-   ├── Add server conformance tests for encoding with non-SSE modes
-   ├── Update TypeScript client to validate encoding requires live='sse'
-   ├── Update Python client to validate encoding requires live='sse'
-   ├── Verify: pnpm build && pnpm typecheck && pnpm lint
-   └── Verify: All conformance tests pass
+Step 7: Python Client Implementation ✅
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live='sse'
+   └── Verify: Client conformance tests pass
+
+Step 8: Go Client Implementation ✅
+   ├── Add WithEncoding() option
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live=sse
+   └── Verify: Client conformance tests pass
+
+Step 9: Elixir Client Implementation ✅
+   ├── Add :encoding option to read/2
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live=:sse
+   └── Verify: Client conformance tests pass
+
+Step 10: .NET Client Implementation
+   ├── Add encoding option to Read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live=sse
+   └── Verify: Client conformance tests pass
+
+Step 11: Swift Client Implementation
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live=.sse
+   └── Verify: Client conformance tests pass
+
+Step 12: PHP Client Implementation
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live='sse'
+   └── Verify: Client conformance tests pass
+
+Step 13: Java Client Implementation
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires LiveMode.SSE
+   └── Verify: Client conformance tests pass
+
+Step 14: Rust Client Implementation
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires LiveMode::Sse
+   └── Verify: Client conformance tests pass
+
+Step 15: Ruby Client Implementation
+   ├── Add encoding option to read() method
+   ├── Add base64 decoding for SSE data events
+   ├── Add validation: encoding requires live: :sse
+   └── Verify: Client conformance tests pass
 ```
 
 ## Step 1: Server Conformance Tests
@@ -176,39 +230,26 @@ Changes to `handleRead()` and `handleSSE()`:
 | client-conformance-tests | `test-cases/consumer/read-sse.yaml`        | Update existing test                    |
 | client-conformance-tests | `test-cases/consumer/read-sse-base64.yaml` | New test file                           |
 
-## Step 7: Encoding Validation Hardening
+## Client Implementation Details
 
-**Issue identified during code review:** The `encoding` parameter is only meaningful for SSE mode, but servers currently silently ignore it for catch-up and long-poll modes. This can lead to confusing behavior where users expect base64-encoded data but receive raw bytes.
+Each client implementation follows the same pattern:
 
-### 7.1 Protocol Documentation
+1. **Add encoding option** - Accept `encoding: 'base64'` in read options
+2. **Pass query parameter** - Add `?encoding=base64` to SSE request URL
+3. **Decode SSE data events** - Base64 decode data event payloads before returning
+4. **Validate usage** - Return error if encoding used without SSE mode
 
-**File:** `PROTOCOL.md`
+### Client Packages
 
-Add explicit statement in Section 5.7 that the `encoding` parameter is only valid when `live=sse`. Servers MUST return 400 Bad Request if `encoding` is provided without `live=sse`.
-
-### 7.2 Server Conformance Tests
-
-**File:** `packages/server-conformance-tests/src/index.ts`
-
-**New tests:**
-
-| Test                                                           | Expected Result |
-| -------------------------------------------------------------- | --------------- |
-| `should return 400 for encoding parameter without live mode`   | 400             |
-| `should return 400 for encoding parameter with live=long-poll` | 400             |
-
-### 7.3 Client Validation
-
-**Files to modify:**
-
-| Package   | File                             | Change                                                    |
-| --------- | -------------------------------- | --------------------------------------------------------- |
-| client    | `src/stream-api.ts`              | Throw error if `encoding` specified without `live: 'sse'` |
-| client-py | `src/durable_streams/stream.py`  | Raise error if `encoding` specified without `live='sse'`  |
-| client-py | `src/durable_streams/astream.py` | Raise error if `encoding` specified without `live='sse'`  |
-
-### 7.4 Rationale
-
-- **Fail-fast behavior:** Users get immediate feedback when misconfiguring the API
-- **Consistent contract:** Both client and server enforce the same rules
-- **Protocol compliance:** Aligns with protocol spec that encoding is SSE-specific
+| Package       | Language   | Status      |
+| ------------- | ---------- | ----------- |
+| client        | TypeScript | ✅ Complete |
+| client-py     | Python     | ✅ Complete |
+| client-go     | Go         | ✅ Complete |
+| client-elixir | Elixir     | ✅ Complete |
+| client-dotnet | .NET       | Pending     |
+| client-swift  | Swift      | Pending     |
+| client-php    | PHP        | Pending     |
+| client-java   | Java       | Pending     |
+| client-rust   | Rust       | Pending     |
+| client-rb     | Ruby       | Pending     |
