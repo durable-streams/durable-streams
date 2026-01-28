@@ -52,6 +52,9 @@ enum QueryParams {
 
     /// Cursor for CDN collapsing
     static let cursor = "cursor"
+
+    /// Encoding for SSE with binary streams (e.g., "base64")
+    static let encoding = "encoding"
 }
 
 /// Default values for client configuration.
