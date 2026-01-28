@@ -353,7 +353,7 @@ func TestFileStore_LongPoll(t *testing.T) {
 	var messages []Message
 	var timedOut bool
 	go func() {
-		messages, timedOut, _ = store.WaitForMessages(context.Background(), "/test", ZeroOffset, 5*time.Second)
+		messages, timedOut, _, _ = store.WaitForMessages(context.Background(), "/test", ZeroOffset, 5*time.Second)
 		close(done)
 	}()
 
@@ -393,7 +393,7 @@ func TestFileStore_LongPollTimeout(t *testing.T) {
 	offset, _ := store.GetCurrentOffset("/test")
 
 	// Long-poll at tail with short timeout
-	messages, timedOut, err := store.WaitForMessages(context.Background(), "/test", offset, 100*time.Millisecond)
+	messages, timedOut, _, err := store.WaitForMessages(context.Background(), "/test", offset, 100*time.Millisecond)
 	if err != nil {
 		t.Fatalf("WaitForMessages failed: %v", err)
 	}
@@ -440,5 +440,152 @@ func TestFileStore_InitialData(t *testing.T) {
 	}
 	if !bytes.Equal(messages[0].Data, []byte("initial content")) {
 		t.Error("initial data mismatch")
+	}
+}
+
+func TestFileStore_StreamClosure(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "filestore-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create stream
+	_, _, err = store.Create("/test", CreateOptions{
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Append some data
+	_, err = store.Append("/test", []byte("data"), AppendOptions{})
+	if err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	// Close the stream
+	closeResult, err := store.CloseStream("/test")
+	if err != nil {
+		t.Fatalf("CloseStream failed: %v", err)
+	}
+	if closeResult.AlreadyClosed {
+		t.Error("stream should not be already closed")
+	}
+
+	// Verify stream is closed
+	meta, err := store.Get("/test")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !meta.Closed {
+		t.Error("stream should be closed")
+	}
+
+	// Try to append to closed stream - should fail
+	_, err = store.Append("/test", []byte("more data"), AppendOptions{})
+	if err != ErrStreamClosed {
+		t.Errorf("expected ErrStreamClosed, got: %v", err)
+	}
+
+	// Close again (idempotent)
+	closeResult, err = store.CloseStream("/test")
+	if err != nil {
+		t.Fatalf("second CloseStream failed: %v", err)
+	}
+	if !closeResult.AlreadyClosed {
+		t.Error("stream should be already closed")
+	}
+}
+
+func TestFileStore_CreateClosed(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "filestore-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create stream in closed state
+	meta, _, err := store.Create("/closed", CreateOptions{
+		ContentType: "text/plain",
+		Closed:      true,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if !meta.Closed {
+		t.Error("stream should be created closed")
+	}
+
+	// Append should fail
+	_, err = store.Append("/closed", []byte("data"), AppendOptions{})
+	if err != ErrStreamClosed {
+		t.Errorf("expected ErrStreamClosed, got: %v", err)
+	}
+}
+
+func TestFileStore_AppendAndClose(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "filestore-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Create stream
+	_, _, err = store.Create("/test", CreateOptions{
+		ContentType: "text/plain",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Append with close
+	result, err := store.Append("/test", []byte("final"), AppendOptions{
+		Close: true,
+	})
+	if err != nil {
+		t.Fatalf("Append with close failed: %v", err)
+	}
+	if !result.StreamClosed {
+		t.Error("StreamClosed should be true")
+	}
+
+	// Verify stream is closed
+	meta, err := store.Get("/test")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if !meta.Closed {
+		t.Error("stream should be closed after append with close")
+	}
+
+	// Read back data
+	messages, _, err := store.Read("/test", ZeroOffset)
+	if err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Errorf("expected 1 message, got %d", len(messages))
+	}
+	if !bytes.Equal(messages[0].Data, []byte("final")) {
+		t.Error("data mismatch")
 	}
 }
