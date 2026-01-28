@@ -17,7 +17,7 @@ from typing import Any
 
 import httpx
 
-from durable_streams._errors import DurableStreamError, FetchError
+from durable_streams._errors import DurableStreamError, FetchError, StreamClosedError
 from durable_streams._types import Offset, STREAM_CLOSED_HEADER
 
 # Producer header constants
@@ -186,6 +186,7 @@ class IdempotentProducer:
         # Pipelining state
         self._in_flight: dict[int, asyncio.Task[None]] = {}  # seq -> task
         self._closed = False
+        self._stream_closed = False
 
         # When auto_claim is true, epoch is not yet known until first batch completes
         # We block pipelining until then to avoid racing with the claim
@@ -348,6 +349,9 @@ class IdempotentProducer:
 
         This is idempotent when called with the same (producerId, epoch, seq).
         """
+        if self._stream_closed:
+            return IdempotentAppendResult(offset="", duplicate=True)
+
         # Ensure pending batches are flushed before closing
         await self.flush()
 
@@ -358,6 +362,7 @@ class IdempotentProducer:
         epoch = self._epoch
         try:
             result = await self._do_send_close(data, close_seq, epoch)
+            self._stream_closed = True
 
             if not self._epoch_claimed:
                 self._epoch_claimed = True
@@ -426,7 +431,9 @@ class IdempotentProducer:
                 response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
             )
             if stream_closed:
-                return IdempotentAppendResult(offset="", duplicate=True)
+                if self._stream_closed:
+                    return IdempotentAppendResult(offset="", duplicate=True)
+                raise StreamClosedError(url=self._url)
 
             expected_seq_str = response.headers.get(PRODUCER_EXPECTED_SEQ_HEADER)
             expected_seq = int(expected_seq_str) if expected_seq_str else 0

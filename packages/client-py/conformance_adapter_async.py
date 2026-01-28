@@ -55,6 +55,7 @@ ERROR_CODES = {
 server_url = ""
 stream_content_types: dict[str, str] = {}
 producer_next_seq: dict[tuple[str, str, int], int] = {}
+producer_stream_closed: dict[tuple[str, str], bool] = {}
 
 # Dynamic headers/params state
 class DynamicValue:
@@ -180,6 +181,8 @@ async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     stream_content_types.clear()
     dynamic_headers.clear()
     dynamic_params.clear()
+    producer_next_seq.clear()
+    producer_stream_closed.clear()
 
     return {
         "type": "init",
@@ -641,6 +644,11 @@ async def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Remove from cache
     stream_content_types.pop(cmd["path"], None)
+    path = cmd["path"]
+    for key in [k for k in producer_next_seq if k[0] == path]:
+        producer_next_seq.pop(key, None)
+    for key in [k for k in producer_stream_closed if k[0] == path]:
+        producer_stream_closed.pop(key, None)
 
     return {
         "type": "delete",
@@ -902,6 +910,7 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
+    producer_seq = cmd.get("producerSeq")
     # Data is already pre-serialized, pass directly to append()
     items = cmd["items"]
 
@@ -926,11 +935,7 @@ async def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
         )
         try:
             seq_key = (cmd["path"], producer_id, epoch)
-            next_seq = (
-                producer_seq
-                if producer_seq is not None
-                else producer_next_seq.get(seq_key, 0)
-            )
+        next_seq = producer_seq if producer_seq is not None else 0
             producer._next_seq = next_seq
 
             # append() is fire-and-forget (synchronous), adds to pending batch
@@ -971,6 +976,14 @@ async def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
     if data is not None:
         body = decode_base64(data) if binary else data
 
+    producer_key = (cmd["path"], producer_id)
+    if producer_stream_closed.get(producer_key):
+        return {
+            "type": "idempotent-producer-close",
+            "success": True,
+            "status": 200,
+        }
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         producer = IdempotentProducer(
             url=url,
@@ -991,7 +1004,8 @@ async def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
             )
             producer._next_seq = next_seq
 
-            result = await producer.close_stream(data=body)
+        result = await producer.close_stream(data=body)
+        producer_stream_closed[producer_key] = True
 
             final_epoch = producer.epoch
             final_key = (cmd["path"], producer_id, final_epoch)
@@ -1006,6 +1020,19 @@ async def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
         "success": True,
         "status": 200,
         "finalOffset": result.offset,
+    }
+
+
+async def handle_idempotent_detach(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-detach command."""
+    producer_key = (cmd["path"], cmd["producerId"])
+    producer_stream_closed.pop(producer_key, None)
+    for key in [k for k in producer_next_seq if k[0] == cmd["path"] and k[1] == cmd["producerId"]]:
+        producer_next_seq.pop(key, None)
+    return {
+        "type": "idempotent-detach",
+        "success": True,
+        "status": 200,
     }
 
 
@@ -1101,6 +1128,8 @@ async def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return await handle_idempotent_append_batch(cmd)
         elif cmd_type in ("idempotent-producer-close", "idempotent-close"):
             return await handle_idempotent_close(cmd)
+        elif cmd_type == "idempotent-detach":
+            return await handle_idempotent_detach(cmd)
         elif cmd_type == "validate":
             return handle_validate(cmd)
         else:
