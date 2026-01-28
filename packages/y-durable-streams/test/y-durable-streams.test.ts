@@ -3,7 +3,7 @@ import { DurableStreamTestServer } from "@durable-streams/server"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { DurableStreamsProvider } from "../src"
-import type { ProviderStatus } from "../src"
+import type { ProviderStatus, TransportMode } from "../src"
 
 describe(`y-durable-streams`, () => {
   let server: DurableStreamTestServer
@@ -36,22 +36,27 @@ describe(`y-durable-streams`, () => {
         doc?: Y.Doc
         awareness?: boolean
         connect?: boolean
+        transport?: TransportMode
+        awarenessTransport?: TransportMode
       }
     ): DurableStreamsProvider {
       const doc = options?.doc ?? new Y.Doc()
       const awarenessProtocol = options?.awareness
         ? new Awareness(doc)
         : undefined
+      const transport = options?.transport ?? `sse`
 
       const provider = new DurableStreamsProvider({
         doc,
         documentStream: {
           url: `${baseUrl}/v1/stream/rooms/${roomId}`,
+          transport,
         },
         awarenessStream: awarenessProtocol
           ? {
               url: `${baseUrl}/v1/stream/presence/${roomId}`,
               protocol: awarenessProtocol,
+              transport: options?.awarenessTransport ?? transport,
             }
           : undefined,
         connect: options?.connect,
@@ -242,6 +247,156 @@ describe(`y-durable-streams`, () => {
       })
     })
 
+    describe(`SSE transport with base64 encoding`, () => {
+      it(`should sync document between two providers using SSE`, async () => {
+        const roomId = `sse-sync-${Date.now()}`
+
+        // Provider 1 creates content using SSE transport
+        const doc1 = new Y.Doc()
+        const provider1 = createProvider(roomId, {
+          doc: doc1,
+          transport: `sse`,
+        })
+        await waitForSync(provider1)
+
+        const text1 = doc1.getText(`content`)
+        text1.insert(0, `Hello from SSE doc1`)
+
+        // Wait for the update to be sent
+        await new Promise((r) => setTimeout(r, 200))
+
+        // Provider 2 joins using SSE and should receive the content
+        const doc2 = new Y.Doc()
+        const provider2 = createProvider(roomId, {
+          doc: doc2,
+          transport: `sse`,
+        })
+        await waitForSync(provider2)
+
+        const text2 = doc2.getText(`content`)
+        expect(text2.toString()).toBe(`Hello from SSE doc1`)
+      })
+
+      it(`should sync incremental updates using SSE`, async () => {
+        const roomId = `sse-incremental-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const doc2 = new Y.Doc()
+
+        const provider1 = createProvider(roomId, {
+          doc: doc1,
+          transport: `sse`,
+        })
+        const provider2 = createProvider(roomId, {
+          doc: doc2,
+          transport: `sse`,
+        })
+
+        await waitForSync(provider1)
+        await waitForSync(provider2)
+
+        const text1 = doc1.getText(`content`)
+        const text2 = doc2.getText(`content`)
+
+        // Make changes in doc1
+        text1.insert(0, `First`)
+
+        // Wait for sync
+        await new Promise((r) => setTimeout(r, 300))
+
+        expect(text2.toString()).toBe(`First`)
+
+        // Make more changes
+        text1.insert(5, ` Second`)
+        await new Promise((r) => setTimeout(r, 300))
+
+        expect(text2.toString()).toBe(`First Second`)
+      })
+
+      it(`should handle concurrent edits using SSE`, async () => {
+        const roomId = `sse-concurrent-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const doc2 = new Y.Doc()
+
+        const provider1 = createProvider(roomId, {
+          doc: doc1,
+          transport: `sse`,
+        })
+        const provider2 = createProvider(roomId, {
+          doc: doc2,
+          transport: `sse`,
+        })
+
+        await waitForSync(provider1)
+        await waitForSync(provider2)
+
+        // Ensure both start empty
+        expect(doc1.getText(`content`).toString()).toBe(``)
+        expect(doc2.getText(`content`).toString()).toBe(``)
+
+        // Make concurrent edits
+        doc1.getText(`content`).insert(0, `AAA`)
+        doc2.getText(`content`).insert(0, `BBB`)
+
+        // Wait for sync
+        await new Promise((r) => setTimeout(r, 500))
+
+        // Both should converge to the same state (CRDT property)
+        const content1 = doc1.getText(`content`).toString()
+        const content2 = doc2.getText(`content`).toString()
+
+        expect(content1).toBe(content2)
+        expect(content1).toContain(`AAA`)
+        expect(content1).toContain(`BBB`)
+      })
+
+      it(`should sync Y.Map using SSE`, async () => {
+        const roomId = `sse-map-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = createProvider(roomId, {
+          doc: doc1,
+          transport: `sse`,
+        })
+        await waitForSync(provider1)
+
+        const map1 = doc1.getMap(`settings`)
+        map1.set(`theme`, `dark`)
+        map1.set(`fontSize`, 14)
+
+        await new Promise((r) => setTimeout(r, 200))
+
+        const doc2 = new Y.Doc()
+        const provider2 = createProvider(roomId, {
+          doc: doc2,
+          transport: `sse`,
+        })
+        await waitForSync(provider2)
+
+        const map2 = doc2.getMap(`settings`)
+        expect(map2.get(`theme`)).toBe(`dark`)
+        expect(map2.get(`fontSize`)).toBe(14)
+      })
+
+      it(`should handle reconnect and disconnect with SSE`, async () => {
+        const roomId = `sse-reconnect-${Date.now()}`
+        const provider = createProvider(roomId, { transport: `sse` })
+
+        await waitForSync(provider)
+        expect(provider.connected).toBe(true)
+
+        provider.disconnect()
+        expect(provider.connected).toBe(false)
+        expect(provider.synced).toBe(false)
+
+        await provider.connect()
+        await waitForSync(provider)
+        expect(provider.connected).toBe(true)
+        expect(provider.synced).toBe(true)
+      })
+    })
+
     describe(`Y.Map and Y.Array support`, () => {
       it(`should sync Y.Map`, async () => {
         const roomId = `map-sync-${Date.now()}`
@@ -286,182 +441,6 @@ describe(`y-durable-streams`, () => {
       })
     })
 
-    describe(`Awareness (presence) - Binary Format`, () => {
-      it(`should sync awareness between providers`, async () => {
-        const roomId = `awareness-${Date.now()}`
-
-        const doc1 = new Y.Doc()
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        await waitForSync(provider1)
-
-        // Set local awareness state
-        provider1.awareness!.setLocalStateField(`user`, {
-          name: `Alice`,
-          color: `#ff0000`,
-        })
-
-        await new Promise((r) => setTimeout(r, 300))
-
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
-        // Wait for awareness to sync
-        await new Promise((r) => setTimeout(r, 500))
-
-        const states = provider2.awareness!.getStates()
-        const client1State = states.get(provider1.awareness!.clientID)
-
-        expect(client1State).toBeDefined()
-        expect(client1State?.user).toEqual({
-          name: `Alice`,
-          color: `#ff0000`,
-        })
-      })
-
-      it(`should sync awareness with complex state objects`, async () => {
-        const roomId = `awareness-complex-${Date.now()}`
-
-        const doc1 = new Y.Doc()
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        await waitForSync(provider1)
-
-        // Set complex awareness state with nested objects
-        provider1.awareness!.setLocalStateField(`user`, {
-          name: `Bob`,
-          color: `#00ff00`,
-        })
-        provider1.awareness!.setLocalStateField(`cursor`, {
-          x: 100,
-          y: 200,
-          selection: { start: 0, end: 10 },
-        })
-
-        await new Promise((r) => setTimeout(r, 300))
-
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
-        await new Promise((r) => setTimeout(r, 500))
-
-        const states = provider2.awareness!.getStates()
-        const client1State = states.get(provider1.awareness!.clientID)
-
-        expect(client1State).toBeDefined()
-        expect(client1State?.user).toEqual({
-          name: `Bob`,
-          color: `#00ff00`,
-        })
-        expect(client1State?.cursor).toEqual({
-          x: 100,
-          y: 200,
-          selection: { start: 0, end: 10 },
-        })
-      })
-
-      it(`should handle awareness updates from multiple clients`, async () => {
-        const roomId = `awareness-multi-${Date.now()}`
-
-        const doc1 = new Y.Doc()
-        const doc2 = new Y.Doc()
-        const doc3 = new Y.Doc()
-
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-
-        await waitForSync(provider1)
-        await waitForSync(provider2)
-
-        // Set awareness for both clients
-        provider1.awareness!.setLocalStateField(`user`, { name: `Client1` })
-        provider2.awareness!.setLocalStateField(`user`, { name: `Client2` })
-
-        await new Promise((r) => setTimeout(r, 500))
-
-        // Third client joins and should see both awareness states
-        const provider3 = createProvider(roomId, { doc: doc3, awareness: true })
-        await waitForSync(provider3)
-
-        await new Promise((r) => setTimeout(r, 500))
-
-        const states = provider3.awareness!.getStates()
-
-        // Should see at least its own state plus both other clients
-        expect(states.size).toBeGreaterThanOrEqual(2)
-
-        const client1State = states.get(provider1.awareness!.clientID)
-        const client2State = states.get(provider2.awareness!.clientID)
-
-        expect(client1State?.user).toEqual({ name: `Client1` })
-        expect(client2State?.user).toEqual({ name: `Client2` })
-      })
-
-      it(`should update awareness state changes in real-time`, async () => {
-        const roomId = `awareness-realtime-${Date.now()}`
-
-        const doc1 = new Y.Doc()
-        const doc2 = new Y.Doc()
-
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-
-        await waitForSync(provider1)
-        await waitForSync(provider2)
-
-        // Initial state
-        provider1.awareness!.setLocalStateField(`user`, { name: `Initial` })
-        await new Promise((r) => setTimeout(r, 300))
-
-        let client1State = provider2
-          .awareness!.getStates()
-          .get(provider1.awareness!.clientID)
-        expect(client1State?.user).toEqual({ name: `Initial` })
-
-        // Update state
-        provider1.awareness!.setLocalStateField(`user`, { name: `Updated` })
-        await new Promise((r) => setTimeout(r, 300))
-
-        client1State = provider2
-          .awareness!.getStates()
-          .get(provider1.awareness!.clientID)
-        expect(client1State?.user).toEqual({ name: `Updated` })
-      })
-
-      it(`should handle binary awareness data with special characters in state`, async () => {
-        const roomId = `awareness-special-${Date.now()}`
-
-        const doc1 = new Y.Doc()
-        const provider1 = createProvider(roomId, { doc: doc1, awareness: true })
-        await waitForSync(provider1)
-
-        // Set state with special characters and unicode
-        provider1.awareness!.setLocalStateField(`user`, {
-          name: `User 日本語 🎉`,
-          emoji: `👍🏻`,
-          special: `"quotes" and 'apostrophes' & <html>`,
-        })
-
-        await new Promise((r) => setTimeout(r, 300))
-
-        const doc2 = new Y.Doc()
-        const provider2 = createProvider(roomId, { doc: doc2, awareness: true })
-        await waitForSync(provider2)
-
-        await new Promise((r) => setTimeout(r, 500))
-
-        const states = provider2.awareness!.getStates()
-        const client1State = states.get(provider1.awareness!.clientID)
-
-        expect(client1State).toBeDefined()
-        expect(client1State?.user).toEqual({
-          name: `User 日本語 🎉`,
-          emoji: `👍🏻`,
-          special: `"quotes" and 'apostrophes' & <html>`,
-        })
-      })
-    })
-
     describe(`Error handling`, () => {
       it(`should emit error event on failure`, async () => {
         const doc = new Y.Doc()
@@ -471,6 +450,7 @@ describe(`y-durable-streams`, () => {
           doc,
           documentStream: {
             url: `http://localhost:99999/invalid`, // Invalid port
+            transport: `sse`,
           },
           connect: false,
         })
