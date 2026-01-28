@@ -118,6 +118,10 @@ STREAM_EXPIRES_AT_HEADER = "Stream-Expires-At"
 OFFSET_QUERY_PARAM = "offset"
 LIVE_QUERY_PARAM = "live"
 CURSOR_QUERY_PARAM = "cursor"
+ENCODING_QUERY_PARAM = "encoding"
 
 # Content types compatible with SSE
 SSE_COMPATIBLE_CONTENT_TYPES = ("text/", "application/json")
+
+# SSE encoding type
+SSEEncoding = Literal["base64"]

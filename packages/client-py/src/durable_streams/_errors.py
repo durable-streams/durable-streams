@@ -270,6 +270,19 @@ class StreamClosedError(DurableStreamError):
         self.final_offset = final_offset
 
 
+class SSEEncodingError(DurableStreamError):
+    """
+    Exception raised when there's an encoding error for SSE mode.
+
+    This can happen when:
+    - encoding is provided for text/* or application/json streams (not allowed)
+    - base64 decoding fails (invalid base64 data)
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="SSE_ENCODING_ERROR")
+
+
 def error_from_status(
     status: int,
     url: str,
