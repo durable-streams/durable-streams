@@ -453,7 +453,14 @@ func handleCreate(_ cmd: Command) async -> Result {
         return errorResult(cmd.type, "INTERNAL_ERROR", "Invalid URL")
     }
 
-    let contentType = cmd.contentType ?? "application/octet-stream"
+    let contentType: String
+    if let providedContentType = cmd.contentType {
+        contentType = providedContentType
+    } else if let cachedContentType = await state.getContentType(path: path) {
+        contentType = cachedContentType
+    } else {
+        contentType = "application/octet-stream"
+    }
     let closed = cmd.closed ?? false
 
     // Decode data if provided
