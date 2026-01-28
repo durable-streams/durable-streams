@@ -136,7 +136,22 @@ public final class DurableStream implements AutoCloseable {
      */
     public void create(String url, String contentType, Duration ttl, Instant expiresAt, boolean closed)
             throws DurableStreamException {
-        HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt, closed);
+        create(url, contentType, ttl, expiresAt, closed, null);
+    }
+
+    /**
+     * Create a stream with full options and optional initial data.
+     *
+     * @param url Stream URL
+     * @param contentType MIME type (e.g., "application/json")
+     * @param ttl Time-to-live duration
+     * @param expiresAt Absolute expiration time
+     * @param closed Create stream as immediately closed
+     * @param data Optional initial data to write
+     */
+    public void create(String url, String contentType, Duration ttl, Instant expiresAt, boolean closed, byte[] data)
+            throws DurableStreamException {
+        HttpRequest request = buildCreateRequest(url, contentType, ttl, expiresAt, closed, data);
         executeWithRetry(request, "create", response -> parseCreateResponse(response, url));
     }
 
@@ -389,13 +404,30 @@ public final class DurableStream implements AutoCloseable {
     }
 
     private HttpRequest buildCreateRequest(String url, String contentType, Duration ttl, Instant expiresAt) {
-        return buildCreateRequest(url, contentType, ttl, expiresAt, false);
+        return buildCreateRequest(url, contentType, ttl, expiresAt, false, null);
     }
 
-    private HttpRequest buildCreateRequest(String url, String contentType, Duration ttl, Instant expiresAt, boolean closed) {
+    private HttpRequest buildCreateRequest(
+            String url,
+            String contentType,
+            Duration ttl,
+            Instant expiresAt,
+            boolean closed,
+            byte[] data) {
+        HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.noBody();
+        byte[] body = null;
+        if (data != null && data.length > 0) {
+            if (contentType != null && contentType.toLowerCase().contains("application/json")) {
+                body = wrapInJsonArray(data);
+            } else {
+                body = data;
+            }
+            bodyPublisher = HttpRequest.BodyPublishers.ofByteArray(body);
+        }
+
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(buildUrlWithParams(url)))
-                .method("PUT", HttpRequest.BodyPublishers.noBody())
+                .method("PUT", bodyPublisher)
                 .timeout(Duration.ofSeconds(30));
 
         resolveHeaders().forEach(builder::header);
@@ -602,6 +634,10 @@ public final class DurableStream implements AutoCloseable {
         } else if (status == 404) {
             throw new StreamNotFoundException(url);
         } else if (status == 409) {
+            String streamClosed = response.headers().firstValue("Stream-Closed").orElse(null);
+            if ("true".equalsIgnoreCase(streamClosed)) {
+                throw new StreamClosedException(url);
+            }
             throw new SequenceConflictException(
                     response.headers().firstValue("Stream-Seq").orElse("unknown"),
                     seq != null ? String.valueOf(seq) : "unknown"
