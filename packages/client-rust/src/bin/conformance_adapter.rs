@@ -449,7 +449,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     // Check if this is a JSON stream from cached content type
     let is_json_stream = app_state
