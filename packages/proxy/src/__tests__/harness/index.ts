@@ -25,6 +25,7 @@ export {
   abortStream,
   headStream,
   deleteStream,
+  waitForStreamReady,
   collectStreamChunks,
   parseSSEEvents,
   waitFor,

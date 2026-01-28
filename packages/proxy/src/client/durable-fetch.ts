@@ -33,6 +33,28 @@ import type {
 const DEFAULT_PREFIX = `durable-streams:`
 
 /**
+ * Check whether an error from a resume attempt is expected and
+ * should fall through to creating a new stream.
+ *
+ * Expected failures: network errors (TypeError), stale/deleted streams
+ * (404 / not found), and abort signals. Anything else is unexpected
+ * and should propagate to the caller.
+ */
+function isExpectedResumeError(error: unknown): boolean {
+  if (error instanceof TypeError) {
+    return true
+  }
+  if (error instanceof Error) {
+    return (
+      error.message.includes(`404`) ||
+      error.message.includes(`not found`) ||
+      error.name === `AbortError`
+    )
+  }
+  return false
+}
+
+/**
  * Create a durable fetch wrapper.
  *
  * This wrapper:
@@ -113,15 +135,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
             normalizedProxyUrl,
             requestId
           )
-          // Only fall through to create for expected resume failures
-          // (network errors, 404 stale stream). Rethrow unexpected errors.
-          const isExpected =
-            error instanceof TypeError || // network/fetch errors
-            (error instanceof Error &&
-              (error.message.includes(`404`) ||
-                error.message.includes(`not found`) ||
-                error.name === `AbortError`))
-          if (!isExpected) {
+          if (!isExpectedResumeError(error)) {
             throw error
           }
         }

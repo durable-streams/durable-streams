@@ -11,9 +11,8 @@ import {
   createStream,
   createTestContext,
   deleteStream,
-  headStream,
   readStream,
-  waitFor,
+  waitForStreamReady,
 } from "./harness"
 
 const ctx = createTestContext()
@@ -59,14 +58,7 @@ describe(`stream deletion`, () => {
     expect(createResult.status).toBe(201)
     expect(createResult.streamId).toBeDefined()
 
-    // Wait for data to be piped
-    await waitFor(async () => {
-      const r = await headStream({
-        proxyUrl: ctx.urls.proxy,
-        streamId: createResult.streamId!,
-      })
-      return r.status === 200
-    })
+    await waitForStreamReady(ctx.urls.proxy, createResult.streamId!)
 
     const result = await deleteStream({
       proxyUrl: ctx.urls.proxy,
@@ -96,14 +88,7 @@ describe(`stream deletion`, () => {
 
     expect(createResult.streamId).toBeDefined()
 
-    // Wait for data to be piped
-    await waitFor(async () => {
-      const r = await headStream({
-        proxyUrl: ctx.urls.proxy,
-        streamId: createResult.streamId!,
-      })
-      return r.status === 200
-    })
+    await waitForStreamReady(ctx.urls.proxy, createResult.streamId!)
 
     // Delete the stream
     const deleteResult = await deleteStream({

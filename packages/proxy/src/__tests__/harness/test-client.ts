@@ -228,20 +228,10 @@ export async function abortStream(
     method: `PATCH`,
   })
 
-  let body: unknown = null
-  if (response.status !== 204) {
-    const contentType = response.headers.get(`content-type`) ?? ``
-    if (contentType.includes(`application/json`)) {
-      body = await response.json()
-    } else {
-      body = await response.text()
-    }
-  }
-
   return {
     status: response.status,
     headers: response.headers,
-    body,
+    body: await parseResponseBody(response),
   }
 }
 
@@ -327,21 +317,41 @@ export async function deleteStream(
     method: `DELETE`,
   })
 
-  let body: unknown = null
-  if (response.status !== 204) {
-    const contentType = response.headers.get(`content-type`) ?? ``
-    if (contentType.includes(`application/json`)) {
-      body = await response.json()
-    } else {
-      body = await response.text()
-    }
-  }
-
   return {
     status: response.status,
     headers: response.headers,
-    body,
+    body: await parseResponseBody(response),
   }
+}
+
+/**
+ * Wait until a stream is ready (returns 200 from HEAD).
+ * Useful after createStream to ensure data has been piped before further assertions.
+ */
+export async function waitForStreamReady(
+  proxyUrl: string,
+  streamId: string
+): Promise<void> {
+  await waitFor(async () => {
+    const r = await headStream({ proxyUrl, streamId })
+    return r.status === 200
+  })
+}
+
+/**
+ * Parse a response body based on content type.
+ * Returns null for 204 No Content responses.
+ */
+async function parseResponseBody(response: Response): Promise<unknown> {
+  if (response.status === 204) {
+    return null
+  }
+
+  const contentType = response.headers.get(`content-type`) ?? ``
+  if (contentType.includes(`application/json`)) {
+    return response.json()
+  }
+  return response.text()
 }
 
 /**

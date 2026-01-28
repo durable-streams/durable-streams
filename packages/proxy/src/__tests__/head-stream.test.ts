@@ -10,7 +10,7 @@ import {
   createStream,
   createTestContext,
   headStream,
-  waitFor,
+  waitForStreamReady,
 } from "./harness"
 
 const ctx = createTestContext()
@@ -65,14 +65,7 @@ describe(`stream HEAD metadata`, () => {
     expect(createResult.status).toBe(201)
     expect(createResult.streamId).toBeDefined()
 
-    // Wait for data to be piped
-    await waitFor(async () => {
-      const r = await headStream({
-        proxyUrl: ctx.urls.proxy,
-        streamId: createResult.streamId!,
-      })
-      return r.status === 200
-    })
+    await waitForStreamReady(ctx.urls.proxy, createResult.streamId!)
 
     const result = await headStream({
       proxyUrl: ctx.urls.proxy,
@@ -94,14 +87,7 @@ describe(`stream HEAD metadata`, () => {
 
     expect(createResult.streamId).toBeDefined()
 
-    // Wait for data to be piped
-    await waitFor(async () => {
-      const r = await headStream({
-        proxyUrl: ctx.urls.proxy,
-        streamId: createResult.streamId!,
-      })
-      return r.status === 200
-    })
+    await waitForStreamReady(ctx.urls.proxy, createResult.streamId!)
 
     const result = await headStream({
       proxyUrl: ctx.urls.proxy,
