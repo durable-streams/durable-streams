@@ -125,6 +125,7 @@ async Task<object> HandleCreate(JsonElement root)
     var closed = GetOptionalBool(root, "closed") ?? false;
     var dataStr = GetOptionalString(root, "data");
     var binary = GetOptionalBool(root, "binary");
+    var headers = GetHeaders(root);
     try
     {
         var stream = client.GetStream(path);
