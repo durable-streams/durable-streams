@@ -147,7 +147,7 @@ export async function handleCreateStream(
     sendError(
       res,
       400,
-      `INVALID_ACTION`,
+      `INVALID_UPSTREAM_METHOD`,
       `Upstream-Method must be one of: GET, POST, PUT, PATCH, DELETE`
     )
     return

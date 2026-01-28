@@ -89,7 +89,7 @@ describe(`upstream connection failure`, () => {
     expect(result.headers.get(`Upstream-Status`)).toBe(`503`)
   })
 
-  it(`returns 400 INVALID_ACTION for disallowed methods`, async () => {
+  it(`returns 400 INVALID_UPSTREAM_METHOD for disallowed methods`, async () => {
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, `test-secret-key-for-development`)
 
@@ -105,6 +105,6 @@ describe(`upstream connection failure`, () => {
 
     expect(response.status).toBe(400)
     const body = await response.json()
-    expect(body.error.code).toBe(`INVALID_ACTION`)
+    expect(body.error.code).toBe(`INVALID_UPSTREAM_METHOD`)
   })
 })

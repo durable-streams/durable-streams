@@ -36,7 +36,7 @@ The proxy protocol is registered at `/v1/proxy` with the following routes:
 
 3. **Method Validation**: `Upstream-Method` must be one of: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`
    - Disallowed: `HEAD`, `OPTIONS`, `CONNECT`, `TRACE`
-   - Error: `INVALID_ACTION` (400)
+   - Error: `INVALID_UPSTREAM_METHOD` (400)
 
 4. **Allowlist Validation**: `Upstream-URL` must match at least one pattern in the configured allowlist
    - URL must use HTTP or HTTPS scheme
@@ -106,12 +106,12 @@ Runs asynchronously after POST returns:
 
 ```http
 HTTP/1.1 201 Created
-Location: /v1/proxy/{streamId}?expires={ts}&signature={sig}
+Location: https://{host}/v1/proxy/{streamId}?expires={ts}&signature={sig}
 Upstream-Content-Type: {upstream Content-Type}
 Access-Control-Expose-Headers: Location, Upstream-Content-Type, ...
 ```
 
-No response body. Location contains pre-signed URL valid for 24 hours.
+No response body. Location is always an absolute URL (using `X-Forwarded-Proto` for scheme detection behind TLS-terminating proxies). The pre-signed URL is valid for 24 hours.
 
 **On Upstream Error (4xx/5xx)**:
 
@@ -292,6 +292,21 @@ url = `${origin}/v1/proxy/${streamId}?expires=${expiresAt}&signature=${signature
 
 ---
 
+## Capability Model
+
+The pre-signed URL returned by POST is a **capability URL**: possession of it grants both **read** and **abort** access to the stream. The signature binds to `{streamId}:{expires}` and does not include the HTTP method or action, so a single URL works for both GET (read) and PATCH (abort).
+
+| Operation           | Auth required                   |
+| ------------------- | ------------------------------- |
+| **Read** (GET)      | Pre-signed URL _or_ service JWT |
+| **Abort** (PATCH)   | Pre-signed URL only             |
+| **Metadata** (HEAD) | Service JWT only                |
+| **Delete** (DELETE) | Service JWT only                |
+
+This means any holder of the pre-signed URL can abort the upstream connection. If you share read URLs with untrusted parties, be aware they can also cancel generation. Administrative operations (metadata, deletion) require the service secret and cannot be performed with a pre-signed URL alone.
+
+---
+
 ## Allowlist Pattern Matching
 
 Patterns parsed into `URLPattern` matchers:
@@ -348,18 +363,19 @@ Default ports (80 for HTTP, 443 for HTTPS) are normalized to empty string.
 
 ## Error Codes Reference
 
-| Code                      | Status | Trigger                                 |
-| ------------------------- | ------ | --------------------------------------- |
-| `MISSING_SECRET`          | 401    | No JWT in request                       |
-| `INVALID_SECRET`          | 401    | JWT verification failed                 |
-| `SIGNATURE_EXPIRED`       | 401    | Pre-signed URL past expiration          |
-| `SIGNATURE_INVALID`       | 401    | HMAC verification failed                |
-| `MISSING_SIGNATURE`       | 401    | PATCH without expires/signature         |
-| `MISSING_UPSTREAM_URL`    | 400    | POST without Upstream-URL header        |
-| `MISSING_UPSTREAM_METHOD` | 400    | POST without Upstream-Method header     |
-| `INVALID_ACTION`          | 400    | Invalid Upstream-Method or PATCH action |
-| `REDIRECT_NOT_ALLOWED`    | 400    | Upstream returned 3xx                   |
-| `UPSTREAM_NOT_ALLOWED`    | 403    | URL not in allowlist                    |
-| `STREAM_NOT_FOUND`        | 404    | Stream doesn't exist                    |
-| `UPSTREAM_TIMEOUT`        | 504    | No headers within 60s                   |
-| `UPSTREAM_BODY_TIMEOUT`   | 504    | No data within 10 minutes               |
+| Code                      | Status | Trigger                             |
+| ------------------------- | ------ | ----------------------------------- |
+| `MISSING_SECRET`          | 401    | No JWT in request                   |
+| `INVALID_SECRET`          | 401    | JWT verification failed             |
+| `SIGNATURE_EXPIRED`       | 401    | Pre-signed URL past expiration      |
+| `SIGNATURE_INVALID`       | 401    | HMAC verification failed            |
+| `MISSING_SIGNATURE`       | 401    | PATCH without expires/signature     |
+| `MISSING_UPSTREAM_URL`    | 400    | POST without Upstream-URL header    |
+| `MISSING_UPSTREAM_METHOD` | 400    | POST without Upstream-Method header |
+| `INVALID_UPSTREAM_METHOD` | 400    | Disallowed Upstream-Method on POST  |
+| `INVALID_ACTION`          | 400    | Invalid PATCH action parameter      |
+| `REDIRECT_NOT_ALLOWED`    | 400    | Upstream returned 3xx               |
+| `UPSTREAM_NOT_ALLOWED`    | 403    | URL not in allowlist                |
+| `STREAM_NOT_FOUND`        | 404    | Stream doesn't exist                |
+| `UPSTREAM_TIMEOUT`        | 504    | No headers within 60s               |
+| `UPSTREAM_BODY_TIMEOUT`   | 504    | No data within 10 minutes           |
