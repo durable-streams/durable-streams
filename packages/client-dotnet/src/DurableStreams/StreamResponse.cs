@@ -380,6 +380,12 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 _stream.ContentType = contentType;
             }
+
+            // Closed streams should be treated as up-to-date even before control event
+            if (HttpHelpers.GetBoolHeader(_currentResponse, Headers.StreamClosed))
+            {
+                _upToDate = true;
+            }
         }
 
         while (!cancellationToken.IsCancellationRequested)

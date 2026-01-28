@@ -248,6 +248,19 @@ async Task<object> HandleAppend(JsonElement root)
     }
     catch (DurableStreamException ex) when (ex.StatusCode == 409)
     {
+        if (ex is StreamClosedException)
+        {
+            return new
+            {
+                type = "error",
+                success = false,
+                commandType = "append",
+                errorCode = "STREAM_CLOSED",
+                status = 409,
+                message = "Stream is already closed"
+            };
+        }
+
         try
         {
             var stream = client.GetStream(path);
