@@ -283,6 +283,19 @@ async Task<object> HandleAppend(JsonElement root)
             // Fall through to standard error mapping below
         }
 
+        if (string.IsNullOrEmpty(seq))
+        {
+            return new
+            {
+                type = "error",
+                success = false,
+                commandType = "append",
+                errorCode = "STREAM_CLOSED",
+                status = 409,
+                message = "Stream is already closed"
+            };
+        }
+
         return CreateErrorFromException("append", ex);
     }
     catch (Exception ex)
