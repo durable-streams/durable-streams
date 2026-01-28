@@ -17,8 +17,8 @@ from typing import Any
 
 import httpx
 
-from durable_streams._types import Offset, STREAM_CLOSED_HEADER
 from durable_streams._errors import DurableStreamError, FetchError, StreamClosedError
+from durable_streams._types import STREAM_CLOSED_HEADER, Offset
 
 # Producer header constants
 PRODUCER_ID_HEADER = "Producer-Id"
