@@ -177,6 +177,8 @@ type IdempotentProducer struct {
 	nextSeq  int
 	closed   bool
 	closedCh chan struct{}
+	// streamClosed indicates the stream has been closed by this producer.
+	streamClosed bool
 
 	// Batching state
 	pendingBatch []pendingEntry
@@ -405,6 +407,47 @@ func (p *IdempotentProducer) Close() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	return p.Flush(ctx)
+}
+
+// CloseStream closes the stream using producer headers.
+// Optionally appends final data atomically with the close.
+func (p *IdempotentProducer) CloseStream(ctx context.Context, data []byte) (IdempotentAppendResult, error) {
+	if err := p.Flush(ctx); err != nil {
+		return IdempotentAppendResult{}, err
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return IdempotentAppendResult{}, ErrProducerClosed
+	}
+	if p.streamClosed {
+		p.mu.Unlock()
+		return IdempotentAppendResult{Offset: "", Duplicate: true}, nil
+	}
+	seq := p.nextSeq
+	p.nextSeq++
+	epoch := p.epoch
+	p.mu.Unlock()
+
+	result, err := p.doSendClose(ctx, data, seq, epoch)
+	if err != nil {
+		p.signalSeqComplete(epoch, seq, err)
+		if p.config.OnError != nil {
+			p.config.OnError(err)
+		}
+		return IdempotentAppendResult{}, err
+	}
+
+	p.mu.Lock()
+	if !p.epochClaimed {
+		p.epochClaimed = true
+	}
+	p.streamClosed = true
+	p.mu.Unlock()
+
+	p.signalSeqComplete(epoch, seq, nil)
+	return result, nil
 }
 
 // Restart increments the epoch and resets the sequence.
@@ -693,5 +736,114 @@ func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEnt
 
 	default:
 		return IdempotentAppendResult{}, newStreamError("append", p.url, resp.StatusCode, errorFromStatus(resp.StatusCode))
+	}
+}
+
+// doSendClose sends a close request with producer headers.
+func (p *IdempotentProducer) doSendClose(ctx context.Context, data []byte, seq, epoch int) (IdempotentAppendResult, error) {
+	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+
+	var body []byte
+	if len(data) > 0 {
+		if isJSON {
+			wrapped := make([]byte, 0, len(data)+2)
+			wrapped = append(wrapped, '[')
+			wrapped = append(wrapped, data...)
+			wrapped = append(wrapped, ']')
+			body = wrapped
+		} else {
+			body = data
+		}
+	}
+
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, reader)
+	if err != nil {
+		return IdempotentAppendResult{}, err
+	}
+
+	req.Header.Set(headerProducerID, p.producerID)
+	req.Header.Set(headerProducerEpoch, strconv.Itoa(epoch))
+	req.Header.Set(headerProducerSeq, strconv.Itoa(seq))
+	req.Header.Set(headerStreamClosed, "true")
+	if len(body) > 0 {
+		req.Header.Set(headerContentType, p.config.ContentType)
+	}
+
+	resp, err := p.client.httpClient.Do(req)
+	if err != nil {
+		return IdempotentAppendResult{}, err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		return IdempotentAppendResult{Offset: "", Duplicate: true}, nil
+	case http.StatusOK:
+		offset := Offset(resp.Header.Get(headerStreamOffset))
+		return IdempotentAppendResult{Offset: offset, Duplicate: false}, nil
+	case http.StatusForbidden:
+		currentEpochStr := resp.Header.Get(headerProducerEpoch)
+		currentEpoch := epoch
+		if currentEpochStr != "" {
+			if parsed, err := strconv.Atoi(currentEpochStr); err == nil {
+				currentEpoch = parsed
+			}
+		}
+
+		if p.config.AutoClaim {
+			newEpoch := currentEpoch + 1
+			p.mu.Lock()
+			p.epoch = newEpoch
+			p.nextSeq = 1 // This request uses seq 0
+			p.mu.Unlock()
+
+			return p.doSendClose(ctx, data, 0, newEpoch)
+		}
+
+		return IdempotentAppendResult{}, &StaleEpochError{CurrentEpoch: currentEpoch}
+	case http.StatusConflict:
+		if resp.Header.Get(headerStreamClosed) == "true" {
+			return IdempotentAppendResult{}, newStreamError("close", p.url, resp.StatusCode, ErrStreamClosed)
+		}
+
+		expectedSeqStr := resp.Header.Get(headerProducerExpectedSeq)
+		expectedSeq := 0
+		if expectedSeqStr != "" {
+			if parsed, err := strconv.Atoi(expectedSeqStr); err == nil {
+				expectedSeq = parsed
+			}
+		}
+
+		if expectedSeq < seq {
+			for s := expectedSeq; s < seq; s++ {
+				if err := p.waitForSeq(epoch, s); err != nil {
+					return IdempotentAppendResult{}, err
+				}
+			}
+			return p.doSendClose(ctx, data, seq, epoch)
+		}
+
+		receivedSeqStr := resp.Header.Get(headerProducerReceivedSeq)
+		receivedSeq := seq
+		if receivedSeqStr != "" {
+			if parsed, err := strconv.Atoi(receivedSeqStr); err == nil {
+				receivedSeq = parsed
+			}
+		}
+
+		return IdempotentAppendResult{}, &SequenceGapError{
+			ExpectedSeq: expectedSeq,
+			ReceivedSeq: receivedSeq,
+		}
+	case http.StatusBadRequest:
+		return IdempotentAppendResult{}, newStreamError("close", p.url, resp.StatusCode, ErrBadRequest)
+	default:
+		return IdempotentAppendResult{}, newStreamError("close", p.url, resp.StatusCode, errorFromStatus(resp.StatusCode))
 	}
 }

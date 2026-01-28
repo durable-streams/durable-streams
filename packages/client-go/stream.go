@@ -234,6 +234,9 @@ func (s *Stream) Append(ctx context.Context, data []byte, opts ...AppendOption) 
 	case http.StatusNotFound:
 		return nil, newStreamError("append", s.url, resp.StatusCode, ErrStreamNotFound)
 	case http.StatusConflict:
+		if resp.Header.Get(headerStreamClosed) == "true" {
+			return nil, newStreamError("append", s.url, resp.StatusCode, ErrStreamClosed)
+		}
 		// Could be sequence conflict or content-type mismatch
 		return nil, newStreamError("append", s.url, resp.StatusCode, ErrSeqConflict)
 	default:
