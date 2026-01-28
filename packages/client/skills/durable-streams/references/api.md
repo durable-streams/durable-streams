@@ -43,7 +43,7 @@ class DurableStream {
   head(opts?): Promise<HeadResult>
   create(opts?): Promise<this>
   delete(opts?): Promise<void>
-  append(body: BodyInit | Uint8Array | string, opts?: AppendOptions): Promise<void>
+  append(body: Uint8Array | string | Promise<Uint8Array | string>, opts?: AppendOptions): Promise<void>
   appendStream(source: AsyncIterable<Uint8Array | string>, opts?): Promise<void>
   writable(opts?): WritableStream<Uint8Array | string>
   stream<TJson>(opts?): Promise<StreamResponse<TJson>>
@@ -69,6 +69,37 @@ interface AppendOptions {
   seq?: string              // Sequence number for ordering
   signal?: AbortSignal
 }
+```
+
+### writable(opts?)
+
+Creates a `WritableStream` for piping data to the stream. Uses `IdempotentProducer` internally.
+
+```typescript
+writable(opts?: {
+  producerId?: string       // Producer ID (auto-generated if omitted)
+  lingerMs?: number         // Batch wait time
+  maxBatchBytes?: number    // Max batch size
+  onError?: (err: Error) => void  // Error callback
+  signal?: AbortSignal      // Cancellation
+}): WritableStream<Uint8Array | string>
+```
+
+**Usage:**
+
+```typescript
+// Pipe from any ReadableStream
+await someReadableStream.pipeTo(handle.writable())
+
+// Pipe through a transform
+const readable = inputStream.pipeThrough(new TextEncoderStream())
+await readable.pipeTo(handle.writable())
+
+// With options
+await source.pipeTo(handle.writable({
+  lingerMs: 10,
+  maxBatchBytes: 64 * 1024,
+}))
 ```
 
 ## StreamResponse
@@ -190,10 +221,11 @@ interface TextChunk {
 }
 
 interface HeadResult {
-  offset: Offset
-  contentType?: string
-  ttlSeconds?: number
-  expiresAt?: Date
+  exists: true            // Always true (throws if stream doesn't exist)
+  contentType?: string    // Stream's content type
+  offset?: Offset         // Tail offset (next offset after end of stream)
+  etag?: string           // ETag for the stream
+  cacheControl?: string   // Cache-Control header value
 }
 ```
 

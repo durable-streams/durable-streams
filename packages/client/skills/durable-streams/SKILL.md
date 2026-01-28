@@ -149,7 +149,7 @@ const handle = await DurableStream.create({
   url,
   contentType: "application/json",
 })
-await handle.append({ event: "click" }) // Objects serialized automatically
+await handle.append(JSON.stringify({ event: "click" }))
 ```
 
 **Byte mode** (default): Raw concatenated bytes, implement your own framing.
