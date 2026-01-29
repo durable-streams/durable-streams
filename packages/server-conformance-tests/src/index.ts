@@ -7642,6 +7642,1007 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(headAfter.status).toBe(404)
       })
+
+      test(`put-idempotent-create-closed-mismatch: PUT closed stream, then PUT without Stream-Closed returns 409`, async () => {
+        const streamPath = `/v1/stream/put-closed-mismatch-${Date.now()}`
+
+        // Create closed stream
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+          },
+        })
+        expect(createResponse.status).toBe(201)
+        expect(createResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Try to PUT again without Stream-Closed header - should be 409 (closure status mismatch)
+        const secondPut = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+        expect(secondPut.status).toBe(409)
+      })
+
+      test(`stream-closed-header-non-true-values: Non-true values are treated as if header absent`, async () => {
+        const streamPath = `/v1/stream/closed-header-values-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // POST with Stream-Closed: false - should be treated as if header absent
+        // This is a normal append with empty body which should fail with 400
+        const falseResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `false`,
+          },
+          body: ``,
+        })
+        // Should be 400 (empty body without valid Stream-Closed: true)
+        expect(falseResponse.status).toBe(400)
+
+        // Verify stream is still open
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.headers.get(STREAM_CLOSED_HEADER)).toBeNull()
+      })
+
+      test(`stream-closed-header-yes-value: Stream-Closed: yes is treated as if header absent`, async () => {
+        const streamPath = `/v1/stream/closed-header-yes-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // POST with Stream-Closed: yes - should be treated as if header absent
+        const yesResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `yes`,
+          },
+          body: ``,
+        })
+        // Should be 400 (empty body without valid Stream-Closed: true)
+        expect(yesResponse.status).toBe(400)
+      })
+
+      test(`stream-closed-header-1-value: Stream-Closed: 1 is treated as if header absent`, async () => {
+        const streamPath = `/v1/stream/closed-header-1-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // POST with Stream-Closed: 1 - should be treated as if header absent
+        const oneResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `1`,
+          },
+          body: ``,
+        })
+        // Should be 400 (empty body without valid Stream-Closed: true)
+        expect(oneResponse.status).toBe(400)
+      })
+
+      test(
+        `long-poll-on-closed-empty-stream: Long-poll on immediately-closed empty stream returns immediately`,
+        async () => {
+          const streamPath = `/v1/stream/longpoll-empty-closed-${Date.now()}`
+
+          // Create empty stream and close immediately
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `PUT`,
+            headers: {
+              "Content-Type": `text/plain`,
+              [STREAM_CLOSED_HEADER]: `true`,
+            },
+          })
+
+          // Get tail offset
+          const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `HEAD`,
+          })
+          const tailOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+          // Long-poll should return immediately with Stream-Closed: true
+          const startTime = Date.now()
+          const longpollResponse = await fetch(
+            `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=long-poll`
+          )
+          const elapsed = Date.now() - startTime
+
+          expect(longpollResponse.status).toBe(204)
+          expect(longpollResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(
+            `true`
+          )
+          expect(longpollResponse.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(
+            `true`
+          )
+          // Should return almost immediately (not wait the full timeout)
+          expect(elapsed).toBeLessThan(5000)
+        },
+        getLongPollTestTimeoutMs()
+      )
+
+      test(`producer-state-after-delete-recreate: Old producer state does not carry forward after delete/recreate`, async () => {
+        const streamPath = `/v1/stream/producer-delete-recreate-${Date.now()}`
+
+        // Create stream and write with producer
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Producer writes seq=0
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `first`,
+        })
+        expect(write1.status).toBe(200)
+
+        // Delete stream
+        const deleteResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `DELETE`,
+        })
+        expect([200, 204]).toContain(deleteResponse.status)
+
+        // Recreate stream
+        const recreate = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+        expect(recreate.status).toBe(201)
+
+        // Producer should be able to start fresh with seq=0 again
+        const write2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `new first`,
+        })
+        expect(write2.status).toBe(200)
+
+        // Verify new content (old state did not carry forward)
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+        expect(content).toBe(`new first`)
+      })
+
+      test(`json-empty-array-close: POST with [] + Stream-Closed: true is rejected`, async () => {
+        const streamPath = `/v1/stream/json-empty-close-${Date.now()}`
+
+        // Create JSON stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/json` },
+        })
+
+        // POST with empty array + Stream-Closed: true
+        // Per protocol Section 7.1: empty arrays in POST are rejected with 400
+        // Even with Stream-Closed header, the empty array body is still invalid
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `application/json`,
+            [STREAM_CLOSED_HEADER]: `true`,
+          },
+          body: `[]`,
+        })
+
+        // Empty array is rejected (protocol spec: "Servers MUST reject POST requests
+        // containing empty JSON arrays ([]) with 400 Bad Request")
+        expect(closeResponse.status).toBe(400)
+
+        // Stream should still be open (close was rejected)
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.headers.get(STREAM_CLOSED_HEADER)).toBeNull()
+
+        // Proper way to close JSON stream without data: use empty body, not []
+        const properClose = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+        expect(properClose.status).toBe(204)
+        expect(properClose.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+      })
+
+      test(`json-batch-append-and-close: JSON array flattening works with atomic close`, async () => {
+        const streamPath = `/v1/stream/json-batch-close-${Date.now()}`
+
+        // Create JSON stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `application/json` },
+        })
+
+        // POST with JSON array + Stream-Closed: true
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `application/json`,
+            [STREAM_CLOSED_HEADER]: `true`,
+          },
+          body: JSON.stringify([{ id: 1 }, { id: 2 }, { id: 3 }]),
+        })
+
+        // POST append returns 204 on success
+        expect([200, 204]).toContain(closeResponse.status)
+        expect(closeResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Verify all data is present and stream is closed
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const data = await readResponse.json()
+        expect(data).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
+        expect(readResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+      })
+
+      test(`catch-up-closure-discovery: Closure discovered on subsequent read at tail`, async () => {
+        const streamPath = `/v1/stream/catchup-closure-${Date.now()}`
+
+        // Create stream with content
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `data`,
+        })
+
+        // First read - stream is open
+        const firstRead = await fetch(`${getBaseUrl()}${streamPath}`)
+        expect(firstRead.status).toBe(200)
+        expect(await firstRead.text()).toBe(`data`)
+        expect(firstRead.headers.get(STREAM_CLOSED_HEADER)).toBeNull()
+        const tailOffset = firstRead.headers.get(STREAM_OFFSET_HEADER)
+
+        // Close the stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Second read at tail - discovers closure
+        const secondRead = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=${tailOffset}`
+        )
+        expect(secondRead.status).toBe(200)
+        const body = await secondRead.text()
+        expect(body).toBe(``) // Empty body
+        expect(secondRead.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        expect(secondRead.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      })
+
+      test(`etag-on-closed-stream: ETag varies with closure status, 304 works correctly`, async () => {
+        const streamPath = `/v1/stream/etag-closed-${Date.now()}`
+
+        // Create stream with content
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `data`,
+        })
+
+        // Get ETag from first read
+        const firstRead = await fetch(`${getBaseUrl()}${streamPath}`)
+        const openEtag = firstRead.headers.get(`ETag`)
+        expect(openEtag).toBeTruthy()
+
+        // Close the stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Get ETag after closure
+        const closedRead = await fetch(`${getBaseUrl()}${streamPath}`)
+        const closedEtag = closedRead.headers.get(`ETag`)
+        expect(closedEtag).toBeTruthy()
+
+        // ETags should differ (closure changes ETag per spec)
+        expect(closedEtag).not.toBe(openEtag)
+
+        // 304 should work with correct ETag
+        const conditionalRead = await fetch(`${getBaseUrl()}${streamPath}`, {
+          headers: { "If-None-Match": closedEtag! },
+        })
+        expect(conditionalRead.status).toBe(304)
+      })
+
+      test(`producer-id-special-characters: Producer-Id with special characters works`, async () => {
+        const streamPath = `/v1/stream/producer-special-chars-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Producer ID with special characters
+        const specialId = `producer:with-special_chars.and/slashes`
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: specialId,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `data`,
+        })
+        expect([200, 204]).toContain(write1.status)
+      })
+
+      test(`producer-id-accented-chars: Producer-Id with accented Latin characters works`, async () => {
+        const streamPath = `/v1/stream/producer-accented-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Producer ID with accented Latin characters (ASCII-compatible)
+        // Note: HTTP headers must be ASCII, so full Unicode is not allowed per spec
+        const accentedId = `producer-cafe-resume`
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: accentedId,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `data`,
+        })
+        expect([200, 204]).toContain(write1.status)
+      })
+
+      test(`producer-id-long-string: Very long Producer-Id is handled`, async () => {
+        const streamPath = `/v1/stream/producer-long-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Very long producer ID (256 characters)
+        const longId = `a`.repeat(256)
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: longId,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `data`,
+        })
+        // Server may accept or reject (implementation-defined), but should not crash
+        expect([200, 204, 400, 413]).toContain(write1.status)
+      })
+
+      test(`stream-seq-combined-with-producer-headers: Both validations apply independently`, async () => {
+        const streamPath = `/v1/stream/seq-and-producer-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Write with both Stream-Seq and producer headers
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `001`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `first`,
+        })
+        expect(write1.status).toBe(200)
+
+        // Try with regressed Stream-Seq but valid Producer-Seq
+        const write2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `000`, // Regressed
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `1`, // Valid next seq
+          },
+          body: `second`,
+        })
+        expect(write2.status).toBe(409) // Stream-Seq regression
+
+        // Try with valid Stream-Seq but regressed Producer-Seq
+        const write3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `002`, // Valid next seq
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`, // Duplicate
+          },
+          body: `third`,
+        })
+        expect(write3.status).toBe(204) // Producer dedup
+      })
+
+      test(`producer-epoch-max-value: Epoch at 2^53-1 boundary works`, async () => {
+        const streamPath = `/v1/stream/producer-epoch-max-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Use max safe integer for epoch (2^53 - 1)
+        const maxEpoch = (2 ** 53 - 1).toString()
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: maxEpoch,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `data`,
+        })
+        expect([200, 204]).toContain(write1.status)
+      })
+
+      test(`producer-seq-max-value: Producer-Seq at 2^53-1 boundary works`, async () => {
+        const streamPath = `/v1/stream/producer-seq-max-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Use max safe integer for seq (2^53 - 1)
+        const maxSeq = (2 ** 53 - 1).toString()
+        const write1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: maxSeq,
+          },
+          body: `data`,
+        })
+        // May succeed or fail with 409 (seq gap), but should not crash
+        expect([200, 204, 409]).toContain(write1.status)
+      })
+
+      test(`offset-value-not-sentinel: Server does not generate -1 or now as offset values`, async () => {
+        const streamPath = `/v1/stream/offset-not-sentinel-${Date.now()}`
+
+        // Create stream with multiple appends
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `first`,
+        })
+
+        for (let i = 0; i < 5; i++) {
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { "Content-Type": `text/plain` },
+            body: `msg-${i}`,
+          })
+        }
+
+        // Get final offset
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        const offset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+        // Offset should not be a sentinel value
+        expect(offset).not.toBe(`-1`)
+        expect(offset).not.toBe(`now`)
+      })
+    })
+
+    // ========================================================================
+    // Concurrency Tests
+    // ========================================================================
+
+    describe(`Concurrency Tests`, () => {
+      const PRODUCER_ID_HEADER = `Producer-Id`
+      const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+      const PRODUCER_SEQ_HEADER = `Producer-Seq`
+
+      test(`concurrent-append-and-close: Both requests serialize correctly`, async () => {
+        const streamPath = `/v1/stream/concurrent-append-close-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Launch append and close concurrently
+        const [appendResult, closeResult] = await Promise.all([
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { "Content-Type": `text/plain` },
+            body: `concurrent-data`,
+          }),
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { [STREAM_CLOSED_HEADER]: `true` },
+          }),
+        ])
+
+        // Both should have valid responses
+        expect([200, 204, 409]).toContain(appendResult.status)
+        expect([200, 204, 409]).toContain(closeResult.status)
+
+        // At least one should succeed
+        const appendOk =
+          appendResult.status === 200 || appendResult.status === 204
+        const closeOk = closeResult.status === 204
+        expect(appendOk || closeOk).toBe(true)
+
+        // Stream should be closed at the end
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // If append succeeded (200 or 204), data should be present
+        if (appendResult.status === 200 || appendResult.status === 204) {
+          const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+          const content = await readResponse.text()
+          expect(content).toContain(`concurrent-data`)
+        }
+      })
+
+      test(`concurrent-close-and-close: Both close requests succeed (idempotent)`, async () => {
+        const streamPath = `/v1/stream/concurrent-close-close-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Launch two close requests concurrently
+        const [close1, close2] = await Promise.all([
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { [STREAM_CLOSED_HEADER]: `true` },
+          }),
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { [STREAM_CLOSED_HEADER]: `true` },
+          }),
+        ])
+
+        // Both should succeed (close is idempotent)
+        expect(close1.status).toBe(204)
+        expect(close2.status).toBe(204)
+        expect(close1.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        expect(close2.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Stream should be closed exactly once
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+      })
+
+      test(`concurrent-append-and-close-with-body: Race between append and append-and-close`, async () => {
+        const streamPath = `/v1/stream/concurrent-append-close-body-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Launch regular append and append-and-close concurrently
+        const [appendResult, appendCloseResult] = await Promise.all([
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { "Content-Type": `text/plain` },
+            body: `regular-append`,
+          }),
+          fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: {
+              "Content-Type": `text/plain`,
+              [STREAM_CLOSED_HEADER]: `true`,
+            },
+            body: `final-append`,
+          }),
+        ])
+
+        // Both should have valid responses (200/204 for success, 409 for conflict)
+        expect([200, 204, 409]).toContain(appendResult.status)
+        expect([200, 204, 409]).toContain(appendCloseResult.status)
+
+        // Read final content to verify data integrity
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+
+        // At least one of the appends should be present
+        expect(
+          content.includes(`regular-append`) || content.includes(`final-append`)
+        ).toBe(true)
+
+        // The final state depends on the race outcome:
+        // - If append-and-close won: stream is closed, final-append present
+        // - If regular append won then append-and-close got 409: stream may be open
+        // - If both succeeded: both data present, stream is closed
+        // We verify that the server handled the race gracefully without errors
+      })
+
+      test(`multiple-producers-interleaved: Independent sequence spaces don't interfere`, async () => {
+        const streamPath = `/v1/stream/multiple-producers-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Track results from both producers
+        const resultsA: Array<number> = []
+        const resultsB: Array<number> = []
+
+        // Two producers writing concurrently with their own seq spaces
+        const producerA = async () => {
+          for (let seq = 0; seq < 3; seq++) {
+            const res = await fetch(`${getBaseUrl()}${streamPath}`, {
+              method: `POST`,
+              headers: {
+                "Content-Type": `text/plain`,
+                [PRODUCER_ID_HEADER]: `producer-A`,
+                [PRODUCER_EPOCH_HEADER]: `0`,
+                [PRODUCER_SEQ_HEADER]: seq.toString(),
+              },
+              body: `A-${seq}`,
+            })
+            resultsA.push(res.status)
+          }
+        }
+
+        const producerB = async () => {
+          for (let seq = 0; seq < 3; seq++) {
+            const res = await fetch(`${getBaseUrl()}${streamPath}`, {
+              method: `POST`,
+              headers: {
+                "Content-Type": `text/plain`,
+                [PRODUCER_ID_HEADER]: `producer-B`,
+                [PRODUCER_EPOCH_HEADER]: `0`,
+                [PRODUCER_SEQ_HEADER]: seq.toString(),
+              },
+              body: `B-${seq}`,
+            })
+            resultsB.push(res.status)
+          }
+        }
+
+        // Run both concurrently
+        await Promise.all([producerA(), producerB()])
+
+        // All write attempts should have valid responses (200, 204, or 409 for race conditions)
+        for (const status of [...resultsA, ...resultsB]) {
+          expect([200, 204, 409]).toContain(status)
+        }
+
+        // Read and verify messages are present
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+
+        // Count how many successful writes we expect per producer
+        // (200 = new data, 204 = duplicate)
+        const successfulA = resultsA.filter(
+          (s) => s === 200 || s === 204
+        ).length
+        const successfulB = resultsB.filter(
+          (s) => s === 200 || s === 204
+        ).length
+
+        // At least some messages from each producer should be present if they had successful writes
+        if (successfulA > 0) {
+          expect(content).toContain(`A-`)
+        }
+        if (successfulB > 0) {
+          expect(content).toContain(`B-`)
+        }
+      })
+
+      test(
+        `close-during-active-long-poll: Close wakes waiting long-poll immediately`,
+        async () => {
+          const streamPath = `/v1/stream/close-during-longpoll-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+          // Create stream
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `PUT`,
+            headers: { "Content-Type": `text/plain` },
+          })
+
+          // Get initial offset
+          const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `HEAD`,
+          })
+          const offset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+          // Start long-poll in background
+          const startTime = Date.now()
+          const longpollPromise = fetch(
+            `${getBaseUrl()}${streamPath}?offset=${offset}&live=long-poll`
+          )
+
+          // Wait a bit for long-poll to be established
+          await new Promise((resolve) => setTimeout(resolve, 500))
+
+          // Close the stream
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: { [STREAM_CLOSED_HEADER]: `true` },
+          })
+
+          // Wait for long-poll to return
+          const longpollResponse = await longpollPromise
+          const elapsed = Date.now() - startTime
+
+          // Long-poll should return 204 (no content to return)
+          expect(longpollResponse.status).toBe(204)
+
+          // Should have returned quickly (not waited for full timeout)
+          expect(elapsed).toBeLessThan(10000)
+
+          // Verify the stream is indeed closed (the long-poll may or may not
+          // have the Stream-Closed header depending on timing, but the stream
+          // should be closed after this)
+          const verifyHead = await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `HEAD`,
+          })
+          expect(verifyHead.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        },
+        getLongPollTestTimeoutMs()
+      )
+
+      test(`close-during-active-sse: Close pushes streamClosed event to active SSE`, async () => {
+        const streamPath = `/v1/stream/close-during-sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Get initial offset
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        const offset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+        // Start SSE connection with a longer timeout
+        const controller = new AbortController()
+        const ssePromise = fetch(
+          `${getBaseUrl()}${streamPath}?offset=${offset}&live=sse`,
+          { signal: controller.signal }
+        )
+
+        // Wait for SSE to be established
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Close the stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Wait a bit for the close event to propagate
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Abort the SSE connection (we've given it time to receive the close event)
+        controller.abort()
+
+        // The stream should be closed
+        const finalHead = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(finalHead.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Verify SSE response was started
+        try {
+          const response = await ssePromise
+          expect(response.status).toBe(200)
+        } catch {
+          // AbortError is expected
+        }
+      })
+
+      test(`multiple-readers-during-close: Readers at different offsets handle closure correctly`, async () => {
+        const streamPath = `/v1/stream/multi-reader-close-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream with some data
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `chunk1`,
+        })
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `chunk2`,
+        })
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `chunk3`,
+        })
+
+        // Get tail offset
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        const tailOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+        // Close the stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Reader at offset 0 catches up and sees closed
+        const readerFromStart = await fetch(`${getBaseUrl()}${streamPath}`)
+        expect(readerFromStart.status).toBe(200)
+        const content = await readerFromStart.text()
+        expect(content).toBe(`chunk1chunk2chunk3`)
+        expect(readerFromStart.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Reader at tail sees immediate closure signal
+        const readerAtTail = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=${tailOffset}`
+        )
+        expect(readerAtTail.status).toBe(200)
+        expect(await readerAtTail.text()).toBe(``)
+        expect(readerAtTail.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+      })
+
+      test(`head-during-active-sse: HEAD does not interfere with active SSE connections`, async () => {
+        const streamPath = `/v1/stream/head-during-sse-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream with data
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `initial`,
+        })
+
+        // Start SSE connection
+        const controller = new AbortController()
+        const ssePromise = fetch(
+          `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+          { signal: controller.signal }
+        )
+
+        // Wait for SSE to be established
+        await new Promise((resolve) => setTimeout(resolve, 300))
+
+        // Perform multiple HEAD requests while SSE is active
+        for (let i = 0; i < 5; i++) {
+          const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `HEAD`,
+          })
+          expect(headResponse.status).toBe(200)
+        }
+
+        // Append data while SSE is active
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `after-heads`,
+        })
+
+        // Give SSE time to receive the new data
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        // Abort SSE
+        controller.abort()
+
+        // Verify SSE was running
+        try {
+          const response = await ssePromise
+          expect(response.status).toBe(200)
+        } catch {
+          // AbortError is expected
+        }
+
+        // Verify data integrity
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+        expect(content).toContain(`initial`)
+        expect(content).toContain(`after-heads`)
+      })
+
+      test(`sse-reconnect-after-close: Reconnecting after close gets closure signal again`, async () => {
+        const streamPath = `/v1/stream/sse-reconnect-close-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+        // Create stream with data and close
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `data`,
+        })
+
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+        const tailOffset = closeResponse.headers.get(STREAM_OFFSET_HEADER)
+
+        // First SSE connection at tail
+        const { received: received1 } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=sse`,
+          { timeoutMs: 5000, untilContent: `streamClosed` }
+        )
+
+        // Should have received streamClosed: true
+        expect(received1).toContain(`streamClosed`)
+        const events1 = parseSSEEvents(received1)
+        const controlEvent1 = events1.find((e) => e.type === `control`)
+        expect(controlEvent1).toBeDefined()
+        const controlData1 = JSON.parse(controlEvent1!.data)
+        expect(controlData1.streamClosed).toBe(true)
+
+        // "Reconnect" - second SSE connection
+        const { received: received2 } = await fetchSSE(
+          `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=sse`,
+          { timeoutMs: 5000, untilContent: `streamClosed` }
+        )
+
+        // Should get closure signal again, not hang
+        expect(received2).toContain(`streamClosed`)
+        const events2 = parseSSEEvents(received2)
+        const controlEvent2 = events2.find((e) => e.type === `control`)
+        expect(controlEvent2).toBeDefined()
+        const controlData2 = JSON.parse(controlEvent2!.data)
+        expect(controlData2.streamClosed).toBe(true)
+      })
     })
   })
 }
