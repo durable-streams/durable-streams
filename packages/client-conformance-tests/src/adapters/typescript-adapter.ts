@@ -21,6 +21,7 @@ import {
 import {
   ErrorCodes,
   decodeBase64,
+  encodeBase64,
   parseCommand,
   serializeResult,
 } from "../protocol.js"
@@ -40,6 +41,28 @@ let serverUrl = ``
 
 // Track content-type per stream path for append operations
 const streamContentTypes = new Map<string, string>()
+
+/**
+ * Check if a content type represents binary data (not text/JSON).
+ * Binary content should be base64 encoded when returned to the test runner.
+ */
+function isBinaryContentType(contentType: string | undefined): boolean {
+  if (!contentType) return false
+  const normalized = contentType.toLowerCase().split(`;`)[0]?.trim()
+  // Text and JSON types are not binary
+  if (normalized?.startsWith(`text/`)) return false
+  if (normalized === `application/json`) return false
+  // These are common binary types
+  if (normalized === `application/octet-stream`) return true
+  if (normalized === `application/x-binary`) return true
+  if (normalized === `application/x-protobuf`) return true
+  if (normalized?.startsWith(`image/`)) return true
+  if (normalized?.startsWith(`audio/`)) return true
+  if (normalized?.startsWith(`video/`)) return true
+  // Default to binary for unknown application/* types
+  if (normalized?.startsWith(`application/`)) return true
+  return false
+}
 
 // Track IdempotentProducer instances to maintain state across operations
 // Key: "path|producerId|epoch"
@@ -62,8 +85,7 @@ function getOrCreateProducer(
   const key = getProducerCacheKey(path, producerId, epoch)
   let producer = producerCache.get(key)
   if (!producer) {
-    const contentType =
-      streamContentTypes.get(path) ?? `application/octet-stream`
+    const contentType = streamContentTypes.get(path) ?? `text/plain`
     const ds = new DurableStream({
       url: `${serverUrl}${path}`,
       contentType,
@@ -192,7 +214,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
     case `create`: {
       try {
         const url = `${serverUrl}${command.path}`
-        const contentType = command.contentType ?? `application/octet-stream`
+        // Default to text/plain for backwards compatibility with tests
+        // that don't specify content type and expect text data
+        const contentType = command.contentType ?? `text/plain`
 
         // Check if stream already exists by trying to connect first
         let alreadyExists = false
@@ -260,8 +284,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const url = `${serverUrl}${command.path}`
 
         // Get content-type from cache or use default
-        const contentType =
-          streamContentTypes.get(command.path) ?? `application/octet-stream`
+        const contentType = streamContentTypes.get(command.path) ?? `text/plain`
 
         // Resolve dynamic headers/params
         const { headers: dynamicHdrs, values: headersSent } =
@@ -404,10 +427,21 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             // Use byte reading for non-JSON content
             const data = await response.body()
             if (data.length > 0) {
-              chunks.push({
-                data: new TextDecoder().decode(data),
-                offset: response.offset,
-              })
+              const isBinary = isBinaryContentType(contentType)
+              if (isBinary) {
+                // Return binary data as base64 to preserve byte integrity
+                chunks.push({
+                  data: encodeBase64(data),
+                  binary: true,
+                  offset: response.offset,
+                })
+              } else {
+                // Text content - decode as UTF-8
+                chunks.push({
+                  data: new TextDecoder().decode(data),
+                  offset: response.offset,
+                })
+              }
             }
           }
           finalOffset = response.offset
@@ -450,6 +484,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
               const hasData = chunk.data.length > 0
               if (hasData) {
+                // For live/SSE mode, the client library handles base64 decoding
+                // (when encoding=base64 is specified). The data is already decoded,
+                // so we just need to convert bytes to string.
                 chunks.push({
                   data: decoder.decode(chunk.data),
                   offset: chunk.offset,
@@ -583,8 +620,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const url = `${serverUrl}${command.path}`
 
         // Get content-type from cache or use default
-        const contentType =
-          streamContentTypes.get(command.path) ?? `application/octet-stream`
+        const contentType = streamContentTypes.get(command.path) ?? `text/plain`
 
         const ds = new DurableStream({
           url,
@@ -659,8 +695,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         )
 
         // append() is fire-and-forget (synchronous), then flush() sends the batch
-        // Data is already pre-serialized, pass directly to append()
-        producer.append(command.data)
+        // Decode binary data if needed
+        const data = command.binary ? decodeBase64(command.data) : command.data
+        producer.append(data)
         await producer.flush()
         // Don't detach - keep producer for subsequent operations
 
@@ -679,8 +716,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const url = `${serverUrl}${command.path}`
 
         // Get content-type from cache or use default
-        const contentType =
-          streamContentTypes.get(command.path) ?? `application/octet-stream`
+        const contentType = streamContentTypes.get(command.path) ?? `text/plain`
 
         const ds = new DurableStream({
           url,
@@ -995,7 +1031,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
       case `append`: {
         const url = `${serverUrl}${operation.path}`
         const contentType =
-          streamContentTypes.get(operation.path) ?? `application/octet-stream`
+          streamContentTypes.get(operation.path) ?? `text/plain`
         const ds = new DurableStream({ url, contentType })
 
         // Generate payload (using fill for speed - don't want to measure PRNG)
@@ -1016,7 +1052,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
 
       case `roundtrip`: {
         const url = `${serverUrl}${operation.path}`
-        const contentType = operation.contentType ?? `application/octet-stream`
+        const contentType = operation.contentType ?? `text/plain`
 
         // Create stream first
         const ds = await DurableStream.create({ url, contentType })
@@ -1057,7 +1093,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
         const url = `${serverUrl}${operation.path}`
         await DurableStream.create({
           url,
-          contentType: operation.contentType ?? `application/octet-stream`,
+          contentType: operation.contentType ?? `text/plain`,
         })
         break
       }
@@ -1065,7 +1101,7 @@ async function handleBenchmark(command: BenchmarkCommand): Promise<TestResult> {
       case `throughput_append`: {
         const url = `${serverUrl}${operation.path}`
         const contentType =
-          streamContentTypes.get(operation.path) ?? `application/octet-stream`
+          streamContentTypes.get(operation.path) ?? `text/plain`
 
         // Ensure stream exists
         try {

@@ -743,11 +743,24 @@ export async function runBenchmarks(
   let adapterArgs = options.clientArgs ?? []
 
   if (adapterPath === `ts` || adapterPath === `typescript`) {
-    adapterPath = `npx`
-    adapterArgs = [
-      `tsx`,
-      new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
-    ]
+    // Detect if running from src or dist
+    const currentUrl = import.meta.url
+    const isRunningFromSrc = currentUrl.includes(`/src/`)
+
+    if (isRunningFromSrc) {
+      // Running from source: use tsx to run TypeScript directly
+      adapterPath = `npx`
+      adapterArgs = [
+        `tsx`,
+        new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
+      ]
+    } else {
+      // Running from dist: use node to run compiled JavaScript
+      adapterPath = `node`
+      adapterArgs = [
+        new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
+      ]
+    }
   }
 
   // Start client adapter
