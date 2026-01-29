@@ -4827,7 +4827,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 25 }
         )
-      }, 15000)
+      })
 
       test(`read-your-writes: data is immediately visible after append`, async () => {
         await fc.assert(
@@ -5350,7 +5350,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           ),
           { numRuns: 15 }
         )
-      }, 15000)
+      })
 
       test(`content hash changes with each append`, async () => {
         const streamPath = `/v1/stream/hash-changes-${Date.now()}-${Math.random().toString(36).slice(2)}`
