@@ -177,6 +177,35 @@ func normalizeContentType(contentType string) string {
 	return strings.TrimSpace(strings.ToLower(contentType))
 }
 
+// isBinaryContentType checks if a content type represents binary data (not text/JSON).
+func isBinaryContentType(contentType string) bool {
+	normalized := normalizeContentType(contentType)
+	if normalized == "" {
+		return false
+	}
+	// Text and JSON types are not binary
+	if strings.HasPrefix(normalized, "text/") {
+		return false
+	}
+	if normalized == "application/json" {
+		return false
+	}
+	// These are common binary types
+	if normalized == "application/octet-stream" ||
+		normalized == "application/x-binary" ||
+		normalized == "application/x-protobuf" ||
+		strings.HasPrefix(normalized, "image/") ||
+		strings.HasPrefix(normalized, "audio/") ||
+		strings.HasPrefix(normalized, "video/") {
+		return true
+	}
+	// Default to binary for unknown application/* types
+	if strings.HasPrefix(normalized, "application/") {
+		return true
+	}
+	return false
+}
+
 func getProducer(cmd Command, cfg durablestreams.IdempotentProducerConfig) (*durablestreams.IdempotentProducer, error) {
 	key := producerKey{path: cmd.Path, producerID: cmd.ProducerID}
 	if producer, ok := producers[key]; ok {
@@ -361,7 +390,9 @@ func handleCreate(cmd Command) Result {
 
 	contentType := cmd.ContentType
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		// Default to text/plain for backwards compatibility with tests
+		// that don't specify content type and expect text data
+		contentType = "text/plain"
 	}
 
 	// Check if stream already exists
@@ -632,7 +663,16 @@ func handleRead(cmd Command) Result {
 					Data:   string(compactJSON),
 					Offset: string(chunk.NextOffset),
 				})
+			} else if liveMode == durablestreams.LiveModeNone && isBinaryContentType(contentType) {
+				// For non-live mode with binary content, return as base64 to preserve byte integrity
+				// For live mode (SSE/long-poll), the client handles transport encoding so we return as text
+				chunks = append(chunks, ReadChunk{
+					Data:   base64.StdEncoding.EncodeToString(chunk.Data),
+					Binary: true,
+					Offset: string(chunk.NextOffset),
+				})
 			} else {
+				// Text content or live mode - return as string
 				chunks = append(chunks, ReadChunk{
 					Data:   string(chunk.Data),
 					Offset: string(chunk.NextOffset),
@@ -754,7 +794,7 @@ func handleClose(cmd Command) Result {
 	// Get content type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 	stream.SetContentType(contentType)
 
@@ -873,7 +913,7 @@ func handleIdempotentAppend(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	cfg := durablestreams.IdempotentProducerConfig{
@@ -888,9 +928,20 @@ func handleIdempotentAppend(cmd Command) Result {
 		return errorResult("idempotent-append", err)
 	}
 
-	// Data is already pre-serialized, pass directly to Append()
+	// Decode binary data if needed
+	var data []byte
+	if cmd.Binary {
+		var err error
+		data, err = base64.StdEncoding.DecodeString(cmd.Data)
+		if err != nil {
+			return errorResult("idempotent-append", err)
+		}
+	} else {
+		data = []byte(cmd.Data)
+	}
+
 	// Append returns immediately (fire-and-forget)
-	if err := producer.Append([]byte(cmd.Data)); err != nil {
+	if err := producer.Append(data); err != nil {
 		return errorResult("idempotent-append", err)
 	}
 
@@ -917,7 +968,7 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	// Use provided maxInFlight or default to 1 for compatibility
@@ -977,7 +1028,7 @@ func handleIdempotentClose(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	cfg := durablestreams.IdempotentProducerConfig{
