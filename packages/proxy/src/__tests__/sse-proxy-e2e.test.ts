@@ -13,6 +13,7 @@ import {
   createTestContext,
   parseSSEEvents,
   readStream,
+  waitFor,
 } from "./harness"
 
 const ctx = createTestContext()
@@ -26,33 +27,30 @@ afterAll(async () => {
 })
 
 /**
- * Helper to wait for the upstream piping to complete.
+ * Wait for a stream to be closed (upstream finished writing).
  */
-async function waitForPiping(ms = 150): Promise<void> {
-  await new Promise((r) => setTimeout(r, ms))
+async function waitForStreamClosed(streamUrl: string): Promise<void> {
+  await waitFor(async () => {
+    const result = await readStream({ streamUrl, offset: `-1` })
+    return result.headers.get(`Stream-Closed`) === `true`
+  })
 }
 
 interface RoundTripOptions {
   body: string | Array<string>
   contentType?: string
   chunkDelayMs?: number
-  waitMs?: number
 }
 
 /**
  * Helper that performs a complete round-trip test:
- * sets up upstream, creates stream, waits, reads, and returns the result.
+ * sets up upstream, creates stream, waits for closure, reads, and returns the result.
  */
 async function roundTrip(options: RoundTripOptions): Promise<{
   createResult: Awaited<ReturnType<typeof createStream>>
   readResult: Awaited<ReturnType<typeof readStream>>
 }> {
-  const {
-    body,
-    contentType = `text/event-stream`,
-    chunkDelayMs = 10,
-    waitMs = 150,
-  } = options
+  const { body, contentType = `text/event-stream`, chunkDelayMs = 10 } = options
 
   ctx.upstream.setResponse({
     headers: { "Content-Type": contentType },
@@ -66,7 +64,7 @@ async function roundTrip(options: RoundTripOptions): Promise<{
     body: {},
   })
 
-  await waitForPiping(waitMs)
+  await waitForStreamClosed(createResult.streamUrl!)
 
   const readResult = await readStream({
     streamUrl: createResult.streamUrl!,
@@ -121,7 +119,7 @@ describe(`SSE proxy e2e: data integrity`, () => {
       body: {},
     })
 
-    await waitForPiping()
+    await waitForStreamClosed(createResult.streamUrl!)
 
     const [read1, read2, read3] = await Promise.all([
       readStream({ streamUrl: createResult.streamUrl!, offset: `-1` }),
@@ -239,7 +237,7 @@ describe(`SSE proxy e2e: encoding`, () => {
     const longString = `x`.repeat(10000)
     const chunks = createSSEChunks([{ data: `{"long": "${longString}"}` }])
 
-    const { readResult } = await roundTrip({ body: chunks, waitMs: 300 })
+    const { readResult } = await roundTrip({ body: chunks })
 
     expect(readResult.body).toContain(longString)
     expect(readResult.body).toBe(chunks.join(``))
@@ -256,7 +254,6 @@ describe(`SSE proxy e2e: batching and chunking`, () => {
     const { readResult } = await roundTrip({
       body: chunks,
       chunkDelayMs: 5,
-      waitMs: 500,
     })
 
     const events = parseSSEEvents(readResult.body)
@@ -275,7 +272,7 @@ describe(`SSE proxy e2e: batching and chunking`, () => {
       { data: `{"chunk": 3, "data": "${largeData}"}` },
     ])
 
-    await verifyPreservesBody(chunks, { waitMs: 500 })
+    await verifyPreservesBody(chunks)
   })
 
   it(`handles data split across network chunks`, async () => {
@@ -289,7 +286,6 @@ describe(`SSE proxy e2e: batching and chunking`, () => {
     const { readResult } = await roundTrip({
       body: chunks,
       chunkDelayMs: 20,
-      waitMs: 200,
     })
 
     expect(readResult.body).toBe(chunks.join(``))
@@ -308,7 +304,7 @@ describe(`SSE proxy e2e: batching and chunking`, () => {
       { data: `{"seq": 3}` },
     ])
 
-    await verifyPreservesBody(chunks, { chunkDelayMs: 500, waitMs: 2000 })
+    await verifyPreservesBody(chunks, { chunkDelayMs: 500 })
   })
 })
 
@@ -341,7 +337,7 @@ describe(`SSE proxy e2e: offset-based resumption`, () => {
       body: {},
     })
 
-    await waitForPiping()
+    await waitForStreamClosed(createResult.streamUrl!)
 
     const readResult = await readStream({
       streamUrl: createResult.streamUrl!,
@@ -390,7 +386,7 @@ describe(`SSE proxy e2e: offset-based resumption`, () => {
       body: {},
     })
 
-    await waitForPiping()
+    await waitForStreamClosed(createResult.streamUrl!)
 
     const [read1, read2] = await Promise.all([
       readStream({ streamUrl: createResult.streamUrl!, offset: `-1` }),
@@ -445,7 +441,6 @@ describe(`SSE proxy e2e: stream lifecycle`, () => {
   it(`stream is marked closed after upstream completes`, async () => {
     const { readResult } = await roundTrip({
       body: createSSEChunks([{ data: `{"done": true}` }]),
-      waitMs: 200,
     })
 
     expect(readResult.status).toBe(200)
