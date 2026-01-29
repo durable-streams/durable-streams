@@ -30,6 +30,15 @@ export interface StreamCredentials {
 }
 
 /**
+ * Headers configuration for upstream requests.
+ * Can be a static object or a function that returns headers dynamically.
+ */
+export type HeadersConfig =
+  | Record<string, string>
+  | (() => Record<string, string>)
+  | (() => Promise<Record<string, string>>)
+
+/**
  * Options for creating a durable fetch wrapper.
  */
 export interface DurableFetchOptions {
@@ -43,6 +52,12 @@ export interface DurableFetchOptions {
   storagePrefix?: string
   /** Whether to automatically resume on reconnection (default: true) */
   autoResume?: boolean
+  /**
+   * Headers to send with upstream requests (e.g., API keys).
+   * Can be a static object or a function for dynamic headers.
+   * These headers are merged with any headers passed in individual requests.
+   */
+  headers?: HeadersConfig
 }
 
 /**

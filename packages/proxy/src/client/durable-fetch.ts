@@ -14,18 +14,36 @@ import {
   saveCredentials,
   updateOffset,
 } from "./storage"
+import { unwrapProxySSE } from "./sse-utils"
 import type {
   DurableFetch,
   DurableFetchOptions,
   DurableFetchRequestOptions,
   DurableResponse,
+  HeadersConfig,
   StreamCredentials,
 } from "./types"
+
+// Re-export for convenience
+export { unwrapProxySSE } from "./sse-utils"
 
 /**
  * Default storage prefix for credentials.
  */
 const DEFAULT_PREFIX = `durable-streams:`
+
+/**
+ * Resolve headers configuration to a plain object.
+ */
+async function resolveHeaders(
+  config: HeadersConfig | undefined
+): Promise<Record<string, string>> {
+  if (!config) return {}
+  if (typeof config === `function`) {
+    return await config()
+  }
+  return config
+}
 
 /**
  * Extract the service name from a proxy URL.
@@ -89,6 +107,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     fetch: fetchFn = fetch,
     storagePrefix = DEFAULT_PREFIX,
     autoResume = true,
+    headers: headersConfig,
   } = options
 
   // Parse and validate the proxy URL
@@ -147,9 +166,20 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     createUrl.searchParams.set(`stream_key`, stream_key)
     createUrl.searchParams.set(`upstream`, upstreamUrl)
 
+    // Resolve and merge headers
+    const configHeaders = await resolveHeaders(headersConfig)
+    const requestHeaders = fetchInit.headers as
+      | Record<string, string>
+      | undefined
+    const mergedHeaders = {
+      ...configHeaders,
+      ...requestHeaders,
+    }
+
     const createResponse = await fetchFn(createUrl.toString(), {
       ...fetchInit,
       method: `POST`,
+      headers: mergedHeaders,
     })
 
     if (!createResponse.ok) {
@@ -262,10 +292,7 @@ async function readFromStream(
 }
 
 /**
- * Create a transform stream that tracks offset updates from SSE events.
- *
- * SSE format includes an optional `id:` field that contains the offset.
- * We parse this to track our position for resume capability.
+ * Create a transform stream that unwraps the proxy's SSE layer and tracks offset updates.
  */
 function trackOffsetUpdates(
   body: ReadableStream<Uint8Array>,
@@ -274,52 +301,103 @@ function trackOffsetUpdates(
   storageScope: string,
   streamKey: string
 ): ReadableStream<Uint8Array> {
-  const decoder = new TextDecoder()
-  let buffer = ``
+  return unwrapProxySSE(body, (controlData) => {
+    if (controlData.streamNextOffset) {
+      updateOffset(
+        storage,
+        storagePrefix,
+        storageScope,
+        streamKey,
+        controlData.streamNextOffset
+      )
+    }
+  })
+}
 
-  return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const reader = body.getReader()
+/**
+ * Options for resuming a durable stream.
+ */
+export interface ResumeOptions {
+  /** The proxy URL (e.g., https://api.example.com/v1/proxy/chat) */
+  proxyUrl: string
+  /** The stream key */
+  streamKey: string
+  /** The read token for authorization */
+  readToken: string
+  /** The offset to resume from (default: "-1" for beginning) */
+  offset?: string
+  /** Custom fetch implementation */
+  fetch?: typeof fetch
+}
 
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
+/**
+ * Resume a durable stream by fetching from the proxy's stream endpoint.
+ *
+ * This function:
+ * 1. Fetches from the proxy's stream endpoint with the given offset
+ * 2. Unwraps the proxy's SSE layer
+ * 3. Returns a Response with the unwrapped upstream content
+ *
+ * @param options - Resume options
+ * @returns A Response with the unwrapped stream body
+ *
+ * @example
+ * ```typescript
+ * const response = await resume({
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
+ *   streamKey: 'conversation-123',
+ *   readToken: 'token-from-credentials',
+ *   offset: '5',
+ * })
+ *
+ * // Read the unwrapped stream
+ * const reader = response.body?.getReader()
+ * // ... process chunks
+ * ```
+ */
+export async function resume(options: ResumeOptions): Promise<Response> {
+  const {
+    proxyUrl,
+    streamKey,
+    readToken,
+    offset = `-1`,
+    fetch: fetchFn = fetch,
+  } = options
 
-          if (done) {
-            controller.close()
-            break
-          }
+  const proxyUrlObj = new URL(proxyUrl)
+  const serviceName = getServiceName(proxyUrlObj)
+  const proxyPrefix = getProxyPrefix(proxyUrlObj)
 
-          // Pass through the data
-          controller.enqueue(value)
+  // Build the stream URL
+  const streamUrl = new URL(
+    `${proxyPrefix}/v1/proxy/${serviceName}/streams/${streamKey}`,
+    proxyUrlObj.origin
+  )
+  streamUrl.searchParams.set(`offset`, offset)
+  streamUrl.searchParams.set(`live`, `sse`)
 
-          // Parse SSE events to track offset from id: field
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split(`\n`)
-
-          // Keep the last incomplete line in the buffer
-          buffer = lines.pop() ?? ``
-
-          for (const line of lines) {
-            // SSE id: field contains the offset
-            if (line.startsWith(`id:`)) {
-              const offset = line.slice(3).trim()
-              if (offset) {
-                updateOffset(
-                  storage,
-                  storagePrefix,
-                  storageScope,
-                  streamKey,
-                  offset
-                )
-              }
-            }
-          }
-        }
-      } catch (error) {
-        controller.error(error)
-      }
+  const response = await fetchFn(streamUrl.toString(), {
+    headers: {
+      Authorization: `Bearer ${readToken}`,
+      Accept: `text/event-stream`,
     },
+  })
+
+  if (!response.ok) {
+    throw new Error(`Failed to resume stream: ${response.status}`)
+  }
+
+  if (!response.body) {
+    throw new Error(`No response body`)
+  }
+
+  // Unwrap the proxy's SSE layer
+  const unwrappedBody = unwrapProxySSE(response.body)
+
+  return new Response(unwrappedBody, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
   })
 }
 
