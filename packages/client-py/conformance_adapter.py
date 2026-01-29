@@ -125,6 +125,35 @@ def encode_base64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
+def is_binary_content_type(content_type: str | None) -> bool:
+    """Check if a content type represents binary data (not text/JSON)."""
+    if not content_type:
+        return False
+    normalized = content_type.lower().split(";")[0].strip()
+    # Text and JSON types are not binary
+    if normalized.startswith("text/"):
+        return False
+    if normalized == "application/json":
+        return False
+    # These are common binary types
+    if normalized == "application/octet-stream":
+        return True
+    if normalized == "application/x-binary":
+        return True
+    if normalized == "application/x-protobuf":
+        return True
+    if normalized.startswith("image/"):
+        return True
+    if normalized.startswith("audio/"):
+        return True
+    if normalized.startswith("video/"):
+        return True
+    # Default to binary for unknown application/* types
+    if normalized.startswith("application/"):
+        return True
+    return False
+
+
 def map_error_code(err: Exception) -> tuple[str, int | None]:
     """Map a Python exception to an error code and optional status."""
     if isinstance(err, StreamNotFoundError):
@@ -219,7 +248,7 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
     """Handle create command."""
     global stream_content_types
     url = f"{server_url}{cmd['path']}"
-    content_type = cmd.get("contentType", "application/octet-stream")
+    content_type = cmd.get("contentType", "text/plain")
 
     # Check if stream already exists
     already_exists = False
@@ -293,7 +322,7 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     url = f"{server_url}{cmd['path']}"
 
     # Get content type from cache or default
-    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+    content_type = stream_content_types.get(cmd["path"], "text/plain")
 
     # Resolve dynamic headers/params
     dynamic_hdrs, headers_sent = resolve_dynamic_headers()
@@ -430,12 +459,24 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                 # Use byte reading for non-JSON content
                 data = response.read_bytes()
                 if data:
-                    chunks.append(
-                        {
-                            "data": data.decode("utf-8", errors="replace"),
-                            "offset": response.offset,
-                        }
-                    )
+                    is_binary = is_binary_content_type(content_type)
+                    if is_binary:
+                        # Return binary data as base64 to preserve byte integrity
+                        chunks.append(
+                            {
+                                "data": encode_base64(data),
+                                "binary": True,
+                                "offset": response.offset,
+                            }
+                        )
+                    else:
+                        # Text content - decode as UTF-8
+                        chunks.append(
+                            {
+                                "data": data.decode("utf-8"),
+                                "offset": response.offset,
+                            }
+                        )
                     if len(chunks) >= max_chunks:
                         stopped_for_max_chunks = True
             final_offset = response.offset
@@ -484,17 +525,27 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             # For long-poll mode, read the response body directly instead of using
             # iteration (which continues forever in live modes). Read initial response,
             # check upToDate, and only continue if not up-to-date and more data is needed.
+            is_binary = is_binary_content_type(content_type)
             if response.status != 204:
                 try:
                     # Read the initial response body
                     data = response._response.read()
                     if data:
-                        chunks.append(
-                            {
-                                "data": data.decode("utf-8", errors="replace"),
-                                "offset": response.offset,
-                            }
-                        )
+                        if is_binary:
+                            chunks.append(
+                                {
+                                    "data": encode_base64(data),
+                                    "binary": True,
+                                    "offset": response.offset,
+                                }
+                            )
+                        else:
+                            chunks.append(
+                                {
+                                    "data": data.decode("utf-8"),
+                                    "offset": response.offset,
+                                }
+                            )
 
                     final_offset = response.offset
                     up_to_date = response.up_to_date
@@ -517,12 +568,21 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                         next_response.close()
 
                         if data:
-                            chunks.append(
-                                {
-                                    "data": data.decode("utf-8", errors="replace"),
-                                    "offset": response.offset,
-                                }
-                            )
+                            if is_binary:
+                                chunks.append(
+                                    {
+                                        "data": encode_base64(data),
+                                        "binary": True,
+                                        "offset": response.offset,
+                                    }
+                                )
+                            else:
+                                chunks.append(
+                                    {
+                                        "data": data.decode("utf-8"),
+                                        "offset": response.offset,
+                                    }
+                                )
                             chunk_count += 1
                             if chunk_count >= max_chunks:
                                 stopped_for_max_chunks = True
@@ -607,7 +667,7 @@ def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
     url = f"{server_url}{cmd['path']}"
 
     # Get content-type from cache
-    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+    content_type = stream_content_types.get(cmd["path"], "text/plain")
 
     producer_id = cmd.get("producerId")
     producer_epoch = cmd.get("epoch") or cmd.get("producerEpoch") or 0
@@ -700,7 +760,7 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
 
         if op_type == "append":
             url = f"{server_url}{operation['path']}"
-            content_type = stream_content_types.get(operation["path"], "application/octet-stream")
+            content_type = stream_content_types.get(operation["path"], "text/plain")
             # Use shared_client for connection reuse - major perf improvement
             ds = DurableStream(url, content_type=content_type, client=shared_client)
 
@@ -721,7 +781,7 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
 
         elif op_type == "roundtrip":
             url = f"{server_url}{operation['path']}"
-            content_type = operation.get("contentType", "application/octet-stream")
+            content_type = operation.get("contentType", "text/plain")
             live_mode = operation.get("live", "long-poll")
 
             # Use shared client for connection reuse - httpx.Client is thread-safe
@@ -793,7 +853,7 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
 
         elif op_type == "create":
             url = f"{server_url}{operation['path']}"
-            content_type = operation.get("contentType", "application/octet-stream")
+            content_type = operation.get("contentType", "text/plain")
             ds = DurableStream.create(url, content_type=content_type, client=shared_client)
             # Don't close - we passed in a shared client
 
@@ -801,7 +861,7 @@ def handle_benchmark(cmd: dict[str, Any]) -> dict[str, Any]:
             import asyncio
             import os
             url = f"{server_url}{operation['path']}"
-            content_type = stream_content_types.get(operation["path"], "application/octet-stream")
+            content_type = stream_content_types.get(operation["path"], "text/plain")
 
             # Ensure stream exists - use shared client
             try:
@@ -931,14 +991,15 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
     url = f"{server_url}{cmd['path']}"
 
     # Get content-type from cache or use default
-    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+    content_type = stream_content_types.get(cmd["path"], "text/plain")
 
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
     producer_seq = cmd.get("producerSeq")
-    # Data is already pre-serialized, pass directly to append()
-    data = cmd["data"]
+    binary = cmd.get("binary", False)
+    # Decode binary data if needed
+    data = decode_base64(cmd["data"]) if binary else cmd["data"]
 
     async def do_append():
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1054,7 +1115,7 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     url = f"{server_url}{cmd['path']}"
 
     # Get content-type from cache or use default
-    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+    content_type = stream_content_types.get(cmd["path"], "text/plain")
 
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
@@ -1117,7 +1178,7 @@ def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
     import asyncio
 
     url = f"{server_url}{cmd['path']}"
-    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+    content_type = stream_content_types.get(cmd["path"], "text/plain")
 
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
