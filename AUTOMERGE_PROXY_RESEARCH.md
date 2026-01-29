@@ -1,330 +1,403 @@
 # Automerge Proxy Research
 
-This document explores adding an Automerge provider for Durable Streams, similar to the existing Yjs provider (`y-durable-streams`).
+This document explores adding an `automerge-repo` NetworkAdapter for Durable Streams, similar to the existing Yjs provider (`y-durable-streams`).
 
-## Executive Summary
+## What is a NetworkAdapter?
 
-Automerge is a CRDT library with a well-defined sync protocol that can be adapted to work with Durable Streams. Unlike Yjs, Automerge's sync protocol is **bidirectional and stateful**, which presents unique challenges for integration with an append-only log architecture. Two implementation approaches are viable:
+In `automerge-repo`, a **NetworkAdapter** is the abstraction for connecting to other peers. The `Repo` uses adapters to discover peers, send messages, and receive messages. Unlike Yjs which uses a Provider pattern, Automerge uses this adapter pattern that plugs into the repo infrastructure.
 
-1. **Low-level approach**: Use Automerge's `generateSyncMessage`/`receiveSyncMessage` APIs directly
-2. **High-level approach**: Implement an `automerge-repo` NetworkAdapter
+### NetworkAdapter Interface
 
-## Automerge Overview
-
-### Core Concepts
-
-Automerge is a JSON-like CRDT library that provides:
-- Multiple CRDT implementations (text, lists, maps, counters)
-- Compact binary compression format
-- Transport-agnostic sync protocol
-- Rust core with JavaScript/WASM bindings
-
-**Key Packages:**
-- `@automerge/automerge` - Core CRDT implementation and sync protocol
-- `@automerge/automerge-repo` - Higher-level document management with pluggable networking/storage
-
-### Sync Protocol Deep Dive
-
-Automerge's sync protocol is based on [this paper](https://arxiv.org/abs/2012.00472) and assumes **reliable, in-order message delivery** between peers.
-
-**Key characteristics:**
-- **Bidirectional**: Both peers exchange messages until fully synced
-- **Stateful**: Each peer maintains a `SyncState` per connected peer
-- **Efficient**: Often achieves sync in a single round-trip per direction
-- **Binary**: Messages are `Uint8Array` (compact binary format)
-
-**Core sync functions:**
 ```typescript
-import * as Automerge from "@automerge/automerge"
+import { EventEmitter } from "eventemitter3"
 
-// Initialize sync state for a peer
-const syncState = Automerge.initSyncState()
+interface NetworkAdapterEvents {
+  close: () => void
+  "peer-candidate": (payload: PeerCandidatePayload) => void
+  "peer-disconnected": (payload: PeerDisconnectedPayload) => void
+  message: (payload: Message) => void
+}
 
-// Generate message to send (returns [newState, message | null])
-const [newState, message] = Automerge.generateSyncMessage(doc, syncState)
+interface PeerCandidatePayload {
+  peerId: PeerId
+  peerMetadata: PeerMetadata
+}
 
-// Receive message from peer (returns [newDoc, newState])
-const [newDoc, newState] = Automerge.receiveSyncMessage(doc, syncState, message)
+interface PeerDisconnectedPayload {
+  peerId: PeerId
+}
 
-// Sync state can be serialized for persistence
-const encoded = Automerge.encodeSyncState(syncState)
-const decoded = Automerge.decodeSyncState(encoded)
-```
+interface PeerMetadata {
+  storageId?: StorageId
+  isEphemeral?: boolean
+}
 
-**Sync flow:**
-1. Peer A generates sync message and sends to Peer B
-2. Peer B receives message, updates doc, generates response
-3. Exchange continues until both `generateSyncMessage` return `null`
-4. `null` message means peers are fully synchronized
+// Message types: request, sync, unavailable, ephemeral
+interface Message {
+  type: string
+  senderId: PeerId
+  targetId: PeerId
+  data?: Uint8Array
+  documentId?: DocumentId
+}
 
-## Comparison: Yjs vs Automerge Sync
+abstract class NetworkAdapter extends EventEmitter<NetworkAdapterEvents> {
+  peerId?: PeerId
+  peerMetadata?: PeerMetadata
 
-| Aspect | Yjs | Automerge |
-|--------|-----|-----------|
-| Sync direction | Unidirectional (updates broadcast) | Bidirectional (message exchange) |
-| State per peer | None required | `SyncState` per peer |
-| Message format | Update deltas | Sync messages with bloom filters |
-| Merge strategy | Apply updates directly | Generate/receive sync messages |
-| Update batching | `Y.mergeUpdates()` | Built into sync protocol |
+  // Called by Repo to start connection
+  abstract connect(peerId: PeerId, peerMetadata?: PeerMetadata): void
 
-### Key Challenge
+  // Called by Repo to send a message to a peer
+  abstract send(message: Message): void
 
-Yjs works well with append-only logs because updates are **unidirectional broadcasts** - any client can append an update and all other clients apply it.
+  // Called by Repo to disconnect
+  abstract disconnect(): void
 
-Automerge's sync protocol is **bidirectional** - it expects a back-and-forth exchange between specific peers. This doesn't naturally fit an append-only broadcast model.
-
-## Proposed Solution: Server-Mediated Sync
-
-### Architecture
-
-```
-┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-│   Client A   │────▶│  Durable Stream  │◀────│   Client B   │
-│  (Automerge) │     │  (append-only)   │     │  (Automerge) │
-└──────────────┘     └──────────────────┘     └──────────────┘
-        │                    │                       │
-        │                    ▼                       │
-        │           ┌──────────────┐                 │
-        └──────────▶│   Virtual    │◀────────────────┘
-                    │  Sync Peer   │
-                    └──────────────┘
-```
-
-### Approach: Client as "Virtual Peer"
-
-Instead of clients syncing with each other directly, each client:
-
-1. **Maintains sync state with a "virtual server peer"**
-2. **Appends sync messages to the stream**
-3. **Processes all stream messages as if from the virtual peer**
-4. **Re-derives sync state from stream on reconnect**
-
-This works because:
-- All clients see the same ordered stream of messages
-- Each client can reconstruct document state by processing all messages
-- The stream acts as a shared "truth" that all clients sync against
-
-### Message Format
-
-Each stream entry contains:
-```typescript
-interface AutomergeStreamMessage {
-  // The Automerge sync message (binary)
-  syncMessage: Uint8Array
-
-  // Client identifier for filtering own messages
-  clientId: string
-
-  // Optional: heads at time of send (for optimization)
-  heads?: string[]
+  // Readiness checks
+  abstract isReady(): boolean
+  abstract whenReady(): Promise<void>
 }
 ```
 
-### Provider Implementation
+### How automerge-repo Uses NetworkAdapters
 
-```typescript
-// Proposed package: automerge-durable-streams or am-durable-streams
+1. **Repo creates adapter** and calls `connect(peerId, peerMetadata)`
+2. **Adapter emits `peer-candidate`** when it discovers another peer
+3. **Repo calls `send(message)`** to transmit sync/request/ephemeral messages
+4. **Adapter emits `message`** when it receives data from peers
+5. **Adapter emits `peer-disconnected`** when a peer leaves
 
-export class DurableStreamsProvider {
-  private doc: Automerge.Doc<T>
-  private stream: DurableStream
-  private syncState: Automerge.SyncState
-  private clientId: string
+The key insight: **automerge-repo handles all the sync protocol logic internally**. The NetworkAdapter just needs to transport messages between peers.
 
-  constructor(options: {
-    doc: Automerge.Doc<T>
-    streamUrl: string
-    transport: "sse" | "long-poll"
-  })
+## Architecture: Durable Stream as Message Bus
 
-  async connect(): Promise<void>
-  disconnect(): void
-  destroy(): void
-
-  // Events
-  on(event: "synced", handler: (synced: boolean) => void): void
-  on(event: "change", handler: (doc: Automerge.Doc<T>) => void): void
-  on(event: "error", handler: (error: Error) => void): void
-}
+```
+┌─────────────────┐                              ┌─────────────────┐
+│   Client A      │                              │   Client B      │
+│ ┌─────────────┐ │                              │ ┌─────────────┐ │
+│ │    Repo     │ │                              │ │    Repo     │ │
+│ └──────┬──────┘ │                              │ └──────┬──────┘ │
+│        │        │                              │        │        │
+│ ┌──────▼──────┐ │     ┌──────────────────┐     │ ┌──────▼──────┐ │
+│ │ DurableStr- │ │────▶│  Durable Stream  │◀────│ │ DurableStr- │ │
+│ │ eamsAdapter │ │     │  (append-only)   │     │ │ eamsAdapter │ │
+│ └─────────────┘ │     └──────────────────┘     │ └─────────────┘ │
+└─────────────────┘                              └─────────────────┘
 ```
 
-### Sync Algorithm
+Each client:
+1. **Appends messages** to the stream via `send()`
+2. **Reads all messages** from the stream
+3. **Filters messages** - only emits messages targeted to this peer
+4. **Treats all other clients as peers** discovered through the stream
 
-**On connect (replay history):**
+## Implementation Design
+
+### Package: `automerge-repo-network-durable-streams`
+
 ```typescript
-async connect() {
-  // Create fresh doc and sync state
-  this.doc = Automerge.init()
-  this.syncState = Automerge.initSyncState()
+import { NetworkAdapter, type Message, type PeerId, type PeerMetadata } from "@automerge/automerge-repo"
+import { DurableStream } from "@durable-streams/client"
 
-  // Stream from beginning
-  const response = await this.stream.stream({ offset: "-1", live: transport })
+export interface DurableStreamsNetworkAdapterOptions {
+  /** URL of the durable stream */
+  url: string | URL
+  /** Transport mode */
+  transport?: "sse" | "long-poll"
+  /** Optional headers (can be functions for dynamic values like auth tokens) */
+  headers?: Record<string, string | (() => string)>
+}
 
-  response.subscribeBytes((chunk) => {
-    const messages = decode(chunk.data)
-    for (const msg of messages) {
-      // Skip our own messages
-      if (msg.clientId === this.clientId) continue
+export class DurableStreamsNetworkAdapter extends NetworkAdapter {
+  private stream: DurableStream | null = null
+  private abortController: AbortController | null = null
+  private unsubscribe: (() => void) | null = null
+  private knownPeers: Set<PeerId> = new Set()
+  private readyPromise: Promise<void>
+  private resolveReady!: () => void
+  private _isReady = false
 
-      // Apply sync message
-      const [newDoc, newState] = Automerge.receiveSyncMessage(
-        this.doc, this.syncState, msg.syncMessage
-      )
-      this.doc = newDoc
-      this.syncState = newState
+  constructor(private options: DurableStreamsNetworkAdapterOptions) {
+    super()
+    this.readyPromise = new Promise((resolve) => {
+      this.resolveReady = resolve
+    })
+  }
+
+  connect(peerId: PeerId, peerMetadata?: PeerMetadata): void {
+    this.peerId = peerId
+    this.peerMetadata = peerMetadata
+    this.abortController = new AbortController()
+    this.connectToStream()
+  }
+
+  private async connectToStream(): Promise<void> {
+    const url = typeof this.options.url === "string"
+      ? this.options.url
+      : this.options.url.href
+
+    // Create or connect to existing stream
+    try {
+      this.stream = await DurableStream.create({
+        url,
+        contentType: "application/octet-stream",
+        headers: this.options.headers,
+        signal: this.abortController!.signal,
+      })
+    } catch (err) {
+      if (err instanceof DurableStreamError && err.code === "CONFLICT_EXISTS") {
+        this.stream = new DurableStream({
+          url,
+          contentType: "application/octet-stream",
+          headers: this.options.headers,
+          signal: this.abortController!.signal,
+        })
+      } else {
+        throw err
+      }
     }
 
-    if (chunk.upToDate) {
-      // Generate any sync messages we need to send
-      this.generateAndSendSyncMessages()
-      this.emit("synced", true)
+    // Announce ourselves by appending a "join" message
+    await this.announcePresence()
+
+    // Start streaming from beginning to catch up on history
+    const transport = this.options.transport ?? "sse"
+    const response = await this.stream.stream({
+      offset: "-1",
+      live: transport,
+      encoding: transport === "sse" ? "base64" : undefined,
+    })
+
+    this.unsubscribe = response.subscribeBytes((chunk) => {
+      this.handleChunk(chunk)
+    })
+  }
+
+  private async announcePresence(): Promise<void> {
+    // Append a presence announcement so other peers discover us
+    const announcement: StreamEnvelope = {
+      type: "announce",
+      peerId: this.peerId!,
+      peerMetadata: this.peerMetadata,
     }
-  })
-}
-```
+    await this.stream!.append(encodeEnvelope(announcement))
+  }
 
-**On local change:**
-```typescript
-onChange(newDoc: Automerge.Doc<T>) {
-  this.doc = newDoc
-  this.generateAndSendSyncMessages()
-}
+  private handleChunk(chunk: { data: Uint8Array; upToDate?: boolean }): void {
+    if (chunk.data.length === 0) {
+      if (chunk.upToDate && !this._isReady) {
+        this._isReady = true
+        this.resolveReady()
+      }
+      return
+    }
 
-async generateAndSendSyncMessages() {
-  const [newState, message] = Automerge.generateSyncMessage(this.doc, this.syncState)
-  this.syncState = newState
+    // Decode messages from chunk
+    const envelopes = decodeEnvelopes(chunk.data)
 
-  if (message) {
-    await this.stream.append(encode({
-      syncMessage: message,
-      clientId: this.clientId,
-    }))
+    for (const envelope of envelopes) {
+      if (envelope.type === "announce") {
+        // Discovered a peer
+        if (envelope.peerId !== this.peerId && !this.knownPeers.has(envelope.peerId)) {
+          this.knownPeers.add(envelope.peerId)
+          this.emit("peer-candidate", {
+            peerId: envelope.peerId,
+            peerMetadata: envelope.peerMetadata ?? {},
+          })
+        }
+      } else if (envelope.type === "message") {
+        // Only emit messages targeted to us (or broadcast)
+        if (envelope.message.targetId === this.peerId) {
+          // Track sender as known peer
+          if (!this.knownPeers.has(envelope.message.senderId)) {
+            this.knownPeers.add(envelope.message.senderId)
+            this.emit("peer-candidate", {
+              peerId: envelope.message.senderId,
+              peerMetadata: {},
+            })
+          }
+          this.emit("message", envelope.message)
+        }
+      } else if (envelope.type === "leave") {
+        if (this.knownPeers.has(envelope.peerId)) {
+          this.knownPeers.delete(envelope.peerId)
+          this.emit("peer-disconnected", { peerId: envelope.peerId })
+        }
+      }
+    }
+
+    if (chunk.upToDate && !this._isReady) {
+      this._isReady = true
+      this.resolveReady()
+    }
+  }
+
+  send(message: Message): void {
+    if (!this.stream || !this._isReady) return
+
+    const envelope: StreamEnvelope = {
+      type: "message",
+      message,
+    }
+
+    // Fire and forget - stream handles ordering
+    this.stream.append(encodeEnvelope(envelope)).catch((err) => {
+      console.error("[automerge-durable-streams] Failed to send:", err)
+    })
+  }
+
+  disconnect(): void {
+    // Announce departure
+    if (this.stream && this.peerId) {
+      const envelope: StreamEnvelope = {
+        type: "leave",
+        peerId: this.peerId,
+      }
+      this.stream.append(encodeEnvelope(envelope)).catch(() => {})
+    }
+
+    this.abortController?.abort()
+    this.unsubscribe?.()
+    this.stream = null
+    this.knownPeers.clear()
+    this._isReady = false
+    this.emit("close")
+  }
+
+  isReady(): boolean {
+    return this._isReady
+  }
+
+  whenReady(): Promise<void> {
+    return this.readyPromise
   }
 }
 ```
 
-## Alternative: Raw Changes Approach
+### Wire Format
 
-A simpler approach that bypasses the sync protocol entirely:
-
-**Instead of sync messages, append raw changes:**
-```typescript
-// On local change
-const changes = Automerge.getChanges(oldDoc, newDoc)
-for (const change of changes) {
-  await stream.append(change) // Each change is already a Uint8Array
-}
-
-// On receive
-const [newDoc] = Automerge.applyChanges(doc, [change])
-```
-
-**Pros:**
-- Simpler - no sync state management
-- Each change is self-contained
-- Natural fit for append-only log
-
-**Cons:**
-- Less efficient for large documents with lots of history
-- No bloom filter optimization
-- May send redundant changes
-
-This approach is similar to how Yjs works - just broadcast changes.
-
-## Recommended Implementation Path
-
-### Phase 1: MVP with Raw Changes
-
-Start with the simpler "raw changes" approach:
+Messages are wrapped in an envelope for the stream:
 
 ```typescript
-// Package: am-durable-streams
-export class DurableStreamsSync {
-  private doc: Automerge.Doc<T>
-  private stream: DurableStream
+type StreamEnvelope =
+  | { type: "announce"; peerId: PeerId; peerMetadata?: PeerMetadata }
+  | { type: "message"; message: Message }
+  | { type: "leave"; peerId: PeerId }
 
-  // Frame changes with length prefix (like Yjs uses lib0)
-  private frameChange(change: Uint8Array): Uint8Array
-  private unframeChanges(data: Uint8Array): Uint8Array[]
-}
+// Encode/decode using CBOR or MessagePack for efficiency
+// Could also use lib0 encoding like y-durable-streams does
+function encodeEnvelope(envelope: StreamEnvelope): Uint8Array
+function decodeEnvelopes(data: Uint8Array): StreamEnvelope[]
 ```
 
-**Package structure:**
+### Usage Example
+
+```typescript
+import { Repo } from "@automerge/automerge-repo"
+import { DurableStreamsNetworkAdapter } from "automerge-repo-network-durable-streams"
+
+const repo = new Repo({
+  network: [
+    new DurableStreamsNetworkAdapter({
+      url: "https://example.com/v1/streams/my-document",
+      transport: "sse",
+      headers: {
+        Authorization: () => `Bearer ${getToken()}`,
+      },
+    }),
+  ],
+})
+
+// Create or find a document
+const handle = repo.create()
+handle.change((doc) => {
+  doc.text = "Hello, world!"
+})
 ```
-packages/am-durable-streams/
+
+## Key Design Decisions
+
+### 1. Peer Discovery via Stream
+
+Unlike WebSocket adapters that have explicit connection handshakes, we discover peers by reading their "announce" messages from the stream. This means:
+- All peers see each other's announcements
+- Late-joining peers see historical announcements and can catch up
+- No separate signaling channel needed
+
+### 2. Message Targeting
+
+automerge-repo messages have `targetId` - we only emit messages addressed to us. This provides logical point-to-point communication over the broadcast stream.
+
+### 3. Reliable In-Order Delivery
+
+Durable Streams guarantee:
+- Messages are persisted and ordered
+- All clients see the same sequence
+- Exactly-once delivery with idempotent producers
+
+This matches automerge-repo's requirements perfectly.
+
+### 4. Reconnection Handling
+
+On reconnect:
+1. Stream from offset `-1` (beginning) to replay history
+2. All "announce" messages rebuild peer set
+3. All "message" envelopes replay sync state
+4. Document converges to correct state
+
+The stream acts as the source of truth.
+
+## Comparison to Existing Adapters
+
+| Aspect | WebSocket | BroadcastChannel | Durable Streams |
+|--------|-----------|------------------|-----------------|
+| Persistence | No | No | Yes |
+| Offline support | No | No | Yes (via replay) |
+| Server required | Yes | No | Yes |
+| Peer discovery | Server-mediated | Broadcast | Stream history |
+| Message ordering | Per-connection | Broadcast | Global ordering |
+
+## Package Structure
+
+```
+packages/automerge-repo-network-durable-streams/
 ├── src/
-│   ├── index.ts
-│   ├── types.ts
-│   └── durable-streams-sync.ts
+│   ├── index.ts                    # Main export
+│   ├── adapter.ts                  # DurableStreamsNetworkAdapter
+│   ├── encoding.ts                 # Envelope encode/decode
+│   └── types.ts                    # Type definitions
 ├── test/
-│   └── durable-streams-sync.test.ts
+│   ├── adapter.test.ts             # Unit tests
+│   └── integration.test.ts         # Integration with real streams
 ├── package.json
 ├── tsconfig.json
 └── README.md
 ```
 
-### Phase 2: automerge-repo NetworkAdapter
-
-For users already using `automerge-repo`, provide a NetworkAdapter:
-
-```typescript
-// Package: @durable-streams/automerge-repo-network-adapter
-import { NetworkAdapter } from "@automerge/automerge-repo"
-
-export class DurableStreamsNetworkAdapter extends NetworkAdapter {
-  connect(peerId: string): void
-  disconnect(): void
-  send(message: Message): void
-  isReady(): boolean
-  whenReady(): Promise<void>
-}
-```
-
-This would integrate with the automerge-repo ecosystem while using Durable Streams as the transport.
-
-### Phase 3: Optimizations
-
-- Sync state persistence between sessions
-- Bloom filter optimization for initial sync
-- Batching multiple changes before append
-- Compression for large documents
-
-## Dependencies
+### Dependencies
 
 ```json
 {
   "peerDependencies": {
-    "@automerge/automerge": "^3.0.0"
+    "@automerge/automerge-repo": "^2.0.0"
   },
-  "devDependencies": {
-    "@automerge/automerge": "^3.2.0"
+  "dependencies": {
+    "@durable-streams/client": "workspace:*"
   }
 }
 ```
 
 ## Open Questions
 
-1. **Framing format**: Use lib0 like Yjs, or custom length-prefixed format?
-2. **Client ID generation**: UUID, or derived from Automerge actor ID?
-3. **Awareness/Presence**: Automerge doesn't have built-in presence like Yjs's Awareness protocol. Should we add a separate presence stream?
-4. **Document recovery**: How to handle corrupted stream entries?
-5. **Multiple documents**: Support multiple docs per stream, or one stream per doc?
+1. **Encoding format**: Use CBOR, MessagePack, or lib0 VarUint8Array framing?
+2. **Presence/ephemeral data**: automerge-repo has ephemeral messages - how to handle them with durable streams? (Maybe a separate non-durable stream?)
+3. **Stream per document vs shared stream**: One stream per documentId, or multiplex?
+4. **Peer timeout**: How long to keep peers in `knownPeers` without hearing from them?
 
 ## References
 
-- [Automerge GitHub](https://github.com/automerge/automerge)
-- [Automerge Documentation](https://automerge.org/docs/hello/)
-- [Automerge Sync Protocol (Rust docs)](https://automerge.org/automerge/automerge/sync/index.html)
-- [Binary Format Specification](https://automerge.org/automerge-binary-format-spec/)
-- [Automerge-Repo](https://automerge.org/blog/automerge-repo/)
-- [automerge-repo Networking](https://automerge.org/docs/reference/repositories/networking/)
-- [Sync Protocol Paper](https://arxiv.org/abs/2012.00472)
-
-## Conclusion
-
-Adding Automerge support to Durable Streams is feasible with two main approaches:
-
-1. **Raw changes** (recommended MVP): Simpler, broadcast-style like Yjs
-2. **Sync protocol**: More complex but potentially more efficient for large docs
-
-The raw changes approach provides the best starting point as it closely mirrors the successful Yjs implementation pattern while requiring minimal adaptation of Automerge's architecture.
+- [automerge-repo GitHub](https://github.com/automerge/automerge-repo)
+- [NetworkAdapter API](https://automerge.org/automerge-repo/classes/_automerge_automerge-repo.NetworkAdapter.html)
+- [automerge-repo Networking Docs](https://automerge.org/docs/reference/repositories/networking/)
+- [BroadcastChannel Adapter Source](https://github.com/automerge/automerge-repo/tree/main/packages/automerge-repo-network-broadcastchannel)
