@@ -31,15 +31,15 @@ function extractPRsFromChangelog(
   version: string
 ): Array<number> {
   try {
-    const content = readFileSync(changelogPath, "utf-8")
-    const lines = content.split("\n")
+    const content = readFileSync(changelogPath, `utf-8`)
+    const lines = content.split(`\n`)
 
     let inTargetVersion = false
     let foundVersion = false
     const prNumbers = new Set<number>()
 
     for (const line of lines) {
-      if (line.startsWith("## ")) {
+      if (line.startsWith(`## `)) {
         const versionMatch = line.match(/^## (\d+\.\d+\.\d+)/)
         if (versionMatch) {
           if (versionMatch[1] === version) {
@@ -80,8 +80,8 @@ function groupPRsByNumber(
   const prMap = new Map<number, PRInfo>()
 
   for (const pkg of publishedPackages) {
-    const pkgPath = `packages/${pkg.name.replace("@durable-streams/", "")}`
-    const changelogPath = resolve(process.cwd(), pkgPath, "CHANGELOG.md")
+    const pkgPath = `packages/${pkg.name.replace(`@durable-streams/`, ``)}`
+    const changelogPath = resolve(process.cwd(), pkgPath, `CHANGELOG.md`)
     const prNumbers = extractPRsFromChangelog(changelogPath, pkg.version)
 
     for (const prNumber of prNumbers) {
@@ -103,7 +103,7 @@ function hasExistingComment(number: number, repository: string): boolean {
   try {
     const result = execSync(
       `gh api repos/${repository}/issues/${number}/comments --jq '[.[] | select(.body | contains("has been released!"))] | length'`,
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+      { encoding: `utf-8`, stdio: [`pipe`, `pipe`, `pipe`] }
     )
     return parseInt(result.trim(), 10) > 0
   } catch (error) {
@@ -115,7 +115,7 @@ function hasExistingComment(number: number, repository: string): boolean {
 }
 
 function findLinkedIssues(prNumber: number, repository: string): Array<number> {
-  const [owner, repo] = repository.split("/")
+  const [owner, repo] = repository.split(`/`)
   const query = `
     query($owner: String!, $repo: String!, $pr: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -133,18 +133,18 @@ function findLinkedIssues(prNumber: number, repository: string): Array<number> {
   try {
     const result = execSync(
       `gh api graphql -f query='${query}' -F owner='${owner}' -F repo='${repo}' -F pr=${prNumber} --jq '.data.repository.pullRequest.closingIssuesReferences.nodes[].number'`,
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
+      { encoding: `utf-8`, stdio: [`pipe`, `pipe`, `pipe`] }
     )
 
     const issueNumbers = result
       .trim()
-      .split("\n")
+      .split(`\n`)
       .filter((line) => line)
       .map((line) => parseInt(line, 10))
 
     if (issueNumbers.length > 0) {
       console.log(
-        `  PR #${prNumber} links to issues: ${issueNumbers.join(", ")}`
+        `  PR #${prNumber} links to issues: ${issueNumbers.join(`, `)}`
       )
     }
 
@@ -163,11 +163,11 @@ function formatPackageList(
 ): string {
   return packages
     .map((pkg) => {
-      const anchor = pkg.version.replace(/\./g, "")
+      const anchor = pkg.version.replace(/\./g, ``)
       const changelogUrl = `https://github.com/${repository}/blob/main/${pkg.pkgPath}/CHANGELOG.md#${anchor}`
       return `- [${pkg.name}@${pkg.version}](${changelogUrl})`
     })
-    .join("\n")
+    .join(`\n`)
 }
 
 function commentOnPR(pr: PRInfo, repository: string): void {
@@ -184,7 +184,7 @@ function commentOnPR(pr: PRInfo, repository: string): void {
   try {
     execSync(`gh pr comment ${number} --body-file -`, {
       input: comment,
-      stdio: ["pipe", "inherit", "inherit"],
+      stdio: [`pipe`, `inherit`, `inherit`],
     })
     console.log(`✓ Commented on PR #${number}`)
   } catch (error) {
@@ -202,16 +202,16 @@ function commentOnIssue(issue: IssueInfo, repository: string): void {
 
   const prLinks = Array.from(prs)
     .map((pr) => `#${pr}`)
-    .join(", ")
-  const prWord = prs.size === 1 ? "PR" : "PRs"
-  const verb = prs.size === 1 ? "has" : "have"
+    .join(`, `)
+  const prWord = prs.size === 1 ? `PR` : `PRs`
+  const verb = prs.size === 1 ? `has` : `have`
   const packageList = formatPackageList(packages, repository)
   const comment = `🎉 The ${prWord} fixing this issue (${prLinks}) ${verb} been released!\n\n${packageList}\n\nThank you for reporting!`
 
   try {
     execSync(`gh issue comment ${number} --body-file -`, {
       input: comment,
-      stdio: ["pipe", "inherit", "inherit"],
+      stdio: [`pipe`, `inherit`, `inherit`],
     })
     console.log(`✓ Commented on issue #${number}`)
   } catch (error) {
@@ -224,12 +224,12 @@ function main(): void {
   const repository = process.env.REPOSITORY
 
   if (!publishedPackagesJson) {
-    console.log("No packages were published. Skipping PR comments.")
+    console.log(`No packages were published. Skipping PR comments.`)
     return
   }
 
   if (!repository) {
-    console.log("Repository is missing. Skipping PR comments.")
+    console.log(`Repository is missing. Skipping PR comments.`)
     return
   }
 
@@ -237,12 +237,12 @@ function main(): void {
   try {
     publishedPackages = JSON.parse(publishedPackagesJson)
   } catch (error) {
-    console.error("Failed to parse PUBLISHED_PACKAGES:", error)
+    console.error(`Failed to parse PUBLISHED_PACKAGES:`, error)
     process.exit(1)
   }
 
   if (publishedPackages.length === 0) {
-    console.log("No packages were published. Skipping PR comments.")
+    console.log(`No packages were published. Skipping PR comments.`)
     return
   }
 
@@ -251,7 +251,7 @@ function main(): void {
   const prMap = groupPRsByNumber(publishedPackages)
 
   if (prMap.size === 0) {
-    console.log("No PRs found in CHANGELOGs. Nothing to comment on.")
+    console.log(`No PRs found in CHANGELOGs. Nothing to comment on.`)
     return
   }
 
@@ -293,12 +293,12 @@ function main(): void {
     }
   }
 
-  console.log("\n✓ Done!")
+  console.log(`\n✓ Done!`)
 }
 
 try {
   main()
 } catch (error) {
-  console.error("Fatal error:", error)
+  console.error(`Fatal error:`, error)
   process.exit(1)
 }

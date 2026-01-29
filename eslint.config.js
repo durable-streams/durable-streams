@@ -11,7 +11,6 @@ export default [
       `**/build/**`,
       `**/.output/**`,
       `**/coverage/**`,
-      `.github/**`,
       `eslint.config.js`,
       `vitest.config.ts`,
       `**/vite.config.ts`,
