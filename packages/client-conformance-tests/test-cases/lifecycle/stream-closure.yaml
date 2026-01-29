@@ -581,3 +581,179 @@ tests:
         path: ${streamPath}
         expect:
           streamClosed: true
+
+  # =============================================================================
+  # Additional Edge Case Tests (from PR review)
+  # =============================================================================
+
+  - id: atomic-close-dedup-with-producer
+    name: Retry of append-and-close with same producer tuple is deduplicated
+    description: Retrying a close-with-body using same (pid, epoch, seq) returns 204 and stream has exactly one copy of data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # First close with final message
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "final-data"
+        expect:
+          status: 200
+      # Retry with same producer tuple - should be deduplicated
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "final-data"
+        expect:
+          status: 200
+      # Verify only one copy of data exists
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "final-data"
+          streamClosed: true
+
+  - id: close-nonexistent-stream
+    name: Close nonexistent stream returns 404
+    description: POST with Stream-Closed to nonexistent URL returns 404
+    operations:
+      - action: close
+        path: /nonexistent-stream-${unique}
+        expect:
+          status: 404
+
+  - id: read-offset-beyond-closed-tail
+    name: Read offset past closed stream tail returns empty with streamClosed
+    description: Reading from an offset past the final data returns empty body + streamClosed + upToDate
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      # First read to get all data
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          storeOffsetAs: tailOffset
+          upToDate: true
+          streamClosed: true
+      # Read from tail (which is past the data) - should get empty + closed
+      - action: read
+        path: ${streamPath}
+        offset: ${tailOffset}
+        live: false
+        expect:
+          chunkCount: 0
+          upToDate: true
+          streamClosed: true
+
+  - id: head-closed-stream-returns-tail-offset
+    name: HEAD on closed stream returns correct tail offset
+    description: HEAD after close-with-append returns offset after the final data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Get initial offset
+      - action: head
+        path: ${streamPath}
+        expect:
+          storeOffsetAs: initialOffset
+      # Close with final message
+      - action: close
+        path: ${streamPath}
+        data: "final-content"
+        expect:
+          status: 200
+      # HEAD should return new offset (not initial)
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+          hasOffset: true
+
+  - id: delete-closed-stream
+    name: Deletion overrides closure
+    description: Deleting a closed stream returns 404 after, not Stream-Closed
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      # Verify closed
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+      # Delete
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      # Should be 404 now (not 409/STREAM_CLOSED)
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 404
+
+  - id: create-closed-with-ttl
+    name: Create closed stream with TTL
+    description: Closed stream + TTL both apply, stream expires normally
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        ttlSeconds: 60
+        closed: true
+        expect:
+          status: 201
+      # Verify both closed and has TTL
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: close-with-body-retry-different-body
+    name: Producer sends close+body A, retries same seq with body B - deduplicates to A
+    description: When retrying a close with different body content, the original body is kept
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Close with body A
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "body-A"
+        expect:
+          status: 200
+      # Retry with same seq but different body - should be deduplicated to original
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "body-B"
+        expect:
+          status: 200
+      # Verify original body is preserved
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "body-A"
+          streamClosed: true

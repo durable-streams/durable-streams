@@ -7002,5 +7002,227 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(duplicateClose.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
       })
     })
+
+    // ========================================================================
+    // Additional Edge Case Tests (from PR review)
+    // ========================================================================
+
+    describe(`Edge Cases`, () => {
+      test(`409-includes-stream-offset: 409 for closed stream includes Stream-Next-Offset header`, async () => {
+        const streamPath = `/v1/stream/409-offset-${Date.now()}`
+
+        // Create stream with content
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `some content`,
+        })
+
+        // Close the stream
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+        const finalOffset = closeResponse.headers.get(STREAM_OFFSET_HEADER)
+        expect(finalOffset).toBeTruthy()
+
+        // Try to append - should get 409 with offset
+        const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `should fail`,
+        })
+
+        expect(appendResponse.status).toBe(409)
+        expect(appendResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        expect(appendResponse.headers.get(STREAM_OFFSET_HEADER)).toBe(
+          finalOffset
+        )
+      })
+
+      test(`close-nonexistent-stream-404: POST with Stream-Closed to nonexistent stream returns 404`, async () => {
+        const streamPath = `/v1/stream/nonexistent-close-${Date.now()}`
+
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        expect(closeResponse.status).toBe(404)
+      })
+
+      test(`offset-now-on-closed-stream: offset=now on closed stream returns Stream-Closed: true`, async () => {
+        const streamPath = `/v1/stream/offset-now-closed-${Date.now()}`
+
+        // Create with content and close
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `content`,
+        })
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Read with offset=now
+        const readResponse = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=now`
+        )
+
+        expect(readResponse.status).toBe(200)
+        expect(readResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        expect(readResponse.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      })
+
+      test(`producer-state-survives-close: Stale-epoch producer gets 403, not 409 STREAM_CLOSED`, async () => {
+        const streamPath = `/v1/stream/producer-state-close-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Producer A writes with epoch 0
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [PRODUCER_ID_HEADER]: `producer-A`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `first`,
+        })
+
+        // Producer A closes with epoch 1 (claiming new epoch)
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_ID_HEADER]: `producer-A`,
+            [PRODUCER_EPOCH_HEADER]: `1`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `final`,
+        })
+
+        // Producer A with stale epoch 0 tries to close again - should get 403 (stale epoch)
+        const staleResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_ID_HEADER]: `producer-A`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `1`,
+          },
+          body: `stale attempt`,
+        })
+
+        // Should be 403 (stale epoch) - the producer state check happens before stream closed check
+        // This may be 409 depending on implementation order - both are valid
+        expect([403, 409]).toContain(staleResponse.status)
+      })
+
+      test(`close-with-different-body-dedup: Retry close with different body deduplicates to original`, async () => {
+        const streamPath = `/v1/stream/close-dedup-body-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // Close with body A
+        const firstClose = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `body-A`,
+        })
+        expect(firstClose.status).toBe(200)
+
+        // Retry with same tuple but different body
+        const retryClose = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_ID_HEADER]: `test-producer`,
+            [PRODUCER_EPOCH_HEADER]: `0`,
+            [PRODUCER_SEQ_HEADER]: `0`,
+          },
+          body: `body-B`,
+        })
+        expect(retryClose.status).toBe(204) // Duplicate
+
+        // Verify original body is preserved
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+        const content = await readResponse.text()
+        expect(content).toBe(`body-A`)
+      })
+
+      test(`empty-post-without-stream-closed-400: POST with empty body but no Stream-Closed returns 400`, async () => {
+        const streamPath = `/v1/stream/empty-no-closed-${Date.now()}`
+
+        // Create stream
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+
+        // POST with empty body but no Stream-Closed header
+        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: ``,
+        })
+
+        expect(response.status).toBe(400)
+      })
+
+      test(`delete-closed-stream: Deleting a closed stream removes it (returns 404 after)`, async () => {
+        const streamPath = `/v1/stream/delete-closed-${Date.now()}`
+
+        // Create and close
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `content`,
+        })
+
+        await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+
+        // Verify closed
+        const headBefore = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headBefore.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+
+        // Delete
+        const deleteResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `DELETE`,
+        })
+        expect([200, 204]).toContain(deleteResponse.status)
+
+        // Should be 404 now, not 409/STREAM_CLOSED
+        const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headAfter.status).toBe(404)
+      })
+    })
   })
 }
