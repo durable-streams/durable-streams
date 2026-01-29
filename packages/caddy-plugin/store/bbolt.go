@@ -31,6 +31,16 @@ type bboltMetadata struct {
 	DirectoryName string `json:"directory_name"`
 	// Idempotent producer state (added in protocol v1.1)
 	Producers map[string]*bboltProducerState `json:"producers,omitempty"`
+	// Stream closure state
+	Closed   bool                   `json:"closed,omitempty"`
+	ClosedBy *bboltClosedByProducer `json:"closed_by,omitempty"`
+}
+
+// bboltClosedByProducer is the serialized form of ClosedByProducer
+type bboltClosedByProducer struct {
+	ProducerId string `json:"producer_id"`
+	Epoch      int64  `json:"epoch"`
+	Seq        int64  `json:"seq"`
 }
 
 // bboltProducerState is the serialized form of ProducerState
@@ -92,6 +102,7 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 		TTLSeconds:    meta.TTLSeconds,
 		CreatedAt:     meta.CreatedAt.Unix(),
 		DirectoryName: directoryName,
+		Closed:        meta.Closed,
 	}
 	if meta.ExpiresAt != nil {
 		ts := meta.ExpiresAt.Unix()
@@ -107,6 +118,15 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 				LastSeq:     state.LastSeq,
 				LastUpdated: state.LastUpdated,
 			}
+		}
+	}
+
+	// Convert ClosedBy
+	if meta.ClosedBy != nil {
+		bm.ClosedBy = &bboltClosedByProducer{
+			ProducerId: meta.ClosedBy.ProducerId,
+			Epoch:      meta.ClosedBy.Epoch,
+			Seq:        meta.ClosedBy.Seq,
 		}
 	}
 
@@ -160,6 +180,7 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 			CurrentOffset: offset,
 			LastSeq:       bm.LastSeq,
 			TTLSeconds:    bm.TTLSeconds,
+			Closed:        bm.Closed,
 		}
 
 		if bm.ExpiresAt != nil {
@@ -178,6 +199,15 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 					LastSeq:     state.LastSeq,
 					LastUpdated: state.LastUpdated,
 				}
+			}
+		}
+
+		// Deserialize ClosedBy
+		if bm.ClosedBy != nil {
+			meta.ClosedBy = &ClosedByProducer{
+				ProducerId: bm.ClosedBy.ProducerId,
+				Epoch:      bm.ClosedBy.Epoch,
+				Seq:        bm.ClosedBy.Seq,
 			}
 		}
 
@@ -269,8 +299,8 @@ func (s *BboltMetadataStore) UpdateOffset(path string, offset Offset, lastSeq st
 	})
 }
 
-// UpdateAppendState updates offset, lastSeq, and producer state atomically
-func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastSeq string, producerId string, producerState *ProducerState) error {
+// UpdateAppendState updates offset, lastSeq, producer state, and optionally closed state atomically
+func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastSeq string, producerId string, producerState *ProducerState, closed bool, closedBy *ClosedByProducer) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -311,6 +341,18 @@ func (s *BboltMetadataStore) UpdateAppendState(path string, offset Offset, lastS
 				Epoch:       producerState.Epoch,
 				LastSeq:     producerState.LastSeq,
 				LastUpdated: producerState.LastUpdated,
+			}
+		}
+
+		// Update closed state if requested
+		if closed {
+			bm.Closed = true
+			if closedBy != nil {
+				bm.ClosedBy = &bboltClosedByProducer{
+					ProducerId: closedBy.ProducerId,
+					Epoch:      closedBy.Epoch,
+					Seq:        closedBy.Seq,
+				}
 			}
 		}
 
@@ -380,6 +422,7 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 				CurrentOffset: offset,
 				LastSeq:       bm.LastSeq,
 				TTLSeconds:    bm.TTLSeconds,
+				Closed:        bm.Closed,
 			}
 			if bm.ExpiresAt != nil {
 				t := timeFromUnix(*bm.ExpiresAt)
@@ -399,8 +442,64 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 				}
 			}
 
+			// Deserialize ClosedBy
+			if bm.ClosedBy != nil {
+				meta.ClosedBy = &ClosedByProducer{
+					ProducerId: bm.ClosedBy.ProducerId,
+					Epoch:      bm.ClosedBy.Epoch,
+					Seq:        bm.ClosedBy.Seq,
+				}
+			}
+
 			return fn(meta, bm.DirectoryName)
 		})
+	})
+}
+
+// SetClosed updates only the closed state for a stream
+func (s *BboltMetadataStore) SetClosed(path string, closed bool, closedBy *ClosedByProducer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		// Read existing
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		// Make a copy
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		// Update closed state
+		bm.Closed = closed
+		if closedBy != nil {
+			bm.ClosedBy = &bboltClosedByProducer{
+				ProducerId: closedBy.ProducerId,
+				Epoch:      closedBy.Epoch,
+				Seq:        closedBy.Seq,
+			}
+		}
+
+		// Write back
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
 	})
 }
 

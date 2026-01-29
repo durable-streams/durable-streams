@@ -46,7 +46,7 @@ module DurableStreams
     # @param headers [Hash] Additional headers
     def initialize(url:, producer_id:, epoch: 0, auto_claim: false,
                    max_batch_bytes: 1_048_576, linger_ms: 5, max_in_flight: 5,
-                   content_type: nil, headers: {})
+                   content_type: nil, headers: {}, next_seq: 0)
       @url = url
       @producer_id = producer_id
       @epoch = epoch
@@ -57,7 +57,9 @@ module DurableStreams
       @content_type = content_type || "application/json"
       @headers = headers
 
-      @seq = -1  # Start at -1 so first message has seq=0 after increment
+      raise ArgumentError, "next_seq must be >= 0" if next_seq.negative?
+
+      @seq = next_seq - 1 # Start at next_seq - 1 so next append uses next_seq
       @pending = []
       @mutex = Mutex.new
       @send_mutex = Mutex.new  # Ensure batches are sent in order
@@ -65,6 +67,7 @@ module DurableStreams
       @in_flight_cv = ConditionVariable.new
       @transport = HTTP::Transport.new
       @closed = false
+      @stream_closed = false
       @linger_timer = nil
       @linger_cancelled = false
       @batch_queue = Queue.new
@@ -162,6 +165,36 @@ module DurableStreams
         @batch_queue << :shutdown
         @sender_thread.join(5) # Wait up to 5 seconds
         @sender_thread.kill if @sender_thread.alive? # Force kill if stuck
+      end
+    end
+
+    # Close the stream using producer headers (idempotent)
+    # @param data [String, nil] Optional final data to append before closing
+    def close_stream(data: nil)
+      return if @stream_closed
+
+      flush
+
+      attempts = 0
+      close_seq = @seq + 1
+
+      begin
+        send_close_request(data, close_seq, @epoch)
+        @seq = close_seq
+        @stream_closed = true
+        @closed = true
+      rescue StaleEpochError => e
+        attempts += 1
+        raise if attempts > 3
+
+        if @auto_claim
+          server_epoch = e.current_epoch || @epoch
+          @epoch = [server_epoch + 1, @epoch + 1].max
+          close_seq = 0
+          retry
+        else
+          raise
+        end
       end
     end
 
@@ -338,7 +371,54 @@ module DurableStreams
         current_epoch = response[PRODUCER_EPOCH_HEADER]&.to_i
         raise StaleEpochError.new(current_epoch: current_epoch, url: @url, headers: response.headers)
       when 409
+        if response[STREAM_CLOSED_HEADER]&.downcase == "true"
+          raise StreamClosedError.new(url: @url, headers: response.headers)
+        end
+
         # Could be sequence gap or other conflict
+        expected = response[PRODUCER_EXPECTED_SEQ_HEADER]&.to_i
+        received = response[PRODUCER_RECEIVED_SEQ_HEADER]&.to_i
+        if expected && received
+          raise SequenceGapError.new(expected_seq: expected, received_seq: received,
+                                     url: @url, headers: response.headers)
+        else
+          raise SeqConflictError.new(url: @url, headers: response.headers)
+        end
+      else
+        raise DurableStreams.error_from_status(response.status, url: @url, body: response.body,
+                                               headers: response.headers)
+      end
+    end
+
+    def send_close_request(data, seq, epoch)
+      headers = HTTP.resolve_headers(@headers)
+      headers["content-type"] = @content_type
+      headers[PRODUCER_ID_HEADER] = @producer_id
+      headers[PRODUCER_EPOCH_HEADER] = epoch.to_s
+      headers[PRODUCER_SEQ_HEADER] = seq.to_s
+      headers[STREAM_CLOSED_HEADER] = "true"
+
+      body = if data.nil?
+               ""
+             elsif DurableStreams.json_content_type?(@content_type)
+               "[#{data}]"
+             else
+               data
+             end
+
+      response = @transport.request(:post, @url, headers: headers, body: body)
+
+      case response.status
+      when 200, 201, 204
+        nil
+      when 403
+        current_epoch = response[PRODUCER_EPOCH_HEADER]&.to_i
+        raise StaleEpochError.new(current_epoch: current_epoch, url: @url, headers: response.headers)
+      when 409
+        if response[STREAM_CLOSED_HEADER]&.downcase == "true"
+          raise StreamClosedError.new(url: @url, headers: response.headers)
+        end
+
         expected = response[PRODUCER_EXPECTED_SEQ_HEADER]&.to_i
         received = response[PRODUCER_RECEIVED_SEQ_HEADER]&.to_i
         if expected && received

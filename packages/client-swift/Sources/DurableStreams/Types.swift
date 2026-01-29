@@ -185,11 +185,15 @@ public struct StreamInfo: Sendable {
     /// Cache control headers
     public let cacheControl: String?
 
-    public init(offset: Offset?, contentType: String?, etag: String? = nil, cacheControl: String? = nil) {
+    /// Whether the stream is closed (EOF)
+    public let streamClosed: Bool
+
+    public init(offset: Offset?, contentType: String?, etag: String? = nil, cacheControl: String? = nil, streamClosed: Bool = false) {
         self.offset = offset
         self.contentType = contentType
         self.etag = etag
         self.cacheControl = cacheControl
+        self.streamClosed = streamClosed
     }
 
     /// Whether the stream exists (has an offset)
@@ -200,6 +204,16 @@ public struct StreamInfo: Sendable {
 
     /// Whether the stream has data
     public var hasData: Bool { exists && !isEmpty }
+}
+
+/// Result of a close operation.
+public struct CloseResult: Sendable, Equatable {
+    /// The final offset after closing the stream
+    public let finalOffset: Offset
+
+    public init(finalOffset: Offset) {
+        self.finalOffset = finalOffset
+    }
 }
 
 /// Result of an append operation.

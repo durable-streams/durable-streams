@@ -22,13 +22,27 @@ else
 fi
 IMAGE_TAG="swift-conformance-adapter:${SOURCES_HASH:0:12}"
 
-# Check if image exists
+# Check if image exists, fall back to latest if present.
 if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-    echo "Building Swift conformance adapter Docker image..." >&2
-    docker build -t "$IMAGE_TAG" -t swift-conformance-adapter:latest "$SCRIPT_DIR" >&2
+    if docker image inspect swift-conformance-adapter:latest >/dev/null 2>&1; then
+        IMAGE_TAG="swift-conformance-adapter:latest"
+    else
+        echo "Building Swift conformance adapter Docker image..." >&2
+        docker build -t "$IMAGE_TAG" -t swift-conformance-adapter:latest "$SCRIPT_DIR" >&2
+    fi
 fi
 
 # Run the adapter interactively (-i for stdin, no -t since we don't need a tty)
-# DOCKER_HOST_REWRITE=1 tells the adapter to replace localhost with host.docker.internal
-# This is needed on macOS where --network host doesn't work (uses a VM)
-exec docker run -i --rm -e DOCKER_HOST_REWRITE=1 "$IMAGE_TAG"
+DOCKER_ARGS=(-i --rm)
+DOCKER_ENV=()
+
+if [ "$(uname -s)" = "Linux" ]; then
+  # Use host network to avoid iptables/NAT dependencies in minimal environments.
+  DOCKER_ARGS+=(--network=host)
+else
+  # Rewrite localhost to host.docker.internal on platforms without host networking.
+  DOCKER_ARGS+=(--add-host=host.docker.internal:host-gateway)
+  DOCKER_ENV+=(-e DOCKER_HOST_REWRITE=1)
+fi
+
+exec docker run "${DOCKER_ARGS[@]}" "${DOCKER_ENV[@]}" "$IMAGE_TAG"

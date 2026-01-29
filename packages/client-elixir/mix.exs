@@ -34,9 +34,10 @@ defmodule DurableStreams.MixProject do
       # Users who don't need SSE can exclude this dependency
       {:finch, "~> 0.18"},
       # CA certificates for HTTPS
-      {:castore, "~> 1.0"}
+      {:castore, "~> 1.0"},
+      # JSON fallback for Elixir < 1.18
+      {:jason, "~> 1.4"}
       # Note: Finch is required for SSE support. Without it, SSE falls back to long-poll.
-      # For Elixir < 1.18, add {:jason, "~> 1.4"} to use the Jason fallback
     ]
   end
 

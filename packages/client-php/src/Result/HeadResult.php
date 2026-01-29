@@ -14,5 +14,6 @@ final class HeadResult
         public readonly ?string $contentType = null,
         public readonly ?int $ttlSeconds = null,
         public readonly ?string $expiresAt = null,
+        public readonly bool $streamClosed = false,
     ) {}
 }

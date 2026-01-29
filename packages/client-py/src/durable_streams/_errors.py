@@ -247,6 +247,29 @@ class SSEReadAllError(DurableStreamError):
         self.method = method
 
 
+class StreamClosedError(DurableStreamError):
+    """
+    Exception raised when attempting to append to a closed stream.
+
+    A closed stream has reached its end-of-stream (EOF) state and
+    no longer accepts appends. The stream's data remains fully readable.
+
+    Corresponds to HTTP 409 Conflict with Stream-Closed: true header.
+    """
+
+    def __init__(
+        self,
+        message: str = "Cannot append to closed stream",
+        url: str | None = None,
+        final_offset: str | None = None,
+    ) -> None:
+        if url:
+            message = f"Cannot append to closed stream: {url}"
+        super().__init__(message, status=409, code="STREAM_CLOSED")
+        self.url = url
+        self.final_offset = final_offset
+
+
 def error_from_status(
     status: int,
     url: str,

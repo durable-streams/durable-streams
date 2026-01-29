@@ -361,3 +361,120 @@ func TestBboltMetadataStore_GetNotFound(t *testing.T) {
 		t.Errorf("expected ErrStreamNotFound, got %v", err)
 	}
 }
+
+func TestBboltMetadataStore_ClosedState(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+	store, err := NewBboltMetadataStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	// Put a stream
+	meta := &StreamMetadata{
+		Path:          "/test/stream",
+		ContentType:   "text/plain",
+		CurrentOffset: ZeroOffset,
+		CreatedAt:     time.Now(),
+		Closed:        false,
+	}
+	if err := store.Put(meta, "dir1"); err != nil {
+		t.Fatalf("failed to put: %v", err)
+	}
+
+	// Verify not closed
+	gotMeta, _, err := store.Get("/test/stream")
+	if err != nil {
+		t.Fatalf("failed to get: %v", err)
+	}
+	if gotMeta.Closed {
+		t.Error("stream should not be closed initially")
+	}
+
+	// Close the stream
+	if err := store.SetClosed("/test/stream", true, nil); err != nil {
+		t.Fatalf("failed to set closed: %v", err)
+	}
+
+	// Verify closed
+	gotMeta, _, err = store.Get("/test/stream")
+	if err != nil {
+		t.Fatalf("failed to get: %v", err)
+	}
+	if !gotMeta.Closed {
+		t.Error("stream should be closed")
+	}
+}
+
+func TestBboltMetadataStore_ClosedByPersistence(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bbolt-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "metadata.bbolt")
+
+	// Create store and add closed stream with ClosedBy
+	{
+		store, err := NewBboltMetadataStore(dbPath)
+		if err != nil {
+			t.Fatalf("failed to create store: %v", err)
+		}
+
+		meta := &StreamMetadata{
+			Path:          "/closed-stream",
+			ContentType:   "text/plain",
+			CurrentOffset: Offset{ReadSeq: 0, ByteOffset: 100},
+			CreatedAt:     time.Now(),
+			Closed:        true,
+			ClosedBy: &ClosedByProducer{
+				ProducerId: "producer-1",
+				Epoch:      5,
+				Seq:        10,
+			},
+		}
+		if err := store.Put(meta, "closed-dir"); err != nil {
+			t.Fatalf("failed to put: %v", err)
+		}
+
+		if err := store.Close(); err != nil {
+			t.Fatalf("failed to close: %v", err)
+		}
+	}
+
+	// Reopen and verify closed state persisted
+	{
+		store, err := NewBboltMetadataStore(dbPath)
+		if err != nil {
+			t.Fatalf("failed to reopen store: %v", err)
+		}
+		defer store.Close()
+
+		meta, _, err := store.Get("/closed-stream")
+		if err != nil {
+			t.Fatalf("failed to get: %v", err)
+		}
+		if !meta.Closed {
+			t.Error("closed state not persisted")
+		}
+		if meta.ClosedBy == nil {
+			t.Fatal("ClosedBy not persisted")
+		}
+		if meta.ClosedBy.ProducerId != "producer-1" {
+			t.Errorf("ClosedBy.ProducerId mismatch: got %q", meta.ClosedBy.ProducerId)
+		}
+		if meta.ClosedBy.Epoch != 5 {
+			t.Errorf("ClosedBy.Epoch mismatch: got %d", meta.ClosedBy.Epoch)
+		}
+		if meta.ClosedBy.Seq != 10 {
+			t.Errorf("ClosedBy.Seq mismatch: got %d", meta.ClosedBy.Seq)
+		}
+	}
+}

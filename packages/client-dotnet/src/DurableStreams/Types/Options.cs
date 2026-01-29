@@ -85,6 +85,32 @@ public class CreateStreamOptions
     /// Additional headers for the request.
     /// </summary>
     public Dictionary<string, string>? Headers { get; set; }
+
+    /// <summary>
+    /// Whether to create the stream in a closed state.
+    /// </summary>
+    public bool Closed { get; set; } = false;
+}
+
+/// <summary>
+/// Options for closing a stream.
+/// </summary>
+public class CloseOptions
+{
+    /// <summary>
+    /// Optional final data to append before closing.
+    /// </summary>
+    public byte[]? Data { get; set; }
+
+    /// <summary>
+    /// Content type for the final data.
+    /// </summary>
+    public string? ContentType { get; set; }
+
+    /// <summary>
+    /// Additional headers for the request.
+    /// </summary>
+    public Dictionary<string, string>? Headers { get; set; }
 }
 
 /// <summary>

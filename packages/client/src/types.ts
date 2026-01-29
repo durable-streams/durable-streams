@@ -228,6 +228,12 @@ export interface JsonBatchMeta {
    * Last Stream-Cursor / streamCursor, if present.
    */
   cursor?: string
+
+  /**
+   * Whether the stream is closed and this batch contains the final data.
+   * When true, no more data will ever be appended to the stream.
+   */
+  streamClosed: boolean
 }
 
 /**
@@ -357,6 +363,18 @@ export interface CreateOptions extends StreamHandleOptions {
    * @default true
    */
   batching?: boolean
+
+  /**
+   * If true, create the stream in the closed state.
+   * Any body provided becomes the complete and final content.
+   *
+   * Useful for:
+   * - Cached responses
+   * - Placeholder errors
+   * - Pre-computed results
+   * - Single-message streams that are immediately complete
+   */
+  closed?: boolean
 }
 
 /**
@@ -401,6 +419,41 @@ export interface AppendOptions {
    * Monotonically increasing per epoch, per-batch.
    */
   producerSeq?: number
+}
+
+/**
+ * Result of a close operation.
+ */
+export interface CloseResult {
+  /**
+   * The final offset of the stream.
+   * This is the offset after the last byte (including any final message).
+   * Returned via the `Stream-Next-Offset` header.
+   */
+  finalOffset: Offset
+}
+
+/**
+ * Options for closing a stream.
+ */
+export interface CloseOptions {
+  /**
+   * Optional final message to append atomically with close.
+   * For JSON streams, pass a pre-serialized JSON string.
+   * Strings are UTF-8 encoded.
+   */
+  body?: Uint8Array | string
+
+  /**
+   * Content type for the final message.
+   * Defaults to the stream's content type. Must match if provided.
+   */
+  contentType?: string
+
+  /**
+   * AbortSignal for this operation.
+   */
+  signal?: AbortSignal
 }
 
 /**
@@ -470,6 +523,12 @@ export interface HeadResult {
    * Cache-Control header value.
    */
   cacheControl?: string
+
+  /**
+   * Whether the stream is closed.
+   * When true, no further appends are permitted.
+   */
+  streamClosed: boolean
 }
 
 /**
@@ -519,6 +578,7 @@ export type DurableStreamErrorCode =
   | `ALREADY_CONSUMED`
   | `ALREADY_CLOSED`
   | `PARSE_ERROR`
+  | `STREAM_CLOSED`
   | `UNKNOWN`
 
 /**
@@ -675,6 +735,19 @@ export interface StreamResponse<TJson = unknown> {
    * Updated after each chunk is delivered to the consumer.
    */
   readonly upToDate: boolean
+
+  /**
+   * Whether the stream is closed (EOF).
+   *
+   * When true, no more data will ever be appended to the stream.
+   * This is updated after each chunk is delivered to the consumer.
+   *
+   * In live mode, when streamClosed becomes true:
+   * - Long-poll requests return immediately (no waiting)
+   * - SSE connections are closed by the server
+   * - Clients stop reconnecting automatically
+   */
+  readonly streamClosed: boolean
 
   // =================================
   // 1) Accumulating helpers (Promise)

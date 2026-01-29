@@ -27,6 +27,7 @@ from durable_streams import (
     FetchError,
     IdempotentProducer,
     SeqConflictError,
+    StreamClosedError,
     StreamExistsError,
     StreamNotFoundError,
     __version__,
@@ -51,6 +52,8 @@ ERROR_CODES = {
 # Global state
 server_url = ""
 stream_content_types: dict[str, str] = {}
+producer_next_seq: dict[tuple[str, str, int], int] = {}
+producer_stream_closed: dict[tuple[str, str], bool] = {}
 # Shared HTTP client for connection reuse (significant perf improvement)
 shared_client: httpx.Client | None = None
 
@@ -130,6 +133,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
         return ERROR_CODES["CONFLICT"], 409
     if isinstance(err, SeqConflictError):
         return ERROR_CODES["SEQUENCE_CONFLICT"], 409
+    if isinstance(err, StreamClosedError):
+        return "STREAM_CLOSED", 409
     if isinstance(err, DurableStreamError):
         status = err.status
         code = err.code
@@ -180,6 +185,8 @@ def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
     global server_url, stream_content_types, shared_client
     server_url = cmd["serverUrl"]
     stream_content_types.clear()
+    producer_next_seq.clear()
+    producer_stream_closed.clear()
     dynamic_headers.clear()
     dynamic_params.clear()
 
@@ -224,12 +231,20 @@ def handle_create(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Create the stream
     headers = cmd.get("headers")
+    closed = cmd.get("closed", False)
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    body: bytes | str | None = None
+    if data is not None:
+        body = decode_base64(data) if binary else data
     ds = DurableStream.create(
         url,
         content_type=content_type,
         ttl_seconds=cmd.get("ttlSeconds"),
         expires_at=cmd.get("expiresAt"),
         headers=headers,
+        closed=closed,
+        body=body,
     )
 
     # Cache content type
@@ -374,6 +389,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     chunks: list[dict[str, Any]] = []
     final_offset = offset
     up_to_date = False
+    stream_closed = False
+    stopped_for_max_chunks = False
     status = 200  # Default status
 
     with stream(
@@ -386,6 +403,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         status = response.status
         final_offset = response.offset
         up_to_date = response.up_to_date
+        stream_closed = response.stream_closed
 
         if live is False:
             # For non-live mode, get all available data
@@ -402,6 +420,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                             "offset": response.offset,
                         }
                     )
+                    if len(chunks) >= max_chunks:
+                        stopped_for_max_chunks = True
             else:
                 # Use byte reading for non-JSON content
                 data = response.read_bytes()
@@ -412,8 +432,11 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                             "offset": response.offset,
                         }
                     )
+                    if len(chunks) >= max_chunks:
+                        stopped_for_max_chunks = True
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
         elif is_sse:
             # For SSE mode, use iter_events() which yields StreamEvent objects for each
             # SSE data event, with metadata updated after control events.
@@ -435,6 +458,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
+                        stopped_for_max_chunks = True
                         break
 
                     # For waitForUpToDate: stop when upToDate becomes True AND
@@ -451,6 +475,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
         else:
             # For long-poll mode, read the response body directly instead of using
             # iteration (which continues forever in live modes). Read initial response,
@@ -495,6 +520,9 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                                 }
                             )
                             chunk_count += 1
+                            if chunk_count >= max_chunks:
+                                stopped_for_max_chunks = True
+                                break
 
                         final_offset = response.offset
                         up_to_date = response.up_to_date
@@ -507,6 +535,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             status = response.status
             final_offset = response.offset
             up_to_date = response.up_to_date
+            stream_closed = response.stream_closed
 
     result: dict[str, Any] = {
         "type": "read",
@@ -515,6 +544,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
+        "streamClosed": False if stopped_for_max_chunks else stream_closed,
     }
     if headers_sent:
         result["headersSent"] = headers_sent
@@ -541,6 +571,7 @@ def handle_head(cmd: dict[str, Any]) -> dict[str, Any]:
         "status": 200,
         "offset": result.offset,
         "contentType": result.content_type,
+        "streamClosed": result.stream_closed,
     }
 
 
@@ -554,12 +585,91 @@ def handle_delete(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Remove from cache
     stream_content_types.pop(cmd["path"], None)
+    path = cmd["path"]
+    for key in [k for k in producer_next_seq if k[0] == path]:
+        producer_next_seq.pop(key, None)
+    for key in [k for k in producer_stream_closed if k[0] == path]:
+        producer_stream_closed.pop(key, None)
 
     return {
         "type": "delete",
         "success": True,
         "status": 200,
     }
+
+
+def handle_close(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle close command."""
+    url = f"{server_url}{cmd['path']}"
+
+    # Get content-type from cache
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd.get("producerId")
+    producer_epoch = cmd.get("epoch") or cmd.get("producerEpoch") or 0
+    producer_seq = cmd.get("producerSeq")
+    auto_claim = cmd.get("autoClaim", False)
+
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    body: bytes | str | None = None
+    if data is not None:
+        body = decode_base64(data) if binary else data
+
+    if producer_id:
+        import asyncio
+
+        async def do_close() -> dict[str, Any]:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                producer = IdempotentProducer(
+                    url=url,
+                    producer_id=producer_id,
+                    client=client,
+                    epoch=producer_epoch,
+                    auto_claim=auto_claim,
+                    max_in_flight=1,
+                    linger_ms=0,
+                    content_type=content_type,
+                )
+                try:
+                    seq_key = (cmd["path"], producer_id, producer_epoch)
+                    next_seq = (
+                        producer_seq
+                        if producer_seq is not None
+                        else producer_next_seq.get(seq_key, 0)
+                    )
+                    producer._next_seq = next_seq
+
+                    result = await producer.close_stream(data=body)
+
+                    final_epoch = producer.epoch
+                    final_key = (cmd["path"], producer_id, final_epoch)
+                    producer_next_seq[final_key] = producer._next_seq
+                    if final_key != seq_key:
+                        producer_next_seq.pop(seq_key, None)
+                    return {
+                        "type": "close",
+                        "success": True,
+                        "finalOffset": result.offset,
+                    }
+                finally:
+                    await producer.close()
+
+        return asyncio.run(do_close())
+
+    ds = DurableStream(url, content_type=content_type)
+    try:
+        result = ds.close_stream(
+            data=body,
+            content_type=cmd.get("contentType"),
+        )
+        return {
+            "type": "close",
+            "success": True,
+            "finalOffset": result.final_offset,
+        }
+    finally:
+        ds.close()
 
 
 def handle_shutdown(_cmd: dict[str, Any]) -> dict[str, Any]:
@@ -822,6 +932,7 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
+    producer_seq = cmd.get("producerSeq")
     # Data is already pre-serialized, pass directly to append()
     data = cmd["data"]
 
@@ -838,9 +949,24 @@ def handle_idempotent_append(cmd: dict[str, Any]) -> dict[str, Any]:
                 content_type=content_type,
             )
             try:
+                seq_key = (cmd["path"], producer_id, epoch)
+                next_seq = (
+                    producer_seq
+                    if producer_seq is not None
+                    else producer_next_seq.get(seq_key, 0)
+                )
+                producer._next_seq = next_seq
+
                 # append() is fire-and-forget (synchronous), then flush() sends the batch
                 producer.append(data)
                 await producer.flush()
+
+                final_epoch = producer.epoch
+                final_key = (cmd["path"], producer_id, final_epoch)
+                producer_next_seq[final_key] = producer._next_seq
+                if final_key != seq_key:
+                    producer_next_seq.pop(seq_key, None)
+
                 return {
                     "type": "idempotent-append",
                     "success": True,
@@ -929,6 +1055,7 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
     producer_id = cmd["producerId"]
     epoch = cmd.get("epoch", 0)
     auto_claim = cmd.get("autoClaim", False)
+    producer_seq = cmd.get("producerSeq")
     # Data is already pre-serialized, pass directly to append()
     items = cmd["items"]
 
@@ -953,12 +1080,22 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
                 content_type=content_type,
             )
             try:
+                seq_key = (cmd["path"], producer_id, epoch)
+                next_seq = producer_seq if producer_seq is not None else 0
+                producer._next_seq = next_seq
+
                 # append() is fire-and-forget (synchronous), adds to pending batch
                 for item in items:
                     producer.append(item)
 
                 # flush() sends the batch and waits for completion
                 await producer.flush()
+
+                final_epoch = producer.epoch
+                final_key = (cmd["path"], producer_id, final_epoch)
+                producer_next_seq[final_key] = producer._next_seq
+                if final_key != seq_key:
+                    producer_next_seq.pop(seq_key, None)
 
                 return {
                     "type": "idempotent-append-batch",
@@ -969,6 +1106,85 @@ def handle_idempotent_append_batch(cmd: dict[str, Any]) -> dict[str, Any]:
                 await producer.close()
 
     return asyncio.run(do_append_batch())
+
+
+def handle_idempotent_close(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-producer-close command."""
+    import asyncio
+
+    url = f"{server_url}{cmd['path']}"
+    content_type = stream_content_types.get(cmd["path"], "application/octet-stream")
+
+    producer_id = cmd["producerId"]
+    epoch = cmd.get("epoch", 0)
+    auto_claim = cmd.get("autoClaim", False)
+    producer_seq = cmd.get("producerSeq")
+
+    data = cmd.get("data")
+    binary = cmd.get("binary", False)
+    body: bytes | str | None = None
+    if data is not None:
+        body = decode_base64(data) if binary else data
+
+    async def do_close() -> dict[str, Any]:
+        producer_key = (cmd["path"], producer_id)
+        if producer_stream_closed.get(producer_key):
+            return {
+                "type": "idempotent-producer-close",
+                "success": True,
+                "status": 200,
+            }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            producer = IdempotentProducer(
+                url=url,
+                producer_id=producer_id,
+                client=client,
+                epoch=epoch,
+                auto_claim=auto_claim,
+                max_in_flight=1,
+                linger_ms=0,
+                content_type=content_type,
+            )
+            try:
+                seq_key = (cmd["path"], producer_id, epoch)
+                next_seq = (
+                    producer_seq
+                    if producer_seq is not None
+                    else producer_next_seq.get(seq_key, 0)
+                )
+                producer._next_seq = next_seq
+
+                result = await producer.close_stream(data=body)
+                producer_stream_closed[producer_key] = True
+
+                final_epoch = producer.epoch
+                final_key = (cmd["path"], producer_id, final_epoch)
+                producer_next_seq[final_key] = producer._next_seq
+                if final_key != seq_key:
+                    producer_next_seq.pop(seq_key, None)
+                return {
+                    "type": "idempotent-producer-close",
+                    "success": True,
+                    "status": 200,
+                    "finalOffset": result.offset,
+                }
+            finally:
+                await producer.close()
+
+    return asyncio.run(do_close())
+
+
+def handle_idempotent_detach(cmd: dict[str, Any]) -> dict[str, Any]:
+    """Handle idempotent-detach command."""
+    producer_key = (cmd["path"], cmd["producerId"])
+    producer_stream_closed.pop(producer_key, None)
+    for key in [k for k in producer_next_seq if k[0] == cmd["path"] and k[1] == cmd["producerId"]]:
+        producer_next_seq.pop(key, None)
+    return {
+        "type": "idempotent-detach",
+        "success": True,
+        "status": 200,
+    }
 
 
 def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
@@ -990,6 +1206,8 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_head(cmd)
         elif cmd_type == "delete":
             return handle_delete(cmd)
+        elif cmd_type == "close":
+            return handle_close(cmd)
         elif cmd_type == "shutdown":
             return handle_shutdown(cmd)
         elif cmd_type == "benchmark":
@@ -1004,6 +1222,10 @@ def handle_command(cmd: dict[str, Any]) -> dict[str, Any]:
             return handle_idempotent_append(cmd)
         elif cmd_type == "idempotent-append-batch":
             return handle_idempotent_append_batch(cmd)
+        elif cmd_type in ("idempotent-producer-close", "idempotent-close"):
+            return handle_idempotent_close(cmd)
+        elif cmd_type == "idempotent-detach":
+            return handle_idempotent_detach(cmd)
         elif cmd_type == "validate":
             return handle_validate(cmd)
         else:

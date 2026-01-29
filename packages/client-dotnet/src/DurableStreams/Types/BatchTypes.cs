@@ -35,4 +35,10 @@ public readonly record struct StreamMetadata(
     string? ETag,
     string? CacheControl,
     TimeSpan? Ttl,
-    DateTimeOffset? ExpiresAt);
+    DateTimeOffset? ExpiresAt,
+    bool StreamClosed = false);
+
+/// <summary>
+/// Result of closing a stream.
+/// </summary>
+public readonly record struct CloseResult(Offset FinalOffset);

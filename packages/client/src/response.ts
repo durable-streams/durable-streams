@@ -7,6 +7,7 @@
 
 import { asAsyncIterableReadableStream } from "./asyncIterableReadableStream"
 import {
+  STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
@@ -55,6 +56,8 @@ export interface StreamResponseConfig {
   initialCursor?: string
   /** Initial upToDate from first response headers */
   initialUpToDate: boolean
+  /** Initial streamClosed from first response headers */
+  initialStreamClosed: boolean
   /** The held first Response object */
   firstResponse: Response
   /** Abort controller for the session */
@@ -99,6 +102,7 @@ export class StreamResponseImpl<
   #offset: Offset
   #cursor?: string
   #upToDate: boolean
+  #streamClosed: boolean
 
   // --- Internal state ---
   #isJsonMode: boolean
@@ -136,6 +140,7 @@ export class StreamResponseImpl<
     this.#offset = config.initialOffset
     this.#cursor = config.initialCursor
     this.#upToDate = config.initialUpToDate
+    this.#streamClosed = config.initialStreamClosed
 
     // Initialize response metadata from first response
     this.#headers = config.firstResponse.headers
@@ -298,6 +303,10 @@ export class StreamResponseImpl<
     return this.#upToDate
   }
 
+  get streamClosed(): boolean {
+    return this.#streamClosed
+  }
+
   // =================================
   // Internal helpers
   // =================================
@@ -338,13 +347,15 @@ export class StreamResponseImpl<
 
   /**
    * Determine if we should continue with live updates based on live mode
-   * and whether we've received upToDate.
+   * and whether we've received upToDate or streamClosed.
    */
   #shouldContinueLive(): boolean {
     // Stop if we've received upToDate and a consumption method wants to stop after upToDate
     if (this.#stopAfterUpToDate && this.upToDate) return false
     // Stop if live mode is explicitly disabled
     if (this.live === false) return false
+    // Stop if stream is closed (EOF) - no more data will ever be appended
+    if (this.#streamClosed) return false
     return true
   }
 
@@ -358,6 +369,10 @@ export class StreamResponseImpl<
     const cursor = response.headers.get(STREAM_CURSOR_HEADER)
     if (cursor) this.#cursor = cursor
     this.#upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
+    const streamClosedHeader = response.headers.get(STREAM_CLOSED_HEADER)
+    if (streamClosedHeader?.toLowerCase() === `true`) {
+      this.#streamClosed = true
+    }
 
     // Update response metadata to reflect latest server response
     this.#headers = response.headers
@@ -368,7 +383,7 @@ export class StreamResponseImpl<
 
   /**
    * Extract stream metadata from Response headers.
-   * Used by subscriber APIs to get the correct offset/cursor/upToDate for each
+   * Used by subscriber APIs to get the correct offset/cursor/upToDate/streamClosed for each
    * specific Response, rather than reading from `this` which may be stale due to
    * ReadableStream prefetching or timing issues.
    */
@@ -376,26 +391,31 @@ export class StreamResponseImpl<
     offset: Offset
     cursor: string | undefined
     upToDate: boolean
+    streamClosed: boolean
   } {
     const offset = response.headers.get(STREAM_OFFSET_HEADER)
     const cursor = response.headers.get(STREAM_CURSOR_HEADER)
     const upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
+    const streamClosed =
+      response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
     return {
       offset: offset ?? this.offset, // Fall back to instance state if no header
       cursor: cursor ?? this.cursor,
       upToDate,
+      streamClosed: streamClosed || this.streamClosed, // Once closed, always closed
     }
   }
 
   /**
    * Create a synthetic Response from SSE data with proper headers.
-   * Includes offset/cursor/upToDate in headers so subscribers can read them.
+   * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
    */
   #createSSESyntheticResponse(
     data: string,
     offset: Offset,
     cursor: string | undefined,
-    upToDate: boolean
+    upToDate: boolean,
+    streamClosed: boolean
   ): Response {
     const headers: Record<string, string> = {
       "content-type": this.contentType ?? `application/json`,
@@ -406,6 +426,9 @@ export class StreamResponseImpl<
     }
     if (upToDate) {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
+    }
+    if (streamClosed) {
+      headers[STREAM_CLOSED_HEADER] = `true`
     }
     return new Response(data, { status: 200, headers })
   }
@@ -420,6 +443,11 @@ export class StreamResponseImpl<
     }
     if (controlEvent.upToDate !== undefined) {
       this.#upToDate = controlEvent.upToDate
+    }
+    if (controlEvent.streamClosed) {
+      this.#streamClosed = true
+      // A closed stream is definitionally up-to-date - no more data will ever be appended
+      this.#upToDate = true
     }
   }
 
@@ -613,7 +641,8 @@ export class StreamResponseImpl<
           bufferedData,
           this.offset,
           this.cursor,
-          this.upToDate
+          this.upToDate,
+          this.streamClosed
         )
 
         // Try to reconnect
@@ -640,7 +669,8 @@ export class StreamResponseImpl<
           bufferedData,
           controlEvent.streamNextOffset,
           controlEvent.streamCursor,
-          controlEvent.upToDate ?? false
+          controlEvent.upToDate ?? false,
+          controlEvent.streamClosed ?? false
         )
         return { type: `response`, response }
       }
@@ -1114,7 +1144,7 @@ export class StreamResponseImpl<
 
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
-          const { offset, cursor, upToDate } =
+          const { offset, cursor, upToDate, streamClosed } =
             this.#getMetadataFromResponse(response)
 
           // Get response text first (handles empty responses gracefully)
@@ -1139,6 +1169,7 @@ export class StreamResponseImpl<
             offset,
             cursor,
             upToDate,
+            streamClosed,
           })
 
           result = await reader.read()
@@ -1181,7 +1212,7 @@ export class StreamResponseImpl<
 
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
-          const { offset, cursor, upToDate } =
+          const { offset, cursor, upToDate, streamClosed } =
             this.#getMetadataFromResponse(response)
 
           const buffer = await response.arrayBuffer()
@@ -1192,6 +1223,7 @@ export class StreamResponseImpl<
             offset,
             cursor,
             upToDate,
+            streamClosed,
           })
 
           result = await reader.read()
@@ -1234,7 +1266,7 @@ export class StreamResponseImpl<
 
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
-          const { offset, cursor, upToDate } =
+          const { offset, cursor, upToDate, streamClosed } =
             this.#getMetadataFromResponse(response)
 
           const text = await response.text()
@@ -1245,6 +1277,7 @@ export class StreamResponseImpl<
             offset,
             cursor,
             upToDate,
+            streamClosed,
           })
 
           result = await reader.read()

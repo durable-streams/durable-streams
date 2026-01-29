@@ -98,6 +98,7 @@ export interface AppendOptions {
   producerId?: string
   producerEpoch?: number
   producerSeq?: number
+  close?: boolean // Close stream after append
 }
 
 /**
@@ -106,6 +107,7 @@ export interface AppendOptions {
 export interface AppendResult {
   message: StreamMessage | null
   producerResult?: ProducerValidationResult
+  streamClosed?: boolean // Stream is now closed
 }
 
 export class StreamStore {
@@ -172,6 +174,7 @@ export class StreamStore {
       ttlSeconds?: number
       expiresAt?: string
       initialData?: Uint8Array
+      closed?: boolean
     } = {}
   ): Stream {
     // Use getIfNotExpired to treat expired streams as non-existent
@@ -185,8 +188,10 @@ export class StreamStore {
           `application/octet-stream`)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
+      const closedMatches =
+        (options.closed ?? false) === (existing.closed ?? false)
 
-      if (contentTypeMatches && ttlMatches && expiresMatches) {
+      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
         // Idempotent success - return existing stream
         return existing
       } else {
@@ -205,6 +210,7 @@ export class StreamStore {
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
       createdAt: Date.now(),
+      closed: options.closed ?? false,
     }
 
     // If initial data is provided, append it
@@ -397,6 +403,34 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
+    // Check if stream is closed
+    if (stream.closed) {
+      // Check if this is a duplicate of the closing request (idempotent producer)
+      if (
+        options.producerId &&
+        stream.closedBy &&
+        stream.closedBy.producerId === options.producerId &&
+        stream.closedBy.epoch === options.producerEpoch &&
+        stream.closedBy.seq === options.producerSeq
+      ) {
+        // Idempotent success - return 204 with Stream-Closed
+        return {
+          message: null,
+          streamClosed: true,
+          producerResult: {
+            status: `duplicate`,
+            lastSeq: options.producerSeq,
+          },
+        }
+      }
+
+      // Stream is closed - reject append
+      return {
+        message: null,
+        streamClosed: true,
+      }
+    }
+
     // Check content type match using normalization (handles charset parameters)
     if (options.contentType && stream.contentType) {
       const providedType = normalizeContentType(options.contentType)
@@ -460,14 +494,30 @@ export class StreamStore {
       stream.lastSeq = options.seq
     }
 
-    // Notify any pending long-polls
+    // Close stream if requested
+    if (options.close) {
+      stream.closed = true
+      // Track which producer tuple closed the stream for idempotent duplicate detection
+      if (options.producerId !== undefined) {
+        stream.closedBy = {
+          producerId: options.producerId,
+          epoch: options.producerEpoch!,
+          seq: options.producerSeq!,
+        }
+      }
+      // Notify pending long-polls that stream is closed
+      this.notifyLongPollsClosed(path)
+    }
+
+    // Notify any pending long-polls of new messages
     this.notifyLongPolls(path)
 
-    // Return AppendResult if producer headers were used
-    if (producerResult) {
+    // Return AppendResult if producer headers were used or stream was closed
+    if (producerResult || options.close) {
       return {
         message,
         producerResult,
+        streamClosed: options.close,
       }
     }
 
@@ -501,6 +551,122 @@ export class StreamStore {
         return result
       }
       return { message: result }
+    } finally {
+      releaseLock()
+    }
+  }
+
+  /**
+   * Close a stream without appending data.
+   * @returns The final offset, or null if stream doesn't exist
+   */
+  closeStream(
+    path: string
+  ): { finalOffset: string; alreadyClosed: boolean } | null {
+    const stream = this.getIfNotExpired(path)
+    if (!stream) {
+      return null
+    }
+
+    const alreadyClosed = stream.closed ?? false
+    stream.closed = true
+
+    // Notify any pending long-polls that the stream is closed
+    this.notifyLongPollsClosed(path)
+
+    return {
+      finalOffset: stream.currentOffset,
+      alreadyClosed,
+    }
+  }
+
+  /**
+   * Close a stream with producer headers for idempotent close-only operations.
+   * Participates in producer sequencing for deduplication.
+   * @returns The final offset and producer result, or null if stream doesn't exist
+   */
+  async closeStreamWithProducer(
+    path: string,
+    options: {
+      producerId: string
+      producerEpoch: number
+      producerSeq: number
+    }
+  ): Promise<{
+    finalOffset: string
+    alreadyClosed: boolean
+    producerResult?: ProducerValidationResult
+  } | null> {
+    // Acquire producer lock for serialization
+    const releaseLock = await this.acquireProducerLock(path, options.producerId)
+
+    try {
+      const stream = this.getIfNotExpired(path)
+      if (!stream) {
+        return null
+      }
+
+      // Check if already closed
+      if (stream.closed) {
+        // Check if this is the same producer tuple (duplicate - idempotent success)
+        if (
+          stream.closedBy &&
+          stream.closedBy.producerId === options.producerId &&
+          stream.closedBy.epoch === options.producerEpoch &&
+          stream.closedBy.seq === options.producerSeq
+        ) {
+          return {
+            finalOffset: stream.currentOffset,
+            alreadyClosed: true,
+            producerResult: {
+              status: `duplicate`,
+              lastSeq: options.producerSeq,
+            },
+          }
+        }
+
+        // Different producer trying to close an already-closed stream - conflict
+        return {
+          finalOffset: stream.currentOffset,
+          alreadyClosed: true,
+          producerResult: { status: `stream_closed` },
+        }
+      }
+
+      // Validate producer state
+      const producerResult = this.validateProducer(
+        stream,
+        options.producerId,
+        options.producerEpoch,
+        options.producerSeq
+      )
+
+      // Return early for non-accepted results
+      if (producerResult.status !== `accepted`) {
+        return {
+          finalOffset: stream.currentOffset,
+          alreadyClosed: stream.closed ?? false,
+          producerResult,
+        }
+      }
+
+      // Commit producer state and close stream
+      this.commitProducerState(stream, producerResult)
+      stream.closed = true
+      stream.closedBy = {
+        producerId: options.producerId,
+        epoch: options.producerEpoch,
+        seq: options.producerSeq,
+      }
+
+      // Notify any pending long-polls
+      this.notifyLongPollsClosed(path)
+
+      return {
+        finalOffset: stream.currentOffset,
+        alreadyClosed: false,
+        producerResult,
+      }
     } finally {
       releaseLock()
     }
@@ -591,7 +757,11 @@ export class StreamStore {
     path: string,
     offset: string,
     timeoutMs: number
-  ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
+  ): Promise<{
+    messages: Array<StreamMessage>
+    timedOut: boolean
+    streamClosed?: boolean
+  }> {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
@@ -603,12 +773,20 @@ export class StreamStore {
       return { messages, timedOut: false }
     }
 
+    // If stream is closed and client is at tail, return immediately
+    if (stream.closed && offset === stream.currentOffset) {
+      return { messages: [], timedOut: false, streamClosed: true }
+    }
+
     // Wait for new messages
     return new Promise((resolve) => {
       const timeoutId = setTimeout(() => {
         // Remove from pending
         this.removePendingLongPoll(pending)
-        resolve({ messages: [], timedOut: true })
+        // Check if stream was closed during the wait
+        const currentStream = this.getIfNotExpired(path)
+        const streamClosed = currentStream?.closed ?? false
+        resolve({ messages: [], timedOut: true, streamClosed })
       }, timeoutMs)
 
       const pending: PendingLongPoll = {
@@ -617,7 +795,11 @@ export class StreamStore {
         resolve: (msgs) => {
           clearTimeout(timeoutId)
           this.removePendingLongPoll(pending)
-          resolve({ messages: msgs, timedOut: false })
+          // Check if stream was closed (empty messages could mean closed)
+          const currentStream = this.getIfNotExpired(path)
+          const streamClosed =
+            currentStream?.closed && msgs.length === 0 ? true : undefined
+          resolve({ messages: msgs, timedOut: false, streamClosed })
         },
         timeoutId,
       }
@@ -726,6 +908,18 @@ export class StreamStore {
       if (messages.length > 0) {
         pending.resolve(messages)
       }
+    }
+  }
+
+  /**
+   * Notify pending long-polls that a stream has been closed.
+   * They should wake up immediately and return Stream-Closed: true.
+   */
+  private notifyLongPollsClosed(path: string): void {
+    const toNotify = this.pendingLongPolls.filter((p) => p.path === path)
+    for (const pending of toNotify) {
+      // Resolve with empty messages - the caller will check stream.closed
+      pending.resolve([])
     }
   }
 

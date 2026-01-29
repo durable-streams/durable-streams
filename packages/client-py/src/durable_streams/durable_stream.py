@@ -19,6 +19,7 @@ import httpx
 
 from durable_streams._errors import (
     SeqConflictError,
+    StreamClosedError,
     StreamExistsError,
     StreamNotFoundError,
     error_from_status,
@@ -31,11 +32,13 @@ from durable_streams._parse import (
 )
 from durable_streams._response import StreamResponse
 from durable_streams._types import (
+    STREAM_CLOSED_HEADER,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_SEQ_HEADER,
     STREAM_TTL_HEADER,
     AppendResult,
+    CloseResult,
     HeadersLike,
     HeadResult,
     LiveMode,
@@ -209,6 +212,7 @@ class DurableStream:
         params: ParamsLike | None = None,
         client: httpx.Client | None = None,
         timeout: float | httpx.Timeout | None = None,
+        closed: bool = False,
         **kwargs: Any,
     ) -> DurableStream:
         """
@@ -224,6 +228,7 @@ class DurableStream:
             params: Query parameters
             client: Optional httpx.Client
             timeout: Request timeout
+            closed: If True, create the stream in the closed state
             **kwargs: Additional arguments
 
         Returns:
@@ -247,6 +252,7 @@ class DurableStream:
                 ttl_seconds=ttl_seconds,
                 expires_at=expires_at,
                 body=body,
+                closed=closed,
             )
         except Exception:
             # Close the handle to avoid leaking the client if we created it
@@ -361,6 +367,9 @@ class DurableStream:
         offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
         etag = response.headers.get("etag")
         cache_control = response.headers.get("cache-control")
+        stream_closed = (
+            response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+        )
 
         # Update instance content type
         if content_type:
@@ -372,6 +381,7 @@ class DurableStream:
             offset=offset,
             etag=etag,
             cache_control=cache_control,
+            stream_closed=stream_closed,
         )
 
     def create_stream(
@@ -381,6 +391,7 @@ class DurableStream:
         ttl_seconds: int | None = None,
         expires_at: str | None = None,
         body: bytes | str | Any | None = None,
+        closed: bool = False,
     ) -> None:
         """
         Create this stream on the server.
@@ -390,6 +401,7 @@ class DurableStream:
             ttl_seconds: Time-to-live in seconds
             expires_at: Absolute expiry time (RFC3339)
             body: Optional initial body
+            closed: If True, create the stream in the closed state
 
         Raises:
             StreamExistsError: If stream already exists with different config
@@ -405,6 +417,8 @@ class DurableStream:
             resolved_headers[STREAM_TTL_HEADER] = str(ttl_seconds)
         if expires_at:
             resolved_headers[STREAM_EXPIRES_AT_HEADER] = expires_at
+        if closed:
+            resolved_headers[STREAM_CLOSED_HEADER] = "true"
 
         request_body: bytes | None = None
         if body is not None:
@@ -464,6 +478,94 @@ class DurableStream:
                 self._url,
                 headers=headers_dict,
             )
+
+    def close_stream(
+        self,
+        *,
+        data: bytes | str | Any | None = None,
+        content_type: str | None = None,
+    ) -> CloseResult:
+        """
+        Close the stream, optionally with a final message.
+
+        After closing:
+        - No further appends are permitted (server returns 409)
+        - Readers can observe the closed state and treat it as EOF
+        - The stream's data remains fully readable
+
+        Closing is:
+        - **Durable**: The closed state is persisted
+        - **Monotonic**: Once closed, a stream cannot be reopened
+        - **Idempotent** (without body): Safe to call multiple times
+
+        Args:
+            data: Optional final message to append atomically with close.
+                  For JSON streams, this should be a pre-serialized JSON string.
+            content_type: Content type for the final message. Defaults to
+                          the stream's content type. Must match if provided.
+
+        Returns:
+            CloseResult with the final offset
+
+        Raises:
+            StreamClosedError: If called with body on an already-closed stream
+            StreamNotFoundError: If stream doesn't exist
+        """
+        resolved_headers = resolve_headers_sync(self._headers)
+        resolved_params = resolve_params_sync(self._params)
+        request_url = build_url_with_params(self._url, resolved_params)
+
+        ct = content_type or self._content_type
+        if ct:
+            resolved_headers["content-type"] = ct
+
+        # Always send Stream-Closed: true header
+        resolved_headers[STREAM_CLOSED_HEADER] = "true"
+
+        # Prepare body if provided
+        request_body: bytes | None = None
+        if data is not None:
+            # For JSON mode, wrap in array
+            if is_json_content_type(ct):
+                body_str = (
+                    data if isinstance(data, str) else data.decode("utf-8")
+                )
+                request_body = f"[{body_str}]".encode()
+            else:
+                request_body = encode_body(data)
+
+        response = self._client.post(
+            request_url,
+            headers=resolved_headers,
+            content=request_body,
+            timeout=self._timeout,
+        )
+
+        # Check for 409 Conflict with Stream-Closed header
+        if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(
+                    url=self._url, final_offset=final_offset
+                )
+
+        if response.status_code == 404:
+            raise StreamNotFoundError(url=self._url)
+
+        if not response.is_success and response.status_code != 204:
+            headers_dict = parse_httpx_headers(response.headers)
+            raise error_from_status(
+                response.status_code,
+                self._url,
+                body=response.text,
+                headers=headers_dict,
+            )
+
+        final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        return CloseResult(final_offset=final_offset)
 
     def append(
         self,
@@ -527,6 +629,12 @@ class DurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:
@@ -648,6 +756,12 @@ class DurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:

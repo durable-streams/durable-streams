@@ -41,6 +41,10 @@ export interface CreateCommand {
   expiresAt?: string
   /** Custom headers to include */
   headers?: Record<string, string>
+  /** Create the stream in closed state */
+  closed?: boolean
+  /** Initial body data to include on creation */
+  data?: string
 }
 
 /**
@@ -113,6 +117,38 @@ export interface IdempotentAppendBatchCommand {
 }
 
 /**
+ * Close a stream via IdempotentProducer (uses producer headers for idempotency).
+ */
+export interface IdempotentCloseCommand {
+  type: `idempotent-close`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Optional final message to append atomically with close */
+  data?: string
+  /** Auto-claim epoch on 403 */
+  autoClaim: boolean
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
+ * Detach an IdempotentProducer (stop without closing stream).
+ */
+export interface IdempotentDetachCommand {
+  type: `idempotent-detach`
+  path: string
+  /** Producer ID */
+  producerId: string
+  /** Producer epoch */
+  epoch: number
+  /** Custom headers to include */
+  headers?: Record<string, string>
+}
+
+/**
  * Read from a stream (GET request).
  */
 export interface ReadCommand {
@@ -148,6 +184,35 @@ export interface DeleteCommand {
   type: `delete`
   path: string
   headers?: Record<string, string>
+}
+
+/**
+ * Close a stream (no more appends allowed).
+ */
+export interface CloseCommand {
+  type: `close`
+  /** Stream path */
+  path: string
+  /** Optional final message to append */
+  data?: string
+  /** Content type for the final message */
+  contentType?: string
+}
+
+/**
+ * Close a stream via direct HTTP (bypasses client adapter).
+ * Used for testing server-side stream closure behavior.
+ */
+export interface ServerCloseCommand {
+  type: `server-close`
+  /** Stream path */
+  path: string
+  /** Whether stream should be closed (always true for this command) */
+  streamClosed: true
+  /** Optional body data */
+  data?: string
+  /** Content type for the body */
+  contentType?: string
 }
 
 /**
@@ -334,9 +399,13 @@ export type TestCommand =
   | AppendCommand
   | IdempotentAppendCommand
   | IdempotentAppendBatchCommand
+  | IdempotentCloseCommand
+  | IdempotentDetachCommand
   | ReadCommand
   | HeadCommand
   | DeleteCommand
+  | CloseCommand
+  | ServerCloseCommand
   | ShutdownCommand
   | SetDynamicHeaderCommand
   | SetDynamicParamCommand
@@ -460,6 +529,26 @@ export interface IdempotentAppendBatchResult {
 }
 
 /**
+ * Successful idempotent-close result.
+ */
+export interface IdempotentCloseResult {
+  type: `idempotent-close`
+  success: true
+  status: number
+  /** Final stream offset after close */
+  finalOffset?: string
+}
+
+/**
+ * Successful idempotent-detach result.
+ */
+export interface IdempotentDetachResult {
+  type: `idempotent-detach`
+  success: true
+  status: number
+}
+
+/**
  * A chunk of data read from the stream.
  */
 export interface ReadChunk {
@@ -484,6 +573,8 @@ export interface ReadResult {
   offset?: string
   /** Whether stream is up-to-date (caught up to head) */
   upToDate?: boolean
+  /** Whether the stream has been permanently closed (no more appends) */
+  streamClosed?: boolean
   /** Cursor value if provided */
   cursor?: string
   /** Response headers */
@@ -509,6 +600,8 @@ export interface HeadResult {
   ttlSeconds?: number
   /** Absolute expiry (ISO 8601) */
   expiresAt?: string
+  /** Whether the stream has been permanently closed (no more appends) */
+  streamClosed?: boolean
   headers?: Record<string, string>
 }
 
@@ -520,6 +613,16 @@ export interface DeleteResult {
   success: true
   status: number
   headers?: Record<string, string>
+}
+
+/**
+ * Successful close result.
+ */
+export interface CloseResult {
+  type: `close`
+  success: true
+  /** Final offset after closing (may include final message) */
+  finalOffset: string
 }
 
 /**
@@ -612,9 +715,12 @@ export type TestResult =
   | AppendResult
   | IdempotentAppendResult
   | IdempotentAppendBatchResult
+  | IdempotentCloseResult
+  | IdempotentDetachResult
   | ReadResult
   | HeadResult
   | DeleteResult
+  | CloseResult
   | ShutdownResult
   | SetDynamicHeaderResult
   | SetDynamicParamResult
@@ -683,6 +789,8 @@ export const ErrorCodes = {
   NOT_FOUND: `NOT_FOUND`,
   /** Sequence number conflict (409) */
   SEQUENCE_CONFLICT: `SEQUENCE_CONFLICT`,
+  /** Stream is closed (409 with Stream-Closed header) */
+  STREAM_CLOSED: `STREAM_CLOSED`,
   /** Invalid offset format */
   INVALID_OFFSET: `INVALID_OFFSET`,
   /** Server returned unexpected status */

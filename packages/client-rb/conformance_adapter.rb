@@ -32,11 +32,14 @@ module ErrorCode
   PARSE_ERROR = "PARSE_ERROR"
   INTERNAL_ERROR = "INTERNAL_ERROR"
   NOT_SUPPORTED = "NOT_SUPPORTED"
+  STREAM_CLOSED = "STREAM_CLOSED"
 end
 
 # Global state
 $server_url = ""
 $stream_content_types = {}
+$producer_next_seq = {}
+$producer_stream_closed = {}
 
 # Dynamic headers/params state
 class DynamicValue
@@ -66,6 +69,31 @@ end
 $dynamic_headers = {}
 $dynamic_params = {}
 
+def producer_seq_key(path, producer_id, epoch)
+  "#{path}|#{producer_id}|#{epoch}"
+end
+
+def producer_key(path, producer_id)
+  "#{path}|#{producer_id}"
+end
+
+def drop_producer_epochs(path, producer_id)
+  prefix = "#{path}|#{producer_id}|"
+  $producer_next_seq.keys.each do |key|
+    $producer_next_seq.delete(key) if key.start_with?(prefix)
+  end
+end
+
+def clear_producer_for_path(path)
+  prefix = "#{path}|"
+  $producer_next_seq.keys.each do |key|
+    $producer_next_seq.delete(key) if key.start_with?(prefix)
+  end
+  $producer_stream_closed.keys.each do |key|
+    $producer_stream_closed.delete(key) if key.start_with?(prefix)
+  end
+end
+
 def resolve_dynamic_values(dynamic_map)
   resolved = {}
   dynamic_map.each do |name, config|
@@ -90,6 +118,8 @@ def map_error_code(err)
     [ErrorCode::NOT_FOUND, 404]
   when DurableStreams::StreamExistsError
     [ErrorCode::CONFLICT, 409]
+  when DurableStreams::StreamClosedError
+    [ErrorCode::STREAM_CLOSED, 409]
   when DurableStreams::SeqConflictError
     [ErrorCode::SEQUENCE_CONFLICT, 409]
   when DurableStreams::BadRequestError
@@ -131,6 +161,8 @@ def handle_init(cmd)
   $stream_content_types.clear
   $dynamic_headers.clear
   $dynamic_params.clear
+  $producer_next_seq.clear
+  $producer_stream_closed.clear
 
   {
     "type" => "init",
@@ -150,6 +182,11 @@ end
 def handle_create(cmd)
   url = "#{$server_url}#{cmd["path"]}"
   content_type = cmd["contentType"] || "application/octet-stream"
+  closed = cmd["closed"] || false
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
 
   # Check if stream already exists
   already_exists = false
@@ -168,7 +205,9 @@ def handle_create(cmd)
     content_type: content_type,
     ttl_seconds: cmd["ttlSeconds"],
     expires_at: cmd["expiresAt"],
-    headers: headers
+    headers: headers,
+    closed: closed,
+    body: data
   )
 
   # Cache content type
@@ -381,13 +420,23 @@ def handle_read(cmd)
     up_to_date = true
   end
 
+  # Check stream closed status by doing a HEAD request
+  stream_closed = false
+  begin
+    head_result = stream.head
+    stream_closed = head_result.stream_closed
+  rescue StandardError
+    # Ignore errors - stream_closed defaults to false
+  end
+
   result = {
     "type" => "read",
     "success" => true,
     "status" => status,
     "chunks" => chunks,
     "offset" => final_offset,
-    "upToDate" => up_to_date
+    "upToDate" => up_to_date,
+    "streamClosed" => stream_closed
   }
   result["headersSent"] = headers_sent unless headers_sent.empty?
   result["paramsSent"] = params_sent unless params_sent.empty?
@@ -409,7 +458,32 @@ def handle_head(cmd)
     "success" => true,
     "status" => 200,
     "offset" => result.next_offset,
-    "contentType" => result.content_type
+    "contentType" => result.content_type,
+    "streamClosed" => result.stream_closed
+  }
+end
+
+def handle_close(cmd)
+  url = "#{$server_url}#{cmd["path"]}"
+
+  # Get content type from cache or default
+  content_type = cmd["contentType"] || $stream_content_types[cmd["path"]] || "application/octet-stream"
+
+  headers = cmd["headers"] || {}
+  stream = DurableStreams::Stream.new(url, content_type: content_type, headers: headers)
+
+  # Decode data if provided
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  result = stream.close_stream(data: data, content_type: content_type)
+
+  {
+    "type" => "close",
+    "success" => true,
+    "finalOffset" => result.final_offset
   }
 end
 
@@ -422,6 +496,7 @@ def handle_delete(cmd)
 
   # Remove from cache
   $stream_content_types.delete(cmd["path"])
+  clear_producer_for_path(cmd["path"])
 
   {
     "type" => "delete",
@@ -658,6 +733,12 @@ def handle_idempotent_append(cmd)
   auto_claim = cmd["autoClaim"] || false
   # Data is already pre-serialized, pass directly to append()
   data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  seq_key = producer_seq_key(cmd["path"], producer_id, epoch)
+  next_seq = $producer_next_seq[seq_key] || 0
 
   producer = DurableStreams::Producer.new(
     url: url,
@@ -666,12 +747,17 @@ def handle_idempotent_append(cmd)
     auto_claim: auto_claim,
     max_in_flight: 1,
     linger_ms: 0,
-    content_type: content_type
+    content_type: content_type,
+    next_seq: next_seq
   )
 
   producer.append(data)
   producer.flush
-  producer.close
+
+  final_epoch = producer.epoch
+  final_next_seq = producer.seq + 1
+  drop_producer_epochs(cmd["path"], producer_id)
+  $producer_next_seq[producer_seq_key(cmd["path"], producer_id, final_epoch)] = final_next_seq
 
   {
     "type" => "idempotent-append",
@@ -712,6 +798,69 @@ def handle_idempotent_append_batch(cmd)
 
   {
     "type" => "idempotent-append-batch",
+    "success" => true,
+    "status" => 200
+  }
+end
+
+def handle_idempotent_close(cmd)
+  url = "#{$server_url}#{cmd["path"]}"
+
+  content_type = cmd["contentType"] || $stream_content_types[cmd["path"]] || "application/octet-stream"
+
+  producer_id = cmd["producerId"]
+  epoch = cmd["epoch"] || 0
+  auto_claim = cmd["autoClaim"] || false
+
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  producer_key = producer_key(cmd["path"], producer_id)
+  if $producer_stream_closed[producer_key]
+    return {
+      "type" => "idempotent-close",
+      "success" => true,
+      "status" => 200
+    }
+  end
+
+  seq_key = producer_seq_key(cmd["path"], producer_id, epoch)
+  next_seq = $producer_next_seq[seq_key] || 0
+
+  producer = DurableStreams::Producer.new(
+    url: url,
+    producer_id: producer_id,
+    epoch: epoch,
+    auto_claim: auto_claim,
+    max_in_flight: 1,
+    linger_ms: 0,
+    content_type: content_type,
+    next_seq: next_seq
+  )
+
+  producer.close_stream(data: data)
+
+  final_epoch = producer.epoch
+  final_next_seq = producer.seq + 1
+  drop_producer_epochs(cmd["path"], producer_id)
+  $producer_next_seq[producer_seq_key(cmd["path"], producer_id, final_epoch)] = final_next_seq
+  $producer_stream_closed[producer_key] = true
+
+  {
+    "type" => "idempotent-close",
+    "success" => true,
+    "status" => 200
+  }
+end
+
+def handle_idempotent_detach(cmd)
+  drop_producer_epochs(cmd["path"], cmd["producerId"])
+  $producer_stream_closed.delete(producer_key(cmd["path"], cmd["producerId"]))
+
+  {
+    "type" => "idempotent-detach",
     "success" => true,
     "status" => 200
   }
@@ -780,6 +929,7 @@ def handle_command(cmd)
     when "append" then handle_append(cmd)
     when "read" then handle_read(cmd)
     when "head" then handle_head(cmd)
+    when "close" then handle_close(cmd)
     when "delete" then handle_delete(cmd)
     when "shutdown" then handle_shutdown(cmd)
     when "benchmark" then handle_benchmark(cmd)
@@ -788,6 +938,8 @@ def handle_command(cmd)
     when "clear-dynamic" then handle_clear_dynamic(cmd)
     when "idempotent-append" then handle_idempotent_append(cmd)
     when "idempotent-append-batch" then handle_idempotent_append_batch(cmd)
+    when "idempotent-close" then handle_idempotent_close(cmd)
+    when "idempotent-detach" then handle_idempotent_detach(cmd)
     when "validate" then handle_validate(cmd)
     else
       {

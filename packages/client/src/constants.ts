@@ -26,6 +26,12 @@ export const STREAM_CURSOR_HEADER = `Stream-Cursor`
  */
 export const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
 
+/**
+ * Response/request header indicating stream is closed (EOF).
+ * When present with value "true", the stream is permanently closed.
+ */
+export const STREAM_CLOSED_HEADER = `Stream-Closed`
+
 // ============================================================================
 // Request Headers
 // ============================================================================
@@ -112,6 +118,12 @@ export const SSE_OFFSET_FIELD = `streamNextOffset`
  * Note: Different from HTTP header name (camelCase vs Header-Case).
  */
 export const SSE_CURSOR_FIELD = `streamCursor`
+
+/**
+ * SSE control event field for stream closed state.
+ * Note: Different from HTTP header name (camelCase vs Header-Case).
+ */
+export const SSE_CLOSED_FIELD = `streamClosed`
 
 // ============================================================================
 // Internal Constants

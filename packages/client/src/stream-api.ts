@@ -7,6 +7,7 @@
 import {
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
+  STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
@@ -190,6 +191,8 @@ async function streamInternal<TJson = unknown>(
   const initialCursor =
     firstResponse.headers.get(STREAM_CURSOR_HEADER) ?? undefined
   const initialUpToDate = firstResponse.headers.has(STREAM_UP_TO_DATE_HEADER)
+  const initialStreamClosed =
+    firstResponse.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
 
   // Determine if JSON mode
   const isJsonMode =
@@ -288,6 +291,7 @@ async function streamInternal<TJson = unknown>(
     initialOffset,
     initialCursor,
     initialUpToDate,
+    initialStreamClosed,
     firstResponse,
     abortController,
     fetchNext,
