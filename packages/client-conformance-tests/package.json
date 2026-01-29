@@ -77,6 +77,8 @@
     "test:run:python-async:verbose": "tsx src/cli.ts --run ../client-py/run-conformance-adapter-async.sh --verbose",
     "test:run:python:verbose": "tsx src/cli.ts --run ../client-py/run-conformance-adapter.sh --verbose",
     "test:run:verbose": "tsx src/cli.ts --run ts --verbose",
+    "test:run:effect": "tsx src/cli.ts --run ../client-effect/run-conformance-adapter.sh",
+    "test:run:effect:verbose": "tsx src/cli.ts --run ../client-effect/run-conformance-adapter.sh --verbose",
     "bench:ts": "tsx src/cli.ts --bench ts",
     "bench:elixir": "tsx src/cli.ts --bench ../client-elixir/run-conformance-adapter.sh",
     "bench:python": "tsx src/cli.ts --bench ../client-py/run-conformance-adapter.sh",
