@@ -123,6 +123,10 @@ Stream closure provides an explicit end-of-stream (EOF) signal that allows reade
 
 After closure, the stream's data remains fully readable. Only new appends are rejected.
 
+**Stream-Closed Header Value:**
+
+The `Stream-Closed` header uses the value `true` (case-insensitive) to indicate closure. Servers **MUST** treat the header as present only when its value is exactly `true` (case-insensitive comparison). Other values such as `false`, `yes`, `1`, or empty string **MUST** be treated as if the header were absent. Servers **SHOULD NOT** return error responses for non-`true` values; they simply ignore the header.
+
 ## 5. HTTP Operations
 
 The protocol defines operations that are applied to a stream URL. The examples in this section use `{stream-url}` to represent any stream URL. Servers may implement any URL structure they choose; the protocol is defined by the HTTP methods, query parameters, and headers.
@@ -139,10 +143,17 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` if the existing stream's configuration (content type, TTL/expiry) matches the request, or
+- return `200 OK` if the existing stream's configuration (content type, TTL/expiry, and closure status) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
+
+**Closure status matching:** When checking for idempotent success (200 OK), servers **MUST** compare the `Stream-Closed` header in the request against the stream's current closure status. For example:
+
+- `PUT /stream` (no `Stream-Closed`) to an **open** stream with matching config → `200 OK`
+- `PUT /stream` (no `Stream-Closed`) to a **closed** stream → `409 Conflict` (closure status mismatch)
+- `PUT /stream + Stream-Closed: true` to a **closed** stream with matching config → `200 OK`
+- `PUT /stream + Stream-Closed: true` to an **open** stream → `409 Conflict` (closure status mismatch)
 
 #### Request Headers (Optional)
 
@@ -242,8 +253,15 @@ When a client attempts to append to a closed stream (without `Stream-Closed: tru
 
 - `409 Conflict` status code
 - `Stream-Closed: true` header
+- `Stream-Next-Offset: <offset>`: The final offset of the closed stream (useful for clients to know the stream's final position)
 
 This allows clients to detect and handle the "stream already closed" condition programmatically without parsing the response body. Servers **SHOULD** keep the response body empty or use a standardized error format; clients **SHOULD NOT** rely on parsing the body to determine the reason for rejection.
+
+**Error Precedence:** When an append request would trigger multiple conflict conditions (e.g., stream is closed AND content type mismatches), servers **SHOULD** check the stream's closed status first. This ensures clients receive the `Stream-Closed: true` header, enabling correct error handling. The recommended precedence is:
+
+1. Stream closed → `409 Conflict` with `Stream-Closed: true`
+2. Content type mismatch → `409 Conflict`
+3. Sequence regression → `409 Conflict`
 
 ### 5.2.1. Idempotent Producers
 
@@ -704,6 +722,15 @@ Offsets are opaque tokens that identify positions within a stream. They have the
   - If data arrives before the first control event, `upToDate` reflects the current state
   - No historical data is sent; only future data events are streamed
 
+  **Closed streams** (`offset=now` on a closed stream):
+  - Regardless of the `live` parameter, servers **MUST** return immediately with the closure signal
+  - The response **MUST** include `Stream-Closed: true` and `Stream-Up-To-Date: true` headers
+  - The `Stream-Next-Offset` header **MUST** be set to the stream's final (tail) offset
+  - For catch-up mode: `200 OK` with empty body (or empty JSON array for JSON streams)
+  - For long-poll mode: `204 No Content` (no waiting, immediate return)
+  - For SSE mode: The first (and only) control event includes `streamClosed: true` and `upToDate: true`, then the connection closes
+  - This ensures clients using `offset=now` can immediately discover that a stream has no future data
+
 **Reserved Values**: The sentinel values `-1` and `now` are reserved by the protocol. Server implementations **MUST NOT** generate these strings as actual stream offsets (in `Stream-Next-Offset` headers or SSE control events). This ensures clients can always distinguish between sentinel requests and real offset values.
 
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
@@ -808,6 +835,8 @@ This design ensures:
 **ETag Usage:**
 
 Servers **MUST** generate `ETag` headers for GET responses, except for `offset=now` responses. Clients **MAY** use `If-None-Match` with the `ETag` value on repeat catch-up requests. When a client provides a valid `If-None-Match` header that matches the current ETag, servers **MUST** respond with `304 Not Modified` (with no body) instead of re-sending the same data. This is essential for fast loading and efficient bandwidth usage.
+
+**ETag and Stream Closure:** ETags **MUST** vary with the stream's closure status. When a stream is closed (without new data being appended), the ETag **MUST** change to ensure clients do not receive `304 Not Modified` responses that would hide the closure signal. Implementations **SHOULD** include a closure indicator in the ETag format (e.g., appending `:c` to the ETag when the stream is closed).
 
 **Query Parameter Ordering:**
 
