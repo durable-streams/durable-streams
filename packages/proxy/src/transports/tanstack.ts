@@ -1,59 +1,55 @@
 /**
  * TanStack AI Adapter for Durable Proxy.
  *
- * This adapter integrates with TanStack's AI utilities
- * to provide transparent reconnection for streaming responses.
+ * This adapter integrates with TanStack's `useChat` hook via the
+ * `ConnectionAdapter` interface, providing transparent reconnection
+ * for streaming responses through durable streams.
+ *
+ * The TanStack `ConnectionAdapter` contract:
+ *   connect(messages, data?, abortSignal?) => AsyncIterable<StreamChunk>
+ *
+ * This adapter routes requests through durableFetch (two-phase POST→GET),
+ * then parses the SSE response into StreamChunk objects.
  */
 
 import { createAbortFn, createDurableFetch, getDefaultStorage } from "../client"
 import { generateStreamKey } from "./hash"
 import type { DurableFetch } from "../client/types"
-import type {
-  ConnectionAdapter,
-  ConnectionAdapterOptions,
-  ConnectionAdapterResponse,
-  DurableAdapterOptions,
-} from "./types"
+import type { DurableAdapterOptions } from "./types"
 
 /**
- * Create a durable adapter for TanStack AI.
- *
- * This adapter provides:
- * - Automatic reconnection on network failures
- * - Resume from last known position
- * - Abort support for canceling streams
+ * Create a durable adapter for TanStack AI's `useChat` hook.
  *
  * @param apiUrl - The absolute URL of your backend API for chat completions
  * @param options - Adapter configuration options
- * @returns A connection adapter instance
+ * @returns A ConnectionAdapter compatible with `@tanstack/ai-client`
  *
  * @example
  * ```typescript
  * import { createDurableAdapter } from '@durable-streams/proxy/transports'
  *
- * const adapter = createDurableAdapter('https://api.example.com/api/chat', {
- *   proxyUrl: 'https://proxy.example.com/v1/proxy',
- *   proxyAuthorization: 'service-secret',
- *   getRequestId: (messages, data) => data?.conversationId ?? 'default',
+ * const adapter = createDurableAdapter('http://localhost:3002/api/chat', {
+ *   proxyUrl: 'http://localhost:4440/v1/proxy',
+ *   proxyAuthorization: 'dev-secret',
+ *   getRequestId: (messages) => `conv-${messages.length}`,
  * })
  *
  * // Use with TanStack AI
- * const connection = await adapter.connect({
- *   body: { messages },
+ * const { messages, sendMessage } = useChat({
+ *   connection: adapter,
  * })
- *
- * // Read the stream
- * const reader = connection.stream.getReader()
- * // ...
- *
- * // To abort
- * await adapter.abort()
  * ```
  */
 export function createDurableAdapter(
   apiUrl: string,
   options: DurableAdapterOptions
-): ConnectionAdapter {
+): {
+  connect: (
+    messages: Array<unknown>,
+    data?: Record<string, unknown>,
+    abortSignal?: AbortSignal
+  ) => AsyncIterable<unknown>
+} {
   // Validate that apiUrl is an absolute URL
   try {
     new URL(apiUrl)
@@ -84,27 +80,13 @@ export function createDurableAdapter(
     fetch: fetchFn,
   })
 
-  // Track abort functions for concurrent streams
-  const abortFns = new Map<string, () => Promise<void>>()
-  let currentRequestId: string | null = null
-
   return {
-    async connect(
-      connectOptions: ConnectionAdapterOptions
-    ): Promise<ConnectionAdapterResponse> {
-      const {
-        method = `POST`,
-        body,
-        headers: requestHeaders,
-        signal,
-      } = connectOptions
-
-      // Extract messages from body for request ID generation
-      const bodyObj = typeof body === `string` ? JSON.parse(body) : (body ?? {})
-      const messages = bodyObj.messages ?? []
-      const data = bodyObj.data
-
-      // Generate request ID
+    async *connect(
+      messages: Array<unknown>,
+      data?: Record<string, unknown>,
+      abortSignal?: AbortSignal
+    ) {
+      // Generate request ID for resumability
       const requestId = getRequestId(messages, data)
 
       // Resolve headers
@@ -114,23 +96,22 @@ export function createDurableAdapter(
           : (configHeaders ?? {})
       const mergedHeaders = {
         ...resolvedConfigHeaders,
-        ...requestHeaders,
         "Content-Type": `application/json`,
       }
 
-      // Ensure streaming is enabled
+      // Build the request body (messages + any extra data)
       const requestBody = {
-        ...bodyObj,
-        stream: true,
+        messages,
+        data,
       }
 
-      // Make the durable fetch request
+      // Make the durable fetch request (handles POST→GET two-phase flow)
       const response = await durableFetch(apiUrl, {
-        method,
+        method: `POST`,
         headers: mergedHeaders,
         body: JSON.stringify(requestBody),
         requestId,
-        signal,
+        signal: abortSignal,
       })
 
       if (!response.ok) {
@@ -141,29 +122,92 @@ export function createDurableAdapter(
         throw new Error(`No response body`)
       }
 
-      // Set up abort function for this stream
+      // Set up abort function for stop button support
       if (response.streamUrl) {
-        abortFns.set(requestId, createAbortFn(response.streamUrl, fetchFn))
-        currentRequestId = requestId
-      }
+        const abortFn = createAbortFn(response.streamUrl, fetchFn)
 
-      return {
-        stream: response.body,
-        headers: response.headers,
-        status: response.status,
-      }
-    },
-
-    async abort(): Promise<void> {
-      // Abort the current stream
-      if (currentRequestId) {
-        const abortFn = abortFns.get(currentRequestId)
-        if (abortFn) {
-          await abortFn()
-          abortFns.delete(currentRequestId)
+        // When the abort signal fires, call the proxy abort endpoint
+        if (abortSignal) {
+          const onAbort = () => {
+            abortFn().catch(() => {
+              // Ignore abort errors (stream may already be complete)
+            })
+          }
+          if (abortSignal.aborted) {
+            onAbort()
+          } else {
+            abortSignal.addEventListener(`abort`, onAbort, { once: true })
+          }
         }
-        currentRequestId = null
       }
+
+      // Parse SSE from the response body and yield StreamChunks
+      yield* parseSSEStream(response.body, abortSignal)
     },
+  }
+}
+
+/**
+ * Parse a Server-Sent Events stream into individual JSON chunks.
+ *
+ * Reads the response body line-by-line, extracts `data:` prefixed lines,
+ * parses them as JSON, and yields each parsed object.
+ */
+async function* parseSSEStream(
+  body: ReadableStream<Uint8Array>,
+  abortSignal?: AbortSignal
+): AsyncGenerator<unknown> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ``
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (true) {
+      if (abortSignal?.aborted) break
+
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split(`\n`)
+
+      // Keep the last incomplete line in the buffer
+      buffer = lines.pop() ?? ``
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+
+        // Extract data from SSE "data: ..." lines
+        const data = trimmed.startsWith(`data: `) ? trimmed.slice(6) : trimmed
+
+        // Skip the [DONE] sentinel
+        if (data === `[DONE]`) continue
+
+        try {
+          const parsed = JSON.parse(data)
+          yield parsed
+        } catch {
+          // Skip non-JSON lines
+        }
+      }
+    }
+
+    // Process any remaining data in the buffer
+    if (buffer.trim()) {
+      const data = buffer.trim().startsWith(`data: `)
+        ? buffer.trim().slice(6)
+        : buffer.trim()
+      if (data !== `[DONE]`) {
+        try {
+          yield JSON.parse(data)
+        } catch {
+          // Skip non-JSON remainder
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
   }
 }
