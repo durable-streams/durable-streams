@@ -12,7 +12,12 @@ import { spawn } from "node:child_process"
 import { createInterface } from "node:readline"
 import { randomUUID } from "node:crypto"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { parseResult, serializeCommand } from "./protocol.js"
+import {
+  decodeBase64,
+  encodeBase64,
+  parseResult,
+  serializeCommand,
+} from "./protocol.js"
 import {
   countTests,
   filterByCategory,
@@ -381,13 +386,15 @@ async function executeOperation(
 
     case `idempotent-append`: {
       const path = resolveVariables(op.path, variables)
-      const data = resolveVariables(op.data, variables)
+      const data = op.binaryData ?? op.data ?? ``
+      const binary = !!op.binaryData
 
       const result = await client.send(
         {
           type: `idempotent-append`,
           path,
           data,
+          binary,
           producerId: op.producerId,
           epoch: op.epoch ?? 0,
           autoClaim: op.autoClaim ?? false,
@@ -1058,6 +1065,43 @@ function validateExpectation(
     }
   }
 
+  // Check binaryData (for read results with base64-encoded binary comparison)
+  if (expect.binaryData !== undefined && isReadResult(result)) {
+    // Combine all chunks into a single byte array
+    const binaryChunks: Array<Uint8Array> = []
+    for (const chunk of result.chunks) {
+      if (chunk.binary) {
+        binaryChunks.push(decodeBase64(chunk.data))
+      } else {
+        binaryChunks.push(new TextEncoder().encode(chunk.data))
+      }
+    }
+    const totalLength = binaryChunks.reduce(
+      (sum, chunk) => sum + chunk.length,
+      0
+    )
+    const actualBytes = new Uint8Array(totalLength)
+    let offset = 0
+    for (const chunk of binaryChunks) {
+      actualBytes.set(chunk, offset)
+      offset += chunk.length
+    }
+
+    const expectedBytes = decodeBase64(expect.binaryData as string)
+
+    // Compare byte-by-byte
+    if (actualBytes.length !== expectedBytes.length) {
+      const actualB64 = encodeBase64(actualBytes)
+      return `Expected binary data length ${expectedBytes.length}, got ${actualBytes.length}. Expected: ${expect.binaryData}, got: ${actualB64}`
+    }
+    for (let i = 0; i < expectedBytes.length; i++) {
+      if (actualBytes[i] !== expectedBytes[i]) {
+        const actualB64 = encodeBase64(actualBytes)
+        return `Binary data mismatch at byte ${i}: expected 0x${expectedBytes[i]!.toString(16).padStart(2, `0`)}, got 0x${actualBytes[i]!.toString(16).padStart(2, `0`)}. Expected: ${expect.binaryData}, got: ${actualB64}`
+      }
+    }
+  }
+
   // Check dataContains
   if (expect.dataContains !== undefined && isReadResult(result)) {
     const actualData = result.chunks.map((c) => c.data).join(``)
@@ -1454,12 +1498,24 @@ export async function runConformanceTests(
   let adapterArgs = options.clientArgs ?? []
 
   if (adapterPath === `ts` || adapterPath === `typescript`) {
-    // Use built-in TypeScript adapter via tsx
-    adapterPath = `npx`
-    adapterArgs = [
-      `tsx`,
-      new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
-    ]
+    // Detect if running from src or dist
+    const currentUrl = import.meta.url
+    const isRunningFromSrc = currentUrl.includes(`/src/`)
+
+    if (isRunningFromSrc) {
+      // Running from source: use tsx to run TypeScript directly
+      adapterPath = `npx`
+      adapterArgs = [
+        `tsx`,
+        new URL(`./adapters/typescript-adapter.ts`, import.meta.url).pathname,
+      ]
+    } else {
+      // Running from dist: use node to run compiled JavaScript
+      adapterPath = `node`
+      adapterArgs = [
+        new URL(`./adapters/typescript-adapter.js`, import.meta.url).pathname,
+      ]
+    }
   }
 
   // Start client adapter

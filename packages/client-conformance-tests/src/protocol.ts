@@ -86,6 +86,8 @@ export interface IdempotentAppendCommand {
   path: string
   /** Data to append (string - will be JSON parsed for JSON streams) */
   data: string
+  /** Whether data is base64 encoded binary */
+  binary?: boolean
   /** Producer ID */
   producerId: string
   /** Producer epoch */

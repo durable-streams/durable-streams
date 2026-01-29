@@ -1,0 +1,170 @@
+id: producer-binary-integrity
+name: Binary Data Integrity
+description: Tests for binary data integrity when appending non-UTF8 bytes
+category: producer
+tags:
+  - binary
+  - core
+
+tests:
+  - id: append-non-utf8-bytes-single
+    name: Append non-UTF8 bytes (single append)
+    description: |
+      Client should preserve binary data integrity when appending bytes that
+      are not valid UTF-8 sequences. Bytes like 0x80, 0x9B, 0xF5, 0xFF are
+      invalid UTF-8 lead bytes and must NOT be replaced with the UTF-8
+      replacement character (U+FFFD / 0xEF 0xBF 0xBD).
+
+      This tests for a specific bug where TextDecoder was incorrectly used
+      to convert binary data to string before sending to fetch().
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # Test pattern: 0x00 0x00 0x01 0x9B 0xF5 0x8B 0x65 0x3B
+      # These bytes would be corrupted by TextDecoder because 0x9B, 0xF5, 0x8B
+      # are not valid UTF-8 lead bytes and would be replaced with 0xEF 0xBF 0xBD
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAABm/WLZTs=" # [0x00, 0x00, 0x01, 0x9B, 0xF5, 0x8B, 0x65, 0x3B]
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "AAABm/WLZTs="
+          upToDate: true
+
+  - id: append-high-bytes-single
+    name: Append high byte values (single append)
+    description: |
+      Client should correctly handle bytes in the range 0x80-0xFF which
+      are often problematic for UTF-8 decoders.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # Bytes: 0x90, 0x90, 0xA0, 0xF0, 0xFF, 0xFF
+      - action: append
+        path: ${streamPath}
+        binaryData: "kJCg8P//" # [0x90, 0x90, 0xA0, 0xF0, 0xFF, 0xFF]
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "kJCg8P//"
+          upToDate: true
+
+  - id: append-all-byte-values
+    name: Append all byte values 0x00-0xFF
+    description: |
+      Client should preserve all 256 possible byte values without corruption.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # All bytes 0x00-0xFF in order
+      - action: append
+        path: ${streamPath}
+        binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w=="
+          upToDate: true
+
+  - id: append-non-utf8-bytes-batched
+    name: Append non-UTF8 bytes with batching enabled
+    description: |
+      When batching is enabled, the client must still preserve binary data
+      integrity. This tests that the batching code path doesn't use TextDecoder.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # Same test pattern as single append but using idempotent producer (which enables batching)
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: binary-test
+        binaryData: "AAABm/WLZTs=" # [0x00, 0x00, 0x01, 0x9B, 0xF5, 0x8B, 0x65, 0x3B]
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "AAABm/WLZTs="
+          upToDate: true
+
+  - id: append-binary-x-binary-content-type
+    name: Append binary data with application/x-binary content type
+    description: |
+      Tests binary data integrity with a different binary content type.
+      The bug should not be content-type specific (any non-JSON stream).
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/x-binary
+    operations:
+      - action: append
+        path: ${streamPath}
+        binaryData: "gJCg8P//" # [0x80, 0x90, 0xA0, 0xF0, 0xFF, 0xFF]
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "gJCg8P//"
+          upToDate: true
+
+  - id: append-protobuf-like-data
+    name: Append protobuf-like binary data
+    description: |
+      Tests with a realistic binary data pattern similar to Protocol Buffers.
+      This includes field tags, length prefixes, and varint-encoded values.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # Simulated protobuf: field 1 (string) = "hello", field 2 (varint) = 155, field 3 (bytes) = 0xDEADBEEF
+      - action: append
+        path: ${streamPath}
+        binaryData: "CgVoZWxsbxCbARoE3q2+7w==" # Protobuf-like structure
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          binaryData: "CgVoZWxsbxCbARoE3q2+7w=="
+          upToDate: true
+
+  - id: append-replacement-char-should-not-appear
+    name: Binary data should not contain UTF-8 replacement character
+    description: |
+      Ensures that the single byte 0x9B is returned as-is and NOT replaced
+      with the 3-byte UTF-8 replacement character sequence (0xEF 0xBF 0xBD).
+      This is the signature of the TextDecoder corruption bug.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/octet-stream
+    operations:
+      # Single problematic byte: 0x9B (not valid UTF-8)
+      - action: append
+        path: ${streamPath}
+        binaryData: "mw==" # [0x9B]
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # Should be exactly 1 byte (0x9B), not 3 bytes (replacement char)
+          binaryData: "mw=="
+          upToDate: true
