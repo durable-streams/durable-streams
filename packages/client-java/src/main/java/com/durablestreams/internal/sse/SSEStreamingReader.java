@@ -13,6 +13,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +38,7 @@ public final class SSEStreamingReader implements AutoCloseable {
     private final BlockingQueue<ChunkOrError> chunkQueue;
     private final AtomicBoolean closed;
     private final AtomicBoolean started;
+    private final String encoding;
 
     private volatile Thread readerThread;
     private volatile InputStream inputStream;
@@ -45,13 +47,14 @@ public final class SSEStreamingReader implements AutoCloseable {
     private volatile String currentCursor;
     private volatile boolean upToDate;
 
-    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset) {
+    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset, String encoding) {
         this.httpClient = httpClient;
         this.request = request;
         this.chunkQueue = new LinkedBlockingQueue<>();
         this.closed = new AtomicBoolean(false);
         this.started = new AtomicBoolean(false);
         this.currentOffset = initialOffset;
+        this.encoding = encoding;
         this.upToDate = false;
     }
 
@@ -237,7 +240,25 @@ public final class SSEStreamingReader implements AutoCloseable {
         cursor = extractJsonString(controlJson, "streamCursor");
         isUpToDate = extractJsonBoolean(controlJson, "upToDate");
 
-        byte[] dataBytes = data != null ? data.getBytes(StandardCharsets.UTF_8) : new byte[0];
+        byte[] dataBytes;
+        if (data == null || data.isEmpty()) {
+            dataBytes = new byte[0];
+        } else if ("base64".equals(encoding)) {
+            // Decode base64 data per Protocol Section 5.7
+            // Per protocol: concatenate data lines, remove \n and \r, then decode
+            String cleaned = data.replace("\n", "").replace("\r", "");
+            if (cleaned.isEmpty()) {
+                dataBytes = new byte[0];
+            } else {
+                try {
+                    dataBytes = Base64.getDecoder().decode(cleaned);
+                } catch (IllegalArgumentException e) {
+                    throw new ParseErrorException("Invalid base64 data in SSE event: " + e.getMessage());
+                }
+            }
+        } else {
+            dataBytes = data.getBytes(StandardCharsets.UTF_8);
+        }
 
         Map<String, String> headers = new HashMap<>();
         if (nextOffset != null) {

@@ -348,6 +348,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             url,
             offset: command.offset,
             live,
+            encoding: command.encoding,
             headers: mergedHeaders,
             signal: abortController.signal,
           })

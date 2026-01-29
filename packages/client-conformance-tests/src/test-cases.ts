@@ -269,6 +269,8 @@ export interface ReadOperation {
   offset?: string
   /** Live mode */
   live?: false | `long-poll` | `sse`
+  /** Encoding for SSE data events (required for binary streams in SSE mode) */
+  encoding?: `base64`
   /** Timeout for long-poll in ms */
   timeoutMs?: number
   /** Maximum chunks to read */

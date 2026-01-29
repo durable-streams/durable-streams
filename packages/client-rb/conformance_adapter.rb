@@ -174,7 +174,8 @@ def handle_init(cmd)
       "sse" => true,
       "longPoll" => true,
       "streaming" => true,
-      "dynamicHeaders" => true
+      "dynamicHeaders" => true,
+      "sseBase64Encoding" => true
     }
   }
 end
@@ -300,6 +301,9 @@ def handle_read(cmd)
          else false # Default to catch-up only
          end
 
+  # Get encoding option for SSE binary streams (Protocol Section 5.7)
+  encoding = cmd["encoding"]
+
   timeout_ms = cmd["timeoutMs"] || 5000
   max_chunks = cmd["maxChunks"] || 100
   wait_for_up_to_date = cmd["waitForUpToDate"] || false
@@ -329,8 +333,8 @@ def handle_read(cmd)
 
   begin
     if live == false
-      # Catch-up mode
-      reader = stream.read(offset: offset, live: false, format: format)
+      # Catch-up mode - pass encoding to trigger validation (should fail if encoding provided)
+      reader = stream.read(offset: offset, live: false, format: format, encoding: encoding)
 
       if is_json
         reader.each_batch do |batch|
@@ -341,7 +345,11 @@ def handle_read(cmd)
         end
       else
         reader.each do |chunk|
-          chunks << { "data" => chunk.data, "offset" => chunk.next_offset } unless chunk.data.empty?
+          unless chunk.data.empty?
+            # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+            chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+            chunks << chunk_entry
+          end
           final_offset = chunk.next_offset
           up_to_date = chunk.up_to_date
         end
@@ -350,23 +358,41 @@ def handle_read(cmd)
       reader.close
     elsif live == :sse
       # SSE mode with timeout
-      reader = stream.read(offset: offset, live: :sse, format: :json)
+      reader = stream.read(offset: offset, live: :sse, format: format, encoding: encoding)
       chunk_count = 0
 
       begin
         Timeout.timeout(timeout_ms / 1000.0) do
-          reader.each_batch do |batch|
-            unless batch.items.empty?
-              data = JSON.generate(batch.items)
-              chunks << { "data" => data, "offset" => batch.next_offset }
-              chunk_count += 1
+          if is_json
+            reader.each_batch do |batch|
+              unless batch.items.empty?
+                data = JSON.generate(batch.items)
+                chunks << { "data" => data, "offset" => batch.next_offset }
+                chunk_count += 1
+              end
+
+              final_offset = batch.next_offset
+              up_to_date = batch.up_to_date
+
+              break if chunk_count >= max_chunks
+              break if wait_for_up_to_date && up_to_date
             end
+          else
+            # For byte streams with encoding (e.g., base64)
+            reader.each do |chunk|
+              unless chunk.data.empty?
+                # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+                chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+                chunks << chunk_entry
+                chunk_count += 1
+              end
 
-            final_offset = batch.next_offset
-            up_to_date = batch.up_to_date
+              final_offset = chunk.next_offset
+              up_to_date = chunk.up_to_date
 
-            break if chunk_count >= max_chunks
-            break if wait_for_up_to_date && up_to_date
+              break if chunk_count >= max_chunks
+              break if wait_for_up_to_date && up_to_date
+            end
           end
         end
       rescue Timeout::Error
@@ -377,8 +403,8 @@ def handle_read(cmd)
       status = reader.status || 200
       reader.close
     else
-      # Long-poll mode
-      reader = stream.read(offset: offset, live: :long_poll, format: format)
+      # Long-poll mode - pass encoding to trigger validation (should fail if encoding provided)
+      reader = stream.read(offset: offset, live: :long_poll, format: format, encoding: encoding)
       chunk_count = 0
 
       Timeout.timeout(timeout_ms / 1000.0) do
@@ -399,7 +425,9 @@ def handle_read(cmd)
         else
           reader.each do |chunk|
             unless chunk.data.empty?
-              chunks << { "data" => chunk.data, "offset" => chunk.next_offset }
+              # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+              chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+              chunks << chunk_entry
               chunk_count += 1
             end
 
@@ -866,6 +894,24 @@ def handle_idempotent_detach(cmd)
   }
 end
 
+# Helper to encode chunk data for JSON response.
+# Returns data as UTF-8 string if valid, otherwise base64 encodes and sets binary flag.
+def encode_chunk_data(data, offset)
+  # Try to convert to UTF-8
+  begin
+    utf8_data = data.dup.force_encoding("UTF-8")
+    if utf8_data.valid_encoding?
+      { "data" => utf8_data, "offset" => offset }
+    else
+      # Data contains non-UTF8 bytes, must base64 encode
+      { "data" => Base64.strict_encode64(data), "offset" => offset, "binary" => true }
+    end
+  rescue StandardError
+    # Any encoding error means we should base64 encode
+    { "data" => Base64.strict_encode64(data), "offset" => offset, "binary" => true }
+  end
+end
+
 def validation_error(message)
   {
     "type" => "error",
@@ -969,7 +1015,11 @@ def main
     begin
       command = JSON.parse(line)
       result = handle_command(command)
-      puts JSON.generate(result)
+      # Generate JSON and escape U+2028/U+2029 which are line terminators
+      # that can break JavaScript JSON parsers
+      json_output = JSON.generate(result)
+      json_output = json_output.gsub("\u2028", "\\u2028").gsub("\u2029", "\\u2029")
+      puts json_output
       $stdout.flush
 
       break if command["type"] == "shutdown"

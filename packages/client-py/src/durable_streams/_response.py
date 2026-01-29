@@ -18,6 +18,7 @@ from typing import (
 
 from durable_streams._errors import (
     SSEBytesIterationError,
+    SSEEncodingError,
     SSEReadAllError,
     StreamConsumedError,
 )
@@ -27,6 +28,7 @@ from durable_streams._parse import (
 from durable_streams._types import (
     LiveMode,
     Offset,
+    SSEEncoding,
     StreamEvent,
 )
 
@@ -74,6 +76,7 @@ class StreamResponse(Generic[T]):
         fetch_next: Callable[[Offset, str | None], httpx.Response],
         is_sse: bool = False,
         own_client: bool = False,
+        encoding: SSEEncoding | None = None,
     ) -> None:
         self._url = url
         self._response = response
@@ -85,6 +88,7 @@ class StreamResponse(Generic[T]):
         self._fetch_next = fetch_next
         self._is_sse = is_sse
         self._own_client = own_client
+        self._encoding = encoding
 
         self._consumed_by: str | None = None
         self._closed = False
@@ -151,6 +155,42 @@ class StreamResponse(Generic[T]):
             return not self._up_to_date
         # Otherwise, keep tailing until explicitly closed
         return True
+
+    def _decode_base64(self, data: str) -> bytes:
+        """
+        Decode base64 string to bytes.
+
+        Per protocol: concatenate data lines, remove newlines and carriage returns,
+        then decode.
+
+        Args:
+            data: The base64-encoded string from SSE data event
+
+        Returns:
+            Decoded bytes
+
+        Raises:
+            SSEEncodingError: If base64 decoding fails
+        """
+        import base64
+
+        # Remove all newlines and carriage returns per protocol
+        cleaned = data.replace("\n", "").replace("\r", "")
+
+        # Empty string is valid
+        if not cleaned:
+            return b""
+
+        # Validate length is multiple of 4
+        if len(cleaned) % 4 != 0:
+            raise SSEEncodingError(
+                f"Invalid base64 data: length {len(cleaned)} is not a multiple of 4"
+            )
+
+        try:
+            return base64.b64decode(cleaned)
+        except Exception as e:
+            raise SSEEncodingError(f"Failed to decode base64 data: {e}") from e
 
     @property
     def url(self) -> str:
@@ -349,7 +389,12 @@ class StreamResponse(Generic[T]):
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
-                yield event.data
+                # If encoding is base64, decode and convert back to text
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    yield decoded_bytes.decode("utf-8")
+                else:
+                    yield event.data
             else:
                 # Control event - update metadata
                 self._offset = event.stream_next_offset
@@ -448,7 +493,13 @@ class StreamResponse(Generic[T]):
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
-                items = decode_json_items(event.data, decode)
+                # If encoding is base64, decode first
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    data_str = decoded_bytes.decode("utf-8")
+                else:
+                    data_str = event.data
+                items = decode_json_items(data_str, decode)
                 if items:
                     yield items
             else:
@@ -577,13 +628,21 @@ class StreamResponse(Generic[T]):
 
         for event in parse_sse_sync(self._response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
+                # If encoding is base64, decode first
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    decoded_str = decoded_bytes.decode("utf-8")
+                else:
+                    decoded_bytes = event.data.encode("utf-8")
+                    decoded_str = event.data
+
                 # Convert data based on mode but don't yield yet
                 if mode == "text":
-                    data: Any = event.data
+                    data: Any = decoded_str
                 elif mode == "json" or mode == "json_batches":
-                    data = decode_json_items(event.data, decode)
+                    data = decode_json_items(decoded_str, decode)
                 else:
-                    data = event.data.encode("utf-8")
+                    data = decoded_bytes
                 buffered_data.append(data)
             else:
                 # Control event - update metadata first
@@ -871,6 +930,7 @@ class AsyncStreamResponse(Generic[T]):
         fetch_next: Callable[[Offset, str | None], Any],  # Returns awaitable
         is_sse: bool = False,
         own_client: bool = False,
+        encoding: SSEEncoding | None = None,
     ) -> None:
         self._url = url
         self._response = response
@@ -882,6 +942,7 @@ class AsyncStreamResponse(Generic[T]):
         self._fetch_next = fetch_next
         self._is_sse = is_sse
         self._own_client = own_client
+        self._encoding = encoding
 
         self._consumed_by: str | None = None
         self._closed = False
@@ -947,6 +1008,42 @@ class AsyncStreamResponse(Generic[T]):
             return not self._up_to_date
         # Otherwise, keep tailing until explicitly closed
         return True
+
+    def _decode_base64(self, data: str) -> bytes:
+        """
+        Decode base64 string to bytes.
+
+        Per protocol: concatenate data lines, remove newlines and carriage returns,
+        then decode.
+
+        Args:
+            data: The base64-encoded string from SSE data event
+
+        Returns:
+            Decoded bytes
+
+        Raises:
+            SSEEncodingError: If base64 decoding fails
+        """
+        import base64
+
+        # Remove all newlines and carriage returns per protocol
+        cleaned = data.replace("\n", "").replace("\r", "")
+
+        # Empty string is valid
+        if not cleaned:
+            return b""
+
+        # Validate length is multiple of 4
+        if len(cleaned) % 4 != 0:
+            raise SSEEncodingError(
+                f"Invalid base64 data: length {len(cleaned)} is not a multiple of 4"
+            )
+
+        try:
+            return base64.b64decode(cleaned)
+        except Exception as e:
+            raise SSEEncodingError(f"Failed to decode base64 data: {e}") from e
 
     @property
     def url(self) -> str:
@@ -1129,7 +1226,12 @@ class AsyncStreamResponse(Generic[T]):
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
-                yield event.data
+                # If encoding is base64, decode and convert back to text
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    yield decoded_bytes.decode("utf-8")
+                else:
+                    yield event.data
             else:
                 self._offset = event.stream_next_offset
                 if event.stream_cursor:
@@ -1209,7 +1311,13 @@ class AsyncStreamResponse(Generic[T]):
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
-                items = decode_json_items(event.data, decode)
+                # If encoding is base64, decode first
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    data_str = decoded_bytes.decode("utf-8")
+                else:
+                    data_str = event.data
+                items = decode_json_items(data_str, decode)
                 if items:
                     yield items
             else:
@@ -1324,13 +1432,21 @@ class AsyncStreamResponse(Generic[T]):
 
         async for event in parse_sse_async(self._response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
+                # If encoding is base64, decode first
+                if self._encoding == "base64":
+                    decoded_bytes = self._decode_base64(event.data)
+                    decoded_str = decoded_bytes.decode("utf-8")
+                else:
+                    decoded_bytes = event.data.encode("utf-8")
+                    decoded_str = event.data
+
                 # Convert data based on mode but don't yield yet
                 if mode == "text":
-                    data: Any = event.data
+                    data: Any = decoded_str
                 elif mode in ("json", "json_batches"):
-                    data = decode_json_items(event.data, decode)
+                    data = decode_json_items(decoded_str, decode)
                 else:
-                    data = event.data.encode("utf-8")
+                    data = decoded_bytes
                 buffered_data.append(data)
             else:
                 # Control event - update metadata first

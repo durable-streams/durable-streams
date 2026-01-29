@@ -373,6 +373,9 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     max_chunks = cmd.get("maxChunks", 100)
     wait_for_up_to_date = cmd.get("waitForUpToDate", False)
 
+    # Get encoding for SSE with binary streams
+    encoding = cmd.get("encoding")
+
     # Resolve dynamic headers/params
     dynamic_hdrs, headers_sent = resolve_dynamic_headers()
     _, params_sent = resolve_dynamic_params()
@@ -399,6 +402,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         live=live,
         headers=merged_headers,
         timeout=timeout_seconds,
+        encoding=encoding,
     ) as response:
         status = response.status
         final_offset = response.offset

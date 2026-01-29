@@ -20,7 +20,7 @@
 //!     stream.append(b"hello world").await?;
 //!
 //!     // Read data
-//!     let mut reader = stream.read().offset(Offset::Beginning).build();
+//!     let mut reader = stream.read().offset(Offset::Beginning).build()?;
 //!     while let Some(chunk) = reader.next_chunk().await? {
 //!         println!("Got {} bytes", chunk.data.len());
 //!     }

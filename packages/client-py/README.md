@@ -171,6 +171,25 @@ The `live` parameter controls streaming behavior:
 - `"long-poll"` - Explicit long-poll mode for live updates
 - `"sse"` - Explicit Server-Sent Events mode for live updates
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` parameter:
+
+```python
+from durable_streams import stream
+
+# Read binary stream with SSE using base64 encoding
+with stream(
+    "https://streams.example.com/my-binary-stream",
+    live="sse",
+    encoding="base64",
+) as res:
+    for chunk in res:  # bytes - automatically decoded from base64
+        process(chunk)
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ### StreamResponse / AsyncStreamResponse
 
 Response objects returned by `stream()` and `astream()`. These are **one-shot** -

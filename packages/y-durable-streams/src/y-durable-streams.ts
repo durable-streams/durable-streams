@@ -305,9 +305,11 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     if (this.abortController?.signal.aborted) return
 
     // Start streaming from the beginning
+    const transport = this.documentStreamConfig.transport
     const response = await this.documentStream.stream({
       offset: `-1`,
-      live: `long-poll`,
+      live: transport,
+      encoding: transport === `sse` ? `base64` : undefined,
     })
 
     if (this.abortController?.signal.aborted) return
@@ -386,9 +388,11 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     this.startAwarenessHeartbeat()
 
     // Start streaming from current position - we don't need historical presence data.
+    const awarenessTransport = this.awarenessStreamConfig.transport
     const response = await this.awarenessStream.stream({
       offset: `now`,
-      live: `long-poll`,
+      live: awarenessTransport,
+      encoding: awarenessTransport === `sse` ? `base64` : undefined,
     })
 
     if (this.abortController?.signal.aborted) return

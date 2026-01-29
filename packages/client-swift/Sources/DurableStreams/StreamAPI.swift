@@ -17,6 +17,10 @@ public struct StreamOptions: Sendable {
     /// Live mode
     public var live: LiveMode
 
+    /// Encoding for SSE with binary streams (e.g., "base64")
+    /// Only valid when live mode is .sse (Protocol Section 5.7)
+    public var encoding: String?
+
     /// Custom headers
     public var headers: HeadersRecord
 
@@ -33,6 +37,7 @@ public struct StreamOptions: Sendable {
         url: URL,
         offset: Offset = .start,
         live: LiveMode = .catchUp,
+        encoding: String? = nil,
         headers: HeadersRecord = [:],
         params: ParamsRecord = [:],
         session: URLSession = .shared,
@@ -41,6 +46,7 @@ public struct StreamOptions: Sendable {
         self.url = url
         self.offset = offset
         self.live = live
+        self.encoding = encoding
         self.headers = headers
         self.params = params
         self.session = session
@@ -56,6 +62,7 @@ public func stream(
     url: URL,
     offset: Offset = .start,
     live: LiveMode = .catchUp,
+    encoding: String? = nil,
     headers: HeadersRecord = [:],
     params: ParamsRecord = [:],
     session: URLSession = .shared
@@ -64,6 +71,7 @@ public func stream(
         url: url,
         offset: offset,
         live: live,
+        encoding: encoding,
         headers: headers,
         params: params,
         session: session
@@ -73,6 +81,11 @@ public func stream(
 
 /// Stream with full options.
 public func stream(_ options: StreamOptions) async throws -> StreamResponse {
+    // Validate encoding is only used with live=sse (Protocol Section 5.7)
+    if options.encoding != nil && options.live != .sse {
+        throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live='sse'")
+    }
+
     let httpClient = HTTPClient(
         session: options.session,
         headers: options.headers,
@@ -88,6 +101,11 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
         queryParams[QueryParams.live] = liveValue
     }
 
+    // Add encoding for SSE with binary streams
+    if options.live == .sse, let encoding = options.encoding {
+        queryParams[QueryParams.encoding] = encoding
+    }
+
     let requestURL = try await httpClient.buildURL(base: options.url, params: queryParams)
     let request = await httpClient.buildRequest(url: requestURL, timeout: options.timeout)
 
@@ -99,7 +117,8 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
         session: options.session,
         headers: options.headers,
         params: options.params,
-        timeout: options.timeout
+        timeout: options.timeout,
+        encoding: options.encoding
     )
 
     return StreamResponse(
@@ -122,6 +141,7 @@ internal struct StreamingContext: Sendable {
     let headers: HeadersRecord
     let params: ParamsRecord
     let timeout: TimeInterval
+    let encoding: String?
 }
 
 /// Response from a stream request.

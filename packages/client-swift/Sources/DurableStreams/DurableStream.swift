@@ -324,17 +324,33 @@ public actor DurableStream {
     // MARK: - Reading
 
     /// Read from the stream starting at an offset.
+    /// - Parameters:
+    ///   - offset: Starting offset
+    ///   - live: Live mode (catchUp, longPoll, sse)
+    ///   - encoding: Encoding for SSE with binary streams (e.g., "base64"). Only valid with live=.sse.
+    ///   - headers: Additional headers
     public func read(
         offset: Offset = .start,
         live: LiveMode = .catchUp,
+        encoding: String? = nil,
         headers: HeadersRecord = [:]
     ) async throws -> StreamResponse {
+        // Validate encoding is only used with live=sse (Protocol Section 5.7)
+        if encoding != nil && live != .sse {
+            throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live='sse'")
+        }
+
         var params: [String: String] = [
             QueryParams.offset: offset.rawValue
         ]
 
         if let liveValue = live.queryValue, live != .catchUp {
             params[QueryParams.live] = liveValue
+        }
+
+        // Add encoding for SSE with binary streams
+        if live == .sse, let enc = encoding {
+            params[QueryParams.encoding] = enc
         }
 
         // Use longer timeout for long-poll/SSE modes
@@ -744,10 +760,13 @@ public actor DurableStream {
     ///
     /// Uses SSE live mode to receive server-sent events. Events are parsed
     /// per the EventSource specification.
-    public func sseEvents(from offset: Offset = .start) -> AsyncThrowingStream<SSEEvent, Error> {
+    /// - Parameters:
+    ///   - offset: Starting offset
+    ///   - encoding: Encoding for binary streams (e.g., "base64"). When set, data events are decoded.
+    public func sseEvents(from offset: Offset = .start, encoding: String? = nil) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                await self.runSSELoop(from: offset, continuation: continuation)
+                await self.runSSELoop(from: offset, encoding: encoding, continuation: continuation)
             }
             continuation.onTermination = { _ in
                 task.cancel()
@@ -759,6 +778,7 @@ public actor DurableStream {
     /// Uses true streaming to receive SSE events as they arrive.
     private func runSSELoop(
         from offset: Offset,
+        encoding: String? = nil,
         continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
     ) async {
         var currentOffset = offset
@@ -767,10 +787,15 @@ public actor DurableStream {
 
         while !Task.isCancelled {
             do {
-                let queryParams: [String: String] = [
+                var queryParams: [String: String] = [
                     QueryParams.offset: currentOffset.rawValue,
                     QueryParams.live: "sse"
                 ]
+
+                // Add encoding for SSE with binary streams
+                if let enc = encoding {
+                    queryParams[QueryParams.encoding] = enc
+                }
 
                 let requestURL = try await httpClient.buildURL(base: url, params: queryParams)
                 var request = await httpClient.buildRequest(url: requestURL, timeout: config.longPollTimeout)
@@ -796,7 +821,28 @@ public actor DurableStream {
 
                             if line.isEmpty {
                                 // Empty line = end of event
-                                if let event = currentEvent.build() {
+                                if var event = currentEvent.build() {
+                                    // Decode base64 data for "data" events when encoding is set
+                                    if encoding == "base64" && event.effectiveEvent == "data" {
+                                        // Per Protocol Section 5.7: remove \n and \r before decoding
+                                        let cleanedData = event.data
+                                            .replacingOccurrences(of: "\n", with: "")
+                                            .replacingOccurrences(of: "\r", with: "")
+
+                                        if let decodedData = Data(base64Encoded: cleanedData, options: .ignoreUnknownCharacters) {
+                                            // Convert decoded bytes to string for the event
+                                            // Use ISO-8859-1 to preserve all byte values
+                                            if let decodedString = String(data: decodedData, encoding: .isoLatin1) {
+                                                event = SSEEvent(
+                                                    event: event.event,
+                                                    data: decodedString,
+                                                    id: event.id,
+                                                    retry: event.retry
+                                                )
+                                            }
+                                        }
+                                    }
+
                                     continuation.yield(event)
 
                                     // Update offset from control events
@@ -878,7 +924,8 @@ private struct SSEEventBuilder {
 
     mutating func parseLine(_ line: String) {
         if line.hasPrefix("event:") {
-            event = stripLeadingSpace(String(line.dropFirst(6)))
+            // Trim trailing whitespace for event type (not part of SSE spec, but defensive)
+            event = stripLeadingSpace(String(line.dropFirst(6))).trimmingCharacters(in: .whitespaces)
         } else if line.hasPrefix("data:") {
             data.append(stripLeadingSpace(String(line.dropFirst(5))))
         } else if line.hasPrefix("id:") {

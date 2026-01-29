@@ -103,6 +103,22 @@ end
 stream.read(live: :sse).each.lazy.take(10).to_a
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
+
+```ruby
+stream = DurableStreams.create("/binary-data", content_type: "application/octet-stream")
+
+# Read binary stream with SSE using base64 encoding
+stream.read(live: :sse, encoding: :base64).each do |chunk|
+  # chunk is binary data - automatically decoded from base64
+  process_binary_data(chunk)
+end
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ### Batch Processing with Checkpoints
 
 For reliable processing with resume capability:

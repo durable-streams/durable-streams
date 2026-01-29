@@ -77,6 +77,8 @@ export interface StreamResponseConfig {
   ) => Promise<Response>
   /** SSE resilience options */
   sseResilience?: SSEResilienceOptions
+  /** Encoding for SSE data events */
+  encoding?: `base64`
 }
 
 /**
@@ -129,6 +131,9 @@ export class StreamResponseImpl<
   #consecutiveShortSSEConnections = 0
   #sseFallbackToLongPoll = false
 
+  // --- SSE Encoding State ---
+  #encoding?: `base64`
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -166,6 +171,9 @@ export class StreamResponseImpl<
       backoffMaxDelay: config.sseResilience?.backoffMaxDelay ?? 5000,
       logWarnings: config.sseResilience?.logWarnings ?? true,
     }
+
+    // Initialize SSE encoding
+    this.#encoding = config.encoding
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -407,11 +415,74 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Decode base64 string to Uint8Array.
+   * Per protocol: concatenate data lines, remove \n and \r, then decode.
+   */
+  #decodeBase64(base64Str: string): Uint8Array {
+    // Remove all newlines and carriage returns per protocol
+    const cleaned = base64Str.replace(/[\n\r]/g, ``)
+
+    // Empty string is valid
+    if (cleaned.length === 0) {
+      return new Uint8Array(0)
+    }
+
+    // Validate length is multiple of 4
+    if (cleaned.length % 4 !== 0) {
+      throw new DurableStreamError(
+        `Invalid base64 data: length ${cleaned.length} is not a multiple of 4`,
+        `PARSE_ERROR`
+      )
+    }
+
+    try {
+      // Prefer Buffer (native C++ in Node) over atob (requires JS charCodeAt loop)
+      if (typeof Buffer !== `undefined`) {
+        return new Uint8Array(Buffer.from(cleaned, `base64`))
+      } else {
+        const binaryStr = atob(cleaned)
+        const bytes = new Uint8Array(binaryStr.length)
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i)
+        }
+        return bytes
+      }
+    } catch (err) {
+      throw new DurableStreamError(
+        `Failed to decode base64 data: ${err instanceof Error ? err.message : String(err)}`,
+        `PARSE_ERROR`
+      )
+    }
+  }
+
+  /**
    * Create a synthetic Response from SSE data with proper headers.
    * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
    */
   #createSSESyntheticResponse(
     data: string,
+    offset: Offset,
+    cursor: string | undefined,
+    upToDate: boolean,
+    streamClosed: boolean
+  ): Response {
+    return this.#createSSESyntheticResponseFromParts(
+      [data],
+      offset,
+      cursor,
+      upToDate,
+      streamClosed
+    )
+  }
+
+  /**
+   * Create a synthetic Response from multiple SSE data parts.
+   * For base64 mode, each part is independently encoded, so we decode each
+   * separately and concatenate the binary results.
+   * For text mode, parts are simply concatenated as strings.
+   */
+  #createSSESyntheticResponseFromParts(
+    dataParts: Array<string>,
     offset: Offset,
     cursor: string | undefined,
     upToDate: boolean,
@@ -430,7 +501,44 @@ export class StreamResponseImpl<
     if (streamClosed) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
-    return new Response(data, { status: 200, headers })
+
+    // Decode base64 if encoding is used
+    let body: BodyInit
+    if (this.#encoding === `base64`) {
+      // Each data part is independently base64 encoded, decode each separately
+      const decodedParts = dataParts
+        .filter((part) => part.length > 0)
+        .map((part) => this.#decodeBase64(part))
+
+      if (decodedParts.length === 0) {
+        // No data - return empty body
+        body = new ArrayBuffer(0)
+      } else if (decodedParts.length === 1) {
+        // Single part - use directly
+        const decoded = decodedParts[0]!
+        body = decoded.buffer.slice(
+          decoded.byteOffset,
+          decoded.byteOffset + decoded.byteLength
+        ) as ArrayBuffer
+      } else {
+        // Multiple parts - concatenate binary data
+        const totalLength = decodedParts.reduce(
+          (sum, part) => sum + part.length,
+          0
+        )
+        const combined = new Uint8Array(totalLength)
+        let offset = 0
+        for (const part of decodedParts) {
+          combined.set(part, offset)
+          offset += part.length
+        }
+        body = combined.buffer
+      }
+    } else {
+      body = dataParts.join(``)
+    }
+
+    return new Response(body, { status: 200, headers })
   }
 
   /**
@@ -606,8 +714,22 @@ export class StreamResponseImpl<
       return this.#processSSEDataEvent(event.data, sseEventIterator)
     }
 
-    // Control event without preceding data - update state and continue
+    // Control event without preceding data - update state
     this.#updateStateFromSSEControl(event)
+
+    // If upToDate is signaled, yield an empty response so subscribers receive the signal
+    // This is important for empty streams and for subscribers waiting for catch-up completion
+    if (event.upToDate) {
+      const response = this.#createSSESyntheticResponse(
+        ``,
+        event.streamNextOffset,
+        event.streamCursor,
+        true,
+        event.streamClosed ?? false
+      )
+      return { type: `response`, response }
+    }
+
     return { type: `continue` }
   }
 
@@ -615,6 +737,9 @@ export class StreamResponseImpl<
    * Process an SSE data event by waiting for its corresponding control event.
    * In SSE protocol, control events come AFTER data events.
    * Multiple data events may arrive before a single control event - we buffer them.
+   *
+   * For base64 mode, each data event is independently base64 encoded, so we
+   * collect them as an array and decode each separately.
    */
   async #processSSEDataEvent(
     pendingData: string,
@@ -628,7 +753,8 @@ export class StreamResponseImpl<
     | { type: `error`; error: Error }
   > {
     // Buffer to accumulate data from multiple consecutive data events
-    let bufferedData = pendingData
+    // For base64 mode, we collect as array since each event is independently encoded
+    const bufferedDataParts: Array<string> = [pendingData]
 
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     while (true) {
@@ -637,8 +763,8 @@ export class StreamResponseImpl<
 
       if (controlDone) {
         // Stream ended without control event - yield buffered data with current state
-        const response = this.#createSSESyntheticResponse(
-          bufferedData,
+        const response = this.#createSSESyntheticResponseFromParts(
+          bufferedDataParts,
           this.offset,
           this.cursor,
           this.upToDate,
@@ -665,8 +791,8 @@ export class StreamResponseImpl<
       if (controlEvent.type === `control`) {
         // Update state and create response with correct metadata
         this.#updateStateFromSSEControl(controlEvent)
-        const response = this.#createSSESyntheticResponse(
-          bufferedData,
+        const response = this.#createSSESyntheticResponseFromParts(
+          bufferedDataParts,
           controlEvent.streamNextOffset,
           controlEvent.streamCursor,
           controlEvent.upToDate ?? false,
@@ -677,7 +803,7 @@ export class StreamResponseImpl<
 
       // Got another data event before control - buffer it
       // Server sends multiple data events followed by one control event
-      bufferedData += controlEvent.data
+      bufferedDataParts.push(controlEvent.data)
     }
   }
 

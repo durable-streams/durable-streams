@@ -5,6 +5,7 @@
  */
 
 import {
+  ENCODING_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
@@ -63,6 +64,14 @@ export async function stream<TJson = unknown>(
   if (!options.url) {
     throw new DurableStreamError(
       `Invalid stream options: missing required url parameter`,
+      `BAD_REQUEST`
+    )
+  }
+
+  // Validate encoding is only used with live='sse' (Protocol Section 5.7)
+  if (options.encoding && options.live !== `sse`) {
+    throw new DurableStreamError(
+      `encoding parameter is only valid with live='sse'`,
       `BAD_REQUEST`
     )
   }
@@ -142,6 +151,11 @@ async function streamInternal<TJson = unknown>(
     fetchUrl.searchParams.set(LIVE_QUERY_PARAM, live)
   }
 
+  // Set encoding query param for SSE with binary streams
+  if (live === `sse` && options.encoding) {
+    fetchUrl.searchParams.set(ENCODING_QUERY_PARAM, options.encoding)
+  }
+
   // Add custom params
   const params = await resolveParams(options.params)
   for (const [key, value] of Object.entries(params)) {
@@ -199,6 +213,42 @@ async function streamInternal<TJson = unknown>(
     options.json === true ||
     (contentType?.includes(`application/json`) ?? false)
 
+  // Validate encoding + content-type compatibility (per Protocol Section 5.7)
+  // Skip validation for SSE responses (content-type is text/event-stream, not the stream's actual type)
+  // DurableStream.stream() validates encoding against the stream's content-type before calling this function
+  const isSSEResponse = contentType?.includes(`text/event-stream`)
+  const isTextCompatible =
+    contentType?.startsWith(`text/`) ||
+    contentType?.includes(`application/json`)
+
+  if (
+    live === `sse` &&
+    options.encoding &&
+    isTextCompatible &&
+    !isSSEResponse
+  ) {
+    throw new DurableStreamError(
+      `encoding option must not be provided for text/* or application/json streams (got ${contentType})`,
+      `BAD_REQUEST`
+    )
+  }
+
+  // Validate that encoding is required for binary streams with SSE
+  // Skip for SSE responses - the server handles this validation
+  if (
+    live === `sse` &&
+    !options.encoding &&
+    !isTextCompatible &&
+    !isSSEResponse
+  ) {
+    throw new DurableStreamError(
+      `SSE mode is not compatible with content type: ${contentType}. ` +
+        `SSE is only supported for text/* or application/json streams. ` +
+        `For binary streams, use encoding='base64'.`,
+      `SSE_NOT_SUPPORTED`
+    )
+  }
+
   // Create the fetch function for subsequent requests
   const fetchNext = async (
     offset: Offset,
@@ -255,6 +305,9 @@ async function streamInternal<TJson = unknown>(
           const sseUrl = new URL(url)
           sseUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
           sseUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
+          if (options.encoding) {
+            sseUrl.searchParams.set(ENCODING_QUERY_PARAM, options.encoding)
+          }
           if (cursor) {
             sseUrl.searchParams.set(`cursor`, cursor)
           }
@@ -297,5 +350,6 @@ async function streamInternal<TJson = unknown>(
     fetchNext,
     startSSE,
     sseResilience: options.sseResilience,
+    encoding: options.encoding,
   })
 }

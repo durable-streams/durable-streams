@@ -253,6 +253,27 @@ For real-time updates, use long-poll or SSE:
 )
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `:encoding` option:
+
+```elixir
+# Create a binary stream
+{:ok, stream} = DS.create(stream, content_type: "application/octet-stream")
+
+# Read with SSE using base64 encoding
+{:ok, chunk} = DS.read(stream,
+  offset: "-1",
+  live: :sse,
+  encoding: :base64
+)
+
+# chunk.data is binary - automatically decoded from base64
+process_binary(chunk.data)
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ## Long-Running Consumer
 
 For production use, the `Consumer` GenServer handles:

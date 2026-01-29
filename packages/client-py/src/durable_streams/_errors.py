@@ -270,6 +270,19 @@ class StreamClosedError(DurableStreamError):
         self.final_offset = final_offset
 
 
+class SSEEncodingError(DurableStreamError):
+    """
+    Exception raised when there's an encoding error for SSE mode.
+
+    This can happen when:
+    - encoding is provided for text/* or application/json streams (not allowed)
+    - base64 decoding fails (invalid base64 data)
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="SSE_ENCODING_ERROR")
+
+
 def error_from_status(
     status: int,
     url: str,
@@ -293,8 +306,12 @@ def error_from_status(
     details = body
 
     if status == 400:
+        # Include body in message if available for better error context
+        message = f"Bad request: {url}"
+        if details:
+            message = f"{message} - {details}"
         return DurableStreamError(
-            f"Bad request: {url}",
+            message,
             status=400,
             code="BAD_REQUEST",
             details=details,

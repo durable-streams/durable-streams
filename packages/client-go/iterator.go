@@ -2,6 +2,7 @@ package durablestreams
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"strings"
@@ -49,14 +50,15 @@ type Chunk struct {
 //
 // Always call Close() when done to release resources.
 type ChunkIterator struct {
-	stream  *Stream
-	ctx     context.Context
-	cancel  context.CancelFunc
-	offset  Offset
-	live    LiveMode
-	cursor  string
-	headers map[string]string
-	timeout time.Duration
+	stream   *Stream
+	ctx      context.Context
+	cancel   context.CancelFunc
+	offset   Offset
+	live     LiveMode
+	cursor   string
+	headers  map[string]string
+	timeout  time.Duration
+	encoding string
 
 	// Public state accessible during iteration
 	// Offset is the current position in the stream.
@@ -83,6 +85,9 @@ type ChunkIterator struct {
 	sseParser   *sse.Parser
 	sseResponse *http.Response
 	ssePending  *Chunk // Pending chunk from SSE data event
+
+	// initErr holds any validation error from Read() to be returned on first Next()
+	initErr error
 }
 
 // Next returns the next chunk of bytes from the stream.
@@ -111,6 +116,11 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 		it.mu.Unlock()
 		return nil, Done
 	}
+	// Return any validation error from Read()
+	if it.initErr != nil {
+		it.mu.Unlock()
+		return nil, it.initErr
+	}
 	it.mu.Unlock()
 
 	// Check context
@@ -132,7 +142,7 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 // nextHTTP handles regular HTTP requests (catch-up and long-poll).
 func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 	// Build the read URL
-	readURL := it.stream.buildReadURL(it.offset, it.live, it.cursor)
+	readURL := it.stream.buildReadURL(it.offset, it.live, it.cursor, it.encoding)
 
 	// Create request
 	req, err := http.NewRequestWithContext(it.ctx, http.MethodGet, readURL, nil)
@@ -315,14 +325,25 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 		case sse.DataEvent:
 			// Buffer data, wait for control event to get offset.
 			// Multiple data events may arrive before a single control event - accumulate them.
+			data := []byte(e.Data)
+
+			// Decode base64 if encoding is set
+			if it.encoding == "base64" {
+				decoded, err := base64.StdEncoding.DecodeString(e.Data)
+				if err != nil {
+					return nil, newStreamError("read", it.stream.url, 0, err)
+				}
+				data = decoded
+			}
+
 			it.mu.Lock()
 			if it.ssePending == nil {
 				it.ssePending = &Chunk{
-					Data: []byte(e.Data),
+					Data: data,
 				}
 			} else {
 				// Append to existing pending data
-				it.ssePending.Data = append(it.ssePending.Data, []byte(e.Data)...)
+				it.ssePending.Data = append(it.ssePending.Data, data...)
 			}
 			it.mu.Unlock()
 
@@ -368,7 +389,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 
 // establishSSEConnection creates a new SSE connection.
 func (it *ChunkIterator) establishSSEConnection() error {
-	readURL := it.stream.buildReadURL(it.offset, LiveModeSSE, it.cursor)
+	readURL := it.stream.buildReadURL(it.offset, LiveModeSSE, it.cursor, it.encoding)
 
 	req, err := http.NewRequestWithContext(it.ctx, http.MethodGet, readURL, nil)
 	if err != nil {

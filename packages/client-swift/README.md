@@ -158,6 +158,25 @@ for try await event in handle.sseEvents(from: lastOffset) {
 }
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
+
+```swift
+let stream = try await DurableStream.create(
+    url: URL(string: "https://api.example.com/streams/binary-data")!,
+    contentType: "application/octet-stream"
+)
+
+// Read binary stream with SSE using base64 encoding
+for try await chunk in handle.byteChunks(from: .start, live: .sse, encoding: .base64) {
+    // chunk.data is Data - automatically decoded from base64
+    processBinaryData(chunk.data)
+}
+```
+
+The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+
 ## API Reference
 
 ### Reading Streams

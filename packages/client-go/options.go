@@ -196,6 +196,7 @@ type readConfig struct {
 	cursor   string
 	headers  map[string]string
 	timeout  time.Duration
+	encoding string
 }
 
 // ReadOption configures a Read operation.
@@ -238,6 +239,19 @@ func WithReadHeaders(headers map[string]string) ReadOption {
 func WithReadTimeout(d time.Duration) ReadOption {
 	return func(cfg *readConfig) {
 		cfg.timeout = d
+	}
+}
+
+// WithEncoding sets the encoding for SSE data events.
+// Required for binary streams (content-type not text/* or application/json).
+// Must not be provided for text or JSON streams.
+//
+// When set to "base64", the client will:
+//   - Add ?encoding=base64 to SSE requests
+//   - Decode base64-encoded data events before processing
+func WithEncoding(encoding string) ReadOption {
+	return func(cfg *readConfig) {
+		cfg.encoding = encoding
 	}
 }
 

@@ -33,10 +33,12 @@ const provider = new DurableStreamsProvider({
   doc,
   documentStream: {
     url: "https://your-server.com/v1/stream/rooms/my-room",
+    transport: "sse",
   },
   awarenessStream: {
     url: "https://your-server.com/v1/stream/presence/my-room",
     protocol: awareness,
+    transport: "sse",
   },
 })
 
@@ -54,6 +56,7 @@ const provider = new DurableStreamsProvider({
   doc,
   documentStream: {
     url: "https://your-server.com/v1/stream/rooms/my-room",
+    transport: "sse",
   },
 })
 ```
@@ -65,6 +68,7 @@ const provider = new DurableStreamsProvider({
   doc,
   documentStream: {
     url: "https://your-server.com/v1/stream/rooms/my-room",
+    transport: "sse",
     headers: {
       Authorization: "Bearer your-token",
     },
@@ -72,6 +76,7 @@ const provider = new DurableStreamsProvider({
   awarenessStream: {
     url: "https://your-server.com/v1/stream/presence/my-room",
     protocol: awareness,
+    transport: "sse",
     headers: {
       Authorization: "Bearer your-token",
     },
@@ -79,12 +84,33 @@ const provider = new DurableStreamsProvider({
 })
 ```
 
+### Transport Mode
+
+By default, the provider uses Server-Sent Events (SSE) for real-time updates. You can switch to long-polling if needed:
+
+```typescript
+const provider = new DurableStreamsProvider({
+  doc,
+  documentStream: {
+    url: "https://your-server.com/v1/stream/rooms/my-room",
+    transport: "long-poll", // Use long-poll instead of SSE
+  },
+  awarenessStream: {
+    url: "https://your-server.com/v1/stream/presence/my-room",
+    protocol: awareness,
+    transport: "long-poll", // Can configure each stream independently
+  },
+})
+```
+
+Note: When using SSE with binary streams, base64 encoding is automatically applied.
+
 ### Manual Connection
 
 ```typescript
 const provider = new DurableStreamsProvider({
   doc,
-  documentStream: { url },
+  documentStream: { url, transport: "sse" },
   connect: false, // Don't connect automatically
 })
 
@@ -168,9 +194,12 @@ interface DurableStreamsProviderOptions {
   debug?: boolean // default: false
 }
 
+type TransportMode = "long-poll" | "sse"
+
 interface StreamConfig {
   url: string | URL
   headers?: Record<string, string | (() => string)>
+  transport: TransportMode // required
 }
 
 interface AwarenessConfig extends StreamConfig {
@@ -186,7 +215,12 @@ The provider uses two separate durable streams:
 
 2. **Awareness Stream** - Syncs presence data (cursors, selections, user info). Reads from current position since historical presence is not needed.
 
-Both streams use long-polling for real-time updates. Updates are encoded using lib0's VarUint8Array framing.
+Both streams support two transport modes for real-time updates:
+
+- **SSE** (default) - Lower latency, uses Server-Sent Events with automatic base64 encoding for binary data
+- **Long-polling** - Compatible with all HTTP infrastructure, useful as fallback
+
+Updates are encoded using lib0's VarUint8Array framing.
 
 ## License
 

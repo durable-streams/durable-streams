@@ -209,7 +209,7 @@ function handleInit(array $cmd): array {
         'clientVersion' => version(),
         'features' => [
             'batching' => true,
-            'sse' => false,  // SSE not yet implemented
+            'sse' => true,  // SSE now implemented
             'longPoll' => true,
             'streaming' => true,
             'dynamicHeaders' => true,
@@ -342,16 +342,12 @@ function handleRead(array $cmd): array {
         if ($cmd['live'] === 'long-poll') {
             $live = LiveMode::LongPoll;
         } elseif ($cmd['live'] === 'sse') {
-            // SSE not supported in PHP, but we need to handle the test case
-            return [
-                'type' => 'error',
-                'success' => false,
-                'commandType' => 'read',
-                'errorCode' => ERROR_NOT_SUPPORTED,
-                'message' => 'SSE not supported in PHP client',
-            ];
+            $live = LiveMode::SSE;
         }
     }
+
+    // Get encoding parameter (for SSE with binary streams)
+    $encoding = $cmd['encoding'] ?? null;
 
     $timeoutMs = $cmd['timeoutMs'] ?? 5000;
     $maxChunks = $cmd['maxChunks'] ?? 100;
@@ -375,12 +371,13 @@ function handleRead(array $cmd): array {
 
     // For long-poll, add buffer to HTTP timeout to ensure we receive server's response
     // The server waits for timeoutMs, so our HTTP timeout needs to be longer
-    $httpTimeout = $live ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
+    $httpTimeout = $live->isLive() ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
 
     $response = stream([
         'url' => $url,
         'offset' => $offset,
         'live' => $live,
+        'encoding' => $encoding,
         'headers' => $mergedHeaders,
         'timeout' => $httpTimeout,
         'client' => $sharedClient,
@@ -388,17 +385,32 @@ function handleRead(array $cmd): array {
 
     try {
         $chunkCount = 0;
-        foreach ($response as $chunk) {
-            if ($chunk !== '') {
-                // For JSON streams, validate JSON to detect parse errors
-                if ($isJson) {
-                    json_decode($chunk, true, 512, JSON_THROW_ON_ERROR);
+        foreach ($response->chunks() as $chunk) {
+            if ($chunk->hasData()) {
+                $data = $chunk->data;
+
+                // For JSON streams (not binary/base64), validate JSON to detect parse errors
+                if ($isJson && $encoding === null) {
+                    json_decode($data, true, 512, JSON_THROW_ON_ERROR);
                 }
 
-                $chunks[] = [
-                    'data' => $chunk,
-                    'offset' => $response->getOffset(),
-                ];
+                // Check if data contains non-UTF-8 bytes that would break JSON encoding
+                // If so, base64 encode it for transport
+                $needsBase64 = !mb_check_encoding($data, 'UTF-8') ||
+                    str_contains($data, "\x00"); // null bytes break JSON
+
+                if ($needsBase64) {
+                    $chunks[] = [
+                        'data' => base64_encode($data),
+                        'binary' => true,
+                        'offset' => $chunk->offset,
+                    ];
+                } else {
+                    $chunks[] = [
+                        'data' => $data,
+                        'offset' => $chunk->offset,
+                    ];
+                }
                 $chunkCount++;
             }
 
@@ -407,7 +419,7 @@ function handleRead(array $cmd): array {
                 break;
             }
 
-            if ($waitForUpToDate && $response->isUpToDate()) {
+            if ($waitForUpToDate && $chunk->upToDate) {
                 $response->cancel();
                 break;
             }
@@ -419,7 +431,7 @@ function handleRead(array $cmd): array {
 
             // For long-poll mode with status 204 (server timeout), return
             // This means server waited but no data arrived
-            if ($live === LiveMode::LongPoll && $response->getStatus() === 204) {
+            if ($live === LiveMode::LongPoll && $chunk->status === 204) {
                 $response->cancel();
                 break;
             }

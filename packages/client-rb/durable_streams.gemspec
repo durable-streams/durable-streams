@@ -33,4 +33,6 @@ Gem::Specification.new do |spec|
 
   # Runtime dependencies
   spec.add_dependency "net-http-persistent", "~> 4.0"
+  spec.add_dependency "base64" # Required for Ruby 3.4.0+ (base64 encoding for SSE binary streams)
+  spec.add_dependency "logger" # Required for Ruby 4.0.0+
 end
