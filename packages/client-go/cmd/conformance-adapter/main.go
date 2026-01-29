@@ -55,7 +55,8 @@ type Command struct {
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
 	MaxChunks       int    `json:"maxChunks,omitempty"`
 	WaitForUpToDate bool   `json:"waitForUpToDate,omitempty"`
-	Encoding        string `json:"encoding,omitempty"` // "base64" for binary SSE
+	Encoding        string `json:"encoding,omitempty"`       // "base64" for binary SSE
+	BinaryResponse  bool   `json:"binaryResponse,omitempty"` // Return binary data as base64
 	// Benchmark fields
 	IterationID string              `json:"iterationId,omitempty"`
 	Operation   *BenchmarkOperation `json:"operation,omitempty"`
@@ -361,7 +362,9 @@ func handleCreate(cmd Command) Result {
 
 	contentType := cmd.ContentType
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		// Default to text/plain for backwards compatibility with tests
+		// that don't specify content type and expect text data
+		contentType = "text/plain"
 	}
 
 	// Check if stream already exists
@@ -632,7 +635,15 @@ func handleRead(cmd Command) Result {
 					Data:   string(compactJSON),
 					Offset: string(chunk.NextOffset),
 				})
+			} else if cmd.BinaryResponse {
+				// Return binary data as base64 to preserve byte integrity
+				chunks = append(chunks, ReadChunk{
+					Data:   base64.StdEncoding.EncodeToString(chunk.Data),
+					Binary: true,
+					Offset: string(chunk.NextOffset),
+				})
 			} else {
+				// Text content - return as string
 				chunks = append(chunks, ReadChunk{
 					Data:   string(chunk.Data),
 					Offset: string(chunk.NextOffset),
@@ -754,7 +765,7 @@ func handleClose(cmd Command) Result {
 	// Get content type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 	stream.SetContentType(contentType)
 
@@ -873,7 +884,7 @@ func handleIdempotentAppend(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	cfg := durablestreams.IdempotentProducerConfig{
@@ -888,9 +899,20 @@ func handleIdempotentAppend(cmd Command) Result {
 		return errorResult("idempotent-append", err)
 	}
 
-	// Data is already pre-serialized, pass directly to Append()
+	// Decode binary data if needed
+	var data []byte
+	if cmd.Binary {
+		var err error
+		data, err = base64.StdEncoding.DecodeString(cmd.Data)
+		if err != nil {
+			return errorResult("idempotent-append", err)
+		}
+	} else {
+		data = []byte(cmd.Data)
+	}
+
 	// Append returns immediately (fire-and-forget)
-	if err := producer.Append([]byte(cmd.Data)); err != nil {
+	if err := producer.Append(data); err != nil {
 		return errorResult("idempotent-append", err)
 	}
 
@@ -917,7 +939,7 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	// Use provided maxInFlight or default to 1 for compatibility
@@ -977,7 +999,7 @@ func handleIdempotentClose(cmd Command) Result {
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
-		contentType = "application/octet-stream"
+		contentType = "text/plain"
 	}
 
 	cfg := durablestreams.IdempotentProducerConfig{

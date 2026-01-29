@@ -86,6 +86,8 @@ export interface IdempotentAppendCommand {
   path: string
   /** Data to append (string - will be JSON parsed for JSON streams) */
   data: string
+  /** Whether data is base64 encoded binary */
+  binary?: boolean
   /** Producer ID */
   producerId: string
   /** Producer epoch */
@@ -160,6 +162,8 @@ export interface ReadCommand {
   live?: false | true | `long-poll` | `sse`
   /** Encoding for SSE data events (required for binary streams in SSE mode) */
   encoding?: `base64`
+  /** Whether adapter should return binary data as base64 (set by runner based on test expectations) */
+  binaryResponse?: boolean
   /** Timeout for long-poll in milliseconds */
   timeoutMs?: number
   /** Maximum number of chunks to read (for testing) */

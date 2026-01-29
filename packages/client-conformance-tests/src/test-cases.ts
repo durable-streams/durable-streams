@@ -163,7 +163,9 @@ export interface IdempotentAppendOperation {
   /** Producer epoch */
   epoch?: number
   /** Data to append (string or JSON for JSON streams) */
-  data: string
+  data?: string
+  /** Binary data to append (base64 encoded) */
+  binaryData?: string
   /** Auto-claim epoch on 403 */
   autoClaim?: boolean
   headers?: Record<string, string>
@@ -630,6 +632,8 @@ export interface ReadExpectation extends BaseExpectation {
   status?: 200 | 204 | 404 | number
   /** Expected data content (exact match) */
   data?: string
+  /** Expected binary data content (base64 encoded, exact byte match) */
+  binaryData?: string
   /** Expected data to contain (substring) */
   dataContains?: string
   /** Expected data to contain all of these substrings */

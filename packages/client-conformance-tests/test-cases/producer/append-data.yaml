@@ -72,7 +72,8 @@ tests:
       - action: read
         path: ${streamPath}
         expect:
-          data: "Hello Binary!"
+          # Binary stream should return bytes, use binaryData for byte comparison
+          binaryData: "SGVsbG8gQmluYXJ5IQ=="
 
   - id: append-empty
     name: Append empty data
