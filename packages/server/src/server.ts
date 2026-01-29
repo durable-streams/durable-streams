@@ -676,14 +676,16 @@ export class DurableStreamTestServer {
       headers[`content-type`] = stream.contentType
     }
 
-    // Generate ETag: {path}:-1:{offset} (consistent with GET format)
-    headers[`etag`] =
-      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}"`
-
     // Include Stream-Closed if stream is closed
     if (stream.closed) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
+
+    // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
+    // The :c suffix ensures ETag changes when a stream is closed, even without new data
+    const closedSuffix = stream.closed ? `:c` : ``
+    headers[`etag`] =
+      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}${closedSuffix}"`
 
     res.writeHead(200, headers)
     res.end()
@@ -892,9 +894,12 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
-    // Generate ETag: based on path, start offset, and end offset
+    // Generate ETag: based on path, start offset, end offset, and closure status
+    // The :c suffix ensures ETag changes when a stream is closed, even without new data
     const startOffset = offset ?? `-1`
-    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}"`
+    const closedSuffix =
+      currentStream?.closed && clientAtTail && upToDate ? `:c` : ``
+    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}${closedSuffix}"`
     headers[`etag`] = etag
 
     // Check If-None-Match for conditional GET (Protocol Section 8.1)
@@ -1265,9 +1270,11 @@ export class DurableStreamTestServer {
 
         // Stream already closed by a different producer - conflict
         if (closeResult.producerResult?.status === `stream_closed`) {
+          const stream = this.store.get(path)
           res.writeHead(409, {
             "content-type": `text/plain`,
             [STREAM_CLOSED_HEADER]: `true`,
+            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
           })
           res.end(`Stream is closed`)
           return
@@ -1363,9 +1370,11 @@ export class DurableStreamTestServer {
         }
 
         // Not a duplicate - stream was closed by different request, return 409
+        const closedStream = this.store.get(path)
         res.writeHead(409, {
           "content-type": `text/plain`,
           [STREAM_CLOSED_HEADER]: `true`,
+          [STREAM_OFFSET_HEADER]: closedStream?.currentOffset ?? ``,
         })
         res.end(`Stream is closed`)
         return

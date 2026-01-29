@@ -48,7 +48,7 @@ export async function handleErrorResponse(
   if (status === 409) {
     // Check if this is a stream closed error
     const streamClosedHeader = response.headers.get(STREAM_CLOSED_HEADER)
-    if (streamClosedHeader === `true`) {
+    if (streamClosedHeader?.toLowerCase() === `true`) {
       const finalOffset =
         response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
       throw new StreamClosedError(url, finalOffset)
