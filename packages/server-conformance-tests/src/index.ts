@@ -3696,123 +3696,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     // Base64 Encoding for Binary Streams (Protocol Section 5.7)
     // ==========================================================================
 
-    test(`should return 400 for binary stream SSE without encoding parameter`, async () => {
-      const streamPath = `/v1/stream/sse-binary-no-encoding-${Date.now()}`
-
-      // Create stream with binary content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/octet-stream` },
-        body: new Uint8Array([0x01, 0x02, 0x03]),
-      })
-
-      // SSE request without encoding parameter should fail for binary streams
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should return 400 for text stream SSE with encoding parameter`, async () => {
-      const streamPath = `/v1/stream/sse-text-with-encoding-${Date.now()}`
-
-      // Create stream with text content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-        body: `test data`,
-      })
-
-      // SSE request with encoding parameter should fail for text streams
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should return 400 for JSON stream SSE with encoding parameter`, async () => {
-      const streamPath = `/v1/stream/sse-json-with-encoding-${Date.now()}`
-
-      // Create stream with JSON content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/json` },
-        body: JSON.stringify({ message: `hello` }),
-      })
-
-      // SSE request with encoding parameter should fail for JSON streams
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should return 400 for unsupported encoding value`, async () => {
-      const streamPath = `/v1/stream/sse-unsupported-encoding-${Date.now()}`
-
-      // Create stream with binary content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/octet-stream` },
-        body: new Uint8Array([0x01, 0x02, 0x03]),
-      })
-
-      // SSE request with unsupported encoding value should fail
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=gzip`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should return 400 for encoding parameter without live mode (catch-up)`, async () => {
-      const streamPath = `/v1/stream/catchup-with-encoding-${Date.now()}`
-
-      // Create stream with binary content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/octet-stream` },
-        body: new Uint8Array([0x01, 0x02, 0x03]),
-      })
-
-      // Catch-up request (no live param) with encoding parameter should fail
-      // encoding is only valid with live=sse per Protocol Section 5.7
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&encoding=base64`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should return 400 for encoding parameter with live=long-poll`, async () => {
-      const streamPath = `/v1/stream/longpoll-with-encoding-${Date.now()}`
-
-      // Create stream with binary content type
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `application/octet-stream` },
-        body: new Uint8Array([0x01, 0x02, 0x03]),
-      })
-
-      // Long-poll request with encoding parameter should fail
-      // encoding is only valid with live=sse per Protocol Section 5.7
-      const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=long-poll&encoding=base64`,
-        { method: `GET` }
-      )
-
-      expect(response.status).toBe(400)
-    })
-
-    test(`should accept encoding=base64 for binary streams and return base64 encoded data`, async () => {
+    test(`should auto-detect binary streams and return base64 encoded data in SSE mode`, async () => {
       const streamPath = `/v1/stream/sse-binary-base64-${Date.now()}`
 
       // Create stream with binary content type and known binary data
@@ -3823,9 +3707,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: binaryData,
       })
 
-      // SSE request with encoding=base64 should succeed
+      // SSE request for binary stream should auto-detect and use base64
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -3850,7 +3734,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(controlData.streamNextOffset).toBeDefined()
     })
 
-    test(`should include Stream-SSE-Data-Encoding header when encoding is used`, async () => {
+    test(`should include Stream-SSE-Data-Encoding header for binary streams`, async () => {
       const streamPath = `/v1/stream/sse-encoding-header-${Date.now()}`
 
       // Create stream with binary content type
@@ -3860,9 +3744,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: new Uint8Array([0x01, 0x02, 0x03]),
       })
 
-      // SSE request with encoding=base64
+      // SSE request for binary stream (server auto-detects encoding)
       const { response } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -3885,7 +3769,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -3903,7 +3787,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(controlData.streamCursor).toBeDefined()
     })
 
-    test(`should handle empty binary payload with base64 encoding`, async () => {
+    test(`should handle empty binary payload with auto-detected base64 encoding`, async () => {
       const streamPath = `/v1/stream/sse-base64-empty-${Date.now()}`
 
       // Create empty stream with binary content type
@@ -3913,7 +3797,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -3929,7 +3813,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(controlData.upToDate).toBe(true)
     })
 
-    test(`should handle large binary payload with base64 encoding`, async () => {
+    test(`should handle large binary payload with auto-detected base64 encoding`, async () => {
       const streamPath = `/v1/stream/sse-base64-large-${Date.now()}`
 
       // Create stream with larger binary data (1KB)
@@ -3945,7 +3829,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control`, timeoutMs: 5000 }
       )
 
@@ -3966,7 +3850,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       }
     })
 
-    test(`should handle binary data with special bytes using base64 encoding`, async () => {
+    test(`should handle binary data with special bytes using auto-detected base64 encoding`, async () => {
       const streamPath = `/v1/stream/sse-base64-special-bytes-${Date.now()}`
 
       // Binary data that would break SSE if not encoded:
@@ -3982,7 +3866,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -4005,7 +3889,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(decoded[4]).toBe(0xfe) // high byte
     })
 
-    test(`should accept encoding=base64 for application/x-protobuf streams`, async () => {
+    test(`should auto-detect base64 encoding for application/x-protobuf streams`, async () => {
       const streamPath = `/v1/stream/sse-base64-protobuf-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -4015,7 +3899,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -4034,7 +3918,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(decoded[7]).toBe(0x65)
     })
 
-    test(`should accept encoding=base64 for image/png streams`, async () => {
+    test(`should auto-detect base64 encoding for image/png streams`, async () => {
       const streamPath = `/v1/stream/sse-base64-image-${Date.now()}`
 
       // PNG magic header bytes
@@ -4049,7 +3933,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=-1&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
         { untilContent: `event: control` }
       )
 
@@ -4070,7 +3954,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(decoded[3]).toBe(0x47) // 'G'
     })
 
-    test(`should handle offset=now with encoding=base64 for binary streams`, async () => {
+    test(`should handle offset=now with auto-detected base64 encoding for binary streams`, async () => {
       const streamPath = `/v1/stream/sse-base64-offset-now-${Date.now()}`
 
       await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -4080,7 +3964,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
 
       const { response, received } = await fetchSSE(
-        `${getBaseUrl()}${streamPath}?offset=now&live=sse&encoding=base64`,
+        `${getBaseUrl()}${streamPath}?offset=now&live=sse`,
         { untilContent: `"upToDate"` }
       )
 

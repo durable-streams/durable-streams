@@ -451,7 +451,6 @@ impl DurableStream {
         offset: &Offset,
         live: Option<&str>,
         cursor: Option<&str>,
-        encoding: Option<&str>,
     ) -> String {
         let mut url = self.url.clone();
         let mut params = Vec::new();
@@ -467,13 +466,6 @@ impl DurableStream {
         // Add cursor if specified
         if let Some(cursor) = cursor {
             params.push(format!("cursor={}", cursor));
-        }
-
-        // Add encoding for SSE with binary streams (per Protocol Section 5.7)
-        if let Some(encoding) = encoding {
-            if live == Some("sse") {
-                params.push(format!("encoding={}", encoding));
-            }
         }
 
         if !params.is_empty() {

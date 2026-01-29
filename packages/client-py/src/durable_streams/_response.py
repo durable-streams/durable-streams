@@ -26,6 +26,7 @@ from durable_streams._parse import (
     decode_json_items,
 )
 from durable_streams._types import (
+    STREAM_SSE_DATA_ENCODING_HEADER,
     LiveMode,
     Offset,
     SSEEncoding,
@@ -88,7 +89,15 @@ class StreamResponse(Generic[T]):
         self._fetch_next = fetch_next
         self._is_sse = is_sse
         self._own_client = own_client
-        self._encoding = encoding
+
+        # Detect encoding from response header if not explicitly provided
+        if encoding is not None:
+            self._encoding = encoding
+        elif is_sse:
+            encoding_header = response.headers.get(STREAM_SSE_DATA_ENCODING_HEADER)
+            self._encoding: SSEEncoding | None = "base64" if encoding_header == "base64" else None
+        else:
+            self._encoding = None
 
         self._consumed_by: str | None = None
         self._closed = False
@@ -942,7 +951,15 @@ class AsyncStreamResponse(Generic[T]):
         self._fetch_next = fetch_next
         self._is_sse = is_sse
         self._own_client = own_client
-        self._encoding = encoding
+
+        # Detect encoding from response header if not explicitly provided
+        if encoding is not None:
+            self._encoding = encoding
+        elif is_sse:
+            encoding_header = response.headers.get(STREAM_SSE_DATA_ENCODING_HEADER)
+            self._encoding: SSEEncoding | None = "base64" if encoding_header == "base64" else None
+        else:
+            self._encoding = None
 
         self._consumed_by: str | None = None
         self._closed = False

@@ -298,7 +298,6 @@ defmodule DurableStreams.ConformanceAdapter do
     max_chunks = cmd["maxChunks"] || 100
     wait_for_up_to_date = cmd["waitForUpToDate"] || false
     headers = cmd["headers"] || %{}
-    encoding = cmd["encoding"]
 
     # Resolve dynamic headers
     {resolved_headers, new_state} = resolve_dynamic_headers(state)
@@ -323,9 +322,6 @@ defmodule DurableStreams.ConformanceAdapter do
       timeout: timeout_ms,
       headers: merged_headers
     ]
-
-    # Add encoding option if provided (for SSE base64 binary streams)
-    opts = if encoding, do: Keyword.put(opts, :encoding, encoding), else: opts
 
     # Determine if this is a JSON stream for response validation
     content_type = new_state.stream_content_types[path] || ""

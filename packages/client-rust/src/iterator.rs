@@ -57,7 +57,6 @@ pub struct ReadBuilder {
     timeout: Duration,
     headers: Vec<(String, String)>,
     cursor: Option<String>,
-    encoding: Option<String>,
 }
 
 impl ReadBuilder {
@@ -69,7 +68,6 @@ impl ReadBuilder {
             timeout: Duration::from_secs(30),
             headers: Vec::new(),
             cursor: None,
-            encoding: None,
         }
     }
 
@@ -111,39 +109,10 @@ impl ReadBuilder {
         self
     }
 
-    /// Set the encoding for SSE mode with binary streams.
-    ///
-    /// Per Protocol Section 5.7, the encoding parameter is only valid with `live=sse`.
-    /// Currently only "base64" is supported.
-    ///
-    /// # Example
-    /// ```ignore
-    /// stream.read()
-    ///     .live(LiveMode::Sse)
-    ///     .encoding("base64")
-    ///     .build()
-    /// ```
-    pub fn encoding(mut self, encoding: impl Into<String>) -> Self {
-        self.encoding = Some(encoding.into());
-        self
-    }
-
     /// Build the ChunkIterator.
     ///
     /// No network request is made until `next_chunk()` is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(StreamError::BadRequest)` if encoding is specified without `LiveMode::Sse`,
-    /// per Protocol Section 5.7.
     pub fn build(self) -> Result<ChunkIterator, StreamError> {
-        // Validate encoding is only used with live=sse (Protocol Section 5.7)
-        if self.encoding.is_some() && self.live != LiveMode::Sse {
-            return Err(StreamError::BadRequest {
-                message: "encoding parameter is only valid with live='sse'".to_string(),
-            });
-        }
-
         Ok(ChunkIterator {
             stream: self.stream,
             offset: self.offset,
@@ -151,7 +120,7 @@ impl ReadBuilder {
             timeout: self.timeout,
             headers: self.headers,
             cursor: self.cursor,
-            encoding: self.encoding,
+            encoding: None,
             up_to_date: false,
             closed: false,
             done: false,
@@ -230,7 +199,7 @@ impl ChunkIterator {
     async fn next_http(&mut self, live_param: Option<&str>) -> Result<Option<Chunk>, StreamError> {
         let url = self
             .stream
-            .build_read_url(&self.offset, live_param, self.cursor.as_deref(), None);
+            .build_read_url(&self.offset, live_param, self.cursor.as_deref());
 
         let mut req = self.stream.client.inner.get(&url);
 
@@ -378,7 +347,7 @@ impl ChunkIterator {
         // Establish SSE connection
         let url = self
             .stream
-            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref(), self.encoding.as_deref());
+            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref());
 
         let mut req = self
             .stream
@@ -414,6 +383,13 @@ impl ChunkIterator {
                     return self.next_http(Some("long-poll")).await;
                 }
 
+                // Detect encoding from response header
+                self.encoding = resp
+                    .headers()
+                    .get("stream-sse-data-encoding")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
                 self.sse_state = Some(SseState {
                     response: resp,
                     buffer: String::new(),
@@ -424,16 +400,9 @@ impl ChunkIterator {
                 self.next_sse_chunk().await
             }
             400 => {
-                // If encoding was provided, return the error (invalid encoding for content type)
-                // Otherwise, SSE not supported - fall back to long-poll
-                if self.encoding.is_some() {
-                    Err(StreamError::BadRequest {
-                        message: "encoding parameter not allowed for text/* or application/json streams".to_string(),
-                    })
-                } else {
-                    self.live = LiveMode::LongPoll;
-                    self.next_http(Some("long-poll")).await
-                }
+                // SSE not supported - fall back to long-poll
+                self.live = LiveMode::LongPoll;
+                self.next_http(Some("long-poll")).await
             }
             404 => Err(StreamError::NotFound {
                 url: self.stream.url.clone(),

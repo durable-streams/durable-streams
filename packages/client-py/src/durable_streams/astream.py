@@ -13,17 +13,15 @@ from typing import Any, cast
 import httpx
 
 from durable_streams._errors import (
-    SSEEncodingError,
-    SSENotSupportedError,
     error_from_status,
 )
 from durable_streams._parse import parse_httpx_headers, parse_response_headers
 from durable_streams._response import AsyncStreamResponse
 from durable_streams._types import (
     CURSOR_QUERY_PARAM,
-    ENCODING_QUERY_PARAM,
     LIVE_QUERY_PARAM,
     OFFSET_QUERY_PARAM,
+    STREAM_SSE_DATA_ENCODING_HEADER,
     HeadersLike,
     LiveMode,
     Offset,
@@ -32,7 +30,6 @@ from durable_streams._types import (
 )
 from durable_streams._util import (
     build_url_with_params,
-    is_sse_compatible_content_type,
     resolve_headers_async,
     resolve_params_async,
 )
@@ -76,7 +73,6 @@ class AsyncStreamSession:
         | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
-        encoding: SSEEncoding | None = None,
         **kwargs: Any,
     ) -> None:
         self._url = url
@@ -88,7 +84,6 @@ class AsyncStreamSession:
         self._on_error = on_error
         self._client = client
         self._timeout = timeout
-        self._encoding: SSEEncoding | None = encoding
         self._kwargs = kwargs
         self._response: AsyncStreamResponse[Any] | None = None
 
@@ -123,7 +118,6 @@ class AsyncStreamSession:
             on_error=self._on_error,
             client=self._client,
             timeout=self._timeout,
-            encoding=self._encoding,
             **self._kwargs,
         )
         return self._response
@@ -160,7 +154,6 @@ def astream(
     | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: float | httpx.Timeout | None = None,
-    encoding: SSEEncoding | None = None,
     **kwargs: Any,
 ) -> AsyncStreamSession:
     """
@@ -183,10 +176,6 @@ def astream(
         on_error: Async error handler callback
         client: Optional httpx.AsyncClient to use (will not be closed)
         timeout: Request timeout
-        encoding: SSE data encoding for binary streams. When set to "base64",
-            the client will decode base64-encoded SSE data events.
-            Required for binary streams (content-type not text/* or application/json)
-            when using SSE mode. MUST NOT be provided for text/JSON streams.
         **kwargs: Additional arguments passed to httpx
 
     Returns:
@@ -204,14 +193,6 @@ def astream(
         ...     async for item in res.iter_json():
         ...         print(item)
     """
-    # Validate encoding is only used with live='sse' (Protocol Section 5.7)
-    if encoding is not None and live != "sse":
-        from ._errors import SSEEncodingError
-
-        raise SSEEncodingError(
-            "encoding parameter is only valid with live='sse'"
-        )
-
     return AsyncStreamSession(
         url,
         offset=offset,
@@ -222,7 +203,6 @@ def astream(
         on_error=on_error,
         client=client,
         timeout=timeout,
-        encoding=encoding,
         **kwargs,
     )
 
@@ -241,7 +221,6 @@ async def _astream_impl(
     | None = None,
     client: httpx.AsyncClient | None = None,
     timeout: float | httpx.Timeout | None = None,
-    encoding: SSEEncoding | None = None,
     **kwargs: Any,
 ) -> AsyncStreamResponse[Any]:
     """Internal implementation that creates the actual response."""
@@ -261,7 +240,6 @@ async def _astream_impl(
             client=http_client,
             _own_client=own_client,
             timeout=timeout,
-            encoding=encoding,
             **kwargs,
         )
     except Exception:
@@ -285,7 +263,6 @@ async def _astream_internal(
     client: httpx.AsyncClient,
     _own_client: bool,  # Reserved for future client lifecycle management
     timeout: float | httpx.Timeout | None,
-    encoding: SSEEncoding | None,
     **kwargs: Any,
 ) -> AsyncStreamResponse[Any]:
     """Internal implementation of astream()."""
@@ -301,10 +278,6 @@ async def _astream_internal(
     elif live == "sse":
         query_params[LIVE_QUERY_PARAM] = "sse"
         is_sse = True
-
-    # Add encoding query param for SSE with binary streams
-    if is_sse and encoding:
-        query_params[ENCODING_QUERY_PARAM] = encoding
 
     if cursor:
         query_params[CURSOR_QUERY_PARAM] = cursor
@@ -384,30 +357,12 @@ async def _astream_internal(
 
             raise
 
-    # Check SSE compatibility after response headers are available
-    # Skip validation for SSE responses (content-type is text/event-stream, not the stream's actual type)
-    # DurableStream.read() validates encoding against the stream's content-type before calling this function
+    # Detect encoding from response header (server auto-detects binary content types)
+    encoding: SSEEncoding | None = None
     if is_sse:
-        content_type = response.headers.get("content-type")
-        is_sse_response = content_type and "text/event-stream" in content_type
-        is_text_compatible = is_sse_compatible_content_type(content_type)
-
-        # Validate encoding + content-type compatibility (per Protocol Section 5.7)
-        if encoding and is_text_compatible and not is_sse_response:
-            await response.aclose()
-            raise SSEEncodingError(
-                f"encoding option must not be provided for text/* or application/json "
-                f"streams (got {content_type})"
-            )
-
-        # Without encoding, SSE only works with text-compatible content types
-        if not encoding and not is_text_compatible and not is_sse_response:
-            await response.aclose()
-            raise SSENotSupportedError(
-                f"SSE mode is not compatible with content type: {content_type}. "
-                "SSE is only supported for text/* or application/json streams. "
-                "For binary streams, use encoding='base64'."
-            )
+        encoding_header = response.headers.get(STREAM_SSE_DATA_ENCODING_HEADER)
+        if encoding_header == "base64":
+            encoding = "base64"
 
     headers_dict = parse_httpx_headers(response.headers)
     meta = parse_response_headers(headers_dict)
@@ -429,9 +384,6 @@ async def _astream_internal(
             next_params[LIVE_QUERY_PARAM] = "long-poll"
         elif live == "sse":
             next_params[LIVE_QUERY_PARAM] = "sse"
-            # Include encoding for SSE reconnection
-            if encoding:
-                next_params[ENCODING_QUERY_PARAM] = encoding
 
         if next_cursor:
             next_params[CURSOR_QUERY_PARAM] = next_cursor

@@ -327,7 +327,6 @@ async Task<object> HandleRead(JsonElement root)
     var path = root.GetProperty("path").GetString()!;
     var offset = GetOptionalString(root, "offset");
     var liveStr = GetOptionalString(root, "live");
-    var encoding = GetOptionalString(root, "encoding");
     var timeoutMs = GetOptionalInt(root, "timeoutMs");
     var maxChunks = GetOptionalInt(root, "maxChunks") ?? 100;
     var waitForUpToDate = GetOptionalBool(root, "waitForUpToDate") ?? false;
@@ -361,7 +360,6 @@ async Task<object> HandleRead(JsonElement root)
         {
             Offset = offset != null ? new Offset(offset) : Offset.Beginning,
             Live = live,
-            Encoding = encoding,
             Headers = headersSent
         }, cts.Token);
 
