@@ -697,7 +697,7 @@ func (m *longPollManager) notifyClosed(path string) {
 // JSON helper functions
 func isJSONContentType(ct string) bool {
 	mediaType := strings.ToLower(extractMediaType(ct))
-	return mediaType == "application/json"
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 // processJSONAppend processes JSON data for append, flattening top-level arrays

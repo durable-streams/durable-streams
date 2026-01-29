@@ -778,11 +778,16 @@ Clients **MAY** use any content type for their streams, including:
 
 ### 7.1. JSON Mode
 
-Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
+Streams created with JSON content types have special semantics for message boundaries and batch operations. JSON Mode applies to:
+
+- `application/json`
+- Any content type with a `+json` suffix (e.g., `application/vnd.api+json`, `application/ld+json`, `application/hal+json`)
+
+Servers **MUST** treat these content types identically for JSON Mode processing. Content type matching is case-insensitive and ignores parameters (e.g., `application/json; charset=utf-8` is treated as `application/json`).
 
 #### Message Boundaries
 
-For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
+For JSON streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
 
 #### Array Flattening for Batch Operations
 

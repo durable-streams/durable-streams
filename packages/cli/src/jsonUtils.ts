@@ -1,9 +1,11 @@
 /**
  * Check if content-type indicates JSON mode.
+ * Matches application/json and any +json suffix (e.g., application/vnd.api+json).
  * Handles cases like "application/json; charset=utf-8".
  */
 export function isJsonContentType(contentType: string): boolean {
-  return contentType.split(`;`)[0]!.trim().toLowerCase() === `application/json`
+  const normalized = contentType.split(`;`)[0]!.trim().toLowerCase()
+  return normalized === `application/json` || normalized.endsWith(`+json`)
 }
 
 /**

@@ -327,7 +327,7 @@ func (s *Stream) Close(ctx context.Context, opts ...CloseOption) (*CloseResult, 
 		if contentType == "" {
 			contentType = s.contentType
 		}
-		if contentType == "application/json" {
+		if isJSONContentType(contentType) {
 			wrapped := []byte("[")
 			wrapped = append(wrapped, cfg.data...)
 			wrapped = append(wrapped, ']')

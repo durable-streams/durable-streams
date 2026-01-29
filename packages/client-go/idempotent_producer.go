@@ -611,7 +611,7 @@ func (p *IdempotentProducer) sendCurrentBatchLocked() {
 
 // doSendBatch sends a batch to the server.
 func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEntry, seq, epoch int) (IdempotentAppendResult, error) {
-	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+	isJSON := isJSONContentType(p.config.ContentType)
 
 	var batchedBody []byte
 	if isJSON {
@@ -741,7 +741,7 @@ func (p *IdempotentProducer) doSendBatch(ctx context.Context, batch []pendingEnt
 
 // doSendClose sends a close request with producer headers.
 func (p *IdempotentProducer) doSendClose(ctx context.Context, data []byte, seq, epoch int) (IdempotentAppendResult, error) {
-	isJSON := normalizeContentType(p.config.ContentType) == "application/json"
+	isJSON := isJSONContentType(p.config.ContentType)
 
 	var body []byte
 	if len(data) > 0 {

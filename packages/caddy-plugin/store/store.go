@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -301,10 +302,10 @@ func ExtractMediaType(ct string) string {
 	return extractMediaType(ct)
 }
 
-// IsJSONContentType returns true if the content type is application/json
+// IsJSONContentType returns true if the content type is application/json or has +json suffix
 func IsJSONContentType(ct string) bool {
 	mediaType := toLower(extractMediaType(ct))
-	return mediaType == "application/json"
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 // FormatJSONResponse formats messages as a JSON array

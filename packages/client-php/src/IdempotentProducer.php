@@ -449,10 +449,20 @@ final class IdempotentProducer
         $headers['Content-Type'] = $contentType;
 
         $body = $data ?? '';
-        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+        if ($data !== null && self::isJsonContentType($contentType)) {
             $body = '[' . $data . ']';
         }
 
         $this->client->post($this->url, $body, $headers);
+    }
+
+    /**
+     * Check if content type indicates JSON (application/json or +json suffix).
+     */
+    private static function isJsonContentType(string $contentType): bool
+    {
+        $normalized = strtolower(explode(';', $contentType)[0] ?? '');
+        $normalized = trim($normalized);
+        return $normalized === 'application/json' || str_ends_with($normalized, '+json');
     }
 }

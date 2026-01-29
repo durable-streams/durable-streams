@@ -418,7 +418,7 @@ public final class DurableStream implements AutoCloseable {
         HttpRequest.BodyPublisher bodyPublisher = HttpRequest.BodyPublishers.noBody();
         byte[] body = null;
         if (data != null && data.length > 0) {
-            if (contentType != null && contentType.toLowerCase().contains("application/json")) {
+            if (contentType != null && isJsonContentType(contentType)) {
                 body = wrapInJsonArray(data);
             } else {
                 body = data;
@@ -466,7 +466,7 @@ public final class DurableStream implements AutoCloseable {
         if (data != null && data.length > 0) {
             // For JSON streams, wrap data in array
             byte[] body;
-            if (ct.toLowerCase().contains("application/json")) {
+            if (isJsonContentType(ct)) {
                 body = wrapInJsonArray(data);
             } else {
                 body = data;
@@ -793,6 +793,22 @@ public final class DurableStream implements AutoCloseable {
 
     private static String encode(String s) {
         return URLEncoder.encode(s, StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Check if content type indicates JSON (application/json or +json suffix).
+     */
+    private static boolean isJsonContentType(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String normalized = contentType.toLowerCase();
+        // Extract media type before semicolon
+        int idx = normalized.indexOf(';');
+        if (idx >= 0) {
+            normalized = normalized.substring(0, idx).trim();
+        }
+        return normalized.equals("application/json") || normalized.endsWith("+json");
     }
 
     private static DurableStreamException wrapException(Exception e) {

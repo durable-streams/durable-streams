@@ -18,6 +18,7 @@ import {
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
   STREAM_TTL_HEADER,
+  isJsonContentType,
 } from "./constants"
 import {
   BackoffDefaults,
@@ -59,15 +60,6 @@ interface QueuedMessage {
   signal?: AbortSignal
   resolve: () => void
   reject: (error: Error) => void
-}
-
-/**
- * Normalize content-type by extracting the media type (before any semicolon).
- * Handles cases like "application/json; charset=utf-8".
- */
-function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
 
 /**
@@ -387,7 +379,7 @@ export class DurableStream {
     // For JSON mode with body, wrap in array
     let body: BodyInit | undefined
     if (opts?.body !== undefined) {
-      const isJson = normalizeContentType(contentType) === `application/json`
+      const isJson = isJsonContentType(contentType)
       if (isJson) {
         const bodyStr =
           typeof opts.body === `string`
@@ -489,7 +481,7 @@ export class DurableStream {
 
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
     // Input is pre-serialized JSON string
-    const isJson = normalizeContentType(contentType) === `application/json`
+    const isJson = isJsonContentType(contentType)
     let encodedBody: BodyInit
     if (isJson) {
       // JSON mode: decode as UTF-8 string and wrap in array
@@ -610,7 +602,7 @@ export class DurableStream {
       requestHeaders[STREAM_SEQ_HEADER] = highestSeq
     }
 
-    const isJson = normalizeContentType(contentType) === `application/json`
+    const isJson = isJsonContentType(contentType)
 
     // Batch data based on content type
     let batchedBody: BodyInit

@@ -12,6 +12,7 @@ import {
   STREAM_OFFSET_HEADER,
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
+  isJsonContentType,
 } from "./constants"
 import { DurableStreamError, FetchBackoffAbortError } from "./error"
 import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
@@ -196,9 +197,7 @@ async function streamInternal<TJson = unknown>(
     firstResponse.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
 
   // Determine if JSON mode
-  const isJsonMode =
-    options.json === true ||
-    (contentType?.includes(`application/json`) ?? false)
+  const isJsonMode = options.json === true || isJsonContentType(contentType)
 
   // Detect SSE data encoding from response header (server auto-sets for binary streams)
   const sseDataEncoding = firstResponse.headers.get(

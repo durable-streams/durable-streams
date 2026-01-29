@@ -57,6 +57,20 @@ stream_content_types: dict[str, str] = {}
 producer_next_seq: dict[tuple[str, str, int], int] = {}
 producer_stream_closed: dict[tuple[str, str], bool] = {}
 
+
+def _normalize_content_type(content_type: str | None) -> str:
+    """Normalize content-type by extracting media type (before semicolon)."""
+    if not content_type:
+        return ""
+    return content_type.split(";")[0].strip().lower()
+
+
+def _is_json_content_type(content_type: str | None) -> bool:
+    """Check if content type indicates JSON (application/json or +json suffix)."""
+    normalized = _normalize_content_type(content_type)
+    return normalized == "application/json" or normalized.endswith("+json")
+
+
 # Dynamic headers/params state
 class DynamicValue:
     """Represents a dynamic value that can be evaluated per-request."""
@@ -390,7 +404,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
 
         # Check if JSON content type
         content_type = stream_content_types.get(cmd["path"])
-        is_json_content = content_type and "application/json" in content_type
+        is_json_content = _is_json_content_type(content_type)
 
         if live is False:
             # For non-live mode, get all available data

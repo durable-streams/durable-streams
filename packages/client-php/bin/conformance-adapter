@@ -48,6 +48,19 @@ $producerStreamClosed = [];
 
 // Dynamic headers/params state
 $dynamicHeaders = [];
+
+/**
+ * Check if content type indicates JSON (application/json or +json suffix).
+ */
+function isJsonContentType(?string $contentType): bool
+{
+    if ($contentType === null) {
+        return false;
+    }
+    $normalized = strtolower(explode(';', $contentType)[0] ?? '');
+    $normalized = trim($normalized);
+    return $normalized === 'application/json' || str_ends_with($normalized, '+json');
+}
 $dynamicParams = [];
 
 class DynamicValue {
@@ -364,7 +377,7 @@ function handleRead(array $cmd): array {
 
     // Check if stream content type is JSON
     $contentType = $streamContentTypes[$cmd['path']] ?? null;
-    $isJson = $contentType !== null && str_contains($contentType, 'application/json');
+    $isJson = isJsonContentType($contentType);
 
     // For long-poll, add buffer to HTTP timeout to ensure we receive server's response
     // The server waits for timeoutMs, so our HTTP timeout needs to be longer
