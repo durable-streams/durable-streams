@@ -7,11 +7,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
 // TestBase64DecodeSSEData tests that base64-encoded SSE data events are correctly decoded
+// when the server returns a Stream-SSE-Data-Encoding: base64 response header
 func TestBase64DecodeSSEData(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -53,14 +53,10 @@ func TestBase64DecodeSSEData(t *testing.T) {
 			// Create SSE response with base64-encoded data
 			sseData := "event: data\ndata: " + encoded + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
-			// Create test server
+			// Create test server that returns Stream-SSE-Data-Encoding header
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// Verify encoding query param is set
-				if r.URL.Query().Get("encoding") != "base64" {
-					t.Error("expected encoding=base64 query param")
-				}
-
 				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 				w.WriteHeader(http.StatusOK)
 				w.Write([]byte(sseData))
 			}))
@@ -70,13 +66,12 @@ func TestBase64DecodeSSEData(t *testing.T) {
 			client := NewClient(WithBaseURL(server.URL))
 			stream := client.Stream("/test")
 
-			// Read with SSE and base64 encoding
+			// Read with SSE - encoding is auto-detected from response header
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
 			it := stream.Read(ctx,
 				WithLive(LiveModeSSE),
-				WithEncoding("base64"),
 			)
 			defer it.Close()
 
@@ -92,66 +87,6 @@ func TestBase64DecodeSSEData(t *testing.T) {
 	}
 }
 
-// TestBase64URLBuilding tests that encoding query param is added to SSE URLs
-func TestBase64URLBuilding(t *testing.T) {
-	tests := []struct {
-		name        string
-		live        LiveMode
-		encoding    string
-		wantEncoded bool
-	}{
-		{
-			name:        "SSE with base64 encoding",
-			live:        LiveModeSSE,
-			encoding:    "base64",
-			wantEncoded: true,
-		},
-		{
-			name:        "SSE without encoding",
-			live:        LiveModeSSE,
-			encoding:    "",
-			wantEncoded: false,
-		},
-		{
-			name:        "long-poll with encoding (should not add param)",
-			live:        LiveModeLongPoll,
-			encoding:    "base64",
-			wantEncoded: false,
-		},
-		{
-			name:        "no live mode with encoding (should not add param)",
-			live:        LiveModeNone,
-			encoding:    "base64",
-			wantEncoded: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient()
-			stream := client.Stream("http://example.com/test")
-
-			url := stream.buildReadURL(StartOffset, tt.live, "", tt.encoding)
-
-			hasEncoding := strings.Contains(url, "encoding=base64")
-			if hasEncoding != tt.wantEncoded {
-				t.Errorf("URL %q: hasEncoding=%v, want %v", url, hasEncoding, tt.wantEncoded)
-			}
-		})
-	}
-}
-
-// TestWithEncodingOption tests the WithEncoding option function
-func TestWithEncodingOption(t *testing.T) {
-	cfg := &readConfig{}
-	opt := WithEncoding("base64")
-	opt(cfg)
-
-	if cfg.encoding != "base64" {
-		t.Errorf("got encoding %q, want %q", cfg.encoding, "base64")
-	}
-}
-
 // TestBase64DecodeInvalidData tests error handling for invalid base64 data
 func TestBase64DecodeInvalidData(t *testing.T) {
 	// Create SSE response with invalid base64 data
@@ -159,6 +94,7 @@ func TestBase64DecodeInvalidData(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(sseData))
 	}))
@@ -172,7 +108,6 @@ func TestBase64DecodeInvalidData(t *testing.T) {
 
 	it := stream.Read(ctx,
 		WithLive(LiveModeSSE),
-		WithEncoding("base64"),
 	)
 	defer it.Close()
 
@@ -197,6 +132,7 @@ func TestBase64MultipleDataEvents(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(sseData))
 	}))
@@ -210,7 +146,6 @@ func TestBase64MultipleDataEvents(t *testing.T) {
 
 	it := stream.Read(ctx,
 		WithLive(LiveModeSSE),
-		WithEncoding("base64"),
 	)
 	defer it.Close()
 
@@ -224,7 +159,7 @@ func TestBase64MultipleDataEvents(t *testing.T) {
 	}
 }
 
-// TestSSEWithoutEncodingPassesThroughData tests that SSE without encoding passes data as-is
+// TestSSEWithoutEncodingPassesThroughData tests that SSE without encoding header passes data as-is
 func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	rawData := "Hello, World!"
 
@@ -232,11 +167,7 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	sseData := "event: data\ndata: " + rawData + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify no encoding query param
-		if r.URL.Query().Get("encoding") != "" {
-			t.Error("unexpected encoding query param")
-		}
-
+		// No Stream-SSE-Data-Encoding header - data should pass through as-is
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(sseData))
@@ -263,37 +194,8 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	}
 }
 
-// TestEncodingRequiresSSEMode tests that encoding parameter is only valid with SSE mode
-func TestEncodingRequiresSSEMode(t *testing.T) {
-	// Server should never be called since validation happens before request
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("server should not be called when encoding validation fails")
-	}))
-	defer server.Close()
-
-	client := NewClient(WithBaseURL(server.URL))
-	stream := client.Stream("/test")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Read with encoding option but no live mode (should error)
-	it := stream.Read(ctx, WithEncoding("base64"))
-	defer it.Close()
-
-	_, err := it.Next()
-	if err == nil {
-		t.Fatal("expected error when using encoding without SSE mode")
-	}
-
-	// Verify error message mentions the issue
-	if !strings.Contains(err.Error(), "encoding") || !strings.Contains(err.Error(), "sse") {
-		t.Errorf("error should mention encoding and sse, got: %v", err)
-	}
-}
-
-// TestStreamingWithBase64ReconnectPreservesEncoding tests that encoding is preserved on SSE reconnect
-func TestStreamingWithBase64ReconnectPreservesEncoding(t *testing.T) {
+// TestStreamingWithBase64ReconnectDetectsEncoding tests that encoding is detected from response header on each SSE connection
+func TestStreamingWithBase64ReconnectDetectsEncoding(t *testing.T) {
 	callCount := 0
 	testData := []byte("test data")
 	encoded := base64.StdEncoding.EncodeToString(testData)
@@ -301,12 +203,8 @@ func TestStreamingWithBase64ReconnectPreservesEncoding(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 
-		// Always verify encoding is present
-		if r.URL.Query().Get("encoding") != "base64" {
-			t.Errorf("call %d: expected encoding=base64 query param", callCount)
-		}
-
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
 
 		if callCount == 1 {
@@ -331,7 +229,6 @@ func TestStreamingWithBase64ReconnectPreservesEncoding(t *testing.T) {
 
 	it := stream.Read(ctx,
 		WithLive(LiveModeSSE),
-		WithEncoding("base64"),
 	)
 	defer it.Close()
 

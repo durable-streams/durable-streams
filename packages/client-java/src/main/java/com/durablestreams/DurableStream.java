@@ -252,20 +252,17 @@ public final class DurableStream implements AutoCloseable {
      * // Or using builder
      * client.read(url, ReadOptions.builder().offset(offset).liveMode(LiveMode.SSE).build())
      *
-     * // For binary streams with SSE, use base64 encoding
-     * client.read(url, ReadOptions.from(offset).live(LiveMode.SSE).encoding("base64"))
      * }</pre>
      *
      * @param url Stream URL
-     * @param options Read options (offset, live mode, timeout, cursor, encoding)
+     * @param options Read options (offset, live mode, timeout, cursor)
      */
     public ChunkIterator read(String url, ReadOptions options) throws DurableStreamException {
         return new ChunkIterator(this, url,
                 options.getOffset(),
                 options.getLiveMode(),
                 options.getTimeout(),
-                options.getCursor(),
-                options.getEncoding());
+                options.getCursor());
     }
 
     // ==================== Read JSON ====================
@@ -299,8 +296,7 @@ public final class DurableStream implements AutoCloseable {
                 options.getOffset(),
                 options.getLiveMode(),
                 options.getTimeout(),
-                options.getCursor(),
-                options.getEncoding());
+                options.getCursor());
         return new JsonIterator<>(chunkIterator, parser);
     }
 
@@ -333,10 +329,10 @@ public final class DurableStream implements AutoCloseable {
         return executeWithRetry(request, "read", response -> parseReadResponse(response, url, offset));
     }
 
-    SSEStreamingReader openSSEStream(String url, Offset offset, String cursor, String encoding)
+    SSEStreamingReader openSSEStream(String url, Offset offset, String cursor)
             throws DurableStreamException {
-        HttpRequest request = buildSSERequest(url, offset, cursor, encoding);
-        return new SSEStreamingReader(httpClient, request, offset, encoding);
+        HttpRequest request = buildSSERequest(url, offset, cursor);
+        return new SSEStreamingReader(httpClient, request, offset);
     }
 
     // ==================== Dynamic header/param management (package-private for testing) ====================
@@ -575,7 +571,7 @@ public final class DurableStream implements AutoCloseable {
         return builder.build();
     }
 
-    private HttpRequest buildSSERequest(String url, Offset offset, String cursor, String encoding) {
+    private HttpRequest buildSSERequest(String url, Offset offset, String cursor) {
         StringBuilder urlBuilder = new StringBuilder(url);
         List<String> params = new ArrayList<>();
 
@@ -587,10 +583,6 @@ public final class DurableStream implements AutoCloseable {
         params.add("live=sse");
         if (cursor != null) {
             params.add("cursor=" + encode(cursor));
-        }
-        // Add encoding for SSE with binary streams (Protocol Section 5.7)
-        if (encoding != null) {
-            params.add("encoding=" + encode(encoding));
         }
 
         if (!params.isEmpty()) {

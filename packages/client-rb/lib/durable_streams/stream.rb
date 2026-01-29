@@ -267,17 +267,10 @@ module DurableStreams
     # @param live [Boolean, Symbol] Live mode (false, :long_poll, :sse)
     # @param format [Symbol] Format hint (:auto, :json, :bytes)
     # @param cursor [String, nil] Optional cursor for continuation
-    # @param encoding [String, nil] Encoding for SSE binary streams (e.g., "base64")
     # @yield [Reader] Optional block for automatic cleanup
     # @return [JsonReader, ByteReader] Reader for iterating messages
-    # @raise [BadRequestError] If encoding is provided without live: :sse
-    def read(offset: "-1", live: false, format: :auto, cursor: nil, encoding: nil, &block)
-      # Validate encoding is only used with live=sse (Protocol Section 5.7)
-      if encoding && live != :sse
-        raise BadRequestError.new("encoding parameter is only valid with live='sse'", url: @url)
-      end
-
-      reader = create_reader(offset: offset, live: live, format: format, cursor: cursor, encoding: encoding)
+    def read(offset: "-1", live: false, format: :auto, cursor: nil, &block)
+      reader = create_reader(offset: offset, live: live, format: format, cursor: cursor)
 
       if block_given?
         begin
@@ -325,14 +318,14 @@ module DurableStreams
 
     private
 
-    def create_reader(offset:, live:, format:, cursor:, encoding: nil)
+    def create_reader(offset:, live:, format:, cursor:)
       effective_format = determine_format(format)
 
       case effective_format
       when :json
-        JsonReader.new(self, offset: offset, live: live, cursor: cursor, encoding: encoding)
+        JsonReader.new(self, offset: offset, live: live, cursor: cursor)
       else
-        ByteReader.new(self, offset: offset, live: live, cursor: cursor, encoding: encoding)
+        ByteReader.new(self, offset: offset, live: live, cursor: cursor)
       end
     end
 

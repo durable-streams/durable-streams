@@ -166,13 +166,6 @@ public class StreamOptions
     }
 
     /// <summary>
-    /// Encoding for SSE data payloads.
-    /// Currently only "base64" is supported. Required for binary streams with SSE mode.
-    /// Per Protocol Section 5.7, encoding is only valid with Live=Sse.
-    /// </summary>
-    public string? Encoding { get; set; }
-
-    /// <summary>
     /// Additional headers for the request.
     /// </summary>
     public Dictionary<string, string>? Headers { get; set; }

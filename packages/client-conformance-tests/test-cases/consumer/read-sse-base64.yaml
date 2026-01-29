@@ -1,12 +1,11 @@
 id: consumer-sse-base64
 name: SSE Base64 Encoding
-description: Tests for base64 encoding of binary data in SSE mode (Protocol Section 5.7)
+description: Tests for auto-detected base64 encoding of binary data in SSE mode (Protocol Section 5.7)
 category: consumer
 tags:
   - sse
   - base64
   - binary
-  - encoding
 requires:
   - sse
 
@@ -25,7 +24,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -46,7 +44,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -69,7 +66,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -100,7 +96,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -126,7 +121,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -151,7 +145,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -172,7 +165,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           upToDate: true
@@ -191,7 +183,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -212,7 +203,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -238,7 +228,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -264,7 +253,6 @@ tests:
         path: ${streamPath}
         offset: ${skipOffset}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -284,7 +272,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           upToDate: true
@@ -310,7 +297,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -331,105 +317,10 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
           upToDate: true
-
-  # Validation tests for encoding parameter restrictions (Protocol Section 5.7)
-  - id: sse-base64-encoding-requires-sse-catchup
-    name: Encoding parameter rejected without live=sse (catch-up mode)
-    description: |
-      Per Protocol Section 5.7, the encoding parameter is only valid with live=sse.
-      Clients SHOULD validate this constraint locally and reject the request.
-    setup:
-      - action: create
-        as: streamPath
-        contentType: application/octet-stream
-      - action: append
-        path: ${streamPath}
-        binaryData: "AQID"
-    operations:
-      - action: read
-        path: ${streamPath}
-        live: false
-        encoding: base64
-        expect:
-          status: 400
-          messageContains:
-            - encoding
-
-  - id: sse-base64-encoding-requires-sse-longpoll
-    name: Encoding parameter rejected with live=long-poll
-    description: |
-      Per Protocol Section 5.7, the encoding parameter is only valid with live=sse.
-      Using encoding with long-poll mode should fail.
-    requires:
-      - long-poll
-    setup:
-      - action: create
-        as: streamPath
-        contentType: application/octet-stream
-      - action: append
-        path: ${streamPath}
-        binaryData: "AQID"
-    operations:
-      - action: read
-        path: ${streamPath}
-        live: long-poll
-        encoding: base64
-        timeoutMs: 1000
-        expect:
-          status: 400
-          messageContains:
-            - encoding
-
-  - id: sse-base64-encoding-rejected-for-text-streams
-    name: Encoding parameter rejected for text/* streams
-    description: |
-      Per Protocol Section 5.7, if the stream's configured content-type is text/*
-      or application/json, clients MUST NOT provide encoding. Servers MUST treat
-      this as invalid parameters and return 400 Bad Request.
-      Clients MAY validate this locally before making the request.
-    setup:
-      - action: create
-        as: streamPath
-        contentType: text/plain
-      - action: append
-        path: ${streamPath}
-        data: "Hello World"
-    operations:
-      - action: read
-        path: ${streamPath}
-        live: sse
-        encoding: base64
-        waitForUpToDate: true
-        expect:
-          status: 400
-
-  - id: sse-base64-encoding-rejected-for-json-streams
-    name: Encoding parameter rejected for application/json streams
-    description: |
-      Per Protocol Section 5.7, if the stream's configured content-type is text/*
-      or application/json, clients MUST NOT provide encoding. Servers MUST treat
-      this as invalid parameters and return 400 Bad Request.
-      Clients MAY validate this locally before making the request.
-    setup:
-      - action: create
-        as: streamPath
-        contentType: application/json
-      - action: append
-        path: ${streamPath}
-        data: '{"message": "hello"}'
-    operations:
-      - action: read
-        path: ${streamPath}
-        live: sse
-        encoding: base64
-        waitForUpToDate: true
-        expect:
-          status: 400
 
   # SSE reconnection test - verifies decoder state resets properly
   - id: sse-base64-reconnect-decoding
@@ -455,7 +346,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         maxChunks: 1
         expect:
           minChunks: 1
@@ -465,7 +355,6 @@ tests:
         path: ${streamPath}
         offset: ${firstOffset}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -494,7 +383,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         timeoutMs: 10000
         expect:
@@ -526,7 +414,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -552,7 +439,6 @@ tests:
         path: ${streamPath}
         offset: ${offset}
         live: sse
-        encoding: base64
         maxChunks: 1
         timeoutMs: 10000
         background: true
@@ -583,7 +469,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -604,7 +489,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -625,7 +509,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -646,7 +529,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -671,7 +553,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -693,7 +574,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
@@ -703,7 +583,7 @@ tests:
   - id: sse-base64-offset-now
     name: SSE base64 works with offset=now
     description: |
-      Starting an SSE read with offset=now and encoding=base64 should
+      Starting an SSE read with offset=now on a binary stream should
       skip historical data and receive only new live data.
     setup:
       - action: create
@@ -717,7 +597,6 @@ tests:
         path: ${streamPath}
         offset: "now"
         live: sse
-        encoding: base64
         maxChunks: 1
         timeoutMs: 10000
         background: true
@@ -777,7 +656,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         timeoutMs: 10000
         expect:

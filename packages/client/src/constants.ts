@@ -104,10 +104,9 @@ export const LIVE_QUERY_PARAM = `live`
 export const CURSOR_QUERY_PARAM = `cursor`
 
 /**
- * Query parameter for SSE data encoding.
- * Required for binary streams in SSE mode.
+ * Response header indicating SSE data encoding (e.g., base64 for binary streams).
  */
-export const ENCODING_QUERY_PARAM = `encoding`
+export const STREAM_SSE_DATA_ENCODING_HEADER = `stream-sse-data-encoding`
 
 // ============================================================================
 // SSE Control Event Fields (camelCase per PROTOCOL.md Section 5.7)
@@ -136,8 +135,8 @@ export const SSE_CLOSED_FIELD = `streamClosed`
 // ============================================================================
 
 /**
- * Content types that support SSE mode.
- * SSE is only valid for text/* or application/json streams.
+ * Content types that are natively compatible with SSE (UTF-8 text).
+ * Binary content types are also supported via automatic base64 encoding.
  */
 export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
   `text/`,
@@ -151,5 +150,4 @@ export const DURABLE_STREAM_PROTOCOL_QUERY_PARAMS: Array<string> = [
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
-  ENCODING_QUERY_PARAM,
 ]

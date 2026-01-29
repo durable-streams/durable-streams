@@ -31,6 +31,9 @@ public sealed class StreamResponse : IAsyncDisposable
     private bool _disposed;
     private bool _consumed;
 
+    // Encoding detected from Stream-SSE-Data-Encoding response header
+    private string? _detectedEncoding;
+
     // Pending SSE data (data event received, waiting for control)
     private string? _pendingSseData;
 
@@ -395,6 +398,13 @@ public sealed class StreamResponse : IAsyncDisposable
                 _stream.ContentType = contentType;
             }
 
+            // Detect encoding from response header (server auto-detects binary content types)
+            var encodingHeader = HttpHelpers.GetHeader(_currentResponse, Headers.StreamSseDataEncoding);
+            if (encodingHeader != null)
+            {
+                _detectedEncoding = encodingHeader;
+            }
+
             // Closed streams should be treated as up-to-date even before control event
             if (HttpHelpers.GetBoolHeader(_currentResponse, Headers.StreamClosed))
             {
@@ -442,12 +452,14 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 var dataEvt = (SseDataEvent)eventObj;
 
-                // Decode base64 if encoding is set (Protocol Section 5.7)
-                if (_options.Encoding == "base64")
+                // Decode base64 if encoding detected from response header
+                if (_detectedEncoding == "base64")
                 {
                     try
                     {
-                        var decodedBytes = Convert.FromBase64String(dataEvt.Data);
+                        // Per protocol: remove \n and \r characters before decoding
+                        var cleaned = dataEvt.Data.Replace("\n", "").Replace("\r", "");
+                        var decodedBytes = Convert.FromBase64String(cleaned);
                         var decodedStr = Encoding.UTF8.GetString(decodedBytes);
                         _pendingSseData = (_pendingSseData ?? "") + decodedStr;
                     }
@@ -516,12 +528,6 @@ public sealed class StreamResponse : IAsyncDisposable
         if (_cursor != null)
         {
             queryParams[QueryParams.Cursor] = _cursor;
-        }
-
-        // Add encoding for SSE with binary streams
-        if (_options.Encoding != null && _options.Live == LiveMode.Sse)
-        {
-            queryParams[QueryParams.Encoding] = _options.Encoding;
         }
 
         _url = HttpHelpers.BuildUrl(_stream.Url, queryParams);

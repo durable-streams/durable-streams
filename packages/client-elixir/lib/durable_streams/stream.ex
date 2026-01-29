@@ -380,7 +380,6 @@ defmodule DurableStreams.Stream do
   - `:live` - Live mode: false, :long_poll, or :sse
   - `:timeout` - Timeout in milliseconds
   - `:headers` - Additional headers
-  - `:encoding` - Encoding for SSE data events (e.g., "base64" for binary streams)
   """
   @spec read(t(), keyword()) :: {:ok, read_chunk()} | {:error, term()}
   def read(%__MODULE__{} = stream, opts \\ []) do
@@ -390,35 +389,27 @@ defmodule DurableStreams.Stream do
     extra_headers = Keyword.get(opts, :headers, %{})
     halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
     halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
-    encoding = Keyword.get(opts, :encoding)
 
-    # Validate encoding is only used with live=:sse (Protocol Section 5.7)
     is_sse = live == :sse or live == "sse"
-    if encoding != nil and not is_sse do
-      {:error, {:bad_request, "encoding parameter is only valid with live='sse'"}}
-    else
-      read_impl(stream, offset, live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding, is_sse)
-    end
+    read_impl(stream, offset, live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, is_sse)
   end
 
-  defp read_impl(stream, offset, _live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding, true = _is_sse) do
+  defp read_impl(stream, offset, _live, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, true = _is_sse) do
     # Use Finch for true SSE streaming when available
     if DurableStreams.HTTP.Finch.available?() do
-      read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding)
+      read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate)
     else
       read_httpc(stream, offset, :sse, timeout, extra_headers)
     end
   end
 
-  defp read_impl(stream, offset, live, timeout, extra_headers, _halt_on_up_to_date, _halt_on_up_to_date_immediate, _encoding, false = _is_sse) do
+  defp read_impl(stream, offset, live, timeout, extra_headers, _halt_on_up_to_date, _halt_on_up_to_date_immediate, false = _is_sse) do
     read_httpc(stream, offset, live, timeout, extra_headers)
   end
 
   # SSE streaming using Finch (true incremental delivery)
-  defp read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate, encoding \\ nil) do
+  defp read_sse_finch(stream, offset, timeout, extra_headers, halt_on_up_to_date, halt_on_up_to_date_immediate) do
     query_params = [{"offset", offset}, {"live", "sse"}]
-    # Add encoding parameter for base64 binary streams
-    query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
     url_with_query = url(stream) <> "?" <> URI.encode_query(query_params)
 
     headers =
@@ -439,8 +430,7 @@ defmodule DurableStreams.Stream do
     sse_opts = [
       timeout: timeout,
       halt_on_up_to_date: halt_on_up_to_date,
-      halt_on_up_to_date_immediate: halt_on_up_to_date_immediate,
-      encoding: encoding
+      halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
     ]
     case DurableStreams.HTTP.Finch.stream_sse(url_with_query, headers, sse_opts, on_event) do
       {:ok, %{next_offset: final_offset, up_to_date: up_to_date}} ->
@@ -510,9 +500,12 @@ defmodule DurableStreams.Stream do
 
         # Parse SSE response if content-type is text/event-stream
         # SSE has upToDate and nextOffset in the control event
+        # Detect encoding from response header
+        sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
+
         {data, sse_next_offset, sse_up_to_date} =
           if String.contains?(content_type, "text/event-stream") do
-            parse_sse_response(body)
+            parse_sse_response(body, sse_encoding)
           else
             {body, nil, nil}
           end
@@ -565,10 +558,11 @@ defmodule DurableStreams.Stream do
       {:error, {:timeout_partial, %{status: status, headers: resp_headers, partial_body: body}}} when streaming ->
         # For SSE, partial data on timeout is expected - we received some events
         content_type = HTTP.get_header(resp_headers, "content-type") || ""
+        sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
 
         {data, sse_next_offset, sse_up_to_date} =
           if String.contains?(content_type, "text/event-stream") do
-            parse_sse_response(body)
+            parse_sse_response(body, sse_encoding)
           else
             {body, nil, nil}
           end
@@ -906,11 +900,11 @@ defmodule DurableStreams.Stream do
   #
   #   event: control
   #   data: {"streamNextOffset":"...","upToDate":true}
-  defp parse_sse_response(body) when is_binary(body) do
+  defp parse_sse_response(body, encoding \\ nil) when is_binary(body) do
     events =
       body
       |> String.split(~r/\n\n+/)
-      |> Enum.map(&parse_sse_event/1)
+      |> Enum.map(&parse_sse_event(&1, encoding))
       |> Enum.filter(fn {_type, data} -> data != "" and data != nil end)
 
     # Extract data from data events
@@ -955,7 +949,7 @@ defmodule DurableStreams.Stream do
   end
 
   # Parse a single SSE event block and return {type, data}
-  defp parse_sse_event(event) do
+  defp parse_sse_event(event, encoding \\ nil) do
     lines = String.split(event, "\n")
 
     # Extract event type (default to :data if not specified)
@@ -982,20 +976,22 @@ defmodule DurableStreams.Stream do
       end)
       |> Enum.reverse()
       |> Enum.join("\n")
-      |> decode_sse_data(event_type)
+      |> decode_sse_data(event_type, encoding)
 
     {event_type, data}
   end
 
-  # Don't decode control events - they're JSON
-  defp decode_sse_data("", _event_type), do: ""
-  defp decode_sse_data(data, :control), do: data
-  defp decode_sse_data(data, _event_type) do
-    # SSE data events might be base64-encoded
-    # Try to decode as base64, fall back to raw data
-    case Base.decode64(data) do
+  # Decode SSE data based on encoding detected from the stream-sse-data-encoding response header.
+  # Don't decode control events - they're JSON.
+  defp decode_sse_data("", _event_type, _encoding), do: ""
+  defp decode_sse_data(data, :control, _encoding), do: data
+  defp decode_sse_data(data, _event_type, "base64") do
+    # Remove any newlines/carriage returns per SSE protocol
+    cleaned = String.replace(data, ~r/[\n\r]/, "")
+    case Base.decode64(cleaned) do
       {:ok, decoded} -> decoded
-      :error -> data
+      :error -> raise DurableStreams.ParseError, message: "Failed to decode base64 SSE data: invalid base64 encoding"
     end
   end
+  defp decode_sse_data(data, _event_type, _encoding), do: data
 end

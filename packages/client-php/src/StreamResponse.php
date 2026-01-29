@@ -42,7 +42,6 @@ final class StreamResponse implements IteratorAggregate
      * @param string $url Stream URL
      * @param string $initialOffset Starting offset
      * @param LiveMode $liveMode Live mode
-     * @param string|null $encoding Encoding for SSE data (e.g., 'base64')
      * @param array<string, string|callable> $headers Request headers (values can be callables)
      * @param HttpClientInterface $client HTTP client
      * @param float $timeout Request timeout
@@ -52,7 +51,6 @@ final class StreamResponse implements IteratorAggregate
         private readonly string $url,
         string $initialOffset,
         private readonly LiveMode $liveMode,
-        private readonly ?string $encoding,
         array $headers,
         private HttpClientInterface $client,
         private float $timeout,
@@ -178,11 +176,6 @@ final class StreamResponse implements IteratorAggregate
 
         if ($this->cursor !== null) {
             $query['cursor'] = $this->cursor;
-        }
-
-        // Add encoding parameter for SSE mode
-        if ($this->encoding !== null && $this->liveMode === LiveMode::SSE) {
-            $query['encoding'] = $this->encoding;
         }
 
         $url .= '?' . http_build_query($query);
@@ -329,10 +322,6 @@ final class StreamResponse implements IteratorAggregate
             $query['cursor'] = $this->cursor;
         }
 
-        if ($this->encoding !== null) {
-            $query['encoding'] = $this->encoding;
-        }
-
         $sseUrl = $this->url . '?' . http_build_query($query);
 
         // Resolve dynamic headers
@@ -340,6 +329,10 @@ final class StreamResponse implements IteratorAggregate
 
         // Open SSE stream
         $stream = $this->client->openStream($sseUrl, $resolvedHeaders, $this->timeout);
+
+        // Detect encoding from response header (server auto-sets for binary streams)
+        $encoding = $stream->getHeader('Stream-SSE-Data-Encoding');
+
         $parser = new SSEParser($stream);
 
         $pendingData = null;
@@ -358,8 +351,8 @@ final class StreamResponse implements IteratorAggregate
                     // Buffer data, wait for control event to get offset
                     $data = $event->data;
 
-                    // Decode base64 if encoding is set
-                    if ($this->encoding === 'base64' && $data !== null) {
+                    // Decode base64 if encoding header indicates base64
+                    if ($encoding === 'base64' && $data !== null) {
                         // Remove any newlines inserted between base64 lines per protocol spec
                         $data = str_replace(["\n", "\r"], '', $data);
                         $decoded = base64_decode($data, true);

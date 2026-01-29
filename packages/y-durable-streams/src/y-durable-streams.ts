@@ -309,7 +309,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     const response = await this.documentStream.stream({
       offset: `-1`,
       live: transport,
-      encoding: transport === `sse` ? `base64` : undefined,
     })
 
     if (this.abortController?.signal.aborted) return
@@ -392,7 +391,6 @@ export class DurableStreamsProvider extends ObservableV2<DurableStreamsProviderE
     const response = await this.awarenessStream.stream({
       offset: `now`,
       live: awarenessTransport,
-      encoding: awarenessTransport === `sse` ? `base64` : undefined,
     })
 
     if (this.abortController?.signal.aborted) return

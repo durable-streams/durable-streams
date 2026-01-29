@@ -290,6 +290,9 @@ final class SSEStreamHandle
     private bool $finished = false;
     private float $timeout;
 
+    /** @var array<string, string> Response headers (lowercase keys) */
+    private array $responseHeaders = [];
+
     /**
      * @param string $url Full URL
      * @param array<string, string> $headers Request headers
@@ -408,7 +411,7 @@ final class SSEStreamHandle
                 if ($statusCode === 400) {
                     curl_multi_remove_handle($multi, $handle);
                     curl_multi_close($multi);
-                    throw new DurableStreamException('Bad request - encoding may be invalid or not supported', 'BAD_REQUEST');
+                    throw new DurableStreamException('Bad request', 'BAD_REQUEST');
                 }
 
                 if ($statusCode >= 400) {
@@ -436,6 +439,15 @@ final class SSEStreamHandle
 
         $this->handle = $handle;
         $this->multi = $multi;
+        $this->responseHeaders = $responseHeaders;
+    }
+
+    /**
+     * Get a response header value (case-insensitive).
+     */
+    public function getHeader(string $name): ?string
+    {
+        return $this->responseHeaders[strtolower($name)] ?? null;
     }
 
     /**

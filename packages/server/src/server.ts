@@ -40,7 +40,6 @@ const STREAM_CLOSED_HEADER = `Stream-Closed`
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
-const ENCODING_QUERY_PARAM = `encoding`
 
 /**
  * Encode data for SSE format.
@@ -712,7 +711,6 @@ export class DurableStreamTestServer {
     const offset = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined
     const live = url.searchParams.get(LIVE_QUERY_PARAM)
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
-    const encoding = url.searchParams.get(ENCODING_QUERY_PARAM) ?? undefined
 
     // Validate offset parameter
     if (offset !== undefined) {
@@ -750,43 +748,20 @@ export class DurableStreamTestServer {
       return
     }
 
-    // Validate encoding parameter is only valid with live=sse (Protocol Section 5.7)
-    if (encoding && live !== `sse`) {
-      res.writeHead(400, { "content-type": `text/plain` })
-      res.end(`encoding parameter is only valid with live='sse'`)
-      return
-    }
-
-    // Validate encoding parameter for SSE mode (Protocol Section 5.7)
+    // Determine if this is a binary stream that needs base64 encoding in SSE mode
+    let useBase64 = false
     if (live === `sse`) {
       const ct = stream.contentType?.toLowerCase().split(`;`)[0]?.trim() ?? ``
       const isTextCompatible =
         ct.startsWith(`text/`) || ct === `application/json`
-
-      if (isTextCompatible && encoding) {
-        res.writeHead(400, { "content-type": `text/plain` })
-        res.end(
-          `encoding parameter not allowed for text/* or application/json streams`
-        )
-        return
-      }
-      if (!isTextCompatible && !encoding) {
-        res.writeHead(400, { "content-type": `text/plain` })
-        res.end(`encoding parameter required for non-text content types`)
-        return
-      }
-      if (encoding && encoding !== `base64`) {
-        res.writeHead(400, { "content-type": `text/plain` })
-        res.end(`unsupported encoding value: ${encoding}`)
-        return
-      }
+      useBase64 = !isTextCompatible
     }
 
     // Handle SSE mode
     if (live === `sse`) {
       // For SSE with offset=now, convert to actual tail offset
       const sseOffset = offset === `now` ? stream.currentOffset : offset!
-      await this.handleSSE(path, stream, sseOffset, cursor, encoding, res)
+      await this.handleSSE(path, stream, sseOffset, cursor, useBase64, res)
       return
     }
 
@@ -979,7 +954,7 @@ export class DurableStreamTestServer {
     stream: ReturnType<StreamStore[`get`]>,
     initialOffset: string,
     cursor: string | undefined,
-    encoding: string | undefined,
+    useBase64: boolean,
     res: ServerResponse
   ): Promise<void> {
     // Track this SSE connection
@@ -995,8 +970,8 @@ export class DurableStreamTestServer {
       "cross-origin-resource-policy": `cross-origin`,
     }
 
-    // Add encoding header when base64 encoding is used (Protocol Section 5.7)
-    if (encoding === `base64`) {
+    // Add encoding header when base64 encoding is used for binary streams
+    if (useBase64) {
       sseHeaders[STREAM_SSE_DATA_ENCODING_HEADER] = `base64`
     }
 
@@ -1035,7 +1010,7 @@ export class DurableStreamTestServer {
       for (const message of messages) {
         // Format data based on content type and encoding
         let dataPayload: string
-        if (encoding === `base64`) {
+        if (useBase64) {
           // Base64 encode binary data (Protocol Section 5.7)
           dataPayload = Buffer.from(message.data).toString(`base64`)
         } else if (isJsonStream) {

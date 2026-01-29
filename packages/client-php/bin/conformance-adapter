@@ -346,9 +346,6 @@ function handleRead(array $cmd): array {
         }
     }
 
-    // Get encoding parameter (for SSE with binary streams)
-    $encoding = $cmd['encoding'] ?? null;
-
     $timeoutMs = $cmd['timeoutMs'] ?? 5000;
     $maxChunks = $cmd['maxChunks'] ?? 100;
     $waitForUpToDate = $cmd['waitForUpToDate'] ?? false;
@@ -377,7 +374,6 @@ function handleRead(array $cmd): array {
         'url' => $url,
         'offset' => $offset,
         'live' => $live,
-        'encoding' => $encoding,
         'headers' => $mergedHeaders,
         'timeout' => $httpTimeout,
         'client' => $sharedClient,
@@ -389,8 +385,8 @@ function handleRead(array $cmd): array {
             if ($chunk->hasData()) {
                 $data = $chunk->data;
 
-                // For JSON streams (not binary/base64), validate JSON to detect parse errors
-                if ($isJson && $encoding === null) {
+                // For JSON streams, validate JSON to detect parse errors
+                if ($isJson) {
                     json_decode($data, true, 512, JSON_THROW_ON_ERROR);
                 }
 

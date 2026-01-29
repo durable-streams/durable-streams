@@ -11,8 +11,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param live [Symbol, false] Live mode (:long_poll, :sse, false)
     # @param cursor [String, nil] Initial cursor
-    # @param encoding [String, nil] Encoding for SSE binary streams (e.g., "base64")
-    def initialize(stream, offset: "-1", live: false, cursor: nil, encoding: nil)
+    def initialize(stream, offset: "-1", live: false, cursor: nil)
       @stream = stream
       @offset = DurableStreams.normalize_offset(offset)
       @live = live
@@ -22,7 +21,6 @@ module DurableStreams
       @closed = false
       @status = nil
       @sse_reader = nil
-      @encoding = encoding
     end
 
     # Iterate over individual JSON messages
@@ -166,8 +164,7 @@ module DurableStreams
       @sse_reader = SSEReader.new(
         @stream,
         offset: @next_offset,
-        cursor: @cursor,
-        encoding: @encoding
+        cursor: @cursor
       )
 
       @sse_reader.each_event do |event|

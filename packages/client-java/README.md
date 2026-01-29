@@ -112,24 +112,21 @@ try (var chunks = client.read(url, ReadOptions.from(offset).live(LiveMode.SSE)))
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
+For binary content types (e.g., `application/octet-stream`), the server automatically base64-encodes data in SSE mode and signals this via the `Stream-SSE-Data-Encoding: base64` response header. The client detects this header and decodes the data automatically:
 
 ```java
 // Create a binary stream
 client.create(url, "application/octet-stream");
 
-// Read with SSE using base64 encoding
+// Read with SSE - base64 decoding handled based on response header
 try (var chunks = client.read(url, ReadOptions.from(offset)
-        .live(LiveMode.SSE)
-        .encoding("base64"))) {
+        .live(LiveMode.SSE))) {
     for (var chunk : chunks) {
         // chunk.getData() is byte[] - automatically decoded from base64
         processBinaryData(chunk.getData());
     }
 }
 ```
-
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
 
 ## Type-Safe JSON
 

@@ -7,14 +7,12 @@
 import fastq from "fastq"
 
 import {
-  DurableStreamError,
   InvalidSignalError,
   MissingStreamUrlError,
   StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
 import {
-  SSE_COMPATIBLE_CONTENT_TYPES,
   STREAM_CLOSED_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
@@ -873,22 +871,6 @@ export class DurableStream {
   async stream<TJson = unknown>(
     options?: Omit<StreamOptions, `url`>
   ): Promise<StreamResponse<TJson>> {
-    // Check SSE compatibility if SSE mode is requested
-    if (options?.live === `sse` && this.contentType) {
-      const isSSECompatible = SSE_COMPATIBLE_CONTENT_TYPES.some((prefix) =>
-        this.contentType!.startsWith(prefix)
-      )
-      // Allow SSE for binary content types if encoding is provided (e.g., base64)
-      if (!isSSECompatible && !options.encoding) {
-        throw new DurableStreamError(
-          `SSE is not supported for content-type: ${this.contentType}. ` +
-            `For binary streams, use encoding='base64'.`,
-          `SSE_NOT_SUPPORTED`,
-          400
-        )
-      }
-    }
-
     // Merge handle-level and call-specific headers
     const mergedHeaders: HeadersRecord = {
       ...this.#options.headers,
@@ -911,7 +893,6 @@ export class DurableStream {
       offset: options?.offset,
       live: options?.live,
       json: options?.json,
-      encoding: options?.encoding,
       onError: options?.onError ?? this.#onError,
       warnOnHttp: options?.warnOnHttp ?? this.#options.warnOnHttp,
     })

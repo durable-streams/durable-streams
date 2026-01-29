@@ -47,7 +47,6 @@ struct Command {
     live: Option<Value>,
     max_chunks: Option<usize>,
     wait_for_up_to_date: Option<bool>,
-    encoding: Option<String>,
     // Benchmark fields
     iteration_id: Option<String>,
     operation: Option<BenchmarkOperation>,
@@ -487,11 +486,6 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         builder = builder.offset(Offset::parse(offset));
     }
 
-    // Add encoding for SSE with binary streams
-    if let Some(encoding) = &cmd.encoding {
-        builder = builder.encoding(encoding.clone());
-    }
-
     // Merge dynamic headers with command headers
     for (k, v) in &headers_sent {
         builder = builder.header(k.clone(), v.clone());
@@ -534,7 +528,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                         }
 
                         if !chunk.data.is_empty() {
-                            // The client library has already decoded base64 if encoding=base64 was used.
+                            // The client library has already decoded base64 if the server indicated base64 encoding.
                             // We need to return the data to the test runner:
                             // - If valid UTF-8, return as string
                             // - If not valid UTF-8, base64 encode for transport

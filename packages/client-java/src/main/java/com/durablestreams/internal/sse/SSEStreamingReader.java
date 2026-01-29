@@ -38,7 +38,6 @@ public final class SSEStreamingReader implements AutoCloseable {
     private final BlockingQueue<ChunkOrError> chunkQueue;
     private final AtomicBoolean closed;
     private final AtomicBoolean started;
-    private final String encoding;
 
     private volatile Thread readerThread;
     private volatile InputStream inputStream;
@@ -46,15 +45,15 @@ public final class SSEStreamingReader implements AutoCloseable {
     private volatile Offset currentOffset;
     private volatile String currentCursor;
     private volatile boolean upToDate;
+    private volatile String encoding;
 
-    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset, String encoding) {
+    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset) {
         this.httpClient = httpClient;
         this.request = request;
         this.chunkQueue = new LinkedBlockingQueue<>();
         this.closed = new AtomicBoolean(false);
         this.started = new AtomicBoolean(false);
         this.currentOffset = initialOffset;
-        this.encoding = encoding;
         this.upToDate = false;
     }
 
@@ -76,6 +75,11 @@ public final class SSEStreamingReader implements AutoCloseable {
             } else if (status != 200) {
                 throw new DurableStreamException("SSE connection failed with status: " + status, status);
             }
+
+            // Detect encoding from response header
+            this.encoding = response.headers()
+                    .firstValue("Stream-SSE-Data-Encoding")
+                    .orElse(null);
 
             inputStream = response.body();
 

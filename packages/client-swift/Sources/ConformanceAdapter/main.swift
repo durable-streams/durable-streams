@@ -1106,7 +1106,6 @@ func handleRead(_ cmd: Command) async -> Result {
             cmd,
             url: url,
             offset: offset,
-            encoding: cmd.encoding,
             maxChunks: maxChunks,
             waitForUpToDate: waitForUpToDate,
             timeoutSeconds: timeoutSeconds,
@@ -1154,11 +1153,9 @@ func handleRead(_ cmd: Command) async -> Result {
                 await state.cacheHandle(path: path, handle: handle)
             }
 
-            // Pass encoding to trigger validation (should fail if encoding provided without SSE)
             let result = try await handle.read(
                 offset: currentOffset,
                 live: liveMode,
-                encoding: cmd.encoding,
                 headers: [:]  // Already in config
             )
 
@@ -1282,7 +1279,6 @@ func handleSSERead(
     _ cmd: Command,
     url: URL,
     offset: Offset,
-    encoding: String?,
     maxChunks: Int,
     waitForUpToDate: Bool,
     timeoutSeconds: Double,
@@ -1317,7 +1313,7 @@ func handleSSERead(
 
         // Process SSE events directly (not in a separate task)
         // This allows errors to propagate naturally
-        for try await event in await handle.sseEvents(from: offset, encoding: encoding) {
+        for try await event in await handle.sseEvents(from: offset) {
             if Task.isCancelled || Date() >= deadline {
                 break
             }
@@ -1344,27 +1340,24 @@ func handleSSERead(
                     upToDate: control.upToDate ?? false
                 )
             } else if event.effectiveEvent == "data" || event.effectiveEvent == "message" {
-                // The client library has already decoded base64 if encoding=base64 was used.
-                // The data is now in ISO-8859-1 encoding (raw bytes as string).
+                // The client library auto-decodes base64 when the server returns
+                // Stream-SSE-Data-Encoding: base64. Decoded data is stored as
+                // ISO-8859-1 string to preserve all byte values.
                 // We need to return it to the test runner:
                 // - If valid UTF-8, return as string
                 // - If not valid UTF-8, base64 encode for transport
-                if encoding == "base64" {
-                    // Convert from ISO-8859-1 string back to raw bytes
-                    if let rawData = event.data.data(using: .isoLatin1) {
-                        // Try to convert to UTF-8 string
-                        if let utf8String = String(data: rawData, encoding: .utf8) {
-                            await accumulator.addChunk(ReadChunk(data: utf8String, offset: currentOffset.rawValue))
-                        } else {
-                            // Not valid UTF-8, encode as base64 for transport
-                            await accumulator.addChunk(ReadChunk(
-                                data: rawData.base64EncodedString(),
-                                binary: true,
-                                offset: currentOffset.rawValue
-                            ))
-                        }
+                // Convert from ISO-8859-1 string back to raw bytes
+                if let rawData = event.data.data(using: .isoLatin1) {
+                    // Try to convert to UTF-8 string
+                    if let utf8String = String(data: rawData, encoding: .utf8) {
+                        await accumulator.addChunk(ReadChunk(data: utf8String, offset: currentOffset.rawValue))
                     } else {
-                        await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
+                        // Not valid UTF-8, encode as base64 for transport
+                        await accumulator.addChunk(ReadChunk(
+                            data: rawData.base64EncodedString(),
+                            binary: true,
+                            offset: currentOffset.rawValue
+                        ))
                     }
                 } else {
                     await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))

@@ -77,36 +77,6 @@ defmodule DurableStreams.Base64EncodingTest do
     end
   end
 
-  describe "URL building with encoding parameter" do
-    test "builds URL with encoding parameter when specified" do
-      base_url = "http://example.com/stream"
-      offset = "0"
-      encoding = "base64"
-
-      query_params = [{"offset", offset}, {"live", "sse"}]
-      query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
-      url_with_query = base_url <> "?" <> URI.encode_query(query_params)
-
-      assert String.contains?(url_with_query, "encoding=base64")
-      assert String.contains?(url_with_query, "offset=0")
-      assert String.contains?(url_with_query, "live=sse")
-    end
-
-    test "builds URL without encoding parameter when not specified" do
-      base_url = "http://example.com/stream"
-      offset = "0"
-      encoding = nil
-
-      query_params = [{"offset", offset}, {"live", "sse"}]
-      query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
-      url_with_query = base_url <> "?" <> URI.encode_query(query_params)
-
-      refute String.contains?(url_with_query, "encoding=")
-      assert String.contains?(url_with_query, "offset=0")
-      assert String.contains?(url_with_query, "live=sse")
-    end
-  end
-
   # Helper function to test base64 decoding logic
   # This mirrors the logic in DurableStreams.HTTP.Finch.decode_sse_data/2
   defp decode_sse_data(data, "base64") when is_binary(data) do

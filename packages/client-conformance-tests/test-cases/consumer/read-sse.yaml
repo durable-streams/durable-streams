@@ -132,7 +132,7 @@ tests:
 
   - id: sse-binary-data
     name: SSE with binary data
-    description: SSE should correctly transmit binary data with base64 encoding
+    description: SSE should correctly transmit binary data with auto-detected base64 encoding
     setup:
       - action: create
         as: streamPath
@@ -144,7 +144,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1
