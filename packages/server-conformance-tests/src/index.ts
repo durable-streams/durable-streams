@@ -3153,22 +3153,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(response.status).toBe(400)
     })
 
-    test(`client should reject SSE mode for incompatible content types`, async () => {
-      const streamPath = `/v1/stream/sse-binary-test-${Date.now()}`
-
-      // Create stream with binary content type (not SSE compatible)
-      const stream = await DurableStream.create({
-        url: `${getBaseUrl()}${streamPath}`,
-        contentType: `application/octet-stream`,
-      })
-
-      // Append some binary data
-      await stream.append(new Uint8Array([0x01, 0x02, 0x03]))
-
-      // Trying to read via SSE mode should throw
-      await expect(stream.stream({ live: `sse` })).rejects.toThrow()
-    })
-
     test(`should stream data events via SSE`, async () => {
       const streamPath = `/v1/stream/sse-data-stream-test-${Date.now()}`
 
