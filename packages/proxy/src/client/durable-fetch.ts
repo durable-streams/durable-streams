@@ -278,7 +278,6 @@ async function readFromStream(
     offset: credentials.offset === `-1` ? undefined : credentials.offset,
     fetch: fetchFn,
     live: `sse`, // Follow until stream closes
-    encoding: `base64`,
   })
 
   // Bridge: wrap DS client's bodyStream() into a Response
