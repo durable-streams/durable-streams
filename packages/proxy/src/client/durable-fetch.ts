@@ -181,14 +181,19 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     // Handle errors
     if (!createResponse.ok) {
       if (createResponse.status === 502) {
-        const upstreamStatus = createResponse.headers.get(`Upstream-Status`)
-        const errorBody = await createResponse.text()
-        throw new Error(`Upstream error (${upstreamStatus}): ${errorBody}`)
+        const upstreamStatus = parseInt(createResponse.headers.get(`Upstream-Status`)!, 10)
+        const upstreamContentType = createResponse.headers.get(`Upstream-Content-Type`)
+        return new Response(createResponse.body, {
+          status: upstreamStatus,
+          headers: {
+            ...createResponse.headers,
+            "Content-Type": upstreamContentType ?? `application/octet-stream`,
+            "Upstream-Error": "true"
+          },
+        })
+      } else {
+        return createResponse
       }
-      const errorBody = await createResponse.text().catch(() => ``)
-      throw new Error(
-        `Failed to create stream: ${createResponse.status} ${errorBody}`
-      )
     }
 
     // Extract Location header (pre-signed URL)
