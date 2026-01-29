@@ -232,7 +232,7 @@ class DurableStream {
   head(opts?: { signal?: AbortSignal }): Promise<HeadResult>
   create(opts?: CreateOptions): Promise<this>
   delete(opts?: { signal?: AbortSignal }): Promise<void>
-  close(opts?: CloseOptions): Promise<CloseResult>  // Close stream (EOF)
+  close(opts?: CloseOptions): Promise<CloseResult> // Close stream (EOF)
   append(
     body: BodyInit | Uint8Array | string,
     opts?: AppendOptions
@@ -921,6 +921,7 @@ const result = await producer.close('{"done": true}')
 #### `detach(): Promise<void>`
 
 Stop the producer without closing the underlying stream. Use this when:
+
 - Handing off writing to another producer
 - Keeping the stream open for future writes
 - Stopping this producer but not signaling EOF to readers
@@ -998,17 +999,18 @@ const result = await stream.close({
 
 ```typescript
 interface CloseOptions {
-  body?: Uint8Array | string  // Optional final message
-  contentType?: string        // Content type (must match stream)
-  signal?: AbortSignal        // Cancellation
+  body?: Uint8Array | string // Optional final message
+  contentType?: string // Content type (must match stream)
+  signal?: AbortSignal // Cancellation
 }
 
 interface CloseResult {
-  finalOffset: Offset  // The offset after the last byte
+  finalOffset: Offset // The offset after the last byte
 }
 ```
 
 **Idempotency:**
+
 - `close()` without body: Idempotent — safe to call multiple times
 - `close({ body })` with body: NOT idempotent — throws `StreamClosedError` if already closed. Use `IdempotentProducer.close(finalMessage)` for idempotent close-with-body.
 
@@ -1017,7 +1019,9 @@ interface CloseResult {
 For reliable close with final message (safe to retry):
 
 ```typescript
-const producer = new IdempotentProducer(stream, "producer-1", { autoClaim: true })
+const producer = new IdempotentProducer(stream, "producer-1", {
+  autoClaim: true,
+})
 
 // Write some messages
 producer.append('{"event": "start"}')
@@ -1059,12 +1063,12 @@ The `streamClosed` property indicates when a stream is permanently closed:
 ```typescript
 // StreamResponse properties
 const res = await stream({ url, live: true })
-console.log(res.streamClosed)  // false initially
+console.log(res.streamClosed) // false initially
 
 // In subscribers - batch/chunk metadata includes streamClosed
 res.subscribeJson((batch) => {
   console.log("Items:", batch.items)
-  console.log("Stream closed:", batch.streamClosed)  // true when EOF reached
+  console.log("Stream closed:", batch.streamClosed) // true when EOF reached
 })
 
 // In HEAD requests
@@ -1087,7 +1091,7 @@ res.subscribeJson((batch) => {
   for (const item of batch.items) {
     process(item)
   }
-  
+
   if (batch.streamClosed) {
     console.log("Stream complete, no more data will arrive")
     // Connection will close automatically

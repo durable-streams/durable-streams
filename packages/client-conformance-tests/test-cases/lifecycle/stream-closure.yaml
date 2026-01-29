@@ -621,7 +621,7 @@ tests:
     description: POST with Stream-Closed to nonexistent URL returns 404
     operations:
       - action: close
-        path: /nonexistent-stream-${unique}
+        path: /nonexistent-close-stream-12345
         expect:
           status: 404
 
