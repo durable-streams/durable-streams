@@ -40,7 +40,6 @@ const STREAM_CLOSED_HEADER = `Stream-Closed`
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
-// encoding query param removed - servers auto-detect binary content types
 
 /**
  * Encode data for SSE format.
@@ -712,7 +711,6 @@ export class DurableStreamTestServer {
     const offset = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined
     const live = url.searchParams.get(LIVE_QUERY_PARAM)
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
-    // encoding query param is no longer used - servers auto-detect binary content types
 
     // Validate offset parameter
     if (offset !== undefined) {

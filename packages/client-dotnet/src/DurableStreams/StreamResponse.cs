@@ -457,7 +457,9 @@ public sealed class StreamResponse : IAsyncDisposable
                 {
                     try
                     {
-                        var decodedBytes = Convert.FromBase64String(dataEvt.Data);
+                        // Per protocol: remove \n and \r characters before decoding
+                        var cleaned = dataEvt.Data.Replace("\n", "").Replace("\r", "");
+                        var decodedBytes = Convert.FromBase64String(cleaned);
                         var decodedStr = Encoding.UTF8.GetString(decodedBytes);
                         _pendingSseData = (_pendingSseData ?? "") + decodedStr;
                     }

@@ -990,7 +990,7 @@ defmodule DurableStreams.Stream do
     cleaned = String.replace(data, ~r/[\n\r]/, "")
     case Base.decode64(cleaned) do
       {:ok, decoded} -> decoded
-      :error -> data
+      :error -> raise DurableStreams.ParseError, message: "Failed to decode base64 SSE data: invalid base64 encoding"
     end
   end
   defp decode_sse_data(data, _event_type, _encoding), do: data

@@ -83,16 +83,12 @@ export async function handleReadStream(
   // Forward query parameters
   const offset = url.searchParams.get(`offset`)
   const live = url.searchParams.get(`live`)
-  const encoding = url.searchParams.get(`encoding`)
 
   if (offset) {
     dsUrl.searchParams.set(`offset`, offset)
   }
   if (live) {
     dsUrl.searchParams.set(`live`, live)
-  }
-  if (encoding) {
-    dsUrl.searchParams.set(`encoding`, encoding)
   }
 
   try {

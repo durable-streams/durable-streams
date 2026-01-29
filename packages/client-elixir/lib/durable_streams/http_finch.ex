@@ -315,7 +315,7 @@ defmodule DurableStreams.HTTP.Finch do
     cleaned = String.replace(data, ~r/[\n\r]/, "")
     case Base.decode64(cleaned) do
       {:ok, decoded} -> decoded
-      :error -> data  # If decoding fails, return original data
+      :error -> raise DurableStreams.ParseError, message: "Failed to decode base64 SSE data: invalid base64 encoding"
     end
   end
 

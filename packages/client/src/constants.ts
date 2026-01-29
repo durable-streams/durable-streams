@@ -135,8 +135,8 @@ export const SSE_CLOSED_FIELD = `streamClosed`
 // ============================================================================
 
 /**
- * Content types that support SSE mode.
- * SSE is only valid for text/* or application/json streams.
+ * Content types that are natively compatible with SSE (UTF-8 text).
+ * Binary content types are also supported via automatic base64 encoding.
  */
 export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
   `text/`,

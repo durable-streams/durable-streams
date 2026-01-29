@@ -173,22 +173,21 @@ The `live` parameter controls streaming behavior:
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` parameter:
+For binary content types (e.g., `application/octet-stream`), the server automatically base64-encodes data in SSE mode and signals this via the `Stream-SSE-Data-Encoding: base64` response header. The client detects this header and decodes the data automatically:
 
 ```python
 from durable_streams import stream
 
-# Read binary stream with SSE using base64 encoding
+# Read binary stream with SSE - encoding is auto-detected
 with stream(
     "https://streams.example.com/my-binary-stream",
     live="sse",
-    encoding="base64",
 ) as res:
     for chunk in res:  # bytes - automatically decoded from base64
         process(chunk)
 ```
 
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+The client automatically decodes base64 data events based on the server's response header.
 
 ### StreamResponse / AsyncStreamResponse
 

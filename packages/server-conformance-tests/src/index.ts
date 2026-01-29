@@ -3741,6 +3741,50 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(encodingHeader).toBe(`base64`)
     })
 
+    test(`should NOT include Stream-SSE-Data-Encoding header for text/plain streams`, async () => {
+      const streamPath = `/v1/stream/sse-text-no-encoding-${Date.now()}`
+
+      // Create stream with text content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello world`,
+      })
+
+      const { response } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Should NOT include the Stream-SSE-Data-Encoding header for text streams
+      const encodingHeader = response.headers.get(`stream-sse-data-encoding`)
+      expect(encodingHeader).toBeNull()
+    })
+
+    test(`should NOT include Stream-SSE-Data-Encoding header for application/json streams`, async () => {
+      const streamPath = `/v1/stream/sse-json-no-encoding-${Date.now()}`
+
+      // Create stream with JSON content type
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ message: `hello` }),
+      })
+
+      const { response } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `event: control` }
+      )
+
+      expect(response.status).toBe(200)
+
+      // Should NOT include the Stream-SSE-Data-Encoding header for JSON streams
+      const encodingHeader = response.headers.get(`stream-sse-data-encoding`)
+      expect(encodingHeader).toBeNull()
+    })
+
     test(`should base64 encode data events only, control events remain JSON`, async () => {
       const streamPath = `/v1/stream/sse-base64-data-only-${Date.now()}`
 
