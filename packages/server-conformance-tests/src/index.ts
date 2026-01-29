@@ -7008,6 +7008,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     // ========================================================================
 
     describe(`Edge Cases`, () => {
+      // Producer header constants for edge case tests
+      const PRODUCER_ID_HEADER = `Producer-Id`
+      const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+      const PRODUCER_SEQ_HEADER = `Producer-Seq`
+
       test(`409-includes-stream-offset: 409 for closed stream includes Stream-Next-Offset header`, async () => {
         const streamPath = `/v1/stream/409-offset-${Date.now()}`
 
