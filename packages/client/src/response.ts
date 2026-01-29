@@ -470,7 +470,8 @@ export class StreamResponseImpl<
       [data],
       offset,
       cursor,
-      upToDate
+      upToDate,
+      streamClosed
     )
   }
 
@@ -484,7 +485,8 @@ export class StreamResponseImpl<
     dataParts: Array<string>,
     offset: Offset,
     cursor: string | undefined,
-    upToDate: boolean
+    upToDate: boolean,
+    streamClosed: boolean
   ): Response {
     const headers: Record<string, string> = {
       "content-type": this.contentType ?? `application/json`,
@@ -722,7 +724,8 @@ export class StreamResponseImpl<
         ``,
         event.streamNextOffset,
         event.streamCursor,
-        true
+        true,
+        event.streamClosed ?? false
       )
       return { type: `response`, response }
     }
