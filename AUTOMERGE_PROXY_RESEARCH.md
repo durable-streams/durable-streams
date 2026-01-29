@@ -70,56 +70,91 @@ abstract class NetworkAdapter extends EventEmitter<NetworkAdapterEvents> {
 
 The key insight: **automerge-repo handles all the sync protocol logic internally**. The NetworkAdapter just needs to transport messages between peers.
 
-## Architecture: Durable Stream as Message Bus
+## Architecture: One Stream Per Document
+
+Each document gets its own Durable Stream. This keeps streams focused and prevents unbounded growth from mixing unrelated documents.
 
 ```
-┌─────────────────┐                              ┌─────────────────┐
-│   Client A      │                              │   Client B      │
-│ ┌─────────────┐ │                              │ ┌─────────────┐ │
-│ │    Repo     │ │                              │ │    Repo     │ │
-│ └──────┬──────┘ │                              │ └──────┬──────┘ │
-│        │        │                              │        │        │
-│ ┌──────▼──────┐ │     ┌──────────────────┐     │ ┌──────▼──────┐ │
-│ │ DurableStr- │ │────▶│  Durable Stream  │◀────│ │ DurableStr- │ │
-│ │ eamsAdapter │ │     │  (append-only)   │     │ │ eamsAdapter │ │
-│ └─────────────┘ │     └──────────────────┘     │ └─────────────┘ │
-└─────────────────┘                              └─────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                         Client A                                │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │                         Repo                            │    │
+│  └───────────────────────────┬─────────────────────────────┘    │
+│                              │                                  │
+│  ┌───────────────────────────▼─────────────────────────────┐    │
+│  │              DurableStreamsNetworkAdapter               │    │
+│  │  ┌─────────────────────────────────────────────────┐    │    │
+│  │  │          streams: Map<DocumentId, Stream>       │    │    │
+│  │  │  ┌─────────┐  ┌─────────┐  ┌─────────┐         │    │    │
+│  │  │  │ doc-abc │  │ doc-xyz │  │ doc-123 │   ...   │    │    │
+│  │  │  └────┬────┘  └────┬────┘  └────┬────┘         │    │    │
+│  │  └───────┼────────────┼───────────┼───────────────┘    │    │
+│  └──────────┼────────────┼───────────┼────────────────────┘    │
+└─────────────┼────────────┼───────────┼──────────────────────────┘
+              │            │           │
+              ▼            ▼           ▼
+     ┌────────────┐ ┌────────────┐ ┌────────────┐
+     │  Stream    │ │  Stream    │ │  Stream    │
+     │ /docs/abc  │ │ /docs/xyz  │ │ /docs/123  │
+     └────────────┘ └────────────┘ └────────────┘
 ```
 
-Each client:
-1. **Appends messages** to the stream via `send()`
-2. **Reads all messages** from the stream
-3. **Filters messages** - only emits messages targeted to this peer
-4. **Treats all other clients as peers** discovered through the stream
+**Why one stream per document?**
+- Streams are persistent - mixing unrelated doc history gets messy
+- Each stream stays bounded to one document's lifecycle
+- Easier permission boundaries per document
+- Replay only fetches relevant messages
+- Natural URL structure: `/streams/docs/{documentId}`
 
 ## Implementation Design
 
 ### Package: `automerge-repo-network-durable-streams`
 
 ```typescript
-import { NetworkAdapter, type Message, type PeerId, type PeerMetadata } from "@automerge/automerge-repo"
-import { DurableStream } from "@durable-streams/client"
+import {
+  NetworkAdapter,
+  type Message,
+  type PeerId,
+  type PeerMetadata,
+  type DocumentId,
+} from "@automerge/automerge-repo"
+import { DurableStream, DurableStreamError } from "@durable-streams/client"
 
 export interface DurableStreamsNetworkAdapterOptions {
-  /** URL of the durable stream */
-  url: string | URL
+  /** Base URL for document streams. DocumentId will be appended. */
+  baseUrl: string | URL
   /** Transport mode */
   transport?: "sse" | "long-poll"
   /** Optional headers (can be functions for dynamic values like auth tokens) */
   headers?: Record<string, string | (() => string)>
 }
 
+interface DocumentStream {
+  stream: DurableStream
+  unsubscribe: () => void
+  peers: Set<PeerId>
+  ready: boolean
+}
+
 export class DurableStreamsNetworkAdapter extends NetworkAdapter {
-  private stream: DurableStream | null = null
-  private abortController: AbortController | null = null
-  private unsubscribe: (() => void) | null = null
+  private readonly baseUrl: string
+  private readonly transport: "sse" | "long-poll"
+  private readonly headers?: Record<string, string | (() => string)>
+
+  private streams: Map<DocumentId, DocumentStream> = new Map()
   private knownPeers: Set<PeerId> = new Set()
+  private abortController: AbortController | null = null
+  private _isReady = false
   private readyPromise: Promise<void>
   private resolveReady!: () => void
-  private _isReady = false
 
-  constructor(private options: DurableStreamsNetworkAdapterOptions) {
+  constructor(options: DurableStreamsNetworkAdapterOptions) {
     super()
+    this.baseUrl = typeof options.baseUrl === "string"
+      ? options.baseUrl.replace(/\/$/, "")  // Remove trailing slash
+      : options.baseUrl.href.replace(/\/$/, "")
+    this.transport = options.transport ?? "sse"
+    this.headers = options.headers
     this.readyPromise = new Promise((resolve) => {
       this.resolveReady = resolve
     })
@@ -129,137 +164,180 @@ export class DurableStreamsNetworkAdapter extends NetworkAdapter {
     this.peerId = peerId
     this.peerMetadata = peerMetadata
     this.abortController = new AbortController()
-    this.connectToStream()
-  }
 
-  private async connectToStream(): Promise<void> {
-    const url = typeof this.options.url === "string"
-      ? this.options.url
-      : this.options.url.href
-
-    // Create or connect to existing stream
-    try {
-      this.stream = await DurableStream.create({
-        url,
-        contentType: "application/octet-stream",
-        headers: this.options.headers,
-        signal: this.abortController!.signal,
-      })
-    } catch (err) {
-      if (err instanceof DurableStreamError && err.code === "CONFLICT_EXISTS") {
-        this.stream = new DurableStream({
-          url,
-          contentType: "application/octet-stream",
-          headers: this.options.headers,
-          signal: this.abortController!.signal,
-        })
-      } else {
-        throw err
-      }
-    }
-
-    // Announce ourselves by appending a "join" message
-    await this.announcePresence()
-
-    // Start streaming from beginning to catch up on history
-    const transport = this.options.transport ?? "sse"
-    const response = await this.stream.stream({
-      offset: "-1",
-      live: transport,
-      encoding: transport === "sse" ? "base64" : undefined,
-    })
-
-    this.unsubscribe = response.subscribeBytes((chunk) => {
-      this.handleChunk(chunk)
-    })
-  }
-
-  private async announcePresence(): Promise<void> {
-    // Append a presence announcement so other peers discover us
-    const announcement: StreamEnvelope = {
-      type: "announce",
-      peerId: this.peerId!,
-      peerMetadata: this.peerMetadata,
-    }
-    await this.stream!.append(encodeEnvelope(announcement))
-  }
-
-  private handleChunk(chunk: { data: Uint8Array; upToDate?: boolean }): void {
-    if (chunk.data.length === 0) {
-      if (chunk.upToDate && !this._isReady) {
-        this._isReady = true
-        this.resolveReady()
-      }
-      return
-    }
-
-    // Decode messages from chunk
-    const envelopes = decodeEnvelopes(chunk.data)
-
-    for (const envelope of envelopes) {
-      if (envelope.type === "announce") {
-        // Discovered a peer
-        if (envelope.peerId !== this.peerId && !this.knownPeers.has(envelope.peerId)) {
-          this.knownPeers.add(envelope.peerId)
-          this.emit("peer-candidate", {
-            peerId: envelope.peerId,
-            peerMetadata: envelope.peerMetadata ?? {},
-          })
-        }
-      } else if (envelope.type === "message") {
-        // Only emit messages targeted to us (or broadcast)
-        if (envelope.message.targetId === this.peerId) {
-          // Track sender as known peer
-          if (!this.knownPeers.has(envelope.message.senderId)) {
-            this.knownPeers.add(envelope.message.senderId)
-            this.emit("peer-candidate", {
-              peerId: envelope.message.senderId,
-              peerMetadata: {},
-            })
-          }
-          this.emit("message", envelope.message)
-        }
-      } else if (envelope.type === "leave") {
-        if (this.knownPeers.has(envelope.peerId)) {
-          this.knownPeers.delete(envelope.peerId)
-          this.emit("peer-disconnected", { peerId: envelope.peerId })
-        }
-      }
-    }
-
-    if (chunk.upToDate && !this._isReady) {
-      this._isReady = true
-      this.resolveReady()
-    }
+    // Adapter is ready immediately - streams are created lazily per document
+    this._isReady = true
+    this.resolveReady()
   }
 
   send(message: Message): void {
-    if (!this.stream || !this._isReady) return
+    if (!this._isReady || !message.documentId) return
 
-    const envelope: StreamEnvelope = {
-      type: "message",
-      message,
+    // Get or create stream for this document
+    const docStream = this.streams.get(message.documentId)
+    if (docStream?.ready) {
+      // Stream exists and is ready - send directly
+      this.sendToStream(docStream, message)
+    } else if (!docStream) {
+      // No stream yet - create it, then send
+      this.getOrCreateStream(message.documentId).then((ds) => {
+        if (ds) this.sendToStream(ds, message)
+      })
     }
+    // If stream exists but not ready, message will be handled after ready
+  }
 
-    // Fire and forget - stream handles ordering
-    this.stream.append(encodeEnvelope(envelope)).catch((err) => {
+  private sendToStream(docStream: DocumentStream, message: Message): void {
+    const envelope: StreamEnvelope = { type: "message", message }
+    docStream.stream.append(encodeEnvelope(envelope)).catch((err) => {
       console.error("[automerge-durable-streams] Failed to send:", err)
     })
   }
 
+  private async getOrCreateStream(documentId: DocumentId): Promise<DocumentStream | null> {
+    // Check again in case another call created it
+    const existing = this.streams.get(documentId)
+    if (existing) return existing
+
+    const url = `${this.baseUrl}/${documentId}`
+
+    try {
+      let stream: DurableStream
+
+      // Create or connect to existing stream
+      try {
+        stream = await DurableStream.create({
+          url,
+          contentType: "application/octet-stream",
+          headers: this.headers,
+          signal: this.abortController!.signal,
+        })
+      } catch (err) {
+        if (err instanceof DurableStreamError && err.code === "CONFLICT_EXISTS") {
+          stream = new DurableStream({
+            url,
+            contentType: "application/octet-stream",
+            headers: this.headers,
+            signal: this.abortController!.signal,
+          })
+        } else {
+          throw err
+        }
+      }
+
+      const docStream: DocumentStream = {
+        stream,
+        unsubscribe: () => {},
+        peers: new Set(),
+        ready: false,
+      }
+
+      this.streams.set(documentId, docStream)
+
+      // Announce presence on this document's stream
+      const announcement: StreamEnvelope = {
+        type: "announce",
+        peerId: this.peerId!,
+        peerMetadata: this.peerMetadata,
+      }
+      await stream.append(encodeEnvelope(announcement))
+
+      // Subscribe to the stream
+      const response = await stream.stream({
+        offset: "-1",
+        live: this.transport,
+        encoding: this.transport === "sse" ? "base64" : undefined,
+      })
+
+      docStream.unsubscribe = response.subscribeBytes((chunk) => {
+        this.handleChunk(documentId, docStream, chunk)
+      })
+
+      return docStream
+    } catch (err) {
+      console.error(`[automerge-durable-streams] Failed to connect to stream for ${documentId}:`, err)
+      this.streams.delete(documentId)
+      return null
+    }
+  }
+
+  private handleChunk(
+    documentId: DocumentId,
+    docStream: DocumentStream,
+    chunk: { data: Uint8Array; upToDate?: boolean }
+  ): void {
+    if (chunk.data.length > 0) {
+      const envelopes = decodeEnvelopes(chunk.data)
+
+      for (const envelope of envelopes) {
+        if (envelope.type === "announce") {
+          // Discovered a peer on this document
+          if (envelope.peerId !== this.peerId) {
+            docStream.peers.add(envelope.peerId)
+
+            // Emit peer-candidate if we haven't seen this peer globally yet
+            if (!this.knownPeers.has(envelope.peerId)) {
+              this.knownPeers.add(envelope.peerId)
+              this.emit("peer-candidate", {
+                peerId: envelope.peerId,
+                peerMetadata: envelope.peerMetadata ?? {},
+              })
+            }
+          }
+        } else if (envelope.type === "message") {
+          // Only emit messages targeted to us
+          if (envelope.message.targetId === this.peerId) {
+            // Track sender as known peer
+            if (!this.knownPeers.has(envelope.message.senderId)) {
+              this.knownPeers.add(envelope.message.senderId)
+              docStream.peers.add(envelope.message.senderId)
+              this.emit("peer-candidate", {
+                peerId: envelope.message.senderId,
+                peerMetadata: {},
+              })
+            }
+            this.emit("message", envelope.message)
+          }
+        } else if (envelope.type === "leave") {
+          docStream.peers.delete(envelope.peerId)
+          // Only emit peer-disconnected if peer is not on any other stream
+          if (this.knownPeers.has(envelope.peerId) && !this.isPeerOnAnyStream(envelope.peerId)) {
+            this.knownPeers.delete(envelope.peerId)
+            this.emit("peer-disconnected", { peerId: envelope.peerId })
+          }
+        }
+      }
+    }
+
+    if (chunk.upToDate && !docStream.ready) {
+      docStream.ready = true
+    }
+  }
+
+  private isPeerOnAnyStream(peerId: PeerId): boolean {
+    for (const [, docStream] of this.streams) {
+      if (docStream.peers.has(peerId)) return true
+    }
+    return false
+  }
+
   disconnect(): void {
-    // Announce departure
-    if (this.stream && this.peerId) {
-      const envelope: StreamEnvelope = {
+    // Announce departure on all streams
+    if (this.peerId) {
+      const leaveEnvelope: StreamEnvelope = {
         type: "leave",
         peerId: this.peerId,
       }
-      this.stream.append(encodeEnvelope(envelope)).catch(() => {})
+      const encoded = encodeEnvelope(leaveEnvelope)
+
+      for (const [, docStream] of this.streams) {
+        docStream.stream.append(encoded).catch(() => {})
+        docStream.unsubscribe()
+      }
     }
 
     this.abortController?.abort()
-    this.unsubscribe?.()
-    this.stream = null
+    this.streams.clear()
     this.knownPeers.clear()
     this._isReady = false
     this.emit("close")
@@ -285,10 +363,14 @@ type StreamEnvelope =
   | { type: "message"; message: Message }
   | { type: "leave"; peerId: PeerId }
 
-// Encode/decode using CBOR or MessagePack for efficiency
-// Could also use lib0 encoding like y-durable-streams does
-function encodeEnvelope(envelope: StreamEnvelope): Uint8Array
-function decodeEnvelopes(data: Uint8Array): StreamEnvelope[]
+// Encode/decode using CBOR, MessagePack, or lib0 encoding
+function encodeEnvelope(envelope: StreamEnvelope): Uint8Array {
+  // Implementation: CBOR.encode() or msgpack.encode() or lib0 encoding
+}
+
+function decodeEnvelopes(data: Uint8Array): StreamEnvelope[] {
+  // Implementation: decode framed messages from chunk
+}
 ```
 
 ### Usage Example
@@ -300,7 +382,7 @@ import { DurableStreamsNetworkAdapter } from "automerge-repo-network-durable-str
 const repo = new Repo({
   network: [
     new DurableStreamsNetworkAdapter({
-      url: "https://example.com/v1/streams/my-document",
+      baseUrl: "https://example.com/v1/streams/docs",
       transport: "sse",
       headers: {
         Authorization: () => `Bearer ${getToken()}`,
@@ -309,7 +391,10 @@ const repo = new Repo({
   ],
 })
 
-// Create or find a document
+// Documents automatically get their own streams:
+// - doc "abc-123" -> https://example.com/v1/streams/docs/abc-123
+// - doc "xyz-789" -> https://example.com/v1/streams/docs/xyz-789
+
 const handle = repo.create()
 handle.change((doc) => {
   doc.text = "Hello, world!"
@@ -318,35 +403,43 @@ handle.change((doc) => {
 
 ## Key Design Decisions
 
-### 1. Peer Discovery via Stream
+### 1. Lazy Stream Creation
 
-Unlike WebSocket adapters that have explicit connection handshakes, we discover peers by reading their "announce" messages from the stream. This means:
-- All peers see each other's announcements
-- Late-joining peers see historical announcements and can catch up
-- No separate signaling channel needed
+Streams are created on-demand when `send()` is called with a new `documentId`. This means:
+- No upfront cost for documents you haven't accessed
+- Streams are created as the Repo requests them
+- Natural cleanup when documents are no longer used
 
-### 2. Message Targeting
+### 2. Per-Document Peer Discovery
 
-automerge-repo messages have `targetId` - we only emit messages addressed to us. This provides logical point-to-point communication over the broadcast stream.
+Peers are discovered within the context of documents:
+- Peer A opens doc1 → announces on doc1's stream
+- Peer B opens doc1 → sees A's announcement, emits `peer-candidate`
+- Peer A opens doc2 → announces on doc2's stream
+- Peer B hasn't opened doc2 → doesn't see A there
 
-### 3. Reliable In-Order Delivery
+This matches automerge-repo's model where sync happens per-document.
+
+### 3. Global Peer Tracking
+
+While peers are discovered per-document, we track them globally to avoid duplicate `peer-candidate` events:
+- First time we see a peer on any stream → emit `peer-candidate`
+- `peer-disconnected` only emitted when peer leaves all streams
+
+### 4. Reliable In-Order Delivery
 
 Durable Streams guarantee:
 - Messages are persisted and ordered
-- All clients see the same sequence
+- All clients see the same sequence per stream
 - Exactly-once delivery with idempotent producers
 
-This matches automerge-repo's requirements perfectly.
+### 5. Reconnection Handling
 
-### 4. Reconnection Handling
-
-On reconnect:
+On reconnect to a document stream:
 1. Stream from offset `-1` (beginning) to replay history
-2. All "announce" messages rebuild peer set
+2. All "announce" messages rebuild peer set for that document
 3. All "message" envelopes replay sync state
 4. Document converges to correct state
-
-The stream acts as the source of truth.
 
 ## Comparison to Existing Adapters
 
@@ -355,8 +448,9 @@ The stream acts as the source of truth.
 | Persistence | No | No | Yes |
 | Offline support | No | No | Yes (via replay) |
 | Server required | Yes | No | Yes |
-| Peer discovery | Server-mediated | Broadcast | Stream history |
-| Message ordering | Per-connection | Broadcast | Global ordering |
+| Peer discovery | Server-mediated | Broadcast | Per-document stream |
+| Message ordering | Per-connection | Broadcast | Per-document ordering |
+| Stream per doc | N/A | No (shared) | Yes |
 
 ## Package Structure
 
@@ -391,9 +485,12 @@ packages/automerge-repo-network-durable-streams/
 ## Open Questions
 
 1. **Encoding format**: Use CBOR, MessagePack, or lib0 VarUint8Array framing?
-2. **Presence/ephemeral data**: automerge-repo has ephemeral messages - how to handle them with durable streams? (Maybe a separate non-durable stream?)
-3. **Stream per document vs shared stream**: One stream per documentId, or multiplex?
-4. **Peer timeout**: How long to keep peers in `knownPeers` without hearing from them?
+2. **Ephemeral messages**: automerge-repo has ephemeral messages for cursor positions etc. These probably shouldn't be persisted. Options:
+   - Filter them out (don't append to stream)
+   - Use a separate non-durable channel
+   - Append but mark as ephemeral for cleanup
+3. **Stream cleanup**: When should old announce/leave messages be compacted?
+4. **Peer timeout**: Should we emit `peer-disconnected` after inactivity, or only on explicit "leave"?
 
 ## References
 
