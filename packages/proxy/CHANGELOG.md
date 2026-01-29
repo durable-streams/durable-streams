@@ -1,5 +1,16 @@
 # @durable-streams/proxy
 
+## 0.1.1
+
+### Patch Changes
+
+- Add comprehensive SSE proxy e2e test suite covering data integrity, SSE format preservation, encoding, chunking, offset-based resumption, content-type handling, and edge cases. ([#233](https://github.com/durable-streams/durable-streams/pull/233))
+
+- Remove `encoding` option from SSE reads. Servers now automatically base64-encode binary content types and signal this via the `Stream-SSE-Data-Encoding: base64` response header. Clients decode automatically when this header is present. ([#231](https://github.com/durable-streams/durable-streams/pull/231))
+
+- Updated dependencies [[`5ceafb8`](https://github.com/durable-streams/durable-streams/commit/5ceafb896944e869f943f121dc9701c1aee4cb78), [`334a4fc`](https://github.com/durable-streams/durable-streams/commit/334a4fc80fc1483cebf9c0a02959f14875519a13), [`82a566a`](https://github.com/durable-streams/durable-streams/commit/82a566ace620b1b8d0d43cdf181356e6a6f6f4aa)]:
+  - @durable-streams/client@0.2.1
+
 ## 0.1.0
 
 ### Minor Changes

@@ -1,5 +1,20 @@
 # @durable-streams/client
 
+## 0.2.1
+
+### Patch Changes
+
+- Fix SSE event field parsing to comply with spec ([#209](https://github.com/durable-streams/durable-streams/pull/209))
+
+  Per the SSE specification, parsers should strip only a single leading space
+  after the colon in field values, not all whitespace. This fixes the `event:`
+  field parsing in all three client implementations to use the same correct
+  behavior already used for `data:` fields.
+
+- Remove `encoding` option from SSE reads. Servers now automatically base64-encode binary content types and signal this via the `Stream-SSE-Data-Encoding: base64` response header. Clients decode automatically when this header is present. ([#231](https://github.com/durable-streams/durable-streams/pull/231))
+
+- added support for base64 encoding over sse ([#223](https://github.com/durable-streams/durable-streams/pull/223))
+
 ## 0.2.0
 
 ### Minor Changes

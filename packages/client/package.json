@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/client",
   "description": "TypeScript client for the Durable Streams protocol",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
