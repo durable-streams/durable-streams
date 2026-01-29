@@ -9,7 +9,7 @@
 
 ## Abstract
 
-This document specifies the Durable Streams Protocol, an HTTP-based protocol for creating, appending to, and reading from durable, append-only byte streams. The protocol provides a simple, web-native primitive for applications requiring ordered, replayable data streams with support for catch-up reads and live tailing. It is designed to be a foundation for higher-level abstractions such as event sourcing, database synchronization, collaborative editing, and AI conversation histories.
+This document specifies the Durable Streams Protocol, an HTTP-based protocol for creating, appending to, and reading from durable, append-only byte streams. The protocol provides a simple, web-native primitive for applications requiring ordered, replayable data streams with support for catch-up reads, live tailing, and explicit stream closure (EOF). It is designed to be a foundation for higher-level abstractions such as event sourcing, database synchronization, collaborative editing, AI conversation histories, and finite response streaming.
 
 ## Copyright Notice
 
@@ -21,14 +21,17 @@ Copyright (c) 2026 ElectricSQL
 2. [Terminology](#2-terminology)
 3. [Protocol Overview](#3-protocol-overview)
 4. [Stream Model](#4-stream-model)
+   - 4.1. [Stream Closure](#41-stream-closure)
 5. [HTTP Operations](#5-http-operations)
    - 5.1. [Create Stream](#51-create-stream)
    - 5.2. [Append to Stream](#52-append-to-stream)
-   - 5.3. [Delete Stream](#53-delete-stream)
-   - 5.4. [Stream Metadata](#54-stream-metadata)
-   - 5.5. [Read Stream - Catch-up](#55-read-stream---catch-up)
-   - 5.6. [Read Stream - Live (Long-poll)](#56-read-stream---live-long-poll)
-   - 5.7. [Read Stream - Live (SSE)](#57-read-stream---live-sse)
+     - 5.2.1. [Idempotent Producers](#521-idempotent-producers)
+   - 5.3. [Close Stream](#53-close-stream)
+   - 5.4. [Delete Stream](#54-delete-stream)
+   - 5.5. [Stream Metadata](#55-stream-metadata)
+   - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
+   - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
+   - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
 6. [Offsets](#6-offsets)
 7. [Content Types](#7-content-types)
 8. [Caching and Collapsing](#8-caching-and-collapsing)
@@ -49,6 +52,7 @@ Modern web and cloud applications frequently require ordered, durable sequences 
 - AI conversation histories and token streaming
 - Workflow execution histories
 - Real-time application state updates
+- Finite response streaming (proxied HTTP responses, job outputs, file transfers)
 
 While these patterns are widespread, the web platform lacks a simple, first-class primitive for durable streams. Applications typically implement ad-hoc solutions using combinations of databases, queues, and polling mechanisms, each reinventing similar offset-based replay semantics.
 
@@ -66,17 +70,20 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Tail Offset**: The offset immediately after the last byte in the stream. This is the position where new appends will be written.
 
+**Closed Stream**: A stream that has been explicitly closed by a writer. Once closed, a stream is in a terminal state: no further appends are permitted, and readers can observe the closure as an end-of-stream (EOF) signal. Closure is durable and monotonic — once closed, a stream remains closed.
+
 ## 3. Protocol Overview
 
 The Durable Streams Protocol is an HTTP-based protocol that operates on URLs. A stream is simply a URL; the protocol defines how to interact with that URL using standard HTTP methods, query parameters, and custom headers.
 
-The protocol defines operations to create, append to, read, delete, and query metadata for streams. Reads have three modes: catch-up, long-poll, and Server-Sent Events (SSE). The primary operations are:
+The protocol defines operations to create, append to, read, close, delete, and query metadata for streams. Reads have three modes: catch-up, long-poll, and Server-Sent Events (SSE). The primary operations are:
 
 1. **Create**: Establish a new stream at a URL with optional initial content (PUT)
 2. **Append**: Add bytes to the end of an existing stream (POST)
-3. **Read**: Retrieve bytes starting from a given offset, with support for catch-up and live modes (GET)
-4. **Delete**: Remove a stream (DELETE)
-5. **Head**: Query stream metadata without transferring data (HEAD)
+3. **Close**: Transition a stream to closed state, optionally with a final append (POST with `Stream-Closed: true`)
+4. **Read**: Retrieve bytes starting from a given offset, with support for catch-up and live modes (GET)
+5. **Delete**: Remove a stream (DELETE)
+6. **Head**: Query stream metadata without transferring data (HEAD)
 
 The protocol does not prescribe a specific URL structure. Servers may organize streams using any URL scheme they choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths). The protocol is defined by the HTTP methods, query parameters, and headers applied to any stream URL.
 
@@ -94,8 +101,27 @@ A stream is an append-only sequence of bytes with the following properties:
 - **Content Type**: Each stream has a MIME content type set at creation
 - **TTL/Expiry**: Streams may have optional time-to-live or absolute expiry times
 - **Retention**: Servers **MAY** implement retention policies that drop data older than a certain age while the stream continues. If a stream is deleted a new stream **SHOULD NOT** be created at the same URL.
+- **Stream State**: A stream is either **open** (accepts appends) or **closed** (no further appends permitted). Streams start in the open state and transition to closed via an explicit close operation. This transition is **durable** (persisted) and **monotonic** (once closed, a stream cannot be reopened).
 
 Clients track their position in a stream using offsets. Offsets are opaque to clients but are lexicographically sortable, allowing clients to determine ordering and resume from any point.
+
+### 4.1. Stream Closure
+
+Stream closure provides an explicit end-of-stream (EOF) signal that allows readers to distinguish between "no data yet" and "no more data ever." This is essential for finite streams where writers need to signal completion, such as:
+
+- Proxied HTTP responses that have finished streaming
+- Completed job outputs or workflow executions
+- Finalized conversation histories or document streams
+
+**Properties of stream closure:**
+
+- **Durable**: The closed state is persisted and survives server restarts
+- **Monotonic**: Once closed, a stream cannot be reopened
+- **Idempotent**: Closing an already-closed stream succeeds (or returns a stable "already closed" response)
+- **Observable**: Readers can detect closure and treat it as EOF
+- **Atomic with final append**: Writers can atomically append a final message and close in a single operation
+
+After closure, the stream's data remains fully readable. Only new appends are rejected.
 
 ## 5. HTTP Operations
 
@@ -130,6 +156,13 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
   - Sets an absolute expiry time as an RFC 3339 timestamp.
   - If both `Stream-TTL` and `Stream-Expires-At` are supplied, servers **SHOULD** reject the request with `400 Bad Request`. Implementations **MAY** define a deterministic precedence rule, but **MUST** document it.
 
+- `Stream-Closed: true` (optional)
+  - When present, the stream is created in the **closed** state. Any body provided becomes the complete and final content of the stream.
+  - This enables atomic "create and close" semantics for single-message or empty streams that are immediately complete (e.g., cached responses, placeholder errors, pre-computed results).
+  - **Examples:**
+    - `PUT /stream + Stream-Closed: true` (empty body): Creates an empty, immediately-closed stream (useful for "completed with no output" or error placeholders).
+    - `PUT /stream + Stream-Closed: true + body`: Creates a single-shot stream with the body as its complete content (useful for cached responses, pre-computed results).
+
 #### Request Body (Optional)
 
 - Initial stream bytes. If provided, these bytes form the first content of the stream.
@@ -147,6 +180,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 - `Location: {stream-url}` (on 201): Servers **SHOULD** include a `Location` header equal to `{stream-url}` in `201 Created` responses.
 - `Content-Type: <stream-content-type>`: The stream's content type
 - `Stream-Next-Offset: <offset>`: The tail offset after any initial content
+- `Stream-Closed: true`: Present when the stream was created in the closed state
 
 ### 5.2. Append to Stream
 
@@ -158,14 +192,15 @@ POST {stream-url}
 
 Where `{stream-url}` is the URL of an existing stream.
 
-Appends bytes to the end of an existing stream. Supports both full-body and streaming (chunked) append operations.
+Appends bytes to the end of an existing stream. Supports both full-body and streaming (chunked) append operations. Optionally closes the stream atomically with the append.
 
 Servers that do not support appends for a given stream **SHOULD** return `405 Method Not Allowed` or `501 Not Implemented` to `POST` requests on that URL.
 
 #### Request Headers
 
 - `Content-Type: <stream-content-type>`
-  - **MUST** match the stream's existing content type. Servers **MUST** return `409 Conflict` when the content type is valid but does not match the stream's configured type.
+  - **MUST** match the stream's existing content type when a body is provided. Servers **MUST** return `409 Conflict` when the content type is valid but does not match the stream's configured type.
+  - **MAY** be omitted when the request body is empty (i.e., close-only requests with `Stream-Closed: true`). When the request body is empty, servers **MUST NOT** reject based on `Content-Type` and **MAY** ignore it entirely. This ensures close-only requests remain robust even when clients/libraries attach default `Content-Type` headers.
 
 - `Transfer-Encoding: chunked` (optional)
   - Indicates a streaming body. Servers **SHOULD** support HTTP/1.1 chunked encoding and HTTP/2 streaming semantics.
@@ -175,23 +210,40 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
   - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
 
+- `Stream-Closed: true` (optional)
+  - When present with value `true`, the stream is **closed** after the append completes. This is an atomic operation: the body (if any) is appended as the final data, and the stream transitions to the closed state in the same step.
+  - If the request body is empty (Content-Length: 0 or no body), the stream is closed without appending any data. This is the only case where an empty POST body is valid.
+  - Once closed, the stream rejects all subsequent appends with `409 Conflict` (see below).
+  - **Close-only requests are idempotent**: if the stream is already closed and the request includes `Stream-Closed: true` with an empty body, servers **SHOULD** return `204 No Content` with `Stream-Closed: true`.
+  - **Append-and-close requests are NOT idempotent** (without idempotent producer headers): if the stream is already closed and the request includes a body but no idempotent producer headers, servers **MUST** return `409 Conflict` with `Stream-Closed: true`, since the body cannot be appended. However, if idempotent producer semantics apply and the request matches the `(producerId, epoch, seq)` tuple that performed the closing append, servers treat it as a deduplicated success (see Section 5.2.1).
+
 #### Request Body
 
-- Bytes to append to the stream. Servers **MUST** reject POST requests with an empty body (Content-Length: 0 or no body) with `400 Bad Request`. Empty appends have no semantic meaning and are likely client errors.
+- Bytes to append to the stream. Servers **MUST** reject POST requests with an empty body (Content-Length: 0 or no body) with `400 Bad Request`, **unless** the `Stream-Closed: true` header is present (which allows closing without appending data).
 
 #### Response Codes
 
-- `204 No Content`: Append successful
-- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body)
+- `204 No Content`: Append successful (or stream already closed when closing idempotently)
+- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
-- `409 Conflict`: Content type mismatch with stream's configured type, or sequence regression (if `Stream-Seq` provided)
+- `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+- `Stream-Closed: true`: Present when the stream is now closed (either by this request or previously)
+
+#### Response Headers (on 409 Conflict due to closed stream)
+
+When a client attempts to append to a closed stream (without `Stream-Closed: true`), servers **MUST** return:
+
+- `409 Conflict` status code
+- `Stream-Closed: true` header
+
+This allows clients to detect and handle the "stream already closed" condition programmatically without parsing the response body. Servers **SHOULD** keep the response body empty or use a standardized error format; clients **SHOULD NOT** rely on parsing the body to determine the reason for rejection.
 
 ### 5.2.1. Idempotent Producers
 
@@ -317,7 +369,44 @@ Servers **MAY** implement TTL-based cleanup for producer state:
 
 After state expiry, the producer is treated as new. A zombie alive past TTL expiry can write again, which is acceptable for testing but persistent stores should use longer retention.
 
-### 5.3. Delete Stream
+#### Stream Closure with Idempotent Producers
+
+Idempotent producers can close streams using the `Stream-Closed: true` header. The behavior is:
+
+- **Close with final append**: Include body, producer headers, and `Stream-Closed: true`. The append is deduplicated normally, and the stream closes atomically with the final append.
+- **Close without append**: Include `Stream-Closed: true` with empty body. Producer headers are optional but if provided, the close operation is still idempotent.
+- **Duplicate close**: If the stream was already closed by the same `(producerId, epoch, seq)` tuple, servers **SHOULD** return `204 No Content` with `Stream-Closed: true`.
+
+When a closed stream receives an append from an idempotent producer:
+
+- If the `(producerId, epoch, seq)` matches the request that closed the stream, return `204 No Content` (duplicate/idempotent success) with `Stream-Closed: true`
+- Otherwise, return `409 Conflict` with `Stream-Closed: true` (stream is closed, no further appends allowed)
+
+### 5.3. Close Stream
+
+To close a stream without appending data, send a POST request with `Stream-Closed: true` and an empty body:
+
+#### Request
+
+```
+POST {stream-url}
+Stream-Closed: true
+```
+
+#### Response Codes
+
+- `204 No Content`: Stream closed successfully (or already closed—idempotent)
+- `404 Not Found`: Stream does not exist
+- `405 Method Not Allowed` or `501 Not Implemented`: Append/close not supported for this stream
+
+#### Response Headers
+
+- `Stream-Next-Offset: <offset>`: The tail offset (unchanged, since no data was appended)
+- `Stream-Closed: true`: Confirms the stream is now closed
+
+This is the canonical "close-only" operation. For atomic "append final message and close", include a request body as described in Section 5.2.
+
+### 5.4. Delete Stream
 
 #### Request
 
@@ -335,7 +424,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Delete not supported for this stream
 
-### 5.4. Stream Metadata
+### 5.5. Stream Metadata
 
 #### Request
 
@@ -343,7 +432,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 HEAD {stream-url}
 ```
 
-Where `{stream-url}` is the URL of the stream. Checks stream existence and returns metadata without transferring a body. This is the canonical way to find the tail offset, TTL, and expiry information.
+Where `{stream-url}` is the URL of the stream. Checks stream existence and returns metadata without transferring a body. This is the canonical way to find the tail offset, TTL, expiry information, and **closure status**.
 
 #### Response Codes
 
@@ -357,13 +446,14 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-Next-Offset: <offset>`: The tail offset (next offset after the current end)
 - `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
+- `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
 - `Cache-Control`: See Section 8
 
 #### Caching Guidance
 
-Servers **SHOULD** make `HEAD` responses effectively non-cacheable, for example by returning `Cache-Control: no-store`. Servers **MAY** use `Cache-Control: private, max-age=0, must-revalidate` as an alternative, but `no-store` is recommended to avoid stale tail offsets.
+Servers **SHOULD** make `HEAD` responses effectively non-cacheable, for example by returning `Cache-Control: no-store`. Servers **MAY** use `Cache-Control: private, max-age=0, must-revalidate` as an alternative, but `no-store` is recommended to avoid stale tail offsets and closure status.
 
-### 5.5. Read Stream - Catch-up
+### 5.6. Read Stream - Catch-up
 
 #### Request
 
@@ -386,27 +476,36 @@ Where `{stream-url}` is the URL of the stream. Returns bytes starting from the s
 - `410 Gone`: Offset is before the earliest retained position (retention/compaction)
 - `429 Too Many Requests`: Rate limit exceeded
 
-For non-live reads without data beyond the requested offset, servers **SHOULD** return `200 OK` with an empty body and `Stream-Next-Offset` equal to the requested offset.
+For non-live reads without data beyond the requested offset, servers **SHOULD** return `200 OK` with an empty body and `Stream-Next-Offset` equal to the requested offset. If the stream is closed, this response **MUST** also include `Stream-Closed: true` to signal EOF.
 
 #### Response Headers (on 200)
 
 - `Cache-Control`: Derived from TTL/expiry (see Section 8)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
-- `Stream-Cursor: <cursor>`
-  - Cursor to echo on subsequent long-poll requests to improve CDN collapsing
+- `Stream-Cursor: <cursor>` (optional for catch-up, required for live modes)
+  - Cursor to echo on subsequent long-poll requests to improve CDN collapsing. Servers **MAY** include this on catch-up reads; it is **required** for live modes when the stream is open (see Sections 5.7, 5.8). Servers **MAY** omit it when `Stream-Closed` is true. Clients **MUST** tolerate its absence when `Stream-Closed` is present.
 - `Stream-Next-Offset: <offset>`
   - The next offset to read from (for subsequent requests)
 - `Stream-Up-To-Date: true`
   - **MUST** be present and set to `true` when the response includes all data available in the stream at the time the response was generated (i.e., when the requested offset has reached the tail and no more data exists).
   - **SHOULD NOT** be present when returning partial data due to server-defined chunk size limits (when more data exists beyond what was returned).
   - Clients **MAY** use this header to determine when they have caught up and can transition to live tailing mode.
+  - **Important:** `Stream-Up-To-Date: true` does **NOT** imply EOF. More data may be appended in the future. Only `Stream-Closed: true` indicates that no more data will ever arrive.
+- `Stream-Closed: true`
+  - **MUST** be present when the stream is closed **and** the client has reached the final offset **at the time the response is generated**. This includes:
+    - Responses that return the final chunk of data, when the stream is already closed at response generation time, or
+    - Responses with an empty body when the requested offset equals the tail offset of a closed stream (the canonical EOF signal).
+  - When present, clients can conclude that no more data will ever be appended and treat this as EOF.
+  - **SHOULD NOT** be present when returning partial data from a closed stream (when more data exists between the response and the final offset). In this case, `Stream-Closed: true` will be returned on a subsequent request that reaches the final offset.
+  - **Timing note:** If a stream is closed **after** the final chunk was served (or cached), that chunk will not include `Stream-Closed: true`. Clients discover closure by requesting the next offset (`Stream-Next-Offset` from the previous response), which returns an empty body with `Stream-Closed: true`. This is the expected flow when closure occurs between chunk responses or when serving cached chunks.
+  - Clients that need to know closure status before reaching the tail **SHOULD** use `HEAD` (see Section 5.5).
 
 #### Response Body
 
 - Bytes from the stream starting at the specified offset, up to a server-defined maximum chunk size.
 
-### 5.6. Read Stream - Live (Long-poll)
+### 5.7. Read Stream - Live (Long-poll)
 
 #### Request
 
@@ -438,14 +537,34 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 #### Response Headers (on 200)
 
-- Same as catch-up reads (Section 5.5), except:
+- Same as catch-up reads (Section 5.6), plus:
 - `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 8.1.
+- `Stream-Closed: true`: **MUST** be present when the stream is closed (see Section 5.6 for semantics). A `204 No Content` with `Stream-Closed: true` indicates EOF.
+
+**EOF Signaling Across Modes:**
+
+Clients should treat **either** of the following as EOF, depending on the mode used:
+
+- **Catch-up mode**: `200 OK` with empty body and `Stream-Closed: true`
+- **Long-poll mode**: `204 No Content` with `Stream-Closed: true`
+- **SSE mode**: `control` event with `streamClosed: true`
+
+In all cases, `Stream-Closed` / `streamClosed` is the definitive EOF signal. The presence of `Stream-Up-To-Date` / `upToDate` alone does **not** indicate EOF—it only means the client has caught up with currently available data, but more may arrive.
+
+#### Stream Closure Behavior in Long-poll Mode
+
+When the stream is closed and the client is already at the tail offset:
+
+- Servers **MUST NOT** wait for the long-poll timeout
+- Servers **MUST** immediately return `204 No Content` with `Stream-Closed: true` and `Stream-Up-To-Date: true`
+
+This ensures clients observing a closed stream do not have hanging connections waiting for data that will never arrive.
 
 #### Response Body (on 200)
 
@@ -455,7 +574,7 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 
 The timeout for long-polling is implementation-defined. Servers **MAY** accept a `timeout` query parameter (in seconds) as a future extension, but this is not required by the base protocol.
 
-### 5.7. Read Stream - Live (SSE)
+### 5.8. Read Stream - Live (SSE)
 
 #### Request
 
@@ -490,10 +609,13 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Each line prefixed with `data:`
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset` and `streamCursor`. See Section 8.1.
-  - Format: JSON object with offset and cursor. Field names use camelCase: `streamNextOffset` and `streamCursor`.
+  - **MUST** include `streamNextOffset`. See Section 8.1.
+  - **MUST** include `streamCursor` when the stream is open. Servers **MAY** omit `streamCursor` when `streamClosed` is true (cursor is unnecessary when no reconnection is expected).
+  - **MUST** include `upToDate: true` when the client is caught up with all available data. Note: `streamClosed: true` implies `upToDate: true` (a closed stream at the final offset is by definition up-to-date), so `upToDate` **MAY** be omitted when `streamClosed` is true.
+  - **MUST** include `streamClosed: true` when the stream is closed and all data up to the final offset has been sent.
+  - Format: JSON object with offset, cursor (when applicable), up-to-date status, and optionally closed status. Field names use camelCase: `streamNextOffset`, `streamCursor`, `upToDate`, and `streamClosed`.
 
-**Example:**
+**Example (normal data):**
 
 ```
 event: data
@@ -506,10 +628,40 @@ event: control
 data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 ```
 
+**Example (final data with stream closure):**
+
+```
+event: data
+data: [
+data: {"k":"final"}
+data: ]
+
+event: control
+data: {"streamNextOffset":"123456_999","streamClosed":true}
+```
+
+Note: `streamCursor` is omitted when `streamClosed` is true, since clients must not reconnect after receiving a closed signal.
+
+**Client Compatibility:** Clients **MUST** tolerate the absence of `streamCursor` (in SSE) and `Stream-Cursor` (in HTTP headers) when `streamClosed` / `Stream-Closed` is present. Implementations that assume cursor is always present will break when processing closed stream responses.
+
+#### Stream Closure Behavior in SSE Mode
+
+When the stream is closed:
+
+- The final `control` event **MUST** include `streamClosed: true`
+- After emitting the final control event, servers **MUST** close the SSE connection
+- Clients receiving `streamClosed: true` **MUST NOT** attempt to reconnect, as no more data will arrive
+
+If the stream is already closed when an SSE connection is established and the client's offset is at the tail:
+
+- Servers **MUST** immediately emit a `control` event with `streamClosed: true` and `upToDate: true`
+- Servers **MUST** then close the connection
+
 #### Connection Lifecycle
 
 - Server **SHOULD** close connections roughly every ~60 seconds to enable CDN collapsing
 - Client **MUST** reconnect using the last received `streamNextOffset` value from the control event
+- Client **MUST NOT** reconnect if the last control event included `streamClosed: true`
 
 ## 6. Offsets
 
@@ -564,7 +716,7 @@ The protocol supports arbitrary MIME content types. Most content types operate a
 
 **Restriction:**
 
-- SSE mode (Section 5.7) **REQUIRES** `content-type: text/*` or `application/json`
+- SSE mode (Section 5.8) **REQUIRES** `content-type: text/*` or `application/json`
 
 Clients **MAY** use any content type for their streams, including:
 
@@ -635,6 +787,23 @@ Cache-Control: private, max-age=60, stale-while-revalidate=300
 ```
 
 This enables CDN/proxy caching while allowing stale content to be served during revalidation.
+
+**Caching and Stream Closure:**
+
+Catch-up chunks remain fully cacheable, including chunks at the tail of the stream. When a chunk is returned, it may or may not be the final chunk—this is unknown until the client requests the next offset.
+
+The closure signal is discovered when the client requests the offset **after** the final data:
+
+1. Client reads data and receives `Stream-Next-Offset: X` (the tail offset)
+2. Client requests offset `X`
+3. If stream is closed: server returns `200 OK` with **empty body** and `Stream-Closed: true`
+4. If stream is open: server returns `200 OK` with empty body and `Stream-Up-To-Date: true` (or long-poll/SSE waits for data)
+
+This design ensures:
+
+- All data chunks are cacheable (a chunk that later becomes "final" was still valid data)
+- The closure signal is a distinct request/response at the tail offset
+- Cached chunks never become "stale" due to closure—clients simply make one more request to discover EOF
 
 **ETag Usage:**
 
@@ -777,6 +946,7 @@ This document requests registration of the following HTTP headers in the "Perman
 | `Stream-Cursor`      | permanent | This document |
 | `Stream-Next-Offset` | permanent | This document |
 | `Stream-Up-To-Date`  | permanent | This document |
+| `Stream-Closed`      | permanent | This document |
 
 **Descriptions:**
 
@@ -786,6 +956,7 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Cursor`: Cursor for CDN collapsing (opaque string)
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
+- `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
 
 ## 12. References
 
