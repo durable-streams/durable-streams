@@ -87,7 +87,11 @@ class SSEParser:
 
             # Parse the line
             if line.startswith("event:"):
-                self._current_event_type = line[6:].strip()
+                # Per SSE spec, strip only one optional space after "event:"
+                event_type = line[6:]
+                if event_type.startswith(" "):
+                    event_type = event_type[1:]
+                self._current_event_type = event_type
             elif line.startswith("data:"):
                 # Per SSE spec, strip the optional space after "data:"
                 content = line[5:]
