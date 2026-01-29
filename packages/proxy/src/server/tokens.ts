@@ -1,22 +1,16 @@
 /**
- * JWT token utilities for proxy read tokens.
+ * Authentication utilities for the proxy server.
  *
- * Read tokens are short-lived JWTs that grant access to read a specific stream.
- * They're issued when a stream is created and validated on read requests.
+ * Implements pre-signed URLs and service JWT validation per the spec.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto"
-import type { ReadTokenPayload } from "./types"
-
-const TOKEN_VERSION = 1
-const ALGORITHM = `HS256`
 
 /**
- * Base64url encode a buffer or string.
+ * Base64url encode a buffer.
  */
-function base64urlEncode(input: Buffer | string): string {
-  const buffer = typeof input === `string` ? Buffer.from(input) : input
-  return buffer
+function base64urlEncode(input: Buffer): string {
+  return input
     .toString(`base64`)
     .replace(/\+/g, `-`)
     .replace(/\//g, `_`)
@@ -24,116 +18,128 @@ function base64urlEncode(input: Buffer | string): string {
 }
 
 /**
- * Base64url decode to a buffer.
- */
-function base64urlDecode(input: string): Buffer {
-  // Add back padding
-  const padded = input + `===`.slice((input.length + 3) % 4)
-  const base64 = padded.replace(/-/g, `+`).replace(/_/g, `/`)
-  return Buffer.from(base64, `base64`)
-}
-
-/**
- * Create a signature for the given header and payload.
- */
-function createSignature(
-  header: string,
-  payload: string,
-  secret: string
-): string {
-  const data = `${header}.${payload}`
-  const hmac = createHmac(`sha256`, secret)
-  hmac.update(data)
-  return base64urlEncode(hmac.digest())
-}
-
-/**
- * Generate a read token for a stream.
+ * Generate a pre-signed URL for accessing a stream.
  *
- * @param path - The stream path to grant access to
- * @param secret - The JWT secret key
- * @param ttlSeconds - Token TTL in seconds (default: 86400 = 24h)
- * @returns The signed JWT token
+ * The signature is computed as: base64url(HMAC-SHA256(secret, `${streamId}:${expiresAt}`))
+ *
+ * @param origin - The origin URL (e.g., "http://localhost:4440")
+ * @param streamId - The stream ID
+ * @param secret - The HMAC secret key
+ * @param expiresAt - Unix timestamp in seconds when the URL expires
+ * @returns The pre-signed URL
  */
-export function generateReadToken(
-  path: string,
+export function generatePreSignedUrl(
+  origin: string,
+  streamId: string,
   secret: string,
-  ttlSeconds: number = 86400
+  expiresAt: number
 ): string {
-  const now = Math.floor(Date.now() / 1000)
-
-  const header = base64urlEncode(
-    JSON.stringify({
-      alg: ALGORITHM,
-      typ: `JWT`,
-      v: TOKEN_VERSION,
-    })
+  const signature = base64urlEncode(
+    createHmac(`sha256`, secret).update(`${streamId}:${expiresAt}`).digest()
   )
 
-  const payload: ReadTokenPayload = {
-    path,
-    iat: now,
-    exp: now + ttlSeconds,
-  }
-
-  const encodedPayload = base64urlEncode(JSON.stringify(payload))
-  const signature = createSignature(header, encodedPayload, secret)
-
-  return `${header}.${encodedPayload}.${signature}`
+  return `${origin}/v1/proxy/${encodeURIComponent(streamId)}?expires=${expiresAt}&signature=${signature}`
 }
 
 /**
- * Validate and decode a read token.
- *
- * @param token - The JWT token to validate
- * @param secret - The JWT secret key
- * @returns The decoded payload if valid, null if invalid or expired
+ * Result of pre-signed URL validation.
  */
-export function validateReadToken(
-  token: string,
+export type PreSignedUrlResult =
+  | { ok: true }
+  | { ok: false; code: `SIGNATURE_EXPIRED` | `SIGNATURE_INVALID` }
+
+/**
+ * Validate pre-signed URL parameters.
+ *
+ * @param streamId - The stream ID from the URL path
+ * @param expires - The expires query parameter (Unix timestamp in seconds)
+ * @param signature - The signature query parameter
+ * @param secret - The HMAC secret key
+ * @returns Validation result
+ */
+export function validatePreSignedUrl(
+  streamId: string,
+  expires: string,
+  signature: string,
   secret: string
-): ReadTokenPayload | null {
-  const parts = token.split(`.`)
-  if (parts.length !== 3) {
-    return null
+): PreSignedUrlResult {
+  // Check expiration
+  const expiresAt = parseInt(expires, 10)
+  if (isNaN(expiresAt) || Date.now() > expiresAt * 1000) {
+    return { ok: false, code: `SIGNATURE_EXPIRED` }
   }
 
-  const [header, payload, signature] = parts
+  // Compute expected signature
+  const expectedSignature = base64urlEncode(
+    createHmac(`sha256`, secret).update(`${streamId}:${expires}`).digest()
+  )
 
-  // Verify signature using timing-safe comparison
-  const expectedSignature = createSignature(header!, payload!, secret)
-  const providedSigBuffer = Buffer.from(signature!)
-  const expectedSigBuffer = Buffer.from(expectedSignature)
+  // Timing-safe comparison
+  const providedBuffer = Buffer.from(signature)
+  const expectedBuffer = Buffer.from(expectedSignature)
 
-  if (providedSigBuffer.length !== expectedSigBuffer.length) {
-    return null
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return { ok: false, code: `SIGNATURE_INVALID` }
   }
 
-  if (!timingSafeEqual(providedSigBuffer, expectedSigBuffer)) {
-    return null
+  if (!timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return { ok: false, code: `SIGNATURE_INVALID` }
   }
 
-  // Decode and validate payload
-  try {
-    const decoded: ReadTokenPayload = JSON.parse(
-      base64urlDecode(payload!).toString(`utf-8`)
-    )
+  return { ok: true }
+}
 
-    // Check expiration
-    const now = Math.floor(Date.now() / 1000)
-    if (decoded.exp < now) {
-      return null
+/**
+ * Result of service JWT validation.
+ */
+export type ServiceJwtResult =
+  | { ok: true }
+  | { ok: false; code: `MISSING_SECRET` | `INVALID_SECRET` }
+
+/**
+ * Validate service JWT from query parameter or Authorization header.
+ *
+ * The JWT is a simple secret comparison (not a full JWT parse).
+ *
+ * @param secretParam - The secret query parameter value
+ * @param authHeader - The Authorization header value
+ * @param expectedSecret - The expected secret value
+ * @returns Validation result
+ */
+export function validateServiceJwt(
+  secretParam: string | null,
+  authHeader: string | undefined,
+  expectedSecret: string
+): ServiceJwtResult {
+  // Try secret param first
+  let token = secretParam
+
+  // Fall back to Authorization header
+  if (!token && authHeader) {
+    const match = authHeader.match(/^Bearer\s+(.+)$/i)
+    if (match) {
+      token = match[1]!
     }
-
-    // Validate required fields
-    if (!decoded.path || typeof decoded.iat !== `number`) {
-      return null
-    }
-
-    return decoded
-  } catch {
-    return null
   }
+
+  if (!token) {
+    return { ok: false, code: `MISSING_SECRET` }
+  }
+
+  // Compare with expected secret
+  // Use timing-safe comparison to prevent timing attacks
+  const providedBuffer = Buffer.from(token)
+  const expectedBuffer = Buffer.from(expectedSecret)
+
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return { ok: false, code: `INVALID_SECRET` }
+  }
+
+  if (!timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return { ok: false, code: `INVALID_SECRET` }
+  }
+
+  return { ok: true }
 }
 
 /**
@@ -151,62 +157,4 @@ export function extractBearerToken(
 
   const match = authHeader.match(/^Bearer\s+(.+)$/i)
   return match ? match[1]! : null
-}
-
-/**
- * Result of authorization check.
- */
-export type AuthResult =
-  | { ok: true; streamPath: string }
-  | { ok: false; status: number; code: string; message: string }
-
-/**
- * Validate authorization for a stream request.
- * Extracts the bearer token, validates it, and verifies the path matches.
- *
- * @param authHeader - The Authorization header value
- * @param jwtSecret - The JWT secret key
- * @param serviceName - The service name from the URL path
- * @param streamKey - The stream key from the URL path
- * @returns Authorization result with stream path if successful, error details if not
- */
-export function authorizeStreamRequest(
-  authHeader: string | undefined,
-  jwtSecret: string,
-  serviceName: string,
-  streamKey: string
-): AuthResult {
-  const token = extractBearerToken(authHeader)
-
-  if (!token) {
-    return {
-      ok: false,
-      status: 401,
-      code: `MISSING_TOKEN`,
-      message: `Authorization header with Bearer token required`,
-    }
-  }
-
-  const payload = validateReadToken(token, jwtSecret)
-
-  if (!payload) {
-    return {
-      ok: false,
-      status: 401,
-      code: `INVALID_TOKEN`,
-      message: `Invalid or expired read token`,
-    }
-  }
-
-  const expectedPath = `/v1/streams/${serviceName}/${streamKey}`
-  if (payload.path !== expectedPath) {
-    return {
-      ok: false,
-      status: 403,
-      code: `TOKEN_PATH_MISMATCH`,
-      message: `Token is not valid for this stream`,
-    }
-  }
-
-  return { ok: true, streamPath: expectedPath }
 }

@@ -31,34 +31,19 @@ export class MemoryStorage implements DurableStorage {
 /**
  * Create a scoped storage key for a stream.
  *
- * Keys are scoped by proxy URL to prevent collisions between
- * different services or proxy instances using the same stream key.
+ * Keys are scoped by proxy base URL to prevent collisions between
+ * different proxy instances using the same request ID.
  *
  * @param prefix - Storage key prefix
- * @param scope - Scope identifier (typically derived from proxyUrl)
- * @param streamKey - The stream key
+ * @param scope - Scope identifier (the normalized proxy base URL)
+ * @param requestId - The request ID
  */
 export function createStorageKey(
   prefix: string,
   scope: string,
-  streamKey: string
+  requestId: string
 ): string {
-  return `${prefix}${scope}:${streamKey}`
-}
-
-/**
- * Create a scope identifier from a proxy URL.
- * Uses origin + pathname to uniquely identify the proxy service.
- */
-export function createScopeFromUrl(proxyUrl: string): string {
-  try {
-    const url = new URL(proxyUrl)
-    // Use origin + pathname for uniqueness (e.g., "https://proxy.example.com/v1/proxy/chat")
-    return `${url.origin}${url.pathname}`
-  } catch {
-    // Fallback to raw URL if parsing fails
-    return proxyUrl
-  }
+  return `${prefix}${scope}:${requestId}`
 }
 
 /**
@@ -68,10 +53,10 @@ export function saveCredentials(
   storage: DurableStorage,
   prefix: string,
   scope: string,
-  streamKey: string,
+  requestId: string,
   credentials: StreamCredentials
 ): void {
-  const key = createStorageKey(prefix, scope, streamKey)
+  const key = createStorageKey(prefix, scope, requestId)
   storage.setItem(key, JSON.stringify(credentials))
 }
 
@@ -82,9 +67,9 @@ export function loadCredentials(
   storage: DurableStorage,
   prefix: string,
   scope: string,
-  streamKey: string
+  requestId: string
 ): StreamCredentials | null {
-  const key = createStorageKey(prefix, scope, streamKey)
+  const key = createStorageKey(prefix, scope, requestId)
   const data = storage.getItem(key)
 
   if (!data) {
@@ -105,39 +90,47 @@ export function removeCredentials(
   storage: DurableStorage,
   prefix: string,
   scope: string,
-  streamKey: string
+  requestId: string
 ): void {
-  const key = createStorageKey(prefix, scope, streamKey)
+  const key = createStorageKey(prefix, scope, requestId)
   storage.removeItem(key)
 }
 
 /**
- * Update the offset in stored credentials.
+ * Check if a stream's pre-signed URL has expired.
  */
-export function updateOffset(
-  storage: DurableStorage,
-  prefix: string,
-  scope: string,
-  streamKey: string,
-  offset: string
-): void {
-  const credentials = loadCredentials(storage, prefix, scope, streamKey)
-
-  if (credentials) {
-    credentials.offset = offset
-    saveCredentials(storage, prefix, scope, streamKey, credentials)
-  }
+export function isUrlExpired(credentials: StreamCredentials): boolean {
+  return Date.now() > credentials.expiresAtSecs * 1000
 }
 
 /**
- * Check if credentials have expired.
- * Credentials expire after 24 hours by default.
+ * Extract the stream ID from a pre-signed URL.
+ *
+ * Expected format: .../v1/proxy/{streamId}?expires=...&signature=...
  */
-export function isExpired(
-  credentials: StreamCredentials,
-  maxAgeMs: number = 24 * 60 * 60 * 1000
-): boolean {
-  return Date.now() - credentials.createdAt > maxAgeMs
+export function extractStreamIdFromUrl(url: string): string {
+  const parsed = new URL(url)
+  const pathParts = parsed.pathname.split(`/`)
+  const last =
+    pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2]
+  if (!last) {
+    throw new Error(`Cannot extract stream ID from URL: ${url}`)
+  }
+  return decodeURIComponent(last)
+}
+
+/**
+ * Extract the expiration timestamp from a pre-signed URL.
+ *
+ * @returns Unix timestamp in seconds
+ */
+export function extractExpiresFromUrl(url: string): number {
+  const parsed = new URL(url)
+  const expires = parsed.searchParams.get(`expires`)
+  if (!expires) {
+    throw new Error(`Cannot extract expires from URL: ${url}`)
+  }
+  return parseInt(expires, 10)
 }
 
 /**

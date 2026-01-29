@@ -6,17 +6,48 @@
 
 import { handleCreateStream } from "./create-stream"
 import { handleReadStream } from "./read-stream"
+import { handleHeadStream } from "./head-stream"
 import { handleAbortStream } from "./abort-stream"
+import { handleDeleteStream } from "./delete-stream"
 import { createAllowlistValidator } from "./allowlist"
+import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
 /**
  * URL pattern matchers for proxy routes.
  */
-const CREATE_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)$/
-const READ_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)\/streams\/([^/]+)$/
-const ABORT_STREAM_PATTERN = /^\/v1\/proxy\/([^/]+)\/streams\/([^/]+)\/abort$/
+const PROXY_BASE = /^\/v1\/proxy\/?$/ // POST /v1/proxy
+const PROXY_STREAM = /^\/v1\/proxy\/([^/]+)$/ // GET/HEAD/PATCH/DELETE /v1/proxy/:streamId
+
+/**
+ * Set CORS headers on response.
+ */
+function setCorsHeaders(res: ServerResponse): void {
+  res.setHeader(`Access-Control-Allow-Origin`, `*`)
+  res.setHeader(
+    `Access-Control-Allow-Methods`,
+    `GET, POST, HEAD, PATCH, DELETE, OPTIONS`
+  )
+  res.setHeader(
+    `Access-Control-Allow-Headers`,
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization`
+  )
+  res.setHeader(
+    `Access-Control-Expose-Headers`,
+    [
+      `Location`,
+      `Upstream-Content-Type`,
+      `Upstream-Status`,
+      `Stream-Next-Offset`,
+      `Stream-Up-To-Date`,
+      `Stream-Total-Size`,
+      `Stream-Write-Units`,
+      `Stream-Closed`,
+      `Stream-Expires-At`,
+    ].join(`, `)
+  )
+}
 
 /**
  * Create the main request handler for the proxy server.
@@ -30,25 +61,16 @@ export function createProxyHandler(
   // Create the allowlist validator
   const isAllowed = createAllowlistValidator(options.allowlist ?? [])
 
+  // Content type store for tracking upstream content types
+  const contentTypeStore = new Map<string, string>()
+
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
     const path = url.pathname
     const method = req.method ?? `GET`
 
     // Set CORS headers for all responses
-    res.setHeader(`Access-Control-Allow-Origin`, `*`)
-    res.setHeader(
-      `Access-Control-Allow-Methods`,
-      `GET, POST, PUT, DELETE, OPTIONS`
-    )
-    res.setHeader(
-      `Access-Control-Allow-Headers`,
-      `Content-Type, Authorization, Accept`
-    )
-    res.setHeader(
-      `Access-Control-Expose-Headers`,
-      `Durable-Streams-Path, Durable-Streams-Read-Token, Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date`
-    )
+    setCorsHeaders(res)
 
     // Handle preflight requests
     if (method === `OPTIONS`) {
@@ -58,33 +80,52 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy/{service}?stream_key=...&upstream=...
-      // Creates a new stream and starts proxying upstream response
-      const createMatch = path.match(CREATE_STREAM_PATTERN)
-      if (createMatch && method === `POST`) {
-        const serviceName = createMatch[1]!
-        await handleCreateStream(req, res, serviceName, options, isAllowed)
+      // Route: POST /v1/proxy - Create stream
+      if (PROXY_BASE.test(path) && method === `POST`) {
+        await handleCreateStream(req, res, options, isAllowed, contentTypeStore)
         return
       }
 
-      // Route: POST /v1/proxy/{service}/streams/{key}/abort
-      // Aborts an in-progress stream
-      const abortMatch = path.match(ABORT_STREAM_PATTERN)
-      if (abortMatch && method === `POST`) {
-        const serviceName = abortMatch[1]!
-        const streamKey = abortMatch[2]!
-        handleAbortStream(req, res, serviceName, streamKey, options)
-        return
-      }
+      // Routes with streamId
+      const match = path.match(PROXY_STREAM)
+      if (match) {
+        const streamId = decodeURIComponent(match[1]!)
 
-      // Route: GET /v1/proxy/{service}/streams/{key}?offset=...&live=...
-      // Reads from an existing stream
-      const readMatch = path.match(READ_STREAM_PATTERN)
-      if (readMatch && method === `GET`) {
-        const serviceName = readMatch[1]!
-        const streamKey = readMatch[2]!
-        await handleReadStream(req, res, serviceName, streamKey, options)
-        return
+        switch (method) {
+          case `GET`:
+            await handleReadStream(
+              req,
+              res,
+              streamId,
+              options,
+              contentTypeStore
+            )
+            return
+
+          case `HEAD`:
+            await handleHeadStream(
+              req,
+              res,
+              streamId,
+              options,
+              contentTypeStore
+            )
+            return
+
+          case `PATCH`:
+            handleAbortStream(req, res, streamId, options)
+            return
+
+          case `DELETE`:
+            await handleDeleteStream(
+              req,
+              res,
+              streamId,
+              options,
+              contentTypeStore
+            )
+            return
+        }
       }
 
       // Health check endpoint
@@ -95,30 +136,14 @@ export function createProxyHandler(
       }
 
       // Not found
-      res.writeHead(404, { "Content-Type": `application/json` })
-      res.end(
-        JSON.stringify({
-          error: {
-            code: `NOT_FOUND`,
-            message: `Unknown route: ${method} ${path}`,
-          },
-        })
-      )
+      sendError(res, 404, `NOT_FOUND`, `Unknown route: ${method} ${path}`)
     } catch (error) {
       // Internal server error
       const message = error instanceof Error ? error.message : `Unknown error`
       console.error(`Proxy handler error:`, error)
 
       if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": `application/json` })
-        res.end(
-          JSON.stringify({
-            error: {
-              code: `INTERNAL_ERROR`,
-              message,
-            },
-          })
-        )
+        sendError(res, 500, `INTERNAL_ERROR`, message)
       }
     }
   }

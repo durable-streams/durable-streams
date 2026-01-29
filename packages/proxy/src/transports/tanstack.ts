@@ -5,13 +5,7 @@
  * to provide transparent reconnection for streaming responses.
  */
 
-import {
-  createAbortFn,
-  createDurableFetch,
-  createScopeFromUrl,
-  getDefaultStorage,
-  loadCredentials,
-} from "../client"
+import { createAbortFn, createDurableFetch, getDefaultStorage } from "../client"
 import { generateStreamKey } from "./hash"
 import type { DurableFetch } from "../client/types"
 import type {
@@ -38,8 +32,9 @@ import type {
  * import { createDurableAdapter } from '@durable-streams/proxy/transports'
  *
  * const adapter = createDurableAdapter('https://api.example.com/api/chat', {
- *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
- *   getStreamKey: (messages, data) => data?.conversationId ?? 'default',
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy',
+ *   proxyAuthorization: 'service-secret',
+ *   getRequestId: (messages, data) => data?.conversationId ?? 'default',
  * })
  *
  * // Use with TanStack AI
@@ -71,20 +66,19 @@ export function createDurableAdapter(
 
   const {
     proxyUrl,
+    proxyAuthorization,
     storage = getDefaultStorage(),
-    getStreamKey = (msgs: Array<unknown>) =>
+    getRequestId = (msgs: Array<unknown>) =>
       generateStreamKey(`tanstack`, msgs),
     headers: configHeaders,
     fetch: fetchFn = fetch,
     storagePrefix = `durable-streams:`,
   } = options
 
-  // Create scope for storage key namespacing
-  const storageScope = createScopeFromUrl(proxyUrl)
-
   // Create the durable fetch wrapper
   const durableFetch: DurableFetch = createDurableFetch({
     proxyUrl,
+    proxyAuthorization,
     storage,
     storagePrefix,
     fetch: fetchFn,
@@ -92,7 +86,7 @@ export function createDurableAdapter(
 
   // Track abort functions for concurrent streams
   const abortFns = new Map<string, () => Promise<void>>()
-  let currentStreamKey: string | null = null
+  let currentRequestId: string | null = null
 
   return {
     async connect(
@@ -105,13 +99,13 @@ export function createDurableAdapter(
         signal,
       } = connectOptions
 
-      // Extract messages from body for stream key generation
+      // Extract messages from body for request ID generation
       const bodyObj = typeof body === `string` ? JSON.parse(body) : (body ?? {})
       const messages = bodyObj.messages ?? []
       const data = bodyObj.data
 
-      // Generate stream key
-      const streamKey = getStreamKey(messages, data)
+      // Generate request ID
+      const requestId = getRequestId(messages, data)
 
       // Resolve headers
       const resolvedConfigHeaders =
@@ -135,7 +129,7 @@ export function createDurableAdapter(
         method,
         headers: mergedHeaders,
         body: JSON.stringify(requestBody),
-        stream_key: streamKey,
+        requestId,
         signal,
       })
 
@@ -148,20 +142,9 @@ export function createDurableAdapter(
       }
 
       // Set up abort function for this stream
-      if (response.durableStreamPath) {
-        const credentials = loadCredentials(
-          storage,
-          storagePrefix,
-          storageScope,
-          streamKey
-        )
-        if (credentials) {
-          abortFns.set(
-            streamKey,
-            createAbortFn(proxyUrl, streamKey, credentials.readToken, fetchFn)
-          )
-          currentStreamKey = streamKey
-        }
+      if (response.streamUrl) {
+        abortFns.set(requestId, createAbortFn(response.streamUrl, fetchFn))
+        currentRequestId = requestId
       }
 
       return {
@@ -173,13 +156,13 @@ export function createDurableAdapter(
 
     async abort(): Promise<void> {
       // Abort the current stream
-      if (currentStreamKey) {
-        const abortFn = abortFns.get(currentStreamKey)
+      if (currentRequestId) {
+        const abortFn = abortFns.get(currentRequestId)
         if (abortFn) {
           await abortFn()
-          abortFns.delete(currentStreamKey)
+          abortFns.delete(currentRequestId)
         }
-        currentStreamKey = null
+        currentRequestId = null
       }
     },
   }

@@ -32,8 +32,9 @@ import type {
  * import { useChat } from 'ai/react'
  *
  * const transport = createDurableChatTransport({
- *   proxyUrl: 'https://proxy.example.com/v1/proxy/chat',
- *   api: 'https://api.example.com/api/chat', // Your backend API (must be absolute URL)
+ *   proxyUrl: 'https://proxy.example.com/v1/proxy',
+ *   proxyAuthorization: 'service-secret',
+ *   api: 'https://api.example.com/api/chat',
  * })
  *
  * function Chat() {
@@ -52,11 +53,13 @@ export function createDurableChatTransport(
 ): ChatTransport {
   const {
     proxyUrl,
+    proxyAuthorization,
     api,
     storage = getDefaultStorage(),
-    getStreamKey = (msgs: Array<unknown>) => generateStreamKey(`chat`, msgs),
+    getRequestId = (msgs: Array<unknown>) => generateStreamKey(`chat`, msgs),
     headers: configHeaders,
     fetch: fetchFn = fetch,
+    storagePrefix,
   } = options
 
   // Validate that api is an absolute URL
@@ -77,8 +80,10 @@ export function createDurableChatTransport(
   // Create the durable fetch wrapper
   const durableFetch: DurableFetch = createDurableFetch({
     proxyUrl,
+    proxyAuthorization,
     storage,
     fetch: fetchFn,
+    storagePrefix,
   })
 
   return {
@@ -93,8 +98,8 @@ export function createDurableChatTransport(
         body: bodyOverrides,
       } = sendOptions
 
-      // Generate stream key
-      const streamKey = getStreamKey(messages, data)
+      // Generate request ID for resumability
+      const requestId = getRequestId(messages, data)
 
       // Resolve headers
       const resolvedConfigHeaders =
@@ -119,7 +124,7 @@ export function createDurableChatTransport(
         method: `POST`,
         headers: mergedHeaders,
         body: JSON.stringify(body),
-        stream_key: streamKey,
+        requestId,
         signal,
       })
 

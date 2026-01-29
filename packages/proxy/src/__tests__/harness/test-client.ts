@@ -6,21 +6,26 @@
  */
 
 /**
+ * The JWT secret used by the test server.
+ */
+const TEST_SECRET = `test-secret-key-for-development`
+
+/**
  * Options for creating a stream through the proxy.
  */
 export interface CreateStreamOptions {
   /** Proxy server URL */
   proxyUrl: string
-  /** Service name for the proxy route */
-  serviceName: string
-  /** Unique stream key */
-  streamKey: string
   /** Upstream URL to proxy */
   upstreamUrl: string
+  /** Upstream HTTP method (default: POST) */
+  upstreamMethod?: string
   /** Request body */
   body?: string | object
-  /** Request headers */
+  /** Request headers (aimed at upstream) */
   headers?: Record<string, string>
+  /** Service secret (default: test secret) */
+  secret?: string
 }
 
 /**
@@ -33,10 +38,12 @@ export interface CreateStreamResult {
   headers: Headers
   /** Response body (parsed as JSON if applicable) */
   body: unknown
-  /** The stream path if successful */
-  streamPath?: string
-  /** The read token if successful */
-  readToken?: string
+  /** The pre-signed stream URL from Location header */
+  streamUrl?: string
+  /** The stream ID extracted from the Location URL */
+  streamId?: string
+  /** The upstream content type */
+  upstreamContentType?: string
 }
 
 /**
@@ -47,23 +54,31 @@ export async function createStream(
 ): Promise<CreateStreamResult> {
   const {
     proxyUrl,
-    serviceName,
-    streamKey,
     upstreamUrl,
+    upstreamMethod = `POST`,
     body,
     headers = {},
+    secret = TEST_SECRET,
   } = options
 
-  const url = new URL(`/v1/proxy/${serviceName}`, proxyUrl)
-  url.searchParams.set(`stream_key`, streamKey)
-  url.searchParams.set(`upstream`, upstreamUrl)
+  const url = new URL(`/v1/proxy`, proxyUrl)
+  url.searchParams.set(`secret`, secret)
+
+  const requestHeaders: Record<string, string> = {
+    "Upstream-URL": upstreamUrl,
+    "Upstream-Method": upstreamMethod,
+    ...headers,
+  }
+
+  // Remap Authorization to Upstream-Authorization (mimic client behavior)
+  if (headers.Authorization) {
+    requestHeaders[`Upstream-Authorization`] = headers.Authorization
+    delete requestHeaders.Authorization
+  }
 
   const response = await fetch(url.toString(), {
     method: `POST`,
-    headers: {
-      "Content-Type": `application/json`,
-      ...headers,
-    },
+    headers: requestHeaders,
     body: body
       ? typeof body === `string`
         ? body
@@ -80,12 +95,30 @@ export async function createStream(
     responseBody = await response.text()
   }
 
+  // Extract Location header (pre-signed URL)
+  const locationHeader = response.headers.get(`Location`)
+  let streamUrl: string | undefined
+  let streamId: string | undefined
+
+  if (locationHeader) {
+    streamUrl = new URL(locationHeader, proxyUrl).toString()
+    // Extract stream ID from URL path: /v1/proxy/{streamId}
+    const match = new URL(streamUrl).pathname.match(/\/v1\/proxy\/([^/]+)\/?$/)
+    if (match) {
+      streamId = decodeURIComponent(match[1]!)
+    }
+  }
+
+  const upstreamContentType =
+    response.headers.get(`Upstream-Content-Type`) ?? undefined
+
   return {
     status: response.status,
     headers: response.headers,
     body: responseBody,
-    streamPath: response.headers.get(`Durable-Streams-Path`) ?? undefined,
-    readToken: response.headers.get(`Durable-Streams-Read-Token`) ?? undefined,
+    streamUrl,
+    streamId,
+    upstreamContentType,
   }
 }
 
@@ -93,14 +126,8 @@ export async function createStream(
  * Options for reading a stream.
  */
 export interface ReadStreamOptions {
-  /** Proxy server URL */
-  proxyUrl: string
-  /** Service name */
-  serviceName: string
-  /** Stream key */
-  streamKey: string
-  /** Read token */
-  readToken: string
+  /** The pre-signed stream URL */
+  streamUrl: string
   /** Starting offset (default: -1) */
   offset?: string
   /** Live mode (default: none) */
@@ -125,6 +152,8 @@ export interface ReadStreamResult {
   cursor?: string
   /** Whether the response is up-to-date */
   upToDate: boolean
+  /** Upstream content type */
+  upstreamContentType?: string
 }
 
 /**
@@ -133,17 +162,9 @@ export interface ReadStreamResult {
 export async function readStream(
   options: ReadStreamOptions
 ): Promise<ReadStreamResult> {
-  const {
-    proxyUrl,
-    serviceName,
-    streamKey,
-    readToken,
-    offset = `-1`,
-    live,
-    cursor,
-  } = options
+  const { streamUrl, offset = `-1`, live, cursor } = options
 
-  const url = new URL(`/v1/proxy/${serviceName}/streams/${streamKey}`, proxyUrl)
+  const url = new URL(streamUrl)
   url.searchParams.set(`offset`, offset)
   if (live) {
     url.searchParams.set(`live`, live)
@@ -154,7 +175,6 @@ export async function readStream(
 
   const response = await fetch(url.toString(), {
     headers: {
-      Authorization: `Bearer ${readToken}`,
       Accept: live === `sse` ? `text/event-stream` : `*/*`,
     },
   })
@@ -168,6 +188,8 @@ export async function readStream(
     nextOffset: response.headers.get(`Stream-Next-Offset`) ?? undefined,
     cursor: response.headers.get(`Stream-Cursor`) ?? undefined,
     upToDate: response.headers.has(`Stream-Up-To-Date`),
+    upstreamContentType:
+      response.headers.get(`Upstream-Content-Type`) ?? undefined,
   }
 }
 
@@ -175,14 +197,8 @@ export async function readStream(
  * Options for aborting a stream.
  */
 export interface AbortStreamOptions {
-  /** Proxy server URL */
-  proxyUrl: string
-  /** Service name */
-  serviceName: string
-  /** Stream key */
-  streamKey: string
-  /** Read token */
-  readToken: string
+  /** The pre-signed stream URL */
+  streamUrl: string
 }
 
 /**
@@ -203,27 +219,139 @@ export interface AbortStreamResult {
 export async function abortStream(
   options: AbortStreamOptions
 ): Promise<AbortStreamResult> {
-  const { proxyUrl, serviceName, streamKey, readToken } = options
+  const { streamUrl } = options
 
-  const url = new URL(
-    `/v1/proxy/${serviceName}/streams/${streamKey}/abort`,
-    proxyUrl
-  )
+  const url = new URL(streamUrl)
+  url.searchParams.set(`action`, `abort`)
 
   const response = await fetch(url.toString(), {
-    method: `POST`,
-    headers: {
-      Authorization: `Bearer ${readToken}`,
-    },
+    method: `PATCH`,
   })
-
-  const body = await response.json()
 
   return {
     status: response.status,
     headers: response.headers,
-    body,
+    body: await parseResponseBody(response),
   }
+}
+
+/**
+ * Options for a HEAD stream request.
+ */
+export interface HeadStreamOptions {
+  /** Proxy server URL */
+  proxyUrl: string
+  /** The stream ID */
+  streamId: string
+  /** Service secret (default: test secret) */
+  secret?: string
+}
+
+/**
+ * Result of a HEAD stream request.
+ */
+export interface HeadStreamResult {
+  /** HTTP status code */
+  status: number
+  /** Response headers */
+  headers: Headers
+}
+
+/**
+ * Get stream metadata via HEAD.
+ */
+export async function headStream(
+  options: HeadStreamOptions
+): Promise<HeadStreamResult> {
+  const { proxyUrl, streamId, secret = TEST_SECRET } = options
+
+  const url = new URL(`/v1/proxy/${streamId}`, proxyUrl)
+  url.searchParams.set(`secret`, secret)
+
+  const response = await fetch(url.toString(), {
+    method: `HEAD`,
+  })
+
+  return {
+    status: response.status,
+    headers: response.headers,
+  }
+}
+
+/**
+ * Options for a DELETE stream request.
+ */
+export interface DeleteStreamOptions {
+  /** Proxy server URL */
+  proxyUrl: string
+  /** The stream ID */
+  streamId: string
+  /** Service secret (default: test secret) */
+  secret?: string
+}
+
+/**
+ * Result of a DELETE stream request.
+ */
+export interface DeleteStreamResult {
+  /** HTTP status code */
+  status: number
+  /** Response headers */
+  headers: Headers
+  /** Response body */
+  body: unknown
+}
+
+/**
+ * Delete a stream via the proxy.
+ */
+export async function deleteStream(
+  options: DeleteStreamOptions
+): Promise<DeleteStreamResult> {
+  const { proxyUrl, streamId, secret = TEST_SECRET } = options
+
+  const url = new URL(`/v1/proxy/${streamId}`, proxyUrl)
+  url.searchParams.set(`secret`, secret)
+
+  const response = await fetch(url.toString(), {
+    method: `DELETE`,
+  })
+
+  return {
+    status: response.status,
+    headers: response.headers,
+    body: await parseResponseBody(response),
+  }
+}
+
+/**
+ * Wait until a stream is ready (returns 200 from HEAD).
+ * Useful after createStream to ensure data has been piped before further assertions.
+ */
+export async function waitForStreamReady(
+  proxyUrl: string,
+  streamId: string
+): Promise<void> {
+  await waitFor(async () => {
+    const r = await headStream({ proxyUrl, streamId })
+    return r.status === 200
+  })
+}
+
+/**
+ * Parse a response body based on content type.
+ * Returns null for 204 No Content responses.
+ */
+async function parseResponseBody(response: Response): Promise<unknown> {
+  if (response.status === 204) {
+    return null
+  }
+
+  const contentType = response.headers.get(`content-type`) ?? ``
+  if (contentType.includes(`application/json`)) {
+    return response.json()
+  }
+  return response.text()
 }
 
 /**
