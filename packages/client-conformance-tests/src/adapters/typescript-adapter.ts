@@ -42,28 +42,6 @@ let serverUrl = ``
 // Track content-type per stream path for append operations
 const streamContentTypes = new Map<string, string>()
 
-/**
- * Check if a content type represents binary data (not text/JSON).
- * Binary content should be base64 encoded when returned to the test runner.
- */
-function isBinaryContentType(contentType: string | undefined): boolean {
-  if (!contentType) return false
-  const normalized = contentType.toLowerCase().split(`;`)[0]?.trim()
-  // Text and JSON types are not binary
-  if (normalized?.startsWith(`text/`)) return false
-  if (normalized === `application/json`) return false
-  // These are common binary types
-  if (normalized === `application/octet-stream`) return true
-  if (normalized === `application/x-binary`) return true
-  if (normalized === `application/x-protobuf`) return true
-  if (normalized?.startsWith(`image/`)) return true
-  if (normalized?.startsWith(`audio/`)) return true
-  if (normalized?.startsWith(`video/`)) return true
-  // Default to binary for unknown application/* types
-  if (normalized?.startsWith(`application/`)) return true
-  return false
-}
-
 // Track IdempotentProducer instances to maintain state across operations
 // Key: "path|producerId|epoch"
 const producerCache = new Map<string, IdempotentProducer>()
@@ -427,8 +405,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             // Use byte reading for non-JSON content
             const data = await response.body()
             if (data.length > 0) {
-              const isBinary = isBinaryContentType(contentType)
-              if (isBinary) {
+              if (command.binaryResponse) {
                 // Return binary data as base64 to preserve byte integrity
                 chunks.push({
                   data: encodeBase64(data),

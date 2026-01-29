@@ -55,7 +55,8 @@ type Command struct {
 	Live            any    `json:"live,omitempty"` // false | "long-poll" | "sse"
 	MaxChunks       int    `json:"maxChunks,omitempty"`
 	WaitForUpToDate bool   `json:"waitForUpToDate,omitempty"`
-	Encoding        string `json:"encoding,omitempty"` // "base64" for binary SSE
+	Encoding        string `json:"encoding,omitempty"`       // "base64" for binary SSE
+	BinaryResponse  bool   `json:"binaryResponse,omitempty"` // Return binary data as base64
 	// Benchmark fields
 	IterationID string              `json:"iterationId,omitempty"`
 	Operation   *BenchmarkOperation `json:"operation,omitempty"`
@@ -175,35 +176,6 @@ func normalizeContentType(contentType string) string {
 		contentType = contentType[:idx]
 	}
 	return strings.TrimSpace(strings.ToLower(contentType))
-}
-
-// isBinaryContentType checks if a content type represents binary data (not text/JSON).
-func isBinaryContentType(contentType string) bool {
-	normalized := normalizeContentType(contentType)
-	if normalized == "" {
-		return false
-	}
-	// Text and JSON types are not binary
-	if strings.HasPrefix(normalized, "text/") {
-		return false
-	}
-	if normalized == "application/json" {
-		return false
-	}
-	// These are common binary types
-	if normalized == "application/octet-stream" ||
-		normalized == "application/x-binary" ||
-		normalized == "application/x-protobuf" ||
-		strings.HasPrefix(normalized, "image/") ||
-		strings.HasPrefix(normalized, "audio/") ||
-		strings.HasPrefix(normalized, "video/") {
-		return true
-	}
-	// Default to binary for unknown application/* types
-	if strings.HasPrefix(normalized, "application/") {
-		return true
-	}
-	return false
 }
 
 func getProducer(cmd Command, cfg durablestreams.IdempotentProducerConfig) (*durablestreams.IdempotentProducer, error) {
@@ -663,16 +635,15 @@ func handleRead(cmd Command) Result {
 					Data:   string(compactJSON),
 					Offset: string(chunk.NextOffset),
 				})
-			} else if liveMode == durablestreams.LiveModeNone && isBinaryContentType(contentType) {
-				// For non-live mode with binary content, return as base64 to preserve byte integrity
-				// For live mode (SSE/long-poll), the client handles transport encoding so we return as text
+			} else if cmd.BinaryResponse {
+				// Return binary data as base64 to preserve byte integrity
 				chunks = append(chunks, ReadChunk{
 					Data:   base64.StdEncoding.EncodeToString(chunk.Data),
 					Binary: true,
 					Offset: string(chunk.NextOffset),
 				})
 			} else {
-				// Text content or live mode - return as string
+				// Text content - return as string
 				chunks = append(chunks, ReadChunk{
 					Data:   string(chunk.Data),
 					Offset: string(chunk.NextOffset),

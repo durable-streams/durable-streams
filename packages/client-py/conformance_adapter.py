@@ -125,35 +125,6 @@ def encode_base64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
 
-def is_binary_content_type(content_type: str | None) -> bool:
-    """Check if a content type represents binary data (not text/JSON)."""
-    if not content_type:
-        return False
-    normalized = content_type.lower().split(";")[0].strip()
-    # Text and JSON types are not binary
-    if normalized.startswith("text/"):
-        return False
-    if normalized == "application/json":
-        return False
-    # These are common binary types
-    if normalized == "application/octet-stream":
-        return True
-    if normalized == "application/x-binary":
-        return True
-    if normalized == "application/x-protobuf":
-        return True
-    if normalized.startswith("image/"):
-        return True
-    if normalized.startswith("audio/"):
-        return True
-    if normalized.startswith("video/"):
-        return True
-    # Default to binary for unknown application/* types
-    if normalized.startswith("application/"):
-        return True
-    return False
-
-
 def map_error_code(err: Exception) -> tuple[str, int | None]:
     """Map a Python exception to an error code and optional status."""
     if isinstance(err, StreamNotFoundError):
@@ -459,8 +430,8 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                 # Use byte reading for non-JSON content
                 data = response.read_bytes()
                 if data:
-                    is_binary = is_binary_content_type(content_type)
-                    if is_binary:
+                    binary_response = cmd.get("binaryResponse", False)
+                    if binary_response:
                         # Return binary data as base64 to preserve byte integrity
                         chunks.append(
                             {
@@ -525,13 +496,13 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
             # For long-poll mode, read the response body directly instead of using
             # iteration (which continues forever in live modes). Read initial response,
             # check upToDate, and only continue if not up-to-date and more data is needed.
-            is_binary = is_binary_content_type(content_type)
+            binary_response = cmd.get("binaryResponse", False)
             if response.status != 204:
                 try:
                     # Read the initial response body
                     data = response._response.read()
                     if data:
-                        if is_binary:
+                        if binary_response:
                             chunks.append(
                                 {
                                     "data": encode_base64(data),
@@ -568,7 +539,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                         next_response.close()
 
                         if data:
-                            if is_binary:
+                            if binary_response:
                                 chunks.append(
                                     {
                                         "data": encode_base64(data),

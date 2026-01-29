@@ -506,6 +506,9 @@ async function executeOperation(
         ? resolveVariables(op.offset, variables)
         : undefined
 
+      // Tell adapter to return binary data as base64 if test expects binaryData
+      const binaryResponse = op.expect?.binaryData !== undefined
+
       // For background operations, send command but don't wait
       if (op.background && op.as) {
         const resultPromise = client.send(
@@ -515,6 +518,7 @@ async function executeOperation(
             offset,
             live: op.live,
             encoding: op.encoding,
+            binaryResponse,
             timeoutMs: op.timeoutMs,
             maxChunks: op.maxChunks,
             waitForUpToDate: op.waitForUpToDate,
@@ -540,6 +544,7 @@ async function executeOperation(
           offset,
           live: op.live,
           encoding: op.encoding,
+          binaryResponse,
           timeoutMs: op.timeoutMs,
           maxChunks: op.maxChunks,
           waitForUpToDate: op.waitForUpToDate,
