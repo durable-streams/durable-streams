@@ -56,3 +56,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Comment on PRs about release
+        if: steps.changesets.outputs.published == 'true'
+        uses: ./.github/comment-on-release
+        with:
+          published-packages: ${{ steps.changesets.outputs.publishedPackages }}
