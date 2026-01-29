@@ -95,6 +95,36 @@ final class SSEParser
     public function next(): ?SSEEvent
     {
         while (true) {
+            // Process any complete events already in the buffer before reading more
+            // This is critical when the previous next() call left unconsumed data
+            if ($this->buffer !== '') {
+                // Normalize line endings: CRLF -> LF, lone CR -> LF
+                $this->buffer = str_replace(["\r\n", "\r"], "\n", $this->buffer);
+
+                while (($pos = strpos($this->buffer, "\n")) !== false) {
+                    $line = substr($this->buffer, 0, $pos);
+                    $this->buffer = substr($this->buffer, $pos + 1);
+
+                    if ($line === '') {
+                        $event = $this->flushEvent();
+                        if ($event !== null) {
+                            return $event;
+                        }
+                        continue;
+                    }
+
+                    if (str_starts_with($line, 'event:')) {
+                        $this->currentEventType = trim(substr($line, 6));
+                    } elseif (str_starts_with($line, 'data:')) {
+                        $content = substr($line, 5);
+                        if (str_starts_with($content, ' ')) {
+                            $content = substr($content, 1);
+                        }
+                        $this->currentDataLines[] = $content;
+                    }
+                }
+            }
+
             // Try to read more data
             $chunk = $this->readChunk();
             if ($chunk === false || ($chunk === '' && $this->isEof())) {
