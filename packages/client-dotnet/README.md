@@ -154,7 +154,7 @@ LiveMode.Sse       // Server-Sent Events persistent connection
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `Encoding` option:
+For binary content types (e.g., `application/octet-stream`), the server automatically signals base64 encoding via the `Stream-SSE-Data-Encoding` response header:
 
 ```csharp
 var stream = await client.CreateStreamAsync("/my-binary-stream", new CreateStreamOptions
@@ -164,18 +164,17 @@ var stream = await client.CreateStreamAsync("/my-binary-stream", new CreateStrea
 
 await using var response = await stream.StreamAsync(new StreamOptions
 {
-    Live = LiveMode.Sse,
-    Encoding = "base64"
+    Live = LiveMode.Sse
 });
 
 await foreach (var chunk in response.ReadBytesAsync())
 {
-    // chunk.Data is byte[] - automatically decoded from base64
+    // chunk.Data is byte[] - automatically decoded from base64 when server signals encoding
     ProcessBinaryData(chunk.Data);
 }
 ```
 
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+The client automatically detects the encoding from the response header and decodes base64 data events before returning them.
 
 ## API Reference
 

@@ -597,16 +597,16 @@ The timeout for long-polling is implementation-defined. Servers **MAY** accept a
 #### Request
 
 ```
-GET {stream-url}?offset=<offset>&live=sse[&encoding=base64]
+GET {stream-url}?offset=<offset>&live=sse
 ```
 
 Where `{stream-url}` is the URL of the stream. Returns data as a Server-Sent Events (SSE) stream.
 
-By default, SSE mode is valid only for streams with `content-type: text/*` or `application/json`, and servers **MUST** ensure these bytes are valid UTF-8 text. For streams with any other `content-type`, clients **MUST** provide an explicit `encoding` parameter (see below).
+SSE mode supports all stream content types. For streams with `content-type: text/*` or `application/json`, data is delivered as native UTF-8 text. For streams with any other `content-type` (binary streams), servers **MUST** automatically encode the data using base64 encoding.
 
 SSE responses **MUST** use `Content-Type: text/event-stream` in the HTTP response headers.
 
-If a non-default encoding is requested (i.e., the request includes `encoding` and the server represents stream bytes in SSE `data` events using that encoding), servers **SHOULD** include the HTTP response header `stream-sse-data-encoding` with the selected encoding value (e.g., `base64`).
+When a server encodes stream bytes using base64 (for non-text content types), it **MUST** include the HTTP response header `Stream-SSE-Data-Encoding: base64`. Clients **MUST** check for this header and decode the data accordingly. The absence of this header indicates native UTF-8 text delivery.
 
 #### Query Parameters
 
@@ -616,19 +616,10 @@ If a non-default encoding is requested (i.e., the request includes `encoding` an
 - `live=sse` (required)
   - Indicates SSE streaming mode.
 
-- `encoding`
-  - Controls how stream bytes are represented in SSE `data` events when the stream's configured `content-type` is not compatible with native SSE delivery.
-  - **The `encoding` parameter is only valid when `live=sse`.** If `encoding` is provided without `live=sse` (i.e., in catch-up mode or with `live=long-poll`), servers **MUST** return `400 Bad Request`. Clients **SHOULD** validate this constraint locally and **MAY** reject the request with an error before sending it to the server.
-  - When the stream's configured `content-type` is neither `text/*` nor `application/json`, clients **MUST** provide `encoding`. If `encoding` is omitted in this case, servers **MUST** return `400 Bad Request`. Clients **SHOULD** validate that `encoding` is provided when requesting SSE for streams with non-text content types and **MAY** reject the request locally with an error before sending it to the server.
-  - Supported values are extensible. Implementations that support `encoding` **MUST** support `encoding=base64`.
-    - Implementations **MAY** support additional values (e.g., `base64url`) as an extension.
-  - If `encoding` is provided with an unsupported value, servers **MUST** return `400 Bad Request`.
-  - If the stream's configured `content-type` is `text/*` or `application/json`, clients **MUST NOT** provide `encoding`. Servers **MUST** treat this as invalid parameters and return `400 Bad Request`.
-
 #### Response Codes
 
 - `200 OK`: Streaming body (SSE format)
-- `400 Bad Request`: Content type incompatible with SSE, missing required `encoding`, `encoding` provided without `live=sse`, or other invalid parameters
+- `400 Bad Request`: Invalid parameters
 - `404 Not Found`: Stream does not exist
 - `429 Too Many Requests`: Rate limit exceeded
 
@@ -640,12 +631,12 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
 
 - `data`: Emitted for each batch of data
   - Each line prefixed with `data:`
-  - When `encoding=base64` is used, the `data` event payload represents bytes encoded using standard base64 per [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648) (alphabet: A-Z, a-z, 0-9, +, /).
+  - For binary streams (content types other than `text/*` or `application/json`), servers **MUST** encode the data using base64 per [RFC 4648](https://www.rfc-editor.org/rfc/rfc4648) (alphabet: A-Z, a-z, 0-9, +, /).
     - Servers **MAY** split the base64 text across multiple `data:` lines within the same SSE `data` event.
     - Clients **MUST** concatenate the `data:` lines for the event (per SSE rules) and **MUST** remove all `\n` and `\r` characters inserted between lines before base64-decoding.
     - The resulting string (after removing `\n` and `\r`) **MUST** be valid base64 text with length that is a multiple of 4 (or empty).
     - If a `data` event's byte payload length is 0, the base64 text **MUST** be the empty string.
-  - The `encoding` parameter affects only `event: data` payloads. `event: control` events remain JSON as specified and are not encoded.
+  - Base64 encoding affects only `event: data` payloads for binary streams. `event: control` events remain JSON as specified and are not encoded.
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
   - **MUST** include `streamNextOffset`. See Section 8.1.
@@ -696,7 +687,7 @@ If the stream is already closed when an SSE connection is established and the cl
 - Servers **MUST** immediately emit a `control` event with `streamClosed: true` and `upToDate: true`
 - Servers **MUST** then close the connection
 
-**Example (binary stream with `encoding=base64`):**
+**Example (binary stream - server automatically applies base64):**
 
 ```
 event: data
@@ -706,6 +697,8 @@ data: BwgJCg==
 event: control
 data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 ```
+
+Note: For binary streams, the server automatically applies base64 encoding and includes the `Stream-SSE-Data-Encoding: base64` response header. Clients detect this header to know they must decode the data.
 
 #### Connection Lifecycle
 
@@ -773,11 +766,13 @@ Clients **MUST** use the `Stream-Next-Offset` value returned in responses for su
 
 The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
 
-**Restriction:**
+**Automatic SSE Encoding:**
 
-- SSE mode (Section 5.8) is valid by default only for streams with `content-type: text/*` or `application/json`.
-- For streams with any other `content-type`, SSE mode requires an explicit `encoding` parameter (e.g., `encoding=base64`) and the stream bytes are represented in SSE `data` events according to that encoding.
-  Clients **MAY** use any content type for their streams, including:
+- SSE mode (Section 5.8) supports all stream content types.
+- For streams with `content-type: text/*` or `application/json`, data is delivered as native UTF-8 text.
+- For streams with any other `content-type`, servers automatically encode data using base64 and include the `Stream-SSE-Data-Encoding: base64` response header. Clients detect this header to decode the data.
+
+Clients **MAY** use any content type for their streams, including:
 
 - `application/json` for JSON mode with message boundary preservation
 - `application/ndjson` for newline-delimited JSON

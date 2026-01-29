@@ -289,6 +289,7 @@ final class SSEStreamHandle
     private bool $closed = false;
     private bool $finished = false;
     private float $timeout;
+    private ?string $sseDataEncoding = null;
 
     /**
      * @param string $url Full URL
@@ -323,6 +324,7 @@ final class SSEStreamHandle
         $headersDone = false;
         $statusCode = 0;
         $buffer = &$this->buffer;
+        $sseDataEncoding = &$this->sseDataEncoding;
 
         curl_setopt_array($handle, [
             CURLOPT_URL => $url,
@@ -336,7 +338,7 @@ final class SSEStreamHandle
                 $buffer .= $data;
                 return strlen($data);
             },
-            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$responseHeaders, &$headersDone, &$statusCode) {
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$responseHeaders, &$headersDone, &$statusCode, &$sseDataEncoding) {
                 $len = strlen($header);
                 if (trim($header) === '') {
                     $headersDone = true;
@@ -349,7 +351,13 @@ final class SSEStreamHandle
                 }
                 if (str_contains($header, ':')) {
                     [$name, $value] = explode(':', $header, 2);
-                    $responseHeaders[strtolower(trim($name))] = trim($value);
+                    $headerName = strtolower(trim($name));
+                    $headerValue = trim($value);
+                    $responseHeaders[$headerName] = $headerValue;
+                    // Capture SSE data encoding header
+                    if ($headerName === 'stream-sse-data-encoding') {
+                        $sseDataEncoding = $headerValue;
+                    }
                 }
                 return $len;
             },
@@ -513,6 +521,16 @@ final class SSEStreamHandle
     public function eof(): bool
     {
         return $this->finished && $this->buffer === '';
+    }
+
+    /**
+     * Get the SSE data encoding from response header.
+     *
+     * @return string|null The encoding (e.g., 'base64') or null if not set
+     */
+    public function getSseDataEncoding(): ?string
+    {
+        return $this->sseDataEncoding;
     }
 
     /**

@@ -176,7 +176,7 @@ foreach ($response->jsonBatches() as $batch) {
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
+For binary content types (e.g., `application/octet-stream`), SSE mode automatically handles encoding:
 
 ```php
 <?php
@@ -185,17 +185,16 @@ use DurableStreams\LiveMode;
 
 $response = stream([
     'url' => 'https://api.example.com/streams/binary-data',
-    'live' => LiveMode::Sse,
-    'encoding' => 'base64',
+    'live' => LiveMode::SSE,
 ]);
 
 foreach ($response->chunks() as $chunk) {
-    // $chunk->data is binary - automatically decoded from base64
+    // $chunk->data is binary - automatically decoded from base64 if server uses encoding
     processBinaryData($chunk->data);
 }
 ```
 
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+The server automatically applies base64 encoding for binary content types over SSE and signals this via the `Stream-SSE-Data-Encoding` response header. The client detects and decodes this automatically.
 
 ### Dynamic Headers (Token Refresh)
 

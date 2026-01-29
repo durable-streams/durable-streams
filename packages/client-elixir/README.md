@@ -255,24 +255,21 @@ For real-time updates, use long-poll or SSE:
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `:encoding` option:
+For binary content types (e.g., `application/octet-stream`), the server automatically encodes data as base64 when using SSE mode. The client auto-detects this encoding from the `Stream-SSE-Data-Encoding` response header and decodes the data transparently:
 
 ```elixir
 # Create a binary stream
 {:ok, stream} = DS.create(stream, content_type: "application/octet-stream")
 
-# Read with SSE using base64 encoding
+# Read with SSE - encoding is auto-detected
 {:ok, chunk} = DS.read(stream,
   offset: "-1",
-  live: :sse,
-  encoding: :base64
+  live: :sse
 )
 
 # chunk.data is binary - automatically decoded from base64
 process_binary(chunk.data)
 ```
-
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
 
 ## Long-Running Consumer
 

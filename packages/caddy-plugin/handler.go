@@ -251,12 +251,6 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// Check for live mode
 	liveMode := query.Get("live")
 	cursor := query.Get("cursor")
-	encoding := query.Get("encoding")
-
-	// Validate encoding parameter is only valid with live=sse (Protocol Section 5.7)
-	if encoding != "" && liveMode != "sse" {
-		return newHTTPError(http.StatusBadRequest, "encoding parameter is only valid with live='sse'")
-	}
 
 	// Validate long-poll requires offset
 	if liveMode == "long-poll" && !offsetProvided {
@@ -268,22 +262,6 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		return newHTTPError(http.StatusBadRequest, "offset required for SSE mode")
 	}
 
-	// Validate encoding parameter for SSE mode (Protocol Section 5.7)
-	if liveMode == "sse" {
-		ct := strings.ToLower(store.ExtractMediaType(meta.ContentType))
-		isTextCompatible := strings.HasPrefix(ct, "text/") || ct == "application/json"
-
-		if isTextCompatible && encoding != "" {
-			return newHTTPError(http.StatusBadRequest, "encoding parameter not allowed for text/* or application/json streams")
-		}
-		if !isTextCompatible && encoding == "" {
-			return newHTTPError(http.StatusBadRequest, "encoding parameter required for non-text content types")
-		}
-		if encoding != "" && encoding != "base64" {
-			return newHTTPError(http.StatusBadRequest, "unsupported encoding value: "+encoding)
-		}
-	}
-
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
 		// For SSE with offset=now, convert to actual tail offset
@@ -291,7 +269,7 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		if offset.IsNow() {
 			sseOffset = meta.CurrentOffset
 		}
-		return h.handleSSE(w, r, path, sseOffset, cursor, encoding)
+		return h.handleSSE(w, r, path, sseOffset, cursor, meta.ContentType)
 	}
 
 	// For offset=now, convert to actual tail offset
@@ -524,13 +502,17 @@ func generateResponseCursor(clientCursor string) string {
 }
 
 // handleSSE handles Server-Sent Events streaming
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string, encoding string) error {
+func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string, contentType string) error {
 	meta, err := h.store.Get(path)
 	if err != nil {
 		return err
 	}
 
-	// Note: Content-type and encoding validation is done in handleRead before calling handleSSE
+	// Determine if we need base64 encoding based on content type
+	// Binary streams (not text/* or application/json) require base64 encoding for SSE
+	ct := strings.ToLower(store.ExtractMediaType(contentType))
+	isTextCompatible := strings.HasPrefix(ct, "text/") || ct == "application/json"
+	useBase64 := !isTextCompatible
 
 	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -538,8 +520,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	// Add encoding header when base64 encoding is used (Protocol Section 5.7)
-	if encoding == "base64" {
+	// Add encoding header when base64 encoding is used for binary streams
+	if useBase64 {
 		w.Header().Set(HeaderStreamSSEDataEncoding, "base64")
 	}
 
@@ -581,8 +563,8 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				body, _ := h.formatResponse(path, messages, meta.ContentType)
 				fmt.Fprintf(w, "event: data\n")
 
-				if encoding == "base64" {
-					// Base64 encode the binary data for SSE delivery (Protocol Section 5.7)
+				if useBase64 {
+					// Base64 encode binary data for SSE delivery
 					encoded := base64.StdEncoding.EncodeToString(body)
 					fmt.Fprintf(w, "data:%s\n", encoded)
 				} else {

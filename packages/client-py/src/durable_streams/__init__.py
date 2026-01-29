@@ -44,7 +44,6 @@ from durable_streams._types import (
     LiveMode,
     Offset,
     ParamsLike,
-    SSEEncoding,
     StreamEvent,
 )
 from durable_streams.adurable_stream import AsyncDurableStream
@@ -68,7 +67,6 @@ __all__ = [
     "CloseResult",
     "HeadersLike",
     "ParamsLike",
-    "SSEEncoding",
     "IdempotentAppendResult",
     # Errors
     "DurableStreamError",

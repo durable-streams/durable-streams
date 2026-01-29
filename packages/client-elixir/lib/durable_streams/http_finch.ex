@@ -64,7 +64,6 @@ defmodule DurableStreams.HTTP.Finch do
       timeout = Keyword.get(opts, :timeout, 30_000)
       halt_on_up_to_date = Keyword.get(opts, :halt_on_up_to_date, false)
       halt_on_up_to_date_immediate = Keyword.get(opts, :halt_on_up_to_date_immediate, false)
-      encoding = Keyword.get(opts, :encoding)
       request = Finch.build(:get, url, headers)
 
       initial_acc = %{
@@ -78,7 +77,7 @@ defmodule DurableStreams.HTTP.Finch do
         on_event: on_event,
         halt_on_up_to_date: halt_on_up_to_date,
         halt_on_up_to_date_immediate: halt_on_up_to_date_immediate,
-        encoding: encoding
+        encoding: nil  # Will be auto-detected from Stream-SSE-Data-Encoding header
       }
 
       # Use Finch.stream_while for SSE - it supports {:cont, acc} / {:halt, acc} returns
@@ -159,7 +158,9 @@ defmodule DurableStreams.HTTP.Finch do
     # Extract next_offset from headers if present
     next_offset = get_header(headers, "stream-next-offset")
     up_to_date = get_header(headers, "stream-up-to-date") == "true"
-    {:cont, %{acc | headers: headers, next_offset: next_offset, up_to_date: up_to_date}}
+    # Auto-detect encoding from Stream-SSE-Data-Encoding header
+    encoding = get_header(headers, "stream-sse-data-encoding")
+    {:cont, %{acc | headers: headers, next_offset: next_offset, up_to_date: up_to_date, encoding: encoding}}
   end
 
   defp handle_stream_message({:data, chunk}, acc) do

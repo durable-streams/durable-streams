@@ -23,7 +23,6 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private final String url;
     private final LiveMode liveMode;
     private final Duration timeout;
-    private final String encoding;
 
     private Offset currentOffset;
     private String cursor;
@@ -36,27 +35,17 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private SSEStreamingReader sseReader;
     private boolean sseStarted;
 
-    // Validation error to be thrown on first hasNext()/next() call
-    private DurableStreamException validationError;
-
-    ChunkIterator(DurableStream client, String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor, String encoding) {
+    ChunkIterator(DurableStream client, String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor) {
         this.client = client;
         this.url = url;
         this.currentOffset = offset != null ? offset : Offset.BEGINNING;
         this.liveMode = liveMode != null ? liveMode : LiveMode.OFF;
         this.timeout = timeout;
         this.cursor = cursor;
-        this.encoding = encoding;
         this.upToDate = false;
         this.closed = false;
         this.hasNextComputed = false;
         this.sseStarted = false;
-
-        // Validate encoding is only used with live=sse (Protocol Section 5.7)
-        if (encoding != null && this.liveMode != LiveMode.SSE) {
-            this.validationError = new DurableStreamException(
-                    "encoding parameter is only valid with live='sse'", 400);
-        }
     }
 
     @Override
@@ -76,11 +65,6 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     @Override
     public boolean hasNext() {
         if (closed) return false;
-
-        // Throw validation error on first call
-        if (validationError != null) {
-            throw validationError;
-        }
 
         if (hasNextComputed) return nextChunk != null;
 
@@ -124,11 +108,6 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
      */
     public Chunk poll(Duration timeout) throws DurableStreamException {
         if (closed) return null;
-
-        // Throw validation error on first call
-        if (validationError != null) {
-            throw validationError;
-        }
 
         if (liveMode == LiveMode.OFF && upToDate) return null;
 
@@ -181,7 +160,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private void ensureSSEStarted() throws DurableStreamException {
         if (sseStarted) return;
 
-        sseReader = client.openSSEStream(url, currentOffset, cursor, encoding);
+        sseReader = client.openSSEStream(url, currentOffset, cursor);
         sseReader.start();
         sseStarted = true;
     }

@@ -26,6 +26,9 @@ internal static class Headers
 
     // Stream closure header
     public const string StreamClosed = "Stream-Closed";
+
+    // SSE encoding header
+    public const string StreamSseDataEncoding = "Stream-SSE-Data-Encoding";
 }
 
 /// <summary>
@@ -47,5 +50,4 @@ internal static class QueryParams
     public const string Offset = "offset";
     public const string Live = "live";
     public const string Cursor = "cursor";
-    public const string Encoding = "encoding";
 }

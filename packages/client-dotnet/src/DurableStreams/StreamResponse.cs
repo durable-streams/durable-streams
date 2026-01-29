@@ -37,6 +37,9 @@ public sealed class StreamResponse : IAsyncDisposable
     // SSE reconnection backoff state
     private int _sseReconnectAttempts;
 
+    // SSE data encoding detected from response header
+    private string? _sseDataEncoding;
+
     /// <summary>
     /// The stream URL.
     /// </summary>
@@ -395,6 +398,9 @@ public sealed class StreamResponse : IAsyncDisposable
                 _stream.ContentType = contentType;
             }
 
+            // Detect SSE data encoding from response header
+            _sseDataEncoding = HttpHelpers.GetHeader(_currentResponse, Headers.StreamSseDataEncoding);
+
             // Closed streams should be treated as up-to-date even before control event
             if (HttpHelpers.GetBoolHeader(_currentResponse, Headers.StreamClosed))
             {
@@ -428,6 +434,9 @@ public sealed class StreamResponse : IAsyncDisposable
                         return null;
                     }
 
+                    // Detect SSE data encoding from response header on reconnect
+                    _sseDataEncoding = HttpHelpers.GetHeader(_currentResponse, Headers.StreamSseDataEncoding);
+
                     var stream = await _currentResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                     _sseParser = new SseParser(stream);
                     continue;
@@ -442,8 +451,8 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 var dataEvt = (SseDataEvent)eventObj;
 
-                // Decode base64 if encoding is set (Protocol Section 5.7)
-                if (_options.Encoding == "base64")
+                // Decode base64 if encoding is detected from response header (Protocol Section 5.7)
+                if (_sseDataEncoding == "base64")
                 {
                     try
                     {
@@ -516,12 +525,6 @@ public sealed class StreamResponse : IAsyncDisposable
         if (_cursor != null)
         {
             queryParams[QueryParams.Cursor] = _cursor;
-        }
-
-        // Add encoding for SSE with binary streams
-        if (_options.Encoding != null && _options.Live == LiveMode.Sse)
-        {
-            queryParams[QueryParams.Encoding] = _options.Encoding;
         }
 
         _url = HttpHelpers.BuildUrl(_stream.Url, queryParams);

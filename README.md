@@ -376,7 +376,7 @@ In JSON mode:
 
 ### Binary Streams with SSE
 
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option to transmit data safely over the text-based SSE protocol:
+For binary content types (e.g., `application/octet-stream`), the server automatically applies base64 encoding when streaming over SSE to safely transmit binary data over the text-based SSE protocol. The server signals this via the `Stream-SSE-Data-Encoding: base64` response header, and clients automatically decode the data.
 
 ```typescript
 // TypeScript
@@ -387,7 +387,6 @@ const stream = await DurableStream.create({
 
 const response = await stream.read({
   live: "sse",
-  encoding: "base64",
 })
 
 response.subscribe((chunk) => {
@@ -397,7 +396,7 @@ response.subscribe((chunk) => {
 
 ```python
 # Python
-for chunk in stream.read(live="sse", encoding="base64"):
+for chunk in stream.read(live="sse"):
     print(chunk.data)  # bytes - automatically decoded from base64
 ```
 
@@ -405,14 +404,13 @@ for chunk in stream.read(live="sse", encoding="base64"):
 // Go
 iter := stream.Read(ctx,
     durable.WithLive(durable.LiveModeSSE),
-    durable.WithEncoding("base64"),
 )
 for iter.Next() {
     fmt.Println(iter.Data()) // []byte - automatically decoded
 }
 ```
 
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
+The client automatically decodes base64 data events before returning them. This encoding is applied automatically by the server for any content type other than `text/*` or `application/json` when using SSE mode.
 
 ## Offset Semantics
 

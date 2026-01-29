@@ -144,7 +144,6 @@ tests:
       - action: read
         path: ${streamPath}
         live: sse
-        encoding: base64
         waitForUpToDate: true
         expect:
           minChunks: 1

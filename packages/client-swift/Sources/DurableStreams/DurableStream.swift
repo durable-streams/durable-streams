@@ -327,30 +327,18 @@ public actor DurableStream {
     /// - Parameters:
     ///   - offset: Starting offset
     ///   - live: Live mode (catchUp, longPoll, sse)
-    ///   - encoding: Encoding for SSE with binary streams (e.g., "base64"). Only valid with live=.sse.
     ///   - headers: Additional headers
     public func read(
         offset: Offset = .start,
         live: LiveMode = .catchUp,
-        encoding: String? = nil,
         headers: HeadersRecord = [:]
     ) async throws -> StreamResponse {
-        // Validate encoding is only used with live=sse (Protocol Section 5.7)
-        if encoding != nil && live != .sse {
-            throw DurableStreamError.badRequest(message: "encoding parameter is only valid with live='sse'")
-        }
-
         var params: [String: String] = [
             QueryParams.offset: offset.rawValue
         ]
 
         if let liveValue = live.queryValue, live != .catchUp {
             params[QueryParams.live] = liveValue
-        }
-
-        // Add encoding for SSE with binary streams
-        if live == .sse, let enc = encoding {
-            params[QueryParams.encoding] = enc
         }
 
         // Use longer timeout for long-poll/SSE modes
@@ -759,14 +747,14 @@ public actor DurableStream {
     /// Stream raw SSE events from the stream.
     ///
     /// Uses SSE live mode to receive server-sent events. Events are parsed
-    /// per the EventSource specification.
+    /// per the EventSource specification. Binary data encoding is auto-detected
+    /// from the `Stream-SSE-Data-Encoding` response header.
     /// - Parameters:
     ///   - offset: Starting offset
-    ///   - encoding: Encoding for binary streams (e.g., "base64"). When set, data events are decoded.
-    public func sseEvents(from offset: Offset = .start, encoding: String? = nil) -> AsyncThrowingStream<SSEEvent, Error> {
+    public func sseEvents(from offset: Offset = .start) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
-                await self.runSSELoop(from: offset, encoding: encoding, continuation: continuation)
+                await self.runSSELoop(from: offset, continuation: continuation)
             }
             continuation.onTermination = { _ in
                 task.cancel()
@@ -778,7 +766,6 @@ public actor DurableStream {
     /// Uses true streaming to receive SSE events as they arrive.
     private func runSSELoop(
         from offset: Offset,
-        encoding: String? = nil,
         continuation: AsyncThrowingStream<SSEEvent, Error>.Continuation
     ) async {
         var currentOffset = offset
@@ -787,15 +774,10 @@ public actor DurableStream {
 
         while !Task.isCancelled {
             do {
-                var queryParams: [String: String] = [
+                let queryParams: [String: String] = [
                     QueryParams.offset: currentOffset.rawValue,
                     QueryParams.live: "sse"
                 ]
-
-                // Add encoding for SSE with binary streams
-                if let enc = encoding {
-                    queryParams[QueryParams.encoding] = enc
-                }
 
                 let requestURL = try await httpClient.buildURL(base: url, params: queryParams)
                 var request = await httpClient.buildRequest(url: requestURL, timeout: config.longPollTimeout)
@@ -803,6 +785,9 @@ public actor DurableStream {
 
                 // Use streaming to receive bytes as they arrive
                 let (bytes, metadata) = try await httpClient.performStreaming(request)
+
+                // Auto-detect encoding from response header
+                let encoding = metadata.sseDataEncoding
 
                 switch metadata.status {
                 case 200:
@@ -822,7 +807,7 @@ public actor DurableStream {
                             if line.isEmpty {
                                 // Empty line = end of event
                                 if var event = currentEvent.build() {
-                                    // Decode base64 data for "data" events when encoding is set
+                                    // Decode base64 data for "data" events when encoding is detected
                                     if encoding == "base64" && event.effectiveEvent == "data" {
                                         // Per Protocol Section 5.7: remove \n and \r before decoding
                                         let cleanedData = event.data

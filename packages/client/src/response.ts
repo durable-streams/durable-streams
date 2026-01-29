@@ -10,6 +10,7 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import { DurableStreamError } from "./error"
@@ -527,10 +528,10 @@ export class StreamResponseImpl<
           0
         )
         const combined = new Uint8Array(totalLength)
-        let offset = 0
+        let byteOffset = 0
         for (const part of decodedParts) {
-          combined.set(part, offset)
-          offset += part.length
+          combined.set(part, byteOffset)
+          byteOffset += part.length
         }
         body = combined.buffer
       }
@@ -658,6 +659,15 @@ export class StreamResponseImpl<
       this.cursor,
       this.#requestAbortController.signal
     )
+
+    // Update encoding from response header (server decides based on content-type)
+    const newEncoding = newSSEResponse.headers.get(
+      STREAM_SSE_DATA_ENCODING_HEADER
+    ) as `base64` | null
+    if (newEncoding) {
+      this.#encoding = newEncoding
+    }
+
     if (newSSEResponse.body) {
       return parseSSEStream(
         newSSEResponse.body,

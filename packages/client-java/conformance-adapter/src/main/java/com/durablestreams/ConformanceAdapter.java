@@ -299,7 +299,6 @@ public class ConformanceAdapter {
         Number maxChunksNum = (Number) cmd.get("maxChunks");
         int maxChunks = maxChunksNum != null ? maxChunksNum.intValue() : 100;
         Boolean waitForUpToDate = (Boolean) cmd.get("waitForUpToDate");
-        String encoding = (String) cmd.get("encoding");
 
         Offset offset = offsetStr != null ? Offset.of(offsetStr) : Offset.BEGINNING;
         LiveMode liveMode = parseLiveMode(liveValue);
@@ -346,11 +345,8 @@ public class ConformanceAdapter {
             // SSE mode now uses true streaming
             LiveMode effectiveMode = liveMode;
 
-            // Build read options with optional encoding
+            // Build read options - encoding is auto-detected from response header
             ReadOptions readOptions = ReadOptions.from(offset).live(effectiveMode).timeout(timeout);
-            if (encoding != null) {
-                readOptions = readOptions.encoding(encoding);
-            }
 
             try (ChunkIterator iterator = client.read(url, readOptions)) {
                 int count = 0;

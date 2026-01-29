@@ -301,9 +301,6 @@ def handle_read(cmd)
          else false # Default to catch-up only
          end
 
-  # Get encoding option for SSE binary streams (Protocol Section 5.7)
-  encoding = cmd["encoding"]
-
   timeout_ms = cmd["timeoutMs"] || 5000
   max_chunks = cmd["maxChunks"] || 100
   wait_for_up_to_date = cmd["waitForUpToDate"] || false
@@ -333,8 +330,8 @@ def handle_read(cmd)
 
   begin
     if live == false
-      # Catch-up mode - pass encoding to trigger validation (should fail if encoding provided)
-      reader = stream.read(offset: offset, live: false, format: format, encoding: encoding)
+      # Catch-up mode
+      reader = stream.read(offset: offset, live: false, format: format)
 
       if is_json
         reader.each_batch do |batch|
@@ -358,7 +355,7 @@ def handle_read(cmd)
       reader.close
     elsif live == :sse
       # SSE mode with timeout
-      reader = stream.read(offset: offset, live: :sse, format: format, encoding: encoding)
+      reader = stream.read(offset: offset, live: :sse, format: format)
       chunk_count = 0
 
       begin
@@ -378,7 +375,7 @@ def handle_read(cmd)
               break if wait_for_up_to_date && up_to_date
             end
           else
-            # For byte streams with encoding (e.g., base64)
+            # For byte streams (encoding auto-detected from response header)
             reader.each do |chunk|
               unless chunk.data.empty?
                 # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
@@ -403,8 +400,8 @@ def handle_read(cmd)
       status = reader.status || 200
       reader.close
     else
-      # Long-poll mode - pass encoding to trigger validation (should fail if encoding provided)
-      reader = stream.read(offset: offset, live: :long_poll, format: format, encoding: encoding)
+      # Long-poll mode
+      reader = stream.read(offset: offset, live: :long_poll, format: format)
       chunk_count = 0
 
       Timeout.timeout(timeout_ms / 1000.0) do

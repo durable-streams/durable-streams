@@ -219,31 +219,6 @@ LiveMode::LongPoll
 LiveMode::Sse
 ```
 
-### Binary Streams with SSE
-
-For binary content types (e.g., `application/octet-stream`), SSE mode requires the `encoding` option:
-
-```rust
-// Create a binary stream
-stream.create_with(
-    CreateOptions::new().content_type("application/octet-stream")
-).await?;
-
-// Read with SSE using base64 encoding
-let mut reader = stream.read()
-    .offset(Offset::Beginning)
-    .live(LiveMode::Sse)
-    .encoding("base64")
-    .build();
-
-while let Some(chunk) = reader.next_chunk().await? {
-    // chunk.data is Bytes - automatically decoded from base64
-    process_binary_data(&chunk.data);
-}
-```
-
-The client automatically decodes base64 data events before returning them. This is required for any content type other than `text/*` or `application/json` when using SSE mode.
-
 ### ChunkIterator
 
 ```rust

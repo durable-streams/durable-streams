@@ -77,33 +77,15 @@ defmodule DurableStreams.Base64EncodingTest do
     end
   end
 
-  describe "URL building with encoding parameter" do
-    test "builds URL with encoding parameter when specified" do
-      base_url = "http://example.com/stream"
-      offset = "0"
-      encoding = "base64"
-
-      query_params = [{"offset", offset}, {"live", "sse"}]
-      query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
-      url_with_query = base_url <> "?" <> URI.encode_query(query_params)
-
-      assert String.contains?(url_with_query, "encoding=base64")
-      assert String.contains?(url_with_query, "offset=0")
-      assert String.contains?(url_with_query, "live=sse")
-    end
-
-    test "builds URL without encoding parameter when not specified" do
-      base_url = "http://example.com/stream"
-      offset = "0"
-      encoding = nil
-
-      query_params = [{"offset", offset}, {"live", "sse"}]
-      query_params = if encoding, do: [{"encoding", encoding} | query_params], else: query_params
-      url_with_query = base_url <> "?" <> URI.encode_query(query_params)
-
-      refute String.contains?(url_with_query, "encoding=")
-      assert String.contains?(url_with_query, "offset=0")
-      assert String.contains?(url_with_query, "live=sse")
+  describe "encoding auto-detection from response headers" do
+    test "encoding is auto-detected from Stream-SSE-Data-Encoding header" do
+      # The encoding is now auto-detected from the Stream-SSE-Data-Encoding response header
+      # rather than being passed as a URL parameter. The decoding logic remains the same -
+      # if the header is present with value "base64", data is decoded from base64.
+      # This test verifies the decoding behavior that occurs after auto-detection.
+      input = "SGVsbG8gV29ybGQ="
+      result = decode_sse_data(input, "base64")
+      assert result == "Hello World"
     end
   end
 

@@ -13,6 +13,7 @@ from durable_streams._types import (
     STREAM_CLOSED_HEADER,
     STREAM_CURSOR_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
+    STREAM_SSE_DATA_ENCODING_HEADER,
     STREAM_UP_TO_DATE_HEADER,
     Offset,
 )
@@ -30,9 +31,10 @@ class ResponseMetadata:
         up_to_date: Whether the response is at the current end of stream
         stream_closed: Whether the stream has been closed (EOF)
         content_type: The content type of the response
+        sse_encoding: SSE data encoding signaled by server (e.g., "base64")
     """
 
-    __slots__ = ("next_offset", "cursor", "up_to_date", "stream_closed", "content_type")
+    __slots__ = ("next_offset", "cursor", "up_to_date", "stream_closed", "content_type", "sse_encoding")
 
     def __init__(
         self,
@@ -41,12 +43,14 @@ class ResponseMetadata:
         up_to_date: bool = False,
         stream_closed: bool = False,
         content_type: str | None = None,
+        sse_encoding: str | None = None,
     ) -> None:
         self.next_offset = next_offset
         self.cursor = cursor
         self.up_to_date = up_to_date
         self.stream_closed = stream_closed
         self.content_type = content_type
+        self.sse_encoding = sse_encoding
 
 
 def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
@@ -69,6 +73,7 @@ def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
         lower_headers.get(STREAM_CLOSED_HEADER.lower(), "").lower() == "true"
     )
     content_type = lower_headers.get("content-type")
+    sse_encoding = lower_headers.get(STREAM_SSE_DATA_ENCODING_HEADER.lower())
 
     return ResponseMetadata(
         next_offset=next_offset,
@@ -76,6 +81,7 @@ def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
         up_to_date=up_to_date,
         stream_closed=stream_closed,
         content_type=content_type,
+        sse_encoding=sse_encoding,
     )
 
 

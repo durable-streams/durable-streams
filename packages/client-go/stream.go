@@ -14,22 +14,19 @@ import (
 
 // Protocol header names
 const (
-	headerContentType    = "Content-Type"
-	headerStreamOffset   = "Stream-Next-Offset"
-	headerStreamCursor   = "Stream-Cursor"
-	headerStreamUpToDate = "Stream-Up-To-Date"
-	headerStreamClosed   = "Stream-Closed"
-	headerStreamSeq      = "Stream-Seq"
-	headerStreamTTL      = "Stream-TTL"
-	headerStreamExpires  = "Stream-Expires-At"
-	headerETag           = "ETag"
-	headerIfMatch        = "If-Match"
+	headerContentType          = "Content-Type"
+	headerStreamOffset         = "Stream-Next-Offset"
+	headerStreamCursor         = "Stream-Cursor"
+	headerStreamUpToDate       = "Stream-Up-To-Date"
+	headerStreamClosed         = "Stream-Closed"
+	headerStreamSeq            = "Stream-Seq"
+	headerStreamTTL            = "Stream-TTL"
+	headerStreamExpires        = "Stream-Expires-At"
+	headerStreamSSEDataEncoding = "Stream-SSE-Data-Encoding"
+	headerETag                 = "ETag"
+	headerIfMatch              = "If-Match"
 )
 
-// Query parameter names
-const (
-	encodingQueryParam = "encoding"
-)
 
 // Stream represents a durable stream handle.
 // It is a lightweight, reusable object - not a persistent connection.
@@ -495,12 +492,6 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 	// Create a cancellable context for the iterator
 	iterCtx, cancel := context.WithCancel(ctx)
 
-	// Validate encoding is only used with live=sse (Protocol Section 5.7)
-	var initErr error
-	if cfg.encoding != "" && cfg.live != LiveModeSSE {
-		initErr = newStreamError("read", s.url, 400, fmt.Errorf("encoding parameter is only valid with live='sse'"))
-	}
-
 	return &ChunkIterator{
 		stream:   s,
 		ctx:      iterCtx,
@@ -510,15 +501,13 @@ func (s *Stream) Read(ctx context.Context, opts ...ReadOption) *ChunkIterator {
 		cursor:   cfg.cursor,
 		headers:  cfg.headers,
 		timeout:  cfg.timeout,
-		encoding: cfg.encoding,
 		Offset:   cfg.offset,
 		UpToDate: false,
-		initErr:  initErr,
 	}
 }
 
 // buildReadURL constructs the URL for a read request with query parameters.
-func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string, encoding string) string {
+func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string) string {
 	u, err := url.Parse(s.url)
 	if err != nil {
 		return s.url
@@ -544,11 +533,6 @@ func (s *Stream) buildReadURL(offset Offset, live LiveMode, cursor string, encod
 	// Add cursor for CDN collapsing
 	if cursor != "" {
 		q.Set("cursor", cursor)
-	}
-
-	// Add encoding for SSE with binary streams
-	if encoding != "" && live == LiveModeSSE {
-		q.Set(encodingQueryParam, encoding)
 	}
 
 	u.RawQuery = q.Encode()

@@ -1154,11 +1154,9 @@ func handleRead(_ cmd: Command) async -> Result {
                 await state.cacheHandle(path: path, handle: handle)
             }
 
-            // Pass encoding to trigger validation (should fail if encoding provided without SSE)
             let result = try await handle.read(
                 offset: currentOffset,
                 live: liveMode,
-                encoding: cmd.encoding,
                 headers: [:]  // Already in config
             )
 
@@ -1317,7 +1315,8 @@ func handleSSERead(
 
         // Process SSE events directly (not in a separate task)
         // This allows errors to propagate naturally
-        for try await event in await handle.sseEvents(from: offset, encoding: encoding) {
+        // Encoding is now auto-detected from the Stream-SSE-Data-Encoding response header
+        for try await event in await handle.sseEvents(from: offset) {
             if Task.isCancelled || Date() >= deadline {
                 break
             }

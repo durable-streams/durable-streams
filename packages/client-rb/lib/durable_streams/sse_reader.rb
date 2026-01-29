@@ -14,8 +14,7 @@ module DurableStreams
     # @param offset [String] Starting offset
     # @param cursor [String, nil] Initial cursor
     # @param retry_policy [RetryPolicy, nil] Retry policy for reconnection
-    # @param encoding [String, nil] Encoding for binary streams (e.g., "base64")
-    def initialize(stream, offset: "-1", cursor: nil, retry_policy: nil, encoding: nil)
+    def initialize(stream, offset: "-1", cursor: nil, retry_policy: nil)
       @stream = stream
       @offset = offset
       @next_offset = offset
@@ -27,7 +26,7 @@ module DurableStreams
       @buffer = +""
       @http_response = nil
       @connection = nil
-      @encoding = encoding
+      @encoding = nil
     end
 
     # Iterate over SSE events
@@ -98,7 +97,6 @@ module DurableStreams
     def open_sse_connection(&block)
       params = { offset: @next_offset, live: "sse" }
       params[:cursor] = @cursor if @cursor
-      params[:encoding] = @encoding if @encoding
 
       request_url = HTTP.build_url(@stream.url, params)
       uri = URI.parse(request_url)
@@ -126,6 +124,9 @@ module DurableStreams
         unless @status >= 200 && @status < 300
           raise DurableStreams.error_from_status(@status, url: @stream.url)
         end
+        # Auto-detect encoding from response header (Protocol Section 5.7)
+        encoding_header = response["Stream-SSE-Data-Encoding"]
+        @encoding = encoding_header if encoding_header
         yield response
       end
     ensure

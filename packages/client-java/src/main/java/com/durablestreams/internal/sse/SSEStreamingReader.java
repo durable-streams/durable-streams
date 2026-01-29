@@ -30,15 +30,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * - event: control - contains JSON with streamNextOffset, streamCursor, upToDate
  *
  * This reader parses the stream and produces Chunk objects.
+ *
+ * <p>For binary streams, the server automatically applies base64 encoding and signals
+ * this via the Stream-SSE-Data-Encoding response header. The client detects this
+ * automatically when starting the SSE connection.
  */
 public final class SSEStreamingReader implements AutoCloseable {
+
+    private static final String STREAM_SSE_DATA_ENCODING_HEADER = "Stream-SSE-Data-Encoding";
 
     private final HttpClient httpClient;
     private final HttpRequest request;
     private final BlockingQueue<ChunkOrError> chunkQueue;
     private final AtomicBoolean closed;
     private final AtomicBoolean started;
-    private final String encoding;
 
     private volatile Thread readerThread;
     private volatile InputStream inputStream;
@@ -46,15 +51,17 @@ public final class SSEStreamingReader implements AutoCloseable {
     private volatile Offset currentOffset;
     private volatile String currentCursor;
     private volatile boolean upToDate;
+    // Auto-detected from response header
+    private volatile String encoding;
 
-    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset, String encoding) {
+    public SSEStreamingReader(HttpClient httpClient, HttpRequest request, Offset initialOffset) {
         this.httpClient = httpClient;
         this.request = request;
         this.chunkQueue = new LinkedBlockingQueue<>();
         this.closed = new AtomicBoolean(false);
         this.started = new AtomicBoolean(false);
         this.currentOffset = initialOffset;
-        this.encoding = encoding;
+        this.encoding = null;  // Will be auto-detected from response header
         this.upToDate = false;
     }
 
@@ -76,6 +83,12 @@ public final class SSEStreamingReader implements AutoCloseable {
             } else if (status != 200) {
                 throw new DurableStreamException("SSE connection failed with status: " + status, status);
             }
+
+            // Auto-detect encoding from response header (per Protocol Section 5.8)
+            // Server signals base64 encoding for binary streams via this header
+            encoding = response.headers()
+                    .firstValue(STREAM_SSE_DATA_ENCODING_HEADER)
+                    .orElse(null);
 
             inputStream = response.body();
 

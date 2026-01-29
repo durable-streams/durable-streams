@@ -487,11 +487,6 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         builder = builder.offset(Offset::parse(offset));
     }
 
-    // Add encoding for SSE with binary streams
-    if let Some(encoding) = &cmd.encoding {
-        builder = builder.encoding(encoding.clone());
-    }
-
     // Merge dynamic headers with command headers
     for (k, v) in &headers_sent {
         builder = builder.header(k.clone(), v.clone());

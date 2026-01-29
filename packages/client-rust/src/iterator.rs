@@ -7,6 +7,9 @@ use base64::Engine;
 use bytes::Bytes;
 use std::time::Duration;
 
+/// Response header indicating SSE data encoding
+const HEADER_SSE_DATA_ENCODING: &str = "stream-sse-data-encoding";
+
 /// A chunk of data from the stream.
 ///
 /// ## Chunk Semantics
@@ -57,7 +60,6 @@ pub struct ReadBuilder {
     timeout: Duration,
     headers: Vec<(String, String)>,
     cursor: Option<String>,
-    encoding: Option<String>,
 }
 
 impl ReadBuilder {
@@ -69,7 +71,6 @@ impl ReadBuilder {
             timeout: Duration::from_secs(30),
             headers: Vec::new(),
             cursor: None,
-            encoding: None,
         }
     }
 
@@ -111,39 +112,10 @@ impl ReadBuilder {
         self
     }
 
-    /// Set the encoding for SSE mode with binary streams.
-    ///
-    /// Per Protocol Section 5.7, the encoding parameter is only valid with `live=sse`.
-    /// Currently only "base64" is supported.
-    ///
-    /// # Example
-    /// ```ignore
-    /// stream.read()
-    ///     .live(LiveMode::Sse)
-    ///     .encoding("base64")
-    ///     .build()
-    /// ```
-    pub fn encoding(mut self, encoding: impl Into<String>) -> Self {
-        self.encoding = Some(encoding.into());
-        self
-    }
-
     /// Build the ChunkIterator.
     ///
     /// No network request is made until `next_chunk()` is called.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Err(StreamError::BadRequest)` if encoding is specified without `LiveMode::Sse`,
-    /// per Protocol Section 5.7.
     pub fn build(self) -> Result<ChunkIterator, StreamError> {
-        // Validate encoding is only used with live=sse (Protocol Section 5.7)
-        if self.encoding.is_some() && self.live != LiveMode::Sse {
-            return Err(StreamError::BadRequest {
-                message: "encoding parameter is only valid with live='sse'".to_string(),
-            });
-        }
-
         Ok(ChunkIterator {
             stream: self.stream,
             offset: self.offset,
@@ -151,7 +123,6 @@ impl ReadBuilder {
             timeout: self.timeout,
             headers: self.headers,
             cursor: self.cursor,
-            encoding: self.encoding,
             up_to_date: false,
             closed: false,
             done: false,
@@ -168,7 +139,6 @@ pub struct ChunkIterator {
     timeout: Duration,
     headers: Vec<(String, String)>,
     cursor: Option<String>,
-    encoding: Option<String>,
     up_to_date: bool,
     closed: bool,
     done: bool,
@@ -180,6 +150,7 @@ struct SseState {
     buffer: String,           // Accumulated bytes from network
     pending_data: Vec<String>, // Accumulated data lines for current event
     current_event_type: Option<String>,
+    encoding: Option<String>, // Auto-detected from Stream-SSE-Data-Encoding header
 }
 
 impl ChunkIterator {
@@ -230,7 +201,7 @@ impl ChunkIterator {
     async fn next_http(&mut self, live_param: Option<&str>) -> Result<Option<Chunk>, StreamError> {
         let url = self
             .stream
-            .build_read_url(&self.offset, live_param, self.cursor.as_deref(), None);
+            .build_read_url(&self.offset, live_param, self.cursor.as_deref());
 
         let mut req = self.stream.client.inner.get(&url);
 
@@ -378,7 +349,7 @@ impl ChunkIterator {
         // Establish SSE connection
         let url = self
             .stream
-            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref(), self.encoding.as_deref());
+            .build_read_url(&self.offset, Some("sse"), self.cursor.as_deref());
 
         let mut req = self
             .stream
@@ -414,26 +385,27 @@ impl ChunkIterator {
                     return self.next_http(Some("long-poll")).await;
                 }
 
+                // Auto-detect encoding from response header
+                let encoding = resp
+                    .headers()
+                    .get(HEADER_SSE_DATA_ENCODING)
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.to_string());
+
                 self.sse_state = Some(SseState {
                     response: resp,
                     buffer: String::new(),
                     pending_data: Vec::new(),
                     current_event_type: None,
+                    encoding,
                 });
 
                 self.next_sse_chunk().await
             }
             400 => {
-                // If encoding was provided, return the error (invalid encoding for content type)
-                // Otherwise, SSE not supported - fall back to long-poll
-                if self.encoding.is_some() {
-                    Err(StreamError::BadRequest {
-                        message: "encoding parameter not allowed for text/* or application/json streams".to_string(),
-                    })
-                } else {
-                    self.live = LiveMode::LongPoll;
-                    self.next_http(Some("long-poll")).await
-                }
+                // SSE not supported - fall back to long-poll
+                self.live = LiveMode::LongPoll;
+                self.next_http(Some("long-poll")).await
             }
             404 => Err(StreamError::NotFound {
                 url: self.stream.url.clone(),
@@ -529,8 +501,8 @@ impl ChunkIterator {
                                 }
                             }
                             Some("data") | Some("message") | None => {
-                                // Data event - decode base64 if encoding is set
-                                let chunk_data = if self.encoding.as_deref() == Some("base64") {
+                                // Data event - decode base64 if encoding is set (auto-detected from response header)
+                                let chunk_data = if state.encoding.as_deref() == Some("base64") {
                                     // Per protocol: remove \n and \r before decoding
                                     let cleaned: String = data.chars()
                                         .filter(|c| *c != '\n' && *c != '\r')

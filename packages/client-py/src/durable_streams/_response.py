@@ -28,7 +28,6 @@ from durable_streams._parse import (
 from durable_streams._types import (
     LiveMode,
     Offset,
-    SSEEncoding,
     StreamEvent,
 )
 
@@ -76,7 +75,7 @@ class StreamResponse(Generic[T]):
         fetch_next: Callable[[Offset, str | None], httpx.Response],
         is_sse: bool = False,
         own_client: bool = False,
-        encoding: SSEEncoding | None = None,
+        encoding: str | None = None,
     ) -> None:
         self._url = url
         self._response = response
@@ -930,7 +929,7 @@ class AsyncStreamResponse(Generic[T]):
         fetch_next: Callable[[Offset, str | None], Any],  # Returns awaitable
         is_sse: bool = False,
         own_client: bool = False,
-        encoding: SSEEncoding | None = None,
+        encoding: str | None = None,
     ) -> None:
         self._url = url
         self._response = response

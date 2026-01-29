@@ -40,6 +40,9 @@ enum Headers {
 
     /// Request/Response header indicating stream is closed (EOF)
     static let streamClosed = "Stream-Closed"
+
+    /// Response header indicating SSE data encoding (e.g., "base64")
+    static let sseDataEncoding = "Stream-SSE-Data-Encoding"
 }
 
 /// Query parameter names used by the Durable Streams protocol.
