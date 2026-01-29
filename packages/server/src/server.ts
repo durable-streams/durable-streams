@@ -1265,9 +1265,11 @@ export class DurableStreamTestServer {
 
         // Stream already closed by a different producer - conflict
         if (closeResult.producerResult?.status === `stream_closed`) {
+          const stream = this.store.get(path)
           res.writeHead(409, {
             "content-type": `text/plain`,
             [STREAM_CLOSED_HEADER]: `true`,
+            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
           })
           res.end(`Stream is closed`)
           return
@@ -1363,9 +1365,11 @@ export class DurableStreamTestServer {
         }
 
         // Not a duplicate - stream was closed by different request, return 409
+        const closedStream = this.store.get(path)
         res.writeHead(409, {
           "content-type": `text/plain`,
           [STREAM_CLOSED_HEADER]: `true`,
+          [STREAM_OFFSET_HEADER]: closedStream?.currentOffset ?? ``,
         })
         res.end(`Stream is closed`)
         return

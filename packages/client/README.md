@@ -232,6 +232,7 @@ class DurableStream {
   head(opts?: { signal?: AbortSignal }): Promise<HeadResult>
   create(opts?: CreateOptions): Promise<this>
   delete(opts?: { signal?: AbortSignal }): Promise<void>
+  close(opts?: CloseOptions): Promise<CloseResult>  // Close stream (EOF)
   append(
     body: BodyInit | Uint8Array | string,
     opts?: AppendOptions
@@ -610,6 +611,7 @@ res.startOffset // The starting offset passed to stream()
 res.offset // Current offset (updates as data is consumed)
 res.cursor // Cursor for collapsing (if provided by server)
 res.upToDate // Whether we've caught up to the stream head
+res.streamClosed // Whether the stream is permanently closed (EOF)
 ```
 
 ---
@@ -897,12 +899,34 @@ Send any pending batch immediately and wait for all in-flight batches to complet
 await producer.flush()
 ```
 
-#### `close(): Promise<void>`
+#### `close(finalMessage?): Promise<CloseResult>`
 
-Flush pending messages and close the producer. Further `append()` calls will throw.
+Flush pending messages and close the underlying **stream** (EOF). This is the typical way to end a producer session:
+
+1. Flushes all pending messages
+2. Optionally appends a final message atomically with close
+3. Closes the stream (no further appends permitted by any producer)
+
+**Idempotent**: Safe to retry on network failures - uses producer headers for deduplication.
 
 ```typescript
-await producer.close()
+// Close stream (EOF)
+const result = await producer.close()
+console.log("Final offset:", result.finalOffset)
+
+// Close with final message (atomic append + close)
+const result = await producer.close('{"done": true}')
+```
+
+#### `detach(): Promise<void>`
+
+Stop the producer without closing the underlying stream. Use this when:
+- Handing off writing to another producer
+- Keeping the stream open for future writes
+- Stopping this producer but not signaling EOF to readers
+
+```typescript
+await producer.detach() // Stream remains open
 ```
 
 #### `restart(): Promise<void>`
@@ -949,19 +973,162 @@ await producer.flush() // Wait for all batches to complete
 
 ---
 
+## Stream Closure (EOF)
+
+Durable Streams supports permanently closing streams to signal EOF (End of File). Once closed, no further appends are permitted, but data remains fully readable.
+
+### Writer Side
+
+#### Using DurableStream.close()
+
+```typescript
+const stream = await DurableStream.connect({ url })
+
+// Simple close (no final message)
+const result = await stream.close()
+console.log("Final offset:", result.finalOffset)
+
+// Atomic append-and-close with final message
+const result = await stream.close({
+  body: '{"status": "complete"}',
+})
+```
+
+**Options:**
+
+```typescript
+interface CloseOptions {
+  body?: Uint8Array | string  // Optional final message
+  contentType?: string        // Content type (must match stream)
+  signal?: AbortSignal        // Cancellation
+}
+
+interface CloseResult {
+  finalOffset: Offset  // The offset after the last byte
+}
+```
+
+**Idempotency:**
+- `close()` without body: Idempotent — safe to call multiple times
+- `close({ body })` with body: NOT idempotent — throws `StreamClosedError` if already closed. Use `IdempotentProducer.close(finalMessage)` for idempotent close-with-body.
+
+#### Using IdempotentProducer.close()
+
+For reliable close with final message (safe to retry):
+
+```typescript
+const producer = new IdempotentProducer(stream, "producer-1", { autoClaim: true })
+
+// Write some messages
+producer.append('{"event": "start"}')
+producer.append('{"event": "data"}')
+
+// Close with final message (idempotent, safe to retry)
+const result = await producer.close('{"event": "end"}')
+```
+
+**Important:** `IdempotentProducer.close()` closes the **stream**, not just the producer. Use `detach()` to stop the producer without closing the stream.
+
+#### Creating Closed Streams
+
+Create a stream that's immediately closed (useful for cached responses, errors, single-shot data):
+
+```typescript
+// Empty closed stream
+const stream = await DurableStream.create({
+  url: "https://streams.example.com/cached-response",
+  contentType: "application/json",
+  closed: true,
+})
+
+// Closed stream with initial content
+const stream = await DurableStream.create({
+  url: "https://streams.example.com/error-response",
+  contentType: "application/json",
+  body: '{"error": "Service unavailable"}',
+  closed: true,
+})
+```
+
+### Reader Side
+
+#### Detecting Closure
+
+The `streamClosed` property indicates when a stream is permanently closed:
+
+```typescript
+// StreamResponse properties
+const res = await stream({ url, live: true })
+console.log(res.streamClosed)  // false initially
+
+// In subscribers - batch/chunk metadata includes streamClosed
+res.subscribeJson((batch) => {
+  console.log("Items:", batch.items)
+  console.log("Stream closed:", batch.streamClosed)  // true when EOF reached
+})
+
+// In HEAD requests
+const metadata = await stream.head()
+console.log("Stream closed:", metadata.streamClosed)
+```
+
+#### Live Mode Behavior
+
+When a stream is closed:
+
+- **Long-poll**: Returns immediately with `streamClosed: true` (no waiting)
+- **SSE**: Sends `streamClosed: true` in final control event, then closes connection
+- **Subscribers**: Receive final batch with `streamClosed: true`, then stop
+
+```typescript
+const res = await stream({ url, live: true })
+
+res.subscribeJson((batch) => {
+  for (const item of batch.items) {
+    process(item)
+  }
+  
+  if (batch.streamClosed) {
+    console.log("Stream complete, no more data will arrive")
+    // Connection will close automatically
+  }
+})
+```
+
+### Error Handling
+
+Attempting to append to a closed stream throws `StreamClosedError`:
+
+```typescript
+import { StreamClosedError } from "@durable-streams/client"
+
+try {
+  await stream.append("data")
+} catch (error) {
+  if (error instanceof StreamClosedError) {
+    console.log("Stream is closed at offset:", error.finalOffset)
+  }
+}
+```
+
+---
+
 ## Types
 
 Key types exported from the package:
 
 - `Offset` - Opaque string for stream position
-- `StreamResponse` - Response object from stream()
-- `ByteChunk` - `{ data: Uint8Array, offset: Offset, upToDate: boolean, cursor?: string }`
-- `JsonBatch<T>` - `{ items: T[], offset: Offset, upToDate: boolean, cursor?: string }`
-- `TextChunk` - `{ text: string, offset: Offset, upToDate: boolean, cursor?: string }`
-- `HeadResult` - Metadata from HEAD requests
+- `StreamResponse` - Response object from stream() (includes `streamClosed` property)
+- `ByteChunk` - `{ data: Uint8Array, offset: Offset, upToDate: boolean, streamClosed: boolean, cursor?: string }`
+- `JsonBatch<T>` - `{ items: T[], offset: Offset, upToDate: boolean, streamClosed: boolean, cursor?: string }`
+- `TextChunk` - `{ text: string, offset: Offset, upToDate: boolean, streamClosed: boolean, cursor?: string }`
+- `HeadResult` - Metadata from HEAD requests (includes `streamClosed` property)
+- `CloseOptions` - Options for closing a stream
+- `CloseResult` - Result from closing a stream (includes `finalOffset`)
 - `IdempotentProducer` - Exactly-once producer class
 - `StaleEpochError` - Thrown when producer epoch is stale (zombie fencing)
 - `SequenceGapError` - Thrown when sequence numbers are out of order
+- `StreamClosedError` - Thrown when attempting to append to a closed stream (includes `finalOffset`)
 - `DurableStreamError` - Protocol-level errors with codes
 - `FetchError` - Transport/network errors
 

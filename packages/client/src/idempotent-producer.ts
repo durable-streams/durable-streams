@@ -140,6 +140,7 @@ export class IdempotentProducer {
   readonly #maxInFlight: number
   #closed = false
   #closeResult: CloseResult | null = null
+  #pendingFinalMessage?: Uint8Array | string
 
   // When autoClaim is true, we must wait for the first batch to complete
   // before allowing pipelining (to know what epoch was claimed)
@@ -363,13 +364,18 @@ export class IdempotentProducer {
       if (this.#closeResult) {
         return this.#closeResult
       }
-      // If no cached result (shouldn't happen), fetch the final offset
-      const result = await this.#doClose()
+      // Retry path: flush() threw on a previous attempt, so we need to re-run
+      // the entire close sequence with the stored finalMessage
+      await this.flush()
+      const result = await this.#doClose(this.#pendingFinalMessage)
       this.#closeResult = result
       return result
     }
 
     this.#closed = true
+
+    // Store finalMessage for retry safety (if flush() throws, we can retry)
+    this.#pendingFinalMessage = finalMessage
 
     // Flush pending messages first
     await this.flush()
@@ -453,7 +459,9 @@ export class IdempotentProducer {
         // Auto-claim: retry with epoch+1
         const newEpoch = currentEpoch + 1
         this.#epoch = newEpoch
-        this.#nextSeq = 1 // Reset sequence for new epoch
+        // Reset sequence for new epoch - set to 0 so the recursive call uses seq 0
+        // (the first operation in a new epoch should be seq 0)
+        this.#nextSeq = 0
         return this.#doClose(finalMessage)
       }
 

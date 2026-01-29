@@ -446,6 +446,8 @@ export class StreamResponseImpl<
     }
     if (controlEvent.streamClosed) {
       this.#streamClosed = true
+      // A closed stream is definitionally up-to-date - no more data will ever be appended
+      this.#upToDate = true
     }
   }
 
