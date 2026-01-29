@@ -178,7 +178,7 @@ For binary content types (e.g., `application/octet-stream`), the server automati
 ```python
 from durable_streams import stream
 
-# Read binary stream with SSE - encoding is auto-detected
+# Read binary stream with SSE - server signals base64 via response header
 with stream(
     "https://streams.example.com/my-binary-stream",
     live="sse",

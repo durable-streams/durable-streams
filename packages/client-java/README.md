@@ -118,7 +118,7 @@ For binary content types (e.g., `application/octet-stream`), the server automati
 // Create a binary stream
 client.create(url, "application/octet-stream");
 
-// Read with SSE - base64 encoding is auto-detected from the response header
+// Read with SSE - base64 decoding handled based on response header
 try (var chunks = client.read(url, ReadOptions.from(offset)
         .live(LiveMode.SSE))) {
     for (var chunk : chunks) {
