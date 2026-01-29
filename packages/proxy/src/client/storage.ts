@@ -110,8 +110,9 @@ export function isUrlExpired(credentials: StreamCredentials): boolean {
  */
 export function extractStreamIdFromUrl(url: string): string {
   const parsed = new URL(url)
-  const pathParts = parsed.pathname.split('/')
-  const last = pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2]
+  const pathParts = parsed.pathname.split(`/`)
+  const last =
+    pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2]
   if (!last) {
     throw new Error(`Cannot extract stream ID from URL: ${url}`)
   }

@@ -181,14 +181,19 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     // Handle errors
     if (!createResponse.ok) {
       if (createResponse.status === 502) {
-        const upstreamStatus = parseInt(createResponse.headers.get(`Upstream-Status`)!, 10)
-        const upstreamContentType = createResponse.headers.get(`Upstream-Content-Type`)
+        const upstreamStatus = parseInt(
+          createResponse.headers.get(`Upstream-Status`)!,
+          10
+        )
+        const upstreamContentType = createResponse.headers.get(
+          `Upstream-Content-Type`
+        )
         return new Response(createResponse.body, {
           status: upstreamStatus,
           headers: {
             ...createResponse.headers,
             "Content-Type": upstreamContentType ?? `application/octet-stream`,
-            "Upstream-Error": "true"
+            "Upstream-Error": `true`,
           },
         })
       } else {
