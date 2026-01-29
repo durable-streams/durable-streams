@@ -435,6 +435,19 @@ describe(`SSE proxy e2e: content-type handling`, () => {
     expect(createResult.upstreamContentType).toBe(`application/json`)
     expect(readResult.body).toBe(jsonBody)
   })
+
+  it(`handles application/octet-stream upstream content-type`, async () => {
+    // Binary-like data as string (will be preserved byte-for-byte)
+    const binaryData = String.fromCharCode(0, 1, 2, 255, 254, 128, 127)
+
+    const { createResult, readResult } = await roundTrip({
+      body: binaryData,
+      contentType: `application/octet-stream`,
+    })
+
+    expect(createResult.upstreamContentType).toBe(`application/octet-stream`)
+    expect(readResult.body).toBe(binaryData)
+  })
 })
 
 describe(`SSE proxy e2e: stream lifecycle`, () => {
