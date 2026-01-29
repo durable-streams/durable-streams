@@ -106,3 +106,107 @@ tests:
         expect:
           data: '[{"case":"insensitive"}]'
           upToDate: true
+
+  # Negative tests - content types that should NOT be JSON mode
+  - id: plus-xml-not-json-mode
+    name: Content type with +xml suffix is NOT JSON mode
+    description: application/foo+xml should NOT use JSON mode (per RFC 6838)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/atom+xml
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "<entry>test</entry>"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # Non-JSON mode returns raw data, not wrapped in array
+          data: "<entry>test</entry>"
+          upToDate: true
+
+  - id: text-json-not-json-mode
+    name: text/json is NOT treated as JSON mode
+    description: Only application/json and +json suffix trigger JSON mode
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"test": 1}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # text/json is NOT JSON mode - raw data returned
+          data: '{"test": 1}'
+          upToDate: true
+
+  # RFC 8259 compliance - JSON can have any root value type
+  - id: json-primitive-number
+    name: JSON primitive number at root
+    description: Per RFC 8259, JSON text can be a number at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "42"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "[42]"
+          upToDate: true
+
+  - id: json-primitive-string
+    name: JSON primitive string at root
+    description: Per RFC 8259, JSON text can be a string at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '"hello world"'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '["hello world"]'
+          upToDate: true
+
+  - id: json-primitive-boolean-null
+    name: JSON primitive boolean and null at root
+    description: Per RFC 8259, JSON text can be boolean or null at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: primitive-producer
+        epoch: 0
+        items:
+          - data: "true"
+          - data: "false"
+          - data: "null"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "[true,false,null]"
+          upToDate: true

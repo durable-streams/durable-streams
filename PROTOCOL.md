@@ -783,7 +783,13 @@ Streams created with JSON content types have special semantics for message bound
 - `application/json`
 - Any content type with a `+json` suffix (e.g., `application/vnd.api+json`, `application/ld+json`, `application/hal+json`)
 
-Servers **MUST** treat these content types identically for JSON Mode processing. Content type matching is case-insensitive and ignores parameters (e.g., `application/json; charset=utf-8` is treated as `application/json`).
+The `+json` structured syntax suffix is defined by [RFC 6839](https://www.rfc-editor.org/rfc/rfc6839) and indicates that the content follows JSON representation format. Servers **MUST** treat these content types identically for JSON Mode processing. Content type matching is case-insensitive and ignores parameters (e.g., `application/json; charset=utf-8` is treated as `application/json`).
+
+**Note:** Other structured syntax suffixes (e.g., `+xml`, `+der`, `+zip`) do **NOT** trigger JSON Mode. Only `application/json` and types ending with `+json` are treated as JSON.
+
+#### Encoding
+
+Per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), JSON text exchanged between systems **MUST** be encoded using UTF-8. Servers **SHOULD** assume UTF-8 encoding for JSON streams unless a charset parameter explicitly specifies otherwise.
 
 #### Message Boundaries
 
@@ -810,7 +816,7 @@ PUT requests with an empty array body (`[]`) are valid and create an empty strea
 
 #### JSON Validation
 
-Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
+Servers **MUST** validate that appended data is valid JSON per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259). Valid JSON values include objects, arrays, strings, numbers, booleans (`true`, `false`), and `null`. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
 
 #### Response Format
 
