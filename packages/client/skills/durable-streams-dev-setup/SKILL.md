@@ -68,17 +68,25 @@ curl "http://localhost:4437/v1/stream/test?offset=-1"
 
 HTTPS is recommended for local development because browsers limit HTTP/1.1 to 6 concurrent connections per origin. With durable-streams, you'll often have multiple live streams open simultaneously, and this limit can cause connection queueing. HTTPS enables HTTP/2 multiplexing, allowing unlimited concurrent streams over a single connection.
 
-Create a `Caddyfile`:
+### 1. Create a `Caddyfile`:
 
 ```caddyfile
 localhost:4437 {
   route /v1/stream/* {
-    durable_streams
+    durable_streams {
+      data_dir .durable-streams
+    }
   }
 }
 ```
 
-Run:
+### 2. Add to `.gitignore`:
+
+```bash
+echo ".durable-streams" >> .gitignore
+```
+
+### 3. Run:
 
 ```bash
 durable-streams-server run --config Caddyfile
@@ -133,12 +141,14 @@ Create `Caddyfile` in your project root (if not already):
 ```caddyfile
 localhost:4437 {
   route /v1/stream/* {
-    durable_streams
+    durable_streams {
+      data_dir .durable-streams
+    }
   }
 }
 ```
 
-Add to `package.json`:
+Add `.durable-streams` to `.gitignore`, then add to `package.json`:
 
 ```json
 {
@@ -190,31 +200,33 @@ npm install -D concurrently wait-on
 }
 ```
 
-## Persistent Storage (File-Backed)
+## In-Memory Storage (Optional)
 
-For data that survives restarts, use file-backed storage:
+By default, the Caddyfile examples use file-backed storage in `.durable-streams/`. If you want in-memory storage (data lost on restart), omit the `data_dir`:
 
 ```caddyfile
 localhost:4437 {
   route /v1/stream/* {
-    durable_streams {
-      data_dir ./data
-    }
+    durable_streams
   }
 }
 ```
 
-Data is stored in `./data/` using LMDB.
+Or use the zero-config dev command which is always in-memory:
+
+```bash
+durable-streams-server dev
+```
 
 ## Configuration Options
 
 Full Caddyfile options:
 
 ```caddyfile
-:4437 {
+localhost:4437 {
   route /v1/stream/* {
     durable_streams {
-      data_dir ./data              # Enable file-backed storage
+      data_dir .durable-streams    # File-backed storage (recommended)
       max_file_handles 100         # LMDB file handle limit
       long_poll_timeout 30s        # Long-poll wait time
       sse_reconnect_interval 60s   # SSE retry interval
