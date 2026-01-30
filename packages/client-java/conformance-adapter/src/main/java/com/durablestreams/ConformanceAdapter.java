@@ -1088,7 +1088,7 @@ public class ConformanceAdapter {
         if (contentType == null) {
             return false;
         }
-        String normalized = contentType.toLowerCase();
+        String normalized = contentType.toLowerCase(Locale.ROOT);
         int idx = normalized.indexOf(';');
         if (idx >= 0) {
             normalized = normalized.substring(0, idx).trim();

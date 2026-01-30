@@ -789,7 +789,7 @@ The `+json` structured syntax suffix is defined by [RFC 6839](https://www.rfc-ed
 
 #### Encoding
 
-Per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), JSON text exchanged between systems **MUST** be encoded using UTF-8. Servers **SHOULD** assume UTF-8 encoding for JSON streams unless a charset parameter explicitly specifies otherwise.
+Per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), JSON mode payloads **MUST** be UTF-8 encoded. Receivers **MUST** interpret JSON mode payloads as UTF-8. If a `charset` parameter is present, it **MUST** be ignored (RFC 8259 specifies that `application/json` has no charset parameter).
 
 #### Message Boundaries
 

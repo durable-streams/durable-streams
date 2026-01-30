@@ -802,7 +802,7 @@ public final class DurableStream implements AutoCloseable {
         if (contentType == null) {
             return false;
         }
-        String normalized = contentType.toLowerCase();
+        String normalized = contentType.toLowerCase(Locale.ROOT);
         // Extract media type before semicolon
         int idx = normalized.indexOf(';');
         if (idx >= 0) {
