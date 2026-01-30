@@ -45,8 +45,9 @@ durable-streams-server dev
 ```
 
 This starts immediately with:
+
 - **URL**: http://localhost:4437
-- **Endpoint**: http://localhost:4437/v1/stream/*
+- **Endpoint**: http://localhost:4437/v1/stream/\*
 - **Storage**: In-memory (no persistence)
 - **No config file needed**
 
@@ -63,81 +64,14 @@ curl -X POST http://localhost:4437/v1/stream/test -d "hello world"
 curl "http://localhost:4437/v1/stream/test?offset=-1"
 ```
 
-## HTTPS Setup (Optional)
+## HTTPS Setup (Recommended)
 
-For local HTTPS with trusted certificates:
+HTTPS is recommended for local development because browsers limit HTTP/1.1 to 6 concurrent connections per origin. With durable-streams, you'll often have multiple live streams open simultaneously, and this limit can cause connection queueing. HTTPS enables HTTP/2 multiplexing, allowing unlimited concurrent streams over a single connection.
 
-### 1. Trust Caddy's Root CA
-
-Run once per machine to install Caddy's certificate authority:
-
-```bash
-durable-streams-server trust
-```
-
-This adds Caddy's root CA to your system trust store. You may be prompted for your password.
-
-**Check if already trusted:**
-
-```bash
-# macOS
-security find-certificate -a -c "Caddy" ~/Library/Keychains/login.keychain-db
-
-# Linux (varies by distro)
-ls /usr/local/share/ca-certificates/ | grep -i caddy
-```
-
-### 2. Create Caddyfile with HTTPS
+Create a `Caddyfile`:
 
 ```caddyfile
-{
-  admin off
-}
-
 localhost:4437 {
-  route /v1/stream/* {
-    durable_streams
-  }
-}
-```
-
-### 3. Run with Config
-
-```bash
-durable-streams-server run --config Caddyfile
-```
-
-Now https://localhost:4437 works with a trusted certificate.
-
-## Running Alongside Your App
-
-When your app runs on a standard port (3000, 5173, etc.), use a separate port for durable-streams to avoid conflicts.
-
-### Option 1: Default Port (Recommended)
-
-Keep durable-streams on the default port 4437:
-
-```bash
-# Terminal 1: Your app
-npm run dev  # Runs on localhost:3000
-
-# Terminal 2: Durable streams
-durable-streams-server dev  # Runs on localhost:4437
-```
-
-Your app connects to `http://localhost:4437/v1/stream/...`
-
-### Option 2: Custom Port via Caddyfile
-
-Create `Caddyfile.dev`:
-
-```caddyfile
-{
-  admin off
-  auto_https off
-}
-
-:8787 {
   route /v1/stream/* {
     durable_streams
   }
@@ -147,15 +81,61 @@ Create `Caddyfile.dev`:
 Run:
 
 ```bash
-durable-streams-server run --config Caddyfile.dev
+durable-streams-server run --config Caddyfile
 ```
 
-### Option 3: Single Dev Command (Recommended)
+On first run, Caddy automatically:
+
+1. Generates a local CA certificate
+2. Installs it in your system trust store (may prompt for password once)
+3. Issues a certificate for `localhost`
+4. Enables HTTP/2 and HTTP/3
+
+Your app connects to `https://localhost:4437/v1/stream/...`
+
+**If automatic trust fails** (rare, usually permissions), manually trust the CA:
+
+- **macOS**: `~/Library/Application Support/Caddy/pki/authorities/local/root.crt` - double-click to add to Keychain
+- **Linux**: Copy to `/usr/local/share/ca-certificates/` and run `sudo update-ca-certificates`
+
+**HTTP fallback**: If you don't need multiple concurrent streams, the `dev` command uses HTTP:
+
+```bash
+durable-streams-server dev  # HTTP on localhost:4437
+```
+
+## Running Alongside Your App
+
+When your app runs on a standard port (3000, 5173, etc.), use a separate port for durable-streams to avoid conflicts.
+
+### Option 1: Two Terminals
+
+```bash
+# Terminal 1: Your app
+npm run dev  # Runs on localhost:3000
+
+# Terminal 2: Durable streams (HTTPS)
+durable-streams-server run --config Caddyfile  # Runs on https://localhost:4437
+```
+
+Your app connects to `https://localhost:4437/v1/stream/...`
+
+### Option 2: Single Dev Command (Recommended)
 
 Run both servers with one command using `concurrently`:
 
 ```bash
 npm install -D concurrently
+```
+
+Create `Caddyfile` in your project root (if not already):
+
+```caddyfile
+localhost:4437 {
+  route /v1/stream/* {
+    durable_streams
+  }
+}
 ```
 
 Add to `package.json`:
@@ -165,7 +145,7 @@ Add to `package.json`:
   "scripts": {
     "dev": "concurrently \"npm run dev:app\" \"npm run dev:streams\"",
     "dev:app": "vite",
-    "dev:streams": "durable-streams-server dev"
+    "dev:streams": "durable-streams-server run --config Caddyfile"
   }
 }
 ```
@@ -175,7 +155,7 @@ Now `npm run dev` starts everything:
 ```bash
 npm run dev
 # [0] vite dev server running at http://localhost:5173
-# [1] durable-streams server running at http://localhost:4437
+# [1] durable-streams server running at https://localhost:4437
 ```
 
 **Alternative with npm-run-all:**
@@ -189,7 +169,7 @@ npm install -D npm-run-all
   "scripts": {
     "dev": "run-p dev:*",
     "dev:app": "vite",
-    "dev:streams": "durable-streams-server dev"
+    "dev:streams": "durable-streams-server run --config Caddyfile"
   }
 }
 ```
@@ -205,7 +185,7 @@ npm install -D concurrently wait-on
   "scripts": {
     "dev": "concurrently \"npm run dev:streams\" \"npm run dev:app\"",
     "dev:app": "wait-on tcp:4437 && vite",
-    "dev:streams": "durable-streams-server dev"
+    "dev:streams": "durable-streams-server run --config Caddyfile"
   }
 }
 ```
@@ -215,12 +195,7 @@ npm install -D concurrently wait-on
 For data that survives restarts, use file-backed storage:
 
 ```caddyfile
-{
-  admin off
-  auto_https off
-}
-
-:4437 {
+localhost:4437 {
   route /v1/stream/* {
     durable_streams {
       data_dir ./data
@@ -266,7 +241,7 @@ npm install @durable-streams/cli
 
 ```bash
 # Set server URL
-export STREAM_URL=http://localhost:4437/v1/stream
+export STREAM_URL=https://localhost:4437/v1/stream
 
 # Create a stream
 durable-stream create my-stream
@@ -298,19 +273,18 @@ lsof -i :4437
 The server sets `Access-Control-Allow-Origin: *` by default. If you still see CORS errors:
 
 1. Check you're hitting the durable-streams server, not your app server
-2. Verify the server is running: `curl http://localhost:4437/v1/stream/test`
+2. Verify the server is running: `curl https://localhost:4437/v1/stream/test`
 3. Check browser dev tools for the actual error (may be a network issue, not CORS)
 
 ### Certificate Not Trusted
 
 If HTTPS shows certificate warnings:
 
-```bash
-# Re-run trust command
-durable-streams-server trust
-
-# Restart your browser to pick up new certs
-```
+1. Restart the server - Caddy re-attempts trust on startup
+2. Manually trust the CA certificate:
+   - **macOS**: Double-click `~/Library/Application Support/Caddy/pki/authorities/local/root.crt` to add to Keychain
+   - **Linux**: `sudo cp ~/.local/share/caddy/pki/authorities/local/root.crt /usr/local/share/ca-certificates/caddy-local.crt && sudo update-ca-certificates`
+3. Restart your browser to pick up new certs
 
 ### Server Won't Start
 
@@ -331,7 +305,7 @@ import { stream, DurableStream } from "@durable-streams/client"
 
 // Read from a stream
 const res = await stream({
-  url: "http://localhost:4437/v1/stream/my-stream",
+  url: "https://localhost:4437/v1/stream/my-stream",
   live: true,
 })
 
@@ -341,7 +315,7 @@ res.subscribeJson(async (batch) => {
 
 // Create and write to a stream
 const handle = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/my-stream",
+  url: "https://localhost:4437/v1/stream/my-stream",
   contentType: "application/json",
 })
 
