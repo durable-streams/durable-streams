@@ -43,7 +43,10 @@ class DurableStream {
   head(opts?): Promise<HeadResult>
   create(opts?): Promise<this>
   delete(opts?): Promise<void>
-  append(body: Uint8Array | string | Promise<Uint8Array | string>, opts?: AppendOptions): Promise<void>
+  append(
+    body: Uint8Array | string | Promise<Uint8Array | string>,
+    opts?: AppendOptions
+  ): Promise<void>
   appendStream(source: AsyncIterable<Uint8Array | string>, opts?): Promise<void>
   writable(opts?): WritableStream<Uint8Array | string>
   stream<TJson>(opts?): Promise<StreamResponse<TJson>>
@@ -56,8 +59,8 @@ class DurableStream {
 interface CreateOptions {
   url: string | URL
   headers?: HeadersRecord
-  contentType?: string      // "application/json" for JSON mode
-  ttlSeconds?: number       // Auto-delete after N seconds
+  contentType?: string // "application/json" for JSON mode
+  ttlSeconds?: number // Auto-delete after N seconds
   signal?: AbortSignal
 }
 ```
@@ -66,7 +69,7 @@ interface CreateOptions {
 
 ```typescript
 interface AppendOptions {
-  seq?: string              // Sequence number for ordering
+  seq?: string // Sequence number for ordering
   signal?: AbortSignal
 }
 ```
@@ -96,10 +99,12 @@ const readable = inputStream.pipeThrough(new TextEncoderStream())
 await readable.pipeTo(handle.writable())
 
 // With options
-await source.pipeTo(handle.writable({
-  lingerMs: 10,
-  maxBatchBytes: 64 * 1024,
-}))
+await source.pipeTo(
+  handle.writable({
+    lingerMs: 10,
+    maxBatchBytes: 64 * 1024,
+  })
+)
 ```
 
 ## StreamResponse
@@ -165,14 +170,14 @@ new IdempotentProducer(
 
 ```typescript
 interface IdempotentProducerOptions {
-  epoch?: number           // Starting epoch (default: 0)
-  autoClaim?: boolean      // On 403, retry with epoch+1 (default: false)
-  maxBatchBytes?: number   // Max bytes per batch (default: 1MB)
-  lingerMs?: number        // Wait time for batching (default: 5ms)
-  maxInFlight?: number     // Concurrent batches (default: 5)
-  signal?: AbortSignal     // Cancellation
-  fetch?: typeof fetch     // Custom fetch
-  onError?: (error: Error) => void  // Error callback
+  epoch?: number // Starting epoch (default: 0)
+  autoClaim?: boolean // On 403, retry with epoch+1 (default: false)
+  maxBatchBytes?: number // Max bytes per batch (default: 1MB)
+  lingerMs?: number // Wait time for batching (default: 5ms)
+  maxInFlight?: number // Concurrent batches (default: 5)
+  signal?: AbortSignal // Cancellation
+  fetch?: typeof fetch // Custom fetch
+  onError?: (error: Error) => void // Error callback
 }
 ```
 
@@ -188,10 +193,10 @@ restart(): Promise<void>   // Increment epoch, reset seq
 ### Properties
 
 ```typescript
-epoch: number              // Current epoch
-nextSeq: number            // Next sequence number
-pendingCount: number       // Messages in pending batch
-inFlightCount: number      // Batches in flight
+epoch: number // Current epoch
+nextSeq: number // Next sequence number
+pendingCount: number // Messages in pending batch
+inFlightCount: number // Batches in flight
 ```
 
 ## Types
@@ -221,11 +226,11 @@ interface TextChunk {
 }
 
 interface HeadResult {
-  exists: true            // Always true (throws if stream doesn't exist)
-  contentType?: string    // Stream's content type
-  offset?: Offset         // Tail offset (next offset after end of stream)
-  etag?: string           // ETag for the stream
-  cacheControl?: string   // Cache-Control header value
+  exists: true // Always true (throws if stream doesn't exist)
+  contentType?: string // Stream's content type
+  offset?: Offset // Tail offset (next offset after end of stream)
+  etag?: string // ETag for the stream
+  cacheControl?: string // Cache-Control header value
 }
 ```
 

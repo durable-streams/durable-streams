@@ -27,7 +27,7 @@ Transport/network errors including HTTP status codes.
 import { FetchError } from "@durable-streams/client"
 
 if (error instanceof FetchError) {
-  console.log("Status:", error.status)  // HTTP status code
+  console.log("Status:", error.status) // HTTP status code
   console.log("Response:", error.response)
 }
 ```
@@ -118,7 +118,7 @@ const producer = new IdempotentProducer(stream, "id", {
 let fenced = false
 
 const producer = new IdempotentProducer(stream, "id", {
-  autoClaim: false,  // Don't auto-recover
+  autoClaim: false, // Don't auto-recover
   onError: (error) => {
     if (error instanceof StaleEpochError) {
       fenced = true
@@ -139,17 +139,17 @@ await producer.close()
 
 ## HTTP Status Codes
 
-| Status | Meaning | Handling |
-|--------|---------|----------|
-| 200 | Success | Process response |
-| 400 | Bad request | Check request format |
-| 401 | Unauthorized | Refresh token, retry |
-| 403 | Forbidden / Stale epoch | Check epoch, may be fenced |
-| 404 | Stream not found | Create stream or handle missing |
-| 409 | Conflict | Sequence/epoch issue |
-| 413 | Payload too large | Reduce batch size |
-| 429 | Rate limited | Backoff and retry |
-| 500+ | Server error | Automatic retry with backoff |
+| Status | Meaning                 | Handling                        |
+| ------ | ----------------------- | ------------------------------- |
+| 200    | Success                 | Process response                |
+| 400    | Bad request             | Check request format            |
+| 401    | Unauthorized            | Refresh token, retry            |
+| 403    | Forbidden / Stale epoch | Check epoch, may be fenced      |
+| 404    | Stream not found        | Create stream or handle missing |
+| 409    | Conflict                | Sequence/epoch issue            |
+| 413    | Payload too large       | Reduce batch size               |
+| 429    | Rate limited            | Backoff and retry               |
+| 500+   | Server error            | Automatic retry with backoff    |
 
 ## Backoff Configuration
 
@@ -159,11 +159,11 @@ Configure retry behavior:
 const res = await stream({
   url,
   backoffOptions: {
-    initialDelayMs: 100,    // First retry delay
-    maxDelayMs: 30000,      // Maximum delay
-    multiplier: 2,          // Exponential multiplier
-    jitterFactor: 0.1,      // Randomization factor
-    maxRetries: 10,         // Max retry attempts
+    initialDelayMs: 100, // First retry delay
+    maxDelayMs: 30000, // Maximum delay
+    multiplier: 2, // Exponential multiplier
+    jitterFactor: 0.1, // Randomization factor
+    maxRetries: 10, // Max retry attempts
   },
 })
 ```

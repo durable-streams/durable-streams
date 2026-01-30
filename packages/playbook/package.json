@@ -1,52 +1,45 @@
 {
-  "name": "@durable-streams/client",
-  "description": "TypeScript client for the Durable Streams protocol",
-  "version": "0.2.0",
+  "name": "@durable-streams/playbook",
+  "description": "Skills and patterns for building with Durable Streams - guidance for coding agents",
+  "version": "0.1.0",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/durable-streams/durable-streams.git",
-    "directory": "packages/client"
+    "directory": "packages/playbook"
   },
   "bugs": {
     "url": "https://github.com/durable-streams/durable-streams/issues"
   },
   "keywords": [
     "durable-streams",
-    "streaming",
-    "client",
-    "typescript"
+    "playbook",
+    "skills",
+    "agent",
+    "ai",
+    "coding-assistant"
   ],
   "type": "module",
-  "main": "./dist/index.cjs",
-  "module": "./dist/index.js",
+  "bin": {
+    "durable-streams-playbook": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
-      },
-      "require": {
-        "types": "./dist/index.d.cts",
-        "default": "./dist/index.cjs"
       }
     },
     "./package.json": "./package.json"
   },
-  "sideEffects": false,
   "files": [
     "dist",
-    "src"
+    "skills"
   ],
-  "dependencies": {
-    "@microsoft/fetch-event-source": "^2.0.1",
-    "fastq": "^1.19.1"
-  },
   "devDependencies": {
-    "@durable-streams/server": "workspace:*",
-    "fast-check": "^4.4.0",
     "tsdown": "^0.9.0"
   },
   "scripts": {

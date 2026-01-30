@@ -10,10 +10,10 @@ triggers:
   - "local development"
 metadata:
   sources:
-    - "../caddy-plugin/README.md"
-    - "../caddy-plugin/install.sh"
-    - "../cli/README.md"
-    - "../../README.md"
+    - "../../../caddy-plugin/README.md"
+    - "../../../caddy-plugin/install.sh"
+    - "../../../cli/README.md"
+    - "../../../../README.md"
 ---
 
 # Durable Streams Dev Environment Setup

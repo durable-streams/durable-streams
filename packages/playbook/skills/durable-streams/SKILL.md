@@ -11,14 +11,14 @@ triggers:
   - "IdempotentProducer"
 metadata:
   sources:
-    - "src/stream.ts"
-    - "src/stream-api.ts"
-    - "src/response.ts"
-    - "src/idempotent-producer.ts"
-    - "src/types.ts"
-    - "README.md"
-    - "../../README.md"
-    - "../../PROTOCOL.md"
+    - "../../../client/src/stream.ts"
+    - "../../../client/src/stream-api.ts"
+    - "../../../client/src/response.ts"
+    - "../../../client/src/idempotent-producer.ts"
+    - "../../../client/src/types.ts"
+    - "../../../client/README.md"
+    - "../../../../README.md"
+    - "../../../../PROTOCOL.md"
 ---
 
 # Durable Streams
@@ -42,10 +42,10 @@ npm install @durable-streams/client
 
 The client provides three main APIs with increasing levels of control:
 
-| API | Use Case |
-|-----|----------|
-| `stream()` | Read-only, fetch-like interface |
-| `DurableStream` | Read/write handle for a stream |
+| API                  | Use Case                                                         |
+| -------------------- | ---------------------------------------------------------------- |
+| `stream()`           | Read-only, fetch-like interface                                  |
+| `DurableStream`      | Read/write handle for a stream                                   |
 | `IdempotentProducer` | High-throughput exactly-once writes (recommended for production) |
 
 ## Quick Start
@@ -57,8 +57,8 @@ import { stream } from "@durable-streams/client"
 
 const res = await stream<{ event: string }>({
   url: "https://streams.example.com/my-stream",
-  offset: "-1",  // Start from beginning
-  live: true,    // Continue with live updates
+  offset: "-1", // Start from beginning
+  live: true, // Continue with live updates
 })
 
 // Accumulate all data until caught up
@@ -133,12 +133,12 @@ const res = await stream({ url, offset: savedOffset })
 
 Control real-time behavior:
 
-| Mode | Behavior |
-|------|----------|
-| `true` | Auto-select best mode (SSE for JSON, long-poll for binary) |
-| `false` | Catch-up only, stop when up-to-date |
-| `"long-poll"` | Explicit long-poll for live updates |
-| `"sse"` | Explicit SSE for live updates |
+| Mode          | Behavior                                                   |
+| ------------- | ---------------------------------------------------------- |
+| `true`        | Auto-select best mode (SSE for JSON, long-poll for binary) |
+| `false`       | Catch-up only, stop when up-to-date                        |
+| `"long-poll"` | Explicit long-poll for live updates                        |
+| `"sse"`       | Explicit SSE for live updates                              |
 
 ### Content Types
 
@@ -166,9 +166,9 @@ await handle.append(JSON.stringify({ event: "click" }) + "\n")
 ### Promise Helpers (accumulate until up-to-date)
 
 ```typescript
-const bytes = await res.body()   // Uint8Array
-const items = await res.json()   // T[]
-const text = await res.text()    // string
+const bytes = await res.body() // Uint8Array
+const items = await res.json() // T[]
+const text = await res.text() // string
 ```
 
 ### ReadableStreams (pipeable)
@@ -203,17 +203,17 @@ Provides Kafka-style exactly-once semantics:
 
 ```typescript
 const producer = new IdempotentProducer(stream, "producer-id", {
-  epoch: 0,              // Starting epoch
-  autoClaim: true,       // Auto-recover from 403
-  maxBatchBytes: 1_000_000,  // 1MB max batch
-  lingerMs: 5,           // Wait up to 5ms for more messages
-  maxInFlight: 5,        // Concurrent batches
-  onError: (err) => {},  // Error callback
+  epoch: 0, // Starting epoch
+  autoClaim: true, // Auto-recover from 403
+  maxBatchBytes: 1_000_000, // 1MB max batch
+  lingerMs: 5, // Wait up to 5ms for more messages
+  maxInFlight: 5, // Concurrent batches
+  onError: (err) => {}, // Error callback
 })
 
-producer.append(data)    // Fire-and-forget
-await producer.flush()   // Wait for all batches
-await producer.close()   // Cleanup
+producer.append(data) // Fire-and-forget
+await producer.flush() // Wait for all batches
+await producer.close() // Cleanup
 ```
 
 ## Error Handling
@@ -332,16 +332,17 @@ await producer.flush()
 
 The protocol uses standard HTTP:
 
-| Operation | Method | Description |
-|-----------|--------|-------------|
-| Create | `PUT /stream/{path}` | Create new stream |
-| Append | `POST /stream/{path}` | Append data |
-| Read | `GET /stream/{path}?offset=X` | Read from offset |
-| Live | `GET /stream/{path}?offset=X&live=long-poll` | Live tail |
-| Delete | `DELETE /stream/{path}` | Delete stream |
-| Metadata | `HEAD /stream/{path}` | Get stream info |
+| Operation | Method                                       | Description       |
+| --------- | -------------------------------------------- | ----------------- |
+| Create    | `PUT /stream/{path}`                         | Create new stream |
+| Append    | `POST /stream/{path}`                        | Append data       |
+| Read      | `GET /stream/{path}?offset=X`                | Read from offset  |
+| Live      | `GET /stream/{path}?offset=X&live=long-poll` | Live tail         |
+| Delete    | `DELETE /stream/{path}`                      | Delete stream     |
+| Metadata  | `HEAD /stream/{path}`                        | Get stream info   |
 
 Key headers:
+
 - `Stream-Next-Offset` - Resume point for next read
 - `Content-Type` - Set at creation, preserved for all reads
 - `Cache-Control` - Enables CDN caching for historical reads
