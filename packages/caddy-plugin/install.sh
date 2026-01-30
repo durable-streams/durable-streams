@@ -54,16 +54,17 @@ detect_arch() {
 
 # Get latest version from GitHub
 get_latest_version() {
+    # Find latest release with a v* tag (caddy releases), not @* tags (npm packages)
     if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"caddy-v([^"]+)".*/\1/')
+        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name":' | grep -E '"v[0-9]' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
     elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"caddy-v([^"]+)".*/\1/')
+        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name":' | grep -E '"v[0-9]' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
     else
         error "curl or wget is required"
     fi
 
     if [ -z "$VERSION" ]; then
-        error "Could not determine latest version"
+        error "Could not determine latest version. No caddy releases found."
     fi
 
     echo "$VERSION"
@@ -85,7 +86,7 @@ download_and_extract() {
     fi
 
     FILENAME="${BINARY_NAME}_${version}_${os}_${arch}.${EXT}"
-    URL="https://github.com/${REPO}/releases/download/caddy-v${version}/${FILENAME}"
+    URL="https://github.com/${REPO}/releases/download/v${version}/${FILENAME}"
 
     info "Downloading ${BINARY_NAME} v${version} for ${os}/${arch}..."
 
