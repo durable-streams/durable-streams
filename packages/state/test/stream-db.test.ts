@@ -2220,4 +2220,251 @@ describe(`Stream DB TxId Tracking`, () => {
 
     db.close()
   })
+
+  it(`should apply field parsers to transform incoming stream data`, async () => {
+    // Schema for events with date fields
+    const eventSchema: StandardSchemaV1<{
+      id: string
+      title: string
+      createdAt: Date
+      updatedAt: Date
+    }> = {
+      "~standard": {
+        version: 1,
+        vendor: `test`,
+        validate: (value) => {
+          if (
+            typeof value !== `object` ||
+            value === null ||
+            typeof (value as { id?: unknown }).id !== `string` ||
+            typeof (value as { title?: unknown }).title !== `string`
+          ) {
+            return { issues: [{ message: `Invalid event` }] }
+          }
+          return {
+            value: value as {
+              id: string
+              title: string
+              createdAt: Date
+              updatedAt: Date
+            },
+          }
+        },
+      },
+    }
+
+    const streamState = createStateSchema({
+      events: {
+        schema: eventSchema,
+        type: `event`,
+        primaryKey: `id`,
+        parser: {
+          createdAt: (v: unknown) => new Date(v as string),
+          updatedAt: (v: unknown) => new Date(v as string),
+        },
+      },
+    })
+
+    const streamUrl = `${baseUrl}/db/parser-${Date.now()}`
+
+    const stream = await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: streamUrl,
+        contentType: `application/json`,
+      },
+      state: streamState,
+    })
+
+    // Write event with date strings (as they would come from JSON)
+    const now = new Date()
+    const later = new Date(now.getTime() + 1000)
+
+    await stream.append({
+      type: `event`,
+      key: `evt1`,
+      value: {
+        title: `Test Event`,
+        createdAt: now.toISOString(),
+        updatedAt: later.toISOString(),
+      },
+      headers: { operation: `insert` },
+    })
+
+    await db.preload()
+
+    const event = db.collections.events.get(`evt1`)
+
+    // Verify dates were parsed from strings to Date objects
+    expect(event).toBeDefined()
+    expect(event?.title).toBe(`Test Event`)
+    expect(event?.createdAt).toBeInstanceOf(Date)
+    expect(event?.updatedAt).toBeInstanceOf(Date)
+    expect(event?.createdAt.getTime()).toBe(now.getTime())
+    expect(event?.updatedAt.getTime()).toBe(later.getTime())
+
+    db.close()
+  })
+
+  it(`should handle parsers for fields not present in event`, async () => {
+    // Schema with optional field
+    const itemSchema: StandardSchemaV1<{
+      id: string
+      name: string
+      timestamp?: Date
+    }> = {
+      "~standard": {
+        version: 1,
+        vendor: `test`,
+        validate: (value) => {
+          if (
+            typeof value !== `object` ||
+            value === null ||
+            typeof (value as { id?: unknown }).id !== `string` ||
+            typeof (value as { name?: unknown }).name !== `string`
+          ) {
+            return { issues: [{ message: `Invalid item` }] }
+          }
+          return {
+            value: value as { id: string; name: string; timestamp?: Date },
+          }
+        },
+      },
+    }
+
+    const streamState = createStateSchema({
+      items: {
+        schema: itemSchema,
+        type: `item`,
+        primaryKey: `id`,
+        parser: {
+          // Parser defined for optional field
+          timestamp: (v: unknown) => new Date(v as string),
+        },
+      },
+    })
+
+    const streamUrl = `${baseUrl}/db/parser-missing-${Date.now()}`
+
+    const stream = await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: streamUrl,
+        contentType: `application/json`,
+      },
+      state: streamState,
+    })
+
+    // Write event WITHOUT the optional timestamp field
+    await stream.append({
+      type: `item`,
+      key: `item1`,
+      value: { name: `No Timestamp` },
+      headers: { operation: `insert` },
+    })
+
+    await db.preload()
+
+    const item = db.collections.items.get(`item1`)
+
+    // Should work without error, timestamp should be undefined
+    expect(item).toBeDefined()
+    expect(item?.name).toBe(`No Timestamp`)
+    expect(item?.timestamp).toBeUndefined()
+
+    db.close()
+  })
+
+  it(`should apply multiple parsers on same collection`, async () => {
+    // Schema with multiple parseable fields of different types
+    const recordSchema: StandardSchemaV1<{
+      id: string
+      count: number
+      isActive: boolean
+      createdAt: Date
+    }> = {
+      "~standard": {
+        version: 1,
+        vendor: `test`,
+        validate: (value) => {
+          if (typeof value !== `object` || value === null) {
+            return { issues: [{ message: `Invalid record` }] }
+          }
+          return {
+            value: value as {
+              id: string
+              count: number
+              isActive: boolean
+              createdAt: Date
+            },
+          }
+        },
+      },
+    }
+
+    const streamState = createStateSchema({
+      records: {
+        schema: recordSchema,
+        type: `record`,
+        primaryKey: `id`,
+        parser: {
+          // Multiple parsers for different field types
+          count: (v: unknown) => Number(v),
+          isActive: (v: unknown) => v === `true` || v === true,
+          createdAt: (v: unknown) => new Date(v as string),
+        },
+      },
+    })
+
+    const streamUrl = `${baseUrl}/db/parser-multi-${Date.now()}`
+
+    const stream = await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: streamUrl,
+        contentType: `application/json`,
+      },
+      state: streamState,
+    })
+
+    const timestamp = new Date()
+
+    // Write with string representations (simulating raw JSON)
+    await stream.append({
+      type: `record`,
+      key: `rec1`,
+      value: {
+        count: `42`, // string that needs parsing to number
+        isActive: `true`, // string that needs parsing to boolean
+        createdAt: timestamp.toISOString(),
+      },
+      headers: { operation: `insert` },
+    })
+
+    await db.preload()
+
+    const record = db.collections.records.get(`rec1`)
+
+    expect(record).toBeDefined()
+    expect(record?.count).toBe(42)
+    expect(typeof record?.count).toBe(`number`)
+    expect(record?.isActive).toBe(true)
+    expect(typeof record?.isActive).toBe(`boolean`)
+    expect(record?.createdAt).toBeInstanceOf(Date)
+    expect(record?.createdAt.getTime()).toBe(timestamp.getTime())
+
+    db.close()
+  })
 })
