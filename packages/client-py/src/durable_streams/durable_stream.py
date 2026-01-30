@@ -7,7 +7,6 @@ reading, appending, and deleting streams.
 
 from __future__ import annotations
 
-import json
 import threading
 from collections import deque
 from collections.abc import Callable
