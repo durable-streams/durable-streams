@@ -42,16 +42,18 @@ pnpm add @durable-streams/state @tanstack/db
 
 ## Two Levels of Abstraction
 
-| API                 | Use Case                                            |
-| ------------------- | --------------------------------------------------- |
-| `MaterializedState` | Simple in-memory state tracking                     |
-| `StreamDB`          | Full reactive database with TanStack DB integration |
+| API                 | Use Case                                                  |
+| ------------------- | --------------------------------------------------------- |
+| `MaterializedState` | Simple testing/prototyping only                           |
+| `StreamDB`          | **Recommended** - Full reactive database with TanStack DB |
+
+**Use `StreamDB` for most use cases.** It provides typed collections, reactive queries, and optimistic updates. `MaterializedState` is a low-level primitive useful for testing or very simple scenarios where you don't need reactive queries.
 
 ## Quick Start
 
 ### Simple State with MaterializedState
 
-For basic state tracking without schemas:
+For basic testing or prototyping without schemas:
 
 ```typescript
 import { MaterializedState } from "@durable-streams/state"
