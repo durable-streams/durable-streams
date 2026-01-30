@@ -507,10 +507,16 @@ TanStack DB supports multiple frameworks:
 - **Solid**: `@tanstack/solid-db`
 - **Vue**: `@tanstack/vue-db`
 
-See [TanStack DB docs](https://tanstack.com/db) for framework-specific guides.
+For detailed TanStack DB guidance, install the TanStack DB playbook:
+
+```bash
+npx @tanstack/db-playbook list
+npx @tanstack/db-playbook show tanstack-db
+```
 
 ## Additional Resources
 
 - [State Protocol specification](../../../state/STATE-PROTOCOL.md)
+- [TanStack DB playbook](https://www.npmjs.com/package/@tanstack/db-playbook) - Detailed TanStack DB skills
 - [TanStack DB documentation](https://tanstack.com/db)
 - [Standard Schema](https://standardschema.dev/)
