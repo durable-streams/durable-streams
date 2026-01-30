@@ -164,7 +164,11 @@ def is_sse_compatible_content_type(content_type: str | None) -> bool:
     if not content_type:
         return False
     normalized = normalize_content_type(content_type)
-    return normalized.startswith("text/") or is_json_content_type(content_type)
+    return (
+        normalized.startswith("text/")
+        or normalized == "application/json"
+        or normalized.endswith("+json")
+    )
 
 
 def encode_body(body: str | bytes) -> bytes:

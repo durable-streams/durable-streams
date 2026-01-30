@@ -48,6 +48,7 @@ $producerStreamClosed = [];
 
 // Dynamic headers/params state
 $dynamicHeaders = [];
+$dynamicParams = [];
 
 /**
  * Check if content type indicates JSON (application/json or +json suffix).
@@ -57,11 +58,9 @@ function isJsonContentType(?string $contentType): bool
     if ($contentType === null) {
         return false;
     }
-    $normalized = strtolower(explode(';', $contentType)[0] ?? '');
-    $normalized = trim($normalized);
+    $normalized = strtolower(trim(explode(';', $contentType)[0] ?? ''));
     return $normalized === 'application/json' || str_ends_with($normalized, '+json');
 }
-$dynamicParams = [];
 
 class DynamicValue {
     public string $type;

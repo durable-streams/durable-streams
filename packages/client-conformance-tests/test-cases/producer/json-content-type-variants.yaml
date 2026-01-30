@@ -110,7 +110,7 @@ tests:
   # Negative tests - content types that should NOT be JSON mode
   - id: plus-xml-not-json-mode
     name: Content type with +xml suffix is NOT JSON mode
-    description: application/foo+xml should NOT use JSON mode (per RFC 6838)
+    description: application/foo+xml should NOT use JSON mode (per RFC 6839)
     setup:
       - action: create
         as: streamPath

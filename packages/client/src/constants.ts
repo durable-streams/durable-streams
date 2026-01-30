@@ -174,7 +174,11 @@ export function isSseCompatibleContentType(
   contentType: string | null | undefined
 ): boolean {
   const normalized = normalizeContentType(contentType)
-  return normalized.startsWith(`text/`) || isJsonContentType(contentType)
+  return (
+    normalized.startsWith(`text/`) ||
+    normalized === `application/json` ||
+    normalized.endsWith(`+json`)
+  )
 }
 
 /**
