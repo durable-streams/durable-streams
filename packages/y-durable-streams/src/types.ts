@@ -12,6 +12,11 @@ import type { HeadersRecord } from "@durable-streams/client"
 export type ProviderStatus = `disconnected` | `connecting` | `connected`
 
 /**
+ * Transport mode for live stream updates.
+ */
+export type TransportMode = `long-poll` | `sse`
+
+/**
  * Configuration for a stream endpoint.
  */
 export interface StreamConfig {
@@ -25,6 +30,13 @@ export interface StreamConfig {
    * Values can be static strings or functions that return strings.
    */
   headers?: HeadersRecord
+
+  /**
+   * Transport mode for live updates.
+   * - "long-poll": Use HTTP long-polling
+   * - "sse": Use Server-Sent Events with base64 encoding for binary data
+   */
+  transport: TransportMode
 }
 
 /**

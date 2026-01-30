@@ -20,6 +20,7 @@ use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Exception\StreamNotFoundException;
 use DurableStreams\Exception\StreamExistsException;
 use DurableStreams\Exception\SeqConflictException;
+use DurableStreams\Exception\StreamClosedException;
 
 use function DurableStreams\stream;
 use function DurableStreams\version;
@@ -36,11 +37,14 @@ const ERROR_PARSE = 'PARSE_ERROR';
 const ERROR_INTERNAL = 'INTERNAL_ERROR';
 const ERROR_NOT_SUPPORTED = 'NOT_SUPPORTED';
 const ERROR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
+const ERROR_STREAM_CLOSED = 'STREAM_CLOSED';
 
 // Global state
 $serverUrl = '';
 $streamContentTypes = [];
 $sharedClient = null;
+$producerNextSeq = [];
+$producerStreamClosed = [];
 
 // Dynamic headers/params state
 $dynamicHeaders = [];
@@ -63,6 +67,39 @@ class DynamicValue {
             'token' => $this->tokenValue ?? '',
             default => '',
         };
+    }
+}
+
+function producerSeqKey(string $path, string $producerId, int $epoch): string {
+    return "{$path}|{$producerId}|{$epoch}";
+}
+
+function producerKey(string $path, string $producerId): string {
+    return "{$path}|{$producerId}";
+}
+
+function dropProducerEpochs(string $path, string $producerId): void {
+    global $producerNextSeq;
+    $prefix = "{$path}|{$producerId}|";
+    foreach (array_keys($producerNextSeq) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerNextSeq[$key]);
+        }
+    }
+}
+
+function clearProducerForPath(string $path): void {
+    global $producerNextSeq, $producerStreamClosed;
+    $prefix = "{$path}|";
+    foreach (array_keys($producerNextSeq) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerNextSeq[$key]);
+        }
+    }
+    foreach (array_keys($producerStreamClosed) as $key) {
+        if (str_starts_with($key, $prefix)) {
+            unset($producerStreamClosed[$key]);
+        }
     }
 }
 
@@ -100,6 +137,9 @@ function mapErrorCode(Throwable $e): array {
     }
     if ($e instanceof StreamExistsException) {
         return [ERROR_CONFLICT, 409];
+    }
+    if ($e instanceof StreamClosedException) {
+        return [ERROR_STREAM_CLOSED, 409];
     }
     if ($e instanceof SeqConflictException) {
         return [ERROR_SEQ_CONFLICT, 409];
@@ -152,12 +192,14 @@ function errorResult(string $commandType, Throwable $e): array {
 }
 
 function handleInit(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient, $dynamicHeaders, $dynamicParams;
+    global $serverUrl, $streamContentTypes, $sharedClient, $dynamicHeaders, $dynamicParams, $producerNextSeq, $producerStreamClosed;
 
     $serverUrl = $cmd['serverUrl'];
     $streamContentTypes = [];
     $dynamicHeaders = [];
     $dynamicParams = [];
+    $producerNextSeq = [];
+    $producerStreamClosed = [];
     $sharedClient = new HttpClient(timeout: 30.0);
 
     return [
@@ -167,7 +209,7 @@ function handleInit(array $cmd): array {
         'clientVersion' => version(),
         'features' => [
             'batching' => true,
-            'sse' => false,  // SSE not yet implemented
+            'sse' => true,  // SSE now implemented
             'longPoll' => true,
             'streaming' => true,
             'dynamicHeaders' => true,
@@ -183,6 +225,11 @@ function handleCreate(array $cmd): array {
 
     $url = $serverUrl . $cmd['path'];
     $contentType = $cmd['contentType'] ?? 'application/octet-stream';
+    $closed = $cmd['closed'] ?? false;
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
 
     // Check if stream already exists
     $alreadyExists = false;
@@ -201,6 +248,8 @@ function handleCreate(array $cmd): array {
         $cmd['ttlSeconds'] ?? null,
         $cmd['expiresAt'] ?? null,
         $sharedClient,
+        $closed,
+        $data,
     );
 
     // Cache content type
@@ -293,14 +342,7 @@ function handleRead(array $cmd): array {
         if ($cmd['live'] === 'long-poll') {
             $live = LiveMode::LongPoll;
         } elseif ($cmd['live'] === 'sse') {
-            // SSE not supported in PHP, but we need to handle the test case
-            return [
-                'type' => 'error',
-                'success' => false,
-                'commandType' => 'read',
-                'errorCode' => ERROR_NOT_SUPPORTED,
-                'message' => 'SSE not supported in PHP client',
-            ];
+            $live = LiveMode::SSE;
         }
     }
 
@@ -326,7 +368,7 @@ function handleRead(array $cmd): array {
 
     // For long-poll, add buffer to HTTP timeout to ensure we receive server's response
     // The server waits for timeoutMs, so our HTTP timeout needs to be longer
-    $httpTimeout = $live ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
+    $httpTimeout = $live->isLive() ? ($timeoutMs / 1000.0) + 2.0 : $timeoutMs / 1000.0;
 
     $response = stream([
         'url' => $url,
@@ -339,17 +381,32 @@ function handleRead(array $cmd): array {
 
     try {
         $chunkCount = 0;
-        foreach ($response as $chunk) {
-            if ($chunk !== '') {
+        foreach ($response->chunks() as $chunk) {
+            if ($chunk->hasData()) {
+                $data = $chunk->data;
+
                 // For JSON streams, validate JSON to detect parse errors
                 if ($isJson) {
-                    json_decode($chunk, true, 512, JSON_THROW_ON_ERROR);
+                    json_decode($data, true, 512, JSON_THROW_ON_ERROR);
                 }
 
-                $chunks[] = [
-                    'data' => $chunk,
-                    'offset' => $response->getOffset(),
-                ];
+                // Check if data contains non-UTF-8 bytes that would break JSON encoding
+                // If so, base64 encode it for transport
+                $needsBase64 = !mb_check_encoding($data, 'UTF-8') ||
+                    str_contains($data, "\x00"); // null bytes break JSON
+
+                if ($needsBase64) {
+                    $chunks[] = [
+                        'data' => base64_encode($data),
+                        'binary' => true,
+                        'offset' => $chunk->offset,
+                    ];
+                } else {
+                    $chunks[] = [
+                        'data' => $data,
+                        'offset' => $chunk->offset,
+                    ];
+                }
                 $chunkCount++;
             }
 
@@ -358,7 +415,7 @@ function handleRead(array $cmd): array {
                 break;
             }
 
-            if ($waitForUpToDate && $response->isUpToDate()) {
+            if ($waitForUpToDate && $chunk->upToDate) {
                 $response->cancel();
                 break;
             }
@@ -370,7 +427,7 @@ function handleRead(array $cmd): array {
 
             // For long-poll mode with status 204 (server timeout), return
             // This means server waited but no data arrived
-            if ($live === LiveMode::LongPoll && $response->getStatus() === 204) {
+            if ($live === LiveMode::LongPoll && $chunk->status === 204) {
                 $response->cancel();
                 break;
             }
@@ -387,6 +444,15 @@ function handleRead(array $cmd): array {
     $upToDate = $response->isUpToDate();
     $status = $response->getStatus();
 
+    // Check stream closed status
+    $streamClosed = false;
+    try {
+        $headResult = DurableStream::headStatic($url, null, $sharedClient);
+        $streamClosed = $headResult->streamClosed;
+    } catch (Throwable $e) {
+        // Ignore errors - streamClosed defaults to false
+    }
+
     $result = [
         'type' => 'read',
         'success' => true,
@@ -394,6 +460,7 @@ function handleRead(array $cmd): array {
         'chunks' => $chunks,
         'offset' => $finalOffset,
         'upToDate' => $upToDate,
+        'streamClosed' => $streamClosed,
     ];
 
     if (!empty($headersSent)) {
@@ -422,6 +489,29 @@ function handleHead(array $cmd): array {
         'status' => 200,
         'offset' => $result->offset,
         'contentType' => $result->contentType,
+        'streamClosed' => $result->streamClosed,
+    ];
+}
+
+function handleClose(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient;
+
+    $url = $serverUrl . $cmd['path'];
+    $contentType = $cmd['contentType'] ?? $streamContentTypes[$cmd['path']] ?? 'application/octet-stream';
+
+    // Decode data if provided
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
+
+    $ds = new DurableStream($url, $contentType, $cmd['headers'] ?? [], $sharedClient);
+    $result = $ds->closeStream($data, $contentType);
+
+    return [
+        'type' => 'close',
+        'success' => true,
+        'finalOffset' => $result->finalOffset,
     ];
 }
 
@@ -432,6 +522,7 @@ function handleDelete(array $cmd): array {
     DurableStream::deleteStatic($url, $cmd['headers'] ?? null, $sharedClient);
 
     unset($streamContentTypes[$cmd['path']]);
+    clearProducerForPath($cmd['path']);
 
     return [
         'type' => 'delete',
@@ -485,25 +576,40 @@ function handleClearDynamic(array $cmd): array {
 }
 
 function handleIdempotentAppend(array $cmd): array {
-    global $serverUrl, $streamContentTypes, $sharedClient;
+    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq;
 
-    $url = $serverUrl . $cmd['path'];
-    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $streamContentTypes[$path] ?? 'application/json';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
 
     // Data is already pre-serialized, pass directly to enqueue()
     $data = $cmd['data'];
+    if ($cmd['binary'] ?? false) {
+        $data = base64_decode($data);
+    }
+
+    $seqKey = producerSeqKey($path, $producerId, $epoch);
+    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
 
     $producer = new IdempotentProducer(
         url: $url,
-        producerId: $cmd['producerId'],
-        epoch: $cmd['epoch'] ?? 0,
+        producerId: $producerId,
+        epoch: $epoch,
         autoClaim: $cmd['autoClaim'] ?? false,
         contentType: $contentType,
         client: $sharedClient,
+        nextSeq: $nextSeq,
     );
 
     $producer->enqueue($data);
     $producer->flush();
+
+    $finalEpoch = $producer->getEpoch();
+    $finalSeq = $producer->getSeq();
+    dropProducerEpochs($path, $producerId);
+    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
 
     return [
         'type' => 'idempotent-append',
@@ -515,19 +621,25 @@ function handleIdempotentAppend(array $cmd): array {
 function handleIdempotentAppendBatch(array $cmd): array {
     global $serverUrl, $streamContentTypes, $sharedClient;
 
-    $url = $serverUrl . $cmd['path'];
-    $contentType = $streamContentTypes[$cmd['path']] ?? 'application/json';
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $streamContentTypes[$path] ?? 'application/json';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
 
     // Data is already pre-serialized, pass directly to enqueue()
     $items = $cmd['items'];
 
+    $nextSeq = isset($cmd['producerSeq']) ? (int)$cmd['producerSeq'] : 0;
+
     $producer = new IdempotentProducer(
         url: $url,
-        producerId: $cmd['producerId'],
-        epoch: $cmd['epoch'] ?? 0,
+        producerId: $producerId,
+        epoch: $epoch,
         autoClaim: $cmd['autoClaim'] ?? false,
         contentType: $contentType,
         client: $sharedClient,
+        nextSeq: $nextSeq,
     );
 
     foreach ($items as $item) {
@@ -538,6 +650,73 @@ function handleIdempotentAppendBatch(array $cmd): array {
 
     return [
         'type' => 'idempotent-append-batch',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleIdempotentClose(array $cmd): array {
+    global $serverUrl, $streamContentTypes, $sharedClient, $producerNextSeq, $producerStreamClosed;
+
+    $path = $cmd['path'];
+    $url = $serverUrl . $path;
+    $contentType = $cmd['contentType'] ?? $streamContentTypes[$path] ?? 'application/octet-stream';
+    $epoch = $cmd['epoch'] ?? 0;
+    $producerId = $cmd['producerId'];
+
+    $data = $cmd['data'] ?? null;
+    if ($data !== null && ($cmd['binary'] ?? false)) {
+        $data = base64_decode($data);
+    }
+
+    $producerKey = producerKey($path, $producerId);
+    if (!empty($producerStreamClosed[$producerKey])) {
+        return [
+            'type' => 'idempotent-close',
+            'success' => true,
+            'status' => 200,
+        ];
+    }
+
+    $seqKey = producerSeqKey($path, $producerId, $epoch);
+    $nextSeq = $producerNextSeq[$seqKey] ?? 0;
+
+    $producer = new IdempotentProducer(
+        url: $url,
+        producerId: $producerId,
+        epoch: $epoch,
+        autoClaim: $cmd['autoClaim'] ?? false,
+        contentType: $contentType,
+        client: $sharedClient,
+        nextSeq: $nextSeq,
+    );
+
+    $producer->closeStream($data);
+
+    $finalEpoch = $producer->getEpoch();
+    $finalSeq = $producer->getSeq();
+    dropProducerEpochs($path, $producerId);
+    $producerNextSeq[producerSeqKey($path, $producerId, $finalEpoch)] = $finalSeq;
+    $producerStreamClosed[$producerKey] = true;
+
+    return [
+        'type' => 'idempotent-close',
+        'success' => true,
+        'status' => 200,
+    ];
+}
+
+function handleIdempotentDetach(array $cmd): array {
+    global $producerNextSeq, $producerStreamClosed;
+
+    $path = $cmd['path'];
+    $producerId = $cmd['producerId'];
+
+    dropProducerEpochs($path, $producerId);
+    unset($producerStreamClosed[producerKey($path, $producerId)]);
+
+    return [
+        'type' => 'idempotent-detach',
         'success' => true,
         'status' => 200,
     ];
@@ -792,6 +971,7 @@ function handleCommand(array $cmd): array {
             'append' => handleAppend($cmd),
             'read' => handleRead($cmd),
             'head' => handleHead($cmd),
+            'close' => handleClose($cmd),
             'delete' => handleDelete($cmd),
             'shutdown' => handleShutdown($cmd),
             'set-dynamic-header' => handleSetDynamicHeader($cmd),
@@ -799,6 +979,8 @@ function handleCommand(array $cmd): array {
             'clear-dynamic' => handleClearDynamic($cmd),
             'idempotent-append' => handleIdempotentAppend($cmd),
             'idempotent-append-batch' => handleIdempotentAppendBatch($cmd),
+            'idempotent-close' => handleIdempotentClose($cmd),
+            'idempotent-detach' => handleIdempotentDetach($cmd),
             'benchmark' => handleBenchmark($cmd),
             'validate' => handleValidate($cmd),
             default => [

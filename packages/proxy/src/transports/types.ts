@@ -8,15 +8,17 @@ import type { DurableStorage } from "../client/types"
  * Base options shared by all durable transport implementations.
  */
 export interface BaseDurableTransportOptions {
-  /** Base URL of the proxy server */
+  /** Full base URL of the proxy endpoint (e.g., "https://proxy.example.com/v1/proxy") */
   proxyUrl: string
+  /** Authorization for the proxy (service secret) */
+  proxyAuthorization: string
   /** Storage for persisting credentials */
   storage?: DurableStorage
   /** Prefix for storage keys (default: 'durable-streams:') */
   storagePrefix?: string
-  /** Function to generate stream keys from messages */
-  getStreamKey?: (messages: Array<unknown>, data?: unknown) => string
-  /** Headers to include with requests */
+  /** Function to generate request IDs from messages (for resumability) */
+  getRequestId?: (messages: Array<unknown>, data?: unknown) => string
+  /** Headers to include with upstream requests */
   headers?: Record<string, string> | (() => Record<string, string>)
   /** Custom fetch implementation */
   fetch?: typeof fetch

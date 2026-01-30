@@ -39,6 +39,7 @@ type Command struct {
 	ContentType string `json:"contentType,omitempty"`
 	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
 	ExpiresAt   string `json:"expiresAt,omitempty"`
+	Closed      bool   `json:"closed,omitempty"`
 	// Append fields
 	Data   string `json:"data,omitempty"`
 	Binary bool   `json:"binary,omitempty"`
@@ -97,9 +98,11 @@ type Result struct {
 	Features      *Features         `json:"features,omitempty"`
 	Status        int               `json:"status,omitempty"`
 	Offset        string            `json:"offset,omitempty"`
+	FinalOffset   string            `json:"finalOffset,omitempty"`
 	ContentType   string            `json:"contentType,omitempty"`
 	Chunks        []ReadChunk       `json:"chunks"`
 	UpToDate      bool              `json:"upToDate"`
+	StreamClosed  bool              `json:"streamClosed"`
 	Cursor        string            `json:"cursor,omitempty"`
 	Headers       map[string]string `json:"headers,omitempty"`
 	CommandType   string            `json:"commandType,omitempty"`
@@ -153,7 +156,13 @@ var (
 	serverURL          string
 	client             *durablestreams.Client
 	streamContentTypes = make(map[string]string)
+	producers          = make(map[producerKey]*durablestreams.IdempotentProducer)
 )
+
+type producerKey struct {
+	path       string
+	producerID string
+}
 
 // normalizeContentType extracts the media type before semicolon and lowercases.
 func normalizeContentType(contentType string) string {
@@ -165,6 +174,36 @@ func normalizeContentType(contentType string) string {
 		contentType = contentType[:idx]
 	}
 	return strings.TrimSpace(strings.ToLower(contentType))
+}
+
+func getProducer(cmd Command, cfg durablestreams.IdempotentProducerConfig) (*durablestreams.IdempotentProducer, error) {
+	key := producerKey{path: cmd.Path, producerID: cmd.ProducerID}
+	if producer, ok := producers[key]; ok {
+		return producer, nil
+	}
+
+	url := serverURL + cmd.Path
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, cfg)
+	if err != nil {
+		return nil, err
+	}
+	producers[key] = producer
+	return producer, nil
+}
+
+func detachProducer(cmd Command) {
+	key := producerKey{path: cmd.Path, producerID: cmd.ProducerID}
+	if producer, ok := producers[key]; ok {
+		_ = producer.Close()
+		delete(producers, key)
+	}
+}
+
+func closeAllProducers() {
+	for key, producer := range producers {
+		_ = producer.Close()
+		delete(producers, key)
+	}
 }
 
 // Dynamic header/param state
@@ -259,6 +298,8 @@ func handleCommand(cmd Command) Result {
 		return handleHead(cmd)
 	case "delete":
 		return handleDelete(cmd)
+	case "close":
+		return handleClose(cmd)
 	case "benchmark":
 		return handleBenchmark(cmd)
 	case "set-dynamic-header":
@@ -271,9 +312,14 @@ func handleCommand(cmd Command) Result {
 		return handleIdempotentAppend(cmd)
 	case "idempotent-append-batch":
 		return handleIdempotentAppendBatch(cmd)
+	case "idempotent-close", "idempotent-producer-close":
+		return handleIdempotentClose(cmd)
+	case "idempotent-detach", "idempotent-producer-detach":
+		return handleIdempotentDetach(cmd)
 	case "validate":
 		return handleValidate(cmd)
 	case "shutdown":
+		closeAllProducers()
 		return Result{Type: "shutdown", Success: true}
 	default:
 		return sendError(cmd.Type, "NOT_SUPPORTED", fmt.Sprintf("unknown command type: %s", cmd.Type))
@@ -285,6 +331,8 @@ func handleInit(cmd Command) Result {
 	streamContentTypes = make(map[string]string)
 	dynamicHeaders = make(map[string]*DynamicValue)
 	dynamicParams = make(map[string]*DynamicValue)
+	closeAllProducers()
+	producers = make(map[producerKey]*durablestreams.IdempotentProducer)
 	client = durablestreams.NewClient(
 		durablestreams.WithBaseURL(serverURL),
 	)
@@ -335,6 +383,22 @@ func handleCreate(cmd Command) Result {
 	}
 	if len(cmd.Headers) > 0 {
 		opts = append(opts, durablestreams.WithCreateHeaders(cmd.Headers))
+	}
+	if cmd.Closed {
+		opts = append(opts, durablestreams.WithClosed())
+	}
+	if cmd.Data != "" {
+		var initialData []byte
+		if cmd.Binary {
+			decoded, err := base64.StdEncoding.DecodeString(cmd.Data)
+			if err != nil {
+				return sendError("create", "PARSE_ERROR", fmt.Sprintf("failed to decode base64: %v", err))
+			}
+			initialData = decoded
+		} else {
+			initialData = []byte(cmd.Data)
+		}
+		opts = append(opts, durablestreams.WithInitialData(initialData))
 	}
 
 	err := stream.Create(ctx, opts...)
@@ -508,7 +572,6 @@ func handleRead(cmd Command) Result {
 	if len(mergedHeaders) > 0 {
 		opts = append(opts, durablestreams.WithReadHeaders(mergedHeaders))
 	}
-
 	it := stream.Read(ctx, opts...)
 	defer it.Close()
 
@@ -520,7 +583,9 @@ func handleRead(cmd Command) Result {
 
 	var finalOffset string
 	upToDate := false
+	streamClosed := false
 	status := 200 // Default status
+	stoppedForMaxChunks := false
 
 	// Check if this is a JSON stream
 	contentType := streamContentTypes[cmd.Path]
@@ -572,6 +637,12 @@ func handleRead(cmd Command) Result {
 
 		finalOffset = string(chunk.NextOffset)
 		upToDate = chunk.UpToDate
+		streamClosed = streamClosed || chunk.StreamClosed
+
+		if len(chunks) >= maxChunks {
+			stoppedForMaxChunks = true
+			break
+		}
 
 		// For waitForUpToDate, stop when we've reached up-to-date
 		if cmd.WaitForUpToDate && chunk.UpToDate {
@@ -593,13 +664,20 @@ func handleRead(cmd Command) Result {
 		}
 	}
 
+	if stoppedForMaxChunks {
+		streamClosed = false
+	} else {
+		streamClosed = streamClosed || it.StreamClosed
+	}
+
 	res := Result{
-		Type:     "read",
-		Success:  true,
-		Status:   status,
-		Chunks:   chunks,
-		Offset:   finalOffset,
-		UpToDate: upToDate,
+		Type:         "read",
+		Success:      true,
+		Status:       status,
+		Chunks:       chunks,
+		Offset:       finalOffset,
+		UpToDate:     upToDate,
+		StreamClosed: streamClosed,
 	}
 	if len(headersSent) > 0 {
 		res.HeadersSent = headersSent
@@ -627,11 +705,12 @@ func handleHead(cmd Command) Result {
 	}
 
 	return Result{
-		Type:        "head",
-		Success:     true,
-		Status:      200,
-		Offset:      string(meta.NextOffset),
-		ContentType: meta.ContentType,
+		Type:         "head",
+		Success:      true,
+		Status:       200,
+		Offset:       string(meta.NextOffset),
+		ContentType:  meta.ContentType,
+		StreamClosed: meta.StreamClosed,
 	}
 }
 
@@ -658,6 +737,47 @@ func handleDelete(cmd Command) Result {
 		Type:    "delete",
 		Success: true,
 		Status:  200,
+	}
+}
+
+func handleClose(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	stream := client.Stream(cmd.Path)
+
+	// Get content type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	stream.SetContentType(contentType)
+
+	var opts []durablestreams.CloseOption
+	if cmd.Data != "" {
+		if cmd.Binary {
+			decoded, err := base64.StdEncoding.DecodeString(cmd.Data)
+			if err != nil {
+				return sendError("close", "PARSE_ERROR", fmt.Sprintf("failed to decode base64: %v", err))
+			}
+			opts = append(opts, durablestreams.WithCloseData(decoded))
+		} else {
+			opts = append(opts, durablestreams.WithCloseData([]byte(cmd.Data)))
+		}
+	}
+	if cmd.ContentType != "" {
+		opts = append(opts, durablestreams.WithCloseContentType(cmd.ContentType))
+	}
+
+	result, err := stream.Close(ctx, opts...)
+	if err != nil {
+		return errorResult("close", err)
+	}
+
+	return Result{
+		Type:        "close",
+		Success:     true,
+		FinalOffset: string(result.FinalOffset),
 	}
 }
 
@@ -745,25 +865,23 @@ func handleIdempotentAppend(cmd Command) Result {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	url := serverURL + cmd.Path
-
 	// Get content-type from cache or use default
 	contentType := streamContentTypes[cmd.Path]
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
-	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+	cfg := durablestreams.IdempotentProducerConfig{
 		Epoch:       cmd.Epoch,
 		AutoClaim:   cmd.AutoClaim,
 		MaxInFlight: 1,
 		LingerMs:    0, // Send immediately for testing
 		ContentType: contentType,
-	})
+	}
+	producer, err := getProducer(cmd, cfg)
 	if err != nil {
 		return errorResult("idempotent-append", err)
 	}
-	defer producer.Close()
 
 	// Data is already pre-serialized, pass directly to Append()
 	// Append returns immediately (fire-and-forget)
@@ -813,14 +931,15 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 		maxBatchBytes = 1
 	}
 
-	producer, err := client.IdempotentProducer(url, cmd.ProducerID, durablestreams.IdempotentProducerConfig{
+	cfg := durablestreams.IdempotentProducerConfig{
 		Epoch:         cmd.Epoch,
 		AutoClaim:     cmd.AutoClaim,
 		MaxInFlight:   maxInFlight,
 		LingerMs:      lingerMs,
 		MaxBatchBytes: maxBatchBytes,
 		ContentType:   contentType,
-	})
+	}
+	producer, err := client.IdempotentProducer(url, cmd.ProducerID, cfg)
 	if err != nil {
 		return errorResult("idempotent-append-batch", err)
 	}
@@ -841,6 +960,63 @@ func handleIdempotentAppendBatch(cmd Command) Result {
 
 	return Result{
 		Type:    "idempotent-append-batch",
+		Success: true,
+		Status:  200,
+	}
+}
+
+func handleIdempotentClose(cmd Command) Result {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Get content-type from cache or use default
+	contentType := streamContentTypes[cmd.Path]
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+
+	cfg := durablestreams.IdempotentProducerConfig{
+		Epoch:       cmd.Epoch,
+		AutoClaim:   cmd.AutoClaim,
+		MaxInFlight: 1,
+		LingerMs:    0,
+		ContentType: contentType,
+	}
+	producer, err := getProducer(cmd, cfg)
+	if err != nil {
+		return errorResult("idempotent-close", err)
+	}
+
+	var data []byte
+	if cmd.Data != "" {
+		if cmd.Binary {
+			decoded, err := base64.StdEncoding.DecodeString(cmd.Data)
+			if err != nil {
+				return sendError("idempotent-close", "PARSE_ERROR", fmt.Sprintf("failed to decode base64: %v", err))
+			}
+			data = decoded
+		} else {
+			data = []byte(cmd.Data)
+		}
+	}
+
+	result, err := producer.CloseStream(ctx, data)
+	if err != nil {
+		return errorResult("idempotent-close", err)
+	}
+
+	return Result{
+		Type:        "idempotent-close",
+		Success:     true,
+		Status:      200,
+		FinalOffset: string(result.Offset),
+	}
+}
+
+func handleIdempotentDetach(cmd Command) Result {
+	detachProducer(cmd)
+	return Result{
+		Type:    "idempotent-detach",
 		Success: true,
 		Status:  200,
 	}
@@ -914,6 +1090,9 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 	}
 	if errors.Is(err.Err, durablestreams.ErrSeqConflict) {
 		return "SEQUENCE_CONFLICT"
+	}
+	if errors.Is(err.Err, durablestreams.ErrStreamClosed) {
+		return "STREAM_CLOSED"
 	}
 	if errors.Is(err.Err, durablestreams.ErrOffsetGone) {
 		return "INVALID_OFFSET"

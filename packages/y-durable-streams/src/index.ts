@@ -21,4 +21,5 @@ export type {
   StreamConfig,
   AwarenessConfig,
   AwarenessUpdate,
+  TransportMode,
 } from "./types"

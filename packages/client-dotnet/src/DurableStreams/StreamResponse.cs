@@ -26,9 +26,13 @@ public sealed class StreamResponse : IAsyncDisposable
     private Offset _offset;
     private string? _cursor;
     private bool _upToDate;
+    private bool _streamClosed;
     private bool _initialized;
     private bool _disposed;
     private bool _consumed;
+
+    // Encoding detected from Stream-SSE-Data-Encoding response header
+    private string? _detectedEncoding;
 
     // Pending SSE data (data event received, waiting for control)
     private string? _pendingSseData;
@@ -71,6 +75,11 @@ public sealed class StreamResponse : IAsyncDisposable
     /// </summary>
     public bool UpToDate => _upToDate;
 
+    /// <summary>
+    /// Whether the stream is closed (EOF).
+    /// </summary>
+    public bool StreamClosed => _streamClosed;
+
     internal StreamResponse(
         DurableStream stream,
         StreamOptions options,
@@ -86,6 +95,7 @@ public sealed class StreamResponse : IAsyncDisposable
         _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         StartOffset = _offset;
+        _streamClosed = false;
     }
 
     /// <summary>
@@ -122,6 +132,11 @@ public sealed class StreamResponse : IAsyncDisposable
             }
 
             yield return chunk.Value;
+
+            if (_streamClosed)
+            {
+                break;
+            }
 
             if (_upToDate && _options.Live == LiveMode.Off)
             {
@@ -286,6 +301,7 @@ public sealed class StreamResponse : IAsyncDisposable
             var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
             var cursor = HttpHelpers.GetHeader(response, Headers.StreamCursor);
             var upToDate = HttpHelpers.GetBoolHeader(response, Headers.StreamUpToDate);
+            var streamClosed = HttpHelpers.GetBoolHeader(response, Headers.StreamClosed);
 
             if (nextOffset != null)
             {
@@ -295,7 +311,8 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 _cursor = cursor;
             }
-            _upToDate = upToDate;
+            _streamClosed = _streamClosed || streamClosed;
+            _upToDate = upToDate || _streamClosed;
 
             // Update content type if present
             var contentType = HttpHelpers.GetHeader(response, Headers.ContentType);
@@ -380,6 +397,20 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 _stream.ContentType = contentType;
             }
+
+            // Detect encoding from response header (server auto-detects binary content types)
+            var encodingHeader = HttpHelpers.GetHeader(_currentResponse, Headers.StreamSseDataEncoding);
+            if (encodingHeader != null)
+            {
+                _detectedEncoding = encodingHeader;
+            }
+
+            // Closed streams should be treated as up-to-date even before control event
+            if (HttpHelpers.GetBoolHeader(_currentResponse, Headers.StreamClosed))
+            {
+                _streamClosed = true;
+                _upToDate = true;
+            }
         }
 
         while (!cancellationToken.IsCancellationRequested)
@@ -420,7 +451,32 @@ public sealed class StreamResponse : IAsyncDisposable
             if (type == SseEventType.Data)
             {
                 var dataEvt = (SseDataEvent)eventObj;
-                _pendingSseData = (_pendingSseData ?? "") + dataEvt.Data;
+
+                // Decode base64 if encoding detected from response header
+                if (_detectedEncoding == "base64")
+                {
+                    try
+                    {
+                        // Per protocol: remove \n and \r characters before decoding
+                        var cleaned = dataEvt.Data.Replace("\n", "").Replace("\r", "");
+                        var decodedBytes = Convert.FromBase64String(cleaned);
+                        var decodedStr = Encoding.UTF8.GetString(decodedBytes);
+                        _pendingSseData = (_pendingSseData ?? "") + decodedStr;
+                    }
+                    catch (FormatException ex)
+                    {
+                        throw new DurableStreamException(
+                            $"Failed to decode base64 SSE data: {ex.Message}",
+                            DurableStreamErrorCode.ParseError,
+                            null,
+                            _stream.Url,
+                            ex);
+                    }
+                }
+                else
+                {
+                    _pendingSseData = (_pendingSseData ?? "") + dataEvt.Data;
+                }
             }
             else if (type == SseEventType.Control)
             {
@@ -435,7 +491,8 @@ public sealed class StreamResponse : IAsyncDisposable
                 {
                     _cursor = controlEvt.StreamCursor;
                 }
-                _upToDate = controlEvt.UpToDate;
+                _streamClosed = _streamClosed || controlEvt.StreamClosed;
+                _upToDate = _upToDate || controlEvt.UpToDate || _streamClosed;
 
                 // Reset reconnect backoff on successful data
                 _sseReconnectAttempts = 0;

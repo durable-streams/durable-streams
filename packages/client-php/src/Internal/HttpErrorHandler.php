@@ -8,6 +8,7 @@ use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Exception\MessageTooLargeException;
 use DurableStreams\Exception\RateLimitedException;
 use DurableStreams\Exception\SeqConflictException;
+use DurableStreams\Exception\StreamClosedException;
 use DurableStreams\Exception\StreamExistsException;
 use DurableStreams\Exception\StreamNotFoundException;
 use DurableStreams\Exception\UnauthorizedException;
@@ -45,6 +46,11 @@ trait HttpErrorHandler
                 throw new StreamNotFoundException($url);
 
             case 409:
+                $streamClosed = strtolower($headers['stream-closed'] ?? '') === 'true';
+                if ($streamClosed) {
+                    throw new StreamClosedException($url);
+                }
+
                 $expectedSeq = isset($headers['producer-expected-seq'])
                     ? (int) $headers['producer-expected-seq']
                     : null;

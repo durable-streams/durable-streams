@@ -65,6 +65,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     @Override
     public boolean hasNext() {
         if (closed) return false;
+
         if (hasNextComputed) return nextChunk != null;
 
         // In catch-up mode, stop when up-to-date
@@ -107,6 +108,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
      */
     public Chunk poll(Duration timeout) throws DurableStreamException {
         if (closed) return null;
+
         if (liveMode == LiveMode.OFF && upToDate) return null;
 
         // Use SSE streaming for SSE mode
@@ -158,7 +160,7 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private void ensureSSEStarted() throws DurableStreamException {
         if (sseStarted) return;
 
-        sseReader = client.openSSEStream(url,currentOffset, cursor);
+        sseReader = client.openSSEStream(url, currentOffset, cursor);
         sseReader.start();
         sseStarted = true;
     }

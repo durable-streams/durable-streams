@@ -13,7 +13,6 @@ from typing import Any, cast
 import httpx
 
 from durable_streams._errors import (
-    SSENotSupportedError,
     error_from_status,
 )
 from durable_streams._parse import parse_httpx_headers, parse_response_headers
@@ -22,14 +21,15 @@ from durable_streams._types import (
     CURSOR_QUERY_PARAM,
     LIVE_QUERY_PARAM,
     OFFSET_QUERY_PARAM,
+    STREAM_SSE_DATA_ENCODING_HEADER,
     HeadersLike,
     LiveMode,
     Offset,
     ParamsLike,
+    SSEEncoding,
 )
 from durable_streams._util import (
     build_url_with_params,
-    is_sse_compatible_content_type,
     resolve_headers_async,
     resolve_params_async,
 )
@@ -357,15 +357,12 @@ async def _astream_internal(
 
             raise
 
-    # Check SSE compatibility after response headers are available
+    # Detect encoding from response header (server auto-detects binary content types)
+    encoding: SSEEncoding | None = None
     if is_sse:
-        content_type = response.headers.get("content-type")
-        if not is_sse_compatible_content_type(content_type):
-            await response.aclose()
-            raise SSENotSupportedError(
-                f"SSE mode is not compatible with content type: {content_type}. "
-                "SSE is only supported for text/* or application/json streams."
-            )
+        encoding_header = response.headers.get(STREAM_SSE_DATA_ENCODING_HEADER)
+        if encoding_header == "base64":
+            encoding = "base64"
 
     headers_dict = parse_httpx_headers(response.headers)
     meta = parse_response_headers(headers_dict)
@@ -464,4 +461,5 @@ async def _astream_internal(
         fetch_next=fetch_next,
         is_sse=is_sse,
         own_client=_own_client,
+        encoding=encoding,
     )

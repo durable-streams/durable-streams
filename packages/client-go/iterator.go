@@ -2,6 +2,7 @@ package durablestreams
 
 import (
 	"context"
+	"encoding/base64"
 	"io"
 	"net/http"
 	"strings"
@@ -22,6 +23,10 @@ type Chunk struct {
 
 	// UpToDate is true if this chunk ends at stream head.
 	UpToDate bool
+
+	// StreamClosed is true if the stream has been closed (EOF).
+	// When true, no more data will ever be appended.
+	StreamClosed bool
 
 	// Cursor for CDN collapsing (automatically propagated by iterator).
 	Cursor string
@@ -45,12 +50,12 @@ type Chunk struct {
 //
 // Always call Close() when done to release resources.
 type ChunkIterator struct {
-	stream  *Stream
-	ctx     context.Context
-	cancel  context.CancelFunc
-	offset  Offset
-	live    LiveMode
-	cursor  string
+	stream   *Stream
+	ctx      context.Context
+	cancel   context.CancelFunc
+	offset   Offset
+	live     LiveMode
+	cursor   string
 	headers map[string]string
 	timeout time.Duration
 
@@ -62,6 +67,10 @@ type ChunkIterator struct {
 	// UpToDate is true when the iterator has caught up to stream head.
 	UpToDate bool
 
+	// StreamClosed is true when the stream has been closed (EOF).
+	// When true, no more data will ever be appended.
+	StreamClosed bool
+
 	// Cursor is the current cursor value (for debugging/advanced use).
 	// The iterator propagates this automatically; most users can ignore it.
 	Cursor string
@@ -72,9 +81,13 @@ type ChunkIterator struct {
 	doneOnce bool
 
 	// SSE state
-	sseParser   *sse.Parser
-	sseResponse *http.Response
-	ssePending  *Chunk // Pending chunk from SSE data event
+	sseParser      *sse.Parser
+	sseResponse    *http.Response
+	ssePending     *Chunk // Pending chunk from SSE data event
+	sseDataEncoding string // Detected from Stream-SSE-Data-Encoding response header
+
+	// initErr holds any validation error from Read() to be returned on first Next()
+	initErr error
 }
 
 // Next returns the next chunk of bytes from the stream.
@@ -102,6 +115,11 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 	if it.doneOnce {
 		it.mu.Unlock()
 		return nil, Done
+	}
+	// Return any validation error from Read()
+	if it.initErr != nil {
+		it.mu.Unlock()
+		return nil, it.initErr
 	}
 	it.mu.Unlock()
 
@@ -161,6 +179,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
 		upToDate := resp.Header.Get(headerStreamUpToDate) == "true"
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
 		etag := resp.Header.Get(headerETag)
 
 		// Update iterator state
@@ -170,6 +189,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.Offset = nextOffset
 		it.Cursor = cursor
 		it.UpToDate = upToDate
+		it.StreamClosed = streamClosed
 
 		// If up to date and not in live mode, mark as done for next call
 		if upToDate && it.live == LiveModeNone {
@@ -178,12 +198,13 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.mu.Unlock()
 
 		return &Chunk{
-			NextOffset: nextOffset,
-			Data:       data,
-			UpToDate:   upToDate,
-			Cursor:     cursor,
-			ETag:       etag,
-			StatusCode: http.StatusOK,
+			NextOffset:   nextOffset,
+			Data:         data,
+			UpToDate:     upToDate,
+			StreamClosed: streamClosed,
+			Cursor:       cursor,
+			ETag:         etag,
+			StatusCode:   http.StatusOK,
 		}, nil
 
 	case http.StatusNoContent:
@@ -191,6 +212,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
 		upToDate := resp.Header.Get(headerStreamUpToDate) == "true"
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
 
 		it.mu.Lock()
 		if nextOffset != "" {
@@ -202,6 +224,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 			it.Cursor = cursor
 		}
 		it.UpToDate = upToDate
+		it.StreamClosed = streamClosed
 
 		// In non-live mode, 204 means we're done
 		if it.live == LiveModeNone {
@@ -213,11 +236,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 
 		// In live mode, return empty chunk and continue
 		return &Chunk{
-			NextOffset: nextOffset,
-			Data:       nil,
-			UpToDate:   upToDate,
-			Cursor:     cursor,
-			StatusCode: http.StatusNoContent,
+			NextOffset:   nextOffset,
+			Data:         nil,
+			UpToDate:     upToDate,
+			StreamClosed: streamClosed,
+			Cursor:       cursor,
+			StatusCode:   http.StatusNoContent,
 		}, nil
 
 	case http.StatusNotModified:
@@ -231,11 +255,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		}
 		// Return empty chunk
 		return &Chunk{
-			NextOffset: it.offset,
-			Data:       nil,
-			UpToDate:   it.UpToDate,
-			Cursor:     it.cursor,
-			StatusCode: http.StatusNotModified,
+			NextOffset:   it.offset,
+			Data:         nil,
+			UpToDate:     it.UpToDate,
+			StreamClosed: it.StreamClosed,
+			Cursor:       it.cursor,
+			StatusCode:   http.StatusNotModified,
 		}, nil
 
 	case http.StatusNotFound:
@@ -300,14 +325,25 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 		case sse.DataEvent:
 			// Buffer data, wait for control event to get offset.
 			// Multiple data events may arrive before a single control event - accumulate them.
+			data := []byte(e.Data)
+
+			// Decode base64 if server indicated base64 encoding via response header
+			if it.sseDataEncoding == "base64" {
+				decoded, err := base64.StdEncoding.DecodeString(e.Data)
+				if err != nil {
+					return nil, newStreamError("read", it.stream.url, 0, err)
+				}
+				data = decoded
+			}
+
 			it.mu.Lock()
 			if it.ssePending == nil {
 				it.ssePending = &Chunk{
-					Data: []byte(e.Data),
+					Data: data,
 				}
 			} else {
 				// Append to existing pending data
-				it.ssePending.Data = append(it.ssePending.Data, []byte(e.Data)...)
+				it.ssePending.Data = append(it.ssePending.Data, data...)
 			}
 			it.mu.Unlock()
 
@@ -321,6 +357,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 				it.Cursor = e.StreamCursor
 			}
 			it.UpToDate = e.UpToDate
+			it.StreamClosed = e.StreamClosed
 
 			// If we have pending data, complete and return it
 			if it.ssePending != nil {
@@ -328,6 +365,7 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 				chunk.NextOffset = Offset(e.StreamNextOffset)
 				chunk.Cursor = e.StreamCursor
 				chunk.UpToDate = e.UpToDate
+				chunk.StreamClosed = e.StreamClosed
 				chunk.StatusCode = http.StatusOK // SSE is always over 200
 				it.ssePending = nil
 				it.mu.Unlock()
@@ -335,13 +373,14 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 			}
 			it.mu.Unlock()
 
-			// Control event without data (e.g., up-to-date signal)
-			if e.UpToDate {
+			// Control event without data (e.g., up-to-date signal or closed stream)
+			if e.UpToDate || e.StreamClosed {
 				return &Chunk{
-					NextOffset: Offset(e.StreamNextOffset),
-					Cursor:     e.StreamCursor,
-					UpToDate:   true,
-					StatusCode: http.StatusOK, // SSE is always over 200
+					NextOffset:   Offset(e.StreamNextOffset),
+					Cursor:       e.StreamCursor,
+					UpToDate:     e.UpToDate,
+					StreamClosed: e.StreamClosed,
+					StatusCode:   http.StatusOK, // SSE is always over 200
 				}, nil
 			}
 		}
@@ -387,6 +426,7 @@ func (it *ChunkIterator) establishSSEConnection() error {
 		it.mu.Lock()
 		it.sseResponse = resp
 		it.sseParser = sse.NewParser(resp.Body)
+		it.sseDataEncoding = resp.Header.Get("Stream-SSE-Data-Encoding")
 		it.mu.Unlock()
 		return nil
 

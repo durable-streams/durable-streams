@@ -154,4 +154,23 @@ final class Psr18HttpClient implements HttpClientInterface
     {
         return $this->request('DELETE', $url, $headers);
     }
+
+    /**
+     * Open a streaming GET connection (for SSE).
+     *
+     * Note: PSR-18 doesn't support true streaming, so this implementation
+     * uses the cURL-based SSEStreamHandle. For PSR-18 only usage, you'll
+     * need to use the built-in HttpClient for SSE support.
+     *
+     * @param string $url Full URL
+     * @param array<string, string> $headers Request headers
+     * @param float|null $timeout Override default timeout
+     * @return SSEStreamHandle The SSE stream handle
+     * @throws DurableStreamException On connection errors
+     */
+    public function openStream(string $url, array $headers = [], ?float $timeout = null): SSEStreamHandle
+    {
+        // PSR-18 doesn't support streaming, so we use the cURL-based SSEStreamHandle
+        return new SSEStreamHandle($url, $headers, $timeout ?? 30.0, 10.0);
+    }
 }

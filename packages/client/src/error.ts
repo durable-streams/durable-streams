@@ -179,6 +179,26 @@ export class MissingStreamUrlError extends Error {
 }
 
 /**
+ * Error thrown when attempting to append to a closed stream.
+ */
+export class StreamClosedError extends DurableStreamError {
+  readonly code = `STREAM_CLOSED` as const
+  readonly status = 409
+  readonly streamClosed = true
+
+  /**
+   * The final offset of the stream, if available from the response.
+   */
+  readonly finalOffset?: string
+
+  constructor(url?: string, finalOffset?: string) {
+    super(`Cannot append to closed stream`, `STREAM_CLOSED`, 409, url)
+    this.name = `StreamClosedError`
+    this.finalOffset = finalOffset
+  }
+}
+
+/**
  * Error thrown when signal option is invalid.
  */
 export class InvalidSignalError extends Error {

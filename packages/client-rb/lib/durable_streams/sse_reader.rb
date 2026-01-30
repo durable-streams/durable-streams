@@ -3,6 +3,7 @@
 require "json"
 require "uri"
 require "net/http"
+require "base64"
 
 module DurableStreams
   # SSE (Server-Sent Events) reader for live streaming
@@ -25,6 +26,7 @@ module DurableStreams
       @buffer = +""
       @http_response = nil
       @connection = nil
+      @encoding = nil
     end
 
     # Iterate over SSE events
@@ -95,7 +97,6 @@ module DurableStreams
     def open_sse_connection(&block)
       params = { offset: @next_offset, live: "sse" }
       params[:cursor] = @cursor if @cursor
-
       request_url = HTTP.build_url(@stream.url, params)
       uri = URI.parse(request_url)
 
@@ -122,6 +123,9 @@ module DurableStreams
         unless @status >= 200 && @status < 300
           raise DurableStreams.error_from_status(@status, url: @stream.url)
         end
+        # Detect encoding from response header (server auto-detects binary content types)
+        encoding_header = response["stream-sse-data-encoding"]
+        @encoding = encoding_header if encoding_header && !encoding_header.empty?
         yield response
       end
     ensure
@@ -199,6 +203,17 @@ module DurableStreams
       # Ignore unknown event types per SSE spec (forward compatibility)
       unless event_type.nil? || event_type == "data" || event_type == "message"
         return nil
+      end
+
+      # Decode base64 if encoding is set (Protocol Section 5.7)
+      # Per protocol: remove \n and \r characters before base64 decoding
+      if @encoding == "base64" && data && !data.empty?
+        cleaned_data = data.gsub(/[\n\r]/, "")
+        begin
+          data = Base64.strict_decode64(cleaned_data)
+        rescue ArgumentError => e
+          raise ParseError.new("Invalid base64 data in SSE event: #{e.message}")
+        end
       end
 
       {

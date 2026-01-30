@@ -34,6 +34,7 @@ type ControlEvent struct {
 	StreamNextOffset string `json:"streamNextOffset"`
 	StreamCursor     string `json:"streamCursor,omitempty"`
 	UpToDate         bool   `json:"upToDate,omitempty"`
+	StreamClosed     bool   `json:"streamClosed,omitempty"`
 }
 
 func (ControlEvent) eventType() string { return "control" }
@@ -91,7 +92,12 @@ func (p *Parser) Next() (Event, error) {
 		}
 
 		if strings.HasPrefix(line, "event:") {
-			p.current.eventType = strings.TrimSpace(line[6:])
+			// Per SSE spec, strip only one optional space after "event:"
+			eventType := line[6:]
+			if strings.HasPrefix(eventType, " ") {
+				eventType = eventType[1:]
+			}
+			p.current.eventType = eventType
 		} else if strings.HasPrefix(line, "data:") {
 			// Per SSE spec, strip the optional space after "data:"
 			content := line[5:]

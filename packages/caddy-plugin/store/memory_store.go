@@ -180,6 +180,7 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		TTLSeconds:    opts.TTLSeconds,
 		ExpiresAt:     opts.ExpiresAt,
 		CreatedAt:     time.Now(),
+		Closed:        opts.Closed, // Support creating stream in closed state
 	}
 
 	stream := &memoryStream{
@@ -241,6 +242,128 @@ func (s *MemoryStore) Delete(path string) error {
 	return nil
 }
 
+// CloseStream closes a stream without appending data
+func (s *MemoryStore) CloseStream(path string) (*CloseResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream, ok := s.streams[path]
+	if !ok {
+		return nil, ErrStreamNotFound
+	}
+
+	// Check if stream has expired
+	if stream.metadata.IsExpired() {
+		return nil, ErrStreamNotFound
+	}
+
+	alreadyClosed := stream.metadata.Closed
+	stream.metadata.Closed = true
+
+	// Notify pending long-polls that stream is closed
+	s.longPoll.notifyClosed(path)
+
+	return &CloseResult{
+		FinalOffset:   stream.metadata.CurrentOffset,
+		AlreadyClosed: alreadyClosed,
+	}, nil
+}
+
+// CloseStreamWithProducer closes a stream without appending data, using producer headers.
+func (s *MemoryStore) CloseStreamWithProducer(path string, opts CloseProducerOptions) (*CloseProducerResult, error) {
+	// Acquire per-producer lock for serialization
+	producerLock := s.getProducerLock(path, opts.ProducerId)
+	producerLock.Lock()
+	defer producerLock.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	stream, ok := s.streams[path]
+	if !ok {
+		return nil, ErrStreamNotFound
+	}
+
+	// Check if stream has expired
+	if stream.metadata.IsExpired() {
+		return nil, ErrStreamNotFound
+	}
+
+	// If already closed, check if this is a duplicate of the closing request
+	if stream.metadata.Closed {
+		if stream.metadata.ClosedBy != nil &&
+			stream.metadata.ClosedBy.ProducerId == opts.ProducerId &&
+			stream.metadata.ClosedBy.Epoch == opts.ProducerEpoch &&
+			stream.metadata.ClosedBy.Seq == opts.ProducerSeq {
+			return &CloseProducerResult{
+				FinalOffset:    stream.metadata.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        opts.ProducerSeq,
+				StreamClosed:   true,
+				AlreadyClosed:  true,
+			}, nil
+		}
+
+		return &CloseProducerResult{
+			FinalOffset:   stream.metadata.CurrentOffset,
+			StreamClosed:  true,
+			AlreadyClosed: true,
+		}, ErrStreamClosed
+	}
+
+	// Validate producer state
+	appendOpts := AppendOptions{
+		ProducerId:    opts.ProducerId,
+		ProducerEpoch: &opts.ProducerEpoch,
+		ProducerSeq:   &opts.ProducerSeq,
+	}
+	result, newState, err := s.validateProducer(&stream.metadata, appendOpts)
+	if err != nil {
+		return &CloseProducerResult{
+			FinalOffset:    stream.metadata.CurrentOffset,
+			ProducerResult: result.ProducerResult,
+			CurrentEpoch:   result.CurrentEpoch,
+			ExpectedSeq:    result.ExpectedSeq,
+			ReceivedSeq:    result.ReceivedSeq,
+			LastSeq:        result.LastSeq,
+			StreamClosed:   stream.metadata.Closed,
+		}, err
+	}
+
+	if result.ProducerResult == ProducerResultDuplicate {
+		return &CloseProducerResult{
+			FinalOffset:    stream.metadata.CurrentOffset,
+			ProducerResult: ProducerResultDuplicate,
+			LastSeq:        result.LastSeq,
+			StreamClosed:   stream.metadata.Closed,
+			AlreadyClosed:  stream.metadata.Closed,
+		}, nil
+	}
+
+	// Accept: commit producer state and close stream
+	if stream.metadata.Producers == nil {
+		stream.metadata.Producers = make(map[string]*ProducerState)
+	}
+	stream.metadata.Producers[opts.ProducerId] = newState
+	stream.metadata.Closed = true
+	stream.metadata.ClosedBy = &ClosedByProducer{
+		ProducerId: opts.ProducerId,
+		Epoch:      opts.ProducerEpoch,
+		Seq:        opts.ProducerSeq,
+	}
+
+	// Notify pending long-polls that stream is closed
+	s.longPoll.notifyClosed(path)
+
+	return &CloseProducerResult{
+		FinalOffset:    stream.metadata.CurrentOffset,
+		ProducerResult: result.ProducerResult,
+		LastSeq:        result.LastSeq,
+		StreamClosed:   true,
+		AlreadyClosed:  false,
+	}, nil
+}
+
 func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (AppendResult, error) {
 	// Validate producer headers - must be all or none
 	if opts.HasProducerHeaders() && !opts.HasAllProducerHeaders() {
@@ -265,6 +388,28 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 	// Check if stream has expired
 	if stream.metadata.IsExpired() {
 		return AppendResult{}, ErrStreamNotFound
+	}
+
+	// Check if stream is closed
+	if stream.metadata.Closed {
+		// Check if this is a duplicate of the closing request (idempotent producer)
+		if opts.HasAllProducerHeaders() && stream.metadata.ClosedBy != nil &&
+			stream.metadata.ClosedBy.ProducerId == opts.ProducerId &&
+			stream.metadata.ClosedBy.Epoch == *opts.ProducerEpoch &&
+			stream.metadata.ClosedBy.Seq == *opts.ProducerSeq {
+			// Idempotent success - duplicate of closing request
+			return AppendResult{
+				Offset:         stream.metadata.CurrentOffset,
+				ProducerResult: ProducerResultDuplicate,
+				LastSeq:        *opts.ProducerSeq,
+				StreamClosed:   true,
+			}, nil
+		}
+		// Stream is closed - reject append
+		return AppendResult{
+			Offset:       stream.metadata.CurrentOffset,
+			StreamClosed: true,
+		}, ErrStreamClosed
 	}
 
 	// Validate content type if provided
@@ -321,6 +466,23 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 		stream.metadata.Producers[opts.ProducerId] = producerState
 	}
 
+	// Handle stream closure if requested
+	streamClosed := false
+	if opts.Close {
+		stream.metadata.Closed = true
+		streamClosed = true
+		// Track which producer tuple closed the stream for idempotent duplicate detection
+		if opts.HasAllProducerHeaders() {
+			stream.metadata.ClosedBy = &ClosedByProducer{
+				ProducerId: opts.ProducerId,
+				Epoch:      *opts.ProducerEpoch,
+				Seq:        *opts.ProducerSeq,
+			}
+		}
+		// Notify pending long-polls that stream is closed
+		s.longPoll.notifyClosed(path)
+	}
+
 	// Notify long-poll waiters
 	s.longPoll.notify(path)
 
@@ -328,6 +490,7 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 		Offset:         newOffset,
 		ProducerResult: producerResult,
 		LastSeq:        producerLastSeq,
+		StreamClosed:   streamClosed,
 	}, nil
 }
 
@@ -393,14 +556,23 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 	return messages, upToDate, nil
 }
 
-func (s *MemoryStore) WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) ([]Message, bool, error) {
+func (s *MemoryStore) WaitForMessages(ctx context.Context, path string, offset Offset, timeout time.Duration) ([]Message, bool, bool, error) {
+	// First check if stream is closed and client is at tail
+	s.mu.RLock()
+	stream, ok := s.streams[path]
+	if ok && stream.metadata.Closed && offset.Equal(stream.metadata.CurrentOffset) {
+		s.mu.RUnlock()
+		return nil, false, true, nil // streamClosed = true
+	}
+	s.mu.RUnlock()
+
 	// First check if there are already messages
 	messages, _, err := s.Read(path, offset)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	if len(messages) > 0 {
-		return messages, false, nil
+		return messages, false, false, nil
 	}
 
 	// No messages, set up wait
@@ -413,14 +585,37 @@ func (s *MemoryStore) WaitForMessages(ctx context.Context, path string, offset O
 
 	select {
 	case <-ch:
+		// New data or closure available - check which
+		s.mu.RLock()
+		stream, ok := s.streams[path]
+		if ok && stream.metadata.Closed {
+			// Stream was closed
+			currentOffset := stream.metadata.CurrentOffset
+			s.mu.RUnlock()
+			// Check if there are any final messages
+			messages, _, err := s.Read(path, offset)
+			if err != nil {
+				return nil, false, false, err
+			}
+			// If no messages and client is at tail, stream is closed
+			if len(messages) == 0 && offset.Equal(currentOffset) {
+				return nil, false, true, nil
+			}
+			return messages, false, false, nil
+		}
+		s.mu.RUnlock()
 		// New data available
 		messages, _, err := s.Read(path, offset)
-		return messages, false, err
+		return messages, false, false, err
 	case <-timer.C:
-		// Timeout
-		return nil, true, nil
+		// Timeout - check if stream was closed during wait
+		s.mu.RLock()
+		stream, ok := s.streams[path]
+		streamClosed := ok && stream.metadata.Closed
+		s.mu.RUnlock()
+		return nil, true, streamClosed, nil
 	case <-ctx.Done():
-		return nil, false, ctx.Err()
+		return nil, false, false, ctx.Err()
 	}
 }
 
@@ -491,6 +686,12 @@ func (m *longPollManager) notify(path string) {
 		default:
 		}
 	}
+}
+
+// notifyClosed notifies all waiters for a path that the stream has been closed
+// This is the same as notify - waiters will wake up and check stream state
+func (m *longPollManager) notifyClosed(path string) {
+	m.notify(path)
 }
 
 // JSON helper functions

@@ -4,7 +4,7 @@
 
 use bytes::Bytes;
 use durable_streams::{
-    AppendOptions, Client, CreateOptions, LiveMode, Offset, StreamError,
+    AppendOptions, Client, CloseOptions, CreateOptions, LiveMode, Offset, Producer, StreamError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,6 +31,7 @@ struct Command {
     content_type: Option<String>,
     ttl_seconds: Option<u64>,
     expires_at: Option<String>,
+    closed: Option<bool>,
     // Append fields
     data: Option<String>,
     binary: Option<bool>,
@@ -109,6 +110,10 @@ struct Result {
     #[serde(skip_serializing_if = "Option::is_none")]
     up_to_date: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    stream_closed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_offset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cursor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     headers: Option<HashMap<String, String>>,
@@ -175,6 +180,7 @@ struct AppState {
     stream_content_types: HashMap<String, String>,
     dynamic_headers: HashMap<String, DynamicValue>,
     dynamic_params: HashMap<String, DynamicValue>,
+    producers: HashMap<String, Producer>,
 }
 
 fn main() {
@@ -222,6 +228,7 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
         "append" => handle_append(state, cmd).await,
         "read" => handle_read(state, cmd).await,
         "head" => handle_head(state, cmd).await,
+        "close" => handle_close(state, cmd).await,
         "delete" => handle_delete(state, cmd).await,
         "benchmark" => handle_benchmark(state, cmd).await,
         "set-dynamic-header" => handle_set_dynamic_header(state, cmd).await,
@@ -229,6 +236,8 @@ async fn handle_command(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
         "clear-dynamic" => handle_clear_dynamic(state, cmd).await,
         "idempotent-append" => handle_idempotent_append(state, cmd).await,
         "idempotent-append-batch" => handle_idempotent_append_batch(state, cmd).await,
+        "idempotent-close" => handle_idempotent_close(state, cmd).await,
+        "idempotent-detach" => handle_idempotent_detach(state, cmd).await,
         "validate" => handle_validate(cmd),
         "shutdown" => Result {
             result_type: "shutdown".to_string(),
@@ -252,6 +261,7 @@ async fn handle_init(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
         stream_content_types: HashMap::new(),
         dynamic_headers: HashMap::new(),
         dynamic_params: HashMap::new(),
+        producers: HashMap::new(),
     });
 
     Result {
@@ -276,7 +286,15 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
+
+    if let Some(ct) = app_state.stream_content_types.get(&path) {
+        stream.set_content_type(ct.clone());
+    }
+
+    if let Some(ct) = app_state.stream_content_types.get(&path) {
+        stream.set_content_type(ct.clone());
+    }
 
     let content_type = cmd.content_type.unwrap_or_else(|| "application/octet-stream".to_string());
 
@@ -291,6 +309,21 @@ async fn handle_create(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
 
     if let Some(expires) = cmd.expires_at {
         options = options.expires_at(expires);
+    }
+
+    if cmd.closed.unwrap_or(false) {
+        options = options.closed(true);
+    }
+
+    if let Some(data) = cmd.data.clone() {
+        let body: Bytes = if cmd.binary.unwrap_or(false) {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
+                .unwrap_or_default()
+                .into()
+        } else {
+            data.into()
+        };
+        options = options.initial_data(body);
     }
 
     if let Some(headers) = cmd.headers {
@@ -324,7 +357,7 @@ async fn handle_connect(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> R
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     match stream.head().await {
         Ok(meta) => {
@@ -416,7 +449,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let app_state = guard.as_mut().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     // Check if this is a JSON stream from cached content type
     let is_json_stream = app_state
@@ -471,7 +504,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let mut up_to_date = false;
     let mut status = 200u16;
 
-    match Ok(builder.build()) {
+    match builder.build() {
         Ok(mut iter) => {
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -495,22 +528,34 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                         }
 
                         if !chunk.data.is_empty() {
-                            let data_str = String::from_utf8_lossy(&chunk.data).to_string();
-
-                            // Validate JSON for JSON streams
-                            if is_json_stream {
-                                if let Err(e) = serde_json::from_str::<Value>(&data_str) {
-                                    return error_result(
-                                        "read",
-                                        "PARSE_ERROR",
-                                        &format!("Invalid JSON in stream response: {}", e),
-                                    );
+                            // The client library has already decoded base64 if the server indicated base64 encoding.
+                            // We need to return the data to the test runner:
+                            // - If valid UTF-8, return as string
+                            // - If not valid UTF-8, base64 encode for transport
+                            let (data_str, is_binary) = match String::from_utf8(chunk.data.to_vec()) {
+                                Ok(s) => {
+                                    // Valid UTF-8 - validate JSON for JSON streams
+                                    if is_json_stream {
+                                        if let Err(e) = serde_json::from_str::<Value>(&s) {
+                                            return error_result(
+                                                "read",
+                                                "PARSE_ERROR",
+                                                &format!("Invalid JSON in stream response: {}", e),
+                                            );
+                                        }
+                                    }
+                                    (s, false)
                                 }
-                            }
+                                Err(_) => {
+                                    // Not valid UTF-8 - encode as base64 for transport
+                                    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &chunk.data);
+                                    (encoded, true)
+                                }
+                            };
 
                             chunks_result.push(ReadChunk {
                                 data: data_str,
-                                binary: None,
+                                binary: if is_binary { Some(true) } else { None },
                                 offset: Some(chunk.next_offset.to_string()),
                             });
                         }
@@ -542,6 +587,12 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                 }
             }
 
+            // Check stream closed status via HEAD
+            let stream_closed = match stream.head().await {
+                Ok(meta) => meta.stream_closed,
+                Err(_) => false,
+            };
+
             let mut res = Result {
                 result_type: "read".to_string(),
                 success: true,
@@ -549,6 +600,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
                 chunks: Some(chunks_result),
                 offset: Some(final_offset),
                 up_to_date: Some(up_to_date),
+                stream_closed: Some(stream_closed),
                 ..Default::default()
             };
 
@@ -570,7 +622,7 @@ async fn handle_head(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let app_state = guard.as_ref().unwrap();
 
     let path = cmd.path.unwrap_or_default();
-    let stream = app_state.client.stream(&path);
+    let mut stream = app_state.client.stream(&path);
 
     match stream.head().await {
         Ok(meta) => Result {
@@ -579,9 +631,54 @@ async fn handle_head(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
             status: Some(200),
             offset: Some(meta.next_offset.to_string()),
             content_type: meta.content_type,
+            stream_closed: Some(meta.stream_closed),
             ..Default::default()
         },
         Err(e) => stream_error_result("head", e),
+    }
+}
+
+async fn handle_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let guard = state.lock().await;
+    let app_state = guard.as_ref().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let mut stream = app_state.client.stream(&path);
+
+    // Get data
+    let data: Option<Bytes> = if cmd.binary.unwrap_or(false) {
+        cmd.data.map(|d| {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, d)
+                .unwrap_or_default()
+                .into()
+        })
+    } else {
+        cmd.data.map(|d| d.into())
+    };
+
+    let has_data = data.is_some();
+    let mut options = CloseOptions::new();
+    if let Some(d) = data {
+        options = options.data(d);
+    }
+    let content_type = cmd
+        .content_type
+        .or_else(|| app_state.stream_content_types.get(&path).cloned());
+    if let Some(ct) = content_type {
+        stream.set_content_type(ct.clone());
+        if has_data {
+            options = options.content_type(ct);
+        }
+    }
+
+    match stream.close_with(options).await {
+        Ok(result) => Result {
+            result_type: "close".to_string(),
+            success: true,
+            final_offset: Some(result.final_offset.to_string()),
+            ..Default::default()
+        },
+        Err(e) => stream_error_result("close", e),
     }
 }
 
@@ -685,15 +782,18 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
     let epoch = cmd.epoch.unwrap_or(0) as u64;
     let auto_claim = cmd.auto_claim.unwrap_or(false);
 
-    let stream = app_state.client.stream(&url);
-    let producer = stream
-        .producer(&producer_id)
-        .epoch(epoch)
-        .auto_claim(auto_claim)
-        .max_in_flight(1)
-        .linger(Duration::ZERO)
-        .content_type(&content_type)
-        .build();
+    let key = format!("{}|{}", path, producer_id);
+    let producer = app_state.producers.entry(key).or_insert_with(|| {
+        let stream = app_state.client.stream(&url);
+        stream
+            .producer(&producer_id)
+            .epoch(epoch)
+            .auto_claim(auto_claim)
+            .max_in_flight(1)
+            .linger(Duration::ZERO)
+            .content_type(&content_type)
+            .build()
+    });
 
     let data = cmd.data.unwrap_or_default();
 
@@ -783,6 +883,78 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
 
     Result {
         result_type: "idempotent-append-batch".to_string(),
+        success: true,
+        status: Some(200),
+        ..Default::default()
+    }
+}
+
+async fn handle_idempotent_close(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let mut guard = state.lock().await;
+    let app_state = guard.as_mut().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let url = format!("{}{}", app_state.server_url, path);
+
+    let content_type = app_state
+        .stream_content_types
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+
+    let producer_id = cmd.producer_id.unwrap_or_default();
+    let epoch = cmd.epoch.unwrap_or(0) as u64;
+    let auto_claim = cmd.auto_claim.unwrap_or(false);
+
+    let key = format!("{}|{}", path, producer_id);
+    let producer = app_state.producers.entry(key).or_insert_with(|| {
+        let stream = app_state.client.stream(&url);
+        stream
+            .producer(&producer_id)
+            .epoch(epoch)
+            .auto_claim(auto_claim)
+            .max_in_flight(1)
+            .linger(Duration::ZERO)
+            .content_type(&content_type)
+            .build()
+    });
+
+    let data: Option<Bytes> = if cmd.binary.unwrap_or(false) {
+        cmd.data.map(|d| {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, d)
+                .unwrap_or_default()
+                .into()
+        })
+    } else {
+        cmd.data.map(|d| d.into())
+    };
+
+    match producer.close_stream(data).await {
+        Ok(result) => Result {
+            result_type: "idempotent-close".to_string(),
+            success: true,
+            status: Some(200),
+            final_offset: Some(result.next_offset.to_string()),
+            ..Default::default()
+        },
+        Err(e) => producer_error_result("idempotent-close", e),
+    }
+}
+
+async fn handle_idempotent_detach(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Result {
+    let mut guard = state.lock().await;
+    let app_state = guard.as_mut().unwrap();
+
+    let path = cmd.path.unwrap_or_default();
+    let producer_id = cmd.producer_id.unwrap_or_default();
+
+    let key = format!("{}|{}", path, producer_id);
+    if let Some(producer) = app_state.producers.remove(&key) {
+        let _ = producer.close().await;
+    }
+
+    Result {
+        result_type: "idempotent-detach".to_string(),
         success: true,
         status: Some(200),
         ..Default::default()
@@ -907,8 +1079,9 @@ async fn benchmark_read(app_state: &AppState, op: &BenchmarkOperation) -> (i64, 
     }
 
     let start = Instant::now();
-    let mut iter = builder.build();
-    let _ = iter.next_chunk().await;
+    if let Ok(mut iter) = builder.build() {
+        let _ = iter.next_chunk().await;
+    }
     (start.elapsed().as_nanos() as i64, None)
 }
 
@@ -942,11 +1115,13 @@ async fn benchmark_roundtrip(app_state: &AppState, op: &BenchmarkOperation) -> (
                 _ => LiveMode::LongPoll,
             };
 
-            let mut iter = stream.read()
+            if let Ok(mut iter) = stream.read()
                 .offset(Offset::parse(&prev_offset))
                 .live(live_mode)
-                .build();
-            let _ = iter.next_chunk().await;
+                .build()
+            {
+                let _ = iter.next_chunk().await;
+            }
         }
     }
 
@@ -1019,8 +1194,7 @@ async fn benchmark_throughput_read(app_state: &AppState, op: &BenchmarkOperation
     let mut total_bytes = 0;
     let mut count = 0;
 
-    let mut iter = stream.read().offset(Offset::Beginning).build();
-    {
+    if let Ok(mut iter) = stream.read().offset(Offset::Beginning).build() {
         loop {
             match iter.next_chunk().await {
                 Ok(Some(chunk)) => {
@@ -1137,6 +1311,7 @@ fn stream_error_result(cmd_type: &str, err: StreamError) -> Result {
 fn producer_error_result(cmd_type: &str, err: durable_streams::ProducerError) -> Result {
     let (code, status) = match &err {
         durable_streams::ProducerError::Closed => ("CLOSED", None),
+        durable_streams::ProducerError::StreamClosed => ("STREAM_CLOSED", Some(409)),
         durable_streams::ProducerError::StaleEpoch { .. } => ("STALE_EPOCH", Some(403)),
         durable_streams::ProducerError::SequenceGap { .. } => ("SEQUENCE_GAP", Some(409)),
         durable_streams::ProducerError::Stream { .. } => ("STREAM_ERROR", None),
@@ -1167,6 +1342,8 @@ impl Default for Result {
             content_type: None,
             chunks: None,
             up_to_date: None,
+            stream_closed: None,
+            final_offset: None,
             cursor: None,
             headers: None,
             command_type: None,

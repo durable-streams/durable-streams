@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "base64"
+
 module DurableStreams
   # Reader for byte streams - yields raw chunks
   class ByteReader
@@ -18,12 +20,19 @@ module DurableStreams
       @up_to_date = false
       @closed = false
       @status = nil
+      @sse_reader = nil
     end
 
     # Iterate over byte chunks
     # @yield [ByteChunk] Each chunk with data, next_offset, cursor, up_to_date
     def each(&block)
       return enum_for(:each) unless block_given?
+
+      # Handle SSE mode
+      if @live == :sse
+        each_sse(&block)
+        return
+      end
 
       loop do
         break if @closed
@@ -69,6 +78,7 @@ module DurableStreams
     # Cancel/close the reader
     def close
       @closed = true
+      @sse_reader&.close
     end
 
     def closed?
@@ -81,6 +91,45 @@ module DurableStreams
 
     private
 
+    def each_sse(&block)
+      @sse_reader = SSEReader.new(
+        @stream,
+        offset: @next_offset,
+        cursor: @cursor
+      )
+
+      @sse_reader.each_event do |event|
+        break if @closed
+
+        @next_offset = event[:next_offset] if event[:next_offset]
+        @cursor = event[:cursor] if event[:cursor]
+        @up_to_date = event[:up_to_date]
+        @status = 200
+
+        # Only yield if there's data
+        if event[:data] && !event[:data].empty?
+          chunk = ByteChunk.new(
+            data: event[:data],
+            next_offset: @next_offset,
+            cursor: @cursor,
+            up_to_date: @up_to_date
+          )
+          yield chunk
+        elsif event[:up_to_date]
+          # Yield empty chunk on control event with up_to_date
+          chunk = ByteChunk.new(
+            data: "",
+            next_offset: @next_offset,
+            cursor: @cursor,
+            up_to_date: @up_to_date
+          )
+          yield chunk
+        end
+      end
+    ensure
+      @sse_reader&.close
+    end
+
     def fetch_next_chunk
       params = { offset: @next_offset }
       params[:cursor] = @cursor if @cursor
@@ -90,7 +139,8 @@ module DurableStreams
       when :long_poll
         params[:live] = "long-poll"
       when :sse
-        raise SSENotSupportedError.new(content_type: @stream.content_type)
+        # SSE is handled separately via each_sse
+        return nil
       when false
         # No live param for catch-up only
       end

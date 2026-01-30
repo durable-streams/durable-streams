@@ -7,13 +7,13 @@
 import fastq from "fastq"
 
 import {
-  DurableStreamError,
   InvalidSignalError,
   MissingStreamUrlError,
+  StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
 import {
-  SSE_COMPATIBLE_CONTENT_TYPES,
+  STREAM_CLOSED_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
@@ -35,6 +35,8 @@ import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
 import type {
   AppendOptions,
+  CloseOptions,
+  CloseResult,
   CreateOptions,
   HeadResult,
   HeadersRecord,
@@ -204,6 +206,7 @@ export class DurableStream {
       ttlSeconds: opts.ttlSeconds,
       expiresAt: opts.expiresAt,
       body: opts.body,
+      closed: opts.closed,
     })
     return stream
   }
@@ -269,6 +272,8 @@ export class DurableStream {
     const offset = response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
     const etag = response.headers.get(`etag`) ?? undefined
     const cacheControl = response.headers.get(`cache-control`) ?? undefined
+    const streamClosed =
+      response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
 
     // Update instance contentType
     if (contentType) {
@@ -281,6 +286,7 @@ export class DurableStream {
       offset,
       etag,
       cacheControl,
+      streamClosed,
     }
   }
 
@@ -299,6 +305,9 @@ export class DurableStream {
     }
     if (opts?.expiresAt) {
       requestHeaders[STREAM_EXPIRES_AT_HEADER] = opts.expiresAt
+    }
+    if (opts?.closed) {
+      requestHeaders[STREAM_CLOSED_HEADER] = `true`
     }
 
     const body = encodeBody(opts?.body)
@@ -340,6 +349,84 @@ export class DurableStream {
     if (!response.ok) {
       await handleErrorResponse(response, this.url)
     }
+  }
+
+  /**
+   * Close the stream, optionally with a final message.
+   *
+   * After closing:
+   * - No further appends are permitted (server returns 409)
+   * - Readers can observe the closed state and treat it as EOF
+   * - The stream's data remains fully readable
+   *
+   * Closing is:
+   * - **Durable**: The closed state is persisted
+   * - **Monotonic**: Once closed, a stream cannot be reopened
+   *
+   * **Idempotency:**
+   * - `close()` without body: Idempotent — safe to call multiple times
+   * - `close({ body })` with body: NOT idempotent — throws `StreamClosedError`
+   *   if stream is already closed (use `IdempotentProducer.close()` for
+   *   idempotent close-with-body semantics)
+   *
+   * @returns CloseResult with the final offset
+   * @throws StreamClosedError if called with body on an already-closed stream
+   */
+  async close(opts?: CloseOptions): Promise<CloseResult> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    const contentType =
+      opts?.contentType ?? this.#options.contentType ?? this.contentType
+    if (contentType) {
+      requestHeaders[`content-type`] = contentType
+    }
+
+    // Always send Stream-Closed: true header for close operation
+    requestHeaders[STREAM_CLOSED_HEADER] = `true`
+
+    // For JSON mode with body, wrap in array
+    let body: BodyInit | undefined
+    if (opts?.body !== undefined) {
+      const isJson = normalizeContentType(contentType) === `application/json`
+      if (isJson) {
+        const bodyStr =
+          typeof opts.body === `string`
+            ? opts.body
+            : new TextDecoder().decode(opts.body)
+        body = `[${bodyStr}]`
+      } else {
+        body =
+          typeof opts.body === `string`
+            ? opts.body
+            : (opts.body as unknown as BodyInit)
+      }
+    }
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `POST`,
+      headers: requestHeaders,
+      body,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    // Check for 409 Conflict with Stream-Closed header
+    if (response.status === 409) {
+      const isClosed =
+        response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
+      if (isClosed) {
+        const finalOffset =
+          response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
+        throw new StreamClosedError(this.url, finalOffset)
+      }
+    }
+
+    if (!response.ok) {
+      await handleErrorResponse(response, this.url)
+    }
+
+    const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+
+    return { finalOffset }
   }
 
   /**
@@ -403,9 +490,24 @@ export class DurableStream {
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
     // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
-    const bodyStr =
-      typeof body === `string` ? body : new TextDecoder().decode(body)
-    const encodedBody: BodyInit = isJson ? `[${bodyStr}]` : bodyStr
+    let encodedBody: BodyInit
+    if (isJson) {
+      // JSON mode: decode as UTF-8 string and wrap in array
+      const bodyStr =
+        typeof body === `string` ? body : new TextDecoder().decode(body)
+      encodedBody = `[${bodyStr}]`
+    } else {
+      // Binary mode: preserve raw bytes
+      // Use ArrayBuffer for cross-platform BodyInit compatibility
+      if (typeof body === `string`) {
+        encodedBody = body
+      } else {
+        encodedBody = body.buffer.slice(
+          body.byteOffset,
+          body.byteOffset + body.byteLength
+        ) as ArrayBuffer
+      }
+    }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
       method: `POST`,
@@ -522,11 +624,43 @@ export class DurableStream {
       )
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      // For byte mode: concatenate all chunks as a string
-      const strings = batch.map((m) =>
-        typeof m.data === `string` ? m.data : new TextDecoder().decode(m.data)
-      )
-      batchedBody = strings.join(``)
+      // For byte mode: preserve original data types
+      // - Strings are concatenated as strings (for text/* content types)
+      // - Uint8Arrays are concatenated as binary (for application/octet-stream)
+      // - Mixed types: convert all to binary to avoid data corruption
+      const hasUint8Array = batch.some((m) => m.data instanceof Uint8Array)
+      const hasString = batch.some((m) => typeof m.data === `string`)
+
+      if (hasUint8Array && !hasString) {
+        // All binary: concatenate Uint8Arrays
+        const chunks = batch.map((m) => m.data as Uint8Array)
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+        const combined = new Uint8Array(totalLength)
+        let offset = 0
+        for (const chunk of chunks) {
+          combined.set(chunk, offset)
+          offset += chunk.length
+        }
+        batchedBody = combined
+      } else if (hasString && !hasUint8Array) {
+        // All strings: concatenate as string
+        batchedBody = batch.map((m) => m.data as string).join(``)
+      } else {
+        // Mixed types: convert strings to binary and concatenate
+        // This preserves binary data integrity
+        const encoder = new TextEncoder()
+        const chunks = batch.map((m) =>
+          typeof m.data === `string` ? encoder.encode(m.data) : m.data
+        )
+        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+        const combined = new Uint8Array(totalLength)
+        let offset = 0
+        for (const chunk of chunks) {
+          combined.set(chunk, offset)
+          offset += chunk.length
+        }
+        batchedBody = combined
+      }
     }
 
     // Combine signals: stream-level signal + any per-message signals
@@ -682,12 +816,13 @@ export class DurableStream {
         producer.append(chunk)
       },
       async close() {
-        await producer.flush()
+        // close() flushes pending and closes the stream (EOF)
         await producer.close()
         if (writeError) throw writeError // Causes pipeTo() to reject
       },
       abort(_reason) {
-        producer.close().catch((err) => {
+        // detach() stops the producer without closing the stream
+        producer.detach().catch((err) => {
           opts?.onError?.(err) // Report instead of swallowing
         })
       },
@@ -736,20 +871,6 @@ export class DurableStream {
   async stream<TJson = unknown>(
     options?: Omit<StreamOptions, `url`>
   ): Promise<StreamResponse<TJson>> {
-    // Check SSE compatibility if SSE mode is requested
-    if (options?.live === `sse` && this.contentType) {
-      const isSSECompatible = SSE_COMPATIBLE_CONTENT_TYPES.some((prefix) =>
-        this.contentType!.startsWith(prefix)
-      )
-      if (!isSSECompatible) {
-        throw new DurableStreamError(
-          `SSE is not supported for content-type: ${this.contentType}`,
-          `SSE_NOT_SUPPORTED`,
-          400
-        )
-      }
-    }
-
     // Merge handle-level and call-specific headers
     const mergedHeaders: HeadersRecord = {
       ...this.#options.headers,

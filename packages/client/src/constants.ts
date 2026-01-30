@@ -26,6 +26,12 @@ export const STREAM_CURSOR_HEADER = `Stream-Cursor`
  */
 export const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
 
+/**
+ * Response/request header indicating stream is closed (EOF).
+ * When present with value "true", the stream is permanently closed.
+ */
+export const STREAM_CLOSED_HEADER = `Stream-Closed`
+
 // ============================================================================
 // Request Headers
 // ============================================================================
@@ -97,6 +103,11 @@ export const LIVE_QUERY_PARAM = `live`
  */
 export const CURSOR_QUERY_PARAM = `cursor`
 
+/**
+ * Response header indicating SSE data encoding (e.g., base64 for binary streams).
+ */
+export const STREAM_SSE_DATA_ENCODING_HEADER = `stream-sse-data-encoding`
+
 // ============================================================================
 // SSE Control Event Fields (camelCase per PROTOCOL.md Section 5.7)
 // ============================================================================
@@ -113,13 +124,19 @@ export const SSE_OFFSET_FIELD = `streamNextOffset`
  */
 export const SSE_CURSOR_FIELD = `streamCursor`
 
+/**
+ * SSE control event field for stream closed state.
+ * Note: Different from HTTP header name (camelCase vs Header-Case).
+ */
+export const SSE_CLOSED_FIELD = `streamClosed`
+
 // ============================================================================
 // Internal Constants
 // ============================================================================
 
 /**
- * Content types that support SSE mode.
- * SSE is only valid for text/* or application/json streams.
+ * Content types that are natively compatible with SSE (UTF-8 text).
+ * Binary content types are also supported via automatic base64 encoding.
  */
 export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
   `text/`,

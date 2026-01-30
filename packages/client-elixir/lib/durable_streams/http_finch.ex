@@ -76,7 +76,8 @@ defmodule DurableStreams.HTTP.Finch do
         error: nil,
         on_event: on_event,
         halt_on_up_to_date: halt_on_up_to_date,
-        halt_on_up_to_date_immediate: halt_on_up_to_date_immediate
+        halt_on_up_to_date_immediate: halt_on_up_to_date_immediate,
+        encoding: nil
       }
 
       # Use Finch.stream_while for SSE - it supports {:cont, acc} / {:halt, acc} returns
@@ -157,7 +158,9 @@ defmodule DurableStreams.HTTP.Finch do
     # Extract next_offset from headers if present
     next_offset = get_header(headers, "stream-next-offset")
     up_to_date = get_header(headers, "stream-up-to-date") == "true"
-    {:cont, %{acc | headers: headers, next_offset: next_offset, up_to_date: up_to_date}}
+    # Detect encoding from the stream-sse-data-encoding response header
+    encoding = get_header(headers, "stream-sse-data-encoding")
+    {:cont, %{acc | headers: headers, next_offset: next_offset, up_to_date: up_to_date, encoding: encoding}}
   end
 
   defp handle_stream_message({:data, chunk}, acc) do
@@ -224,15 +227,19 @@ defmodule DurableStreams.HTTP.Finch do
 
   defp deliver_event(%{type: "data", data: data, id: id}, acc) do
     # Data event - deliver to callback
+    # Decode base64 if encoding was detected from response header
+    decoded_data = decode_sse_data(data, acc.encoding)
     next_offset = id || acc.next_offset
-    acc.on_event.({:event, data, next_offset, acc.up_to_date})
+    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
     %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
   end
 
   defp deliver_event(%{type: "message", data: data, id: id}, acc) do
     # Default SSE event type is "message" - treat as data
+    # Decode base64 if encoding was detected from response header
+    decoded_data = decode_sse_data(data, acc.encoding)
     next_offset = id || acc.next_offset
-    acc.on_event.({:event, data, next_offset, acc.up_to_date})
+    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
     %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
   end
 
@@ -299,6 +306,20 @@ defmodule DurableStreams.HTTP.Finch do
   end
 
   defp parse_control_data(_), do: {:error, :invalid_control}
+
+  # Decode SSE data based on encoding detected from the stream-sse-data-encoding response header.
+  # If encoding is "base64", decode the data from base64.
+  # Otherwise, return data as-is.
+  defp decode_sse_data(data, "base64") when is_binary(data) do
+    # Remove any newlines/carriage returns per SSE protocol
+    cleaned = String.replace(data, ~r/[\n\r]/, "")
+    case Base.decode64(cleaned) do
+      {:ok, decoded} -> decoded
+      :error -> raise DurableStreams.ParseError, message: "Failed to decode base64 SSE data: invalid base64 encoding"
+    end
+  end
+
+  defp decode_sse_data(data, _encoding), do: data
 
   defp get_header(headers, name) do
     name_lower = String.downcase(name)

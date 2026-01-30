@@ -1,7 +1,7 @@
 /**
  * Tests for reading streams through the proxy.
  *
- * GET /v1/proxy/{service}/streams/{key}?offset=-1&live=...
+ * GET /v1/proxy/:streamId?expires=...&signature=...&offset=...&live=...
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
@@ -23,12 +23,10 @@ afterAll(async () => {
 })
 
 describe(`stream reading`, () => {
-  let streamPath: string
-  let readToken: string
+  let streamUrl: string
 
   beforeEach(async () => {
     // Create a fresh stream for each test
-    const streamKey = `read-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
       body: createSSEChunks([
@@ -40,76 +38,43 @@ describe(`stream reading`, () => {
 
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat/completions`,
       body: { messages: [] },
     })
 
     expect(result.status).toBe(201)
-    streamPath = result.streamPath!
-    readToken = result.readToken!
+    streamUrl = result.streamUrl!
 
     // Wait for upstream to complete
     await new Promise((r) => setTimeout(r, 100))
   })
 
-  it(`returns 401 when no authorization header is provided`, async () => {
-    const url = new URL(`/v1/proxy/chat/streams/some-key`, ctx.urls.proxy)
+  it(`returns 401 when no authentication is provided`, async () => {
+    // Construct a URL without expires/signature
+    const streamId = new URL(streamUrl).pathname.split(`/`).pop()!
+    const url = new URL(`/v1/proxy/${streamId}`, ctx.urls.proxy)
     url.searchParams.set(`offset`, `-1`)
 
     const response = await fetch(url.toString())
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_TOKEN`)
+    expect(body.error.code).toBe(`MISSING_SECRET`)
   })
 
-  it(`returns 401 when token is invalid`, async () => {
-    const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: `some-key`,
-      readToken: `invalid-token`,
-      offset: `-1`,
-    })
+  it(`returns 401 when signature is invalid`, async () => {
+    const url = new URL(streamUrl)
+    url.searchParams.set(`signature`, `invalid-signature`)
+    url.searchParams.set(`offset`, `-1`)
 
-    expect(result.status).toBe(401)
+    const response = await fetch(url.toString())
+
+    expect(response.status).toBe(401)
   })
 
-  it(`returns 403 when token is for a different stream`, async () => {
-    // Create a second stream to get a valid token for it
-    const otherKey = `other-stream-${Date.now()}`
-    ctx.upstream.setResponse({ body: `other` })
-    const otherResult = await createStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey: otherKey,
-      upstreamUrl: ctx.urls.upstream + `/api`,
-      body: {},
-    })
-
-    // Try to read first stream with second stream's token
-    const streamKey = streamPath.split(`/`).pop()!
+  it(`reads stream data with valid pre-signed URL`, async () => {
     const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken: otherResult.readToken!, // Wrong token
-      offset: `-1`,
-    })
-
-    expect(result.status).toBe(403)
-  })
-
-  it(`reads stream data with valid token`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
-    const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamUrl,
       offset: `-1`,
     })
 
@@ -119,13 +84,8 @@ describe(`stream reading`, () => {
   })
 
   it(`returns next offset header`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamUrl,
       offset: `-1`,
     })
 
@@ -135,14 +95,9 @@ describe(`stream reading`, () => {
   })
 
   it(`supports reading from a specific offset`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     // First read to get the tail offset
     const firstResult = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamUrl,
       offset: `-1`,
     })
 
@@ -150,10 +105,7 @@ describe(`stream reading`, () => {
 
     // Read from the end - should get no new data
     const secondResult = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamUrl,
       offset: firstResult.nextOffset!,
     })
 
@@ -162,13 +114,8 @@ describe(`stream reading`, () => {
   })
 
   it(`includes CORS headers in response`, async () => {
-    const streamKey = streamPath.split(`/`).pop()!
-
     const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken,
+      streamUrl,
       offset: `-1`,
     })
 
@@ -181,8 +128,6 @@ describe(`stream reading`, () => {
 
 describe(`stream reading - offset=-1 replay`, () => {
   it(`reads from beginning when offset is -1`, async () => {
-    const streamKey = `replay-test-${Date.now()}`
-
     // Create stream with known content
     ctx.upstream.setResponse({
       headers: { "Content-Type": `text/event-stream` },
@@ -196,8 +141,6 @@ describe(`stream reading - offset=-1 replay`, () => {
 
     const createResult = await createStream({
       proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
       upstreamUrl: ctx.urls.upstream + `/v1/chat`,
       body: {},
     })
@@ -206,10 +149,7 @@ describe(`stream reading - offset=-1 replay`, () => {
 
     // Read with offset=-1 should get all data
     const result = await readStream({
-      proxyUrl: ctx.urls.proxy,
-      serviceName: `chat`,
-      streamKey,
-      readToken: createResult.readToken!,
+      streamUrl: createResult.streamUrl!,
       offset: `-1`,
     })
 

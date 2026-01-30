@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace DurableStreams;
 
 use DurableStreams\Exception\DurableStreamException;
+use DurableStreams\Exception\StreamClosedException;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Internal\HttpClientInterface;
 use DurableStreams\Result\AppendResult;
+use DurableStreams\Result\CloseResult;
 use DurableStreams\Result\HeadResult;
 
 /**
@@ -47,6 +49,8 @@ final class DurableStream
      * @param int|null $ttlSeconds Optional TTL in seconds
      * @param string|null $expiresAt Optional absolute expiry (ISO 8601)
      * @param HttpClientInterface|null $client HTTP client to use
+     * @param bool $closed Whether to create stream as immediately closed
+     * @param string|null $data Optional initial data to write
      * @return self
      */
     public static function create(
@@ -56,6 +60,8 @@ final class DurableStream
         ?int $ttlSeconds = null,
         ?string $expiresAt = null,
         ?HttpClientInterface $client = null,
+        bool $closed = false,
+        ?string $data = null,
     ): self {
         $httpClient = $client ?? new HttpClient();
 
@@ -71,7 +77,16 @@ final class DurableStream
             $requestHeaders['Stream-Expires-At'] = $expiresAt;
         }
 
-        $httpClient->put($url, $requestHeaders);
+        if ($closed) {
+            $requestHeaders['Stream-Closed'] = 'true';
+        }
+
+        $body = $data;
+        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+            $body = '[' . $data . ']';
+        }
+
+        $httpClient->put($url, $requestHeaders, $body);
 
         return new self($url, $contentType, $headers, $httpClient);
     }
@@ -106,6 +121,7 @@ final class DurableStream
         return new HeadResult(
             offset: $response->getOffset() ?? '-1',
             contentType: $response->getContentType(),
+            streamClosed: strtolower($response->getHeader('Stream-Closed') ?? '') === 'true',
         );
     }
 
@@ -127,6 +143,7 @@ final class DurableStream
         return new HeadResult(
             offset: $response->getOffset() ?? '-1',
             contentType: $response->getContentType(),
+            streamClosed: strtolower($response->getHeader('Stream-Closed') ?? '') === 'true',
         );
     }
 
@@ -234,10 +251,68 @@ final class DurableStream
     }
 
     /**
-     * Close the stream handle.
+     * Close the stream handle (connection cleanup - no-op for cURL).
      */
     public function close(): void
     {
         // Nothing to do - cURL handles are reused
+    }
+
+    /**
+     * Close the stream permanently (no more appends allowed).
+     *
+     * @param string|null $data Optional final data to append before closing
+     * @param string|null $contentType Content type for the final data
+     * @param array<string, string> $extraHeaders Additional headers
+     * @return CloseResult
+     */
+    public function closeStream(
+        ?string $data = null,
+        ?string $contentType = null,
+        array $extraHeaders = [],
+    ): CloseResult {
+        $headers = array_merge($this->headers, $extraHeaders);
+        $headers['Stream-Closed'] = 'true';
+
+        $ct = $contentType ?? $this->contentType ?? 'application/octet-stream';
+        $headers['Content-Type'] = $ct;
+
+        // For JSON streams, wrap data in array if provided
+        $body = $data ?? '';
+        if ($data !== null && str_contains(strtolower($ct), 'application/json')) {
+            $body = '[' . $data . ']';
+        }
+
+        try {
+            $response = $this->client->post($this->url, $body, $headers);
+        } catch (StreamClosedException) {
+            // Idempotent close - stream already closed
+            $finalOffset = '-1';
+            try {
+                $finalOffset = $this->head()->offset;
+            } catch (DurableStreamException) {
+                // Ignore head errors; keep default offset
+            }
+            return new CloseResult(finalOffset: $finalOffset);
+        }
+
+        // 204 means idempotent close (already closed)
+        if ($response->status === 204) {
+            return new CloseResult(
+                finalOffset: $response->getOffset() ?? '-1',
+            );
+        }
+
+        // 409 with Stream-Closed header means trying to append to closed stream
+        if ($response->status === 409) {
+            $streamClosed = strtolower($response->getHeader('Stream-Closed') ?? '') === 'true';
+            if ($streamClosed) {
+                throw new StreamClosedException($this->url);
+            }
+        }
+
+        return new CloseResult(
+            finalOffset: $response->getOffset() ?? '-1',
+        );
     }
 }

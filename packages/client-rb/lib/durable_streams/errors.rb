@@ -36,6 +36,14 @@ module DurableStreams
     end
   end
 
+  # Stream is closed - no more appends allowed (409 with Stream-Closed)
+  class StreamClosedError < Error
+    def initialize(url: nil, **opts)
+      message = url ? "Stream is closed: #{url}" : "Stream is closed"
+      super(message, url: url, status: 409, code: "STREAM_CLOSED", **opts)
+    end
+  end
+
   # Content type mismatch (409)
   class ContentTypeMismatchError < Error
     def initialize(url: nil, expected: nil, actual: nil, **opts)
@@ -142,8 +150,10 @@ module DurableStreams
     when 404
       StreamNotFoundError.new(url: url, headers: headers)
     when 409
+      if headers && headers[STREAM_CLOSED_HEADER]&.downcase == "true"
+        StreamClosedError.new(url: url, headers: headers)
       # Could be StreamExistsError or SeqConflictError depending on context
-      if headers&.key?("stream-seq")
+      elsif headers&.key?("stream-seq")
         SeqConflictError.new(url: url, headers: headers)
       else
         StreamExistsError.new(url: url, headers: headers)

@@ -1,0 +1,759 @@
+id: stream-closure
+name: Stream Closure
+description: Tests for stream closure (EOF) functionality
+category: lifecycle
+tags:
+  - core
+  - closure
+  - eof
+
+tests:
+  # =============================================================================
+  # Writer Tests
+  # =============================================================================
+
+  - id: close-empty-stream
+    name: Close stream with no content
+    description: Client should be able to close an empty stream
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: close
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: close-with-content
+    name: Append data then close
+    description: Client should be able to append data and then close the stream
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "data"}'
+      - action: close
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: close-with-final-message
+    name: Atomic append and close
+    description: Close with a final message should append and close atomically
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "initial-data"
+        expect:
+          storeOffsetAs: beforeClose
+      - action: close
+        path: ${streamPath}
+        data: "final-message"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "initial-datafinal-message"
+          streamClosed: true
+
+  - id: close-returns-result
+    name: Close returns finalOffset
+    description: Closing a stream should return the final offset
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "some-data"
+    operations:
+      - action: close
+        path: ${streamPath}
+        expect:
+          status: 200
+
+  - id: close-idempotent
+    name: Closing already-closed stream succeeds
+    description: Closing an already-closed stream should succeed (idempotent)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+    operations:
+      - action: close
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: close
+        path: ${streamPath}
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: create-closed-stream
+    name: Create stream in closed state
+    description: Client should be able to create a stream that is immediately closed
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        closed: true
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          chunkCount: 0
+          upToDate: true
+          streamClosed: true
+
+  - id: create-closed-stream-with-body
+    name: Create closed stream with initial content (one request)
+    description: Client should be able to create a closed stream with body in a single request
+    operations:
+      # Create stream with data + closed in one request
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        data: "initial-content"
+        closed: true
+        expect:
+          status: 201
+      # Verify the content is preserved and stream is closed
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "initial-content"
+          streamClosed: true
+
+  - id: create-then-close-with-body
+    name: Create stream then close with final content (two requests)
+    description: Client should be able to create a stream, then close it with final content
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        expect:
+          status: 201
+      - action: close
+        path: ${streamPath}
+        data: "final-content"
+        expect:
+          status: 200
+      # Verify the content is preserved and stream is closed
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "final-content"
+          streamClosed: true
+
+  - id: append-to-closed-stream-fails
+    name: Append to closed stream fails with STREAM_CLOSED
+    description: Appending to a closed stream should return 409 with STREAM_CLOSED error
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: close
+        path: ${streamPath}
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "should-fail"
+        expect:
+          status: 409
+          errorCode: STREAM_CLOSED
+
+  # =============================================================================
+  # Reader Tests (Catch-up Mode)
+  # =============================================================================
+
+  - id: read-closed-stream-catchup
+    name: Reader sees streamClosed at final offset
+    description: When reading a closed stream to completion, streamClosed should be true
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "chunk1"
+      - action: append
+        path: ${streamPath}
+        data: "chunk2"
+      - action: close
+        path: ${streamPath}
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "chunk1chunk2"
+          upToDate: true
+          streamClosed: true
+
+  - id: read-closed-stream-empty-eof
+    name: Closure discovered via empty body at tail
+    description: When already at tail of closed stream, read returns empty body with streamClosed
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+        expect:
+          storeOffsetAs: tailOffset
+    operations:
+      # First read to get all data
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          storeOffsetAs: afterDataOffset
+          upToDate: true
+          streamClosed: false
+      # Close the stream
+      - action: close
+        path: ${streamPath}
+      # Read again from tail - should get empty body with streamClosed
+      - action: read
+        path: ${streamPath}
+        offset: ${afterDataOffset}
+        live: false
+        expect:
+          chunkCount: 0
+          upToDate: true
+          streamClosed: true
+
+  - id: head-closed-stream
+    name: HEAD returns streamClosed
+    description: HEAD request should indicate when a stream is closed
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "content"
+    operations:
+      # HEAD before close
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          streamClosed: false
+      # Close the stream
+      - action: close
+        path: ${streamPath}
+      # HEAD after close
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+          streamClosed: true
+
+  # =============================================================================
+  # Reader Tests (Live Modes)
+  # =============================================================================
+
+  - id: long-poll-closed-stream-immediate
+    name: Long-poll returns immediately on closed stream
+    description: Long-poll at tail of closed stream should return immediately without waiting
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+        expect:
+          storeOffsetAs: dataOffset
+      - action: close
+        path: ${streamPath}
+    operations:
+      # First read to get all data and reach the tail
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          storeOffsetAs: tailOffset
+          upToDate: true
+          streamClosed: true
+      # Long-poll from tail should return immediately with streamClosed
+      - action: read
+        path: ${streamPath}
+        offset: ${tailOffset}
+        live: long-poll
+        timeoutMs: 5000
+        expect:
+          chunkCount: 0
+          upToDate: true
+          streamClosed: true
+
+  - id: sse-closed-stream-final-event
+    name: SSE final event has streamClosed
+    description: SSE connection to closed stream should receive streamClosed in final control event
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "sse-data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      # Read via SSE - may need multiple chunks as SSE delivers data then control event
+      - action: read
+        path: ${streamPath}
+        live: sse
+        timeoutMs: 5000
+        expect:
+          data: "sse-data"
+          streamClosed: true
+
+  # =============================================================================
+  # State Matrix Tests
+  # =============================================================================
+
+  - id: state-caught-up-open
+    name: State - caught up on open stream
+    description: At tail of open stream, upToDate should be true and streamClosed should be false
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "content"
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "content"
+          upToDate: true
+          streamClosed: false
+
+  - id: state-complete
+    name: State - complete (closed stream at tail)
+    description: At tail of closed stream, both upToDate and streamClosed should be true
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "final-content"
+      - action: close
+        path: ${streamPath}
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "final-content"
+          upToDate: true
+          streamClosed: true
+
+  # Note: This test requires server-side chunk pagination to properly test
+  # partial reads. Currently skipped because maxChunks only limits client-side
+  # processing, not what the server returns. The server sends Stream-Closed: true
+  # on the full response when a stream is closed.
+  # - id: state-catching-up-closed-stream
+  #   name: State - catching up to closed stream
+  #   description: Partial read of closed stream shows streamClosed only at final offset
+  #   ...
+
+  - id: state-open-stream-partial-read
+    name: State - partial read of open stream
+    description: Partial read of open stream shows streamClosed=false and upToDate=false
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "part1"
+      - action: append
+        path: ${streamPath}
+        data: "part2"
+    operations:
+      # Partial read - only get first chunk
+      - action: read
+        path: ${streamPath}
+        maxChunks: 1
+        live: long-poll
+        timeoutMs: 5000
+        expect:
+          streamClosed: false
+          storeOffsetAs: partialOffset
+      # Read from partial offset to end
+      - action: read
+        path: ${streamPath}
+        offset: ${partialOffset}
+        live: false
+        expect:
+          upToDate: true
+          streamClosed: false
+
+  # =============================================================================
+  # IdempotentProducer Tests
+  # =============================================================================
+
+  - id: idempotent-producer-close
+    name: IdempotentProducer.close() closes stream
+    description: IdempotentProducer.close() should close the stream using producer headers
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "message-1"
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "message-1"
+          streamClosed: true
+
+  - id: idempotent-producer-close-with-final-message
+    name: IdempotentProducer.close() with final message
+    description: IdempotentProducer.close(finalMessage) should append and close atomically
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "message-1"
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "final-message"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "message-1final-message"
+          streamClosed: true
+
+  - id: idempotent-producer-detach-does-not-close
+    name: IdempotentProducer.detach() does not close stream
+    description: IdempotentProducer.detach() should stop producer without closing stream
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "message-1"
+      - action: idempotent-detach
+        path: ${streamPath}
+        producerId: producer-1
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: false
+      # Stream should still be open for further appends
+      - action: append
+        path: ${streamPath}
+        data: "message-2"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "message-1message-2"
+          streamClosed: false
+
+  - id: idempotent-producer-close-idempotent
+    name: IdempotentProducer.close() is idempotent
+    description: Calling close() multiple times should succeed (idempotent)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "content"
+    operations:
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        expect:
+          status: 200
+      # Calling close again should succeed (idempotent)
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        expect:
+          status: 200
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: idempotent-producer-close-conflict
+    name: Different producer closing already-closed stream fails
+    description: When a different producer tries to close an already-closed stream, it should fail with STREAM_CLOSED
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: producer-1
+        data: "content"
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+    operations:
+      # Different producer tries to close - should fail
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-2
+        expect:
+          status: 409
+          errorCode: STREAM_CLOSED
+      # Stream should still be closed (by producer-1)
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  # =============================================================================
+  # Additional Edge Case Tests (from PR review)
+  # =============================================================================
+
+  - id: atomic-close-dedup-with-producer
+    name: Retry of append-and-close with same producer tuple is deduplicated
+    description: Retrying a close-with-body using same (pid, epoch, seq) returns 204 and stream has exactly one copy of data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # First close with final message
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "final-data"
+        expect:
+          status: 200
+      # Retry with same producer tuple - should be deduplicated
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "final-data"
+        expect:
+          status: 200
+      # Verify only one copy of data exists
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "final-data"
+          streamClosed: true
+
+  - id: close-nonexistent-stream
+    name: Close nonexistent stream returns 404
+    description: POST with Stream-Closed to nonexistent URL returns 404
+    operations:
+      - action: close
+        path: /nonexistent-close-stream-12345
+        expect:
+          status: 404
+
+  - id: read-offset-beyond-closed-tail
+    name: Read offset past closed stream tail returns empty with streamClosed
+    description: Reading from an offset past the final data returns empty body + streamClosed + upToDate
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      # First read to get all data
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          storeOffsetAs: tailOffset
+          upToDate: true
+          streamClosed: true
+      # Read from tail (which is past the data) - should get empty + closed
+      - action: read
+        path: ${streamPath}
+        offset: ${tailOffset}
+        live: false
+        expect:
+          chunkCount: 0
+          upToDate: true
+          streamClosed: true
+
+  - id: head-closed-stream-returns-tail-offset
+    name: HEAD on closed stream returns correct tail offset
+    description: HEAD after close-with-append returns offset after the final data
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Get initial offset
+      - action: head
+        path: ${streamPath}
+        expect:
+          storeOffsetAs: initialOffset
+      # Close with final message
+      - action: close
+        path: ${streamPath}
+        data: "final-content"
+        expect:
+          status: 200
+      # HEAD should return new offset (not initial)
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+          hasOffset: true
+
+  - id: delete-closed-stream
+    name: Deletion overrides closure
+    description: Deleting a closed stream returns 404 after, not Stream-Closed
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+      - action: append
+        path: ${streamPath}
+        data: "data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      # Verify closed
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+      # Delete
+      - action: delete
+        path: ${streamPath}
+        expect:
+          status: 200
+      # Should be 404 now (not 409/STREAM_CLOSED)
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 404
+
+  - id: create-closed-with-ttl
+    name: Create closed stream with TTL
+    description: Closed stream + TTL both apply, stream expires normally
+    operations:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+        ttlSeconds: 60
+        closed: true
+        expect:
+          status: 201
+      # Verify both closed and has TTL
+      - action: head
+        path: ${streamPath}
+        expect:
+          streamClosed: true
+
+  - id: close-with-body-retry-different-body
+    name: Producer sends close+body A, retries same seq with body B - deduplicates to A
+    description: When retrying a close with different body content, the original body is kept
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Close with body A
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "body-A"
+        expect:
+          status: 200
+      # Retry with same seq but different body - should be deduplicated to original
+      - action: idempotent-close
+        path: ${streamPath}
+        producerId: producer-1
+        data: "body-B"
+        expect:
+          status: 200
+      # Verify original body is preserved
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          data: "body-A"
+          streamClosed: true

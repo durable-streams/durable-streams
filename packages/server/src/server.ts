@@ -18,6 +18,7 @@ const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
 const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
+const STREAM_SSE_DATA_ENCODING_HEADER = `Stream-SSE-Data-Encoding`
 
 // Idempotent producer headers
 const PRODUCER_ID_HEADER = `Producer-Id`
@@ -30,6 +31,10 @@ const PRODUCER_RECEIVED_SEQ_HEADER = `Producer-Received-Seq`
 const SSE_OFFSET_FIELD = `streamNextOffset`
 const SSE_CURSOR_FIELD = `streamCursor`
 const SSE_UP_TO_DATE_FIELD = `upToDate`
+const SSE_CLOSED_FIELD = `streamClosed`
+
+// Stream closure header
+const STREAM_CLOSED_HEADER = `Stream-Closed`
 
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
@@ -422,11 +427,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Producer-Id, Producer-Epoch, Producer-Seq`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -561,6 +566,10 @@ export class DurableStreamTestServer {
       STREAM_EXPIRES_AT_HEADER.toLowerCase()
     ] as string | undefined
 
+    // Parse Stream-Closed header
+    const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
+    const createClosed = closedHeader === `true`
+
     // Validate TTL and Expires-At headers
     if (ttlHeader && expiresAtHeader) {
       res.writeHead(400, { "content-type": `text/plain` })
@@ -609,6 +618,7 @@ export class DurableStreamTestServer {
         ttlSeconds,
         expiresAt: expiresAtHeader,
         initialData: body.length > 0 ? body : undefined,
+        closed: createClosed,
       })
     )
 
@@ -637,6 +647,11 @@ export class DurableStreamTestServer {
       headers[`location`] = `${this._url}${path}`
     }
 
+    // Include Stream-Closed header if created closed
+    if (stream.closed) {
+      headers[STREAM_CLOSED_HEADER] = `true`
+    }
+
     res.writeHead(isNew ? 201 : 200, headers)
     res.end()
   }
@@ -662,9 +677,16 @@ export class DurableStreamTestServer {
       headers[`content-type`] = stream.contentType
     }
 
-    // Generate ETag: {path}:-1:{offset} (consistent with GET format)
+    // Include Stream-Closed if stream is closed
+    if (stream.closed) {
+      headers[STREAM_CLOSED_HEADER] = `true`
+    }
+
+    // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
+    // The :c suffix ensures ETag changes when a stream is closed, even without new data
+    const closedSuffix = stream.closed ? `:c` : ``
     headers[`etag`] =
-      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}"`
+      `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}${closedSuffix}"`
 
     res.writeHead(200, headers)
     res.end()
@@ -726,11 +748,20 @@ export class DurableStreamTestServer {
       return
     }
 
+    // Determine if this is a binary stream that needs base64 encoding in SSE mode
+    let useBase64 = false
+    if (live === `sse`) {
+      const ct = stream.contentType?.toLowerCase().split(`;`)[0]?.trim() ?? ``
+      const isTextCompatible =
+        ct.startsWith(`text/`) || ct === `application/json`
+      useBase64 = !isTextCompatible
+    }
+
     // Handle SSE mode
     if (live === `sse`) {
       // For SSE with offset=now, convert to actual tail offset
       const sseOffset = offset === `now` ? stream.currentOffset : offset!
-      await this.handleSSE(path, stream, sseOffset, cursor, res)
+      await this.handleSSE(path, stream, sseOffset, cursor, useBase64, res)
       return
     }
 
@@ -750,6 +781,11 @@ export class DurableStreamTestServer {
 
       if (stream.contentType) {
         headers[`content-type`] = stream.contentType
+      }
+
+      // Include Stream-Closed if stream is closed (client at tail, upToDate)
+      if (stream.closed) {
+        headers[STREAM_CLOSED_HEADER] = `true`
       }
 
       // No ETag for offset=now responses - Cache-Control: no-store makes ETag unnecessary
@@ -776,15 +812,25 @@ export class DurableStreamTestServer {
       (effectiveOffset && effectiveOffset === stream.currentOffset) ||
       offset === `now`
     if (live === `long-poll` && clientIsCaughtUp && messages.length === 0) {
+      // If stream is closed and client is at tail, return immediately (don't wait)
+      if (stream.closed) {
+        res.writeHead(204, {
+          [STREAM_OFFSET_HEADER]: stream.currentOffset,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+          [STREAM_CLOSED_HEADER]: `true`,
+        })
+        res.end()
+        return
+      }
+
       const result = await this.store.waitForMessages(
         path,
         effectiveOffset ?? stream.currentOffset,
         this.options.longPollTimeout
       )
 
-      if (result.timedOut) {
-        // Return 204 No Content on timeout (per Protocol Section 5.6)
-        // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+      // If stream was closed during wait, return immediately with Stream-Closed
+      if (result.streamClosed) {
         const responseCursor = generateResponseCursor(
           cursor,
           this.options.cursorOptions
@@ -793,7 +839,30 @@ export class DurableStreamTestServer {
           [STREAM_OFFSET_HEADER]: effectiveOffset ?? stream.currentOffset,
           [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: responseCursor,
+          [STREAM_CLOSED_HEADER]: `true`,
         })
+        res.end()
+        return
+      }
+
+      if (result.timedOut) {
+        // Return 204 No Content on timeout (per Protocol Section 5.6)
+        // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
+        const responseCursor = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
+        // Check if stream was closed during the wait
+        const currentStream = this.store.get(path)
+        const timeoutHeaders: Record<string, string> = {
+          [STREAM_OFFSET_HEADER]: effectiveOffset ?? stream.currentOffset,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+          [STREAM_CURSOR_HEADER]: responseCursor,
+        }
+        if (currentStream?.closed) {
+          timeoutHeaders[STREAM_CLOSED_HEADER] = `true`
+        }
+        res.writeHead(204, timeoutHeaders)
         res.end()
         return
       }
@@ -827,9 +896,20 @@ export class DurableStreamTestServer {
       headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
 
-    // Generate ETag: based on path, start offset, and end offset
+    // Include Stream-Closed when stream is closed AND client is at tail AND upToDate
+    // Re-fetch stream to get current state (may have been closed during request)
+    const currentStream = this.store.get(path)
+    const clientAtTail = responseOffset === currentStream?.currentOffset
+    if (currentStream?.closed && clientAtTail && upToDate) {
+      headers[STREAM_CLOSED_HEADER] = `true`
+    }
+
+    // Generate ETag: based on path, start offset, end offset, and closure status
+    // The :c suffix ensures ETag changes when a stream is closed, even without new data
     const startOffset = offset ?? `-1`
-    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}"`
+    const closedSuffix =
+      currentStream?.closed && clientAtTail && upToDate ? `:c` : ``
+    const etag = `"${Buffer.from(path).toString(`base64`)}:${startOffset}:${responseOffset}${closedSuffix}"`
     headers[`etag`] = etag
 
     // Check If-None-Match for conditional GET (Protocol Section 8.1)
@@ -850,10 +930,10 @@ export class DurableStreamTestServer {
       responseData.length >= COMPRESSION_THRESHOLD
     ) {
       const acceptEncoding = req.headers[`accept-encoding`]
-      const encoding = getCompressionEncoding(acceptEncoding)
-      if (encoding) {
-        finalData = compressData(responseData, encoding)
-        headers[`content-encoding`] = encoding
+      const compressionEncoding = getCompressionEncoding(acceptEncoding)
+      if (compressionEncoding) {
+        finalData = compressData(responseData, compressionEncoding)
+        headers[`content-encoding`] = compressionEncoding
         // Add Vary header to indicate response varies by Accept-Encoding
         headers[`vary`] = `accept-encoding`
       }
@@ -874,20 +954,28 @@ export class DurableStreamTestServer {
     stream: ReturnType<StreamStore[`get`]>,
     initialOffset: string,
     cursor: string | undefined,
+    useBase64: boolean,
     res: ServerResponse
   ): Promise<void> {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
     // Set SSE headers (explicitly including security headers for clarity)
-    res.writeHead(200, {
+    const sseHeaders: Record<string, string> = {
       "content-type": `text/event-stream`,
       "cache-control": `no-cache`,
       connection: `keep-alive`,
       "access-control-allow-origin": `*`,
       "x-content-type-options": `nosniff`,
       "cross-origin-resource-policy": `cross-origin`,
-    })
+    }
+
+    // Add encoding header when base64 encoding is used for binary streams
+    if (useBase64) {
+      sseHeaders[STREAM_SSE_DATA_ENCODING_HEADER] = `base64`
+    }
+
+    res.writeHead(200, sseHeaders)
 
     // Check for injected SSE event (for testing SSE parsing)
     const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
@@ -920,9 +1008,12 @@ export class DurableStreamTestServer {
 
       // Send data events for each message
       for (const message of messages) {
-        // Format data based on content type
+        // Format data based on content type and encoding
         let dataPayload: string
-        if (isJsonStream) {
+        if (useBase64) {
+          // Base64 encode binary data (Protocol Section 5.7)
+          dataPayload = Buffer.from(message.data).toString(`base64`)
+        } else if (isJsonStream) {
           // Use formatResponse to get properly formatted JSON (strips trailing commas)
           const jsonBytes = this.store.formatResponse(path, [message])
           dataPayload = decoder.decode(jsonBytes)
@@ -939,8 +1030,14 @@ export class DurableStreamTestServer {
       }
 
       // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset
+      // Re-fetch stream to get current state (may have been closed)
+      const currentStream = this.store.get(path)
       const controlOffset =
-        messages[messages.length - 1]?.offset ?? stream!.currentOffset
+        messages[messages.length - 1]?.offset ?? currentStream!.currentOffset
+
+      // Check if stream is closed and client is at tail
+      const streamIsClosed = currentStream?.closed ?? false
+      const clientAtTail = controlOffset === currentStream!.currentOffset
 
       // Send control event with current offset/cursor (Protocol Section 5.7)
       // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
@@ -950,22 +1047,47 @@ export class DurableStreamTestServer {
       )
       const controlData: Record<string, string | boolean> = {
         [SSE_OFFSET_FIELD]: controlOffset,
-        [SSE_CURSOR_FIELD]: responseCursor,
       }
 
-      // Include upToDate flag when client has caught up to head
-      if (upToDate) {
-        controlData[SSE_UP_TO_DATE_FIELD] = true
+      if (streamIsClosed && clientAtTail) {
+        // Final control event - stream is closed
+        // streamCursor is omitted when streamClosed is true per protocol
+        // upToDate is implied by streamClosed per protocol
+        controlData[SSE_CLOSED_FIELD] = true
+      } else {
+        // Normal control event - include cursor
+        controlData[SSE_CURSOR_FIELD] = responseCursor
+        // Include upToDate flag when client has caught up to head
+        if (upToDate) {
+          controlData[SSE_UP_TO_DATE_FIELD] = true
+        }
       }
 
       res.write(`event: control\n`)
       res.write(encodeSSEData(JSON.stringify(controlData)))
+
+      // Close SSE connection after sending streamClosed
+      if (streamIsClosed && clientAtTail) {
+        break // Exit loop, connection will be closed
+      }
 
       // Update currentOffset for next iteration (use controlOffset for consistency)
       currentOffset = controlOffset
 
       // If caught up, wait for new messages
       if (upToDate) {
+        // Check if stream was closed during processing (before wait)
+        if (currentStream?.closed) {
+          // Send final control event and exit
+          const finalControlData: Record<string, string | boolean> = {
+            [SSE_OFFSET_FIELD]: currentOffset,
+            [SSE_CLOSED_FIELD]: true,
+          }
+          res.write(`event: control\n`)
+          res.write(encodeSSEData(JSON.stringify(finalControlData)))
+          break
+        }
+
         const result = await this.store.waitForMessages(
           path,
           currentOffset,
@@ -976,6 +1098,17 @@ export class DurableStreamTestServer {
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (this.isShuttingDown || !isConnected) break
 
+        // Check if stream was closed during wait
+        if (result.streamClosed) {
+          const finalControlData: Record<string, string | boolean> = {
+            [SSE_OFFSET_FIELD]: currentOffset,
+            [SSE_CLOSED_FIELD]: true,
+          }
+          res.write(`event: control\n`)
+          res.write(encodeSSEData(JSON.stringify(finalControlData)))
+          break
+        }
+
         if (result.timedOut) {
           // Send keep-alive control event on timeout (Protocol Section 5.7)
           // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
@@ -983,13 +1116,28 @@ export class DurableStreamTestServer {
             cursor,
             this.options.cursorOptions
           )
+
+          // Check if stream was closed during the wait
+          const streamAfterWait = this.store.get(path)
+          if (streamAfterWait?.closed) {
+            const closedControlData: Record<string, string | boolean> = {
+              [SSE_OFFSET_FIELD]: currentOffset,
+              [SSE_CLOSED_FIELD]: true,
+            }
+            res.write(`event: control\n`)
+            res.write(encodeSSEData(JSON.stringify(closedControlData)))
+            break
+          }
+
           const keepAliveData: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
             [SSE_CURSOR_FIELD]: keepAliveCursor,
             [SSE_UP_TO_DATE_FIELD]: true, // Still caught up after timeout
           }
-          res.write(`event: control\n`)
-          res.write(encodeSSEData(JSON.stringify(keepAliveData)))
+          // Single write for keep-alive control event
+          res.write(
+            `event: control\n` + encodeSSEData(JSON.stringify(keepAliveData))
+          )
         }
         // Loop will continue and read new messages
       }
@@ -1012,6 +1160,10 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
+    // Parse Stream-Closed header
+    const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
+    const closeStream = closedHeader === `true`
+
     // Extract producer headers
     const producerId = req.headers[PRODUCER_ID_HEADER.toLowerCase()] as
       | string
@@ -1023,23 +1175,8 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
-    const body = await this.readBody(req)
-
-    if (body.length === 0) {
-      res.writeHead(400, { "content-type": `text/plain` })
-      res.end(`Empty body`)
-      return
-    }
-
-    // Content-Type is required per protocol
-    if (!contentType) {
-      res.writeHead(400, { "content-type": `text/plain` })
-      res.end(`Content-Type header is required`)
-      return
-    }
-
     // Validate producer headers - all three must be present together or none
-    // Also reject empty producer ID
+    // Also reject empty producer ID (do this before reading body)
     const hasProducerHeaders =
       producerId !== undefined ||
       producerEpochStr !== undefined ||
@@ -1094,13 +1231,126 @@ export class DurableStreamTestServer {
       }
     }
 
-    // Build append options
+    const body = await this.readBody(req)
+
+    // Handle close-only request (empty body with Stream-Closed: true)
+    // Note: Content-Type validation is skipped for close-only requests per protocol Section 5.2
+    if (body.length === 0 && closeStream) {
+      // Close-only with producer headers participates in producer sequencing
+      if (hasAllProducerHeaders) {
+        const closeResult = await this.store.closeStreamWithProducer(path, {
+          producerId: producerId,
+          producerEpoch: producerEpoch!,
+          producerSeq: producerSeq!,
+        })
+
+        if (!closeResult) {
+          res.writeHead(404, { "content-type": `text/plain` })
+          res.end(`Stream not found`)
+          return
+        }
+
+        // Handle producer validation results
+        if (closeResult.producerResult?.status === `duplicate`) {
+          res.writeHead(204, {
+            [STREAM_OFFSET_HEADER]: closeResult.finalOffset,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
+            [PRODUCER_SEQ_HEADER]:
+              closeResult.producerResult.lastSeq.toString(),
+          })
+          res.end()
+          return
+        }
+
+        if (closeResult.producerResult?.status === `stale_epoch`) {
+          res.writeHead(403, {
+            "content-type": `text/plain`,
+            [PRODUCER_EPOCH_HEADER]:
+              closeResult.producerResult.currentEpoch.toString(),
+          })
+          res.end(`Stale producer epoch`)
+          return
+        }
+
+        if (closeResult.producerResult?.status === `invalid_epoch_seq`) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`New epoch must start with sequence 0`)
+          return
+        }
+
+        if (closeResult.producerResult?.status === `sequence_gap`) {
+          res.writeHead(409, {
+            "content-type": `text/plain`,
+            [PRODUCER_EXPECTED_SEQ_HEADER]:
+              closeResult.producerResult.expectedSeq.toString(),
+            [PRODUCER_RECEIVED_SEQ_HEADER]:
+              closeResult.producerResult.receivedSeq.toString(),
+          })
+          res.end(`Producer sequence gap`)
+          return
+        }
+
+        // Stream already closed by a different producer - conflict
+        if (closeResult.producerResult?.status === `stream_closed`) {
+          const stream = this.store.get(path)
+          res.writeHead(409, {
+            "content-type": `text/plain`,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
+          })
+          res.end(`Stream is closed`)
+          return
+        }
+
+        res.writeHead(204, {
+          [STREAM_OFFSET_HEADER]: closeResult.finalOffset,
+          [STREAM_CLOSED_HEADER]: `true`,
+          [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
+          [PRODUCER_SEQ_HEADER]: producerSeq!.toString(),
+        })
+        res.end()
+        return
+      }
+
+      // Close-only without producer headers (simple idempotent close)
+      const closeResult = this.store.closeStream(path)
+      if (!closeResult) {
+        res.writeHead(404, { "content-type": `text/plain` })
+        res.end(`Stream not found`)
+        return
+      }
+
+      res.writeHead(204, {
+        [STREAM_OFFSET_HEADER]: closeResult.finalOffset,
+        [STREAM_CLOSED_HEADER]: `true`,
+      })
+      res.end()
+      return
+    }
+
+    // Empty body without Stream-Closed is an error
+    if (body.length === 0) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Empty body`)
+      return
+    }
+
+    // Content-Type is required per protocol (for requests with body)
+    if (!contentType) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`Content-Type header is required`)
+      return
+    }
+
+    // Build append options (include close flag for append-and-close)
     const appendOptions = {
       seq,
       contentType,
       producerId,
       producerEpoch,
       producerSeq,
+      close: closeStream,
     }
 
     // Use appendWithProducer for serialized producer operations
@@ -1113,9 +1363,45 @@ export class DurableStreamTestServer {
       )
     }
 
-    // Handle AppendResult with producer validation
-    if (result && typeof result === `object` && `producerResult` in result) {
-      const { message, producerResult } = result
+    // Handle AppendResult with producer validation or streamClosed
+    if (result && typeof result === `object` && `message` in result) {
+      const { message, producerResult, streamClosed } = result as {
+        message: { offset: string } | null
+        producerResult?: {
+          status: string
+          lastSeq?: number
+          currentEpoch?: number
+          expectedSeq?: number
+          receivedSeq?: number
+        }
+        streamClosed?: boolean
+      }
+
+      // Handle append to closed stream
+      if (streamClosed && !message) {
+        // Check if this is an idempotent producer duplicate (matching closing tuple)
+        if (producerResult?.status === `duplicate`) {
+          const stream = this.store.get(path)
+          res.writeHead(204, {
+            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
+            [STREAM_CLOSED_HEADER]: `true`,
+            [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
+            [PRODUCER_SEQ_HEADER]: producerResult.lastSeq!.toString(),
+          })
+          res.end()
+          return
+        }
+
+        // Not a duplicate - stream was closed by different request, return 409
+        const closedStream = this.store.get(path)
+        res.writeHead(409, {
+          "content-type": `text/plain`,
+          [STREAM_CLOSED_HEADER]: `true`,
+          [STREAM_OFFSET_HEADER]: closedStream?.currentOffset ?? ``,
+        })
+        res.end(`Stream is closed`)
+        return
+      }
 
       if (!producerResult || producerResult.status === `accepted`) {
         // Success - return offset
@@ -1129,28 +1415,40 @@ export class DurableStreamTestServer {
         if (producerSeq !== undefined) {
           responseHeaders[PRODUCER_SEQ_HEADER] = producerSeq.toString()
         }
-        res.writeHead(200, responseHeaders)
+        // Include Stream-Closed if stream was closed with this append
+        if (streamClosed) {
+          responseHeaders[STREAM_CLOSED_HEADER] = `true`
+        }
+        // Use 200 for producer appends (with headers), 204 for non-producer appends
+        const statusCode = producerId !== undefined ? 200 : 204
+        res.writeHead(statusCode, responseHeaders)
         res.end()
         return
       }
 
       // Handle producer validation failures
       switch (producerResult.status) {
-        case `duplicate`:
+        case `duplicate`: {
           // 204 No Content for duplicates (idempotent success)
           // Return Producer-Seq as highest accepted (per PROTOCOL.md)
-          res.writeHead(204, {
+          const dupHeaders: Record<string, string> = {
             [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
-            [PRODUCER_SEQ_HEADER]: producerResult.lastSeq.toString(),
-          })
+            [PRODUCER_SEQ_HEADER]: producerResult.lastSeq!.toString(),
+          }
+          // Include Stream-Closed if the stream is now closed
+          if (streamClosed) {
+            dupHeaders[STREAM_CLOSED_HEADER] = `true`
+          }
+          res.writeHead(204, dupHeaders)
           res.end()
           return
+        }
 
         case `stale_epoch`: {
           // 403 Forbidden for stale epochs (zombie fencing)
           res.writeHead(403, {
             "content-type": `text/plain`,
-            [PRODUCER_EPOCH_HEADER]: producerResult.currentEpoch.toString(),
+            [PRODUCER_EPOCH_HEADER]: producerResult.currentEpoch!.toString(),
           })
           res.end(`Stale producer epoch`)
           return
@@ -1167,9 +1465,9 @@ export class DurableStreamTestServer {
           res.writeHead(409, {
             "content-type": `text/plain`,
             [PRODUCER_EXPECTED_SEQ_HEADER]:
-              producerResult.expectedSeq.toString(),
+              producerResult.expectedSeq!.toString(),
             [PRODUCER_RECEIVED_SEQ_HEADER]:
-              producerResult.receivedSeq.toString(),
+              producerResult.receivedSeq!.toString(),
           })
           res.end(`Producer sequence gap`)
           return
@@ -1178,9 +1476,14 @@ export class DurableStreamTestServer {
 
     // Standard append (no producer) - result is StreamMessage
     const message = result as { offset: string }
-    res.writeHead(204, {
+    const responseHeaders: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: message.offset,
-    })
+    }
+    // Include Stream-Closed if stream was closed with this append
+    if (closeStream) {
+      responseHeaders[STREAM_CLOSED_HEADER] = `true`
+    }
+    res.writeHead(204, responseHeaders)
     res.end()
   }
 

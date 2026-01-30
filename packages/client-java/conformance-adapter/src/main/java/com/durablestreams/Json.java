@@ -269,6 +269,10 @@ public final class Json {
                     default:
                         if (c < 0x20) {
                             sb.append(String.format("\\u%04x", (int) c));
+                        } else if (c == '\u2028' || c == '\u2029') {
+                            // U+2028 (Line Separator) and U+2029 (Paragraph Separator)
+                            // must be escaped for JSON-lines protocol compatibility
+                            sb.append(String.format("\\u%04x", (int) c));
                         } else {
                             sb.append(c);
                         }

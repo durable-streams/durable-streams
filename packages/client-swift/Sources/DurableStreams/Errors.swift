@@ -22,6 +22,7 @@ public enum ErrorCode: String, Sendable, CaseIterable {
     case retentionExpired = "RETENTION_EXPIRED"
     case staleEpoch = "STALE_EPOCH"
     case sequenceGap = "SEQUENCE_GAP"
+    case streamClosed = "STREAM_CLOSED"
     case unknown = "UNKNOWN"
 }
 
@@ -104,6 +105,10 @@ public struct DurableStreamError: Error, Sendable, Equatable {
             status: 409,
             details: ["expected": String(expected), "received": String(received)]
         )
+    }
+
+    public static func streamClosed(url: URL) -> DurableStreamError {
+        DurableStreamError(code: .streamClosed, message: "Stream is closed: \(url)", status: 409)
     }
 
     public static func retentionExpired(offset: Offset) -> DurableStreamError {

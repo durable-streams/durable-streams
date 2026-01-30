@@ -97,6 +97,7 @@ type createConfig struct {
 	expiresAt   time.Time
 	initialData []byte
 	headers     map[string]string
+	closed      bool
 }
 
 // CreateOption configures a Create operation.
@@ -137,6 +138,14 @@ func WithInitialData(data []byte) CreateOption {
 func WithCreateHeaders(headers map[string]string) CreateOption {
 	return func(cfg *createConfig) {
 		cfg.headers = headers
+	}
+}
+
+// WithClosed creates the stream in the closed state.
+// Any initial data provided becomes the complete and final content.
+func WithClosed() CreateOption {
+	return func(cfg *createConfig) {
+		cfg.closed = true
 	}
 }
 
@@ -182,11 +191,11 @@ func WithAppendHeaders(headers map[string]string) AppendOption {
 // =============================================================================
 
 type readConfig struct {
-	offset   Offset
-	live     LiveMode
-	cursor   string
-	headers  map[string]string
-	timeout  time.Duration
+	offset  Offset
+	live    LiveMode
+	cursor  string
+	headers map[string]string
+	timeout time.Duration
 }
 
 // ReadOption configures a Read operation.
@@ -264,6 +273,40 @@ type DeleteOption func(*deleteConfig)
 // WithDeleteHeaders sets custom headers for the delete request.
 func WithDeleteHeaders(headers map[string]string) DeleteOption {
 	return func(cfg *deleteConfig) {
+		cfg.headers = headers
+	}
+}
+
+// =============================================================================
+// Close Options
+// =============================================================================
+
+type closeConfig struct {
+	data        []byte
+	contentType string
+	headers     map[string]string
+}
+
+// CloseOption configures a Close operation.
+type CloseOption func(*closeConfig)
+
+// WithCloseData sets the final message to append atomically with close.
+func WithCloseData(data []byte) CloseOption {
+	return func(cfg *closeConfig) {
+		cfg.data = data
+	}
+}
+
+// WithCloseContentType sets the content type for the final message.
+func WithCloseContentType(ct string) CloseOption {
+	return func(cfg *closeConfig) {
+		cfg.contentType = ct
+	}
+}
+
+// WithCloseHeaders sets custom headers for the close request.
+func WithCloseHeaders(headers map[string]string) CloseOption {
+	return func(cfg *closeConfig) {
 		cfg.headers = headers
 	}
 }

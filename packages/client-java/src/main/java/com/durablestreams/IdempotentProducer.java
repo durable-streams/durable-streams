@@ -40,6 +40,7 @@ public final class IdempotentProducer implements AutoCloseable {
     private final AtomicLong nextSeq;
     private final AtomicInteger inFlight;
     private final AtomicBoolean closed;
+    private final AtomicBoolean streamClosed;
 
     // Lock for batch accumulation and dispatch
     private final Object batchLock = new Object();
@@ -74,6 +75,7 @@ public final class IdempotentProducer implements AutoCloseable {
         this.nextSeq = new AtomicLong(config.startingSeq);
         this.inFlight = new AtomicInteger(0);
         this.closed = new AtomicBoolean(false);
+        this.streamClosed = new AtomicBoolean(false);
 
         this.pendingBatch = new ArrayList<>(1024);  // Pre-size for typical batch
         this.batchBytes = 0;
@@ -210,6 +212,44 @@ public final class IdempotentProducer implements AutoCloseable {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+    }
+
+    /**
+     * Close the stream using producer headers (optionally with a final message).
+     */
+    public void closeStream() throws DurableStreamException {
+        closeStream(null);
+    }
+
+    /**
+     * Close the stream using producer headers (optionally with a final message).
+     */
+    public void closeStream(byte[] data) throws DurableStreamException {
+        if (closed.get()) {
+            throw new DurableStreamException("Producer is closed");
+        }
+        if (streamClosed.get()) {
+            return;
+        }
+
+        flush();
+
+        long seq = nextSeq.getAndIncrement();
+        long epochVal = epoch.get();
+        getSeqFuture(epochVal, seq);
+
+        try {
+            sendCloseWithRetry(data, epochVal, seq, false);
+            signalSeqComplete(epochVal, seq, null);
+            streamClosed.set(true);
+        } catch (DurableStreamException err) {
+            signalSeqComplete(epochVal, seq, err);
+            errors.offer(err);
+            if (config.onError != null) {
+                config.onError.accept(err);
+            }
+            throw err;
         }
     }
 
@@ -449,6 +489,104 @@ public final class IdempotentProducer implements AutoCloseable {
                 });
     }
 
+    private void sendCloseWithRetry(byte[] data, long batchEpoch, long seq, boolean isRetry) throws DurableStreamException {
+        byte[] body = null;
+
+        if (data != null && data.length > 0) {
+            String contentType = client.getCachedContentType(url);
+            boolean isJson = contentType != null && contentType.contains("json");
+            if (isJson) {
+                body = wrapInJsonArray(data);
+            } else {
+                body = data;
+            }
+        }
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(30))
+                .header("Producer-Id", producerId)
+                .header("Producer-Epoch", String.valueOf(batchEpoch))
+                .header("Producer-Seq", String.valueOf(seq))
+                .header("Stream-Closed", "true");
+
+        String contentType = client.getCachedContentType(url);
+        if (contentType != null && body != null) {
+            builder.header("Content-Type", contentType);
+        }
+
+        Map<String, String> headers = client.resolveHeaders();
+        headers.forEach(builder::header);
+
+        if (body != null) {
+            builder.POST(HttpRequest.BodyPublishers.ofByteArray(body));
+        } else {
+            builder.POST(HttpRequest.BodyPublishers.noBody());
+        }
+
+        HttpResponse<byte[]> response;
+        try {
+            response = client.getHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        } catch (IOException | InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new DurableStreamException("Close failed: " + e.getMessage(), e);
+        }
+
+        int status = response.statusCode();
+        if (status == 200 || status == 201 || status == 204) {
+            return;
+        }
+
+        if (status == 403) {
+            long serverEpoch = parseEpochFromResponse(response);
+            if (config.autoClaim && !isRetry) {
+                long retrySeq;
+                synchronized (epochLock) {
+                    long currentEpoch = epoch.get();
+                    if (currentEpoch <= serverEpoch) {
+                        long newEpoch = serverEpoch + 1;
+                        epoch.set(newEpoch);
+                        nextSeq.set(0);
+                    }
+                    retrySeq = nextSeq.getAndIncrement();
+                }
+                sendCloseWithRetry(data, epoch.get(), retrySeq, true);
+                return;
+            }
+            throw new StaleEpochException(serverEpoch);
+        }
+
+        if (status == 409) {
+            String streamClosedHeader = response.headers().firstValue("Stream-Closed").orElse(null);
+            if ("true".equalsIgnoreCase(streamClosedHeader)) {
+                throw new StreamClosedException(url);
+            }
+
+            long expectedSeq = response.headers()
+                .firstValue("Producer-Expected-Seq")
+                .map(Long::parseLong)
+                .orElse(-1L);
+
+            if (expectedSeq >= 0 && expectedSeq < seq) {
+                List<CompletableFuture<Void>> waitFutures = new ArrayList<>();
+                for (long s = expectedSeq; s < seq; s++) {
+                    waitFutures.add(waitForSeq(batchEpoch, s));
+                }
+                CompletableFuture.allOf(waitFutures.toArray(new CompletableFuture[0])).join();
+                sendCloseWithRetry(data, batchEpoch, seq, false);
+                return;
+            }
+
+            throw handleSequenceConflict(seq, response);
+        }
+
+        if (status == 404) {
+            throw new StreamNotFoundException(url);
+        }
+
+        throw new DurableStreamException("Close failed with status: " + status, status);
+    }
+
     private SequenceConflictException handleSequenceConflict(long seq, HttpResponse<byte[]> response) {
         String expectedSeqStr = response.headers()
                 .firstValue("Producer-Expected-Seq")
@@ -505,6 +643,16 @@ public final class IdempotentProducer implements AutoCloseable {
             }
             return result;
         }
+    }
+
+    private byte[] wrapInJsonArray(byte[] data) {
+        byte[] prefix = "[".getBytes(StandardCharsets.UTF_8);
+        byte[] suffix = "]".getBytes(StandardCharsets.UTF_8);
+        byte[] result = new byte[prefix.length + data.length + suffix.length];
+        System.arraycopy(prefix, 0, result, 0, prefix.length);
+        System.arraycopy(data, 0, result, prefix.length, data.length);
+        System.arraycopy(suffix, 0, result, prefix.length + data.length, suffix.length);
+        return result;
     }
 
     /**

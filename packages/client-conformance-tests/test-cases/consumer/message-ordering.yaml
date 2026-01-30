@@ -66,6 +66,7 @@ tests:
     setup:
       - action: create
         as: streamPath
+        contentType: text/plain
       - action: append
         path: ${streamPath}
         data: "x"

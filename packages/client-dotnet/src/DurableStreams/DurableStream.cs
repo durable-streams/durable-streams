@@ -73,6 +73,11 @@ public sealed class DurableStream
             request.Headers.TryAddWithoutValidation(Headers.StreamExpiresAt, options.ExpiresAt.Value.ToString("o"));
         }
 
+        if (options?.Closed == true)
+        {
+            request.Headers.TryAddWithoutValidation(Headers.StreamClosed, "true");
+        }
+
         if (options?.InitialData != null)
         {
             request.Content = new ByteArrayContent(options.InitialData);
@@ -130,6 +135,8 @@ public sealed class DurableStream
         var nextOffsetHeader = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
         var ttlSeconds = HttpHelpers.GetIntHeader(response, Headers.StreamTtl);
         var expiresAtStr = HttpHelpers.GetHeader(response, Headers.StreamExpiresAt);
+        var streamClosedHeader = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+        var streamClosed = string.Equals(streamClosedHeader, "true", StringComparison.OrdinalIgnoreCase);
 
         return new StreamMetadata(
             Exists: true,
@@ -138,7 +145,8 @@ public sealed class DurableStream
             ETag: HttpHelpers.GetHeader(response, Headers.ETag),
             CacheControl: HttpHelpers.GetHeader(response, Headers.CacheControl),
             Ttl: ttlSeconds.HasValue ? TimeSpan.FromSeconds(ttlSeconds.Value) : null,
-            ExpiresAt: expiresAtStr != null && DateTimeOffset.TryParse(expiresAtStr, out var expiresAt) ? expiresAt : null
+            ExpiresAt: expiresAtStr != null && DateTimeOffset.TryParse(expiresAtStr, out var expiresAt) ? expiresAt : null,
+            StreamClosed: streamClosed
         );
     }
 
@@ -180,11 +188,21 @@ public sealed class DurableStream
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode == HttpStatusCode.Conflict)
+            {
+                var streamClosed = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+                if (string.Equals(streamClosed, "true", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new StreamClosedException(_url);
+                }
+
+                throw new DurableStreamException(
+                    "Sequence conflict", DurableStreamErrorCode.ConflictSeq, 409, _url);
+            }
+
             throw response.StatusCode switch
             {
                 HttpStatusCode.NotFound => new StreamNotFoundException(_url),
-                HttpStatusCode.Conflict => new DurableStreamException(
-                    "Sequence conflict", DurableStreamErrorCode.ConflictSeq, 409, _url),
                 _ => DurableStreamException.FromStatusCode((int)response.StatusCode, _url, body)
             };
         }
@@ -252,6 +270,79 @@ public sealed class DurableStream
         {
             throw DurableStreamException.FromStatusCode((int)response.StatusCode, _url);
         }
+    }
+
+    /// <summary>
+    /// Close this stream, optionally appending final data.
+    /// </summary>
+    public async Task<CloseResult> CloseAsync(
+        CloseOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, _url);
+        await _client.ApplyDefaultHeadersAsync(request, cancellationToken).ConfigureAwait(false);
+
+        request.Headers.TryAddWithoutValidation(Headers.StreamClosed, "true");
+
+        if (options?.Headers != null)
+        {
+            foreach (var (key, value) in options.Headers)
+            {
+                request.Headers.TryAddWithoutValidation(key, value);
+            }
+        }
+
+        if (options?.Data != null && options.Data.Length > 0)
+        {
+            var contentType = options.ContentType ?? _contentType ?? ContentTypes.OctetStream;
+            var bodyData = options.Data;
+
+            // Wrap in JSON array if JSON content type
+            if (HttpHelpers.IsJsonContentType(contentType))
+            {
+                var arrayStart = "["u8.ToArray();
+                var arrayEnd = "]"u8.ToArray();
+                var wrapped = new byte[arrayStart.Length + bodyData.Length + arrayEnd.Length];
+                Buffer.BlockCopy(arrayStart, 0, wrapped, 0, arrayStart.Length);
+                Buffer.BlockCopy(bodyData, 0, wrapped, arrayStart.Length, bodyData.Length);
+                Buffer.BlockCopy(arrayEnd, 0, wrapped, arrayStart.Length + bodyData.Length, arrayEnd.Length);
+                bodyData = wrapped;
+            }
+
+            request.Content = new ByteArrayContent(bodyData);
+            request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+        }
+
+        using var response = await SendWithRetryAsync(request, cancellationToken, retryAppend: false).ConfigureAwait(false);
+
+        if (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.NoContent)
+        {
+            var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
+            return new CloseResult(
+                FinalOffset: nextOffset is { } offsetStr ? new Offset(offsetStr) : new Offset("-1")
+            );
+        }
+
+        if (response.StatusCode == HttpStatusCode.Conflict)
+        {
+            // Check if stream was already closed
+            var streamClosedHeader = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+            if (string.Equals(streamClosedHeader, "true", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new StreamClosedException(_url);
+            }
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            throw new DurableStreamException(
+                body ?? "Conflict",
+                DurableStreamErrorCode.ConflictExists, 409, _url);
+        }
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new StreamNotFoundException(_url);
+        }
+
+        throw DurableStreamException.FromStatusCode((int)response.StatusCode, _url);
     }
 
     /// <summary>

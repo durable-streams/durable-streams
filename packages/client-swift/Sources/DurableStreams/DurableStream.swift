@@ -78,6 +78,8 @@ public actor DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
+        closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
         let httpClient = HTTPClient(
@@ -96,11 +98,28 @@ public actor DurableStream {
         if let expires = expiresAt {
             headers[Headers.streamExpiresAt] = expires
         }
+        if closed {
+            headers[Headers.streamClosed] = "true"
+        }
+
+        // Prepare body - wrap in JSON array if needed
+        var body: Data? = nil
+        if let inputData = data {
+            if contentType.isJSONContentType {
+                var arrayData = Data("[".utf8)
+                arrayData.append(inputData)
+                arrayData.append(Data("]".utf8))
+                body = arrayData
+            } else {
+                body = inputData
+            }
+        }
 
         let request = await httpClient.buildRequest(
             url: url,
             method: "PUT",
             headers: headers,
+            body: body,
             timeout: config.timeout
         )
 
@@ -157,6 +176,8 @@ public actor DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
+        closed: Bool = false,
         handleConfig: HandleConfiguration
     ) async throws -> DurableStream {
         try await create(
@@ -164,6 +185,8 @@ public actor DurableStream {
             contentType: contentType,
             ttlSeconds: ttlSeconds,
             expiresAt: expiresAt,
+            data: data,
+            closed: closed,
             config: Configuration(from: handleConfig)
         )
     }
@@ -208,7 +231,8 @@ public actor DurableStream {
         return StreamInfo(
             offset: metadata.offset,
             contentType: metadata.contentType,
-            etag: metadata.etag
+            etag: metadata.etag,
+            streamClosed: metadata.streamClosed
         )
     }
 
@@ -224,9 +248,86 @@ public actor DurableStream {
         _ = try await httpClient.performChecked(request)
     }
 
+    /// Close a stream, optionally appending final data.
+    /// - Parameters:
+    ///   - url: The stream URL
+    ///   - data: Optional final data to append before closing
+    ///   - contentType: Content type for the data (default: application/octet-stream)
+    ///   - config: Client configuration
+    /// - Returns: CloseResult with the final offset
+    /// - Throws: `DurableStreamError.streamClosed` if already closed with data
+    public static func close(
+        url: URL,
+        data: Data? = nil,
+        contentType: String = "application/octet-stream",
+        config: Configuration = .default
+    ) async throws -> CloseResult {
+        let httpClient = HTTPClient(
+            session: config.session,
+            headers: config.headers,
+            params: config.params
+        )
+
+        var headers: [String: String] = [
+            Headers.streamClosed: "true"
+        ]
+
+        // Prepare body - wrap in JSON array if JSON content type
+        var body: Data? = nil
+        if let inputData = data, !inputData.isEmpty {
+            if contentType.isJSONContentType {
+                // Wrap in JSON array for proper flattening
+                var arrayData = Data("[".utf8)
+                arrayData.append(inputData)
+                arrayData.append(Data("]".utf8))
+                body = arrayData
+            } else {
+                body = inputData
+            }
+            headers["Content-Type"] = contentType
+        }
+
+        let request = await httpClient.buildRequest(
+            url: url,
+            method: "POST",
+            headers: headers,
+            body: body,
+            timeout: config.timeout
+        )
+
+        let (responseData, metadata) = try await httpClient.perform(request)
+
+        switch metadata.status {
+        case 200, 204:
+            let finalOffset = metadata.offset ?? Offset(rawValue: "-1")
+            return CloseResult(finalOffset: finalOffset)
+        case 409:
+            // Check if stream was already closed
+            if metadata.streamClosed {
+                let finalOffset = metadata.offset ?? Offset(rawValue: "-1")
+                return CloseResult(finalOffset: finalOffset)
+            }
+            let body = String(data: responseData, encoding: .utf8)
+            throw DurableStreamError.conflict(message: body ?? "Conflict")
+        default:
+            let body = String(data: responseData, encoding: .utf8)
+            throw DurableStreamError.fromHTTPStatus(metadata.status, body: body, url: url)
+        }
+    }
+
+    /// Close this stream, optionally appending final data.
+    public func close(data: Data? = nil, contentType: String? = nil) async throws -> CloseResult {
+        let ct = contentType ?? self.contentType ?? "application/octet-stream"
+        return try await DurableStream.close(url: url, data: data, contentType: ct, config: config)
+    }
+
     // MARK: - Reading
 
     /// Read from the stream starting at an offset.
+    /// - Parameters:
+    ///   - offset: Starting offset
+    ///   - live: Live mode (catchUp, longPoll, sse)
+    ///   - headers: Additional headers
     public func read(
         offset: Offset = .start,
         live: LiveMode = .catchUp,
@@ -514,6 +615,9 @@ public actor DurableStream {
             return AppendResult(offset: offset, isDuplicate: isDuplicate)
 
         case 409:
+            if metadata.streamClosed {
+                throw DurableStreamError.streamClosed(url: url)
+            }
             throw DurableStreamError(code: .conflictSeq, message: "Sequence conflict", status: 409)
 
         default:
@@ -537,15 +641,15 @@ public actor DurableStream {
         producerId: String,
         epoch: Int,
         seq: Int,
-        contentType: String? = nil
+        contentType: String? = nil,
+        additionalHeaders: [String: String] = [:]
     ) async throws -> AppendResult {
         let ct = contentType ?? self.contentType ?? "application/octet-stream"
 
-        let headers: [String: String] = [
-            Headers.producerId: producerId,
-            Headers.producerEpoch: String(epoch),
-            Headers.producerSeq: String(seq)
-        ]
+        var headers = additionalHeaders
+        headers[Headers.producerId] = producerId
+        headers[Headers.producerEpoch] = String(epoch)
+        headers[Headers.producerSeq] = String(seq)
 
         let request = await httpClient.buildRequest(
             url: url,
@@ -573,6 +677,9 @@ public actor DurableStream {
             throw DurableStreamError.forbidden(message: "Stale epoch")
 
         case 409:
+            if metadata.streamClosed {
+                throw DurableStreamError.streamClosed(url: url)
+            }
             if let expected = metadata.producerExpectedSeq, let received = metadata.producerReceivedSeq {
                 throw DurableStreamError.sequenceGap(expected: expected, received: received)
             }
@@ -640,7 +747,11 @@ public actor DurableStream {
     /// Stream raw SSE events from the stream.
     ///
     /// Uses SSE live mode to receive server-sent events. Events are parsed
-    /// per the EventSource specification.
+    /// per the EventSource specification. Base64 decoding is automatically
+    /// applied when the server returns a `Stream-SSE-Data-Encoding: base64`
+    /// response header.
+    /// - Parameters:
+    ///   - offset: Starting offset
     public func sseEvents(from offset: Offset = .start) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -676,6 +787,9 @@ public actor DurableStream {
                 // Use streaming to receive bytes as they arrive
                 let (bytes, metadata) = try await httpClient.performStreaming(request)
 
+                // Detect encoding from response header
+                let encoding = metadata.sseDataEncoding
+
                 switch metadata.status {
                 case 200:
                     retryAttempt = 0  // Reset retry count on success
@@ -693,7 +807,28 @@ public actor DurableStream {
 
                             if line.isEmpty {
                                 // Empty line = end of event
-                                if let event = currentEvent.build() {
+                                if var event = currentEvent.build() {
+                                    // Decode base64 data for "data" events when encoding is detected from response header
+                                    if encoding == "base64" && event.effectiveEvent == "data" {
+                                        // Per Protocol Section 5.7: remove \n and \r before decoding
+                                        let cleanedData = event.data
+                                            .replacingOccurrences(of: "\n", with: "")
+                                            .replacingOccurrences(of: "\r", with: "")
+
+                                        if let decodedData = Data(base64Encoded: cleanedData, options: .ignoreUnknownCharacters) {
+                                            // Convert decoded bytes to string for the event
+                                            // Use ISO-8859-1 to preserve all byte values
+                                            if let decodedString = String(data: decodedData, encoding: .isoLatin1) {
+                                                event = SSEEvent(
+                                                    event: event.event,
+                                                    data: decodedString,
+                                                    id: event.id,
+                                                    retry: event.retry
+                                                )
+                                            }
+                                        }
+                                    }
+
                                     continuation.yield(event)
 
                                     // Update offset from control events
@@ -775,7 +910,8 @@ private struct SSEEventBuilder {
 
     mutating func parseLine(_ line: String) {
         if line.hasPrefix("event:") {
-            event = stripLeadingSpace(String(line.dropFirst(6)))
+            // Trim trailing whitespace for event type (not part of SSE spec, but defensive)
+            event = stripLeadingSpace(String(line.dropFirst(6))).trimmingCharacters(in: .whitespaces)
         } else if line.hasPrefix("data:") {
             data.append(stripLeadingSpace(String(line.dropFirst(5))))
         } else if line.hasPrefix("id:") {
@@ -816,12 +952,14 @@ extension DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
+        closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
         guard let url = URL(string: urlString) else {
             fatalError("Invalid URL string: \(urlString)")
         }
-        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, config: config)
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, data: data, closed: closed, config: config)
     }
 
     /// Create a new stream from a URL string (throwing version).
@@ -831,12 +969,14 @@ extension DurableStream {
         contentType: String = "application/json",
         ttlSeconds: Int? = nil,
         expiresAt: String? = nil,
+        data: Data? = nil,
+        closed: Bool = false,
         config: Configuration = .default
     ) async throws -> DurableStream {
         guard let url = URL(string: urlString) else {
             throw DurableStreamError.badRequest(message: "Invalid URL string: \(urlString)")
         }
-        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, config: config)
+        return try await create(url: url, contentType: contentType, ttlSeconds: ttlSeconds, expiresAt: expiresAt, data: data, closed: closed, config: config)
     }
 
     /// Connect to an existing stream from a URL string.

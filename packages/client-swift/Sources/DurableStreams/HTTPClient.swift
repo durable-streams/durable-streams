@@ -38,6 +38,12 @@ struct ResponseMetadata: Sendable {
     /// Received sequence on 409
     let producerReceivedSeq: Int?
 
+    /// Whether the stream is closed (EOF)
+    let streamClosed: Bool
+
+    /// SSE data encoding from response header (e.g., "base64")
+    let sseDataEncoding: String?
+
     init(from response: HTTPURLResponse) {
         self.status = response.statusCode
         self.offset = response.value(forHTTPHeaderField: Headers.streamNextOffset).map { Offset(rawValue: $0) }
@@ -49,6 +55,8 @@ struct ResponseMetadata: Sendable {
         self.producerSeq = response.value(forHTTPHeaderField: Headers.producerSeq).flatMap { Int($0) }
         self.producerExpectedSeq = response.value(forHTTPHeaderField: Headers.producerExpectedSeq).flatMap { Int($0) }
         self.producerReceivedSeq = response.value(forHTTPHeaderField: Headers.producerReceivedSeq).flatMap { Int($0) }
+        self.streamClosed = response.value(forHTTPHeaderField: Headers.streamClosed)?.lowercased() == "true"
+        self.sseDataEncoding = response.value(forHTTPHeaderField: Headers.streamSSEDataEncoding)
     }
 }
 

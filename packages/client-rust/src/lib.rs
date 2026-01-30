@@ -20,7 +20,7 @@
 //!     stream.append(b"hello world").await?;
 //!
 //!     // Read data
-//!     let mut reader = stream.read().offset(Offset::Beginning).build();
+//!     let mut reader = stream.read().offset(Offset::Beginning).build()?;
 //!     while let Some(chunk) = reader.next_chunk().await? {
 //!         println!("Got {} bytes", chunk.data.len());
 //!     }
@@ -40,7 +40,7 @@ pub use client::{Client, ClientBuilder};
 pub use error::{InvalidHeaderError, ProducerError, StreamError};
 pub use iterator::{Chunk, ChunkIterator, ReadBuilder};
 pub use producer::{Producer, ProducerBuilder};
-pub use stream::{AppendOptions, AppendResponse, CreateOptions, DurableStream, HeadResponse};
+pub use stream::{AppendOptions, AppendResponse, CloseOptions, CloseResponse, CreateOptions, DurableStream, HeadResponse};
 pub use types::{LiveMode, Offset};
 
 /// Prelude module for convenient imports.

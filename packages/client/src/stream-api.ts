@@ -7,8 +7,10 @@
 import {
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
+  STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import { DurableStreamError, FetchBackoffAbortError } from "./error"
@@ -190,11 +192,20 @@ async function streamInternal<TJson = unknown>(
   const initialCursor =
     firstResponse.headers.get(STREAM_CURSOR_HEADER) ?? undefined
   const initialUpToDate = firstResponse.headers.has(STREAM_UP_TO_DATE_HEADER)
+  const initialStreamClosed =
+    firstResponse.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
 
   // Determine if JSON mode
   const isJsonMode =
     options.json === true ||
     (contentType?.includes(`application/json`) ?? false)
+
+  // Detect SSE data encoding from response header (server auto-sets for binary streams)
+  const sseDataEncoding = firstResponse.headers.get(
+    STREAM_SSE_DATA_ENCODING_HEADER
+  )
+  const encoding =
+    sseDataEncoding === `base64` ? (`base64` as const) : undefined
 
   // Create the fetch function for subsequent requests
   const fetchNext = async (
@@ -288,10 +299,12 @@ async function streamInternal<TJson = unknown>(
     initialOffset,
     initialCursor,
     initialUpToDate,
+    initialStreamClosed,
     firstResponse,
     abortController,
     fetchNext,
     startSSE,
     sseResilience: options.sseResilience,
+    encoding,
   })
 }

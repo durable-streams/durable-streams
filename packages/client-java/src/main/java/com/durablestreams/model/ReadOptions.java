@@ -16,6 +16,7 @@ import java.time.Duration;
  *     .liveMode(LiveMode.SSE)
  *     .timeout(Duration.ofSeconds(30))
  *     .build())
+ *
  * }</pre>
  */
 public final class ReadOptions {

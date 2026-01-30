@@ -164,10 +164,12 @@ export function YjsRoomProvider({
       doc,
       documentStream: {
         url: documentStreamUrl,
+        transport: `long-poll`,
       },
       awarenessStream: {
         url: presenceStreamUrl,
         protocol: awareness,
+        transport: `sse`,
       },
       connect: false, // We'll connect manually after setting up listeners
     })

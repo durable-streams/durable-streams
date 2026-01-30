@@ -174,6 +174,28 @@ foreach ($response->jsonBatches() as $batch) {
 }
 ```
 
+### Binary Streams with SSE
+
+For binary content types (e.g., `application/octet-stream`), the server automatically base64-encodes data in SSE mode and returns a `Stream-SSE-Data-Encoding: base64` response header. The client detects this header and decodes the data automatically:
+
+```php
+<?php
+
+use DurableStreams\LiveMode;
+
+$response = stream([
+    'url' => 'https://api.example.com/streams/binary-data',
+    'live' => LiveMode::SSE,
+]);
+
+foreach ($response->chunks() as $chunk) {
+    // $chunk->data is binary - automatically decoded from base64
+    processBinaryData($chunk->data);
+}
+```
+
+No additional configuration is needed. The client automatically decodes base64 data events before returning them when the server indicates encoding via the response header.
+
 ### Dynamic Headers (Token Refresh)
 
 Headers can be callables that are evaluated before each request:

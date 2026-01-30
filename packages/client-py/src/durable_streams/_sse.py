@@ -32,12 +32,14 @@ class SSEControlEvent:
         stream_next_offset: The next offset to read from
         stream_cursor: Optional cursor for CDN collapsing
         up_to_date: Whether caught up to end of stream
+        stream_closed: Whether the stream is closed (EOF)
     """
 
     type: str = "control"
     stream_next_offset: Offset = ""
     stream_cursor: str | None = None
     up_to_date: bool = False
+    stream_closed: bool = False
 
 
 SSEEvent = SSEDataEvent | SSEControlEvent
@@ -85,7 +87,11 @@ class SSEParser:
 
             # Parse the line
             if line.startswith("event:"):
-                self._current_event_type = line[6:].strip()
+                # Per SSE spec, strip only one optional space after "event:"
+                event_type = line[6:]
+                if event_type.startswith(" "):
+                    event_type = event_type[1:]
+                self._current_event_type = event_type
             elif line.startswith("data:"):
                 # Per SSE spec, strip the optional space after "data:"
                 content = line[5:]
@@ -112,10 +118,13 @@ class SSEParser:
         if event_type == "control":
             try:
                 control = json.loads(data_str)
+                stream_closed = control.get("streamClosed", False)
+                up_to_date = control.get("upToDate", False) or stream_closed
                 return SSEControlEvent(
                     stream_next_offset=control.get("streamNextOffset", ""),
                     stream_cursor=control.get("streamCursor"),
-                    up_to_date=control.get("upToDate", False),
+                    up_to_date=up_to_date,
+                    stream_closed=stream_closed,
                 )
             except json.JSONDecodeError as e:
                 # Control events contain critical offset data - don't silently ignore

@@ -35,9 +35,9 @@ final class HttpClient implements HttpClientInterface
 
     public function __destruct()
     {
-        if ($this->handle !== null) {
-            curl_close($this->handle);
-        }
+        // In PHP 8.0+, cURL handles are closed automatically when garbage collected
+        // The curl_close() function is deprecated in PHP 8.5
+        $this->handle = null;
     }
 
     /**
@@ -259,5 +259,290 @@ final class HttpClient implements HttpClientInterface
     public function delete(string $url, array $headers = []): HttpResponse
     {
         return $this->request('DELETE', $url, $headers);
+    }
+
+    /**
+     * Open a streaming GET connection (for SSE).
+     *
+     * Returns an SSEStreamHandle that wraps the curl_multi streaming.
+     *
+     * @param string $url Full URL
+     * @param array<string, string> $headers Request headers
+     * @param float|null $timeout Override default timeout
+     * @return SSEStreamHandle The SSE stream handle
+     * @throws DurableStreamException On connection errors
+     */
+    public function openStream(string $url, array $headers = [], ?float $timeout = null): SSEStreamHandle
+    {
+        return new SSEStreamHandle($url, $headers, $timeout ?? $this->timeout, $this->connectTimeout);
+    }
+}
+
+/**
+ * Handle for an SSE stream using curl_multi for non-blocking reads.
+ */
+final class SSEStreamHandle
+{
+    private \CurlHandle $handle;
+    private \CurlMultiHandle $multi;
+    private string $buffer = '';
+    private bool $closed = false;
+    private bool $finished = false;
+    private float $timeout;
+
+    /** @var array<string, string> Response headers (lowercase keys) */
+    private array $responseHeaders = [];
+
+    /**
+     * @param string $url Full URL
+     * @param array<string, string> $headers Request headers
+     * @param float $timeout Request timeout in seconds
+     * @param float $connectTimeout Connection timeout in seconds
+     * @throws DurableStreamException On connection errors
+     */
+    public function __construct(
+        string $url,
+        array $headers,
+        float $timeout,
+        float $connectTimeout,
+    ) {
+        $this->timeout = $timeout;
+
+        // Create a new handle for streaming
+        $handle = curl_init();
+        if ($handle === false) {
+            throw new DurableStreamException('Failed to initialize cURL', 'NETWORK_ERROR');
+        }
+
+        // Build header array for cURL
+        $curlHeaders = [];
+        foreach ($headers as $name => $value) {
+            $curlHeaders[] = "{$name}: {$value}";
+        }
+        // Add Accept header for SSE
+        $curlHeaders[] = 'Accept: text/event-stream';
+
+        $responseHeaders = [];
+        $headersDone = false;
+        $statusCode = 0;
+        $buffer = &$this->buffer;
+
+        curl_setopt_array($handle, [
+            CURLOPT_URL => $url,
+            CURLOPT_HTTPGET => true,
+            CURLOPT_HTTPHEADER => $curlHeaders,
+            CURLOPT_TIMEOUT_MS => (int)($timeout * 1000),
+            CURLOPT_CONNECTTIMEOUT_MS => (int)($connectTimeout * 1000),
+            CURLOPT_RETURNTRANSFER => false,
+            CURLOPT_HEADER => false,
+            CURLOPT_WRITEFUNCTION => function ($ch, $data) use (&$buffer) {
+                $buffer .= $data;
+                return strlen($data);
+            },
+            CURLOPT_HEADERFUNCTION => function ($ch, $header) use (&$responseHeaders, &$headersDone, &$statusCode) {
+                $len = strlen($header);
+                if (trim($header) === '') {
+                    $headersDone = true;
+                    return $len;
+                }
+                // Parse status line
+                if (preg_match('/^HTTP\/[\d.]+ (\d{3})/', $header, $m)) {
+                    $statusCode = (int)$m[1];
+                    return $len;
+                }
+                if (str_contains($header, ':')) {
+                    [$name, $value] = explode(':', $header, 2);
+                    $responseHeaders[strtolower(trim($name))] = trim($value);
+                }
+                return $len;
+            },
+            CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+        ]);
+
+        // Use curl_multi for non-blocking streaming
+        $multi = curl_multi_init();
+        curl_multi_add_handle($multi, $handle);
+
+        // Start the transfer and wait for headers
+        $running = null;
+        $headersReceived = false;
+        $startTime = microtime(true);
+
+        do {
+            $status = curl_multi_exec($multi, $running);
+
+            // Check for connection timeout
+            $elapsed = microtime(true) - $startTime;
+            if (!$headersDone && $elapsed > $connectTimeout) {
+                curl_multi_remove_handle($multi, $handle);
+                curl_multi_close($multi);
+                throw new DurableStreamException('Connection timeout', 'TIMEOUT');
+            }
+
+            // Process any messages (errors, completions)
+            while ($info = curl_multi_info_read($multi)) {
+                if ($info['msg'] === CURLMSG_DONE && $info['result'] !== CURLE_OK) {
+                    $error = curl_error($handle);
+                    $errno = $info['result'];
+                    curl_multi_remove_handle($multi, $handle);
+                    curl_multi_close($multi);
+
+                    if ($errno === CURLE_OPERATION_TIMEDOUT) {
+                        throw new DurableStreamException("Request timeout: {$error}", 'TIMEOUT');
+                    }
+
+                    throw new DurableStreamException("Network error: {$error}", 'NETWORK_ERROR');
+                }
+            }
+
+            // Get the status code as soon as headers are done
+            // @phpstan-ignore booleanNot.alwaysTrue (modified by HEADERFUNCTION callback)
+            if ($headersDone && !$headersReceived) {
+                $headersReceived = true;
+                $statusCode = (int)curl_getinfo($handle, CURLINFO_HTTP_CODE);
+
+                // Handle errors immediately after headers
+                if ($statusCode === 404) {
+                    curl_multi_remove_handle($multi, $handle);
+                    curl_multi_close($multi);
+                    throw new \DurableStreams\Exception\StreamNotFoundException("Stream not found: {$url}");
+                }
+
+                if ($statusCode === 400) {
+                    curl_multi_remove_handle($multi, $handle);
+                    curl_multi_close($multi);
+                    throw new DurableStreamException('Bad request', 'BAD_REQUEST');
+                }
+
+                if ($statusCode >= 400) {
+                    curl_multi_remove_handle($multi, $handle);
+                    curl_multi_close($multi);
+                    throw new DurableStreamException("HTTP error {$statusCode}", 'UNEXPECTED_STATUS', $statusCode);
+                }
+
+                break; // Headers received successfully, continue with streaming
+            }
+
+            if ($status === CURLM_OK && $running) {
+                // Wait a bit for activity
+                curl_multi_select($multi, 0.01);
+            }
+        } while ($running && $status === CURLM_OK);
+
+        // Check if transfer completed before headers (shouldn't happen for SSE)
+        if (!$headersReceived && !$running) {
+            $error = curl_error($handle);
+            curl_multi_remove_handle($multi, $handle);
+            curl_multi_close($multi);
+            throw new DurableStreamException("Connection closed before headers: {$error}", 'NETWORK_ERROR');
+        }
+
+        $this->handle = $handle;
+        $this->multi = $multi;
+        $this->responseHeaders = $responseHeaders;
+    }
+
+    /**
+     * Get a response header value (case-insensitive).
+     */
+    public function getHeader(string $name): ?string
+    {
+        return $this->responseHeaders[strtolower($name)] ?? null;
+    }
+
+    /**
+     * Read data from the SSE stream.
+     *
+     * @param int $length Maximum number of bytes to read
+     * @return string|false Data read, or false on EOF/error
+     */
+    public function read(int $length = 8192): string|false
+    {
+        if ($this->closed) {
+            return false;
+        }
+
+        // If we have buffered data, return it
+        if ($this->buffer !== '') {
+            $data = substr($this->buffer, 0, $length);
+            $this->buffer = substr($this->buffer, strlen($data));
+            return $data;
+        }
+
+        // If transfer is finished, return EOF
+        if ($this->finished) {
+            return false;
+        }
+
+        // Poll for more data
+        $startTime = microtime(true);
+        // @phpstan-ignore booleanAnd.alwaysTrue, booleanNot.alwaysTrue (buffer modified by WRITEFUNCTION callback)
+        while ($this->buffer === '' && !$this->finished) {
+            $running = null;
+            $status = curl_multi_exec($this->multi, $running);
+
+            // Check for timeout
+            $elapsed = microtime(true) - $startTime;
+            if ($elapsed > $this->timeout) {
+                $this->close();
+                return false;
+            }
+
+            // Check for completion
+            while ($info = curl_multi_info_read($this->multi)) {
+                if ($info['msg'] === CURLMSG_DONE) {
+                    $this->finished = true;
+                    break 2;
+                }
+            }
+
+            if (!$running) {
+                $this->finished = true;
+                break;
+            }
+
+            // @phpstan-ignore booleanAnd.rightAlwaysTrue (buffer modified by WRITEFUNCTION callback)
+            if ($this->buffer === '' && $status === CURLM_OK && $running) {
+                // Wait for activity
+                curl_multi_select($this->multi, 0.01);
+            }
+        }
+
+        // Return any buffered data
+        // @phpstan-ignore notIdentical.alwaysFalse (buffer modified by WRITEFUNCTION callback)
+        if ($this->buffer !== '') {
+            $data = substr($this->buffer, 0, $length);
+            $this->buffer = substr($this->buffer, strlen($data));
+            return $data;
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if the stream has reached EOF.
+     */
+    public function eof(): bool
+    {
+        return $this->finished && $this->buffer === '';
+    }
+
+    /**
+     * Close the stream.
+     */
+    public function close(): void
+    {
+        if ($this->closed) {
+            return;
+        }
+
+        $this->closed = true;
+        @curl_multi_remove_handle($this->multi, $this->handle);
+        @curl_multi_close($this->multi);
+    }
+
+    public function __destruct()
+    {
+        $this->close();
     }
 }

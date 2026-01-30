@@ -15,6 +15,7 @@ var jsonOptions = new JsonSerializerOptions
 // State
 DurableStreamClient? client = null;
 var streamContentTypes = new Dictionary<string, string>();
+var producers = new Dictionary<(string path, string producerId), IdempotentProducer>();
 var dynamicHeaders = new Dictionary<string, Func<string>>();
 var dynamicParams = new Dictionary<string, Func<string>>();
 var dynamicCounters = new Dictionary<string, int>();
@@ -42,15 +43,18 @@ while ((line = await reader.ReadLineAsync()) != null)
             "append" => await HandleAppend(root),
             "read" => await HandleRead(root),
             "head" => await HandleHead(root),
+            "close" => await HandleClose(root),
             "delete" => await HandleDelete(root),
             "idempotent-append" => await HandleIdempotentAppend(root),
             "idempotent-append-batch" => await HandleIdempotentAppendBatch(root),
+            "idempotent-close" => await HandleIdempotentClose(root),
+            "idempotent-detach" => await HandleIdempotentDetach(root),
             "validate" => HandleValidate(root),
             "set-dynamic-header" => HandleSetDynamicHeader(root),
             "set-dynamic-param" => HandleSetDynamicParam(root),
             "clear-dynamic" => HandleClearDynamic(),
             "benchmark" => await HandleBenchmark(root),
-            "shutdown" => HandleShutdown(),
+            "shutdown" => await HandleShutdown(),
             _ => CreateError(type ?? "unknown", "NOT_SUPPORTED", $"Unknown command type: {type}")
         };
 
@@ -72,6 +76,9 @@ while ((line = await reader.ReadLineAsync()) != null)
 async Task<object> HandleInit(JsonElement root)
 {
     var serverUrl = root.GetProperty("serverUrl").GetString()!;
+
+    await CloseAllProducersAsync();
+    producers.Clear();
 
     // When running in Docker on macOS, localhost/127.0.0.1 URLs need to be rewritten
     // to host.docker.internal to reach the host machine
@@ -115,17 +122,29 @@ async Task<object> HandleCreate(JsonElement root)
     var contentType = GetOptionalString(root, "contentType");
     var ttlSeconds = GetOptionalInt(root, "ttlSeconds");
     var expiresAt = GetOptionalString(root, "expiresAt");
+    var closed = GetOptionalBool(root, "closed") ?? false;
+    var dataStr = GetOptionalString(root, "data");
+    var binary = GetOptionalBool(root, "binary");
     var headers = GetHeaders(root);
-
     try
     {
         var stream = client.GetStream(path);
+        byte[]? initialData = null;
+        if (!string.IsNullOrEmpty(dataStr))
+        {
+            initialData = binary == true
+                ? Convert.FromBase64String(dataStr)
+                : Encoding.UTF8.GetBytes(dataStr);
+        }
+
         var result = await stream.CreateAsync(new CreateStreamOptions
         {
             ContentType = contentType,
             Ttl = ttlSeconds.HasValue ? TimeSpan.FromSeconds(ttlSeconds.Value) : null,
             ExpiresAt = expiresAt != null ? DateTimeOffset.Parse(expiresAt) : null,
-            Headers = headers
+            Headers = headers,
+            Closed = closed,
+            InitialData = initialData
         });
         var statusCode = result == CreateStreamResult.Created ? 201 : 200;
 
@@ -243,6 +262,58 @@ async Task<object> HandleAppend(JsonElement root)
             paramsSent
         };
     }
+    catch (DurableStreamException ex) when (ex.StatusCode == 409)
+    {
+        if (ex is StreamClosedException)
+        {
+            return new
+            {
+                type = "error",
+                success = false,
+                commandType = "append",
+                errorCode = "STREAM_CLOSED",
+                status = 409,
+                message = "Stream is already closed"
+            };
+        }
+
+        try
+        {
+            var stream = client.GetStream(path);
+            var metadata = await stream.HeadAsync();
+            if (metadata.StreamClosed)
+            {
+                return new
+                {
+                    type = "error",
+                    success = false,
+                    commandType = "append",
+                    errorCode = "STREAM_CLOSED",
+                    status = 409,
+                    message = "Stream is already closed"
+                };
+            }
+        }
+        catch
+        {
+            // Fall through to standard error mapping below
+        }
+
+        if (string.IsNullOrEmpty(seq))
+        {
+            return new
+            {
+                type = "error",
+                success = false,
+                commandType = "append",
+                errorCode = "STREAM_CLOSED",
+                status = 409,
+                message = "Stream is already closed"
+            };
+        }
+
+        return CreateErrorFromException("append", ex);
+    }
     catch (Exception ex)
     {
         return CreateErrorFromException("append", ex);
@@ -294,6 +365,7 @@ async Task<object> HandleRead(JsonElement root)
 
         var chunks = new List<object>();
         var chunkCount = 0;
+        var stoppedForMaxChunks = false;
         // Use response's initial offset as default (important for offset=now)
         string? finalOffset = response.Offset.ToString();
         bool upToDate = response.UpToDate;
@@ -346,7 +418,11 @@ async Task<object> HandleRead(JsonElement root)
                     chunkCount++;
                 }
 
-                if (chunkCount >= maxChunks) break;
+                if (chunkCount >= maxChunks)
+                {
+                    stoppedForMaxChunks = true;
+                    break;
+                }
                 if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;
                 if (upToDate && waitForUpToDate) break;
             }
@@ -368,6 +444,14 @@ async Task<object> HandleRead(JsonElement root)
         // Return 204 for long-poll with no data
         var status = (live == LiveMode.LongPoll && chunks.Count == 0) ? 204 : 200;
 
+        // Get stream closed status from response, fallback to HEAD if needed
+        var streamClosedStatus = response.StreamClosed;
+        if (stoppedForMaxChunks)
+        {
+            // We intentionally stopped early; do not report streamClosed yet.
+            streamClosedStatus = false;
+        }
+
         return new
         {
             type = "read",
@@ -378,7 +462,8 @@ async Task<object> HandleRead(JsonElement root)
             upToDate,
             cursor,
             headersSent,
-            paramsSent
+            paramsSent,
+            streamClosed = streamClosedStatus
         };
     }
     catch (Exception ex)
@@ -412,12 +497,80 @@ async Task<object> HandleHead(JsonElement root)
             offset = metadata.Offset?.ToString(),
             contentType = metadata.ContentType,
             ttlSeconds = metadata.Ttl.HasValue ? (int?)metadata.Ttl.Value.TotalSeconds : null,
-            expiresAt = metadata.ExpiresAt?.ToString("o")
+            expiresAt = metadata.ExpiresAt?.ToString("o"),
+            streamClosed = metadata.StreamClosed
         };
     }
     catch (Exception ex)
     {
         return CreateErrorFromException("head", ex);
+    }
+}
+
+async Task<object> HandleClose(JsonElement root)
+{
+    if (client == null) return CreateError("close", "INTERNAL_ERROR", "Client not initialized");
+
+    var path = root.GetProperty("path").GetString()!;
+    var dataStr = GetOptionalString(root, "data");
+    var binary = GetOptionalBool(root, "binary");
+    var contentType = GetOptionalString(root, "contentType");
+    var headers = GetHeaders(root);
+
+    try
+    {
+        var stream = client.GetStream(path);
+
+        // Set content type from cache if not provided
+        if (contentType == null && streamContentTypes.TryGetValue(path, out var ct))
+        {
+            stream.ContentType = ct;
+            contentType = ct;
+        }
+
+        byte[]? data = null;
+        if (!string.IsNullOrEmpty(dataStr))
+        {
+            if (binary == true)
+            {
+                data = Convert.FromBase64String(dataStr);
+            }
+            else
+            {
+                data = Encoding.UTF8.GetBytes(dataStr);
+            }
+        }
+
+        var result = await stream.CloseAsync(new CloseOptions
+        {
+            Data = data,
+            ContentType = contentType,
+            Headers = headers
+        });
+
+        return new
+        {
+            type = "close",
+            success = true,
+            status = 200,
+            finalOffset = result.FinalOffset.ToString()
+        };
+    }
+    catch (StreamClosedException)
+    {
+        return new
+        {
+            type = "error",
+            success = false,
+            commandType = "close",
+            errorCode = "STREAM_CLOSED",
+            status = 409,
+            message = "Stream is already closed"
+        };
+    }
+    catch (Exception ex)
+    {
+        return CreateErrorFromException("close", ex);
     }
 }
 
@@ -476,7 +629,7 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
             stream.ContentType = ct;
         }
 
-        var producer = stream.CreateProducer(producerId, new IdempotentProducerOptions
+        var producer = GetOrCreateProducer(stream, path, producerId, new IdempotentProducerOptions
         {
             Epoch = epoch,
             AutoClaim = autoClaim,
@@ -484,13 +637,9 @@ async Task<object> HandleIdempotentAppend(JsonElement root)
             Linger = TimeSpan.Zero
         });
 
-        await using (producer)
-        {
-            // Data is already pre-serialized, just pass it through
-            producer.Append(data);
-
-            await producer.FlushAsync();
-        }
+        // Data is already pre-serialized, just pass it through
+        producer.Append(data);
+        await producer.FlushAsync();
 
         return new
         {
@@ -612,6 +761,88 @@ async Task<object> HandleIdempotentAppendBatch(JsonElement root)
     {
         return CreateErrorFromException("idempotent-append-batch", ex);
     }
+}
+
+async Task<object> HandleIdempotentClose(JsonElement root)
+{
+    if (client == null) return CreateError("idempotent-close", "INTERNAL_ERROR", "Client not initialized");
+
+    var path = root.GetProperty("path").GetString()!;
+    var dataStr = GetOptionalString(root, "data");
+    var binary = GetOptionalBool(root, "binary");
+    var producerId = root.GetProperty("producerId").GetString()!;
+    var epoch = root.GetProperty("epoch").GetInt32();
+    var autoClaim = root.GetProperty("autoClaim").GetBoolean();
+    var headers = GetHeaders(root);
+
+    try
+    {
+        var stream = client.GetStream(path);
+
+        if (streamContentTypes.TryGetValue(path, out var ct))
+        {
+            stream.ContentType = ct;
+        }
+
+        var producer = GetOrCreateProducer(stream, path, producerId, new IdempotentProducerOptions
+        {
+            Epoch = epoch,
+            AutoClaim = autoClaim,
+            MaxInFlight = 1,
+            Linger = TimeSpan.Zero
+        });
+
+        ReadOnlyMemory<byte> data = default;
+        if (!string.IsNullOrEmpty(dataStr))
+        {
+            data = binary == true
+                ? Convert.FromBase64String(dataStr)
+                : Encoding.UTF8.GetBytes(dataStr);
+        }
+
+        var result = await producer.CloseStreamAsync(data);
+
+        return new
+        {
+            type = "idempotent-close",
+            success = true,
+            status = 200,
+            finalOffset = result.NextOffset?.ToString()
+        };
+    }
+    catch (StreamClosedException)
+    {
+        return new
+        {
+            type = "error",
+            success = false,
+            commandType = "idempotent-close",
+            errorCode = "STREAM_CLOSED",
+            status = 409,
+            message = "Stream is already closed"
+        };
+    }
+    catch (Exception ex)
+    {
+        return CreateErrorFromException("idempotent-close", ex);
+    }
+}
+
+async Task<object> HandleIdempotentDetach(JsonElement root)
+{
+    if (client == null) return CreateError("idempotent-detach", "INTERNAL_ERROR", "Client not initialized");
+
+    var path = root.GetProperty("path").GetString()!;
+    var producerId = root.GetProperty("producerId").GetString()!;
+
+    await DetachProducerAsync(path, producerId);
+
+    return new
+    {
+        type = "idempotent-detach",
+        success = true,
+        status = 200
+    };
 }
 
 object HandleSetDynamicHeader(JsonElement root)
@@ -1010,13 +1241,49 @@ async Task<object> BenchmarkThroughputRead(JsonElement op)
     };
 }
 
-object HandleShutdown()
+async Task<object> HandleShutdown()
 {
+    await CloseAllProducersAsync();
     client?.Dispose();
     return new { type = "shutdown", success = true };
 }
 
 // Helper functions
+IdempotentProducer GetOrCreateProducer(
+    DurableStream stream,
+    string path,
+    string producerId,
+    IdempotentProducerOptions options)
+{
+    var key = (path, producerId);
+    if (producers.TryGetValue(key, out var existing))
+    {
+        return existing;
+    }
+
+    var producer = stream.CreateProducer(producerId, options);
+    producers[key] = producer;
+    return producer;
+}
+
+async Task DetachProducerAsync(string path, string producerId)
+{
+    var key = (path, producerId);
+    if (producers.Remove(key, out var producer))
+    {
+        await producer.DisposeAsync();
+    }
+}
+
+async Task CloseAllProducersAsync()
+{
+    foreach (var producer in producers.Values)
+    {
+        await producer.DisposeAsync();
+    }
+    producers.Clear();
+}
+
 string? GetOptionalString(JsonElement root, string name)
 {
     return root.TryGetProperty(name, out var prop) && prop.ValueKind == JsonValueKind.String
@@ -1125,6 +1392,7 @@ object CreateErrorFromException(string commandType, Exception ex)
         StreamNotFoundException => ("NOT_FOUND", 404),
         StaleEpochException => ("FORBIDDEN", 403),
         SequenceGapException => ("SEQUENCE_CONFLICT", 409),
+        StreamClosedException => ("STREAM_CLOSED", 409),
         DurableStreamException dse => (MapErrorCode(dse), dse.StatusCode ?? 500),
         InvalidOperationException when ex.Message.Contains("SSE") || ex.Message.Contains("JSON") => ("PARSE_ERROR", null as int?),
         OperationCanceledException => ("TIMEOUT", null as int?),
@@ -1142,6 +1410,7 @@ object CreateErrorFromException(string commandType, Exception ex)
                 dse.Message.ToLowerInvariant().Contains("offset") => "INVALID_OFFSET",
             DurableStreamErrorCode.ConflictSeq => "SEQUENCE_CONFLICT",
             DurableStreamErrorCode.ConflictExists => "CONFLICT",
+            DurableStreamErrorCode.StreamClosed => "STREAM_CLOSED",
             _ => dse.Code.ToString().ToUpperInvariant()
         };
     }

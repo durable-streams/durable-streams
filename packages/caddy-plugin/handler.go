@@ -2,6 +2,7 @@ package durablestreams
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,12 +20,14 @@ import (
 
 // Protocol header names
 const (
-	HeaderStreamNextOffset = "Stream-Next-Offset"
-	HeaderStreamCursor     = "Stream-Cursor"
-	HeaderStreamUpToDate   = "Stream-Up-To-Date"
-	HeaderStreamSeq        = "Stream-Seq"
-	HeaderStreamTTL        = "Stream-TTL"
-	HeaderStreamExpiresAt  = "Stream-Expires-At"
+	HeaderStreamNextOffset      = "Stream-Next-Offset"
+	HeaderStreamCursor          = "Stream-Cursor"
+	HeaderStreamUpToDate        = "Stream-Up-To-Date"
+	HeaderStreamSeq             = "Stream-Seq"
+	HeaderStreamTTL             = "Stream-TTL"
+	HeaderStreamExpiresAt       = "Stream-Expires-At"
+	HeaderStreamClosed          = "Stream-Closed"
+	HeaderStreamSSEDataEncoding = "Stream-SSE-Data-Encoding"
 
 	// Idempotent producer headers
 	HeaderProducerId          = "Producer-Id"
@@ -43,8 +46,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -93,6 +96,10 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	contentType := r.Header.Get("Content-Type")
 	ttlStr := r.Header.Get(HeaderStreamTTL)
 	expiresAtStr := r.Header.Get(HeaderStreamExpiresAt)
+	closedStr := r.Header.Get(HeaderStreamClosed)
+
+	// Parse Stream-Closed header
+	createClosed := closedStr == "true"
 
 	// Validate TTL and ExpiresAt aren't both provided
 	if ttlStr != "" && expiresAtStr != "" {
@@ -134,6 +141,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		TTLSeconds:  ttlSeconds,
 		ExpiresAt:   expiresAt,
 		InitialData: initialData,
+		Closed:      createClosed,
 	}
 
 	meta, wasCreated, err := h.store.Create(path, opts)
@@ -147,6 +155,11 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Set response headers
 	w.Header().Set("Content-Type", meta.ContentType)
 	w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+
+	// Include Stream-Closed header if stream is closed
+	if meta.Closed {
+		w.Header().Set(HeaderStreamClosed, "true")
+	}
 
 	if wasCreated {
 		// Build full URL for Location header
@@ -194,6 +207,11 @@ func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request, path string
 		w.Header().Set(HeaderStreamExpiresAt, meta.ExpiresAt.Format(time.RFC3339))
 	}
 
+	// Include Stream-Closed header if stream is closed
+	if meta.Closed {
+		w.Header().Set(HeaderStreamClosed, "true")
+	}
+
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -233,7 +251,6 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// Check for live mode
 	liveMode := query.Get("live")
 	cursor := query.Get("cursor")
-
 	// Validate long-poll requires offset
 	if liveMode == "long-poll" && !offsetProvided {
 		return newHTTPError(http.StatusBadRequest, "offset required for long-poll mode")
@@ -246,12 +263,17 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 
 	// Handle SSE mode first (before reading)
 	if liveMode == "sse" {
+		// Auto-detect binary content types for base64 encoding
+		ct := strings.ToLower(store.ExtractMediaType(meta.ContentType))
+		isTextCompatible := strings.HasPrefix(ct, "text/") || ct == "application/json"
+		useBase64 := !isTextCompatible
+
 		// For SSE with offset=now, convert to actual tail offset
 		sseOffset := offset
 		if offset.IsNow() {
 			sseOffset = meta.CurrentOffset
 		}
-		return h.handleSSE(w, r, path, sseOffset, cursor)
+		return h.handleSSE(w, r, path, sseOffset, cursor, useBase64)
 	}
 
 	// For offset=now, convert to actual tail offset
@@ -268,6 +290,11 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		w.Header().Set("Content-Type", meta.ContentType)
 		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
 		w.Header().Set(HeaderStreamUpToDate, "true")
+
+		// Include Stream-Closed if stream is closed (client at tail, upToDate)
+		if meta.Closed {
+			w.Header().Set(HeaderStreamClosed, "true")
+		}
 
 		// Prevent caching - tail offset changes with each append
 		w.Header().Set("Cache-Control", "no-store")
@@ -305,13 +332,25 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// 2. Client is caught up (at the tail)
 	shouldWait := liveMode == "long-poll" && len(messages) == 0 && (isNowOffset || effectiveOffset.Equal(meta.CurrentOffset))
 	if shouldWait {
+		// If stream is closed and client is at tail, return immediately (don't wait)
+		if meta.Closed {
+			w.Header().Set("Content-Type", meta.ContentType)
+			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+			w.Header().Set(HeaderStreamUpToDate, "true")
+			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		}
+
 		// Client is caught up, wait for new data
 		timeout := time.Duration(h.LongPollTimeout)
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 
 		var timedOut bool
-		messages, timedOut, err = h.store.WaitForMessages(ctx, path, effectiveOffset, timeout)
+		var streamClosed bool
+		messages, timedOut, streamClosed, err = h.store.WaitForMessages(ctx, path, effectiveOffset, timeout)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				// Timeout or client disconnect - return 204 with current offset
@@ -319,10 +358,26 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 				w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 				w.Header().Set(HeaderStreamUpToDate, "true")
 				w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
+				// Check if stream was closed during wait
+				currentMeta, _ := h.store.Get(path)
+				if currentMeta != nil && currentMeta.Closed {
+					w.Header().Set(HeaderStreamClosed, "true")
+				}
 				w.WriteHeader(http.StatusNoContent)
 				return nil
 			}
 			return err
+		}
+
+		// If stream was closed during wait, return immediately with Stream-Closed
+		if streamClosed {
+			w.Header().Set("Content-Type", meta.ContentType)
+			w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
+			w.Header().Set(HeaderStreamUpToDate, "true")
+			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
+			w.WriteHeader(http.StatusNoContent)
+			return nil
 		}
 
 		if timedOut {
@@ -331,6 +386,11 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 			w.Header().Set(HeaderStreamNextOffset, effectiveOffset.String())
 			w.Header().Set(HeaderStreamUpToDate, "true")
 			w.Header().Set(HeaderStreamCursor, generateResponseCursor(cursor))
+			// Check if stream was closed during timeout
+			currentMeta, _ := h.store.Get(path)
+			if currentMeta != nil && currentMeta.Closed {
+				w.Header().Set(HeaderStreamClosed, "true")
+			}
 			w.WriteHeader(http.StatusNoContent)
 			return nil
 		}
@@ -353,6 +413,11 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// Always set Stream-Up-To-Date when at tail
 	if upToDate {
 		w.Header().Set(HeaderStreamUpToDate, "true")
+	}
+
+	// Include Stream-Closed when stream is closed AND client is at tail AND upToDate
+	if currentMeta.Closed && upToDate {
+		w.Header().Set(HeaderStreamClosed, "true")
 	}
 
 	// Generate Stream-Cursor for long-poll responses (CDN cache collision prevention)
@@ -441,16 +506,10 @@ func generateResponseCursor(clientCursor string) string {
 }
 
 // handleSSE handles Server-Sent Events streaming
-func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string) error {
+func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string, offset store.Offset, cursor string, useBase64 bool) error {
 	meta, err := h.store.Get(path)
 	if err != nil {
 		return err
-	}
-
-	// Validate content type for SSE (must be text/* or application/json)
-	ct := strings.ToLower(store.ExtractMediaType(meta.ContentType))
-	if !strings.HasPrefix(ct, "text/") && ct != "application/json" {
-		return newHTTPError(http.StatusBadRequest, "SSE mode requires text/* or application/json content type")
 	}
 
 	// Set SSE headers
@@ -458,6 +517,11 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+
+	// Add encoding header when base64 encoding is used for binary streams
+	if useBase64 {
+		w.Header().Set(HeaderStreamSSEDataEncoding, "base64")
+	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -488,65 +552,114 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				return err
 			}
 
+			// Re-fetch current metadata to check closed state
+			currentMeta, _ := h.store.Get(path)
+			streamIsClosed := currentMeta != nil && currentMeta.Closed
+
 			if len(messages) > 0 {
 				// Send data event
 				body, _ := h.formatResponse(path, messages, meta.ContentType)
 				fmt.Fprintf(w, "event: data\n")
-				// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
-				// Note: Per SSE spec, we don't add a space after "data:" because clients
-				// strip exactly one leading space. Adding one would cause data starting
-				// with spaces to lose an extra space character.
-				for _, line := range sseLineTerminators.Split(string(body), -1) {
-					fmt.Fprintf(w, "data:%s\n", line)
+
+				if useBase64 {
+					// Base64 encode the binary data for SSE delivery (Protocol Section 5.7)
+					encoded := base64.StdEncoding.EncodeToString(body)
+					fmt.Fprintf(w, "data:%s\n", encoded)
+				} else {
+					// Split on all SSE-valid line terminators (CRLF, CR, LF) to prevent injection
+					// Note: Per SSE spec, we don't add a space after "data:" because clients
+					// strip exactly one leading space. Adding one would cause data starting
+					// with spaces to lose an extra space character.
+					for _, line := range sseLineTerminators.Split(string(body), -1) {
+						fmt.Fprintf(w, "data:%s\n", line)
+					}
 				}
 				fmt.Fprintf(w, "\n")
 
 				// Update current offset
 				currentOffset = messages[len(messages)-1].Offset
 
-				// Generate cursor with collision handling
-				responseCursor := generateResponseCursor(cursor)
+				// Check if client is now at tail of closed stream
+				clientAtTail := currentMeta != nil && currentOffset.Equal(currentMeta.CurrentOffset)
 
-				// Send control event with upToDate flag when caught up
+				// Build control event
 				control := map[string]interface{}{
 					"streamNextOffset": currentOffset.String(),
-					"streamCursor":     responseCursor,
 				}
-				if upToDate {
-					control["upToDate"] = true
+
+				if streamIsClosed && clientAtTail {
+					// Final control event - stream is closed
+					// streamCursor is omitted when streamClosed is true per protocol
+					// upToDate is implied by streamClosed per protocol
+					control["streamClosed"] = true
+				} else {
+					// Normal control event - include cursor
+					control["streamCursor"] = generateResponseCursor(cursor)
+					if upToDate {
+						control["upToDate"] = true
+					}
 				}
+
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
+
+				// Close SSE connection after sending streamClosed
+				if streamIsClosed && clientAtTail {
+					return nil
+				}
 			} else if !sentInitialControl {
 				// Send initial control event even for empty stream
-				currentMeta, _ := h.store.Get(path)
+				// Check if stream is already closed and client is at tail
+				clientAtTail := currentMeta != nil && offset.Equal(currentMeta.CurrentOffset)
 
-				// Generate cursor with collision handling
-				responseCursor := generateResponseCursor(cursor)
-
-				// For initial control without messages, we're at the current offset (up to date)
 				control := map[string]interface{}{
 					"streamNextOffset": currentMeta.CurrentOffset.String(),
-					"streamCursor":     responseCursor,
-					"upToDate":         true,
 				}
+
+				if streamIsClosed && clientAtTail {
+					// Stream already closed at tail - send final control and exit
+					control["streamClosed"] = true
+				} else {
+					// Normal initial control
+					control["streamCursor"] = generateResponseCursor(cursor)
+					control["upToDate"] = true
+				}
+
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
 				flusher.Flush()
 				sentInitialControl = true
+
+				// Close connection if stream is closed
+				if streamIsClosed && clientAtTail {
+					return nil
+				}
 			}
 
-			// Wait for more data
+			// Wait for more data or stream closure
 			timeout := 100 * time.Millisecond
 			waitCtx, cancel := context.WithTimeout(ctx, timeout)
-			h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
+			_, _, streamClosed, _ := h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
 			cancel()
+
+			// If stream was closed during wait, send final control event
+			if streamClosed {
+				control := map[string]interface{}{
+					"streamNextOffset": currentOffset.String(),
+					"streamClosed":     true,
+				}
+				controlJSON, _ := json.Marshal(control)
+				fmt.Fprintf(w, "event: control\n")
+				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
+				flusher.Flush()
+				return nil
+			}
 		}
 	}
 }
@@ -562,16 +675,12 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return err
 	}
 
-	// Check for Content-Type header - required on POST
-	contentType := r.Header.Get("Content-Type")
-	if contentType == "" {
-		return newHTTPError(http.StatusBadRequest, "Content-Type header is required")
-	}
+	// Parse Stream-Closed header
+	closedStr := r.Header.Get(HeaderStreamClosed)
+	closeStream := closedStr == "true"
 
-	// Check if content type matches stream (must validate before reading body)
-	if !store.ContentTypeMatches(meta.ContentType, contentType) {
-		return newHTTPError(http.StatusConflict, "content type mismatch")
-	}
+	// Check for Content-Type header
+	contentType := r.Header.Get("Content-Type")
 
 	// Read body
 	body, err := io.ReadAll(r.Body)
@@ -579,52 +688,135 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return newHTTPError(http.StatusBadRequest, "failed to read body")
 	}
 
-	// Reject empty body
+	// Extract producer headers early (used for close-only and append)
+	producerId := r.Header.Get(HeaderProducerId)
+	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
+	producerSeqStr := r.Header.Get(HeaderProducerSeq)
+
+	hasProducerHeaders := producerId != "" || producerEpochStr != "" || producerSeqStr != ""
+	hasAllProducerHeaders := producerId != "" && producerEpochStr != "" && producerSeqStr != ""
+
+	// Validate producer headers - all or none
+	if hasProducerHeaders && !hasAllProducerHeaders {
+		return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
+	}
+
+	var producerEpoch *int64
+	var producerSeq *int64
+	if hasAllProducerHeaders {
+		// Validate Producer-Epoch
+		if !isValidIntegerString(producerEpochStr) {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+		}
+		epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
+		}
+		producerEpoch = &epoch
+
+		// Validate Producer-Seq
+		if !isValidIntegerString(producerSeqStr) {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+		}
+		seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
+		}
+		producerSeq = &seq
+	}
+
+	// Handle close-only request (empty body with Stream-Closed: true)
+	if len(body) == 0 && closeStream {
+		// Close-only - Content-Type validation is skipped per protocol Section 5.2
+		if hasAllProducerHeaders {
+			result, err := h.store.CloseStreamWithProducer(path, store.CloseProducerOptions{
+				ProducerId:    producerId,
+				ProducerEpoch: *producerEpoch,
+				ProducerSeq:   *producerSeq,
+			})
+			if err != nil {
+				if errors.Is(err, store.ErrStreamNotFound) {
+					return newHTTPError(http.StatusNotFound, "stream not found")
+				}
+				if errors.Is(err, store.ErrStaleEpoch) {
+					w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(result.CurrentEpoch, 10))
+					http.Error(w, "producer epoch is stale", http.StatusForbidden)
+					return nil
+				}
+				if errors.Is(err, store.ErrInvalidEpochSeq) {
+					return newHTTPError(http.StatusBadRequest, "new epoch must start at sequence 0")
+				}
+				if errors.Is(err, store.ErrProducerSeqGap) {
+					w.Header().Set(HeaderProducerExpectedSeq, strconv.FormatInt(result.ExpectedSeq, 10))
+					w.Header().Set(HeaderProducerReceivedSeq, strconv.FormatInt(result.ReceivedSeq, 10))
+					http.Error(w, "producer sequence gap detected", http.StatusConflict)
+					return nil
+				}
+				if errors.Is(err, store.ErrStreamClosed) {
+					w.Header().Set(HeaderStreamClosed, "true")
+					http.Error(w, "stream is closed", http.StatusConflict)
+					return nil
+				}
+				return err
+			}
+
+			w.Header().Set(HeaderStreamNextOffset, result.FinalOffset.String())
+			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderProducerEpoch, strconv.FormatInt(*producerEpoch, 10))
+			w.Header().Set(HeaderProducerSeq, strconv.FormatInt(result.LastSeq, 10))
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		}
+
+		result, err := h.store.CloseStream(path)
+		if err != nil {
+			if errors.Is(err, store.ErrStreamNotFound) {
+				return newHTTPError(http.StatusNotFound, "stream not found")
+			}
+			return err
+		}
+
+		w.Header().Set(HeaderStreamNextOffset, result.FinalOffset.String())
+		w.Header().Set(HeaderStreamClosed, "true")
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	// Empty body without Stream-Closed is an error
 	if len(body) == 0 {
 		return newHTTPError(http.StatusBadRequest, "empty body not allowed")
+	}
+
+	// Content-Type is required for requests with body
+	if contentType == "" {
+		return newHTTPError(http.StatusBadRequest, "Content-Type header is required")
+	}
+
+	// Check if content type matches stream (must validate before processing)
+	if !store.ContentTypeMatches(meta.ContentType, contentType) {
+		return newHTTPError(http.StatusConflict, "content type mismatch")
 	}
 
 	opts := store.AppendOptions{
 		Seq:         r.Header.Get(HeaderStreamSeq),
 		ContentType: contentType,
+		Close:       closeStream,
 	}
 
-	// Extract producer headers
-	producerId := r.Header.Get(HeaderProducerId)
-	producerEpochStr := r.Header.Get(HeaderProducerEpoch)
-	producerSeqStr := r.Header.Get(HeaderProducerSeq)
-
-	// Parse producer headers if any are present
-	if producerId != "" || producerEpochStr != "" || producerSeqStr != "" {
+	if hasAllProducerHeaders {
 		opts.ProducerId = producerId
-
-		if producerEpochStr != "" {
-			// Validate format: must be a valid integer (no floats, no trailing chars)
-			if !isValidIntegerString(producerEpochStr) {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
-			}
-			epoch, err := strconv.ParseInt(producerEpochStr, 10, 64)
-			if err != nil {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Epoch: must be an integer")
-			}
-			opts.ProducerEpoch = &epoch
-		}
-
-		if producerSeqStr != "" {
-			// Validate format: must be a valid integer (no floats, no trailing chars)
-			if !isValidIntegerString(producerSeqStr) {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
-			}
-			seq, err := strconv.ParseInt(producerSeqStr, 10, 64)
-			if err != nil {
-				return newHTTPError(http.StatusBadRequest, "invalid Producer-Seq: must be an integer")
-			}
-			opts.ProducerSeq = &seq
-		}
+		opts.ProducerEpoch = producerEpoch
+		opts.ProducerSeq = producerSeq
 	}
 
 	result, err := h.store.Append(path, body, opts)
 	if err != nil {
+		if errors.Is(err, store.ErrStreamClosed) {
+			// Stream is closed - return 409 with Stream-Closed header
+			w.Header().Set(HeaderStreamClosed, "true")
+			http.Error(w, "stream is closed", http.StatusConflict)
+			return nil
+		}
 		if errors.Is(err, store.ErrSequenceConflict) {
 			return newHTTPError(http.StatusConflict, "sequence number conflict")
 		}
@@ -662,6 +854,11 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+
+	// Include Stream-Closed header if stream was closed
+	if result.StreamClosed {
+		w.Header().Set(HeaderStreamClosed, "true")
+	}
 
 	// Echo Producer-Epoch and Producer-Seq on success when producer headers were provided
 	if opts.ProducerEpoch != nil {

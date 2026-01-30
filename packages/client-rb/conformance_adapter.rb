@@ -32,11 +32,14 @@ module ErrorCode
   PARSE_ERROR = "PARSE_ERROR"
   INTERNAL_ERROR = "INTERNAL_ERROR"
   NOT_SUPPORTED = "NOT_SUPPORTED"
+  STREAM_CLOSED = "STREAM_CLOSED"
 end
 
 # Global state
 $server_url = ""
 $stream_content_types = {}
+$producer_next_seq = {}
+$producer_stream_closed = {}
 
 # Dynamic headers/params state
 class DynamicValue
@@ -66,6 +69,31 @@ end
 $dynamic_headers = {}
 $dynamic_params = {}
 
+def producer_seq_key(path, producer_id, epoch)
+  "#{path}|#{producer_id}|#{epoch}"
+end
+
+def producer_key(path, producer_id)
+  "#{path}|#{producer_id}"
+end
+
+def drop_producer_epochs(path, producer_id)
+  prefix = "#{path}|#{producer_id}|"
+  $producer_next_seq.keys.each do |key|
+    $producer_next_seq.delete(key) if key.start_with?(prefix)
+  end
+end
+
+def clear_producer_for_path(path)
+  prefix = "#{path}|"
+  $producer_next_seq.keys.each do |key|
+    $producer_next_seq.delete(key) if key.start_with?(prefix)
+  end
+  $producer_stream_closed.keys.each do |key|
+    $producer_stream_closed.delete(key) if key.start_with?(prefix)
+  end
+end
+
 def resolve_dynamic_values(dynamic_map)
   resolved = {}
   dynamic_map.each do |name, config|
@@ -90,6 +118,8 @@ def map_error_code(err)
     [ErrorCode::NOT_FOUND, 404]
   when DurableStreams::StreamExistsError
     [ErrorCode::CONFLICT, 409]
+  when DurableStreams::StreamClosedError
+    [ErrorCode::STREAM_CLOSED, 409]
   when DurableStreams::SeqConflictError
     [ErrorCode::SEQUENCE_CONFLICT, 409]
   when DurableStreams::BadRequestError
@@ -131,6 +161,8 @@ def handle_init(cmd)
   $stream_content_types.clear
   $dynamic_headers.clear
   $dynamic_params.clear
+  $producer_next_seq.clear
+  $producer_stream_closed.clear
 
   {
     "type" => "init",
@@ -142,7 +174,8 @@ def handle_init(cmd)
       "sse" => true,
       "longPoll" => true,
       "streaming" => true,
-      "dynamicHeaders" => true
+      "dynamicHeaders" => true,
+      "sseBase64Encoding" => true
     }
   }
 end
@@ -150,6 +183,11 @@ end
 def handle_create(cmd)
   url = "#{$server_url}#{cmd["path"]}"
   content_type = cmd["contentType"] || "application/octet-stream"
+  closed = cmd["closed"] || false
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
 
   # Check if stream already exists
   already_exists = false
@@ -168,7 +206,9 @@ def handle_create(cmd)
     content_type: content_type,
     ttl_seconds: cmd["ttlSeconds"],
     expires_at: cmd["expiresAt"],
-    headers: headers
+    headers: headers,
+    closed: closed,
+    body: data
   )
 
   # Cache content type
@@ -302,7 +342,11 @@ def handle_read(cmd)
         end
       else
         reader.each do |chunk|
-          chunks << { "data" => chunk.data, "offset" => chunk.next_offset } unless chunk.data.empty?
+          unless chunk.data.empty?
+            # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+            chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+            chunks << chunk_entry
+          end
           final_offset = chunk.next_offset
           up_to_date = chunk.up_to_date
         end
@@ -311,23 +355,41 @@ def handle_read(cmd)
       reader.close
     elsif live == :sse
       # SSE mode with timeout
-      reader = stream.read(offset: offset, live: :sse, format: :json)
+      reader = stream.read(offset: offset, live: :sse, format: format)
       chunk_count = 0
 
       begin
         Timeout.timeout(timeout_ms / 1000.0) do
-          reader.each_batch do |batch|
-            unless batch.items.empty?
-              data = JSON.generate(batch.items)
-              chunks << { "data" => data, "offset" => batch.next_offset }
-              chunk_count += 1
+          if is_json
+            reader.each_batch do |batch|
+              unless batch.items.empty?
+                data = JSON.generate(batch.items)
+                chunks << { "data" => data, "offset" => batch.next_offset }
+                chunk_count += 1
+              end
+
+              final_offset = batch.next_offset
+              up_to_date = batch.up_to_date
+
+              break if chunk_count >= max_chunks
+              break if wait_for_up_to_date && up_to_date
             end
+          else
+            # For byte streams (server auto-encodes binary as base64)
+            reader.each do |chunk|
+              unless chunk.data.empty?
+                # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+                chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+                chunks << chunk_entry
+                chunk_count += 1
+              end
 
-            final_offset = batch.next_offset
-            up_to_date = batch.up_to_date
+              final_offset = chunk.next_offset
+              up_to_date = chunk.up_to_date
 
-            break if chunk_count >= max_chunks
-            break if wait_for_up_to_date && up_to_date
+              break if chunk_count >= max_chunks
+              break if wait_for_up_to_date && up_to_date
+            end
           end
         end
       rescue Timeout::Error
@@ -360,7 +422,9 @@ def handle_read(cmd)
         else
           reader.each do |chunk|
             unless chunk.data.empty?
-              chunks << { "data" => chunk.data, "offset" => chunk.next_offset }
+              # Try to return as UTF-8 string; if data contains non-UTF8 bytes, base64 encode
+              chunk_entry = encode_chunk_data(chunk.data, chunk.next_offset)
+              chunks << chunk_entry
               chunk_count += 1
             end
 
@@ -381,13 +445,23 @@ def handle_read(cmd)
     up_to_date = true
   end
 
+  # Check stream closed status by doing a HEAD request
+  stream_closed = false
+  begin
+    head_result = stream.head
+    stream_closed = head_result.stream_closed
+  rescue StandardError
+    # Ignore errors - stream_closed defaults to false
+  end
+
   result = {
     "type" => "read",
     "success" => true,
     "status" => status,
     "chunks" => chunks,
     "offset" => final_offset,
-    "upToDate" => up_to_date
+    "upToDate" => up_to_date,
+    "streamClosed" => stream_closed
   }
   result["headersSent"] = headers_sent unless headers_sent.empty?
   result["paramsSent"] = params_sent unless params_sent.empty?
@@ -409,7 +483,32 @@ def handle_head(cmd)
     "success" => true,
     "status" => 200,
     "offset" => result.next_offset,
-    "contentType" => result.content_type
+    "contentType" => result.content_type,
+    "streamClosed" => result.stream_closed
+  }
+end
+
+def handle_close(cmd)
+  url = "#{$server_url}#{cmd["path"]}"
+
+  # Get content type from cache or default
+  content_type = cmd["contentType"] || $stream_content_types[cmd["path"]] || "application/octet-stream"
+
+  headers = cmd["headers"] || {}
+  stream = DurableStreams::Stream.new(url, content_type: content_type, headers: headers)
+
+  # Decode data if provided
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  result = stream.close_stream(data: data, content_type: content_type)
+
+  {
+    "type" => "close",
+    "success" => true,
+    "finalOffset" => result.final_offset
   }
 end
 
@@ -422,6 +521,7 @@ def handle_delete(cmd)
 
   # Remove from cache
   $stream_content_types.delete(cmd["path"])
+  clear_producer_for_path(cmd["path"])
 
   {
     "type" => "delete",
@@ -658,6 +758,12 @@ def handle_idempotent_append(cmd)
   auto_claim = cmd["autoClaim"] || false
   # Data is already pre-serialized, pass directly to append()
   data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  seq_key = producer_seq_key(cmd["path"], producer_id, epoch)
+  next_seq = $producer_next_seq[seq_key] || 0
 
   producer = DurableStreams::Producer.new(
     url: url,
@@ -666,12 +772,17 @@ def handle_idempotent_append(cmd)
     auto_claim: auto_claim,
     max_in_flight: 1,
     linger_ms: 0,
-    content_type: content_type
+    content_type: content_type,
+    next_seq: next_seq
   )
 
   producer.append(data)
   producer.flush
-  producer.close
+
+  final_epoch = producer.epoch
+  final_next_seq = producer.seq + 1
+  drop_producer_epochs(cmd["path"], producer_id)
+  $producer_next_seq[producer_seq_key(cmd["path"], producer_id, final_epoch)] = final_next_seq
 
   {
     "type" => "idempotent-append",
@@ -715,6 +826,87 @@ def handle_idempotent_append_batch(cmd)
     "success" => true,
     "status" => 200
   }
+end
+
+def handle_idempotent_close(cmd)
+  url = "#{$server_url}#{cmd["path"]}"
+
+  content_type = cmd["contentType"] || $stream_content_types[cmd["path"]] || "application/octet-stream"
+
+  producer_id = cmd["producerId"]
+  epoch = cmd["epoch"] || 0
+  auto_claim = cmd["autoClaim"] || false
+
+  data = cmd["data"]
+  if data && (cmd["binary"] || false)
+    data = Base64.decode64(data)
+  end
+
+  producer_key = producer_key(cmd["path"], producer_id)
+  if $producer_stream_closed[producer_key]
+    return {
+      "type" => "idempotent-close",
+      "success" => true,
+      "status" => 200
+    }
+  end
+
+  seq_key = producer_seq_key(cmd["path"], producer_id, epoch)
+  next_seq = $producer_next_seq[seq_key] || 0
+
+  producer = DurableStreams::Producer.new(
+    url: url,
+    producer_id: producer_id,
+    epoch: epoch,
+    auto_claim: auto_claim,
+    max_in_flight: 1,
+    linger_ms: 0,
+    content_type: content_type,
+    next_seq: next_seq
+  )
+
+  producer.close_stream(data: data)
+
+  final_epoch = producer.epoch
+  final_next_seq = producer.seq + 1
+  drop_producer_epochs(cmd["path"], producer_id)
+  $producer_next_seq[producer_seq_key(cmd["path"], producer_id, final_epoch)] = final_next_seq
+  $producer_stream_closed[producer_key] = true
+
+  {
+    "type" => "idempotent-close",
+    "success" => true,
+    "status" => 200
+  }
+end
+
+def handle_idempotent_detach(cmd)
+  drop_producer_epochs(cmd["path"], cmd["producerId"])
+  $producer_stream_closed.delete(producer_key(cmd["path"], cmd["producerId"]))
+
+  {
+    "type" => "idempotent-detach",
+    "success" => true,
+    "status" => 200
+  }
+end
+
+# Helper to encode chunk data for JSON response.
+# Returns data as UTF-8 string if valid, otherwise base64 encodes and sets binary flag.
+def encode_chunk_data(data, offset)
+  # Try to convert to UTF-8
+  begin
+    utf8_data = data.dup.force_encoding("UTF-8")
+    if utf8_data.valid_encoding?
+      { "data" => utf8_data, "offset" => offset }
+    else
+      # Data contains non-UTF8 bytes, must base64 encode
+      { "data" => Base64.strict_encode64(data), "offset" => offset, "binary" => true }
+    end
+  rescue StandardError
+    # Any encoding error means we should base64 encode
+    { "data" => Base64.strict_encode64(data), "offset" => offset, "binary" => true }
+  end
 end
 
 def validation_error(message)
@@ -780,6 +972,7 @@ def handle_command(cmd)
     when "append" then handle_append(cmd)
     when "read" then handle_read(cmd)
     when "head" then handle_head(cmd)
+    when "close" then handle_close(cmd)
     when "delete" then handle_delete(cmd)
     when "shutdown" then handle_shutdown(cmd)
     when "benchmark" then handle_benchmark(cmd)
@@ -788,6 +981,8 @@ def handle_command(cmd)
     when "clear-dynamic" then handle_clear_dynamic(cmd)
     when "idempotent-append" then handle_idempotent_append(cmd)
     when "idempotent-append-batch" then handle_idempotent_append_batch(cmd)
+    when "idempotent-close" then handle_idempotent_close(cmd)
+    when "idempotent-detach" then handle_idempotent_detach(cmd)
     when "validate" then handle_validate(cmd)
     else
       {
@@ -817,7 +1012,11 @@ def main
     begin
       command = JSON.parse(line)
       result = handle_command(command)
-      puts JSON.generate(result)
+      # Generate JSON and escape U+2028/U+2029 which are line terminators
+      # that can break JavaScript JSON parsers
+      json_output = JSON.generate(result)
+      json_output = json_output.gsub("\u2028", "\\u2028").gsub("\u2029", "\\u2029")
+      puts json_output
       $stdout.flush
 
       break if command["type"] == "shutdown"

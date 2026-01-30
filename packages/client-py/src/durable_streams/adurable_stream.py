@@ -17,6 +17,7 @@ import httpx
 
 from durable_streams._errors import (
     SeqConflictError,
+    StreamClosedError,
     StreamExistsError,
     StreamNotFoundError,
     error_from_status,
@@ -28,11 +29,13 @@ from durable_streams._parse import (
     wrap_for_json_append,
 )
 from durable_streams._types import (
+    STREAM_CLOSED_HEADER,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
     STREAM_SEQ_HEADER,
     STREAM_TTL_HEADER,
     AppendResult,
+    CloseResult,
     HeadersLike,
     HeadResult,
     LiveMode,
@@ -199,6 +202,7 @@ class AsyncDurableStream:
         params: ParamsLike | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float | httpx.Timeout | None = None,
+        closed: bool = False,
         **kwargs: Any,
     ) -> AsyncDurableStream:
         """
@@ -222,6 +226,7 @@ class AsyncDurableStream:
                 ttl_seconds=ttl_seconds,
                 expires_at=expires_at,
                 body=body,
+                closed=closed,
             )
         except Exception:
             # Close the handle to avoid leaking the client if we created it
@@ -306,6 +311,9 @@ class AsyncDurableStream:
         offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
         etag = response.headers.get("etag")
         cache_control = response.headers.get("cache-control")
+        stream_closed = (
+            response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+        )
 
         if content_type:
             self._content_type = content_type
@@ -316,6 +324,7 @@ class AsyncDurableStream:
             offset=offset,
             etag=etag,
             cache_control=cache_control,
+            stream_closed=stream_closed,
         )
 
     async def create_stream(
@@ -325,6 +334,7 @@ class AsyncDurableStream:
         ttl_seconds: int | None = None,
         expires_at: str | None = None,
         body: bytes | str | Any | None = None,
+        closed: bool = False,
     ) -> None:
         """Create this stream on the server."""
         resolved_headers = await resolve_headers_async(self._headers)
@@ -338,6 +348,8 @@ class AsyncDurableStream:
             resolved_headers[STREAM_TTL_HEADER] = str(ttl_seconds)
         if expires_at:
             resolved_headers[STREAM_EXPIRES_AT_HEADER] = expires_at
+        if closed:
+            resolved_headers[STREAM_CLOSED_HEADER] = "true"
 
         request_body: bytes | None = None
         if body is not None:
@@ -391,6 +403,57 @@ class AsyncDurableStream:
                 self._url,
                 headers=headers_dict,
             )
+
+    async def close_stream(
+        self,
+        *,
+        data: bytes | str | Any | None = None,
+        content_type: str | None = None,
+    ) -> CloseResult:
+        """Close this stream, optionally appending final data."""
+        resolved_headers = await resolve_headers_async(self._headers)
+        resolved_params = await resolve_params_async(self._params)
+        request_url = build_url_with_params(self._url, resolved_params)
+
+        resolved_headers[STREAM_CLOSED_HEADER] = "true"
+
+        ct = content_type or self._content_type
+        if ct:
+            resolved_headers["content-type"] = ct
+        request_body: bytes | None = None
+        if data is not None:
+            if is_json_content_type(ct):
+                body_str = data if isinstance(data, str) else data.decode("utf-8")
+                request_body = f"[{body_str}]".encode()
+            else:
+                request_body = encode_body(data)
+
+        response = await self._client.post(
+            request_url,
+            headers=resolved_headers,
+            content=request_body,
+            timeout=self._timeout,
+        )
+
+        if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
+
+        if not response.is_success and response.status_code != 204:
+            headers_dict = parse_httpx_headers(response.headers)
+            raise error_from_status(
+                response.status_code,
+                self._url,
+                body=response.text,
+                headers=headers_dict,
+            )
+
+        final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER, "")
+        return CloseResult(final_offset=final_offset)
 
     async def append(
         self,
@@ -456,6 +519,12 @@ class AsyncDurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:
@@ -578,6 +647,12 @@ class AsyncDurableStream:
         )
 
         if response.status_code == 409:
+            is_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            if is_closed:
+                final_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+                raise StreamClosedError(url=self._url, final_offset=final_offset)
             raise SeqConflictError()
 
         if not response.is_success and response.status_code != 204:

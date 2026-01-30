@@ -61,6 +61,7 @@ class HeadResult:
         offset: The tail offset (next offset after current end of stream)
         etag: ETag for cache validation
         cache_control: Cache-Control header value
+        stream_closed: Whether the stream has been closed (no more appends)
     """
 
     exists: Literal[True]
@@ -68,6 +69,19 @@ class HeadResult:
     offset: Offset | None = None
     etag: str | None = None
     cache_control: str | None = None
+    stream_closed: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CloseResult:
+    """
+    Result from a close operation.
+
+    Attributes:
+        final_offset: The final offset of the stream after closing
+    """
+
+    final_offset: Offset
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +110,7 @@ JsonDecoder = Callable[[Any], T]
 STREAM_NEXT_OFFSET_HEADER = "Stream-Next-Offset"
 STREAM_CURSOR_HEADER = "Stream-Cursor"
 STREAM_UP_TO_DATE_HEADER = "Stream-Up-To-Date"
+STREAM_CLOSED_HEADER = "Stream-Closed"
 STREAM_SEQ_HEADER = "Stream-Seq"
 STREAM_TTL_HEADER = "Stream-TTL"
 STREAM_EXPIRES_AT_HEADER = "Stream-Expires-At"
@@ -104,5 +119,11 @@ OFFSET_QUERY_PARAM = "offset"
 LIVE_QUERY_PARAM = "live"
 CURSOR_QUERY_PARAM = "cursor"
 
+# Response header for SSE data encoding (server auto-detects and sets this)
+STREAM_SSE_DATA_ENCODING_HEADER = "stream-sse-data-encoding"
+
 # Content types compatible with SSE
 SSE_COMPATIBLE_CONTENT_TYPES = ("text/", "application/json")
+
+# SSE encoding type
+SSEEncoding = Literal["base64"]

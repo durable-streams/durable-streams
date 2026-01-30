@@ -58,6 +58,21 @@ interface StreamMetadata {
    * Stored as a plain object for LMDB serialization.
    */
   producers?: Record<string, SerializableProducerState>
+  /**
+   * Whether the stream is closed (no further appends permitted).
+   * Once set to true, this is permanent and durable.
+   */
+  closed?: boolean
+  /**
+   * The producer tuple that closed this stream (for idempotent close).
+   * If set, duplicate close requests with this tuple return 204.
+   * CRITICAL: Must be persisted for duplicate detection after restart.
+   */
+  closedBy?: {
+    producerId: string
+    epoch: number
+    seq: number
+  }
 }
 
 /**
@@ -365,6 +380,8 @@ export class FileBackedStreamStore {
       expiresAt: meta.expiresAt,
       createdAt: meta.createdAt,
       producers,
+      closed: meta.closed,
+      closedBy: meta.closedBy,
     }
   }
 
@@ -554,6 +571,7 @@ export class FileBackedStreamStore {
       ttlSeconds?: number
       expiresAt?: string
       initialData?: Uint8Array
+      closed?: boolean
     } = {}
   ): Promise<Stream> {
     // Use getMetaIfNotExpired to treat expired streams as non-existent
@@ -569,8 +587,10 @@ export class FileBackedStreamStore {
         normalizeMimeType(existing.contentType)
       const ttlMatches = options.ttlSeconds === existing.ttlSeconds
       const expiresMatches = options.expiresAt === existing.expiresAt
+      const closedMatches =
+        (options.closed ?? false) === (existing.closed ?? false)
 
-      if (contentTypeMatches && ttlMatches && expiresMatches) {
+      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
         // Idempotent success - return existing stream
         return this.streamMetaToStream(existing)
       } else {
@@ -585,6 +605,8 @@ export class FileBackedStreamStore {
     const key = `stream:${streamPath}`
 
     // Initialize metadata
+    // Note: We set closed to false initially, then set it true after appending initial data
+    // This prevents the closed check from rejecting the initial append
     const streamMeta: StreamMetadata = {
       path: streamPath,
       contentType: options.contentType,
@@ -596,6 +618,7 @@ export class FileBackedStreamStore {
       segmentCount: 1,
       totalBytes: 0,
       directoryName: generateUniqueDirectoryName(streamPath),
+      closed: false, // Set to false initially, will be updated after initial append if needed
     }
 
     // Create stream directory and empty segment file immediately
@@ -626,12 +649,18 @@ export class FileBackedStreamStore {
         contentType: options.contentType,
         isInitialCreate: true,
       })
-      // Re-fetch updated metadata
-      const updated = this.db.get(key) as StreamMetadata
-      return this.streamMetaToStream(updated)
     }
 
-    return this.streamMetaToStream(streamMeta)
+    // Now set closed flag if requested (after initial append succeeded)
+    if (options.closed) {
+      const updatedMeta = this.db.get(key) as StreamMetadata
+      updatedMeta.closed = true
+      this.db.putSync(key, updatedMeta)
+    }
+
+    // Re-fetch updated metadata
+    const updated = this.db.get(key) as StreamMetadata
+    return this.streamMetaToStream(updated)
   }
 
   get(streamPath: string): Stream | undefined {
@@ -692,6 +721,34 @@ export class FileBackedStreamStore {
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
+    }
+
+    // Check if stream is closed
+    if (streamMeta.closed) {
+      // Check if this is a duplicate of the closing request (idempotent retry)
+      if (
+        options.producerId &&
+        streamMeta.closedBy &&
+        streamMeta.closedBy.producerId === options.producerId &&
+        streamMeta.closedBy.epoch === options.producerEpoch &&
+        streamMeta.closedBy.seq === options.producerSeq
+      ) {
+        // Idempotent success - return 204 with Stream-Closed
+        return {
+          message: null,
+          streamClosed: true,
+          producerResult: {
+            status: `duplicate`,
+            lastSeq: options.producerSeq,
+          },
+        }
+      }
+
+      // Different request - stream is closed, reject
+      return {
+        message: null,
+        streamClosed: true,
+      }
     }
 
     // Check content type match using normalization (handles charset parameters)
@@ -806,12 +863,25 @@ export class FileBackedStreamStore {
     if (producerResult && producerResult.status === `accepted`) {
       updatedProducers[producerResult.producerId] = producerResult.proposedState
     }
+
+    // Build closedBy if closing with producer headers
+    let closedBy: StreamMetadata[`closedBy`] = undefined
+    if (options.close && options.producerId) {
+      closedBy = {
+        producerId: options.producerId,
+        epoch: options.producerEpoch!,
+        seq: options.producerSeq!,
+      }
+    }
+
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
       producers: updatedProducers,
+      closed: options.close ? true : streamMeta.closed,
+      closedBy: closedBy ?? streamMeta.closedBy,
     }
     const key = `stream:${streamPath}`
     this.db.putSync(key, updatedMeta)
@@ -819,11 +889,17 @@ export class FileBackedStreamStore {
     // 5. Notify long-polls (data is now readable from disk)
     this.notifyLongPolls(streamPath)
 
-    // 6. Return AppendResult if producer headers were used
-    if (producerResult) {
+    // 5a. If stream was closed, also notify long-polls of closure
+    if (options.close) {
+      this.notifyLongPollsClosed(streamPath)
+    }
+
+    // 6. Return AppendResult if producer headers were used or stream was closed
+    if (producerResult || options.close) {
       return {
         message,
         producerResult,
+        streamClosed: options.close,
       }
     }
 
@@ -860,6 +936,140 @@ export class FileBackedStreamStore {
         return result
       }
       return { message: result }
+    } finally {
+      releaseLock()
+    }
+  }
+
+  /**
+   * Close a stream without appending data.
+   * @returns The final offset, or null if stream doesn't exist
+   */
+  closeStream(
+    streamPath: string
+  ): { finalOffset: string; alreadyClosed: boolean } | null {
+    const streamMeta = this.getMetaIfNotExpired(streamPath)
+    if (!streamMeta) {
+      return null
+    }
+
+    const alreadyClosed = streamMeta.closed ?? false
+
+    // Update LMDB to mark stream as closed
+    const key = `stream:${streamPath}`
+    const updatedMeta: StreamMetadata = {
+      ...streamMeta,
+      closed: true,
+    }
+    this.db.putSync(key, updatedMeta)
+
+    // Notify any pending long-polls that the stream is closed
+    this.notifyLongPollsClosed(streamPath)
+
+    return {
+      finalOffset: streamMeta.currentOffset,
+      alreadyClosed,
+    }
+  }
+
+  /**
+   * Close a stream with producer headers for idempotent close-only operations.
+   * Participates in producer sequencing for deduplication.
+   * @returns The final offset and producer result, or null if stream doesn't exist
+   */
+  async closeStreamWithProducer(
+    streamPath: string,
+    options: {
+      producerId: string
+      producerEpoch: number
+      producerSeq: number
+    }
+  ): Promise<{
+    finalOffset: string
+    alreadyClosed: boolean
+    producerResult?: ProducerValidationResult
+  } | null> {
+    // Acquire producer lock for serialization
+    const releaseLock = await this.acquireProducerLock(
+      streamPath,
+      options.producerId
+    )
+
+    try {
+      const streamMeta = this.getMetaIfNotExpired(streamPath)
+      if (!streamMeta) {
+        return null
+      }
+
+      // Check if already closed
+      if (streamMeta.closed) {
+        // Check if this is the same producer tuple (duplicate - idempotent success)
+        if (
+          streamMeta.closedBy &&
+          streamMeta.closedBy.producerId === options.producerId &&
+          streamMeta.closedBy.epoch === options.producerEpoch &&
+          streamMeta.closedBy.seq === options.producerSeq
+        ) {
+          return {
+            finalOffset: streamMeta.currentOffset,
+            alreadyClosed: true,
+            producerResult: {
+              status: `duplicate`,
+              lastSeq: options.producerSeq,
+            },
+          }
+        }
+
+        // Different producer trying to close an already-closed stream - conflict
+        return {
+          finalOffset: streamMeta.currentOffset,
+          alreadyClosed: true,
+          producerResult: { status: `stream_closed` },
+        }
+      }
+
+      // Validate producer state
+      const producerResult = this.validateProducer(
+        streamMeta,
+        options.producerId,
+        options.producerEpoch,
+        options.producerSeq
+      )
+
+      // Return early for non-accepted results
+      if (producerResult.status !== `accepted`) {
+        return {
+          finalOffset: streamMeta.currentOffset,
+          alreadyClosed: streamMeta.closed ?? false,
+          producerResult,
+        }
+      }
+
+      // Commit producer state and close stream atomically in LMDB
+      const key = `stream:${streamPath}`
+      const updatedProducers = { ...streamMeta.producers }
+      updatedProducers[producerResult.producerId] = producerResult.proposedState
+
+      const updatedMeta: StreamMetadata = {
+        ...streamMeta,
+        closed: true,
+        closedBy: {
+          producerId: options.producerId,
+          epoch: options.producerEpoch,
+          seq: options.producerSeq,
+        },
+        producers: updatedProducers,
+      }
+      this.db.putSync(key, updatedMeta)
+
+      // Notify any pending long-polls
+      this.notifyLongPollsClosed(streamPath)
+
+      return {
+        finalOffset: streamMeta.currentOffset,
+        alreadyClosed: false,
+        producerResult,
+      }
     } finally {
       releaseLock()
     }
@@ -961,17 +1171,31 @@ export class FileBackedStreamStore {
     streamPath: string,
     offset: string,
     timeoutMs: number
-  ): Promise<{ messages: Array<StreamMessage>; timedOut: boolean }> {
+  ): Promise<{
+    messages: Array<StreamMessage>
+    timedOut: boolean
+    streamClosed?: boolean
+  }> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
       throw new Error(`Stream not found: ${streamPath}`)
     }
 
+    // If stream is closed and client is at tail, return immediately
+    if (streamMeta.closed && offset === streamMeta.currentOffset) {
+      return { messages: [], timedOut: false, streamClosed: true }
+    }
+
     // Check if there are already new messages
     const { messages } = this.read(streamPath, offset)
     if (messages.length > 0) {
-      return { messages, timedOut: false }
+      return { messages, timedOut: false, streamClosed: streamMeta.closed }
+    }
+
+    // If stream is closed (but client not at tail), return what we have
+    if (streamMeta.closed) {
+      return { messages: [], timedOut: false, streamClosed: true }
     }
 
     // Wait for new messages
@@ -979,7 +1203,13 @@ export class FileBackedStreamStore {
       const timeoutId = setTimeout(() => {
         // Remove from pending
         this.removePendingLongPoll(pending)
-        resolve({ messages: [], timedOut: true })
+        // Check if stream was closed during wait
+        const currentMeta = this.getMetaIfNotExpired(streamPath)
+        resolve({
+          messages: [],
+          timedOut: true,
+          streamClosed: currentMeta?.closed,
+        })
       }, timeoutMs)
 
       const pending: PendingLongPoll = {
@@ -988,7 +1218,13 @@ export class FileBackedStreamStore {
         resolve: (msgs) => {
           clearTimeout(timeoutId)
           this.removePendingLongPoll(pending)
-          resolve({ messages: msgs, timedOut: false })
+          // Check if stream was closed
+          const currentMeta = this.getMetaIfNotExpired(streamPath)
+          resolve({
+            messages: msgs,
+            timedOut: false,
+            streamClosed: currentMeta?.closed,
+          })
         },
         timeoutId,
       }
@@ -1110,6 +1346,18 @@ export class FileBackedStreamStore {
       if (messages.length > 0) {
         pending.resolve(messages)
       }
+    }
+  }
+
+  /**
+   * Notify pending long-polls that a stream has been closed.
+   * They should wake up immediately and return Stream-Closed: true.
+   */
+  private notifyLongPollsClosed(streamPath: string): void {
+    const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
+    for (const pending of toNotify) {
+      // Resolve with empty messages - the caller will check stream.closed
+      pending.resolve([])
     }
   }
 

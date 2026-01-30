@@ -1,14 +1,14 @@
 /**
  * Handler for aborting proxy streams.
  *
- * POST /v1/proxy/{service}/streams/{key}/abort
+ * PATCH /v1/proxy/:streamId?action=abort
  *
- * Aborts an in-progress upstream connection and marks the stream as aborted.
+ * Aborts an in-progress upstream connection. Pre-signed URL authentication only.
  */
 
-import { authorizeStreamRequest } from "./tokens"
-import { abortConnection, getConnection } from "./upstream"
-import { sendError, sendJson } from "./response"
+import { validatePreSignedUrl } from "./tokens"
+import { abortConnection } from "./upstream"
+import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
 
@@ -17,43 +17,67 @@ import type { IncomingMessage, ServerResponse } from "node:http"
  *
  * @param req - The incoming HTTP request
  * @param res - The server response
- * @param serviceName - The service name from the URL path
- * @param streamKey - The stream key from the URL path
+ * @param streamId - The stream ID from the URL path
  * @param options - Proxy server options
  */
 export function handleAbortStream(
   req: IncomingMessage,
   res: ServerResponse,
-  serviceName: string,
-  streamKey: string,
+  streamId: string,
   options: ProxyServerOptions
 ): void {
-  // Authorize the request
-  const auth = authorizeStreamRequest(
-    req.headers.authorization,
-    options.jwtSecret,
-    serviceName,
-    streamKey
+  const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
+
+  // Authentication: pre-signed URL ONLY (no JWT fallback)
+  const expires = url.searchParams.get(`expires`)
+  const signature = url.searchParams.get(`signature`)
+
+  if (!expires || !signature) {
+    sendError(
+      res,
+      401,
+      `MISSING_SIGNATURE`,
+      `Pre-signed URL with expires and signature required`
+    )
+    return
+  }
+
+  const result = validatePreSignedUrl(
+    streamId,
+    expires,
+    signature,
+    options.jwtSecret
   )
 
-  if (!auth.ok) {
-    sendError(res, auth.status, auth.code, auth.message)
+  if (!result.ok) {
+    const code = result.code
+    sendError(
+      res,
+      401,
+      code,
+      code === `SIGNATURE_EXPIRED`
+        ? `Pre-signed URL has expired`
+        : `Invalid signature`
+    )
     return
   }
 
-  // Check if there's an active connection
-  const connection = getConnection(auth.streamPath)
-
-  if (!connection || connection.completed) {
-    sendJson(res, 200, { status: `already_completed` })
+  // Validate action parameter
+  const action = url.searchParams.get(`action`)
+  if (action !== `abort`) {
+    sendError(
+      res,
+      400,
+      `INVALID_ACTION`,
+      `Query parameter action must be "abort"`
+    )
     return
   }
 
-  if (connection.aborted) {
-    sendJson(res, 200, { status: `already_aborted` })
-    return
-  }
+  // Abort the connection (idempotent - always succeeds)
+  abortConnection(streamId)
 
-  abortConnection(auth.streamPath)
-  sendJson(res, 200, { status: `aborted` })
+  // 204 No Content
+  res.writeHead(204)
+  res.end()
 }
