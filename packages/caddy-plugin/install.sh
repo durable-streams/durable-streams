@@ -56,9 +56,9 @@ detect_arch() {
 get_latest_version() {
     # Find latest release with a v* tag (caddy releases), not @* tags (npm packages)
     if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name":' | grep -E '"v[0-9]' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep -o '"tag_name": *"v[0-9][^"]*"' | head -1 | grep -o 'v[0-9][^"]*' | sed 's/^v//')
     elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases" | grep '"tag_name":' | grep -E '"v[0-9]' | head -1 | sed -E 's/.*"v([^"]+)".*/\1/')
+        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases" | grep -o '"tag_name": *"v[0-9][^"]*"' | head -1 | grep -o 'v[0-9][^"]*' | sed 's/^v//')
     else
         error "curl or wget is required"
     fi
