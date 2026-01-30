@@ -148,7 +148,9 @@ export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
  * Normalize content-type by extracting the media type (before any semicolon).
  * Handles cases like "application/json; charset=utf-8".
  */
-export function normalizeContentType(contentType: string | undefined): string {
+export function normalizeContentType(
+  contentType: string | null | undefined
+): string {
   if (!contentType) return ``
   return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
@@ -157,7 +159,9 @@ export function normalizeContentType(contentType: string | undefined): string {
  * Check if content-type indicates JSON mode.
  * Matches application/json and any +json suffix (e.g., application/vnd.api+json).
  */
-export function isJsonContentType(contentType: string | undefined): boolean {
+export function isJsonContentType(
+  contentType: string | null | undefined
+): boolean {
   const normalized = normalizeContentType(contentType)
   return normalized === `application/json` || normalized.endsWith(`+json`)
 }
@@ -167,7 +171,7 @@ export function isJsonContentType(contentType: string | undefined): boolean {
  * Matches text/* prefixes and JSON content types (including +json suffix).
  */
 export function isSseCompatibleContentType(
-  contentType: string | undefined
+  contentType: string | null | undefined
 ): boolean {
   const normalized = normalizeContentType(contentType)
   return normalized.startsWith(`text/`) || isJsonContentType(contentType)

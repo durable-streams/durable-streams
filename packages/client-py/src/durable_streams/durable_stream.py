@@ -617,7 +617,7 @@ class DurableStream:
 
         # For JSON mode, wrap in array (server flattens one level)
         if is_json_content_type(ct):
-            body = json.dumps(wrap_for_json_append(data)).encode("utf-8")
+            body = wrap_for_json_append(data).encode("utf-8")
         else:
             body = encode_body(data)
 
