@@ -42,10 +42,10 @@ pnpm add @durable-streams/state @tanstack/db
 
 ## Two Levels of Abstraction
 
-| API | Use Case |
-|-----|----------|
-| `MaterializedState` | Simple in-memory state tracking |
-| `StreamDB` | Full reactive database with TanStack DB integration |
+| API                 | Use Case                                            |
+| ------------------- | --------------------------------------------------- |
+| `MaterializedState` | Simple in-memory state tracking                     |
+| `StreamDB`          | Full reactive database with TanStack DB integration |
 
 ## Quick Start
 
@@ -89,8 +89,8 @@ const userSchema = z.object({
 const schema = createStateSchema({
   users: {
     schema: userSchema,
-    type: "user",        // Event type field
-    primaryKey: "id",    // Primary key field
+    type: "user", // Event type field
+    primaryKey: "id", // Primary key field
   },
 })
 
@@ -111,7 +111,8 @@ import { useLiveQuery } from "@tanstack/react-db"
 import { eq } from "@tanstack/db"
 
 const userQuery = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
+  q
+    .from({ users: db.collections.users })
     .where(({ users }) => eq(users.id, "123"))
     .findOne()
 )
@@ -178,9 +179,9 @@ Define typed collections with validation:
 ```typescript
 const schema = createStateSchema({
   users: {
-    schema: userSchema,      // Standard Schema validator (Zod, Valibot, etc.)
-    type: "user",            // Event type for routing
-    primaryKey: "id",        // Field to use as primary key
+    schema: userSchema, // Standard Schema validator (Zod, Valibot, etc.)
+    type: "user", // Event type for routing
+    primaryKey: "id", // Field to use as primary key
   },
   messages: {
     schema: messageSchema,
@@ -248,28 +249,26 @@ import { useLiveQuery } from "@tanstack/react-db"
 import { eq, gt, and, count } from "@tanstack/db"
 
 // Simple query
-const query = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
-)
+const query = useLiveQuery((q) => q.from({ users: db.collections.users }))
 
 // Filtering
 const activeQuery = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
+  q
+    .from({ users: db.collections.users })
     .where(({ users }) => eq(users.active, true))
 )
 
 // Complex conditions
 const query = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
-    .where(({ users }) => and(
-      eq(users.active, true),
-      gt(users.age, 18)
-    ))
+  q
+    .from({ users: db.collections.users })
+    .where(({ users }) => and(eq(users.active, true), gt(users.age, 18)))
 )
 
 // Sorting and limiting
 const topUsers = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
+  q
+    .from({ users: db.collections.users })
     .orderBy(({ users }) => users.lastSeen, "desc")
     .limit(10)
 )
@@ -284,13 +283,13 @@ const langStats = useLiveQuery((q) => {
       total: count(events.id),
     }))
 
-  return q.from({ stats: counts })
-    .orderBy(({ stats }) => stats.total, "desc")
+  return q.from({ stats: counts }).orderBy(({ stats }) => stats.total, "desc")
 })
 
 // Joins
 const messagesWithUsers = useLiveQuery((q) =>
-  q.from({ messages: db.collections.messages })
+  q
+    .from({ messages: db.collections.messages })
     .join({ users: db.collections.users }, ({ messages, users }) =>
       eq(messages.userId, users.id)
     )
@@ -318,10 +317,14 @@ const db = createStreamDB({
       // Runs async (server mutation)
       mutationFn: async (user) => {
         const txid = crypto.randomUUID()
-        await stream.append(schema.users.insert({
-          value: user,
-          headers: { txid },
-        }))
+        await stream.append(
+          JSON.stringify(
+            schema.users.insert({
+              value: user,
+              headers: { txid },
+            })
+          )
+        )
         await db.utils.awaitTxId(txid) // Wait for confirmation
       },
     },
@@ -346,13 +349,18 @@ const schema = createStateSchema({
 })
 
 // Set value
-await stream.append(schema.config.insert({
-  value: { key: "theme", value: "dark" },
-}))
+await stream.append(
+  JSON.stringify(
+    schema.config.insert({
+      value: { key: "theme", value: "dark" },
+    })
+  )
+)
 
 // Query reactively
 const themeQuery = useLiveQuery((q) =>
-  q.from({ config: db.collections.config })
+  q
+    .from({ config: db.collections.config })
     .where(({ config }) => eq(config.key, "theme"))
     .findOne()
 )
@@ -370,13 +378,18 @@ const schema = createStateSchema({
 })
 
 // Update presence
-await stream.append(schema.presence.update({
-  value: { userId: "kyle", status: "online", lastSeen: Date.now() },
-}))
+await stream.append(
+  JSON.stringify(
+    schema.presence.update({
+      value: { userId: "kyle", status: "online", lastSeen: Date.now() },
+    })
+  )
+)
 
 // Query online users
 const onlineQuery = useLiveQuery((q) =>
-  q.from({ presence: db.collections.presence })
+  q
+    .from({ presence: db.collections.presence })
     .where(({ presence }) => eq(presence.status, "online"))
 )
 ```
@@ -392,9 +405,11 @@ const schema = createStateSchema({
 })
 
 // All types coexist in same stream
-await stream.append(schema.users.insert({ value: user }))
-await stream.append(schema.messages.insert({ value: message }))
-await stream.append(schema.reactions.insert({ value: reaction }))
+await stream.append(JSON.stringify(schema.users.insert({ value: user })))
+await stream.append(JSON.stringify(schema.messages.insert({ value: message })))
+await stream.append(
+  JSON.stringify(schema.reactions.insert({ value: reaction }))
+)
 ```
 
 ## Lifecycle
@@ -450,17 +465,21 @@ useEffect(() => {
 
 ```typescript
 // WRONG - may show stale data
-await stream.append(schema.users.insert({ value: user }))
+await stream.append(JSON.stringify(schema.users.insert({ value: user })))
 // User might not be visible yet
 ```
 
 ```typescript
 // CORRECT - wait for confirmation
 const txid = crypto.randomUUID()
-await stream.append(schema.users.insert({
-  value: user,
-  headers: { txid },
-}))
+await stream.append(
+  JSON.stringify(
+    schema.users.insert({
+      value: user,
+      headers: { txid },
+    })
+  )
+)
 await db.utils.awaitTxId(txid)
 ```
 
@@ -468,13 +487,14 @@ await db.utils.awaitTxId(txid)
 
 ```typescript
 // WRONG - slow, recomputes on every change
-const activeUsers = allUsers.filter(u => u.active)
+const activeUsers = allUsers.filter((u) => u.active)
 ```
 
 ```typescript
 // CORRECT - differential dataflow, only recomputes affected rows
 const activeQuery = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
+  q
+    .from({ users: db.collections.users })
     .where(({ users }) => eq(users.active, true))
 )
 ```
