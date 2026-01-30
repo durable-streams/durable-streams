@@ -150,41 +150,65 @@ Run:
 durable-streams-server run --config Caddyfile.dev
 ```
 
-### Option 3: Reverse Proxy Through Your App
+### Option 3: Single Dev Command (Recommended)
 
-If you want streams accessible through your app's domain, add a proxy route in your dev server (Vite, Next.js, etc.).
+Run both servers with one command using `concurrently`:
 
-**Vite (vite.config.ts):**
-
-```typescript
-export default defineConfig({
-  server: {
-    proxy: {
-      '/v1/stream': {
-        target: 'http://localhost:4437',
-        changeOrigin: true,
-      },
-    },
-  },
-})
+```bash
+npm install -D concurrently
 ```
 
-**Next.js (next.config.js):**
+Add to `package.json`:
 
-```javascript
-module.exports = {
-  async rewrites() {
-    return [
-      {
-        source: '/v1/stream/:path*',
-        destination: 'http://localhost:4437/v1/stream/:path*',
-      },
-    ]
-  },
+```json
+{
+  "scripts": {
+    "dev": "concurrently \"npm run dev:app\" \"npm run dev:streams\"",
+    "dev:app": "vite",
+    "dev:streams": "durable-streams-server dev"
+  }
 }
 ```
 
-Now your app can use `/v1/stream/...` without CORS issues.
+Now `npm run dev` starts everything:
+
+```bash
+npm run dev
+# [0] vite dev server running at http://localhost:5173
+# [1] durable-streams server running at http://localhost:4437
+```
+
+**Alternative with npm-run-all:**
+
+```bash
+npm install -D npm-run-all
+```
+
+```json
+{
+  "scripts": {
+    "dev": "run-p dev:*",
+    "dev:app": "vite",
+    "dev:streams": "durable-streams-server dev"
+  }
+}
+```
+
+**With wait-on (start app after server is ready):**
+
+```bash
+npm install -D concurrently wait-on
+```
+
+```json
+{
+  "scripts": {
+    "dev": "concurrently \"npm run dev:streams\" \"npm run dev:app\"",
+    "dev:app": "wait-on tcp:4437 && vite",
+    "dev:streams": "durable-streams-server dev"
+  }
+}
+```
 
 ## Persistent Storage (File-Backed)
 
@@ -274,8 +298,8 @@ lsof -i :4437
 The server sets `Access-Control-Allow-Origin: *` by default. If you still see CORS errors:
 
 1. Check you're hitting the durable-streams server, not your app server
-2. Use a reverse proxy (see above) to serve from same origin
-3. Verify the server is running: `curl http://localhost:4437/v1/stream/test`
+2. Verify the server is running: `curl http://localhost:4437/v1/stream/test`
+3. Check browser dev tools for the actual error (may be a network issue, not CORS)
 
 ### Certificate Not Trusted
 
