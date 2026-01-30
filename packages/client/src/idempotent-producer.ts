@@ -19,6 +19,7 @@ import {
   PRODUCER_SEQ_HEADER,
   STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
+  isJsonContentType,
 } from "./constants"
 import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
@@ -65,14 +66,6 @@ export class SequenceGapError extends Error {
     this.expectedSeq = expectedSeq
     this.receivedSeq = receivedSeq
   }
-}
-
-/**
- * Normalize content-type by extracting the media type (before any semicolon).
- */
-function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
 
 /**
@@ -392,7 +385,7 @@ export class IdempotentProducer {
    */
   async #doClose(finalMessage?: Uint8Array | string): Promise<CloseResult> {
     const contentType = this.#stream.contentType ?? `application/octet-stream`
-    const isJson = normalizeContentType(contentType) === `application/json`
+    const isJson = isJsonContentType(contentType)
 
     // Build body if final message is provided
     let body: BodyInit | undefined
@@ -666,7 +659,7 @@ export class IdempotentProducer {
     epoch: number
   ): Promise<{ offset: Offset; duplicate: boolean }> {
     const contentType = this.#stream.contentType ?? `application/octet-stream`
-    const isJson = normalizeContentType(contentType) === `application/json`
+    const isJson = isJsonContentType(contentType)
 
     // Build batch body based on content type
     let batchedBody: BodyInit

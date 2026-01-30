@@ -54,3 +54,15 @@ function version(): string
 {
     return '0.1.0';
 }
+
+/**
+ * Check if content type indicates JSON (application/json or +json suffix).
+ *
+ * @param string $contentType Content type string
+ * @return bool True if the content type is JSON
+ */
+function isJsonContentType(string $contentType): bool
+{
+    $normalized = strtolower(trim(explode(';', $contentType)[0] ?? ''));
+    return $normalized === 'application/json' || str_ends_with($normalized, '+json');
+}

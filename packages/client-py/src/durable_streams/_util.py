@@ -137,20 +137,23 @@ def is_json_content_type(content_type: str | None) -> bool:
     """
     Check if a content type indicates JSON.
 
+    Matches application/json and any +json suffix (e.g., application/vnd.api+json).
+
     Args:
         content_type: The content type string
 
     Returns:
-        True if the content type is application/json
+        True if the content type is JSON
     """
-    return normalize_content_type(content_type) == "application/json"
+    normalized = normalize_content_type(content_type)
+    return normalized == "application/json" or normalized.endswith("+json")
 
 
 def is_sse_compatible_content_type(content_type: str | None) -> bool:
     """
     Check if a content type is compatible with SSE mode.
 
-    SSE is only valid for text/* or application/json streams.
+    SSE is only valid for text/* or JSON streams (including +json suffix).
 
     Args:
         content_type: The content type string
@@ -161,7 +164,11 @@ def is_sse_compatible_content_type(content_type: str | None) -> bool:
     if not content_type:
         return False
     normalized = normalize_content_type(content_type)
-    return normalized.startswith("text/") or normalized == "application/json"
+    return (
+        normalized.startswith("text/")
+        or normalized == "application/json"
+        or normalized.endswith("+json")
+    )
 
 
 def encode_body(body: str | bytes) -> bytes:

@@ -12,6 +12,7 @@ import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import {
   formatJsonResponse,
+  isJsonContentType,
   normalizeContentType,
   processJsonAppend,
 } from "./store"
@@ -801,7 +802,7 @@ export class FileBackedStreamStore {
 
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+    if (isJsonContentType(streamMeta.contentType)) {
       processedData = processJsonAppend(data, options.isInitialCreate ?? false)
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
@@ -1258,7 +1259,7 @@ export class FileBackedStreamStore {
     }
 
     // For JSON mode, wrap in array brackets
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+    if (isJsonContentType(streamMeta.contentType)) {
       return formatJsonResponse(concatenated)
     }
 

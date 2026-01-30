@@ -2,8 +2,9 @@
 
 use crate::error::{ProducerError, StreamError};
 use crate::stream::{
-    DurableStream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH, HEADER_PRODUCER_EXPECTED_SEQ,
-    HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_CLOSED, HEADER_STREAM_OFFSET,
+    is_json_content_type, DurableStream, HEADER_CONTENT_TYPE, HEADER_PRODUCER_EPOCH,
+    HEADER_PRODUCER_EXPECTED_SEQ, HEADER_PRODUCER_ID, HEADER_PRODUCER_SEQ, HEADER_STREAM_CLOSED,
+    HEADER_STREAM_OFFSET,
 };
 use crate::types::Offset;
 use bytes::Bytes;
@@ -545,7 +546,7 @@ async fn do_send_batch_with_retry(
 ) -> Result<AppendReceipt, ProducerError> {
     const MAX_409_RETRIES: u32 = 10;
 
-    let is_json = content_type.to_lowercase().contains("application/json");
+    let is_json = is_json_content_type(content_type);
 
     // Build body
     let body = if is_json {
@@ -719,7 +720,7 @@ async fn do_send_close_with_retry(
     let data = data.unwrap_or_else(Bytes::new);
     let has_data = !data.is_empty();
     let body = if has_data {
-        if content_type.to_lowercase().contains("application/json") {
+        if is_json_content_type(content_type) {
             let mut wrapped = Vec::with_capacity(data.len() + 2);
             wrapped.push(b'[');
             wrapped.extend_from_slice(&data);

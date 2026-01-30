@@ -24,6 +24,15 @@ export function normalizeContentType(contentType: string | undefined): string {
 }
 
 /**
+ * Check if content-type indicates JSON mode.
+ * Matches application/json and any +json suffix (e.g., application/vnd.api+json).
+ */
+export function isJsonContentType(contentType: string | undefined): boolean {
+  const normalized = normalizeContentType(contentType)
+  return normalized === `application/json` || normalized.endsWith(`+json`)
+}
+
+/**
  * Process JSON data for append in JSON mode.
  * - Validates JSON
  * - Extracts array elements if data is an array
@@ -742,7 +751,7 @@ export class StreamStore {
     }
 
     // For JSON mode, wrap in array brackets
-    if (normalizeContentType(stream.contentType) === `application/json`) {
+    if (isJsonContentType(stream.contentType)) {
       return formatJsonResponse(concatenated)
     }
 
@@ -860,7 +869,7 @@ export class StreamStore {
   ): StreamMessage | null {
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
-    if (normalizeContentType(stream.contentType) === `application/json`) {
+    if (isJsonContentType(stream.contentType)) {
       processedData = processJsonAppend(data, isInitialCreate)
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
