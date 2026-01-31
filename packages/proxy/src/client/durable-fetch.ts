@@ -33,6 +33,60 @@ import type {
 const DEFAULT_PREFIX = `durable-streams:`
 
 /**
+ * Check whether a URL string is an absolute URL (has a protocol).
+ */
+export function isAbsoluteUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === `http:` || parsed.protocol === `https:`
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolve an upstream URL to an absolute URL.
+ *
+ * If the URL is already absolute, it is returned as-is.
+ * If it's a relative path, it is resolved against:
+ *   1. The explicit `origin` option (if provided)
+ *   2. `window.location.origin` (if available in the environment)
+ *   3. Throws an error if neither is available
+ *
+ * @param url - The upstream URL (absolute or relative path)
+ * @param explicitOrigin - Optional explicit origin from options
+ * @returns The resolved absolute URL
+ * @throws Error if the URL is relative and no origin is available
+ */
+export function resolveUpstreamUrl(
+  url: string,
+  explicitOrigin?: string
+): string {
+  // Already absolute, return as-is
+  if (isAbsoluteUrl(url)) {
+    return url
+  }
+
+  // Try explicit origin first
+  if (explicitOrigin) {
+    return new URL(url, explicitOrigin).toString()
+  }
+
+  // Try window.location.origin in browser environments
+  if (typeof window !== `undefined` && window.location.origin) {
+    return new URL(url, window.location.origin).toString()
+  }
+
+  // No origin available - throw descriptive error
+  throw new Error(
+    `Cannot resolve relative upstream URL "${url}" to an absolute URL. ` +
+      `The upstream URL is a path, but no origin is available to resolve it. ` +
+      `Either provide a full URL (e.g., "https://api.example.com${url}"), ` +
+      `or pass an explicit "origin" option when calling createDurableFetch().`
+  )
+}
+
+/**
  * Check whether an error from a resume attempt is expected and
  * should fall through to creating a new stream.
  *
@@ -96,6 +150,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     storage = getDefaultStorage(),
     fetch: fetchFn = fetch,
     storagePrefix = DEFAULT_PREFIX,
+    origin,
   } = options
 
   // Normalize trailing slash
@@ -113,8 +168,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       signal,
     } = init ?? {}
 
-    const upstream =
+    const rawUpstream =
       typeof upstreamUrl === `string` ? upstreamUrl : upstreamUrl.toString()
+    const upstream = resolveUpstreamUrl(rawUpstream, origin)
 
     // --- Resume path ---
     if (requestId && autoResume) {
