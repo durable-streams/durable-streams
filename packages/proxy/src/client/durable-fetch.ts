@@ -207,7 +207,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
 
     // Add session reuse header if we have session credentials
     if (sessionCredentials) {
-      proxyHeaders[`Use-Stream-Url`] = sessionCredentials.streamUrl
+      proxyHeaders[`Use-Stream-URL`] = sessionCredentials.streamUrl
     }
 
     // Add TTL header if configured
@@ -250,8 +250,8 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
           effectiveSessionId
         )
         // Retry without session reuse by making a recursive call
-        // We need to remove the Use-Stream-Url header and retry
-        delete proxyHeaders[`Use-Stream-Url`]
+        // We need to remove the Use-Stream-URL header and retry
+        delete proxyHeaders[`Use-Stream-URL`]
         const retryResponse = await fetchFn(createUrl.toString(), {
           method: `POST`,
           headers: proxyHeaders,
@@ -667,7 +667,7 @@ async function renewStreamUrl(
   renewEndpoint.searchParams.set(`secret`, proxyAuthorization)
 
   const headers: Record<string, string> = {
-    "Use-Stream-Url": expiredStreamUrl,
+    "Use-Stream-URL": expiredStreamUrl,
     "Upstream-URL": renewUrl,
   }
 

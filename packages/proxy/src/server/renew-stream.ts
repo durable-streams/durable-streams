@@ -90,14 +90,14 @@ export async function handleRenewStream(
     return
   }
 
-  // Step 2: Parse and validate Use-Stream-Url header
+  // Step 2: Parse and validate Use-Stream-URL header
   const useStreamUrlHeader = req.headers[`use-stream-url`]
   if (!useStreamUrlHeader || Array.isArray(useStreamUrlHeader)) {
     sendError(
       res,
       400,
       `MISSING_USE_STREAM_URL`,
-      `Use-Stream-Url header is required`
+      `Use-Stream-URL header is required`
     )
     return
   }
@@ -108,7 +108,7 @@ export async function handleRenewStream(
       res,
       400,
       `INVALID_USE_STREAM_URL`,
-      `Use-Stream-Url header is malformed`
+      `Use-Stream-URL header is malformed`
     )
     return
   }

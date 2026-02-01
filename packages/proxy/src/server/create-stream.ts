@@ -174,7 +174,7 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 2: Check for stream reuse via Use-Stream-Url header
+  // Step 2: Check for stream reuse via Use-Stream-URL header
   const useStreamUrlHeader = req.headers[`use-stream-url`]
   let reuseStreamId: string | null = null
 
@@ -186,7 +186,7 @@ export async function handleCreateStream(
         res,
         400,
         `INVALID_USE_STREAM_URL`,
-        `Use-Stream-Url header is malformed`
+        `Use-Stream-URL header is malformed`
       )
       return
     }

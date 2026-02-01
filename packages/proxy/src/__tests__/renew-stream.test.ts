@@ -5,13 +5,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { generatePreSignedUrl } from "../server/tokens"
 import {
   createAIStreamingResponse,
   createStream,
   createTestContext,
   waitForStreamReady,
 } from "./harness"
-import { generatePreSignedUrl } from "../server/tokens"
 
 const ctx = createTestContext()
 
@@ -68,7 +68,7 @@ async function renewStream(options: {
   url.searchParams.set(`secret`, options.secret ?? TEST_SECRET)
 
   const headers: Record<string, string> = {
-    "Use-Stream-Url": options.streamUrl,
+    "Use-Stream-URL": options.streamUrl,
     "Upstream-URL": options.upstreamUrl,
   }
 
@@ -180,7 +180,7 @@ describe(`POST /v1/proxy/renew`, () => {
     expect(body.error.code).toBe(`STREAM_NOT_FOUND`)
   })
 
-  it(`returns 400 when Use-Stream-Url header is missing`, async () => {
+  it(`returns 400 when Use-Stream-URL header is missing`, async () => {
     const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
 
@@ -205,7 +205,7 @@ describe(`POST /v1/proxy/renew`, () => {
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-Url": streamUrl,
+        "Use-Stream-URL": streamUrl,
       },
     })
 
@@ -223,7 +223,7 @@ describe(`POST /v1/proxy/renew`, () => {
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-Url": streamUrl,
+        "Use-Stream-URL": streamUrl,
         "Upstream-URL": ctx.urls.upstream + `/v1/renew`,
       },
     })
@@ -244,7 +244,7 @@ describe(`POST /v1/proxy/renew`, () => {
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-Url": streamUrl,
+        "Use-Stream-URL": streamUrl,
         "Upstream-URL": ctx.urls.upstream + `/v1/renew`,
         "X-Stream-TTL": `1800`, // 30 minutes
       },

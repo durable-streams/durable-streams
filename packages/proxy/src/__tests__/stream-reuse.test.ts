@@ -1,7 +1,7 @@
 /**
  * Tests for stream reuse functionality.
  *
- * Tests the Use-Stream-Url header support for appending to existing streams.
+ * Tests the Use-Stream-URL header support for appending to existing streams.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -51,7 +51,7 @@ async function createAndGetStreamUrl(): Promise<{
 }
 
 /**
- * Helper to make a request with Use-Stream-Url header
+ * Helper to make a request with Use-Stream-URL header
  */
 async function createStreamWithReuse(
   streamUrl: string,
@@ -71,7 +71,7 @@ async function createStreamWithReuse(
   const headers: Record<string, string> = {
     "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
     "Upstream-Method": `POST`,
-    "Use-Stream-Url": streamUrl,
+    "Use-Stream-URL": streamUrl,
     "Content-Type": `application/json`,
   }
 
@@ -117,7 +117,7 @@ async function createStreamWithReuse(
   }
 }
 
-describe(`stream reuse with Use-Stream-Url`, () => {
+describe(`stream reuse with Use-Stream-URL`, () => {
   it(`returns 200 OK when reusing existing stream`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
@@ -178,7 +178,7 @@ describe(`stream reuse with Use-Stream-Url`, () => {
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
-        "Use-Stream-Url": streamUrl,
+        "Use-Stream-URL": streamUrl,
         "Content-Type": `application/json`,
       },
       body: JSON.stringify({
@@ -191,7 +191,7 @@ describe(`stream reuse with Use-Stream-Url`, () => {
     expect(response.headers.get(`Location`)).toBeDefined()
   })
 
-  it(`returns 400 for malformed Use-Stream-Url`, async () => {
+  it(`returns 400 for malformed Use-Stream-URL`, async () => {
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
 
@@ -200,7 +200,7 @@ describe(`stream reuse with Use-Stream-Url`, () => {
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
-        "Use-Stream-Url": `not-a-valid-url`,
+        "Use-Stream-URL": `not-a-valid-url`,
         "Content-Type": `application/json`,
       },
       body: JSON.stringify({}),
@@ -223,7 +223,7 @@ describe(`stream reuse with Use-Stream-Url`, () => {
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
-        "Use-Stream-Url": fakeStreamUrl,
+        "Use-Stream-URL": fakeStreamUrl,
         "Content-Type": `application/json`,
       },
       body: JSON.stringify({}),
@@ -258,7 +258,7 @@ describe(`stream reuse with Use-Stream-Url`, () => {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
         "Content-Type": `application/json`,
-        "Use-Stream-Url": nonExistentStreamUrl,
+        "Use-Stream-URL": nonExistentStreamUrl,
       },
       body: JSON.stringify({}),
     })
@@ -347,7 +347,7 @@ describe(`409 Conflict for closed streams`, () => {
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
-        "Use-Stream-Url": result.streamUrl!,
+        "Use-Stream-URL": result.streamUrl!,
         "Content-Type": `application/json`,
       },
       body: JSON.stringify({}),
@@ -361,7 +361,7 @@ describe(`409 Conflict for closed streams`, () => {
 })
 
 describe(`mixed session and non-session requests`, () => {
-  it(`first request without Use-Stream-Url creates new stream (201)`, async () => {
+  it(`first request without Use-Stream-URL creates new stream (201)`, async () => {
     ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
     const result = await createStream({
@@ -374,7 +374,7 @@ describe(`mixed session and non-session requests`, () => {
     expect(result.streamUrl).toBeDefined()
   })
 
-  it(`subsequent request with Use-Stream-Url appends (200)`, async () => {
+  it(`subsequent request with Use-Stream-URL appends (200)`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
     const reuse = await createStreamWithReuse(streamUrl)
@@ -383,14 +383,14 @@ describe(`mixed session and non-session requests`, () => {
     expect(reuse.streamUrl).toBeDefined()
   })
 
-  it(`request without Use-Stream-Url after reuse creates new stream`, async () => {
+  it(`request without Use-Stream-URL after reuse creates new stream`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
     // Reuse existing stream
     const reuse = await createStreamWithReuse(streamUrl)
     expect(reuse.status).toBe(200)
 
-    // Create a new stream without Use-Stream-Url
+    // Create a new stream without Use-Stream-URL
     ctx.upstream.setResponse(createAIStreamingResponse([`New stream`]))
 
     const newResult = await createStream({
