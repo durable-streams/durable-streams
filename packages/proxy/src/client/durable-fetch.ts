@@ -27,6 +27,7 @@ import type {
   DurableFetchOptions,
   DurableFetchRequestOptions,
   DurableResponse,
+  DurableStorage,
   SessionCredentials,
   StreamCredentials,
 } from "./types"
@@ -157,7 +158,14 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
             renewUrl,
             normalizedProxyUrl,
             proxyAuthorization,
-            normalized
+            normalized,
+            {
+              storage,
+              storagePrefix,
+              scope: normalizedProxyUrl,
+              requestId,
+              sessionId: effectiveSessionId,
+            }
           )
         } catch (error) {
           removeCredentials(
@@ -230,7 +238,11 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     // Handle errors
     if (!createResponse.ok) {
       // Handle 409 Conflict (stream closed) - clear session and retry without reuse
-      if (createResponse.status === 409 && sessionCredentials && effectiveSessionId) {
+      if (
+        createResponse.status === 409 &&
+        sessionCredentials &&
+        effectiveSessionId
+      ) {
         removeSessionCredentials(
           storage,
           storagePrefix,
@@ -259,7 +271,8 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
               status: upstreamStatus,
               headers: {
                 ...retryResponse.headers,
-                "Content-Type": upstreamContentType ?? `application/octet-stream`,
+                "Content-Type":
+                  upstreamContentType ?? `application/octet-stream`,
                 "Upstream-Error": `true`,
               },
             }) as DurableResponse
@@ -271,7 +284,10 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
         if (!retryLocationHeader) {
           throw new Error(`Missing Location header in retry response`)
         }
-        const retryStreamUrl = new URL(retryLocationHeader, normalizedProxyUrl).toString()
+        const retryStreamUrl = new URL(
+          retryLocationHeader,
+          normalizedProxyUrl
+        ).toString()
         const retryStreamId = extractStreamIdFromUrl(retryStreamUrl)
         const retryExpiresAt = extractExpiresFromUrl(retryStreamUrl)
         const retryUpstreamContentType =
@@ -314,7 +330,14 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
           renewUrl,
           normalizedProxyUrl,
           proxyAuthorization,
-          normalized
+          normalized,
+          {
+            storage,
+            storagePrefix,
+            scope: normalizedProxyUrl,
+            requestId,
+            sessionId: effectiveSessionId,
+          }
         )
       }
 
@@ -389,7 +412,14 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       renewUrl,
       normalizedProxyUrl,
       proxyAuthorization,
-      normalized
+      normalized,
+      {
+        storage,
+        storagePrefix,
+        scope: normalizedProxyUrl,
+        requestId,
+        sessionId: effectiveSessionId,
+      }
     )
   }
 }
@@ -443,6 +473,17 @@ function isRenewableError(error: unknown): error is Error & {
 }
 
 /**
+ * Storage context for saving renewed credentials.
+ */
+interface StorageContext {
+  storage: DurableStorage
+  storagePrefix: string
+  scope: string
+  requestId?: string
+  sessionId?: string
+}
+
+/**
  * Read from a stream using @durable-streams/client stream().
  *
  * The pre-signed URL already contains expires/signature for auth.
@@ -455,6 +496,7 @@ function isRenewableError(error: unknown): error is Error & {
  * @param proxyUrl - Base proxy URL (needed for renewal endpoint)
  * @param proxyAuthorization - Proxy authorization secret
  * @param userHeaders - Original user headers for renewal (used to re-authorize with renewUrl)
+ * @param storageContext - Storage context for persisting renewed credentials
  */
 async function readFromStream(
   fetchFn: typeof fetch,
@@ -463,7 +505,8 @@ async function readFromStream(
   renewUrl?: string,
   proxyUrl?: string,
   proxyAuthorization?: string,
-  userHeaders?: Record<string, string>
+  userHeaders?: Record<string, string>,
+  storageContext?: StorageContext
 ): Promise<DurableResponse> {
   // Use @durable-streams/client stream() function
   let streamResponse
@@ -495,6 +538,31 @@ async function readFromStream(
           expiresAtSecs: extractExpiresFromUrl(renewedUrl),
         }
 
+        // Save renewed credentials to storage for future reads
+        if (storageContext) {
+          const { storage, storagePrefix, scope, requestId, sessionId } =
+            storageContext
+
+          // Update request credentials if we have a requestId
+          if (requestId) {
+            saveCredentials(
+              storage,
+              storagePrefix,
+              scope,
+              requestId,
+              renewedCredentials
+            )
+          }
+
+          // Update session credentials if we have a sessionId
+          if (sessionId) {
+            saveSessionCredentials(storage, storagePrefix, scope, sessionId, {
+              streamUrl: renewedUrl,
+              streamId: credentials.streamId,
+            })
+          }
+        }
+
         // Retry the read with the renewed URL
         return readFromStream(
           fetchFn,
@@ -503,7 +571,8 @@ async function readFromStream(
           renewUrl,
           proxyUrl,
           proxyAuthorization,
-          userHeaders
+          userHeaders,
+          storageContext
         )
       }
     }
