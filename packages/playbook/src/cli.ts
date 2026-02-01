@@ -75,6 +75,10 @@ function listSkills(): void {
   console.log(
     `\nUse 'durable-streams-playbook show <skill>' to view a skill's content.`
   )
+  console.log(`\nTip: Search skills by keyword with grep:`)
+  console.log(
+    `  grep -r "keyword" node_modules/@durable-streams/playbook/skills/`
+  )
 }
 
 function showSkill(skillName: string): void {
