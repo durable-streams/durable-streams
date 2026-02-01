@@ -422,3 +422,82 @@ describe(`client unit: credentials persistence`, () => {
     expect(credentials).toBeNull()
   })
 })
+
+describe(`client integration: auto-renewal flow`, () => {
+  let storage: Storage
+  const proxyUrl = () => `${ctx.urls.proxy}/v1/proxy`
+
+  beforeEach(() => {
+    storage = createMemoryStorage()
+  })
+
+  it(`creates fresh stream when existing credentials are expired`, async () => {
+    const requestId = `auto-renewal-test-${Date.now()}`
+
+    // Manually insert expired credentials
+    const storageKey = `durable-streams:${proxyUrl()}:${requestId}`
+    const expiredCredentials: StreamCredentials = {
+      streamUrl: `${ctx.urls.proxy}/v1/proxy/old-stream-id?expires=${Math.floor(Date.now() / 1000) - 3600}&signature=sig`,
+      streamId: `old-stream-id`,
+      offset: `100`,
+      createdAtMs: Date.now() - 2 * 3600 * 1000,
+      expiresAtSecs: Math.floor(Date.now() / 1000) - 3600, // expired
+    }
+    storage.setItem(storageKey, JSON.stringify(expiredCredentials))
+
+    // Create a client with renewUrl configured
+    ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
+
+    const durableFetch = createDurableFetch({
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
+      storage,
+      autoResume: true,
+      renewUrl: ctx.urls.upstream + `/v1/renew`,
+    })
+
+    // Request with expired credentials should create a new stream
+    // (since auto-resume skips expired credentials)
+    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+      requestId,
+    })
+
+    expect(response.ok).toBe(true)
+    // Should NOT be resumed - should have created new stream
+    expect(response.wasResumed).toBe(false)
+
+    // Verify credentials were updated with fresh data
+    const renewedCredentials = JSON.parse(
+      storage.getItem(storageKey)!
+    ) as StreamCredentials
+
+    // The fresh URL should have a new expiry in the future
+    expect(renewedCredentials.expiresAtSecs).toBeGreaterThan(
+      Math.floor(Date.now() / 1000)
+    )
+    // Should be a new stream, not the old one
+    expect(renewedCredentials.streamId).not.toBe(`old-stream-id`)
+  })
+
+  it(`configures client with renewUrl option`, async () => {
+    // Simple test to verify renewUrl option is accepted
+    const durableFetch = createDurableFetch({
+      proxyUrl: proxyUrl(),
+      proxyAuthorization: TEST_SECRET,
+      storage,
+      autoResume: true,
+      renewUrl: ctx.urls.upstream + `/v1/renew`,
+    })
+
+    ctx.upstream.setResponse(createAIStreamingResponse([`Test`]))
+
+    const response = await durableFetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+    })
+
+    expect(response.ok).toBe(true)
+  })
+})
