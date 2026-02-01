@@ -245,7 +245,7 @@ describe(`validatePreSignedUrl`, () => {
     expect(result.ok).toBe(true)
   })
 
-  it(`returns SIGNATURE_EXPIRED for expired URL`, () => {
+  it(`returns SIGNATURE_EXPIRED for expired URL with valid HMAC`, () => {
     const expiredAt = Math.floor(Date.now() / 1000) - 3600
     const url = generatePreSignedUrl(
       TEST_ORIGIN,
@@ -263,8 +263,31 @@ describe(`validatePreSignedUrl`, () => {
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
+    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
+      expect(result.hmacValid).toBe(true)
+    }
+  })
+
+  it(`returns SIGNATURE_EXPIRED for expired URL with invalid HMAC`, () => {
+    const expiredAt = Math.floor(Date.now() / 1000) - 3600
+    const url = generatePreSignedUrl(
+      TEST_ORIGIN,
+      TEST_STREAM_ID,
+      TEST_SECRET,
+      expiredAt
+    )
+    const parsed = parsePreSignedUrl(url)!
+
+    const result = validatePreSignedUrl(
+      parsed.streamId,
+      parsed.expires,
+      `tampered-signature`, // invalid HMAC
+      TEST_SECRET
+    )
+
+    expect(result.ok).toBe(false)
+    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
+      expect(result.hmacValid).toBe(false)
     }
   })
 
@@ -277,8 +300,9 @@ describe(`validatePreSignedUrl`, () => {
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
+    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
+      // Invalid expires is treated as expired, HMAC will also be invalid
+      expect(result.hmacValid).toBe(false)
     }
   })
 

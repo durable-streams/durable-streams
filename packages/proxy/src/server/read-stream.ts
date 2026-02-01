@@ -8,7 +8,7 @@
  */
 
 import { validatePreSignedUrl, validateServiceJwt } from "./tokens"
-import { sendError } from "./response"
+import { sendError, sendExpiredUrlError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
 
@@ -45,14 +45,18 @@ export async function handleReadStream(
 
     if (!result.ok) {
       const { code } = result
-      sendError(
-        res,
-        401,
-        code,
-        code === `SIGNATURE_EXPIRED`
-          ? `Pre-signed URL has expired`
-          : `Invalid signature`
-      )
+      if (code === `SIGNATURE_EXPIRED`) {
+        // Return structured error with renewable flag for expired URLs
+        sendExpiredUrlError(
+          res,
+          code,
+          `Pre-signed URL has expired`,
+          result.hmacValid,
+          streamId
+        )
+      } else {
+        sendError(res, 401, code, `Invalid signature`)
+      }
       return
     }
   } else {

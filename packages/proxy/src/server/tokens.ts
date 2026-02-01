@@ -130,10 +130,15 @@ export function generatePreSignedUrl(
 
 /**
  * Result of pre-signed URL validation.
+ *
+ * For expired signatures, `hmacValid` indicates if the signature was
+ * cryptographically valid (just past expiry). This enables the client
+ * to determine if the URL is renewable.
  */
 export type PreSignedUrlResult =
   | { ok: true }
-  | { ok: false; code: `SIGNATURE_EXPIRED` | `SIGNATURE_INVALID` }
+  | { ok: false; code: `SIGNATURE_EXPIRED`; hmacValid: boolean }
+  | { ok: false; code: `SIGNATURE_INVALID` }
 
 /**
  * Validate pre-signed URL parameters (HMAC + expiry).
@@ -152,14 +157,16 @@ export function validatePreSignedUrl(
   signature: string,
   secret: string
 ): PreSignedUrlResult {
-  // Check expiration first
+  // Validate HMAC first to determine renewability on expiry
+  const hmacResult = validateHmac(streamId, expires, signature, secret)
+
+  // Check expiration
   const expiresAt = parseInt(expires, 10)
   if (isNaN(expiresAt) || Date.now() > expiresAt * 1000) {
-    return { ok: false, code: `SIGNATURE_EXPIRED` }
+    return { ok: false, code: `SIGNATURE_EXPIRED`, hmacValid: hmacResult.ok }
   }
 
-  // Delegate HMAC validation
-  const hmacResult = validateHmac(streamId, expires, signature, secret)
+  // If we get here, not expired, so check HMAC
   if (!hmacResult.ok) {
     return hmacResult
   }

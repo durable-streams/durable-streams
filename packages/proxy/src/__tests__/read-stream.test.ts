@@ -11,6 +11,9 @@ import {
   createTestContext,
   readStream,
 } from "./harness"
+import { generatePreSignedUrl } from "../server/tokens"
+
+const TEST_SECRET = `test-secret-key-for-development`
 
 const ctx = createTestContext()
 
@@ -123,6 +126,73 @@ describe(`stream reading`, () => {
     expect(result.headers.get(`access-control-expose-headers`)).toContain(
       `Stream-Next-Offset`
     )
+  })
+})
+
+describe(`stream reading - expired URLs`, () => {
+  let streamUrl: string
+  let streamId: string
+
+  beforeEach(async () => {
+    // Create a fresh stream for each test
+    ctx.upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `{"text": "Hello"}` }]),
+      chunkDelayMs: 10,
+    })
+
+    const result = await createStream({
+      proxyUrl: ctx.urls.proxy,
+      upstreamUrl: ctx.urls.upstream + `/v1/chat/completions`,
+      body: { messages: [] },
+    })
+
+    expect(result.status).toBe(201)
+    streamUrl = result.streamUrl!
+    streamId = new URL(streamUrl).pathname.split(`/`).pop()!
+
+    // Wait for upstream to complete
+    await new Promise((r) => setTimeout(r, 100))
+  })
+
+  it(`returns structured error with renewable:true for expired URL with valid HMAC`, async () => {
+    // Generate an expired URL with valid HMAC
+    const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
+    const expiredUrl = generatePreSignedUrl(
+      ctx.urls.proxy,
+      streamId,
+      TEST_SECRET,
+      expiredAt
+    )
+    const url = new URL(expiredUrl)
+    url.searchParams.set(`offset`, `-1`)
+
+    const response = await fetch(url.toString())
+
+    expect(response.status).toBe(401)
+    const body = await response.json()
+    expect(body.error).toBe(`SIGNATURE_EXPIRED`)
+    expect(body.message).toBe(`Pre-signed URL has expired`)
+    expect(body.renewable).toBe(true)
+    expect(body.streamId).toBe(streamId)
+  })
+
+  it(`returns structured error with renewable:false for expired URL with invalid HMAC`, async () => {
+    // Construct URL with invalid signature
+    const url = new URL(`/v1/proxy/${streamId}`, ctx.urls.proxy)
+    const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
+    url.searchParams.set(`expires`, expiredAt.toString())
+    url.searchParams.set(`signature`, `invalid-signature`)
+    url.searchParams.set(`offset`, `-1`)
+
+    const response = await fetch(url.toString())
+
+    expect(response.status).toBe(401)
+    const body = await response.json()
+    expect(body.error).toBe(`SIGNATURE_EXPIRED`)
+    expect(body.message).toBe(`Pre-signed URL has expired`)
+    expect(body.renewable).toBe(false)
+    expect(body.streamId).toBe(streamId)
   })
 })
 
