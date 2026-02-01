@@ -16,14 +16,18 @@ import {
   getDefaultStorage,
   isUrlExpired,
   loadCredentials,
+  loadSessionCredentials,
   removeCredentials,
+  removeSessionCredentials,
   saveCredentials,
+  saveSessionCredentials,
 } from "./storage"
 import type {
   DurableFetch,
   DurableFetchOptions,
   DurableFetchRequestOptions,
   DurableResponse,
+  SessionCredentials,
   StreamCredentials,
 } from "./types"
 
@@ -96,6 +100,10 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     storage = getDefaultStorage(),
     fetch: fetchFn = fetch,
     storagePrefix = DEFAULT_PREFIX,
+    sessionId: clientSessionId,
+    getSessionId: clientGetSessionId,
+    ttl,
+    renewUrl,
   } = options
 
   // Normalize trailing slash
@@ -111,12 +119,24 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       headers: userHeaders,
       body,
       signal,
+      sessionId: requestSessionId,
     } = init ?? {}
 
     const upstream =
       typeof upstreamUrl === `string` ? upstreamUrl : upstreamUrl.toString()
 
-    // --- Resume path ---
+    // Resolve effective sessionId (priority: request > getSessionId > client options)
+    let effectiveSessionId: string | undefined
+    if (requestSessionId !== undefined) {
+      // Explicit per-request sessionId (even if undefined, it means "no session")
+      effectiveSessionId = requestSessionId
+    } else if (clientGetSessionId) {
+      effectiveSessionId = clientGetSessionId(upstream, init)
+    } else {
+      effectiveSessionId = clientSessionId
+    }
+
+    // --- Resume path (requestId credentials first) ---
     if (requestId && autoResume) {
       const existing = loadCredentials(
         storage,
@@ -127,7 +147,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
 
       if (existing && !isUrlExpired(existing)) {
         try {
-          return await readFromStream(fetchFn, existing, true)
+          return await readFromStream(fetchFn, existing, true, renewUrl)
         } catch (error) {
           removeCredentials(
             storage,
@@ -140,6 +160,17 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
           }
         }
       }
+    }
+
+    // --- Session reuse path (check session credentials if no requestId match) ---
+    let sessionCredentials: SessionCredentials | null = null
+    if (effectiveSessionId) {
+      sessionCredentials = loadSessionCredentials(
+        storage,
+        storagePrefix,
+        normalizedProxyUrl,
+        effectiveSessionId
+      )
     }
 
     // --- Create path: POST {proxyUrl} ---
@@ -156,6 +187,16 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     const proxyHeaders: Record<string, string> = {
       "Upstream-URL": upstream,
       "Upstream-Method": method,
+    }
+
+    // Add session reuse header if we have session credentials
+    if (sessionCredentials) {
+      proxyHeaders[`Use-Stream-Url`] = sessionCredentials.streamUrl
+    }
+
+    // Add TTL header if configured
+    if (ttl !== undefined) {
+      proxyHeaders[`X-Stream-TTL`] = String(ttl)
     }
 
     for (const [key, value] of Object.entries(normalized)) {
@@ -180,6 +221,87 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
 
     // Handle errors
     if (!createResponse.ok) {
+      // Handle 409 Conflict (stream closed) - clear session and retry without reuse
+      if (createResponse.status === 409 && sessionCredentials && effectiveSessionId) {
+        removeSessionCredentials(
+          storage,
+          storagePrefix,
+          normalizedProxyUrl,
+          effectiveSessionId
+        )
+        // Retry without session reuse by making a recursive call
+        // We need to remove the Use-Stream-Url header and retry
+        delete proxyHeaders[`Use-Stream-Url`]
+        const retryResponse = await fetchFn(createUrl.toString(), {
+          method: `POST`,
+          headers: proxyHeaders,
+          body,
+          signal,
+        })
+        if (!retryResponse.ok) {
+          if (retryResponse.status === 502) {
+            const upstreamStatus = parseInt(
+              retryResponse.headers.get(`Upstream-Status`)!,
+              10
+            )
+            const upstreamContentType = retryResponse.headers.get(
+              `Upstream-Content-Type`
+            )
+            return new Response(retryResponse.body, {
+              status: upstreamStatus,
+              headers: {
+                ...retryResponse.headers,
+                "Content-Type": upstreamContentType ?? `application/octet-stream`,
+                "Upstream-Error": `true`,
+              },
+            }) as DurableResponse
+          }
+          return retryResponse as DurableResponse
+        }
+        // Process the retry response as a new stream
+        const retryLocationHeader = retryResponse.headers.get(`Location`)
+        if (!retryLocationHeader) {
+          throw new Error(`Missing Location header in retry response`)
+        }
+        const retryStreamUrl = new URL(retryLocationHeader, normalizedProxyUrl).toString()
+        const retryStreamId = extractStreamIdFromUrl(retryStreamUrl)
+        const retryExpiresAt = extractExpiresFromUrl(retryStreamUrl)
+        const retryUpstreamContentType =
+          retryResponse.headers.get(`Upstream-Content-Type`) ?? undefined
+
+        const retryCredentials: StreamCredentials = {
+          streamUrl: retryStreamUrl,
+          streamId: retryStreamId,
+          offset: `-1`,
+          upstreamContentType: retryUpstreamContentType,
+          createdAtMs: Date.now(),
+          expiresAtSecs: retryExpiresAt,
+        }
+
+        // Save session credentials for the new stream
+        if (effectiveSessionId) {
+          saveSessionCredentials(
+            storage,
+            storagePrefix,
+            normalizedProxyUrl,
+            effectiveSessionId,
+            { streamUrl: retryStreamUrl, streamId: retryStreamId }
+          )
+        }
+
+        if (requestId) {
+          saveCredentials(
+            storage,
+            storagePrefix,
+            normalizedProxyUrl,
+            requestId,
+            retryCredentials
+          )
+        }
+
+        return readFromStream(fetchFn, retryCredentials, false, renewUrl)
+      }
+
       if (createResponse.status === 502) {
         const upstreamStatus = parseInt(
           createResponse.headers.get(`Upstream-Status`)!,
@@ -195,9 +317,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
             "Content-Type": upstreamContentType ?? `application/octet-stream`,
             "Upstream-Error": `true`,
           },
-        })
+        }) as DurableResponse
       } else {
-        return createResponse
+        return createResponse as DurableResponse
       }
     }
 
@@ -222,6 +344,17 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       expiresAtSecs: expiresAt,
     }
 
+    // Store/update session credentials for stream reuse
+    if (effectiveSessionId) {
+      saveSessionCredentials(
+        storage,
+        storagePrefix,
+        normalizedProxyUrl,
+        effectiveSessionId,
+        { streamUrl, streamId }
+      )
+    }
+
     if (requestId) {
       saveCredentials(
         storage,
@@ -233,7 +366,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     }
 
     // --- Read from stream using @durable-streams/client ---
-    return readFromStream(fetchFn, credentials, false)
+    return readFromStream(fetchFn, credentials, false, renewUrl)
   }
 }
 
@@ -266,11 +399,17 @@ function normalizeHeaders(
  *
  * The pre-signed URL already contains expires/signature for auth.
  * We delegate to the DS client which handles reconnection, SSE parsing, etc.
+ *
+ * @param fetchFn - Fetch function to use
+ * @param credentials - Stream credentials including URL and offset
+ * @param wasResumed - Whether this is a resumed stream
+ * @param _renewUrl - URL for renewing expired URLs (reserved for future use)
  */
 async function readFromStream(
   fetchFn: typeof fetch,
   credentials: StreamCredentials,
-  wasResumed: boolean
+  wasResumed: boolean,
+  _renewUrl?: string
 ): Promise<DurableResponse> {
   // Use @durable-streams/client stream() function
   const streamResponse = await stream({
