@@ -645,7 +645,7 @@ async function readFromStream(
 /**
  * Attempt to renew an expired stream URL.
  *
- * POSTs to /v1/proxy/renew with the expired URL and renewUrl.
+ * POSTs to /v1/proxy with Renew-Stream-URL header.
  * Returns the fresh URL on success, or null on failure.
  *
  * @param fetchFn - Fetch function to use
@@ -663,11 +663,11 @@ async function renewStreamUrl(
   renewUrl: string,
   userHeaders?: Record<string, string>
 ): Promise<string | null> {
-  const renewEndpoint = new URL(`${proxyUrl}/renew`)
+  const renewEndpoint = new URL(proxyUrl)
   renewEndpoint.searchParams.set(`secret`, proxyAuthorization)
 
   const headers: Record<string, string> = {
-    "Use-Stream-URL": expiredStreamUrl,
+    "Renew-Stream-URL": expiredStreamUrl,
     "Upstream-URL": renewUrl,
   }
 

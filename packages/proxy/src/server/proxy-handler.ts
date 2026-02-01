@@ -19,7 +19,6 @@ import type { IncomingMessage, ServerResponse } from "node:http"
  * URL pattern matchers for proxy routes.
  */
 const PROXY_BASE = /^\/v1\/proxy\/?$/ // POST /v1/proxy
-const PROXY_RENEW = /^\/v1\/proxy\/renew\/?$/ // POST /v1/proxy/renew
 const PROXY_STREAM = /^\/v1\/proxy\/([^/]+)$/ // GET/HEAD/PATCH/DELETE /v1/proxy/:streamId
 
 /**
@@ -33,7 +32,7 @@ function setCorsHeaders(res: ServerResponse): void {
   )
   res.setHeader(
     `Access-Control-Allow-Headers`,
-    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Stream-Signed-URL-TTL`
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Renew-Stream-URL, Stream-Signed-URL-TTL`
   )
   res.setHeader(
     `Access-Control-Expose-Headers`,
@@ -82,16 +81,23 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy/renew - Renew stream URL
-      // (must check before PROXY_STREAM to avoid matching "renew" as streamId)
-      if (PROXY_RENEW.test(path) && method === `POST`) {
-        await handleRenewStream(req, res, options, isAllowed)
-        return
-      }
-
-      // Route: POST /v1/proxy - Create stream
+      // Route: POST /v1/proxy - Create, append, or renew stream
+      // Dispatch based on header:
+      //   - Renew-Stream-URL header → renew (get fresh signed URL)
+      //   - Use-Stream-URL header → append (write to existing stream)
+      //   - Neither → create (new stream)
       if (PROXY_BASE.test(path) && method === `POST`) {
-        await handleCreateStream(req, res, options, isAllowed, contentTypeStore)
+        if (req.headers[`renew-stream-url`]) {
+          await handleRenewStream(req, res, options, isAllowed)
+        } else {
+          await handleCreateStream(
+            req,
+            res,
+            options,
+            isAllowed,
+            contentTypeStore
+          )
+        }
         return
       }
 

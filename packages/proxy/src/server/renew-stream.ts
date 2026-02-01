@@ -1,7 +1,7 @@
 /**
  * Handler for renewing pre-signed stream URLs.
  *
- * POST /v1/proxy/renew
+ * POST /v1/proxy with Renew-Stream-URL header
  *
  * Allows clients to obtain a fresh signed URL for an existing stream
  * without producing a write. This is for re-activating read access
@@ -90,19 +90,19 @@ export async function handleRenewStream(
     return
   }
 
-  // Step 2: Parse and validate Use-Stream-URL header
-  const useStreamUrlHeader = req.headers[`use-stream-url`]
-  if (!useStreamUrlHeader || Array.isArray(useStreamUrlHeader)) {
+  // Step 2: Parse and validate Renew-Stream-URL header
+  const renewStreamUrlHeader = req.headers[`renew-stream-url`]
+  if (!renewStreamUrlHeader || Array.isArray(renewStreamUrlHeader)) {
     sendError(
       res,
       400,
-      `MISSING_USE_STREAM_URL`,
-      `Use-Stream-URL header is required`
+      `MISSING_RENEW_STREAM_URL`,
+      `Renew-Stream-URL header is required`
     )
     return
   }
 
-  const parsedStreamUrl = parsePreSignedUrl(useStreamUrlHeader)
+  const parsedStreamUrl = parsePreSignedUrl(renewStreamUrlHeader)
   if (!parsedStreamUrl) {
     sendError(
       res,

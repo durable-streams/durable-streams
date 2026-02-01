@@ -90,10 +90,10 @@ export interface DurableFetchOptions {
   streamSignedUrlTtl?: number
   /**
    * Optional URL for renewing expired signed URLs.
-   * When a read URL expires, the client will POST to /v1/proxy/renew
-   * with this as the Upstream-URL to obtain a fresh signed URL.
-   * The endpoint must accept the client's auth headers and return
-   * 2xx if the client is still authorized.
+   * When a read URL expires, the client will POST to /v1/proxy
+   * with Renew-Stream-URL header and this as the Upstream-URL
+   * to obtain a fresh signed URL. The endpoint must accept the
+   * client's auth headers and return 2xx if the client is still authorized.
    *
    * If not configured, expired URLs surface as errors to the caller.
    */
