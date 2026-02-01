@@ -34,6 +34,17 @@ export interface StreamCredentials {
 }
 
 /**
+ * Stored credentials for session-based stream reuse.
+ * Used to append multiple requests to the same stream.
+ */
+export interface SessionCredentials {
+  /** The pre-signed stream URL (may be expired - still valid for writes) */
+  streamUrl: string
+  /** The stream ID (UUID) */
+  streamId: string
+}
+
+/**
  * Options for creating a durable fetch wrapper.
  *
  * These options configure the proxy itself, not the upstream request.
