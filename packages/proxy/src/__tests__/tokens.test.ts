@@ -58,9 +58,7 @@ describe(`parsePreSignedUrl`, () => {
       parsePreSignedUrl(`${TEST_ORIGIN}/v1/proxy/${TEST_STREAM_ID}`)
     ).toBeNull()
     expect(
-      parsePreSignedUrl(
-        `${TEST_ORIGIN}/v1/proxy/${TEST_STREAM_ID}?expires=123`
-      )
+      parsePreSignedUrl(`${TEST_ORIGIN}/v1/proxy/${TEST_STREAM_ID}?expires=123`)
     ).toBeNull()
     expect(
       parsePreSignedUrl(
@@ -81,9 +79,7 @@ describe(`parsePreSignedUrl`, () => {
       )
     ).toBeNull()
     expect(
-      parsePreSignedUrl(
-        `${TEST_ORIGIN}/v1/proxy/?expires=123&signature=abc`
-      )
+      parsePreSignedUrl(`${TEST_ORIGIN}/v1/proxy/?expires=123&signature=abc`)
     ).toBeNull()
   })
 })

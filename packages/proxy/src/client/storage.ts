@@ -2,7 +2,11 @@
  * Storage utilities for persisting stream credentials.
  */
 
-import type { DurableStorage, SessionCredentials, StreamCredentials } from "./types"
+import type {
+  DurableStorage,
+  SessionCredentials,
+  StreamCredentials,
+} from "./types"
 
 /**
  * In-memory storage implementation.
