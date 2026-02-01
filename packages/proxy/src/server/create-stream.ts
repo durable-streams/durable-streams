@@ -399,7 +399,8 @@ export async function handleCreateStream(
   // Step 10: Generate pre-signed URL and respond
   // Parse X-Stream-TTL header for URL expiration
   const streamTtlHeader = req.headers[`x-stream-ttl`]
-  let urlExpirationSeconds = options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
+  let urlExpirationSeconds =
+    options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
 
   if (streamTtlHeader && !Array.isArray(streamTtlHeader)) {
     const parsedTtl = parseInt(streamTtlHeader, 10)
