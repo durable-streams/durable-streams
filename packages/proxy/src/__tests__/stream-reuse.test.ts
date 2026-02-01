@@ -76,7 +76,7 @@ async function createStreamWithReuse(
   }
 
   if (options?.ttl !== undefined) {
-    headers[`X-Stream-TTL`] = String(options.ttl)
+    headers[`Stream-Signed-URL-TTL`] = String(options.ttl)
   }
 
   const response = await fetch(url.toString(), {
@@ -269,8 +269,8 @@ describe(`stream reuse with Use-Stream-URL`, () => {
   })
 })
 
-describe(`X-Stream-TTL header`, () => {
-  it(`respects X-Stream-TTL in generated URLs`, async () => {
+describe(`Stream-Signed-URL-TTL header`, () => {
+  it(`respects Stream-Signed-URL-TTL in generated URLs`, async () => {
     ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
@@ -281,7 +281,7 @@ describe(`X-Stream-TTL header`, () => {
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
         "Upstream-Method": `POST`,
-        "X-Stream-TTL": `3600`, // 1 hour
+        "Stream-Signed-URL-TTL": `3600`, // 1 hour
         "Content-Type": `application/json`,
       },
       body: JSON.stringify({}),
@@ -301,7 +301,7 @@ describe(`X-Stream-TTL header`, () => {
     expect(expires).toBeLessThan(expectedExpires + 5)
   })
 
-  it(`respects X-Stream-TTL on stream reuse`, async () => {
+  it(`respects Stream-Signed-URL-TTL on stream reuse`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
     const reuse = await createStreamWithReuse(streamUrl, { ttl: 1800 }) // 30 minutes

@@ -233,7 +233,7 @@ describe(`POST /v1/proxy/renew`, () => {
     expect(body.error.code).toBe(`MISSING_SECRET`)
   })
 
-  it(`respects X-Stream-TTL header in generated URL`, async () => {
+  it(`respects Stream-Signed-URL-TTL header in generated URL`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
     ctx.upstream.setResponse({ status: 200, body: `OK` })
@@ -246,7 +246,7 @@ describe(`POST /v1/proxy/renew`, () => {
       headers: {
         "Use-Stream-URL": streamUrl,
         "Upstream-URL": ctx.urls.upstream + `/v1/renew`,
-        "X-Stream-TTL": `1800`, // 30 minutes
+        "Stream-Signed-URL-TTL": `1800`, // 30 minutes
       },
     })
 

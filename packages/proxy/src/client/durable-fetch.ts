@@ -103,7 +103,7 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     storagePrefix = DEFAULT_PREFIX,
     sessionId: clientSessionId,
     getSessionId: clientGetSessionId,
-    ttl,
+    streamSignedUrlTtl,
     renewUrl,
   } = options
 
@@ -210,9 +210,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       proxyHeaders[`Use-Stream-URL`] = sessionCredentials.streamUrl
     }
 
-    // Add TTL header if configured
-    if (ttl !== undefined) {
-      proxyHeaders[`X-Stream-TTL`] = String(ttl)
+    // Add signed URL TTL header if configured
+    if (streamSignedUrlTtl !== undefined) {
+      proxyHeaders[`Stream-Signed-URL-TTL`] = String(streamSignedUrlTtl)
     }
 
     for (const [key, value] of Object.entries(normalized)) {

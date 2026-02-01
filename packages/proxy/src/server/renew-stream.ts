@@ -223,13 +223,13 @@ export async function handleRenewStream(
   }
 
   // Step 7: Generate fresh signed URL and return 200 OK
-  // Parse X-Stream-TTL header for URL expiration
-  const streamTtlHeader = req.headers[`x-stream-ttl`]
+  // Parse Stream-Signed-URL-TTL header for URL expiration
+  const signedUrlTtlHeader = req.headers[`stream-signed-url-ttl`]
   let urlExpirationSeconds =
     options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
 
-  if (streamTtlHeader && !Array.isArray(streamTtlHeader)) {
-    const parsedTtl = parseInt(streamTtlHeader, 10)
+  if (signedUrlTtlHeader && !Array.isArray(signedUrlTtlHeader)) {
+    const parsedTtl = parseInt(signedUrlTtlHeader, 10)
     if (!isNaN(parsedTtl) && parsedTtl >= 0) {
       urlExpirationSeconds = parsedTtl
     }
