@@ -9,6 +9,7 @@ import { handleReadStream } from "./read-stream"
 import { handleHeadStream } from "./head-stream"
 import { handleAbortStream } from "./abort-stream"
 import { handleDeleteStream } from "./delete-stream"
+import { handleRenewStream } from "./renew-stream"
 import { createAllowlistValidator } from "./allowlist"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
@@ -18,6 +19,7 @@ import type { IncomingMessage, ServerResponse } from "node:http"
  * URL pattern matchers for proxy routes.
  */
 const PROXY_BASE = /^\/v1\/proxy\/?$/ // POST /v1/proxy
+const PROXY_RENEW = /^\/v1\/proxy\/renew\/?$/ // POST /v1/proxy/renew
 const PROXY_STREAM = /^\/v1\/proxy\/([^/]+)$/ // GET/HEAD/PATCH/DELETE /v1/proxy/:streamId
 
 /**
@@ -80,6 +82,13 @@ export function createProxyHandler(
     }
 
     try {
+      // Route: POST /v1/proxy/renew - Renew stream URL
+      // (must check before PROXY_STREAM to avoid matching "renew" as streamId)
+      if (PROXY_RENEW.test(path) && method === `POST`) {
+        await handleRenewStream(req, res, options, isAllowed)
+        return
+      }
+
       // Route: POST /v1/proxy - Create stream
       if (PROXY_BASE.test(path) && method === `POST`) {
         await handleCreateStream(req, res, options, isAllowed, contentTypeStore)
