@@ -40,6 +40,20 @@ pnpm add @durable-streams/state @tanstack/db
 
 > `@tanstack/db` is a peer dependency for reactive queries.
 
+## SSR Warning
+
+**Durable State requires client-only rendering.** `createStreamDB` fetches data at initialization, which fails during server-side rendering.
+
+For TanStack Start/Router apps, wrap durable-state components with `clientOnly`:
+
+```typescript
+import { clientOnly$ } from "@tanstack/start"
+
+const StreamDBProvider = clientOnly$(() => import("./StreamDBProvider"))
+```
+
+See `@electric-sql/playbook` for the `tanstack-start-quickstart` skill with full SSR configuration.
+
 ## Two Levels of Abstraction
 
 | API                 | Use Case                                                  |
@@ -434,6 +448,21 @@ useEffect(() => {
 ```
 
 ## Common Mistakes
+
+### Using StreamDB during SSR
+
+```typescript
+// WRONG - fails during server-side rendering
+// Error: "fetch failed" with no network error = SSR issue
+const db = createStreamDB({ streamOptions, state: schema })
+```
+
+```typescript
+// CORRECT - wrap in clientOnly for SSR frameworks
+import { clientOnly$ } from "@tanstack/start"
+
+const MyComponent = clientOnly$(() => import("./ClientOnlyComponent"))
+```
 
 ### Using primitive values
 

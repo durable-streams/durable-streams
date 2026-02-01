@@ -50,6 +50,27 @@ The client provides three main APIs with increasing levels of control:
 
 ## Quick Start
 
+### Creating a Stream
+
+Streams must exist before reading/writing. Use `DurableStream.create()`:
+
+```typescript
+import { DurableStream } from "@durable-streams/client"
+
+// Creates the stream if it doesn't exist
+const handle = await DurableStream.create({
+  url: "https://streams.example.com/my-stream",
+  contentType: "application/json",
+})
+```
+
+Or via HTTP directly:
+
+```bash
+curl -X PUT https://streams.example.com/my-stream \
+  -H "Content-Type: application/json"
+```
+
 ### Reading with `stream()`
 
 ```typescript
