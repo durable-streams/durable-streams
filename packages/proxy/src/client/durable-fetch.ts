@@ -484,6 +484,11 @@ interface StorageContext {
 }
 
 /**
+ * Maximum number of renewal retry attempts to prevent infinite loops.
+ */
+const MAX_RENEWAL_RETRIES = 1
+
+/**
  * Read from a stream using @durable-streams/client stream().
  *
  * The pre-signed URL already contains expires/signature for auth.
@@ -497,6 +502,7 @@ interface StorageContext {
  * @param proxyAuthorization - Proxy authorization secret
  * @param userHeaders - Original user headers for renewal (used to re-authorize with renewUrl)
  * @param storageContext - Storage context for persisting renewed credentials
+ * @param retryCount - Current renewal retry count (defaults to 0)
  */
 async function readFromStream(
   fetchFn: typeof fetch,
@@ -506,7 +512,8 @@ async function readFromStream(
   proxyUrl?: string,
   proxyAuthorization?: string,
   userHeaders?: Record<string, string>,
-  storageContext?: StorageContext
+  storageContext?: StorageContext,
+  retryCount = 0
 ): Promise<DurableResponse> {
   // Use @durable-streams/client stream() function
   let streamResponse
@@ -518,8 +525,14 @@ async function readFromStream(
       live: `sse`, // Follow until stream closes
     })
   } catch (error) {
-    // Check if this is a renewable 401 error
-    if (isRenewableError(error) && renewUrl && proxyUrl && proxyAuthorization) {
+    // Check if this is a renewable 401 error and we haven't exceeded retry limit
+    if (
+      isRenewableError(error) &&
+      renewUrl &&
+      proxyUrl &&
+      proxyAuthorization &&
+      retryCount < MAX_RENEWAL_RETRIES
+    ) {
       // Attempt to renew the URL
       const renewedUrl = await renewStreamUrl(
         fetchFn,
@@ -563,7 +576,7 @@ async function readFromStream(
           }
         }
 
-        // Retry the read with the renewed URL
+        // Retry the read with the renewed URL (increment retry count)
         return readFromStream(
           fetchFn,
           renewedCredentials,
@@ -572,7 +585,8 @@ async function readFromStream(
           proxyUrl,
           proxyAuthorization,
           userHeaders,
-          storageContext
+          storageContext,
+          retryCount + 1
         )
       }
     }
