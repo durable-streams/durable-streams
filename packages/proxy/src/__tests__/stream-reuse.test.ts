@@ -5,11 +5,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { generatePreSignedUrl } from "../server/tokens"
 import {
   createAIStreamingResponse,
   createStream,
   createTestContext,
-  readStream,
   waitForStreamReady,
 } from "./harness"
 
@@ -100,7 +100,9 @@ async function createStreamWithReuse(
 
   if (locationHeader) {
     newStreamUrl = new URL(locationHeader, ctx.urls.proxy).toString()
-    const match = new URL(newStreamUrl).pathname.match(/\/v1\/proxy\/([^/]+)\/?$/)
+    const match = new URL(newStreamUrl).pathname.match(
+      /\/v1\/proxy\/([^/]+)\/?$/
+    )
     if (match) {
       streamId = decodeURIComponent(match[1]!)
     }
@@ -179,7 +181,9 @@ describe(`stream reuse with Use-Stream-Url`, () => {
         "Use-Stream-Url": streamUrl,
         "Content-Type": `application/json`,
       },
-      body: JSON.stringify({ messages: [{ role: `user`, content: `Continue` }] }),
+      body: JSON.stringify({
+        messages: [{ role: `user`, content: `Continue` }],
+      }),
     })
 
     // Should succeed with 200 (append to existing stream)
@@ -231,22 +235,37 @@ describe(`stream reuse with Use-Stream-Url`, () => {
   })
 
   it(`returns 404 for non-existent stream`, async () => {
-    // First create a valid stream to get a valid signature format
-    const { streamUrl } = await createAndGetStreamUrl()
+    // Generate a valid signed URL for a non-existent stream
+    const nonExistentStreamId = `non-existent-stream-12345`
+    const expiresAt = Math.floor(Date.now() / 1000) + 3600
+    const nonExistentStreamUrl = generatePreSignedUrl(
+      ctx.urls.proxy,
+      nonExistentStreamId,
+      TEST_SECRET,
+      expiresAt
+    )
 
-    // Parse the URL to get the signature format, but use a different stream ID
-    const parsed = new URL(streamUrl)
-    const expires = parsed.searchParams.get(`expires`)
-    const signature = parsed.searchParams.get(`signature`)
+    // Set up upstream to respond (though we shouldn't reach it)
+    ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
-    // Construct URL with non-existent stream ID but try to keep signature
-    // This should fail at the stream existence check, not at HMAC validation
-    // Actually, the HMAC is stream-id specific, so this will fail at HMAC validation
-    // Let's test the 404 path differently - by deleting the stream first
+    // Try to reuse a non-existent stream
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+    url.searchParams.set(`secret`, TEST_SECRET)
 
-    // For now, skip this test - the HMAC validation happens before existence check
-    // The test as designed would return 401 not 404
-    expect(true).toBe(true)
+    const response = await fetch(url.toString(), {
+      method: `POST`,
+      headers: {
+        "Upstream-URL": ctx.urls.upstream + `/v1/chat/completions`,
+        "Upstream-Method": `POST`,
+        "Content-Type": `application/json`,
+        "Use-Stream-Url": nonExistentStreamUrl,
+      },
+      body: JSON.stringify({}),
+    })
+
+    expect(response.status).toBe(404)
+    const body = await response.json()
+    expect(body.error.code).toBe(`STREAM_NOT_FOUND`)
   })
 })
 
