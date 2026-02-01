@@ -1,7 +1,7 @@
 /**
  * Tests for the renewal endpoint and client auto-renewal functionality.
  *
- * POST /v1/proxy/renew
+ * POST /v1/proxy with Renew-Stream-URL header
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -64,11 +64,11 @@ async function renewStream(options: {
   body: unknown
   headers: Headers
 }> {
-  const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
+  const url = new URL(`/v1/proxy`, ctx.urls.proxy)
   url.searchParams.set(`secret`, options.secret ?? TEST_SECRET)
 
   const headers: Record<string, string> = {
-    "Use-Stream-URL": options.streamUrl,
+    "Renew-Stream-URL": options.streamUrl,
     "Upstream-URL": options.upstreamUrl,
   }
 
@@ -105,7 +105,7 @@ async function renewStream(options: {
   }
 }
 
-describe(`POST /v1/proxy/renew`, () => {
+describe(`POST /v1/proxy with Renew-Stream-URL`, () => {
   it(`returns 200 with fresh URL when upstream returns 2xx`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
@@ -180,8 +180,11 @@ describe(`POST /v1/proxy/renew`, () => {
     expect(body.error.code).toBe(`STREAM_NOT_FOUND`)
   })
 
-  it(`returns 400 when Use-Stream-URL header is missing`, async () => {
-    const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
+  it(`returns 400 when Renew-Stream-URL header is missing`, async () => {
+    // Note: Without Renew-Stream-URL header, POST /v1/proxy is treated as
+    // a create request, which requires Upstream-Method. This test verifies
+    // that the create path fails appropriately (not the renew path).
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
 
     const response = await fetch(url.toString(), {
@@ -191,21 +194,23 @@ describe(`POST /v1/proxy/renew`, () => {
       },
     })
 
+    // Without Renew-Stream-URL, this becomes a create request
+    // which fails due to missing Upstream-Method
     expect(response.status).toBe(400)
     const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_USE_STREAM_URL`)
+    expect(body.error.code).toBe(`MISSING_UPSTREAM_METHOD`)
   })
 
   it(`returns 400 when Upstream-URL header is missing`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
-    const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
 
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-URL": streamUrl,
+        "Renew-Stream-URL": streamUrl,
       },
     })
 
@@ -217,13 +222,13 @@ describe(`POST /v1/proxy/renew`, () => {
   it(`returns 401 when service secret is missing`, async () => {
     const { streamUrl } = await createAndGetStreamUrl()
 
-    const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     // Note: no secret parameter
 
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-URL": streamUrl,
+        "Renew-Stream-URL": streamUrl,
         "Upstream-URL": ctx.urls.upstream + `/v1/renew`,
       },
     })
@@ -238,13 +243,13 @@ describe(`POST /v1/proxy/renew`, () => {
 
     ctx.upstream.setResponse({ status: 200, body: `OK` })
 
-    const url = new URL(`/v1/proxy/renew`, ctx.urls.proxy)
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
 
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Use-Stream-URL": streamUrl,
+        "Renew-Stream-URL": streamUrl,
         "Upstream-URL": ctx.urls.upstream + `/v1/renew`,
         "Stream-Signed-URL-TTL": `1800`, // 30 minutes
       },
