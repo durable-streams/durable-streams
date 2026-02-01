@@ -27,6 +27,7 @@ export {
 export type {
   DurableStorage,
   StreamCredentials,
+  SessionCredentials,
   DurableFetchOptions,
   DurableFetchRequestOptions,
   DurableResponse,
