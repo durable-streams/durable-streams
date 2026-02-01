@@ -2,7 +2,7 @@
  * Storage utilities for persisting stream credentials.
  */
 
-import type { DurableStorage, StreamCredentials } from "./types"
+import type { DurableStorage, SessionCredentials, StreamCredentials } from "./types"
 
 /**
  * In-memory storage implementation.
@@ -142,4 +142,76 @@ export function getDefaultStorage(): DurableStorage {
     return localStorage
   }
   return new MemoryStorage()
+}
+
+// ============================================================================
+// Session Credential Storage
+// ============================================================================
+
+/**
+ * Create a scoped storage key for a session.
+ *
+ * Session keys use a different format than request keys to avoid collisions:
+ * `{prefix}session:{scope}:{sessionId}`
+ *
+ * @param prefix - Storage key prefix
+ * @param scope - Scope identifier (the normalized proxy base URL)
+ * @param sessionId - The session ID
+ */
+export function createSessionStorageKey(
+  prefix: string,
+  scope: string,
+  sessionId: string
+): string {
+  return `${prefix}session:${scope}:${sessionId}`
+}
+
+/**
+ * Save session credentials to storage.
+ */
+export function saveSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  sessionId: string,
+  credentials: SessionCredentials
+): void {
+  const key = createSessionStorageKey(prefix, scope, sessionId)
+  storage.setItem(key, JSON.stringify(credentials))
+}
+
+/**
+ * Load session credentials from storage.
+ */
+export function loadSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  sessionId: string
+): SessionCredentials | null {
+  const key = createSessionStorageKey(prefix, scope, sessionId)
+  const data = storage.getItem(key)
+
+  if (!data) {
+    return null
+  }
+
+  try {
+    return JSON.parse(data) as SessionCredentials
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remove session credentials from storage.
+ */
+export function removeSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  sessionId: string
+): void {
+  const key = createSessionStorageKey(prefix, scope, sessionId)
+  storage.removeItem(key)
 }
