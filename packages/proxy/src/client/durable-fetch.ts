@@ -125,6 +125,9 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     const upstream =
       typeof upstreamUrl === `string` ? upstreamUrl : upstreamUrl.toString()
 
+    // Normalize user headers early so they're available for renewal
+    const normalized = normalizeHeaders(userHeaders)
+
     // Resolve effective sessionId (priority: request > getSessionId > client options)
     let effectiveSessionId: string | undefined
     if (requestSessionId !== undefined) {
@@ -147,7 +150,15 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
 
       if (existing && !isUrlExpired(existing)) {
         try {
-          return await readFromStream(fetchFn, existing, true, renewUrl)
+          return await readFromStream(
+            fetchFn,
+            existing,
+            true,
+            renewUrl,
+            normalizedProxyUrl,
+            proxyAuthorization,
+            normalized
+          )
         } catch (error) {
           removeCredentials(
             storage,
@@ -176,9 +187,6 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     // --- Create path: POST {proxyUrl} ---
     const createUrl = new URL(normalizedProxyUrl)
     createUrl.searchParams.set(`secret`, proxyAuthorization)
-
-    // Normalize user headers into a plain object
-    const normalized = normalizeHeaders(userHeaders)
 
     // Build proxy request headers:
     //  - Upstream-URL, Upstream-Method from our args
@@ -299,7 +307,15 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
           )
         }
 
-        return readFromStream(fetchFn, retryCredentials, false, renewUrl)
+        return readFromStream(
+          fetchFn,
+          retryCredentials,
+          false,
+          renewUrl,
+          normalizedProxyUrl,
+          proxyAuthorization,
+          normalized
+        )
       }
 
       if (createResponse.status === 502) {
@@ -366,7 +382,15 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     }
 
     // --- Read from stream using @durable-streams/client ---
-    return readFromStream(fetchFn, credentials, false, renewUrl)
+    return readFromStream(
+      fetchFn,
+      credentials,
+      false,
+      renewUrl,
+      normalizedProxyUrl,
+      proxyAuthorization,
+      normalized
+    )
   }
 }
 
@@ -395,6 +419,30 @@ function normalizeHeaders(
 }
 
 /**
+ * Structured error response for renewable URLs.
+ */
+interface RenewableErrorResponse {
+  error?: string
+  message?: string
+  renewable?: boolean
+  streamId?: string
+}
+
+/**
+ * Check if an error is a renewable 401 error.
+ */
+function isRenewableError(error: unknown): error is Error & {
+  status: number
+  details?: RenewableErrorResponse
+} {
+  if (!(error instanceof Error)) return false
+  const err = error as Error & { status?: number; details?: unknown }
+  if (err.status !== 401) return false
+  const details = err.details as RenewableErrorResponse | undefined
+  return details?.renewable === true
+}
+
+/**
  * Read from a stream using @durable-streams/client stream().
  *
  * The pre-signed URL already contains expires/signature for auth.
@@ -403,21 +451,66 @@ function normalizeHeaders(
  * @param fetchFn - Fetch function to use
  * @param credentials - Stream credentials including URL and offset
  * @param wasResumed - Whether this is a resumed stream
- * @param _renewUrl - URL for renewing expired URLs (reserved for future use)
+ * @param renewUrl - URL for renewing expired URLs
+ * @param proxyUrl - Base proxy URL (needed for renewal endpoint)
+ * @param proxyAuthorization - Proxy authorization secret
+ * @param userHeaders - Original user headers for renewal (used to re-authorize with renewUrl)
  */
 async function readFromStream(
   fetchFn: typeof fetch,
   credentials: StreamCredentials,
   wasResumed: boolean,
-  _renewUrl?: string
+  renewUrl?: string,
+  proxyUrl?: string,
+  proxyAuthorization?: string,
+  userHeaders?: Record<string, string>
 ): Promise<DurableResponse> {
   // Use @durable-streams/client stream() function
-  const streamResponse = await stream({
-    url: credentials.streamUrl,
-    offset: credentials.offset === `-1` ? undefined : credentials.offset,
-    fetch: fetchFn,
-    live: `sse`, // Follow until stream closes
-  })
+  let streamResponse
+  try {
+    streamResponse = await stream({
+      url: credentials.streamUrl,
+      offset: credentials.offset === `-1` ? undefined : credentials.offset,
+      fetch: fetchFn,
+      live: `sse`, // Follow until stream closes
+    })
+  } catch (error) {
+    // Check if this is a renewable 401 error
+    if (isRenewableError(error) && renewUrl && proxyUrl && proxyAuthorization) {
+      // Attempt to renew the URL
+      const renewedUrl = await renewStreamUrl(
+        fetchFn,
+        proxyUrl,
+        proxyAuthorization,
+        credentials.streamUrl,
+        renewUrl,
+        userHeaders
+      )
+
+      if (renewedUrl) {
+        // Update credentials with the fresh URL
+        const renewedCredentials: StreamCredentials = {
+          ...credentials,
+          streamUrl: renewedUrl,
+          expiresAtSecs: extractExpiresFromUrl(renewedUrl),
+        }
+
+        // Retry the read with the renewed URL
+        return readFromStream(
+          fetchFn,
+          renewedCredentials,
+          wasResumed,
+          renewUrl,
+          proxyUrl,
+          proxyAuthorization,
+          userHeaders
+        )
+      }
+    }
+
+    // Rethrow if not renewable or renewal failed
+    throw error
+  }
 
   // Bridge: wrap DS client's bodyStream() into a Response
   const bodyStream = streamResponse.bodyStream()
@@ -464,6 +557,62 @@ async function readFromStream(
   response.wasResumed = wasResumed
 
   return response
+}
+
+/**
+ * Attempt to renew an expired stream URL.
+ *
+ * POSTs to /v1/proxy/renew with the expired URL and renewUrl.
+ * Returns the fresh URL on success, or null on failure.
+ *
+ * @param fetchFn - Fetch function to use
+ * @param proxyUrl - Base proxy URL
+ * @param proxyAuthorization - Proxy authorization secret
+ * @param expiredStreamUrl - The expired stream URL
+ * @param renewUrl - The upstream renewal URL for authorization check
+ * @param userHeaders - Original user headers for renewal
+ */
+async function renewStreamUrl(
+  fetchFn: typeof fetch,
+  proxyUrl: string,
+  proxyAuthorization: string,
+  expiredStreamUrl: string,
+  renewUrl: string,
+  userHeaders?: Record<string, string>
+): Promise<string | null> {
+  const renewEndpoint = new URL(`${proxyUrl}/renew`)
+  renewEndpoint.searchParams.set(`secret`, proxyAuthorization)
+
+  const headers: Record<string, string> = {
+    "Use-Stream-Url": expiredStreamUrl,
+    "Upstream-URL": renewUrl,
+  }
+
+  // Forward user's authorization header for the renewal check
+  if (userHeaders) {
+    for (const [key, value] of Object.entries(userHeaders)) {
+      const lower = key.toLowerCase()
+      if (lower === `authorization`) {
+        headers[`Upstream-Authorization`] = value
+      }
+    }
+  }
+
+  try {
+    const response = await fetchFn(renewEndpoint.toString(), {
+      method: `POST`,
+      headers,
+    })
+
+    if (!response.ok) {
+      return null
+    }
+
+    const location = response.headers.get(`Location`)
+    return location ? new URL(location, proxyUrl).toString() : null
+  } catch {
+    return null
+  }
 }
 
 /**
