@@ -38,11 +38,12 @@ describe(`isAbsoluteUrl`, () => {
     expect(isAbsoluteUrl(`../api/endpoint`)).toBe(false)
   })
 
-  it(`returns false for other protocol schemes`, () => {
-    // These should not be considered "absolute" for our HTTP use case
-    expect(isAbsoluteUrl(`ftp://example.com`)).toBe(false)
-    expect(isAbsoluteUrl(`file:///path/to/file`)).toBe(false)
-    expect(isAbsoluteUrl(`data:text/plain,hello`)).toBe(false)
+  it(`returns true for other protocol schemes`, () => {
+    // Any valid URL with a protocol is considered absolute
+    expect(isAbsoluteUrl(`ftp://example.com`)).toBe(true)
+    expect(isAbsoluteUrl(`file:///path/to/file`)).toBe(true)
+    expect(isAbsoluteUrl(`data:text/plain,hello`)).toBe(true)
+    expect(isAbsoluteUrl(`custom://my-service/endpoint`)).toBe(true)
   })
 
   it(`returns false for malformed URLs`, () => {

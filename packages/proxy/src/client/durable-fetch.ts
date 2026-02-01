@@ -37,8 +37,8 @@ const DEFAULT_PREFIX = `durable-streams:`
  */
 export function isAbsoluteUrl(url: string): boolean {
   try {
-    const parsed = new URL(url)
-    return parsed.protocol === `http:` || parsed.protocol === `https:`
+    new URL(url)
+    return true
   } catch {
     return false
   }
