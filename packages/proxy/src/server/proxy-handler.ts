@@ -33,7 +33,7 @@ function setCorsHeaders(res: ServerResponse): void {
   )
   res.setHeader(
     `Access-Control-Allow-Headers`,
-    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization`
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-Url, X-Stream-TTL`
   )
   res.setHeader(
     `Access-Control-Expose-Headers`,
