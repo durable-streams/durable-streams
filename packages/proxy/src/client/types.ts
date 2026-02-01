@@ -62,6 +62,42 @@ export interface DurableFetchOptions {
   fetch?: typeof fetch
   /** Prefix for storage keys (default: 'durable-streams:') */
   storagePrefix?: string
+  /**
+   * Static session ID for stream reuse.
+   * All requests made with this client will append to the same stream
+   * unless overridden per-request.
+   */
+  sessionId?: string
+  /**
+   * Derive session ID from request parameters.
+   * Called for each request to determine the session ID.
+   * Takes precedence over static sessionId if both are provided.
+   *
+   * @param upstreamUrl - The upstream URL being requested
+   * @param init - The request options
+   * @returns Session ID string, or undefined to create a new stream
+   */
+  getSessionId?: (
+    upstreamUrl: string,
+    init?: DurableFetchRequestOptions
+  ) => string | undefined
+  /**
+   * Optional TTL in seconds for signed URLs.
+   * Sent as X-Stream-TTL header. Server uses this as the expiry
+   * duration for generated signed URLs.
+   * Default: server-configured (typically 7 days).
+   */
+  ttl?: number
+  /**
+   * Optional URL for renewing expired signed URLs.
+   * When a read URL expires, the client will POST to /v1/proxy/renew
+   * with this as the Upstream-URL to obtain a fresh signed URL.
+   * The endpoint must accept the client's auth headers and return
+   * 2xx if the client is still authorized.
+   *
+   * If not configured, expired URLs surface as errors to the caller.
+   */
+  renewUrl?: string
 }
 
 /**
@@ -79,6 +115,12 @@ export interface DurableFetchRequestOptions extends Omit<
   method?: string
   /** Optional request ID for resumability. If not provided, creates a fresh stream each time. */
   requestId?: string
+  /**
+   * Override session ID for this specific request.
+   * Takes precedence over client-level sessionId/getSessionId.
+   * Set to undefined to explicitly create a new stream.
+   */
+  sessionId?: string
 }
 
 /**
