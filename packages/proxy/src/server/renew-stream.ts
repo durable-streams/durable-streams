@@ -48,7 +48,7 @@ async function streamExists(
       method: `HEAD`,
     })
 
-    return headResponse.ok || headResponse.status !== 404
+    return headResponse.ok
   } catch {
     return false
   }
