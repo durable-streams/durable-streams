@@ -301,9 +301,9 @@ describe(`X-Stream-TTL header`, () => {
 })
 
 describe(`409 Conflict for closed streams`, () => {
-  it(`returns 409 when trying to reuse a closed stream`, async () => {
-    // Create a stream
-    ctx.upstream.setResponse(createAIStreamingResponse([`Hello`], { closed: true }))
+  it(`returns 409 when trying to reuse a stream that completed`, async () => {
+    // Create a stream with regular response
+    ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
     const result = await createStream({
       proxyUrl: ctx.urls.proxy,
@@ -314,7 +314,10 @@ describe(`409 Conflict for closed streams`, () => {
     expect(result.status).toBe(201)
     await waitForStreamReady(ctx.urls.proxy, result.streamId!)
 
-    // Try to reuse the closed stream
+    // Wait for the stream to complete (upstream finishes, proxy closes stream)
+    await new Promise((r) => setTimeout(r, 500))
+
+    // Try to reuse the completed/closed stream
     ctx.upstream.setResponse(createAIStreamingResponse([` World`]))
 
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
@@ -331,6 +334,7 @@ describe(`409 Conflict for closed streams`, () => {
       body: JSON.stringify({}),
     })
 
+    // Stream should be closed after upstream completes
     expect(response.status).toBe(409)
     const body = await response.json()
     expect(body.error.code).toBe(`STREAM_CLOSED`)
