@@ -83,11 +83,11 @@ export interface DurableFetchOptions {
   ) => string | undefined
   /**
    * Optional TTL in seconds for signed URLs.
-   * Sent as X-Stream-TTL header. Server uses this as the expiry
-   * duration for generated signed URLs.
+   * Sent as Stream-Signed-URL-TTL header. Server uses this as the expiry
+   * duration for generated pre-signed URLs.
    * Default: server-configured (typically 7 days).
    */
-  ttl?: number
+  streamSignedUrlTtl?: number
   /**
    * Optional URL for renewing expired signed URLs.
    * When a read URL expires, the client will POST to /v1/proxy/renew
