@@ -63,6 +63,70 @@ See `@electric-sql/playbook` for the `tanstack-start-quickstart` skill with full
 
 **Use `StreamDB` for most use cases.** It provides typed collections, reactive queries, and optimistic updates. `MaterializedState` is a low-level primitive useful for testing or very simple scenarios where you don't need reactive queries.
 
+## StreamDB Setup Pattern
+
+**StreamDB is a stateful object that should be created as a global singleton.** It maintains a live connection to the stream and materializes state into queryable collections. Creating multiple instances wastes resources and causes state synchronization issues.
+
+### Key Setup Requirements
+
+1. **Create a single global instance** - StreamDB should be created once at module scope, not inside components
+2. **Call `.preload()` before rendering** - Stream data must be loaded before components can query it
+3. **Use route loaders or similar patterns** - Ensure preload completes before component rendering begins
+
+### Recommended Setup Pattern
+
+```typescript
+// lib/db.ts - Create singleton at module scope
+import { createStateSchema, createStreamDB } from "@durable-streams/state"
+import { z } from "zod"
+
+const schema = createStateSchema({
+  users: {
+    schema: z.object({ id: z.string(), name: z.string() }),
+    type: "user",
+    primaryKey: "id",
+  },
+})
+
+// Global singleton - created once, shared across components
+export const db = createStreamDB({
+  streamOptions: {
+    url: "https://api.example.com/streams/my-stream",
+    contentType: "application/json",
+  },
+  state: schema,
+})
+
+// Export preload function for route loaders
+export const preloadDb = () => db.preload()
+```
+
+```typescript
+// routes/users.tsx - Preload in route loader
+import { createFileRoute } from "@tanstack/react-router"
+import { db, preloadDb } from "../lib/db"
+
+export const Route = createFileRoute("/users")({
+  // Preload before component renders
+  loader: async () => {
+    await preloadDb()
+  },
+  component: UsersPage,
+})
+
+function UsersPage() {
+  // Safe to query - data is already loaded
+  const users = useLiveQuery((q) => q.from({ users: db.collections.users }))
+  return <UserList users={users.data ?? []} />
+}
+```
+
+### Why This Pattern Matters
+
+- **Queries fail on empty state**: If you render components before `preload()` completes, queries return empty results or undefined
+- **No loading states needed**: By preloading in route loaders, components render with data ready
+- **Single source of truth**: One StreamDB instance ensures all components see consistent state
+
 ## Quick Start
 
 ### Simple State with MaterializedState
@@ -431,21 +495,17 @@ await stream.append(
 ## Lifecycle
 
 ```typescript
-// Load all data until up-to-date
+// Load all data until up-to-date (call before rendering components)
 await db.preload()
 
 // Wait for transaction confirmation
 await db.utils.awaitTxId("txid-uuid", 5000) // 5 second timeout
 
-// Cleanup
+// Cleanup (typically only needed when app unmounts)
 db.close()
-
-// React cleanup pattern
-useEffect(() => {
-  const db = createStreamDB({ streamOptions, state: schema })
-  return () => db.close()
-}, [])
 ```
+
+Since StreamDB should be a global singleton, cleanup is typically handled at the application level rather than in individual components. Call `db.close()` when the entire application unmounts or when you need to disconnect from the stream.
 
 ## Common Mistakes
 
@@ -476,20 +536,59 @@ const MyComponent = clientOnly$(() => import("./ClientOnlyComponent"))
 { type: "count", key: "views", value: { count: 42 } }
 ```
 
-### Forgetting to close
+### Creating StreamDB inside components
 
 ```typescript
-// WRONG - memory leak
-const db = createStreamDB({ ... })
-// Component unmounts without cleanup
+// WRONG - creates new instance on every render, loses state
+function MyComponent() {
+  const db = createStreamDB({ streamOptions, state: schema })
+  // ...
+}
 ```
 
 ```typescript
-// CORRECT
+// WRONG - creates new instance per component mount
 useEffect(() => {
-  const db = createStreamDB({ ... })
+  const db = createStreamDB({ streamOptions, state: schema })
   return () => db.close()
 }, [])
+```
+
+```typescript
+// CORRECT - use a global singleton (see "StreamDB Setup Pattern" above)
+// lib/db.ts
+export const db = createStreamDB({ streamOptions, state: schema })
+
+// Component.tsx
+import { db } from "../lib/db"
+function MyComponent() {
+  const users = useLiveQuery((q) => q.from({ users: db.collections.users }))
+}
+```
+
+### Querying before preload completes
+
+```typescript
+// WRONG - queries return empty/undefined before data is loaded
+const db = createStreamDB({ streamOptions, state: schema })
+// Immediately try to query without waiting
+const users = useLiveQuery((q) => q.from({ users: db.collections.users }))
+// users.data is undefined or empty!
+```
+
+```typescript
+// CORRECT - preload in route loader before component renders
+export const Route = createFileRoute("/users")({
+  loader: async () => {
+    await db.preload() // Wait for stream data
+  },
+  component: UsersPage,
+})
+
+function UsersPage() {
+  // Data is ready, queries work immediately
+  const users = useLiveQuery((q) => q.from({ users: db.collections.users }))
+}
 ```
 
 ### Not awaiting txid for critical operations
