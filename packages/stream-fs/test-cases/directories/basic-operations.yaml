@@ -1,0 +1,215 @@
+id: directory-basic-operations
+name: Basic Directory Operations
+description: Tests for directory creation, deletion, and listing
+category: directories
+tags:
+  - core
+  - directories
+
+tests:
+  - id: mkdir-and-list
+    name: Create directory and list it
+    description: Creating a directory should make it listable
+    operations:
+      - action: mkdir
+        path: /projects
+        expect:
+          success: true
+      - action: list
+        path: /
+        expect:
+          containsEntry:
+            name: projects
+            type: directory
+
+  - id: nested-mkdir
+    name: Create nested directories
+    description: Directories can be created inside other directories
+    setup:
+      - action: mkdir
+        path: /projects
+    operations:
+      - action: mkdir
+        path: /projects/app1
+        expect:
+          success: true
+      - action: mkdir
+        path: /projects/app1/src
+        expect:
+          success: true
+      - action: list
+        path: /projects/app1
+        expect:
+          containsEntry:
+            name: src
+            type: directory
+
+  - id: mkdir-without-parent
+    name: mkdir without parent fails
+    description: Creating a directory when parent doesn't exist should fail
+    operations:
+      - action: mkdir
+        path: /nonexistent/child
+        expect:
+          error: NotFoundError
+
+  - id: mkdir-duplicate
+    name: mkdir duplicate fails
+    description: Creating a directory that already exists should fail
+    setup:
+      - action: mkdir
+        path: /existing
+    operations:
+      - action: mkdir
+        path: /existing
+        expect:
+          error: AlreadyExistsError
+
+  - id: rmdir-empty
+    name: Remove empty directory
+    description: An empty directory can be removed
+    setup:
+      - action: mkdir
+        path: /empty-dir
+    operations:
+      - action: rmdir
+        path: /empty-dir
+        expect:
+          success: true
+      - action: exists
+        path: /empty-dir
+        expect:
+          exists: false
+
+  - id: rmdir-non-empty
+    name: Remove non-empty directory fails
+    description: A directory with contents cannot be removed
+    setup:
+      - action: mkdir
+        path: /has-files
+      - action: createFile
+        path: /has-files/file.txt
+        content: "content"
+    operations:
+      - action: rmdir
+        path: /has-files
+        expect:
+          error: DirectoryNotEmptyError
+
+  - id: rmdir-with-subdirs
+    name: Remove directory with subdirectories fails
+    description: A directory with subdirectories cannot be removed
+    setup:
+      - action: mkdir
+        path: /has-dirs
+      - action: mkdir
+        path: /has-dirs/subdir
+    operations:
+      - action: rmdir
+        path: /has-dirs
+        expect:
+          error: DirectoryNotEmptyError
+
+  - id: rmdir-nonexistent
+    name: Remove nonexistent directory fails
+    description: Removing a directory that doesn't exist should fail
+    operations:
+      - action: rmdir
+        path: /nonexistent
+        expect:
+          error: NotFoundError
+
+  - id: list-root
+    name: List root directory
+    description: Root directory is always listable
+    setup:
+      - action: mkdir
+        path: /dir1
+      - action: mkdir
+        path: /dir2
+      - action: createFile
+        path: /file1.txt
+        content: "test"
+    operations:
+      - action: list
+        path: /
+        expect:
+          entryCount: 3
+
+  - id: list-empty-dir
+    name: List empty directory
+    description: Listing an empty directory returns empty array
+    setup:
+      - action: mkdir
+        path: /empty
+    operations:
+      - action: list
+        path: /empty
+        expect:
+          entries: []
+
+  - id: list-mixed-contents
+    name: List directory with mixed contents
+    description: Listing shows both files and subdirectories
+    setup:
+      - action: mkdir
+        path: /mixed
+      - action: mkdir
+        path: /mixed/subdir
+      - action: createFile
+        path: /mixed/file.txt
+        content: "content"
+    operations:
+      - action: list
+        path: /mixed
+        expect:
+          containsEntry:
+            name: subdir
+            type: directory
+          containsEntry:
+            name: file.txt
+            type: file
+
+  - id: list-shows-file-size
+    name: List includes file sizes
+    description: File entries include their size
+    setup:
+      - action: mkdir
+        path: /sized
+      - action: createFile
+        path: /sized/small.txt
+        content: "12345"
+    operations:
+      - action: list
+        path: /sized
+        expect:
+          containsEntry:
+            name: small.txt
+            type: file
+            size: 5
+
+  - id: mkdir-at-file-path-fails
+    name: mkdir at file path fails
+    description: Cannot create a directory where a file exists
+    setup:
+      - action: createFile
+        path: /taken
+        content: "file content"
+    operations:
+      - action: mkdir
+        path: /taken
+        expect:
+          error: AlreadyExistsError
+
+  - id: create-file-at-dir-path-fails
+    name: Create file at directory path fails
+    description: Cannot create a file where a directory exists
+    setup:
+      - action: mkdir
+        path: /dirpath
+    operations:
+      - action: createFile
+        path: /dirpath
+        content: "content"
+        expect:
+          error: AlreadyExistsError

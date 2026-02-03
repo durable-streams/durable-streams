@@ -1,0 +1,56 @@
+{
+  "name": "@durable-streams/stream-fs",
+  "version": "0.0.1",
+  "description": "Shared filesystem abstraction for AI agents built on durable streams",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "diff-match-patch": "^1.0.5"
+  },
+  "devDependencies": {
+    "@types/diff-match-patch": "^1.0.36",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.4"
+  },
+  "peerDependencies": {
+    "xdelta3-wasm": "^0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "xdelta3-wasm": {
+      "optional": true
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "keywords": [
+    "filesystem",
+    "durable-streams",
+    "ai-agents",
+    "collaborative",
+    "event-sourcing"
+  ],
+  "license": "MIT"
+}

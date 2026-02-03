@@ -1,0 +1,194 @@
+id: file-text-patching
+name: Text File Patching
+description: Tests for diff-match-patch based text file updates
+category: files
+tags:
+  - patching
+  - text
+
+tests:
+  - id: small-edit-generates-patch
+    name: Small edit generates a patch
+    description: Editing a small portion of text should create an efficient patch
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/notes.md
+        content: |
+          # Project Notes
+
+          ## Overview
+          This is a sample document.
+
+          ## Details
+          Some details here.
+    operations:
+      - action: writeFile
+        path: /docs/notes.md
+        content: |
+          # Project Notes
+
+          ## Overview
+          This is an UPDATED document.
+
+          ## Details
+          Some details here.
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/notes.md
+        expect:
+          contentContains: "UPDATED document"
+
+  - id: append-content
+    name: Appending content to file
+    description: Adding content to the end generates an efficient patch
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/log.txt
+        content: "Line 1\nLine 2\n"
+    operations:
+      - action: writeFile
+        path: /docs/log.txt
+        content: "Line 1\nLine 2\nLine 3\n"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/log.txt
+        expect:
+          content: "Line 1\nLine 2\nLine 3\n"
+
+  - id: prepend-content
+    name: Prepending content to file
+    description: Adding content to the beginning generates an efficient patch
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/log.txt
+        content: "Line 2\nLine 3\n"
+    operations:
+      - action: writeFile
+        path: /docs/log.txt
+        content: "Line 1\nLine 2\nLine 3\n"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/log.txt
+        expect:
+          content: "Line 1\nLine 2\nLine 3\n"
+
+  - id: multiple-edits
+    name: Multiple sequential edits
+    description: Multiple edits accumulate correctly
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/evolving.txt
+        content: "Version 1"
+    operations:
+      - action: writeFile
+        path: /docs/evolving.txt
+        content: "Version 2"
+      - action: writeFile
+        path: /docs/evolving.txt
+        content: "Version 3"
+      - action: writeFile
+        path: /docs/evolving.txt
+        content: "Version 4"
+      - action: readFile
+        path: /docs/evolving.txt
+        expect:
+          content: "Version 4"
+
+  - id: apply-raw-patch
+    name: Apply raw diff-match-patch
+    description: Advanced users can apply raw patches directly
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/patchable.txt
+        content: "Hello World"
+    operations:
+      # Patch to change "World" to "Universe"
+      - action: applyTextPatch
+        path: /docs/patchable.txt
+        patch: "@@ -1,11 +1,14 @@\n Hello \n-World\n+Universe\n"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/patchable.txt
+        expect:
+          content: "Hello Universe"
+
+  - id: invalid-patch-fails
+    name: Invalid patch fails gracefully
+    description: Applying a patch that doesn't match current content should fail
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/mismatched.txt
+        content: "Current content"
+    operations:
+      # Patch expects different content
+      - action: applyTextPatch
+        path: /docs/mismatched.txt
+        patch: "@@ -1,20 +1,20 @@\n-Completely different\n+Something else\n"
+        expect:
+          error: PatchApplicationError
+
+  - id: large-file-edit
+    name: Edit within large file
+    description: Editing a small portion of a large file is efficient
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/large.txt
+        content: |
+          This is line 1
+          This is line 2
+          This is line 3
+          This is line 4
+          This is line 5
+          This is line 6
+          This is line 7
+          This is line 8
+          This is line 9
+          This is line 10
+          MARKER: original
+          This is line 12
+          This is line 13
+          This is line 14
+          This is line 15
+    operations:
+      - action: writeFile
+        path: /docs/large.txt
+        content: |
+          This is line 1
+          This is line 2
+          This is line 3
+          This is line 4
+          This is line 5
+          This is line 6
+          This is line 7
+          This is line 8
+          This is line 9
+          This is line 10
+          MARKER: updated
+          This is line 12
+          This is line 13
+          This is line 14
+          This is line 15
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/large.txt
+        expect:
+          contentContains: "MARKER: updated"

@@ -1,0 +1,242 @@
+id: tools-edit-file
+name: Edit File Tool
+description: Tests for the LLM edit_file tool (find and replace)
+category: tools
+tags:
+  - tools
+  - llm
+
+tests:
+  - id: edit-unique-string
+    name: Edit unique string succeeds
+    description: Replacing a string that appears exactly once should succeed
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/code.py
+        content: |
+          def hello():
+              print("Hello, World!")
+
+          def goodbye():
+              print("Goodbye!")
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/code.py
+          old_str: 'print("Hello, World!")'
+          new_str: 'print("Hello, Universe!")'
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/code.py
+        expect:
+          contentContains: 'print("Hello, Universe!")'
+          contentNotContains: 'print("Hello, World!")'
+
+  - id: edit-not-found
+    name: Edit fails when string not found
+    description: Trying to replace a string that doesn't exist should fail
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/file.txt
+        content: "Some content here"
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/file.txt
+          old_str: "nonexistent string"
+          new_str: "replacement"
+        expect:
+          success: false
+          errorType: not_found
+
+  - id: edit-ambiguous
+    name: Edit fails when string is ambiguous
+    description: Trying to replace a string that appears multiple times should fail
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/repeated.txt
+        content: |
+          line one
+          line two
+          line three
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/repeated.txt
+          old_str: "line"
+          new_str: "row"
+        expect:
+          success: false
+          errorType: ambiguous
+
+  - id: edit-with-context
+    name: Edit with more context succeeds
+    description: Adding context to make a match unique should work
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/repeated.txt
+        content: |
+          line one
+          line two
+          line three
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/repeated.txt
+          old_str: "line two"
+          new_str: "row two"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/repeated.txt
+        expect:
+          contentContains: "row two"
+          contentContains: "line one"
+          contentContains: "line three"
+
+  - id: edit-nonexistent-file
+    name: Edit nonexistent file fails
+    description: Trying to edit a file that doesn't exist should fail
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /nonexistent.txt
+          old_str: "anything"
+          new_str: "something"
+        expect:
+          success: false
+          errorType: not_found
+
+  - id: edit-multiline
+    name: Edit multiline string
+    description: Can replace multiline strings
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/config.json
+        content: |
+          {
+            "name": "old-name",
+            "version": "1.0.0"
+          }
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/config.json
+          old_str: |
+            "name": "old-name",
+            "version": "1.0.0"
+          new_str: |
+            "name": "new-name",
+            "version": "2.0.0"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/config.json
+        expect:
+          contentContains: '"name": "new-name"'
+          contentContains: '"version": "2.0.0"'
+
+  - id: edit-preserves-indentation
+    name: Edit preserves surrounding content
+    description: Editing should not affect unrelated content
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/code.ts
+        content: |
+          function a() {
+            return 1
+          }
+
+          function b() {
+            return 2
+          }
+
+          function c() {
+            return 3
+          }
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/code.ts
+          old_str: |
+            function b() {
+              return 2
+            }
+          new_str: |
+            function b() {
+              return 42
+            }
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/code.ts
+        expect:
+          contentContains: "return 1"
+          contentContains: "return 42"
+          contentContains: "return 3"
+
+  - id: edit-empty-replacement
+    name: Edit to delete content
+    description: Replacing with empty string effectively deletes the match
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/remove.txt
+        content: "keep this REMOVE_ME and this"
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/remove.txt
+          old_str: "REMOVE_ME "
+          new_str: ""
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/remove.txt
+        expect:
+          content: "keep this and this"
+
+  - id: edit-insert-content
+    name: Edit to insert content
+    description: Using edit to insert new content at a specific location
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/insert.txt
+        content: "line1\nline3"
+    operations:
+      - action: tool
+        name: edit_file
+        params:
+          path: /docs/insert.txt
+          old_str: "line1\nline3"
+          new_str: "line1\nline2\nline3"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/insert.txt
+        expect:
+          content: "line1\nline2\nline3"

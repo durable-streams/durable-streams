@@ -1,0 +1,165 @@
+id: sync-multi-agent
+name: Multi-Agent Synchronization
+description: Tests for multiple agents sharing the same filesystem
+category: sync
+tags:
+  - sync
+  - multi-agent
+
+tests:
+  - id: refresh-sees-new-file
+    name: Refresh sees files created by other agent
+    description: After refresh, new files from other agents should be visible
+    setup:
+      - action: mkdir
+        path: /shared
+    operations:
+      # Simulate another agent creating a file (via direct stream append)
+      - action: simulateExternalWrite
+        metadata:
+          type: file
+          key: /shared/from-other.txt
+          value:
+            path: /shared/from-other.txt
+            contentStreamId: ext-content-1
+            contentType: text
+            size: 11
+            createdAt: 1700000000000
+            updatedAt: 1700000000000
+          headers:
+            operation: insert
+        content:
+          streamId: ext-content-1
+          content: "from agent 2"
+      # Before refresh, file might not be visible depending on implementation
+      - action: refresh
+        expect:
+          success: true
+      # After refresh, file should be visible
+      - action: exists
+        path: /shared/from-other.txt
+        expect:
+          exists: true
+      - action: readFile
+        path: /shared/from-other.txt
+        expect:
+          content: "from agent 2"
+
+  - id: refresh-sees-updated-file
+    name: Refresh sees file updates from other agent
+    description: After refresh, file modifications from other agents should be visible
+    setup:
+      - action: mkdir
+        path: /shared
+      - action: createFile
+        path: /shared/collaborative.txt
+        content: "original"
+        storeContentStreamId: collabStreamId
+    operations:
+      # Simulate another agent updating the file
+      - action: simulateExternalWrite
+        metadata:
+          type: file
+          key: /shared/collaborative.txt
+          value:
+            path: /shared/collaborative.txt
+            contentStreamId: ${collabStreamId}
+            contentType: text
+            size: 14
+            createdAt: 1700000000000
+            updatedAt: 1700000001000
+          headers:
+            operation: update
+        content:
+          streamId: ${collabStreamId}
+          patch: "@@ -1,8 +1,14 @@\n-original\n+updated by agent 2\n"
+      - action: refresh
+      - action: readFile
+        path: /shared/collaborative.txt
+        expect:
+          content: "updated by agent 2"
+
+  - id: refresh-sees-deleted-file
+    name: Refresh sees file deletions from other agent
+    description: After refresh, files deleted by other agents should be gone
+    setup:
+      - action: mkdir
+        path: /shared
+      - action: createFile
+        path: /shared/to-delete.txt
+        content: "will be deleted"
+    operations:
+      # Verify file exists before external delete
+      - action: exists
+        path: /shared/to-delete.txt
+        expect:
+          exists: true
+      # Simulate another agent deleting the file
+      - action: simulateExternalWrite
+        metadata:
+          type: file
+          key: /shared/to-delete.txt
+          headers:
+            operation: delete
+      - action: refresh
+      - action: exists
+        path: /shared/to-delete.txt
+        expect:
+          exists: false
+
+  - id: concurrent-reads-safe
+    name: Concurrent reads are safe
+    description: Multiple agents can read the same file simultaneously
+    setup:
+      - action: mkdir
+        path: /shared
+      - action: createFile
+        path: /shared/readable.txt
+        content: "shared content"
+    operations:
+      # Simulate concurrent reads (in practice, these would be parallel)
+      - action: readFile
+        path: /shared/readable.txt
+        expect:
+          content: "shared content"
+      - action: readFile
+        path: /shared/readable.txt
+        expect:
+          content: "shared content"
+
+  - id: list-after-external-changes
+    name: List reflects external changes after refresh
+    description: Directory listing shows changes made by other agents
+    setup:
+      - action: mkdir
+        path: /shared
+      - action: createFile
+        path: /shared/file1.txt
+        content: "one"
+    operations:
+      - action: list
+        path: /shared
+        expect:
+          entryCount: 1
+      # Simulate another agent adding a file
+      - action: simulateExternalWrite
+        metadata:
+          type: file
+          key: /shared/file2.txt
+          value:
+            path: /shared/file2.txt
+            contentStreamId: ext-content-2
+            contentType: text
+            size: 3
+            createdAt: 1700000000000
+            updatedAt: 1700000000000
+          headers:
+            operation: insert
+        content:
+          streamId: ext-content-2
+          content: "two"
+      - action: refresh
+      - action: list
+        path: /shared
+        expect:
+          entryCount: 2

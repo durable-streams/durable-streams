@@ -1,0 +1,179 @@
+id: file-basic-operations
+name: Basic File Operations
+description: Tests for core file operations - create, read, write, delete
+category: files
+tags:
+  - core
+  - files
+
+tests:
+  - id: create-and-read-text-file
+    name: Create and read a text file
+    description: Create a new text file and read its contents
+    operations:
+      - action: mkdir
+        path: /docs
+        expect:
+          success: true
+      - action: createFile
+        path: /docs/hello.txt
+        content: "Hello, World!"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/hello.txt
+        expect:
+          content: "Hello, World!"
+
+  - id: create-file-without-parent
+    name: Create file without parent directory fails
+    description: Creating a file when parent directory doesn't exist should fail
+    operations:
+      - action: createFile
+        path: /nonexistent/file.txt
+        content: "test"
+        expect:
+          error: NotFoundError
+
+  - id: create-duplicate-file
+    name: Create duplicate file fails
+    description: Creating a file that already exists should fail
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/existing.txt
+        content: "original"
+    operations:
+      - action: createFile
+        path: /docs/existing.txt
+        content: "duplicate"
+        expect:
+          error: AlreadyExistsError
+
+  - id: write-updates-content
+    name: Write updates file content
+    description: Writing to a file should update its content
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/notes.md
+        content: "# Notes\n\nOriginal content"
+    operations:
+      - action: writeFile
+        path: /docs/notes.md
+        content: "# Notes\n\nUpdated content"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/notes.md
+        expect:
+          content: "# Notes\n\nUpdated content"
+
+  - id: write-nonexistent-file
+    name: Write to nonexistent file fails
+    description: Writing to a file that doesn't exist should fail
+    operations:
+      - action: writeFile
+        path: /nonexistent.txt
+        content: "test"
+        expect:
+          error: NotFoundError
+
+  - id: delete-file
+    name: Delete a file
+    description: Deleting a file should remove it
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/to-delete.txt
+        content: "delete me"
+    operations:
+      - action: deleteFile
+        path: /docs/to-delete.txt
+        expect:
+          success: true
+      - action: exists
+        path: /docs/to-delete.txt
+        expect:
+          exists: false
+
+  - id: delete-nonexistent-file
+    name: Delete nonexistent file fails
+    description: Deleting a file that doesn't exist should fail
+    operations:
+      - action: deleteFile
+        path: /nonexistent.txt
+        expect:
+          error: NotFoundError
+
+  - id: read-empty-file
+    name: Read empty file
+    description: Reading an empty file should return empty string
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/empty.txt
+        content: ""
+    operations:
+      - action: readFile
+        path: /docs/empty.txt
+        expect:
+          content: ""
+
+  - id: unicode-content
+    name: Unicode content handling
+    description: Files should properly store and retrieve unicode content
+    setup:
+      - action: mkdir
+        path: /docs
+    operations:
+      - action: createFile
+        path: /docs/unicode.txt
+        content: "Hello 世界 🌍 Привет мир العالم"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/unicode.txt
+        expect:
+          content: "Hello 世界 🌍 Привет мир العالم"
+
+  - id: file-at-root
+    name: Create file at root
+    description: Files can be created directly at root
+    operations:
+      - action: createFile
+        path: /root-file.txt
+        content: "at root"
+        expect:
+          success: true
+      - action: readFile
+        path: /root-file.txt
+        expect:
+          content: "at root"
+    cleanup:
+      - action: deleteFile
+        path: /root-file.txt
+
+  - id: write-same-content-noop
+    name: Writing same content is a no-op
+    description: Writing the same content to a file shouldn't create a new event
+    setup:
+      - action: mkdir
+        path: /docs
+      - action: createFile
+        path: /docs/stable.txt
+        content: "unchanged"
+    operations:
+      - action: writeFile
+        path: /docs/stable.txt
+        content: "unchanged"
+        expect:
+          success: true
+      - action: readFile
+        path: /docs/stable.txt
+        expect:
+          content: "unchanged"

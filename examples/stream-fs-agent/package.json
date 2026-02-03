@@ -1,0 +1,20 @@
+{
+  "name": "stream-fs-agent-example",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Example: AI agent with filesystem tools using stream-fs",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/stream-fs": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.7.3"
+  }
+}
