@@ -1,0 +1,66 @@
+{
+  "name": "@durable-streams/txn-spec",
+  "description": "Formal specification DSL for transactional storage systems - based on CobbleDB/RocksDB formalization",
+  "version": "0.0.1",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/txn-spec"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "transactions",
+    "formal-specification",
+    "rocksdb",
+    "lsm-tree",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./test": {
+      "import": {
+        "types": "./dist/test.d.ts",
+        "default": "./dist/test.js"
+      },
+      "require": {
+        "types": "./dist/test.d.cts",
+        "default": "./dist/test.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "devDependencies": {
+    "tsdown": "^0.9.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

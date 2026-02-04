@@ -7,6 +7,7 @@ const alias = {
   "@durable-streams/server": path.resolve(__dirname, "./packages/server/src"),
   "@durable-streams/state": path.resolve(__dirname, "./packages/state/src"),
   "@durable-streams/proxy": path.resolve(__dirname, "./packages/proxy/src"),
+  "@durable-streams/txn-spec": path.resolve(__dirname, "./packages/txn-spec/src"),
   "@durable-streams/server-conformance-tests": path.resolve(
     __dirname,
     "./packages/server-conformance-tests/src"
@@ -91,6 +92,14 @@ export default defineConfig({
           exclude: ["**/node_modules/**"],
           testTimeout: 30000,
           hookTimeout: 30000,
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "txn-spec",
+          include: ["packages/txn-spec/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
         },
         resolve: { alias },
       }),

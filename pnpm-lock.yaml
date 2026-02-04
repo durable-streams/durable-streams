@@ -443,6 +443,12 @@ importers:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
 
+  packages/txn-spec:
+    devDependencies:
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
+
   packages/y-durable-streams:
     dependencies:
       '@durable-streams/client':
