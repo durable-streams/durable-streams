@@ -152,6 +152,7 @@ final class DurableStream
      *
      * @param string $data Data to append (for JSON streams, pass pre-serialized JSON)
      * @param string|null $seq Optional sequence number
+     * @param string|null $ifMatch Optional ETag for optimistic concurrency control
      * @param array<string, string> $extraHeaders Additional headers for this request
      *
      * Example:
@@ -160,10 +161,16 @@ final class DurableStream
      *
      *   // Byte stream
      *   $stream->append("raw text data");
+     *
+     *   // With optimistic concurrency control
+     *   $stream->append($data, ifMatch: $lastKnownETag);
+     *
+     * @throws \DurableStreams\Exception\PreconditionFailedException if ifMatch ETag doesn't match
      */
     public function append(
         string $data,
         ?string $seq = null,
+        ?string $ifMatch = null,
         array $extraHeaders = [],
     ): AppendResult {
         $headers = array_merge($this->headers, $extraHeaders);
@@ -176,6 +183,10 @@ final class DurableStream
 
         if ($seq !== null) {
             $headers['Stream-Seq'] = $seq;
+        }
+
+        if ($ifMatch !== null) {
+            $headers['If-Match'] = $ifMatch;
         }
 
         $response = $this->client->post($this->url, $body, $headers);

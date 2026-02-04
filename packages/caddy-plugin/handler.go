@@ -46,7 +46,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, If-Match, Producer-Id, Producer-Epoch, Producer-Seq")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
@@ -699,6 +699,31 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	// Validate producer headers - all or none
 	if hasProducerHeaders && !hasAllProducerHeaders {
 		return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
+	}
+
+	// Check If-Match header for optimistic concurrency control
+	ifMatch := r.Header.Get("If-Match")
+
+	// If-Match and producer headers are mutually exclusive (per PROTOCOL.md Section 5.2.2)
+	if ifMatch != "" && hasProducerHeaders {
+		return newHTTPError(http.StatusBadRequest, "If-Match and producer headers are mutually exclusive")
+	}
+
+	// Check If-Match precondition
+	if ifMatch != "" {
+		currentETag := fmt.Sprintf(`"%s"`, meta.CurrentOffset.String())
+
+		// Handle wildcard - matches any existing stream state
+		if ifMatch != "*" && ifMatch != currentETag {
+			// Precondition failed - return 412 with current ETag
+			w.Header().Set("ETag", currentETag)
+			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+			if meta.Closed {
+				w.Header().Set(HeaderStreamClosed, "true")
+			}
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return nil
+		}
 	}
 
 	var producerEpoch *int64

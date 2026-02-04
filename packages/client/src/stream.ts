@@ -9,6 +9,7 @@ import fastq from "fastq"
 import {
   InvalidSignalError,
   MissingStreamUrlError,
+  PreconditionFailedError,
   StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
@@ -487,6 +488,11 @@ export class DurableStream {
       requestHeaders[STREAM_SEQ_HEADER] = opts.seq
     }
 
+    // Add If-Match header for optimistic concurrency control
+    if (opts?.ifMatch) {
+      requestHeaders[`if-match`] = opts.ifMatch
+    }
+
     // For JSON mode, wrap body in array to match protocol (server flattens one level)
     // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
@@ -515,6 +521,21 @@ export class DurableStream {
       body: encodedBody,
       signal: opts?.signal ?? this.#options.signal,
     })
+
+    // Handle 412 Precondition Failed for If-Match
+    if (response.status === 412) {
+      const currentETag = response.headers.get(`etag`) ?? undefined
+      const currentOffset =
+        response.headers.get(STREAM_OFFSET_HEADER) ?? undefined
+      const streamClosed =
+        response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
+      throw new PreconditionFailedError(
+        this.url,
+        currentETag,
+        currentOffset,
+        streamClosed
+      )
+    }
 
     if (!response.ok) {
       await handleErrorResponse(response, this.url)

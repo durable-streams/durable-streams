@@ -270,6 +270,40 @@ class StreamClosedError(DurableStreamError):
         self.final_offset = final_offset
 
 
+class PreconditionFailedError(DurableStreamError):
+    """
+    Exception raised when an If-Match precondition fails (412 Precondition Failed).
+
+    This occurs when using optimistic concurrency control and another writer
+    has modified the stream since the last read. The stream's current state
+    is returned to allow retry logic.
+
+    Corresponds to HTTP 412 Precondition Failed.
+
+    Attributes:
+        url: The URL of the stream
+        current_etag: The current ETag (offset) of the stream
+        current_offset: The current offset from Stream-Next-Offset header
+        stream_closed: Whether the stream is closed
+    """
+
+    def __init__(
+        self,
+        message: str = "Precondition failed: stream offset has changed (concurrent modification)",
+        url: str | None = None,
+        current_etag: str | None = None,
+        current_offset: str | None = None,
+        stream_closed: bool = False,
+    ) -> None:
+        if url:
+            message = f"Precondition failed for stream: {url}"
+        super().__init__(message, status=412, code="PRECONDITION_FAILED")
+        self.url = url
+        self.current_etag = current_etag
+        self.current_offset = current_offset
+        self.stream_closed = stream_closed
+
+
 class SSEEncodingError(DurableStreamError):
     """
     Exception raised when there's an encoding error for SSE mode.
@@ -343,6 +377,9 @@ def error_from_status(
 
     if status == 410:
         return RetentionGoneError(details=details)
+
+    if status == 412:
+        return PreconditionFailedError(url=url)
 
     if status == 429:
         return DurableStreamError(

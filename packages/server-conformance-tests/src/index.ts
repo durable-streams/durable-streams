@@ -7556,4 +7556,297 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
     })
   })
+
+  // ============================================================================
+  // Optimistic Concurrency Control (OCC)
+  // ============================================================================
+
+  describe(`Optimistic Concurrency Control (OCC)`, () => {
+    const STREAM_CLOSED_HEADER = `Stream-Closed`
+
+    test(`append with matching If-Match succeeds`, async () => {
+      const streamPath = `/v1/stream/occ-match-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Get current offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const currentOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+      expect(currentOffset).toBeTruthy()
+
+      // Append with matching If-Match
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"${currentOffset}"`,
+        },
+        body: JSON.stringify({ event: `first` }),
+      })
+
+      expect([200, 204]).toContain(appendResponse.status)
+    })
+
+    test(`append with stale If-Match returns 412`, async () => {
+      const streamPath = `/v1/stream/occ-stale-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // First append
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ event: `first` }),
+      })
+
+      // Try to append with stale offset (0)
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"0"`,
+        },
+        body: JSON.stringify({ event: `second` }),
+      })
+
+      expect(appendResponse.status).toBe(412)
+      expect(appendResponse.headers.get(`ETag`)).toBeTruthy()
+      expect(appendResponse.headers.get(STREAM_OFFSET_HEADER)).toBeTruthy()
+    })
+
+    test(`append with If-Match wildcard succeeds`, async () => {
+      const streamPath = `/v1/stream/occ-wildcard-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // First append
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ event: `first` }),
+      })
+
+      // Append with wildcard If-Match
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `*`,
+        },
+        body: JSON.stringify({ event: `second` }),
+      })
+
+      expect([200, 204]).toContain(appendResponse.status)
+    })
+
+    test(`append with If-Match to non-existent stream returns 404`, async () => {
+      const streamPath = `/v1/stream/occ-nonexistent-${Date.now()}`
+
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"0"`,
+        },
+        body: JSON.stringify({ event: `test` }),
+      })
+
+      expect(appendResponse.status).toBe(404)
+    })
+
+    test(`append with If-Match to closed stream returns 409 (closure takes precedence)`, async () => {
+      const streamPath = `/v1/stream/occ-closed-${Date.now()}`
+
+      // Create and close stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_CLOSED_HEADER]: `true`,
+        },
+      })
+
+      // Try to append with If-Match
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"0"`,
+        },
+        body: JSON.stringify({ event: `test` }),
+      })
+
+      expect(appendResponse.status).toBe(409)
+      expect(appendResponse.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+    })
+
+    test(`second writer fails with 412 after first writer appends`, async () => {
+      const streamPath = `/v1/stream/occ-concurrent-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Get initial offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const initialOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // First writer appends
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ writer: `first` }),
+      })
+
+      // Second writer tries to append with stale offset
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"${initialOffset}"`,
+        },
+        body: JSON.stringify({ writer: `second` }),
+      })
+
+      expect(appendResponse.status).toBe(412)
+    })
+
+    test(`412 response includes current ETag for retry`, async () => {
+      const streamPath = `/v1/stream/occ-etag-response-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // First append
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ event: `first` }),
+      })
+
+      // Get current state
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const currentOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Try to append with stale offset
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"stale-offset"`,
+        },
+        body: JSON.stringify({ event: `retry` }),
+      })
+
+      expect(appendResponse.status).toBe(412)
+      expect(appendResponse.headers.get(STREAM_OFFSET_HEADER)).toBe(
+        currentOffset
+      )
+    })
+
+    test(`If-Match with producer headers returns 400 (mutually exclusive)`, async () => {
+      const streamPath = `/v1/stream/occ-producer-conflict-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Get current offset
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const currentOffset = headResponse.headers.get(STREAM_OFFSET_HEADER)
+
+      // Try to append with both If-Match and producer headers
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"${currentOffset}"`,
+          "Producer-Id": `test-producer`,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: JSON.stringify({ event: `conflict` }),
+      })
+
+      expect(appendResponse.status).toBe(400)
+    })
+
+    test(`successful append after 412 with updated If-Match`, async () => {
+      const streamPath = `/v1/stream/occ-retry-success-${Date.now()}`
+
+      // Create stream
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Get initial offset
+      const headResponse1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      const initialOffset = headResponse1.headers.get(STREAM_OFFSET_HEADER)
+
+      // First writer appends, invalidating the initial offset
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: JSON.stringify({ writer: `first` }),
+      })
+
+      // Second writer tries with stale offset - gets 412
+      const failedAppend = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"${initialOffset}"`,
+        },
+        body: JSON.stringify({ writer: `second` }),
+      })
+
+      expect(failedAppend.status).toBe(412)
+
+      // Get the current ETag from the 412 response
+      const newOffset = failedAppend.headers.get(STREAM_OFFSET_HEADER)
+      expect(newOffset).toBeTruthy()
+
+      // Retry with the updated offset
+      const successfulAppend = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "If-Match": `"${newOffset}"`,
+        },
+        body: JSON.stringify({ writer: `second` }),
+      })
+
+      expect([200, 204]).toContain(successfulAppend.status)
+    })
+  })
 }

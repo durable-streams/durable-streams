@@ -419,6 +419,22 @@ export interface AppendOptions {
    * Monotonically increasing per epoch, per-batch.
    */
   producerSeq?: number
+
+  /**
+   * If-Match header for optimistic concurrency control (OCC).
+   * When set, the append will only succeed if the stream's current
+   * offset matches this value. Use the offset from a previous HEAD
+   * or read operation.
+   *
+   * Format: `"<offset>"` (quoted string per HTTP spec) or `*` for any state.
+   *
+   * If the offset doesn't match (another writer modified the stream),
+   * throws `PreconditionFailedError` with the current offset.
+   *
+   * **Note**: Cannot be used with idempotent producer headers
+   * (producerId, producerEpoch, producerSeq). Server returns 400 if both are provided.
+   */
+  ifMatch?: string
 }
 
 /**
@@ -579,6 +595,7 @@ export type DurableStreamErrorCode =
   | `ALREADY_CLOSED`
   | `PARSE_ERROR`
   | `STREAM_CLOSED`
+  | `PRECONDITION_FAILED`
   | `UNKNOWN`
 
 /**

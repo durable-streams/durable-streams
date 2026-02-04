@@ -225,31 +225,37 @@ module DurableStreams
     # For JSON streams, pass pre-serialized JSON strings.
     # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @param seq [String, nil] Optional sequence number for ordering
+    # @param if_match [String, nil] Optional ETag for optimistic concurrency control
     # @return [AppendResult]
+    # @raise [PreconditionFailedError] if if_match ETag doesn't match current stream ETag
     # @example
     #   # JSON stream - pass pre-serialized JSON
     #   stream.append(JSON.generate({ message: "hello" }))
     #
     #   # Byte stream
     #   stream.append("raw text data")
-    def append(data, seq: nil)
+    #
+    #   # With optimistic concurrency control
+    #   stream.append(data, if_match: last_known_etag)
+    def append(data, seq: nil, if_match: nil)
       unless data.is_a?(String)
         raise ArgumentError, "append() requires a String. For objects, use JSON.generate(). Got #{data.class}"
       end
 
-      if @batching
+      if @batching && if_match.nil?
         append_with_batching(data, seq)
       else
-        append_direct(data, seq)
+        append_direct(data, seq, if_match)
       end
     end
 
     # Sync append (same as append, explicit name for clarity)
     # @param data [String] Data to append (pre-serialized JSON for JSON streams)
     # @param seq [String, nil] Optional sequence number
+    # @param if_match [String, nil] Optional ETag for optimistic concurrency control
     # @return [AppendResult]
-    def append!(data, seq: nil)
-      append(data, seq: seq)
+    def append!(data, seq: nil, if_match: nil)
+      append(data, seq: seq, if_match: if_match)
     end
 
     # Shovel operator for append
@@ -336,8 +342,8 @@ module DurableStreams
       DurableStreams.json_content_type?(@content_type) ? :json : :bytes
     end
 
-    def append_direct(data, seq)
-      post_append([data], seq: seq)
+    def append_direct(data, seq, if_match = nil)
+      post_append([data], seq: seq, if_match: if_match)
     end
 
     def append_with_batching(data, seq)
@@ -408,10 +414,11 @@ module DurableStreams
       post_append(messages.map { |m| m[:data] }, seq: highest_seq)
     end
 
-    def post_append(data_items, seq: nil)
+    def post_append(data_items, seq: nil, if_match: nil)
       headers = resolved_headers
       headers["content-type"] = @content_type if @content_type
       headers[STREAM_SEQ_HEADER] = seq.to_s if seq
+      headers["if-match"] = if_match if if_match
 
       # data_items are pre-serialized strings
       body = if DurableStreams.json_content_type?(@content_type)
@@ -429,6 +436,16 @@ module DurableStreams
         end
 
         raise SeqConflictError.new(url: @url)
+      end
+
+      if response.status == 412
+        raise PreconditionFailedError.new(
+          url: @url,
+          current_etag: response["etag"],
+          current_offset: response[STREAM_NEXT_OFFSET_HEADER],
+          stream_closed: response[STREAM_CLOSED_HEADER]&.downcase == "true",
+          headers: response.headers
+        )
       end
 
       unless response.success? || response.status == 204

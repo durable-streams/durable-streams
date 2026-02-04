@@ -588,12 +588,16 @@ public actor DurableStream {
     ///   - data: The data to append
     ///   - contentType: Optional content type override
     ///   - seq: Optional Stream-Seq header for writer coordination (must be monotonically increasing)
-    public func appendSync(_ data: Data, contentType: String? = nil, seq: Int? = nil) async throws -> AppendResult {
+    ///   - ifMatch: Optional ETag for optimistic concurrency control (fails with preconditionFailed if mismatched)
+    public func appendSync(_ data: Data, contentType: String? = nil, seq: Int? = nil, ifMatch: String? = nil) async throws -> AppendResult {
         let ct = contentType ?? self.contentType ?? "application/octet-stream"
 
         var headers: [String: String] = [:]
         if let seq = seq {
             headers[Headers.streamSeq] = String(seq)
+        }
+        if let ifMatch = ifMatch {
+            headers[Headers.ifMatch] = ifMatch
         }
 
         let request = await httpClient.buildRequest(
@@ -619,6 +623,13 @@ public actor DurableStream {
                 throw DurableStreamError.streamClosed(url: url)
             }
             throw DurableStreamError(code: .conflictSeq, message: "Sequence conflict", status: 409)
+
+        case 412:
+            throw DurableStreamError.preconditionFailed(
+                currentETag: metadata.etag,
+                currentOffset: metadata.offset,
+                streamClosed: metadata.streamClosed
+            )
 
         default:
             let body = String(data: responseData, encoding: .utf8)

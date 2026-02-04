@@ -23,6 +23,7 @@ public enum ErrorCode: String, Sendable, CaseIterable {
     case staleEpoch = "STALE_EPOCH"
     case sequenceGap = "SEQUENCE_GAP"
     case streamClosed = "STREAM_CLOSED"
+    case preconditionFailed = "PRECONDITION_FAILED"
     case unknown = "UNKNOWN"
 }
 
@@ -120,6 +121,23 @@ public struct DurableStreamError: Error, Sendable, Equatable {
         )
     }
 
+    public static func preconditionFailed(currentETag: String?, currentOffset: Offset?, streamClosed: Bool) -> DurableStreamError {
+        var details: [String: String] = [:]
+        if let etag = currentETag {
+            details["currentETag"] = etag
+        }
+        if let offset = currentOffset {
+            details["currentOffset"] = offset.rawValue
+        }
+        details["streamClosed"] = String(streamClosed)
+        return DurableStreamError(
+            code: .preconditionFailed,
+            message: "Precondition failed: stream was modified by another writer",
+            status: 412,
+            details: details
+        )
+    }
+
     public static func networkError(_ underlying: Error) -> DurableStreamError {
         DurableStreamError(code: .networkError, message: "Network error: \(underlying.localizedDescription)")
     }
@@ -155,6 +173,8 @@ public struct DurableStreamError: Error, Sendable, Equatable {
             return .conflict(message: message)
         case 410:
             return DurableStreamError(code: .retentionExpired, message: message, status: status)
+        case 412:
+            return DurableStreamError(code: .preconditionFailed, message: message, status: status)
         case 429:
             return .rateLimited()
         case 503:
