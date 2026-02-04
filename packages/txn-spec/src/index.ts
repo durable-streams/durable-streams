@@ -335,3 +335,28 @@ export {
   // CLI
   runCLI,
 } from "./test-generator"
+
+// =============================================================================
+// HTTP API
+// =============================================================================
+
+export {
+  // Request/Response types
+  type SerializedEffect,
+  type BatchOperation,
+  type BatchRequest,
+  type ReadResult,
+  type BatchResponse,
+  type ErrorResponse,
+
+  // Execution
+  executeBatch,
+
+  // HTTP handler
+  type HttpApiOptions,
+  createHttpHandler,
+
+  // Server
+  type ServerOptions,
+  createServer,
+} from "./http-api"

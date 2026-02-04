@@ -664,8 +664,8 @@ export interface TransactionCoordinator {
   /** Abort a transaction */
   abort: (txnId: TxnId) => void
 
-  /** Commit a transaction */
-  commit: (txnId: TxnId, commitTs?: Timestamp) => void
+  /** Commit a transaction, returns commit timestamp */
+  commit: (txnId: TxnId, commitTs?: Timestamp) => Timestamp
 
   /** Get current state */
   getState: () => TransactionState
@@ -753,7 +753,7 @@ export function createTransactionCoordinator(
       state = result.state
     },
 
-    commit(txnId: TxnId, commitTs?: Timestamp): void {
+    commit(txnId: TxnId, commitTs?: Timestamp): Timestamp {
       const ct = commitTs ?? tsGen.reserveCommitTs()
       const result = commit(state, store, txnId, ct)
       if (!result.success) {
@@ -765,6 +765,7 @@ export function createTransactionCoordinator(
       }
       state = result.state
       tsGen.finalizeCommit(ct)
+      return ct
     },
 
     getState(): TransactionState {
