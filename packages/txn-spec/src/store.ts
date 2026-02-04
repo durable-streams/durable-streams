@@ -297,6 +297,96 @@ export function createMapStore(): StreamStore {
     })
   }
 
+  /**
+   * Find the common predecessor(s) of a set of versions.
+   * These are versions that are predecessors of ALL the given versions.
+   */
+  function findCommonPredecessors(
+    versions: Array<{ versionTs: Timestamp; depTs: Timestamp; effect: Effect }>,
+    allVersions: Array<{
+      versionTs: Timestamp
+      depTs: Timestamp
+      effect: Effect
+    }>
+  ): Array<{ versionTs: Timestamp; depTs: Timestamp; effect: Effect }> {
+    // A version is a common predecessor if it precedes all given versions
+    return allVersions.filter((p) => {
+      // Check if p is a predecessor of ALL versions in the set
+      return versions.every((v) => v !== p && p.versionTs < v.depTs)
+    })
+  }
+
+  /**
+   * Compute the composed effect at a version, recursively including predecessors.
+   * Handles concurrent effects by merging their raw effects, then composing with
+   * the common predecessor's effect.
+   */
+  function computeEffectAtVersion(
+    versions: Array<{ versionTs: Timestamp; depTs: Timestamp; effect: Effect }>,
+    allVersions: Array<{
+      versionTs: Timestamp
+      depTs: Timestamp
+      effect: Effect
+    }>
+  ): EffectOrBottom {
+    if (versions.length === 0) {
+      return BOTTOM
+    }
+
+    if (versions.length === 1) {
+      const v = versions[0]!
+      // Find predecessors of this single version
+      const predecessors = allVersions.filter(
+        (p) => p !== v && p.versionTs < v.depTs
+      )
+      if (predecessors.length === 0) {
+        return v.effect
+      }
+      // Get maximal predecessors
+      const maximalPredecessors = predecessors.filter((p1) => {
+        const otsp1 = createOTSP(p1.depTs, p1.versionTs)
+        return !predecessors.some((p2) => {
+          if (p1 === p2) return false
+          const otsp2 = createOTSP(p2.depTs, p2.versionTs)
+          return otspPrecedes(otsp1, otsp2)
+        })
+      })
+      // Recursively compute effect at predecessors
+      const predecessorEffect = computeEffectAtVersion(
+        maximalPredecessors,
+        allVersions
+      )
+      // Compose: predecessor ⊙ this
+      return composeEffects(predecessorEffect, v.effect)
+    }
+
+    // Multiple concurrent versions
+    // Find their common predecessors
+    const commonPredecessors = findCommonPredecessors(versions, allVersions)
+
+    // Get maximal common predecessors
+    const maximalCommonPredecessors = commonPredecessors.filter((p1) => {
+      const otsp1 = createOTSP(p1.depTs, p1.versionTs)
+      return !commonPredecessors.some((p2) => {
+        if (p1 === p2) return false
+        const otsp2 = createOTSP(p2.depTs, p2.versionTs)
+        return otspPrecedes(otsp1, otsp2)
+      })
+    })
+
+    // Compute effect at common predecessors
+    const commonEffect = computeEffectAtVersion(
+      maximalCommonPredecessors,
+      allVersions
+    )
+
+    // Merge the raw effects of the concurrent versions
+    const mergedRawEffects = mergeEffectSet(versions.map((v) => v.effect))
+
+    // Compose: common predecessor effect ⊙ merged raw effects
+    return composeEffects(commonEffect, mergedRawEffects)
+  }
+
   return {
     doBegin(txnId: TxnId, st: Timestamp): void {
       // Map store: doBegin is a no-op
@@ -313,9 +403,8 @@ export function createMapStore(): StreamStore {
 
       const maximal = getMaximalVersions(visible)
 
-      // Merge maximal effects
-      const effects = maximal.map((v) => v.effect)
-      const result = mergeEffectSet(effects)
+      // Compute the composed effect considering concurrent merges
+      const result = computeEffectAtVersion(maximal, visible)
 
       eventStream.emit({ type: `lookup`, key, snapshotTs: st, result })
       return result
