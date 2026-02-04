@@ -45,15 +45,33 @@ When the ETag doesn't match, the server returns:
   - `Stream-Next-Offset: <current-offset>` - Standard header for consistency
   - `Stream-Closed: true` (if applicable)
 
-### 4. Validation Order
+### 4. Mutual Exclusivity with Idempotent Producers
+
+**`If-Match` and idempotent producer headers (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`) are mutually exclusive.** If a request includes both `If-Match` and any producer headers, the server MUST return `400 Bad Request`.
+
+**Rationale**: These mechanisms solve different problems and have conflicting semantics on retries:
+
+| Mechanism | Problem Solved | Retry Behavior |
+|-----------|---------------|----------------|
+| Idempotent Producers | Safe retries from same writer | Retries succeed (deduplicated) |
+| OCC (If-Match) | Detect concurrent writes | Retries may fail (offset changed) |
+
+If both were allowed, a retry of a successful request would fail with `412` because the offset changed after the original request succeeded. This breaks the retry safety that idempotent producers are designed to provide.
+
+**Use case guidance**:
+- **Single writer, unreliable network**: Use idempotent producers
+- **Multiple writers, conflict detection**: Use OCC (If-Match)
+- **Multiple writers with retry safety**: Use idempotent producers with application-level conflict resolution
+
+### 5. Validation Order
 
 OCC validation should occur **after** basic validation but **before** the actual append:
 
 1. Stream exists (404 if not)
 2. Stream not closed (409 if closed, with `Stream-Closed: true`)
 3. Content-Type matches (409 if mismatch)
-4. Producer headers valid (if provided)
-5. **If-Match validation (412 if mismatch)** ← New
+4. **If-Match + Producer headers mutual exclusivity check (400 if both provided)** ← New
+5. Producer headers valid OR If-Match validation (not both)
 6. Perform append
 
 ---
@@ -80,6 +98,9 @@ Add OCC documentation to Section 5.2 (Append to Stream):
   - `If-Match: *` matches any existing stream state (useful for "append if exists")
   - If the ETag does not match, the server MUST return `412 Precondition Failed`
     with the current ETag in the response headers.
+  - **MUST NOT** be used together with idempotent producer headers (`Producer-Id`,
+    `Producer-Epoch`, `Producer-Seq`). If both `If-Match` and any producer header
+    are present, servers MUST return `400 Bad Request`.
 ```
 
 Add to Response Codes section:
@@ -319,6 +340,26 @@ tests:
           status: 412
           headers:
             Stream-Next-Offset: ${currentState.Stream-Next-Offset}
+
+  # Mutual exclusivity with idempotent producers
+  - name: If-Match with producer headers returns 400
+    steps:
+      - action: create
+        stream: /test/occ-producer-conflict
+        contentType: application/json
+      - action: head
+        stream: /test/occ-producer-conflict
+        saveAs: currentState
+      - action: append
+        stream: /test/occ-producer-conflict
+        headers:
+          If-Match: '"${currentState.Stream-Next-Offset}"'
+          Producer-Id: "test-producer"
+          Producer-Epoch: "0"
+          Producer-Seq: "0"
+        body: '{"event": "conflict"}'
+        expect:
+          status: 400
 ```
 
 ---
@@ -438,6 +479,7 @@ tests:
 ### Protocol
 - [ ] Update PROTOCOL.md with If-Match header documentation
 - [ ] Add 412 Precondition Failed to response codes
+- [ ] Document mutual exclusivity with idempotent producers
 - [ ] Document error precedence including OCC
 - [ ] Update IANA headers section if needed
 
@@ -445,6 +487,7 @@ tests:
 - [ ] Implement If-Match handling in caddy-plugin (Go)
 - [ ] Implement If-Match handling in server (TypeScript)
 - [ ] Add If-Match to CORS Allow-Headers
+- [ ] Validate mutual exclusivity: If-Match + Producer headers → 400
 
 ### Conformance Tests
 - [ ] Create server conformance tests for OCC (occ.yaml)
@@ -485,7 +528,7 @@ tests:
    - **Recommendation**: Use quoted strings per HTTP specification (RFC 9110 Section 8.8.3)
 
 3. **Interaction with idempotent producers**: How does If-Match interact with `Producer-Id/Epoch/Seq`?
-   - **Recommendation**: If-Match is checked before producer deduplication. A duplicate request with wrong If-Match still fails with 412.
+   - **Decision**: They are mutually exclusive. Requests with both `If-Match` and producer headers return `400 Bad Request`. See Design Decision #4 for rationale.
 
 ---
 
