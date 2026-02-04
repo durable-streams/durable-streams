@@ -35,12 +35,12 @@ console.log("Server running on http://127.0.0.1:4437")
 Fast, ephemeral storage for development and testing:
 
 ```typescript
-import { DurableStreamTestServer, StreamStore } from "@durable-streams/server"
+import { DurableStreamTestServer, MemoryStore } from "@durable-streams/server"
 
-const store = new StreamStore()
+const storage = new MemoryStore()
 const server = new DurableStreamTestServer({
   port: 4437,
-  store,
+  storage,
 })
 ```
 
@@ -49,17 +49,30 @@ const server = new DurableStreamTestServer({
 Persistent storage with streams stored as log files and LMDB for metadata:
 
 ```typescript
-import {
-  DurableStreamTestServer,
-  FileBackedStreamStore,
-} from "@durable-streams/server"
+import { DurableStreamTestServer, FileStore } from "@durable-streams/server"
 
-const store = new FileBackedStreamStore({
-  path: "./data/streams",
-})
+const storage = new FileStore({ dataDir: "./data/streams" })
 const server = new DurableStreamTestServer({
   port: 4437,
-  store,
+  storage,
+})
+```
+
+### Custom Storage
+
+Implement the `Store` interface for custom backends (e.g. NATS, Redis, PostgreSQL):
+
+```typescript
+import type { Store } from "@durable-streams/server"
+import { DurableStreamTestServer } from "@durable-streams/server"
+
+class MyCustomStore implements Store {
+  // Implement the Store interface methods
+}
+
+const server = new DurableStreamTestServer({
+  port: 4437,
+  storage: new MyCustomStore(),
 })
 ```
 
@@ -91,45 +104,43 @@ The registry maintains a system stream that tracks all stream creates and delete
 interface TestServerOptions {
   port?: number
   host?: string
-  store?: StreamStore | FileBackedStreamStore
-  hooks?: StreamLifecycleHook[]
-  cors?: boolean
-  cursorOptions?: CursorOptions
+  storage?: Store
+  dataDir?: string
+  onStreamCreated?: StreamLifecycleHook
+  onStreamDeleted?: StreamLifecycleHook
+  compression?: boolean
+  cursorIntervalSeconds?: number
+  cursorEpoch?: Date
 }
 
 class DurableStreamTestServer {
   constructor(options?: TestServerOptions)
-  start(): Promise<void>
+  start(): Promise<string>
   stop(): Promise<void>
-  readonly port: number
-  readonly baseUrl: string
+  get url(): string
 }
 ```
 
-### StreamStore
+### Store Interface
 
-In-memory stream storage:
+All storage backends implement the `Store` interface. See the type exports for full details.
 
-```typescript
-class StreamStore {
-  create(path: string, contentType: string, options?: CreateOptions): Stream
-  get(path: string): Stream | undefined
-  delete(path: string): boolean
-  append(path: string, data: Uint8Array, seq?: string): void
-  read(path: string, offset: string): ReadResult
-}
-```
+Built-in implementations:
 
-### FileBackedStreamStore
+- **`MemoryStore`** — Fast, ephemeral in-memory storage
+- **`FileStore`** — Persistent storage using LMDB + append-only log files
 
-File-backed persistent storage (log files for streams, LMDB for metadata) with the same interface as `StreamStore`.
+### StreamManager
+
+Protocol logic layer that wraps any `Store` implementation. Handles producer validation, JSON processing, content-type matching, long-poll management, and stream closure.
 
 ## Exports
 
 ```typescript
 export { DurableStreamTestServer } from "./server"
-export { StreamStore } from "./store"
-export { FileBackedStreamStore } from "./file-store"
+export { StreamManager } from "./stream-manager"
+export { MemoryStore } from "./memory-store"
+export { FileStore } from "./file-store"
 export { encodeStreamPath, decodeStreamPath } from "./path-encoding"
 export { createRegistryHooks } from "./registry-hook"
 export {
@@ -140,6 +151,15 @@ export {
   DEFAULT_CURSOR_INTERVAL_SECONDS,
   type CursorOptions,
 } from "./cursor"
+export type {
+  AppendMetadata,
+  Store,
+  StoreConfig,
+  StreamInfo,
+  StoredMessage,
+  SerializableProducerState,
+  ClosedByInfo,
+} from "./store"
 export type {
   Stream,
   StreamMessage,

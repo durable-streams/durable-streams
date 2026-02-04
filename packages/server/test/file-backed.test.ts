@@ -120,7 +120,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
-    server1.store.create(`/test`, { contentType: `text/plain` })
+    await server1.store.create(`/test`, { contentType: `text/plain` })
     await server1.store.append(`/test`, encode(`msg1`))
 
     // Wait for fsync
@@ -128,9 +128,10 @@ describe(`Recovery and Crash Consistency`, () => {
 
     // Manually corrupt LMDB to have a higher offset (simulating crash)
     const key = `stream:/test`
-    const meta = (server1.store as any).db.get(key)
+    const db = (server1.store.storage as any).db
+    const meta = db.get(key)
     meta.currentOffset = `0000000000000000_0000000000001000` // Way ahead of actual file
-    ;(server1.store as any).db.put(key, meta)
+    db.put(key, meta)
 
     await server1.stop()
 
@@ -138,14 +139,14 @@ describe(`Recovery and Crash Consistency`, () => {
     const server2 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server2.start()
 
-    const reconciledMeta = (server2.store as any).db.get(key)
+    const reconciledMeta = (server2.store.storage as any).db.get(key)
     expect(reconciledMeta.currentOffset).toBe(
       `0000000000000000_0000000000000004`
     ) // Actual file offset for "msg1"
 
     // Should be able to append more
     await server2.store.append(`/test`, encode(`msg2`))
-    const { messages } = server2.store.read(`/test`)
+    const { messages } = await server2.store.read(`/test`)
     expect(messages).toHaveLength(2)
 
     await server2.stop()
@@ -159,7 +160,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
-    server1.store.create(`/test`, { contentType: `text/plain` })
+    await server1.store.create(`/test`, { contentType: `text/plain` })
     await server1.store.append(`/test`, encode(`complete1`))
     await server1.store.append(`/test`, encode(`complete2`))
 
@@ -167,7 +168,7 @@ describe(`Recovery and Crash Consistency`, () => {
     await new Promise((resolve) => setTimeout(resolve, 1100))
 
     // Get stream metadata before stopping server
-    const streamMeta = (server1.store as any).db.get(`stream:/test`)
+    const streamMeta = (server1.store.storage as any).db.get(`stream:/test`)
 
     await server1.stop()
 
@@ -186,7 +187,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server2 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server2.start()
 
-    const { messages } = server2.store.read(`/test`)
+    const { messages } = await server2.store.read(`/test`)
     // Should only have 1 complete message (complete1)
     // complete2 was truncated so should be discarded
     expect(messages).toHaveLength(1)
@@ -203,13 +204,13 @@ describe(`Recovery and Crash Consistency`, () => {
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
-    server1.store.create(`/test`, { contentType: `text/plain` })
+    await server1.store.create(`/test`, { contentType: `text/plain` })
     await server1.store.append(`/test`, encode(`data`))
 
     // Wait for fsync
     await new Promise((resolve) => setTimeout(resolve, 1100))
 
-    const streamMeta = (server1.store as any).db.get(`stream:/test`)
+    const streamMeta = (server1.store.storage as any).db.get(`stream:/test`)
     const streamDir = path.join(dataDir, `streams`, streamMeta.directoryName)
 
     await server1.stop()
@@ -221,7 +222,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server2 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server2.start()
 
-    expect(server2.store.has(`/test`)).toBe(false)
+    expect(await server2.store.has(`/test`)).toBe(false)
 
     await server2.stop()
   })
@@ -233,7 +234,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
-    server1.store.create(`/test`, { contentType: `text/plain` })
+    await server1.store.create(`/test`, { contentType: `text/plain` })
     // Don't append anything - file is empty
 
     await new Promise((resolve) => setTimeout(resolve, 100))
@@ -243,8 +244,8 @@ describe(`Recovery and Crash Consistency`, () => {
     const server2 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server2.start()
 
-    expect(server2.store.has(`/test`)).toBe(true)
-    const { messages } = server2.store.read(`/test`)
+    expect(await server2.store.has(`/test`)).toBe(true)
+    const { messages } = await server2.store.read(`/test`)
     expect(messages).toHaveLength(0)
 
     await server2.stop()
@@ -257,7 +258,7 @@ describe(`Recovery and Crash Consistency`, () => {
     const server1 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server1.start()
 
-    server1.store.create(`/persist`, { contentType: `text/plain` })
+    await server1.store.create(`/persist`, { contentType: `text/plain` })
     await server1.store.append(`/persist`, encode(`persisted message`))
 
     // Wait for fsync
@@ -268,8 +269,8 @@ describe(`Recovery and Crash Consistency`, () => {
     const server2 = new DurableStreamTestServer({ dataDir, port: 0 })
     await server2.start()
 
-    expect(server2.store.has(`/persist`)).toBe(true)
-    const { messages } = server2.store.read(`/persist`)
+    expect(await server2.store.has(`/persist`)).toBe(true)
+    const { messages } = await server2.store.read(`/persist`)
     expect(messages).toHaveLength(1)
     expect(decode(messages[0].data)).toBe(`persisted message`)
 
