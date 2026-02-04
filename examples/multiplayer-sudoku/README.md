@@ -2,6 +2,16 @@
 
 A real-time collaborative sudoku game with **9,963 boxes** across **123 puzzles**. Built with [TanStack Start](https://tanstack.com/start/latest), [TanStack DB](https://tanstack.com/db/latest), and [Electric SQL](https://electric-sql.com/) for instant multiplayer synchronization.
 
+## One-Click Deploy
+
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/durable-streams/durable-streams/tree/main/examples/multiplayer-sudoku)
+
+**Or deploy with Electric Cloud:**
+
+```bash
+npx @electric-sql/start multiplayer-sudoku
+```
+
 ## Features
 
 - **9,963 playable cells** organized as 123 standard 9x9 sudoku puzzles
@@ -68,11 +78,13 @@ Open http://localhost:5173 (or https://localhost:3443 with Caddy)
 ### Option 1: Electric Cloud (Recommended)
 
 1. **Provision Electric Cloud**
+
    ```bash
    npx @electric-sql/start my-sudoku
    ```
 
 2. **Set environment variables**
+
    ```bash
    DATABASE_URL=<your-postgres-url>
    ELECTRIC_URL=<electric-cloud-url>
@@ -118,6 +130,7 @@ The game generates 123 unique sudoku puzzles using:
 ### Leaderboard
 
 Players earn points by filling cells. Each filled cell:
+
 - Gets marked with the player's unique color
 - Shows the player's name on hover
 - Counts towards their leaderboard score
@@ -144,27 +157,27 @@ multiplayer-sudoku/
 
 ## Tech Stack
 
-| Technology | Purpose |
-|------------|---------|
-| TanStack Start | Full-stack React framework |
-| TanStack DB | Client-side data management |
-| Electric SQL | Real-time Postgres sync |
-| tRPC | Type-safe API layer |
-| Drizzle ORM | Database schema & migrations |
-| Better Auth | Simple authentication |
-| Tailwind CSS | Styling |
+| Technology     | Purpose                      |
+| -------------- | ---------------------------- |
+| TanStack Start | Full-stack React framework   |
+| TanStack DB    | Client-side data management  |
+| Electric SQL   | Real-time Postgres sync      |
+| tRPC           | Type-safe API layer          |
+| Drizzle ORM    | Database schema & migrations |
+| Better Auth    | Simple authentication        |
+| Tailwind CSS   | Styling                      |
 
 ## Scripts
 
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start development server |
-| `pnpm build` | Build for production |
-| `pnpm start` | Start production server |
-| `pnpm backend:up` | Start Docker services |
-| `pnpm backend:down` | Stop Docker services |
-| `pnpm migrate` | Run database migrations |
-| `pnpm migrate:generate` | Generate new migration |
+| Command                 | Description              |
+| ----------------------- | ------------------------ |
+| `pnpm dev`              | Start development server |
+| `pnpm build`            | Build for production     |
+| `pnpm start`            | Start production server  |
+| `pnpm backend:up`       | Start Docker services    |
+| `pnpm backend:down`     | Stop Docker services     |
+| `pnpm migrate`          | Run database migrations  |
+| `pnpm migrate:generate` | Generate new migration   |
 
 ## Contributing
 
