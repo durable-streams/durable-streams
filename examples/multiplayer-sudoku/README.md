@@ -2,15 +2,19 @@
 
 A real-time collaborative sudoku game with **9,963 boxes** across **123 puzzles**. Built with [TanStack Start](https://tanstack.com/start/latest), [TanStack DB](https://tanstack.com/db/latest), and [Electric SQL](https://electric-sql.com/) for instant multiplayer synchronization.
 
-## One-Click Deploy
+## Live Demo
 
-[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/durable-streams/durable-streams/tree/main/examples/multiplayer-sudoku)
+**Open in StackBlitz (runs in browser):**
 
-**Or deploy with Electric Cloud:**
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/github/durable-streams/durable-streams/tree/claude/multiplayer-sudoku-game-HYcXX/examples/multiplayer-sudoku)
+
+**Or deploy your own with Electric Cloud:**
 
 ```bash
 npx @electric-sql/start multiplayer-sudoku
 ```
+
+> **Note:** The StackBlitz demo runs locally in your browser. For a full multiplayer experience, deploy with Electric Cloud.
 
 ## Features
 
