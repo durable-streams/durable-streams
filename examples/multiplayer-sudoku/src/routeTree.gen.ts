@@ -8,226 +8,199 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root"
-import { Route as LoginRouteImport } from "./routes/login"
-import { Route as AuthenticatedRouteImport } from "./routes/_authenticated"
-import { Route as AuthenticatedIndexRouteImport } from "./routes/_authenticated/index"
-import { Route as ApiUsersRouteImport } from "./routes/api/users"
-import { Route as ApiTodosRouteImport } from "./routes/api/todos"
-import { Route as ApiProjectsRouteImport } from "./routes/api/projects"
-import { Route as ApiTrpcSplatRouteImport } from "./routes/api/trpc/$"
-import { Route as ApiAuthSplatRouteImport } from "./routes/api/auth/$"
-import { Route as AuthenticatedProjectProjectIdRouteImport } from "./routes/_authenticated/project/$projectId"
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiUsersRouteImport } from './routes/api/users'
+import { Route as ApiSudokuCellsRouteImport } from './routes/api/sudoku-cells'
+import { Route as ApiPlayerStatsRouteImport } from './routes/api/player-stats'
+import { Route as ApiGameStateRouteImport } from './routes/api/game-state'
+import { Route as ApiTrpcSplatRouteImport } from './routes/api/trpc/$'
+import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const LoginRoute = LoginRouteImport.update({
-  id: "/login",
-  path: "/login",
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthenticatedRoute = AuthenticatedRouteImport.update({
-  id: "/_authenticated",
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
   getParentRoute: () => rootRouteImport,
-} as any)
-const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
-  id: "/",
-  path: "/",
-  getParentRoute: () => AuthenticatedRoute,
 } as any)
 const ApiUsersRoute = ApiUsersRouteImport.update({
-  id: "/api/users",
-  path: "/api/users",
+  id: '/api/users',
+  path: '/api/users',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiTodosRoute = ApiTodosRouteImport.update({
-  id: "/api/todos",
-  path: "/api/todos",
+const ApiSudokuCellsRoute = ApiSudokuCellsRouteImport.update({
+  id: '/api/sudoku-cells',
+  path: '/api/sudoku-cells',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiProjectsRoute = ApiProjectsRouteImport.update({
-  id: "/api/projects",
-  path: "/api/projects",
+const ApiPlayerStatsRoute = ApiPlayerStatsRouteImport.update({
+  id: '/api/player-stats',
+  path: '/api/player-stats',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiGameStateRoute = ApiGameStateRouteImport.update({
+  id: '/api/game-state',
+  path: '/api/game-state',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTrpcSplatRoute = ApiTrpcSplatRouteImport.update({
-  id: "/api/trpc/$",
-  path: "/api/trpc/$",
+  id: '/api/trpc/$',
+  path: '/api/trpc/$',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
-  id: "/api/auth/$",
-  path: "/api/auth/$",
+  id: '/api/auth/$',
+  path: '/api/auth/$',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthenticatedProjectProjectIdRoute =
-  AuthenticatedProjectProjectIdRouteImport.update({
-    id: "/project/$projectId",
-    path: "/project/$projectId",
-    getParentRoute: () => AuthenticatedRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
-  "/login": typeof LoginRoute
-  "/api/projects": typeof ApiProjectsRoute
-  "/api/todos": typeof ApiTodosRoute
-  "/api/users": typeof ApiUsersRoute
-  "/": typeof AuthenticatedIndexRoute
-  "/project/$projectId": typeof AuthenticatedProjectProjectIdRoute
-  "/api/auth/$": typeof ApiAuthSplatRoute
-  "/api/trpc/$": typeof ApiTrpcSplatRoute
+  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/game-state': typeof ApiGameStateRoute
+  '/api/player-stats': typeof ApiPlayerStatsRoute
+  '/api/sudoku-cells': typeof ApiSudokuCellsRoute
+  '/api/users': typeof ApiUsersRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/trpc/$': typeof ApiTrpcSplatRoute
 }
 export interface FileRoutesByTo {
-  "/login": typeof LoginRoute
-  "/api/projects": typeof ApiProjectsRoute
-  "/api/todos": typeof ApiTodosRoute
-  "/api/users": typeof ApiUsersRoute
-  "/": typeof AuthenticatedIndexRoute
-  "/project/$projectId": typeof AuthenticatedProjectProjectIdRoute
-  "/api/auth/$": typeof ApiAuthSplatRoute
-  "/api/trpc/$": typeof ApiTrpcSplatRoute
+  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/game-state': typeof ApiGameStateRoute
+  '/api/player-stats': typeof ApiPlayerStatsRoute
+  '/api/sudoku-cells': typeof ApiSudokuCellsRoute
+  '/api/users': typeof ApiUsersRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/trpc/$': typeof ApiTrpcSplatRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  "/_authenticated": typeof AuthenticatedRouteWithChildren
-  "/login": typeof LoginRoute
-  "/api/projects": typeof ApiProjectsRoute
-  "/api/todos": typeof ApiTodosRoute
-  "/api/users": typeof ApiUsersRoute
-  "/_authenticated/": typeof AuthenticatedIndexRoute
-  "/_authenticated/project/$projectId": typeof AuthenticatedProjectProjectIdRoute
-  "/api/auth/$": typeof ApiAuthSplatRoute
-  "/api/trpc/$": typeof ApiTrpcSplatRoute
+  '/': typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/api/game-state': typeof ApiGameStateRoute
+  '/api/player-stats': typeof ApiPlayerStatsRoute
+  '/api/sudoku-cells': typeof ApiSudokuCellsRoute
+  '/api/users': typeof ApiUsersRoute
+  '/api/auth/$': typeof ApiAuthSplatRoute
+  '/api/trpc/$': typeof ApiTrpcSplatRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | "/login"
-    | "/api/projects"
-    | "/api/todos"
-    | "/api/users"
-    | "/"
-    | "/project/$projectId"
-    | "/api/auth/$"
-    | "/api/trpc/$"
+    | '/'
+    | '/login'
+    | '/api/game-state'
+    | '/api/player-stats'
+    | '/api/sudoku-cells'
+    | '/api/users'
+    | '/api/auth/$'
+    | '/api/trpc/$'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | "/login"
-    | "/api/projects"
-    | "/api/todos"
-    | "/api/users"
-    | "/"
-    | "/project/$projectId"
-    | "/api/auth/$"
-    | "/api/trpc/$"
+    | '/'
+    | '/login'
+    | '/api/game-state'
+    | '/api/player-stats'
+    | '/api/sudoku-cells'
+    | '/api/users'
+    | '/api/auth/$'
+    | '/api/trpc/$'
   id:
-    | "__root__"
-    | "/_authenticated"
-    | "/login"
-    | "/api/projects"
-    | "/api/todos"
-    | "/api/users"
-    | "/_authenticated/"
-    | "/_authenticated/project/$projectId"
-    | "/api/auth/$"
-    | "/api/trpc/$"
+    | '__root__'
+    | '/'
+    | '/login'
+    | '/api/game-state'
+    | '/api/player-stats'
+    | '/api/sudoku-cells'
+    | '/api/users'
+    | '/api/auth/$'
+    | '/api/trpc/$'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  AuthenticatedRoute: typeof AuthenticatedRouteWithChildren
+  IndexRoute: typeof IndexRoute
   LoginRoute: typeof LoginRoute
-  ApiProjectsRoute: typeof ApiProjectsRoute
-  ApiTodosRoute: typeof ApiTodosRoute
+  ApiGameStateRoute: typeof ApiGameStateRoute
+  ApiPlayerStatsRoute: typeof ApiPlayerStatsRoute
+  ApiSudokuCellsRoute: typeof ApiSudokuCellsRoute
   ApiUsersRoute: typeof ApiUsersRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiTrpcSplatRoute: typeof ApiTrpcSplatRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/login": {
-      id: "/login"
-      path: "/login"
-      fullPath: "/login"
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/_authenticated": {
-      id: "/_authenticated"
-      path: ""
-      fullPath: ""
-      preLoaderRoute: typeof AuthenticatedRouteImport
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/_authenticated/": {
-      id: "/_authenticated/"
-      path: "/"
-      fullPath: "/"
-      preLoaderRoute: typeof AuthenticatedIndexRouteImport
-      parentRoute: typeof AuthenticatedRoute
-    }
-    "/api/users": {
-      id: "/api/users"
-      path: "/api/users"
-      fullPath: "/api/users"
+    '/api/users': {
+      id: '/api/users'
+      path: '/api/users'
+      fullPath: '/api/users'
       preLoaderRoute: typeof ApiUsersRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/api/todos": {
-      id: "/api/todos"
-      path: "/api/todos"
-      fullPath: "/api/todos"
-      preLoaderRoute: typeof ApiTodosRouteImport
+    '/api/sudoku-cells': {
+      id: '/api/sudoku-cells'
+      path: '/api/sudoku-cells'
+      fullPath: '/api/sudoku-cells'
+      preLoaderRoute: typeof ApiSudokuCellsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/api/projects": {
-      id: "/api/projects"
-      path: "/api/projects"
-      fullPath: "/api/projects"
-      preLoaderRoute: typeof ApiProjectsRouteImport
+    '/api/player-stats': {
+      id: '/api/player-stats'
+      path: '/api/player-stats'
+      fullPath: '/api/player-stats'
+      preLoaderRoute: typeof ApiPlayerStatsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/api/trpc/$": {
-      id: "/api/trpc/$"
-      path: "/api/trpc/$"
-      fullPath: "/api/trpc/$"
+    '/api/game-state': {
+      id: '/api/game-state'
+      path: '/api/game-state'
+      fullPath: '/api/game-state'
+      preLoaderRoute: typeof ApiGameStateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/trpc/$': {
+      id: '/api/trpc/$'
+      path: '/api/trpc/$'
+      fullPath: '/api/trpc/$'
       preLoaderRoute: typeof ApiTrpcSplatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    "/api/auth/$": {
-      id: "/api/auth/$"
-      path: "/api/auth/$"
-      fullPath: "/api/auth/$"
+    '/api/auth/$': {
+      id: '/api/auth/$'
+      path: '/api/auth/$'
+      fullPath: '/api/auth/$'
       preLoaderRoute: typeof ApiAuthSplatRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    "/_authenticated/project/$projectId": {
-      id: "/_authenticated/project/$projectId"
-      path: "/project/$projectId"
-      fullPath: "/project/$projectId"
-      preLoaderRoute: typeof AuthenticatedProjectProjectIdRouteImport
-      parentRoute: typeof AuthenticatedRoute
     }
   }
 }
 
-interface AuthenticatedRouteChildren {
-  AuthenticatedIndexRoute: typeof AuthenticatedIndexRoute
-  AuthenticatedProjectProjectIdRoute: typeof AuthenticatedProjectProjectIdRoute
-}
-
-const AuthenticatedRouteChildren: AuthenticatedRouteChildren = {
-  AuthenticatedIndexRoute: AuthenticatedIndexRoute,
-  AuthenticatedProjectProjectIdRoute: AuthenticatedProjectProjectIdRoute,
-}
-
-const AuthenticatedRouteWithChildren = AuthenticatedRoute._addFileChildren(
-  AuthenticatedRouteChildren
-)
-
 const rootRouteChildren: RootRouteChildren = {
-  AuthenticatedRoute: AuthenticatedRouteWithChildren,
+  IndexRoute: IndexRoute,
   LoginRoute: LoginRoute,
-  ApiProjectsRoute: ApiProjectsRoute,
-  ApiTodosRoute: ApiTodosRoute,
+  ApiGameStateRoute: ApiGameStateRoute,
+  ApiPlayerStatsRoute: ApiPlayerStatsRoute,
+  ApiSudokuCellsRoute: ApiSudokuCellsRoute,
   ApiUsersRoute: ApiUsersRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiTrpcSplatRoute: ApiTrpcSplatRoute,
@@ -236,9 +209,9 @@ export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
-import type { getRouter } from "./router.tsx"
-import type { startInstance } from "./start.tsx"
-declare module "@tanstack/react-start" {
+import type { getRouter } from './router.tsx'
+import type { startInstance } from './start.tsx'
+declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
