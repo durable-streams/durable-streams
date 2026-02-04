@@ -1,0 +1,139 @@
+.crossword-container {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  cursor: grab;
+  user-select: none;
+}
+
+.crossword-container:active {
+  cursor: grabbing;
+}
+
+.crossword-input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.crossword-grid {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+}
+
+.crossword-cell {
+  position: absolute;
+  box-sizing: border-box;
+  background: #ffffff;
+  border: 1px solid #333;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: 'Arial', sans-serif;
+  font-weight: bold;
+  color: #1a1a2e;
+}
+
+.crossword-cell:hover {
+  background: #e8f4f8;
+}
+
+.crossword-cell.selected {
+  background: #ffd700;
+  box-shadow: 0 0 0 3px #ffd700, 0 0 15px rgba(255, 215, 0, 0.5);
+  z-index: 10;
+}
+
+.crossword-cell.in-word {
+  background: #b3e5fc;
+}
+
+.crossword-cell.in-word.selected {
+  background: #ffd700;
+}
+
+.crossword-cell.correct {
+  background: #c8e6c9;
+  color: #2e7d32;
+}
+
+.crossword-cell.correct.selected {
+  background: #a5d6a7;
+}
+
+.crossword-cell.incorrect {
+  background: #ffcdd2;
+  color: #c62828;
+}
+
+.cell-number {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-weight: normal;
+  color: #666;
+  line-height: 1;
+}
+
+.cell-letter {
+  text-transform: uppercase;
+}
+
+.cell-player {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  padding: 1px 3px;
+  border-radius: 2px;
+  color: white;
+  font-weight: bold;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+.zoom-controls {
+  position: absolute;
+  bottom: 20px;
+  right: 20px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 8px 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+}
+
+.zoom-controls button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: #4ECDC4;
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: bold;
+  transition: background 0.2s;
+}
+
+.zoom-controls button:hover {
+  background: #45b7aa;
+}
+
+.zoom-controls button:last-child {
+  width: auto;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+.zoom-controls span {
+  min-width: 50px;
+  text-align: center;
+  font-size: 14px;
+  color: #333;
+}

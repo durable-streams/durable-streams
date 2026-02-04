@@ -1,0 +1,154 @@
+.leaderboard {
+  width: 280px;
+  background: #1a1a2e;
+  color: white;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #2a2a4e;
+  overflow-y: auto;
+}
+
+.leaderboard-section {
+  padding: 16px;
+  border-bottom: 1px solid #2a2a4e;
+}
+
+.leaderboard-section h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.player-count {
+  background: #4ECDC4;
+  color: #1a1a2e;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.progress-container {
+  position: relative;
+  height: 24px;
+  background: #2a2a4e;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: linear-gradient(90deg, #4ECDC4 0%, #44a08d 100%);
+  border-radius: 12px;
+  transition: width 0.3s ease;
+}
+
+.progress-text {
+  position: absolute;
+  width: 100%;
+  text-align: center;
+  line-height: 24px;
+  font-size: 12px;
+  font-weight: bold;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.active-players {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.active-player {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #2a2a4e;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.active-player:hover {
+  background: #3a3a5e;
+}
+
+.active-player.is-you {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.player-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.player-color {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.player-name {
+  flex: 1;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.player-score {
+  font-weight: bold;
+  color: #4ECDC4;
+  font-size: 14px;
+}
+
+.active-player.is-you .player-score {
+  color: white;
+}
+
+.leaderboard-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.leaderboard-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #2a2a4e;
+  border-radius: 6px;
+  transition: background 0.2s;
+}
+
+.leaderboard-item:hover {
+  background: #3a3a5e;
+}
+
+.leaderboard-item.is-you {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.leaderboard-rank {
+  min-width: 24px;
+  font-size: 14px;
+}
+
+.no-players {
+  text-align: center;
+  color: #666;
+  font-size: 13px;
+  padding: 12px;
+}

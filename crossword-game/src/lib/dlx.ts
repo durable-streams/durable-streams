@@ -277,7 +277,6 @@ export interface CrosswordSlot {
 export class CrosswordDLX {
   private dlx: DancingLinks;
   private placements: WordPlacement[] = [];
-  private slots: CrosswordSlot[] = [];
 
   constructor() {
     this.dlx = new DancingLinks(1);
@@ -292,7 +291,6 @@ export class CrosswordDLX {
     slots: CrosswordSlot[],
     words: Map<string, string> // word -> clue
   ): void {
-    this.slots = slots;
     this.placements = [];
 
     // Add primary columns for each slot (must be filled exactly once)
