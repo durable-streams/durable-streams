@@ -261,6 +261,22 @@ export {
 } from "./store"
 
 // =============================================================================
+// Stream-Backed Stores
+// =============================================================================
+
+export {
+  // Stream-backed store options
+  type StreamBackedStoreOptions,
+
+  // Stream-backed store factory
+  createStreamBackedStore,
+
+  // In-memory stream for testing
+  InMemoryStream,
+  createInMemoryStreamStore,
+} from "./stream-store"
+
+// =============================================================================
 // Scenarios & Testing
 // =============================================================================
 
