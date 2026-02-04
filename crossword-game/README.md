@@ -1,73 +1,83 @@
-# React + TypeScript + Vite
+# Massive Multiplayer Crossword
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A collaborative crossword puzzle game with 10,000+ words across multiple languages and topics.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **10,000+ Words**: Massive word database covering animals, food, technology, science, geography, music, sports, arts, nature, and professions
+- **Multilingual**: Words from English, Spanish, French, German, Italian, Japanese, and Portuguese with English clues
+- **Fun Clues**: Witty, memorable clues that make solving enjoyable
+- **Real-time Multiplayer**: See other players' guesses in real-time via BroadcastChannel
+- **Progress Tracking**: Track completion percentage and individual word progress
+- **Leaderboard**: Compete with other players for the highest score
+- **Pan & Zoom**: Navigate large puzzles easily with mouse wheel and drag
 
-## React Compiler
+## Technology
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **React + TypeScript + Vite**: Modern web stack
+- **Algorithm X (DLX)**: Knuth's Dancing Links algorithm for crossword generation
+- **BroadcastChannel API**: Multi-tab synchronization
+- **LocalStorage**: Persistent game state
 
-## Expanding the ESLint configuration
+## Development
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+```bash
+# Install dependencies
+npm install
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+# Start development server
+npm run dev
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+# Build for production
+npm run build
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Preview production build
+npm run preview
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Deployment
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### Option 1: Vercel (Recommended)
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npx vercel
 ```
+
+### Option 2: Netlify
+
+```bash
+npx netlify deploy --prod --dir=dist
+```
+
+### Option 3: Cloudflare Pages
+
+```bash
+npx wrangler pages deploy dist --project-name=massive-crossword
+```
+
+### Option 4: GitHub Pages
+
+Push to main branch and enable GitHub Pages in repository settings. The included GitHub Actions workflow will automatically build and deploy.
+
+## How to Play
+
+1. Click "Generate New Puzzle" to create a massive crossword
+2. Click on a cell to select it
+3. Type letters to fill in guesses
+4. Use arrow keys to navigate
+5. Press Tab to switch between across and down
+6. Use mouse wheel to zoom, click and drag to pan
+7. Search clues in the right panel
+8. Compete with others for the highest score!
+
+## Keyboard Shortcuts
+
+- **A-Z**: Enter letter
+- **Arrow keys**: Navigate cells
+- **Tab**: Switch direction (across/down)
+- **Backspace/Delete**: Move to previous cell
+- **Ctrl/Cmd + Scroll**: Zoom in/out
+
+## Credits
+
+Built with Algorithm X (Dancing Links) as described by Donald Knuth for efficient exact cover problem solving.
