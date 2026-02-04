@@ -40,177 +40,33 @@ Stream-FS provides filesystem semantics where the stream is the source of truth.
 ```json
 {
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.30.0",
     "diff-match-patch": "^1.0.5",
     "xdelta3-wasm": "^0.1.0"
   },
   "peerDependencies": {
     "@durable-streams/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0"
   }
 }
 ```
 
-## Phase 1: Protocol Prerequisites
+## Prerequisites
 
-### 1.1 Add OCC to Protocol (PROTOCOL.md)
+**OCC (Optimistic Concurrency Control)** is assumed to be available in the protocol and clients:
+- `If-Match` header on append requests
+- `412 Precondition Failed` response when offset doesn't match
+- `AppendOptions.ifMatch` in TypeScript client
+- `AppendResult.offset` returned from append
 
-Add to Append section:
-```markdown
-### Optimistic Concurrency Control
-
-Clients can use the `If-Match` header for conditional appends:
-
-- `If-Match: <offset>` - Append only if stream's current offset matches
-- `If-Match: *` - Append only if stream exists (any offset)
-
-Response codes:
-- `200 OK` - Append succeeded
-- `412 Precondition Failed` - Offset mismatch (concurrent write detected)
-  - Response includes `Stream-Offset` header with current offset for retry
-
-The offset value comes from previous read/append responses or `HEAD` request.
-```
-
-### 1.2 Implement OCC in Server
-
-**File: `packages/server/src/server.ts`**
-
-In POST handler:
-```typescript
-const ifMatch = req.headers.get('if-match')
-if (ifMatch) {
-  const currentOffset = store.getCurrentOffset(streamPath)
-  const expectedOffset = ifMatch.replace(/^"|"$/g, '') // Strip quotes
-
-  if (expectedOffset !== '*' && expectedOffset !== currentOffset) {
-    return new Response('Precondition Failed', {
-      status: 412,
-      headers: { 'Stream-Offset': currentOffset }
-    })
-  }
-}
-```
-
-**File: `packages/caddy-plugin/handler.go`**
-
-Same logic in Go for production server.
-
-### 1.3 Add OCC to TypeScript Client
-
-**File: `packages/client/src/types.ts`**
-
-```typescript
-export interface AppendOptions {
-  // ... existing fields ...
-
-  /**
-   * Expected stream offset for optimistic concurrency control.
-   * If set, append fails with 412 if stream offset doesn't match.
-   * Use offset from previous read/append, or '*' for "stream must exist".
-   */
-  ifMatch?: string
-}
-
-export interface AppendResult {
-  /** New stream offset after append */
-  offset: string
-}
-```
-
-**File: `packages/client/src/stream.ts`**
-
-```typescript
-async #appendDirect(body, opts?: AppendOptions): Promise<AppendResult> {
-  // ... existing code ...
-
-  if (opts?.ifMatch) {
-    requestHeaders['if-match'] = opts.ifMatch
-  }
-
-  const response = await this.#fetchClient(...)
-
-  if (response.status === 412) {
-    const currentOffset = response.headers.get('stream-offset')
-    throw new PreconditionFailedError(currentOffset)
-  }
-
-  return {
-    offset: response.headers.get('stream-offset')
-  }
-}
-```
-
-### 1.4 Add OCC Conformance Tests
-
-**File: `packages/client-conformance-tests/test-cases/producer/occ.yaml`**
-
-```yaml
-id: producer-occ
-name: Optimistic Concurrency Control
-description: Tests for If-Match header support
-
-tests:
-  - id: occ-match-succeeds
-    name: Append succeeds when offset matches
-    setup:
-      - action: create
-        as: streamPath
-    operations:
-      - action: append
-        path: ${streamPath}
-        data: "first"
-        storeOffsetAs: offset1
-      - action: append
-        path: ${streamPath}
-        data: "second"
-        ifMatch: ${offset1}
-        expect:
-          status: 200
-
-  - id: occ-mismatch-fails
-    name: Append fails when offset doesn't match
-    setup:
-      - action: create
-        as: streamPath
-    operations:
-      - action: append
-        path: ${streamPath}
-        data: "first"
-      - action: append
-        path: ${streamPath}
-        data: "second"
-        ifMatch: "wrong-offset"
-        expect:
-          status: 412
-
-  - id: occ-concurrent-write-detection
-    name: Detects concurrent writes
-    setup:
-      - action: create
-        as: streamPath
-    operations:
-      - action: append
-        path: ${streamPath}
-        data: "initial"
-        storeOffsetAs: readOffset
-      # Simulate another writer
-      - action: append
-        path: ${streamPath}
-        data: "concurrent write"
-      # Original writer tries to append with stale offset
-      - action: append
-        path: ${streamPath}
-        data: "my write"
-        ifMatch: ${readOffset}
-        expect:
-          status: 412
-```
+See: https://github.com/durable-streams/durable-streams/issues/32
 
 ---
 
-## Phase 2: Core Stream-FS Implementation
+## Phase 1: Core Stream-FS Implementation
 
-### 2.1 Types and Interfaces
+### 1.1 Types and Interfaces
 
 **File: `packages/stream-fs/src/types.ts`**
 
@@ -221,7 +77,7 @@ Already implemented. Key types:
 - `StreamFactory` - abstraction for stream creation
 - Error classes: `NotFoundError`, `AlreadyExistsError`, `PatchApplicationError`, etc.
 
-### 2.2 StreamFactory Interface
+### 1.2 StreamFactory Interface
 
 **File: `packages/stream-fs/src/types.ts`**
 
@@ -237,7 +93,7 @@ Implementations:
 - `InMemoryStreamFactory` - for testing (already implemented)
 - `DurableStreamFactory` - wraps real client (to implement)
 
-### 2.3 DurableFilesystem Class
+### 1.3 DurableFilesystem Class
 
 **File: `packages/stream-fs/src/durable-filesystem.ts`**
 
@@ -318,7 +174,7 @@ private async getFileContent(contentStreamId: string): Promise<string> {
 }
 ```
 
-### 2.4 Binary File Support
+### 1.4 Binary File Support
 
 **File: `packages/stream-fs/src/binary-content.ts`**
 
@@ -399,9 +255,9 @@ private async writeBinaryFile(
 
 ---
 
-## Phase 3: LLM Tools
+## Phase 2: LLM Tools
 
-### 3.1 Tool Definitions
+### 2.1 Tool Definitions
 
 **File: `packages/stream-fs/src/tools/index.ts`**
 
@@ -411,7 +267,7 @@ Already implemented. Tools:
 - `list_directory`, `mkdir`, `rmdir`
 - `exists`, `stat`
 
-### 3.2 Conflict Handling in Tools
+### 2.2 Conflict Handling in Tools
 
 Update `handleEditFile`:
 
@@ -462,9 +318,9 @@ export async function handleEditFile(
 
 ---
 
-## Phase 4: Conformance Tests
+## Phase 3: Conformance Tests
 
-### 4.1 Test Structure
+### 3.1 Test Structure
 
 ```
 packages/stream-fs/test-cases/
@@ -490,7 +346,7 @@ packages/stream-fs/test-cases/
     └── special-characters.yaml
 ```
 
-### 4.2 Key Test Cases
+### 3.2 Key Test Cases
 
 **Conflict Detection:**
 ```yaml
@@ -546,9 +402,9 @@ packages/stream-fs/test-cases/
 
 ---
 
-## Phase 5: Python Client
+## Phase 4: Python Client
 
-### 5.1 Structure
+### 4.1 Structure
 
 ```
 packages/stream-fs-py/
@@ -565,7 +421,7 @@ packages/stream-fs-py/
     └── ...
 ```
 
-### 5.2 Key Implementation
+### 4.2 Key Implementation
 
 **File: `src/stream_fs/filesystem.py`**
 
@@ -604,9 +460,9 @@ class DurableFilesystem:
 
 ---
 
-## Phase 6: Example Application
+## Phase 5: Example Application
 
-### 6.1 Claude Agent Example
+### 5.1 Claude Agent Example
 
 **File: `examples/stream-fs-agent/src/index.ts`**
 
@@ -616,7 +472,7 @@ Already scaffolded. Key features:
 - Handle tool calls with retry logic
 - Demonstrate multi-turn conversation with file operations
 
-### 6.2 Multi-Agent Demo
+### 5.2 Multi-Agent Demo
 
 **File: `examples/multi-agent-collab/src/index.ts`**
 
@@ -646,30 +502,24 @@ console.log(await fs1.readTextFile('/doc.md'))
 
 ## Implementation Order
 
-1. **Week 1: Protocol + Server OCC**
-   - Add If-Match to PROTOCOL.md
-   - Implement in packages/server
-   - Implement in packages/caddy-plugin
-   - Add conformance tests
-   - Add to TypeScript client
-
-2. **Week 2: Stream-FS Core with OCC**
+1. **Week 1: Stream-FS Core with OCC**
    - Update DurableFilesystem with offset tracking
-   - Integrate OCC into write methods
+   - Integrate OCC into write methods (using `ifMatch` from client)
    - Add PreconditionFailedError handling
    - Test conflict detection
+   - Add stream-fs conformance tests
 
-3. **Week 3: Binary Support**
+2. **Week 2: Binary Support**
    - Integrate xdelta3-wasm
    - Implement binary content streams
    - Add binary conformance tests
 
-4. **Week 4: Python Client**
+3. **Week 3: Python Client**
    - Port DurableFilesystem to Python
    - Port tools to Python
    - Run conformance tests
 
-5. **Week 5: Polish + Examples**
+4. **Week 4: Polish + Examples**
    - Multi-agent example
    - Documentation
    - Performance testing
@@ -689,7 +539,7 @@ console.log(await fs1.readTextFile('/doc.md'))
 ## References
 
 - Exploration branch: `claude/stream-fs-exploration-8JKnW`
-- OCC Issue: https://github.com/durable-streams/durable-streams/issues/32
+- OCC PR: https://github.com/durable-streams/durable-streams/issues/32 (assumed merged)
 - zen-fs (API inspiration): https://github.com/zen-fs/core
 - diff-match-patch: https://github.com/google/diff-match-patch
 - xdelta3: https://github.com/niclasko/xdelta3-wasm
