@@ -82,23 +82,37 @@ Stream matches subscription pattern
 │  POST webhook with notification │
 │  (connection held open)         │
 └───────────────┬─────────────────┘
-                │ consumer calls callback (not webhook response)
-                ▼
-┌─────────────────────────────────┐
-│  state: LIVE                    │◄──────┐
-│  consumer reads events via HTTP │       │
-│  consumer calls callback        │       │ callback activity
-└───────────────┬─────────────────┘───────┘
                 │
-                │ timeout (30s no callback) OR { done: true }
-                ▼
-┌─────────────────────────────────┐
+        ┌───────┴───────┐
+        │               │
+        ▼               ▼
+   (callback)    (webhook responds
+                  { done: true })
+        │               │
+        ▼               │
+┌───────────────┐       │
+│  state: LIVE  │◄──┐   │
+│  processing   │   │   │
+└───────┬───────┘   │   │
+        │           │   │
+        │ callback  │   │
+        │ activity  │   │
+        └───────────┘   │
+        │               │
+        │ timeout OR    │
+        │ { done: true }│
+        ▼               │
+┌───────────────────────┴─────────┐
 │  state: IDLE                    │
 │  (offsets preserved)            │
 └─────────────────────────────────┘
 ```
 
-**Consumer instance identity** is `{handler_id}:{primary_stream_path}`. Multiple subscriptions can match the same stream, each creating independent consumer instances.
+**Two paths from WAKING:**
+1. **WAKING → LIVE → IDLE** (normal flow): Consumer calls callback to signal liveness, processes events, eventually times out or signals done
+2. **WAKING → IDLE** (synchronous): Consumer handles everything in the webhook handler and responds with `{ done: true }`
+
+**Consumer instance identity** is `{handler_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity (paths contain `/`). Multiple subscriptions can match the same stream, each creating independent consumer instances.
 
 The transition from WAKING → LIVE happens when the consumer **calls the callback**, not when it responds to the webhook. This lets the serverless function hold the HTTP connection open (keeping the platform from killing it) while signaling liveness through the callback.
 
@@ -111,22 +125,26 @@ POST https://my-agent.workers.dev/handler
 Content-Type: application/json
 
 {
-  "consumer_id": "sub_a1b2c3:/agents/task-123",
+  "consumer_id": "sub_a1b2c3:%2Fagents%2Ftask-123",
   "primary_stream": "/agents/task-123",
   "streams": [
     { "path": "/agents/task-123", "offset": "1002" },
     { "path": "/shared-filesystem/task-123", "offset": "500" }
   ],
-  "triggered_by": "/agents/task-123",
+  "triggered_by": ["/agents/task-123", "/shared-filesystem/task-123"],
   "callback": "https://streams.example.com/callback?token=eyJ..."
 }
 ```
 
 - `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
-- `triggered_by`: Which stream's events triggered this wake-up
+- `triggered_by`: Array of stream paths that have pending events (multiple streams may have accumulated events while consumer was IDLE)
 - `callback`: Scoped URL for acknowledgments and subscription changes
 
 The webhook can respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing).
+
+**Wake-up batching:** If multiple events arrive on subscribed streams while the consumer is IDLE, they are batched into a single wake-up. The server does not wake the consumer multiple times—one wake-up per IDLE → WAKING transition.
+
+**No re-wake while LIVE:** If the consumer is already LIVE (actively processing), new events on subscribed streams do not trigger additional wake-ups. The consumer reads new events through its existing client connections.
 
 ### Event Reading
 
@@ -136,7 +154,9 @@ This separation keeps the webhook system focused on coordination while leveragin
 
 ### Callback API
 
-The callback URL is scoped to the specific consumer instance and has a fixed TTL. Consumers use it to:
+The callback URL is scoped to the specific consumer instance and has a fixed TTL (default: 5 minutes). The token is a signed JWT containing the consumer_id and expiry timestamp—implementers can use any signing method appropriate for their deployment.
+
+Consumers use the callback to:
 
 ```http
 POST {callback}
@@ -159,19 +179,28 @@ All fields are optional.
 ```json
 {
   "ok": true,
-  "token": "eyJ..."
+  "token": "eyJ...",
+  "streams": [
+    { "path": "/agents/task-123", "offset": "1005" },
+    { "path": "/shared-filesystem/task-123", "offset": "520" },
+    { "path": "/tools/task-123", "offset": "-1" }
+  ]
 }
 ```
 
-The response includes a new `token` when the current one is near expiry. If the token has already expired, the server returns 4xx with a new token; the consumer should retry.
+- `token`: New callback token (always included; refreshed when near expiry)
+- `streams`: Updated list of all subscribed streams with current offsets (included when subscriptions change)
+
+If the token has already expired, the server returns 4xx with a new token; the consumer should retry.
 
 **Subscribe behavior:**
 - New subscriptions start at offset `-1` (beginning of stream)
 - Consumer controls effective position through acks (can immediately ack to current tail to skip history)
-- Subscribe fails if the stream doesn't exist
+- Subscribe fails with error if the stream doesn't exist
 
 **Unsubscribe behavior:**
 - Consumer can unsubscribe from any stream including its primary
+- Unsubscribing from primary is valid—any remaining subscribed stream can still wake the consumer
 - Unsubscribing from all streams removes the consumer instance
 
 ### Secondary Subscriptions (Internal Webhooks)
@@ -191,8 +220,10 @@ For single-server deployments, this is just internal routing. For distributed de
 
 ### Failure Handling
 
+**Webhook request timeout:** The server waits up to 30 seconds for a response from the webhook endpoint. If the endpoint hangs beyond this, the request is considered failed and enters the retry loop.
+
 **Webhook delivery failures** use exponential backoff (AWS standard algorithm):
-- Initial retry with exponential backoff up to 30 seconds
+- Initial retry with exponential backoff up to 30 seconds between attempts
 - Then retry every 60 seconds with jitter
 - No maximum retry limit—keeps retrying indefinitely
 
@@ -208,6 +239,8 @@ Consumer instances are removed when:
 - Primary stream is deleted
 - Webhook errors continuously for 3 days
 - Consumer unsubscribes from all streams (including primary)
+
+When a consumer instance is removed, all its internal webhook subscriptions to secondary streams are also cleaned up.
 
 No explicit deletion API is needed—unsubscribe handles cleanup.
 
@@ -275,11 +308,11 @@ const SAFETY_MARGIN_MS = 5_000      // exit 5s before platform kills us
 
 export default {
   async fetch(request: Request) {
-    const { consumer_id, streams, triggered_by, callback } = await request.json()
+    const { consumer_id, streams: initialStreams, callback } = await request.json()
     const startTime = Date.now()
 
-    // Immediately call callback to transition WAKING → LIVE
-    await fetch(callback, {
+    // Subscribe to additional streams and get updated list
+    const subRes = await fetch(callback, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -289,36 +322,40 @@ export default {
         ]
       })
     })
+    const { streams: allStreams } = await subRes.json()
 
     let lastMessageTime = Date.now()
+    const pendingAcks: Promise<Response>[] = []
     const controller = new AbortController()
 
-    // Process all subscribed streams concurrently
-    for (const s of streams) {
-      const res = await stream({
+    // Set up concurrent readers for all subscribed streams
+    const readers = allStreams.map((s: { path: string; offset: string }) =>
+      stream({
         url: `https://streams.example.com${s.path}`,
         offset: s.offset,
         live: true,
         signal: controller.signal,
-      })
+      }).then(res => {
+        res.subscribeJson(async (batch) => {
+          lastMessageTime = Date.now()
 
-      res.subscribeJson(async (batch) => {
-        lastMessageTime = Date.now()
+          for (const item of batch.items) {
+            await processEvent(s.path, item)
+          }
 
-        for (const item of batch.items) {
-          await processEvent(s.path, item)
-        }
-
-        // Fire-and-forget ack
-        fetch(callback, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            acks: [{ path: s.path, offset: batch.offset }]
-          })
+          // Track ack promises so we can flush before exit
+          pendingAcks.push(fetch(callback, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              acks: [{ path: s.path, offset: batch.offset }]
+            })
+          }))
         })
       })
-    }
+    )
+
+    await Promise.all(readers)
 
     // Check exit conditions periodically
     while (true) {
@@ -333,6 +370,9 @@ export default {
 
     controller.abort()
 
+    // Flush pending acks before exit
+    await Promise.allSettled(pendingAcks)
+
     // Response signals done - transitions LIVE → IDLE
     return Response.json({ done: true })
   }
@@ -341,13 +381,15 @@ export default {
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
+
+declare function processEvent(path: string, item: unknown): Promise<void>
 ```
 
 ### Implementation Scope
 
 **In scope for v1:**
 - Subscription CRUD API
-- Consumer instance lifecycle (IDLE → WAKING → LIVE → IDLE)
+- Consumer instance lifecycle (IDLE → WAKING → LIVE → IDLE, and WAKING → IDLE shortcut)
 - Wake-up notifications and callback API
 - Dynamic subscribe/unsubscribe for secondary streams
 - Internal webhook routing for secondary subscriptions (single-server)
@@ -359,6 +401,7 @@ function sleep(ms: number) {
 - Consumer instance listing/inspection APIs
 - Complex glob patterns (`**`, character classes)
 - Authentication (handled at deployment layer)
+- Configurable callback TTL (fixed at 5 minutes for v1)
 
 ## Definition of Success
 
