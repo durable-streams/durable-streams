@@ -1,0 +1,21 @@
+{
+  "name": "@durable-streams/server-c",
+  "version": "0.0.1",
+  "description": "High-performance C server for the Durable Streams protocol",
+  "private": true,
+  "scripts": {
+    "build": "make clean && make",
+    "build:debug": "make debug",
+    "start": "./durable-streams-server",
+    "clean": "make clean",
+    "check-deps": "make check-deps"
+  },
+  "keywords": [
+    "durable-streams",
+    "server",
+    "high-performance",
+    "c"
+  ],
+  "author": "ElectricSQL",
+  "license": "Apache-2.0"
+}

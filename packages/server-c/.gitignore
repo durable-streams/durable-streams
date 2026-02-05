@@ -1,0 +1,12 @@
+# Build artifacts
+obj/
+durable-streams-server
+
+# CMake build directory
+build/
+
+# Editor files
+*.swp
+*~
+.vscode/
+.idea/

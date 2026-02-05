@@ -94,6 +94,16 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      defineProject({
+        test: {
+          name: "server-c",
+          include: ["packages/server-c/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+          testTimeout: 30000,
+          hookTimeout: 30000,
+        },
+        resolve: { alias },
+      }),
     ],
     coverage: {
       provider: `v8`,
