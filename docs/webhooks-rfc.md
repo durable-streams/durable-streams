@@ -34,6 +34,7 @@ Serverless functions cannot efficiently consume Durable Streams today. The curre
 2. **Periodic polling** — wasteful, adds latency, and doesn't scale when an agent needs to monitor multiple streams
 
 This gap blocks a key use case: **multi-agent systems** where each agent instance needs to:
+
 - React to events on its primary task stream
 - Dynamically subscribe to additional streams (shared filesystem, tool outputs, coordination channels)
 - Maintain offsets across all subscribed streams as a unit
@@ -42,6 +43,7 @@ This gap blocks a key use case: **multi-agent systems** where each agent instanc
 Without server-side push, building this requires external orchestration (separate queue systems, workflow engines) that duplicates what Durable Streams already provides—durable, resumable, ordered event delivery.
 
 **Constraints:**
+
 - Must work with serverless functions that have 30-second to 5-minute execution limits
 - Must handle webhook endpoint failures gracefully (deploys, outages, bugs)
 - Protocol must support distributed deployments, even if reference implementations are single-server
@@ -60,6 +62,7 @@ Add a webhook-based push delivery system to Durable Streams. The core concepts:
 ### Subscription Model
 
 A subscription is registered via HTTP API and consists of:
+
 - `handler_id`: Server-generated UUID identifying this subscription
 - `pattern`: Glob pattern matching stream paths (e.g., `/agents/*`)
 - `webhook`: URL to POST notifications to
@@ -72,6 +75,7 @@ When a stream is created or receives events that match the pattern, the server s
 Subscriptions marked as `internal: true` may be routed differently by implementations (e.g., direct function calls instead of HTTP in single-server deployments), but the behavior is identical.
 
 **Glob patterns** support simple wildcards only:
+
 - `*` matches exactly one path segment
 - `/agents/*` matches `/agents/task-123` but not `/agents/foo/bar`
 - `/agents/*/inbox` matches `/agents/worker-1/inbox`
@@ -164,9 +168,11 @@ Webhook-Signature: t=1704067200,sha256=a1b2c3d4e5f6...
 ```
 
 **Headers:**
+
 - `Webhook-Signature`: Signature for verification (see Webhook Signature Verification below)
 
 **Payload fields:**
+
 - `consumer_id`: Unique identifier for this consumer instance
 - `epoch`: Current epoch; consumers should include this in callback requests
 - `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
@@ -184,6 +190,7 @@ The webhook can respond with `{ "done": true }` to immediately return to IDLE (f
 All webhook notifications are signed to prevent spoofing. Consumers should verify signatures before processing.
 
 **Signature format:**
+
 ```
 Webhook-Signature: t=<timestamp>,sha256=<signature>
 ```
@@ -199,8 +206,9 @@ Webhook-Signature: t=<timestamp>,sha256=<signature>
 4. Compare signatures using constant-time comparison
 
 **Example verification:**
+
 ```typescript
-import { createHmac, timingSafeEqual } from 'crypto'
+import { createHmac, timingSafeEqual } from "crypto"
 
 function verifyWebhookSignature(
   body: string,
@@ -220,9 +228,7 @@ function verifyWebhookSignature(
 
   // Compute expected signature
   const payload = `${timestamp}.${body}`
-  const expected = createHmac('sha256', secret)
-    .update(payload)
-    .digest('hex')
+  const expected = createHmac("sha256", secret).update(payload).digest("hex")
 
   // Constant-time comparison
   return timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
@@ -231,7 +237,7 @@ function verifyWebhookSignature(
 
 ### Event Reading
 
-The webhook notification tells the consumer *what* to read, not the events themselves. Consumers read events using **standard Durable Streams HTTP reads** via the client library.
+The webhook notification tells the consumer _what_ to read, not the events themselves. Consumers read events using **standard Durable Streams HTTP reads** via the client library.
 
 This separation keeps the webhook system focused on coordination while leveraging the existing protocol for data transfer. Authentication for reading streams is handled at the deployment layer, same as existing reads.
 
@@ -259,12 +265,14 @@ Content-Type: application/json
 All fields are optional (except `epoch` should be included for fencing).
 
 **Callback semantics:**
+
 - Callbacks are processed **serially** per consumer instance (no concurrent processing)
 - All operations are **idempotent**—safe to retry on timeout
 - Requests are **atomic**—entire request succeeds or fails together
 - Any callback (even empty `{}`) resets the 45-second timeout
 
 **Success response:**
+
 ```json
 {
   "ok": true,
@@ -282,17 +290,18 @@ All fields are optional (except `epoch` should be included for fencing).
 
 **Error responses:**
 
-| Status | Code | Description |
-|--------|------|-------------|
-| 400 | `INVALID_REQUEST` | Malformed JSON, unknown fields |
-| 401 | `TOKEN_EXPIRED` | Callback token has expired (response includes new token) |
-| 401 | `TOKEN_INVALID` | Callback token is malformed or signature invalid |
-| 404 | `STREAM_NOT_FOUND` | Stream in `subscribe` does not exist |
-| 409 | `INVALID_OFFSET` | Ack offset is invalid (e.g., beyond stream tail) |
-| 409 | `STALE_EPOCH` | Callback epoch is older than current consumer epoch (zombie consumer) |
-| 410 | `CONSUMER_GONE` | Consumer instance no longer exists (subscription deleted) |
+| Status | Code               | Description                                                           |
+| ------ | ------------------ | --------------------------------------------------------------------- |
+| 400    | `INVALID_REQUEST`  | Malformed JSON, unknown fields                                        |
+| 401    | `TOKEN_EXPIRED`    | Callback token has expired (response includes new token)              |
+| 401    | `TOKEN_INVALID`    | Callback token is malformed or signature invalid                      |
+| 404    | `STREAM_NOT_FOUND` | Stream in `subscribe` does not exist                                  |
+| 409    | `INVALID_OFFSET`   | Ack offset is invalid (e.g., beyond stream tail)                      |
+| 409    | `STALE_EPOCH`      | Callback epoch is older than current consumer epoch (zombie consumer) |
+| 410    | `CONSUMER_GONE`    | Consumer instance no longer exists (subscription deleted)             |
 
 Error response body:
+
 ```json
 {
   "ok": false,
@@ -309,11 +318,13 @@ For `TOKEN_EXPIRED`, a new token is included in the error response—consumer sh
 For `STALE_EPOCH`, the consumer should stop processing—a newer instance has taken over.
 
 **Subscribe behavior:**
+
 - New subscriptions start at offset `-1` (beginning of stream)
 - Consumer controls effective position through acks (can immediately ack to current tail to skip history)
 - Subscribe fails with `STREAM_NOT_FOUND` if the stream doesn't exist
 
 **Unsubscribe behavior:**
+
 - Consumer can unsubscribe from any stream including its primary
 - Unsubscribing from primary is valid—any remaining subscribed stream can still wake the consumer
 - Unsubscribing from all streams removes the consumer instance
@@ -329,6 +340,7 @@ When a consumer subscribes to streams beyond its primary, the coordination works
 3. Primary stream decides whether to wake the consumer (if IDLE) or let the callback loop handle it (if LIVE)
 
 This model:
+
 - Uses the same webhook mechanism everywhere
 - Works naturally in distributed deployments where streams live on different servers
 - Keeps the primary stream as single source of truth for consumer state
@@ -340,6 +352,7 @@ For single-server deployments, implementations may optimize internal subscriptio
 **Webhook request timeout:** The server waits up to 30 seconds for a response from the webhook endpoint. If the endpoint hangs beyond this, the request is considered failed and enters the retry loop.
 
 **Webhook delivery failures** use exponential backoff (AWS standard algorithm):
+
 - Initial retry with exponential backoff up to 30 seconds between attempts
 - Then retry every 60 seconds with jitter
 - No maximum retry limit—keeps retrying indefinitely
@@ -353,6 +366,7 @@ This ensures consumers auto-recover after deploys, outages, or bug fixes without
 ### Garbage Collection
 
 Consumer instances are removed when:
+
 - Primary stream is deleted
 - Webhook errors continuously for 3 days
 - Consumer unsubscribes from all streams (including primary)
@@ -364,6 +378,7 @@ No explicit deletion API is needed—unsubscribe handles cleanup.
 ### Subscription HTTP API
 
 **Create subscription:**
+
 ```http
 POST /subscriptions
 {
@@ -385,12 +400,14 @@ POST /subscriptions
 **Note:** The `webhook_secret` is only returned on creation. Store it securely—it cannot be retrieved later.
 
 **List subscriptions:**
+
 ```http
 GET /subscriptions
 → { "subscriptions": [...] }
 ```
 
 **Get subscription:**
+
 ```http
 GET /subscriptions/{handler_id}
 → { "handler_id": "...", ... }
@@ -399,6 +416,7 @@ GET /subscriptions/{handler_id}
 (Does not include `webhook_secret`)
 
 **Delete subscription:**
+
 ```http
 DELETE /subscriptions/{handler_id}
 → 204 No Content
@@ -415,6 +433,7 @@ Subscription and consumer instance state lives in the same Store abstraction as 
 ### Existing Streams
 
 When a subscription is created and matching streams already exist:
+
 - Consumer instances are created in IDLE state
 - They wake only when new events arrive (not immediately)
 - Assumption: existing streams were handled by a previous subscription/version
@@ -422,43 +441,51 @@ When a subscription is created and matching streams already exist:
 ### Example Consumer (Serverless Function)
 
 ```typescript
-import { createHmac, timingSafeEqual } from 'crypto'
-import { stream } from '@durable-streams/client'
+import { createHmac, timingSafeEqual } from "crypto"
+import { stream } from "@durable-streams/client"
 
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET!
-const PLATFORM_TIMEOUT_MS = 30_000  // e.g., Cloudflare Workers limit
-const IDLE_TIMEOUT_MS = 15_000      // exit if no messages for 15s
-const SAFETY_MARGIN_MS = 5_000      // exit 5s before platform kills us
+const PLATFORM_TIMEOUT_MS = 30_000 // e.g., Cloudflare Workers limit
+const IDLE_TIMEOUT_MS = 15_000 // exit if no messages for 15s
+const SAFETY_MARGIN_MS = 5_000 // exit 5s before platform kills us
 
 export default {
   async fetch(request: Request) {
     const body = await request.text()
-    const signature = request.headers.get('Webhook-Signature')
+    const signature = request.headers.get("Webhook-Signature")
 
     // Verify webhook signature
-    if (!signature || !verifyWebhookSignature(body, signature, WEBHOOK_SECRET)) {
-      return new Response('Invalid signature', { status: 401 })
+    if (
+      !signature ||
+      !verifyWebhookSignature(body, signature, WEBHOOK_SECRET)
+    ) {
+      return new Response("Invalid signature", { status: 401 })
     }
 
-    const { consumer_id, epoch, streams: initialStreams, callback } = JSON.parse(body)
+    const {
+      consumer_id,
+      epoch,
+      streams: initialStreams,
+      callback,
+    } = JSON.parse(body)
     const startTime = Date.now()
 
     // Subscribe to additional streams and get updated list
     // First callback transitions WAKING → LIVE
     let token = extractInitialToken(callback)
     let subRes = await fetch(callback, {
-      method: 'POST',
+      method: "POST",
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
         epoch,
         subscribe: [
           `/shared-filesystem/${consumer_id}`,
-          `/tools/${consumer_id}`
-        ]
-      })
+          `/tools/${consumer_id}`,
+        ],
+      }),
     })
     let { streams: allStreams, token: newToken } = await subRes.json()
     token = newToken
@@ -474,7 +501,7 @@ export default {
         offset: s.offset,
         live: true,
         signal: controller.signal,
-      }).then(res => {
+      }).then((res) => {
         res.subscribeJson(async (batch) => {
           lastMessageTime = Date.now()
 
@@ -483,20 +510,24 @@ export default {
           }
 
           // Track ack promises so we can flush before exit
-          pendingAcks.push(fetch(callback, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            },
-            body: JSON.stringify({
-              epoch,
-              acks: [{ path: s.path, offset: batch.offset }]
+          pendingAcks.push(
+            fetch(callback, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                epoch,
+                acks: [{ path: s.path, offset: batch.offset }],
+              }),
             })
-          }).then(res => res.json()).then(data => {
-            token = data.token  // keep token fresh
-            return data
-          }))
+              .then((res) => res.json())
+              .then((data) => {
+                token = data.token // keep token fresh
+                return data
+              })
+          )
         })
       })
     )
@@ -521,7 +552,7 @@ export default {
 
     // Response signals done - transitions LIVE → IDLE
     return Response.json({ done: true })
-  }
+  },
 }
 
 function verifyWebhookSignature(
@@ -540,20 +571,18 @@ function verifyWebhookSignature(
   if (Math.abs(now - ts) > toleranceSeconds) return false
 
   const payload = `${timestamp}.${body}`
-  const expected = createHmac('sha256', secret)
-    .update(payload)
-    .digest('hex')
+  const expected = createHmac("sha256", secret).update(payload).digest("hex")
 
   return timingSafeEqual(Buffer.from(signature), Buffer.from(expected))
 }
 
 function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function extractInitialToken(callbackUrl: string): string {
   // Implementation-specific: extract initial token from callback URL or request
-  return ''
+  return ""
 }
 
 declare function processEvent(path: string, item: unknown): Promise<void>
@@ -564,17 +593,20 @@ declare function processEvent(path: string, item: unknown): Promise<void>
 While authentication is handled at the deployment layer, implementations should consider:
 
 **Webhook signature verification:**
+
 - All webhook notifications include a `Webhook-Signature` header
 - Consumers should verify signatures before processing (see example above)
 - Signatures include timestamps to prevent replay attacks
 
 **Webhook URL validation (SSRF prevention):**
+
 - Require HTTPS for webhook URLs (except localhost in development)
 - Block private IP ranges (RFC 1918, link-local, loopback)
 - Block cloud metadata endpoints (169.254.169.254)
 - Consider allowlisting webhook domains
 
 **Callback token security:**
+
 - Tokens are passed via `Authorization` header to avoid logging exposure
 - Tokens should be signed JWTs with consumer_id, epoch, and expiry
 - Implementations should validate token signatures on every callback
@@ -582,6 +614,7 @@ While authentication is handled at the deployment layer, implementations should 
 ### Implementation Scope
 
 **In scope for v1:**
+
 - Subscription CRUD API
 - Consumer instance lifecycle (IDLE → WAKING → LIVE → IDLE, and WAKING → IDLE shortcut)
 - Consumer epochs for fencing zombie consumers
@@ -593,6 +626,7 @@ While authentication is handled at the deployment layer, implementations should 
 - OpenTelemetry integration in Node.js server for debugging
 
 **Out of scope for v1:**
+
 - Distributed server implementation (protocol supports it)
 - Consumer instance listing/inspection APIs
 - Complex glob patterns (`**`, character classes)
@@ -614,6 +648,7 @@ The following features are not included in v1 but may be added based on demand:
 This feature is successful when a multi-agent system running on serverless functions works smoothly without DX friction. Specifically:
 
 **Functional requirements:**
+
 - Agents wake reliably when events arrive on any subscribed stream
 - Dynamic subscribe/unsubscribe works correctly mid-session
 - Offsets are preserved across wake cycles
@@ -622,12 +657,14 @@ This feature is successful when a multi-agent system running on serverless funct
 - Zombie consumers are fenced via epochs
 
 **Developer experience:**
+
 - Consumer code is straightforward (see example above)
 - Webhook signature verification is simple to implement
 - No external orchestration needed—Durable Streams handles coordination
 - Debugging is tractable via OpenTelemetry traces in the Node.js server
 
 **Out of scope for v1:**
+
 - Distributed server implementation (protocol supports it, reference impl is single-server)
 - Consumer instance listing/inspection APIs
 - Complex glob patterns (`**`, character classes)
