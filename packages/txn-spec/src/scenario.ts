@@ -758,9 +758,11 @@ export const standardScenarios: Array<ScenarioDefinition> = [
     .commit({ ct: 25 })
     .build(),
 
-  scenario(`three-way concurrent increments`)
-    .description(`Three concurrent increments all merge together`)
-    .tags(`concurrent`, `merge`)
+  scenario(`n-way concurrent increments`)
+    .description(
+      `Multiple concurrent increments merge via recursive 2-way merge`
+    )
+    .tags(`concurrent`, `merge`, `n-way`)
     .transaction(`t1`, { st: 0 })
     .update(`counter`, assign(0))
     .commit({ ct: 1 })
