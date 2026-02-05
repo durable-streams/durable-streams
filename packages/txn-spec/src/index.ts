@@ -360,3 +360,34 @@ export {
   type ServerOptions,
   createServer,
 } from "./http-api"
+
+// =============================================================================
+// Fuzz Testing
+// =============================================================================
+
+export {
+  // Random generation
+  SeededRandom,
+
+  // Configuration
+  type FuzzConfig,
+  defaultFuzzConfig,
+
+  // Scenario generation
+  generateRandomScenario,
+
+  // Test results
+  type FuzzRunResult,
+  type StoreFactory,
+
+  // Test runners
+  runFuzzTest,
+  runFuzzTests,
+  quickFuzz,
+
+  // Default stores
+  fuzzStores,
+
+  // Shrinking
+  shrinkFailingCase,
+} from "./fuzz"
