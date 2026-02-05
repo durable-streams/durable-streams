@@ -1,6 +1,10 @@
 # Build artifacts
 obj/
 durable-streams-server
+ds-ultra
+ds-ultra2
+*.gcda
+*.gcno
 
 # CMake build directory
 build/
