@@ -74,10 +74,12 @@ When a stream is created or receives events that match the pattern, the server s
 
 Subscriptions marked as `internal: true` may be routed differently by implementations (e.g., direct function calls instead of HTTP in single-server deployments), but the behavior is identical.
 
-**Glob patterns** support simple wildcards only:
+**Glob patterns** support wildcards:
 
 - `*` matches exactly one path segment
+- `**` matches zero or more path segments (recursive)
 - `/agents/*` matches `/agents/task-123` but not `/agents/foo/bar`
+- `/agents/**` matches `/agents/task-123` and `/agents/foo/bar/baz`
 - `/agents/*/inbox` matches `/agents/worker-1/inbox`
 
 ### Consumer Instance Lifecycle
@@ -427,19 +429,22 @@ No explicit deletion API is needed—unsubscribe handles cleanup.
 
 ### Subscription HTTP API
 
+Subscriptions use the glob pattern as the URL path, with query parameters for CRUD operations. This keeps subscriptions as a property of the path namespace rather than a separate resource.
+
 **Create subscription:**
 
 ```http
-POST /subscriptions
+PUT /agents/*?subscription=agent-handler
+Content-Type: application/json
+
 {
-  "pattern": "/agents/*",
   "webhook": "https://my-agent.workers.dev/handler",
   "description": "Agent task processor"
 }
 
 → 201 Created
 {
-  "subscription_id": "sub_a1b2c3d4",
+  "subscription_id": "agent-handler",
   "pattern": "/agents/*",
   "webhook": "https://my-agent.workers.dev/handler",
   "webhook_secret": "whsec_abc123def456...",
@@ -447,20 +452,31 @@ POST /subscriptions
 }
 ```
 
+The glob pattern (`/agents/*`) is the path; the subscription ID is provided via query parameter.
+
 **Note:** The `webhook_secret` is only returned on creation. Store it securely—it cannot be retrieved later.
 
-**List subscriptions:**
+**URL encoding:** The `*` character is valid in URL paths but requires shell quoting (`curl 'https://.../agents/*?...'`). Servers should treat `*` and `%2A` as equivalent. Literal `*` stream names are not supported.
+
+**List subscriptions under a pattern:**
 
 ```http
-GET /subscriptions
+GET /agents/*?subscriptions
 → { "subscriptions": [...] }
 ```
 
-**Get subscription:**
+**List all subscriptions (search all patterns):**
 
 ```http
-GET /subscriptions/{subscription_id}
-→ { "subscription_id": "...", ... }
+GET /**?subscriptions
+→ { "subscriptions": [...] }
+```
+
+**Get subscription by ID (search all patterns):**
+
+```http
+GET /**?subscription=agent-handler
+→ { "subscription_id": "agent-handler", "pattern": "/agents/*", ... }
 ```
 
 (Does not include `webhook_secret`)
@@ -468,7 +484,7 @@ GET /subscriptions/{subscription_id}
 **Delete subscription:**
 
 ```http
-DELETE /subscriptions/{subscription_id}
+DELETE /agents/*?subscription=agent-handler
 → 204 No Content
 ```
 
@@ -687,7 +703,7 @@ While authentication is handled at the deployment layer, implementations should 
 
 - Distributed server implementation (protocol supports it)
 - Consumer instance listing/inspection APIs
-- Complex glob patterns (`**`, character classes)
+- Complex glob patterns (character classes, negation)
 - Authentication (handled at deployment layer)
 - Configurable callback TTL (fixed at 1 hour for v1)
 
@@ -726,5 +742,5 @@ This feature is successful when a multi-agent system running on serverless funct
 
 - Distributed server implementation (protocol supports it, reference impl is single-server)
 - Consumer instance listing/inspection APIs
-- Complex glob patterns (`**`, character classes)
+- Complex glob patterns (character classes, negation)
 - Authentication (handled at deployment layer)
