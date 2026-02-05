@@ -63,7 +63,7 @@ Add a webhook-based push delivery system to Durable Streams. The core concepts:
 
 A subscription is registered via HTTP API and consists of:
 
-- `handler_id`: Server-generated UUID identifying this subscription
+- `subscription_id`: Server-generated UUID identifying this subscription
 - `pattern`: Glob pattern matching stream paths (e.g., `/agents/*`)
 - `webhook`: URL to POST notifications to
 - `webhook_secret`: Server-generated secret for signature verification (returned on creation, not stored retrievably)
@@ -88,62 +88,86 @@ Stream matches subscription pattern
               ▼
 ┌─────────────────────────────────┐
 │  CONSUMER INSTANCE              │
-│  id: {handler_id}:{stream_path} │
+│  id: {subscription_id}:{stream_path} │
 │  epoch: 1                       │
 │  primary: /agents/task-123      │
 │  streams: [primary]             │
 │  state: IDLE                    │
 └───────────────┬─────────────────┘
                 │ events arrive on any subscribed stream
-                │ epoch incremented
+                │ epoch incremented, wake_id generated
                 ▼
 ┌─────────────────────────────────┐
 │  state: WAKING                  │
-│  epoch: 2                       │
+│  epoch: 2, wake_id: "w_abc123"  │
 │  POST webhook with notification │
-│  (connection held open)         │
-│  45s timeout to receive callback│
+│  (re-deliver until claimed)     │
 └───────────────┬─────────────────┘
                 │
         ┌───────┴───────┐
         │               │
         ▼               ▼
-   (callback)    (webhook responds
-                  { done: true })
-        │               │
-        ▼               ▼
-┌───────────────┐       │
-│  state: LIVE  │◄──┐   │
-│  epoch: 2     │   │   │
-│  processing   │   │   │
-└───────┬───────┘   │   │
-        │           │   │
-        │ callback  │   │
-        │ activity  │   │
-        └───────────┘   │
-        │               │
-        │ 45s timeout   │
-        │ OR { done }   │
-        ▼               │
-┌───────────────────────┴─────────┐
+   (callback       (webhook responds
+    claims           { done: true })
+    wake_id)              │
+        │                 │
+        ▼                 ▼
+┌───────────────┐         │
+│  state: LIVE  │◄──┐     │
+│  epoch: 2     │   │     │
+│  processing   │   │     │
+└───────┬───────┘   │     │
+        │           │     │
+        │ callback  │     │
+        │ activity  │     │
+        └───────────┘     │
+        │                 │
+        │ 45s timeout     │
+        │ OR { done }     │
+        ▼                 │
+┌─────────────────────────┴───────┐
 │  state: IDLE                    │
 │  epoch: 2                       │
 │  (offsets preserved)            │
 └─────────────────────────────────┘
 ```
 
+**Pending work definition:**
+
+Pending work exists when any subscribed stream has unprocessed events:
+
+```
+pending_work = any(tail[path] > acked[path] for path in subscribed_streams)
+```
+
+Where:
+
+- `acked[path]` is the last acknowledged offset (inclusive - this event was processed)
+- `tail[path]` is the current end offset of the stream
+- Offset `-1` means "before any events" (nothing acked yet)
+
+This definition drives wake decisions, re-wake after timeouts, and whether `{done: true}` transitions to IDLE.
+
 **State transitions:**
 
-1. **IDLE → WAKING**: Events arrive on any subscribed stream; epoch is incremented
-2. **WAKING → LIVE**: Consumer calls the callback (any callback request)
-3. **WAKING → IDLE**: Consumer responds with `{ done: true }` (synchronous processing), OR 45-second timeout with no callback
-4. **LIVE → IDLE**: Consumer sends `{ done: true }` in callback, OR 45-second timeout with no callback activity
+1. **IDLE → WAKING**: `pending_work` becomes true; epoch is incremented, new `wake_id` generated
+2. **WAKING → LIVE**: First callback claims the `wake_id` (subsequent callbacks with same wake_id receive `409 ALREADY_CLAIMED`)
+3. **WAKING → IDLE**: Consumer responds with `{ done: true }` AND `pending_work` is false
+4. **LIVE → IDLE**: Consumer sends `{ done: true }` in callback AND `pending_work` is false, OR 45-second timeout with no callback activity
+5. **Re-wake**: If `{done: true}` is received but `pending_work` is still true, immediately trigger a new wake (increment epoch, new wake_id)
 
-**Epoch for fencing:** The epoch is a monotonically increasing counter that increments on each IDLE → WAKING transition. It prevents split-brain scenarios where a zombie consumer (from a previous wake cycle) sends acks that conflict with the current consumer. Callbacks with a stale epoch are rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in the existing Durable Streams protocol.
+**Epoch and wake_id for fencing:** Two identifiers work together to prevent split-brain scenarios:
+
+- **`epoch`**: Monotonically increasing counter that increments on each IDLE → WAKING transition. Callbacks with a stale epoch are rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in the existing Durable Streams protocol.
+- **`wake_id`**: Unique identifier for each wake attempt within an epoch. The first callback claiming a `wake_id` wins; subsequent callbacks with the same `wake_id` receive `409 ALREADY_CLAIMED`. This handles duplicate webhook deliveries (retries before claim).
+
+**Re-wake until claimed:** The server continues retrying the webhook (with exponential backoff) until a callback claims the `wake_id`. A successful HTTP 2xx response to the webhook is not sufficient—the consumer must call the callback to claim the wake. This ensures exactly one consumer instance processes each wake cycle, even with unreliable networks.
+
+**Webhook connection model:** The webhook connection can be held open for the platform's execution limit (e.g., 15 minutes on some serverless platforms). The server tracks consumer liveness via callback activity, not the webhook connection. Consumers should call the callback regularly (at least every 45 seconds) to stay alive. If the webhook connection closes without `{ done: true }` and no recent callback activity, the server treats this as a crash and will re-wake if there's pending work.
 
 **Timeout (45 seconds):** Any callback request (including empty `{}`) resets the timeout. If no callback activity occurs within 45 seconds, the consumer transitions to IDLE. Consumers doing slow processing should send periodic callbacks (even just re-acking the same offset) to stay alive.
 
-**Consumer instance identity** is `{handler_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity (paths contain `/`). Multiple subscriptions can match the same stream, each creating independent consumer instances.
+**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity (paths contain `/`). Multiple subscriptions can match the same stream, each creating independent consumer instances.
 
 ### Wake-up Notification
 
@@ -157,13 +181,15 @@ Webhook-Signature: t=1704067200,sha256=a1b2c3d4e5f6...
 {
   "consumer_id": "sub_a1b2c3d4:%2Fagents%2Ftask-123",
   "epoch": 7,
+  "wake_id": "w_f8a3b2c1",
   "primary_stream": "/agents/task-123",
   "streams": [
     { "path": "/agents/task-123", "offset": "1002" },
     { "path": "/shared-filesystem/task-123", "offset": "500" }
   ],
   "triggered_by": ["/agents/task-123", "/shared-filesystem/task-123"],
-  "callback": "https://streams.example.com/callback/sub_a1b2c3d4/%2Fagents%2Ftask-123"
+  "callback": "https://streams.example.com/callback/sub_a1b2c3d4/%2Fagents%2Ftask-123",
+  "token": "eyJhbGciOiJIUzI1NiIs..."
 }
 ```
 
@@ -174,12 +200,14 @@ Webhook-Signature: t=1704067200,sha256=a1b2c3d4e5f6...
 **Payload fields:**
 
 - `consumer_id`: Unique identifier for this consumer instance
-- `epoch`: Current epoch; consumers should include this in callback requests
+- `epoch`: Current epoch; consumers must include this in callback requests for fencing
+- `wake_id`: Unique identifier for this wake attempt; consumers must include this in their first callback to claim the wake
 - `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
 - `triggered_by`: Array of stream paths that have pending events (informational—consumer should read from all streams based on their offsets, not just triggered ones)
 - `callback`: Scoped URL for acknowledgments and subscription changes
+- `token`: Initial callback token; use in `Authorization: Bearer` header for first callback
 
-The webhook can respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing).
+The webhook can respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing). This counts as claiming the wake—the server will not redeliver.
 
 **Wake-up batching:** If multiple events arrive on subscribed streams while the consumer is IDLE, they are batched into a single wake-up. The server does not wake the consumer multiple times—one wake-up per IDLE → WAKING transition.
 
@@ -204,6 +232,8 @@ Webhook-Signature: t=<timestamp>,sha256=<signature>
 2. Check timestamp is within acceptable window (e.g., ±5 minutes) to prevent replay attacks
 3. Compute expected signature: `HMAC-SHA256(webhook_secret, "<timestamp>.<raw_body>")`
 4. Compare signatures using constant-time comparison
+
+**Important:** Use the raw request body bytes (UTF-8, as received) for signature verification. Do not parse and re-stringify JSON—this can change whitespace or key order and break the signature.
 
 **Example verification:**
 
@@ -243,7 +273,7 @@ This separation keeps the webhook system focused on coordination while leveragin
 
 ### Callback API
 
-The callback URL is scoped to the specific consumer instance and has a fixed TTL (default: 1 hour). The token is passed via the `Authorization` header to avoid logging exposure.
+The callback URL is scoped to the specific consumer instance. The token is passed via the `Authorization` header to avoid logging exposure; it handles authentication and expiry (1 hour TTL) only. Fencing is handled by `epoch` and `wake_id`.
 
 ```http
 POST {callback}
@@ -252,6 +282,7 @@ Content-Type: application/json
 
 {
   "epoch": 7,
+  "wake_id": "w_f8a3b2c1",
   "acks": [
     { "path": "/agents/task-123", "offset": "1005" },
     { "path": "/shared-filesystem/task-123", "offset": "520" }
@@ -262,7 +293,14 @@ Content-Type: application/json
 }
 ```
 
-All fields are optional (except `epoch` should be included for fencing).
+**Required fields:**
+
+- `epoch`: Must match current consumer epoch (fencing)
+- `wake_id`: Must be included in first callback to claim the wake; optional in subsequent callbacks
+
+**Optional fields:**
+
+- `acks`, `subscribe`, `unsubscribe`, `done`: All optional
 
 **Callback semantics:**
 
@@ -280,7 +318,7 @@ All fields are optional (except `epoch` should be included for fencing).
   "streams": [
     { "path": "/agents/task-123", "offset": "1005" },
     { "path": "/shared-filesystem/task-123", "offset": "520" },
-    { "path": "/tools/task-123", "offset": "-1" }
+    { "path": "/tools/task-123", "offset": "42" }
   ]
 }
 ```
@@ -290,15 +328,15 @@ All fields are optional (except `epoch` should be included for fencing).
 
 **Error responses:**
 
-| Status | Code               | Description                                                           |
-| ------ | ------------------ | --------------------------------------------------------------------- |
-| 400    | `INVALID_REQUEST`  | Malformed JSON, unknown fields                                        |
-| 401    | `TOKEN_EXPIRED`    | Callback token has expired (response includes new token)              |
-| 401    | `TOKEN_INVALID`    | Callback token is malformed or signature invalid                      |
-| 404    | `STREAM_NOT_FOUND` | Stream in `subscribe` does not exist                                  |
-| 409    | `INVALID_OFFSET`   | Ack offset is invalid (e.g., beyond stream tail)                      |
-| 409    | `STALE_EPOCH`      | Callback epoch is older than current consumer epoch (zombie consumer) |
-| 410    | `CONSUMER_GONE`    | Consumer instance no longer exists (subscription deleted)             |
+| Status | Code              | Description                                                                 |
+| ------ | ----------------- | --------------------------------------------------------------------------- |
+| 400    | `INVALID_REQUEST` | Malformed JSON, unknown fields                                              |
+| 401    | `TOKEN_EXPIRED`   | Callback token has expired (response includes new token)                    |
+| 401    | `TOKEN_INVALID`   | Callback token is malformed or signature invalid                            |
+| 409    | `ALREADY_CLAIMED` | This `wake_id` was already claimed by another callback (duplicate delivery) |
+| 409    | `INVALID_OFFSET`  | Ack offset is invalid (e.g., beyond stream tail)                            |
+| 409    | `STALE_EPOCH`     | Callback epoch is older than current consumer epoch (zombie consumer)       |
+| 410    | `CONSUMER_GONE`   | Consumer instance no longer exists (subscription deleted)                   |
 
 Error response body:
 
@@ -317,11 +355,21 @@ For `TOKEN_EXPIRED`, a new token is included in the error response—consumer sh
 
 For `STALE_EPOCH`, the consumer should stop processing—a newer instance has taken over.
 
+For `ALREADY_CLAIMED`, another callback already claimed this wake—the consumer should stop processing (this typically happens with duplicate webhook deliveries due to retries).
+
+**Offset semantics:**
+
+Offsets are **"last processed inclusive"**—the offset value represents the last event that was successfully processed. This means:
+
+- Offset `"1005"` means events up to and including 1005 have been processed
+- Next read should start from offset `"1006"`
+- Offset `"-1"` means no events have been processed yet (start from beginning)
+
 **Subscribe behavior:**
 
-- New subscriptions start at offset `-1` (beginning of stream)
-- Consumer controls effective position through acks (can immediately ack to current tail to skip history)
-- Subscribe fails with `STREAM_NOT_FOUND` if the stream doesn't exist
+- New subscriptions start at current tail (new events only)
+- Subscribing to a non-existent stream is allowed—consumer will be woken when the stream is created and receives its first event (useful for tool output streams that appear during execution)
+- No validation of stream paths; typos won't be caught until the stream fails to appear
 
 **Unsubscribe behavior:**
 
@@ -341,21 +389,23 @@ When a consumer subscribes to streams beyond its primary, the coordination works
 
 This model:
 
-- Uses the same webhook mechanism everywhere
+- Uses the same webhook mechanism everywhere (including HMAC signature verification for internal webhooks)
 - Works naturally in distributed deployments where streams live on different servers
 - Keeps the primary stream as single source of truth for consumer state
 
-For single-server deployments, implementations may optimize internal subscriptions (e.g., direct function calls). For distributed deployments, it's HTTP between servers. The routing optimization is implementation-specific.
+For single-server deployments, implementations may optimize internal subscriptions (e.g., direct function calls). For distributed deployments, it's HTTP between servers with the same signature verification. The routing optimization is implementation-specific.
 
 ### Failure Handling
 
 **Webhook request timeout:** The server waits up to 30 seconds for a response from the webhook endpoint. If the endpoint hangs beyond this, the request is considered failed and enters the retry loop.
 
-**Webhook delivery failures** use exponential backoff (AWS standard algorithm):
+**Re-wake until claimed:** The server continues retrying webhook delivery until a callback claims the `wake_id`. A successful HTTP 2xx response is not sufficient—the consumer must call the callback to claim the wake. This ensures exactly one consumer instance processes each wake cycle, even with unreliable networks or slow consumers that respond before processing.
+
+**Webhook delivery retries** use exponential backoff (AWS standard algorithm):
 
 - Initial retry with exponential backoff up to 30 seconds between attempts
 - Then retry every 60 seconds with jitter
-- No maximum retry limit—keeps retrying indefinitely
+- Retries continue until claimed, but consumer instances are GC'd after 3 days of consecutive webhook failures (see Garbage Collection)
 
 This ensures consumers auto-recover after deploys, outages, or bug fixes without manual intervention.
 
@@ -389,7 +439,7 @@ POST /subscriptions
 
 → 201 Created
 {
-  "handler_id": "sub_a1b2c3d4",
+  "subscription_id": "sub_a1b2c3d4",
   "pattern": "/agents/*",
   "webhook": "https://my-agent.workers.dev/handler",
   "webhook_secret": "whsec_abc123def456...",
@@ -409,8 +459,8 @@ GET /subscriptions
 **Get subscription:**
 
 ```http
-GET /subscriptions/{handler_id}
-→ { "handler_id": "...", ... }
+GET /subscriptions/{subscription_id}
+→ { "subscription_id": "...", ... }
 ```
 
 (Does not include `webhook_secret`)
@@ -418,7 +468,7 @@ GET /subscriptions/{handler_id}
 **Delete subscription:**
 
 ```http
-DELETE /subscriptions/{handler_id}
+DELETE /subscriptions/{subscription_id}
 → 204 No Content
 ```
 
@@ -465,14 +515,16 @@ export default {
     const {
       consumer_id,
       epoch,
+      wake_id,
       streams: initialStreams,
       callback,
+      token: initialToken,
     } = JSON.parse(body)
     const startTime = Date.now()
 
-    // Subscribe to additional streams and get updated list
-    // First callback transitions WAKING → LIVE
-    let token = extractInitialToken(callback)
+    // Subscribe to additional streams and claim wake_id
+    // First callback claims the wake and transitions WAKING → LIVE
+    let token = initialToken
     let subRes = await fetch(callback, {
       method: "POST",
       headers: {
@@ -481,12 +533,22 @@ export default {
       },
       body: JSON.stringify({
         epoch,
+        wake_id, // Claims this wake attempt
         subscribe: [
           `/shared-filesystem/${consumer_id}`,
           `/tools/${consumer_id}`,
         ],
       }),
     })
+
+    // Check if another instance already claimed this wake
+    if (subRes.status === 409) {
+      const error = await subRes.json()
+      if (error.error?.code === "ALREADY_CLAIMED") {
+        // Another callback already claimed this wake - exit gracefully
+        return new Response("Already claimed", { status: 200 })
+      }
+    }
     let { streams: allStreams, token: newToken } = await subRes.json()
     token = newToken
 
@@ -580,11 +642,6 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function extractInitialToken(callbackUrl: string): string {
-  // Implementation-specific: extract initial token from callback URL or request
-  return ""
-}
-
 declare function processEvent(path: string, item: unknown): Promise<void>
 ```
 
@@ -617,7 +674,8 @@ While authentication is handled at the deployment layer, implementations should 
 
 - Subscription CRUD API
 - Consumer instance lifecycle (IDLE → WAKING → LIVE → IDLE, and WAKING → IDLE shortcut)
-- Consumer epochs for fencing zombie consumers
+- Consumer epochs and wake_ids for fencing zombie consumers and duplicate deliveries
+- Re-wake until callback claim (not just until HTTP 2xx)
 - Webhook signature verification
 - Wake-up notifications and callback API
 - Dynamic subscribe/unsubscribe for secondary streams
@@ -655,6 +713,7 @@ This feature is successful when a multi-agent system running on serverless funct
 - Agents can stay alive processing live events, then cleanly exit
 - Failed webhooks retry indefinitely and recover automatically after deploys/fixes
 - Zombie consumers are fenced via epochs
+- Duplicate webhook deliveries are handled via wake_id claiming
 
 **Developer experience:**
 
