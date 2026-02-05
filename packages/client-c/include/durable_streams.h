@@ -226,6 +226,11 @@ bool ds_iterator_up_to_date(const ds_iterator_t *iter);
 bool ds_iterator_stream_closed(const ds_iterator_t *iter);
 
 /**
+ * Get the last error message from the iterator.
+ */
+const char *ds_iterator_error_message(const ds_iterator_t *iter);
+
+/**
  * Close and free an iterator.
  */
 void ds_iterator_free(ds_iterator_t *iter);

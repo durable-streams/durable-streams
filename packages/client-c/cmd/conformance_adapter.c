@@ -893,7 +893,8 @@ static void handle_append(const char *json) {
 
         send_result("append", true, fields);
     } else {
-        send_error("append", error_to_code(err), ds_error_string(err));
+        const char *err_msg = result.error_message ? result.error_message : ds_error_string(err);
+        send_error("append", error_to_code(err), err_msg);
     }
 
     ds_result_cleanup(&result);
@@ -980,15 +981,30 @@ static void handle_read(const char *json) {
             }
 
             char *escaped_data;
-            if (chunk.is_binary) {
-                /* Binary data - base64 encode it */
+            /* Check if binary data is actually printable text */
+            bool is_printable = true;
+            if (chunk.is_binary && chunk.data && chunk.data_len > 0) {
+                for (size_t i = 0; i < chunk.data_len; i++) {
+                    unsigned char c = (unsigned char)chunk.data[i];
+                    /* Allow printable ASCII (32-126) plus common whitespace */
+                    if (!((c >= 32 && c <= 126) || c == '\t' || c == '\n' || c == '\r')) {
+                        is_printable = false;
+                        break;
+                    }
+                }
+            }
+
+            if (chunk.is_binary && !is_printable) {
+                /* True binary data - base64 encode it */
                 char *b64 = base64_encode(chunk.data, chunk.data_len);
                 char *temp = json_escape(b64);
                 free(b64);
                 escaped_data = temp;
             } else {
-                /* All text data (including JSON) should be escaped as a string */
-                escaped_data = json_escape(chunk.data);
+                /* Text data or binary that's actually printable text */
+                char *text_data = strndup(chunk.data, chunk.data_len);
+                escaped_data = json_escape(text_data);
+                free(text_data);
             }
 
             char chunk_json[65536];
@@ -996,7 +1012,7 @@ static void handle_read(const char *json) {
             clen = snprintf(chunk_json, sizeof(chunk_json),
                 "{\"data\":%s%s,\"offset\":\"%s\"}",
                 escaped_data ? escaped_data : "\"\"",
-                chunk.is_binary ? ",\"binary\":true" : "",
+                (chunk.is_binary && !is_printable) ? ",\"binary\":true" : "",
                 chunk.offset ? chunk.offset : "");
             free(escaped_data);
 
@@ -1029,6 +1045,8 @@ static void handle_read(const char *json) {
         up_to_date = true;
         status = 204;
     } else if (err != DS_OK && err != DS_ERR_DONE) {
+        const char *iter_err_msg = ds_iterator_error_message(iter);
+        char *err_msg = iter_err_msg ? strdup(iter_err_msg) : NULL;
         ds_iterator_free(iter);
         ds_stream_free(stream);
         free(path);
@@ -1037,7 +1055,8 @@ static void handle_read(const char *json) {
         free(headers_sent);
         free(params_sent);
         free(final_offset);
-        send_error("read", error_to_code(err), ds_error_string(err));
+        send_error("read", error_to_code(err), err_msg ? err_msg : ds_error_string(err));
+        free(err_msg);
         return;
     }
 
@@ -1108,7 +1127,8 @@ static void handle_head(const char *json) {
         free(escaped_ct);
         send_result("head", true, fields);
     } else {
-        send_error("head", error_to_code(err), ds_error_string(err));
+        const char *err_msg = result.error_message ? result.error_message : ds_error_string(err);
+        send_error("head", error_to_code(err), err_msg);
     }
 
     ds_result_cleanup(&result);

@@ -60,6 +60,11 @@ struct ds_iterator {
     int queued_pos;
     /* Last HTTP status */
     int last_status;
+    /* SSE retry tracking */
+    int sse_retry_count;
+    int sse_max_retries;
+    /* Error message for last error */
+    char *last_error_message;
 };
 
 struct ds_producer {
@@ -124,6 +129,159 @@ static char *strdup_safe(const char *s) {
         memcpy(dup, s, len + 1);
     }
     return dup;
+}
+
+/* ========== JSON Validation ========== */
+
+static const char *skip_whitespace(const char *p, const char *end) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
+        p++;
+    }
+    return p;
+}
+
+static const char *validate_json_value(const char *p, const char *end);
+
+static const char *validate_json_string(const char *p, const char *end) {
+    if (p >= end || *p != '"') return NULL;
+    p++;
+    while (p < end && *p != '"') {
+        if (*p == '\\') {
+            p++;
+            if (p >= end) return NULL;
+            if (*p == 'u') {
+                /* Unicode escape \uXXXX */
+                for (int i = 0; i < 4; i++) {
+                    p++;
+                    if (p >= end || !isxdigit((unsigned char)*p)) return NULL;
+                }
+            } else if (*p != '"' && *p != '\\' && *p != '/' && *p != 'b' &&
+                       *p != 'f' && *p != 'n' && *p != 'r' && *p != 't') {
+                return NULL;
+            }
+        } else if ((unsigned char)*p < 0x20) {
+            /* Control characters must be escaped */
+            return NULL;
+        }
+        p++;
+    }
+    if (p >= end || *p != '"') return NULL;
+    return p + 1;
+}
+
+static const char *validate_json_number(const char *p, const char *end) {
+    if (p >= end) return NULL;
+    if (*p == '-') p++;
+    if (p >= end || !isdigit((unsigned char)*p)) return NULL;
+    if (*p == '0') {
+        p++;
+    } else {
+        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    if (p < end && *p == '.') {
+        p++;
+        if (p >= end || !isdigit((unsigned char)*p)) return NULL;
+        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    if (p < end && (*p == 'e' || *p == 'E')) {
+        p++;
+        if (p < end && (*p == '+' || *p == '-')) p++;
+        if (p >= end || !isdigit((unsigned char)*p)) return NULL;
+        while (p < end && isdigit((unsigned char)*p)) p++;
+    }
+    return p;
+}
+
+static const char *validate_json_array(const char *p, const char *end) {
+    if (p >= end || *p != '[') return NULL;
+    p++;
+    p = skip_whitespace(p, end);
+    if (p < end && *p == ']') return p + 1;
+
+    while (1) {
+        p = validate_json_value(p, end);
+        if (!p) return NULL;
+        p = skip_whitespace(p, end);
+        if (p >= end) return NULL;
+        if (*p == ']') return p + 1;
+        if (*p != ',') return NULL;
+        p++;
+        p = skip_whitespace(p, end);
+    }
+}
+
+static const char *validate_json_object(const char *p, const char *end) {
+    if (p >= end || *p != '{') return NULL;
+    p++;
+    p = skip_whitespace(p, end);
+    if (p < end && *p == '}') return p + 1;
+
+    while (1) {
+        /* Key must be a string */
+        p = validate_json_string(p, end);
+        if (!p) return NULL;
+        p = skip_whitespace(p, end);
+        if (p >= end || *p != ':') return NULL;
+        p++;
+        p = skip_whitespace(p, end);
+        /* Value */
+        p = validate_json_value(p, end);
+        if (!p) return NULL;
+        p = skip_whitespace(p, end);
+        if (p >= end) return NULL;
+        if (*p == '}') return p + 1;
+        if (*p != ',') return NULL;
+        p++;
+        p = skip_whitespace(p, end);
+    }
+}
+
+static const char *validate_json_value(const char *p, const char *end) {
+    p = skip_whitespace(p, end);
+    if (p >= end) return NULL;
+
+    switch (*p) {
+        case '"':
+            return validate_json_string(p, end);
+        case '{':
+            return validate_json_object(p, end);
+        case '[':
+            return validate_json_array(p, end);
+        case 't':
+            if (end - p >= 4 && strncmp(p, "true", 4) == 0) return p + 4;
+            return NULL;
+        case 'f':
+            if (end - p >= 5 && strncmp(p, "false", 5) == 0) return p + 5;
+            return NULL;
+        case 'n':
+            if (end - p >= 4 && strncmp(p, "null", 4) == 0) return p + 4;
+            return NULL;
+        default:
+            if (*p == '-' || isdigit((unsigned char)*p)) {
+                return validate_json_number(p, end);
+            }
+            return NULL;
+    }
+}
+
+/* Validate that a string is valid JSON. Returns true if valid. */
+static bool validate_json(const char *data, size_t len) {
+    if (!data || len == 0) return false;
+    const char *end = data + len;
+    const char *p = validate_json_value(data, end);
+    if (!p) return false;
+    p = skip_whitespace(p, end);
+    return p == end;
+}
+
+/* Format error message with stream path context */
+static char *format_error_with_path(const char *path, const char *message) {
+    if (!path || !message) return strdup_safe(message);
+    size_t len = strlen(path) + strlen(message) + 32;
+    char *result = malloc(len);
+    if (!result) return strdup_safe(message);
+    snprintf(result, len, "%s (stream: %s)", message, path);
+    return result;
 }
 
 static void buffer_init(ds_buffer_t *buf) {
@@ -445,7 +603,7 @@ ds_error_t ds_stream_create(ds_stream_t *stream, const ds_create_options_t *opti
     }
 
     if (res != CURLE_OK) {
-        result->error_message = strdup_safe(curl_easy_strerror(res));
+        result->error_message = format_error_with_path(stream->path, curl_easy_strerror(res));
         result->error_code = DS_ERR_NETWORK;
         return DS_ERR_NETWORK;
     }
@@ -460,6 +618,17 @@ ds_error_t ds_stream_append(ds_stream_t *stream, const char *data, size_t data_l
     if (!stream || !data || !result) return DS_ERR_INVALID_ARGUMENT;
 
     memset(result, 0, sizeof(*result));
+
+    /* Validate JSON if content type is application/json */
+    char *norm_ct = normalize_content_type(stream->content_type);
+    bool is_json = norm_ct && strcmp(norm_ct, "application/json") == 0;
+    free(norm_ct);
+
+    if (is_json && data_len > 0 && !validate_json(data, data_len)) {
+        result->error_message = format_error_with_path(stream->path, "Invalid JSON");
+        result->error_code = DS_ERR_PARSE_ERROR;
+        return DS_ERR_PARSE_ERROR;
+    }
 
     CURL *curl = curl_easy_init();
     if (!curl) return DS_ERR_INTERNAL;
@@ -516,12 +685,17 @@ ds_error_t ds_stream_append(ds_stream_t *stream, const char *data, size_t data_l
     free(resp.content_type);
 
     if (res != CURLE_OK) {
-        result->error_message = strdup_safe(curl_easy_strerror(res));
+        result->error_message = format_error_with_path(stream->path, curl_easy_strerror(res));
         result->error_code = DS_ERR_NETWORK;
         return DS_ERR_NETWORK;
     }
 
     ds_error_t err = http_status_to_error((int)http_code, result->stream_closed);
+    /* Set error message with path context for HTTP errors */
+    if (err != DS_OK) {
+        const char *base_msg = (err == DS_ERR_NOT_FOUND) ? "Stream not found" : ds_error_string(err);
+        result->error_message = format_error_with_path(stream->path, base_msg);
+    }
     result->error_code = err;
     return err;
 }
@@ -633,12 +807,17 @@ ds_error_t ds_stream_head(ds_stream_t *stream, const char **headers, ds_result_t
     }
 
     if (res != CURLE_OK) {
-        result->error_message = strdup_safe(curl_easy_strerror(res));
+        result->error_message = format_error_with_path(stream->path, curl_easy_strerror(res));
         result->error_code = DS_ERR_NETWORK;
         return DS_ERR_NETWORK;
     }
 
     ds_error_t err = http_status_to_error((int)http_code, result->stream_closed);
+    /* Set error message with path context for HTTP errors */
+    if (err != DS_OK) {
+        const char *base_msg = (err == DS_ERR_NOT_FOUND) ? "Stream not found" : ds_error_string(err);
+        result->error_message = format_error_with_path(stream->path, base_msg);
+    }
     result->error_code = err;
     return err;
 }
@@ -682,7 +861,7 @@ ds_error_t ds_stream_delete(ds_stream_t *stream, const char **headers, ds_result
     free(resp.content_type);
 
     if (res != CURLE_OK) {
-        result->error_message = strdup_safe(curl_easy_strerror(res));
+        result->error_message = format_error_with_path(stream->path, curl_easy_strerror(res));
         result->error_code = DS_ERR_NETWORK;
         return DS_ERR_NETWORK;
     }
@@ -722,13 +901,25 @@ ds_iterator_t *ds_stream_read(ds_stream_t *stream, const ds_read_options_t *opti
     buffer_init(&iter->sse_buffer);
     iter->last_status = 200;
 
+    /* For SSE live mode, allow limited retries when connection closes.
+     * This allows receiving new data after initial catchup but prevents
+     * infinite loops in tests. */
+    iter->sse_retry_count = 0;
+    iter->sse_max_retries = (iter->live == DS_LIVE_SSE) ? 3 : 0;
+
     return iter;
+}
+
+const char *ds_iterator_error_message(const ds_iterator_t *iter) {
+    if (!iter) return NULL;
+    return iter->last_error_message;
 }
 
 void ds_iterator_free(ds_iterator_t *iter) {
     if (!iter) return;
     free(iter->offset);
     free(iter->cursor);
+    free(iter->last_error_message);
     if (iter->headers) {
         for (char **h = iter->headers; *h; h++) {
             free(*h);
@@ -789,7 +980,7 @@ static size_t sse_header_callback(char *buffer, size_t size, size_t nitems, void
     if (name_len == 12 && strncasecmp(buffer, "content-type", 12) == 0) {
         free(data->content_type);
         data->content_type = strndup(value, value_len);
-    } else if (name_len == 23 && strncasecmp(buffer, "stream-sse-data-encoding", 23) == 0) {
+    } else if (name_len == 24 && strncasecmp(buffer, "stream-sse-data-encoding", 24) == 0) {
         if (value_len == 6 && strncasecmp(value, "base64", 6) == 0) {
             data->is_base64 = true;
             data->iter->sse_is_base64 = true;
@@ -1033,6 +1224,7 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
         return DS_ERR_DONE;
     }
 
+sse_retry:
     /* Check for queued SSE chunks */
     if (iter->queued_pos < iter->queued_count) {
         ds_chunk_t *queued = &iter->queued_chunks[iter->queued_pos++];
@@ -1045,6 +1237,9 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
 
         /* Don't free the queued chunk data - it's been moved to the output */
         queued->data = NULL;
+
+        /* Reset retry count when we get data */
+        iter->sse_retry_count = 0;
 
         return DS_OK;
     }
@@ -1134,6 +1329,21 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
         buffer_free(&resp.body);
         ds_result_cleanup(&http_result);
         iter->up_to_date = true;
+
+        /* For SSE mode, a timeout just means no new data arrived.
+         * If the stream isn't closed, we can retry to continue waiting. */
+        if (iter->live == DS_LIVE_SSE && !iter->done && !iter->stream_closed) {
+            /* Check if we got any SSE chunks while waiting */
+            if (iter->queued_pos < iter->queued_count) {
+                goto sse_retry;
+            }
+            /* No data - retry if we haven't exceeded max retries */
+            if (iter->sse_retry_count < iter->sse_max_retries) {
+                iter->sse_retry_count++;
+                goto sse_retry;
+            }
+        }
+
         return DS_ERR_TIMEOUT;
     }
 
@@ -1152,6 +1362,8 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
     if (http_code == 404) {
         buffer_free(&resp.body);
         ds_result_cleanup(&http_result);
+        free(iter->last_error_message);
+        iter->last_error_message = format_error_with_path(iter->stream->path, "Stream not found");
         return DS_ERR_NOT_FOUND;
     }
 
@@ -1176,6 +1388,8 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
             iter->chunk_count++;
             queued->data = NULL;
             ds_result_cleanup(&http_result);
+            /* Reset retry count when we get data */
+            iter->sse_retry_count = 0;
             return DS_OK;
         }
 
@@ -1184,7 +1398,18 @@ ds_error_t ds_iterator_next(ds_iterator_t *iter, ds_chunk_t *chunk) {
         if (iter->done || iter->stream_closed) {
             return DS_ERR_DONE;
         }
-        return DS_ERR_DONE;
+
+        /* SSE mode: connection closed but stream not closed.
+         * In live mode, reconnect to receive new data.
+         * The request will use the updated offset/cursor from control events. */
+        if (iter->up_to_date && iter->sse_retry_count < iter->sse_max_retries) {
+            /* We caught up to the end - retry to wait for new data */
+            iter->sse_retry_count++;
+            goto sse_retry;
+        }
+
+        /* Not up to date or exceeded retries - return timeout */
+        return DS_ERR_TIMEOUT;
     }
 
     /* Non-SSE mode */
@@ -1305,6 +1530,14 @@ ds_error_t ds_producer_append(ds_producer_t *producer, const char *data, size_t 
     free(norm_ct);
 
     if (is_json) {
+        /* Validate JSON before appending */
+        if (data_len > 0 && !validate_json(data, data_len)) {
+            producer->last_error = DS_ERR_PARSE_ERROR;
+            free(producer->last_error_message);
+            producer->last_error_message = strdup_safe("Invalid JSON");
+            return DS_ERR_PARSE_ERROR;
+        }
+
         /* For JSON, wrap in array if batching */
         if (producer->batch.size == 0) {
             buffer_append(&producer->batch, "[", 1);
@@ -1322,16 +1555,13 @@ ds_error_t ds_producer_append(ds_producer_t *producer, const char *data, size_t 
     return DS_OK;
 }
 
-static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) {
-    if (producer->batch.size == 0) return DS_OK;
-
-    /* Finalize JSON array */
-    char *norm_ct = normalize_content_type(producer->content_type);
-    bool is_json = norm_ct && strcmp(norm_ct, "application/json") == 0;
-    free(norm_ct);
-
-    if (is_json) {
-        buffer_append(&producer->batch, "]", 1);
+static ds_error_t producer_send_batch_internal(ds_producer_t *producer, const char *data,
+                                                size_t data_len, long timeout_ms, int retry_count) {
+    if (retry_count > 3) {
+        producer->last_error = DS_ERR_STALE_EPOCH;
+        free(producer->last_error_message);
+        producer->last_error_message = strdup_safe("autoClaim retry limit exceeded");
+        return DS_ERR_STALE_EPOCH;
     }
 
     CURL *curl = curl_easy_init();
@@ -1365,8 +1595,8 @@ static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) 
     curl_easy_setopt(curl, CURLOPT_URL, producer->url);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, producer->batch.data);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)producer->batch.size);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)data_len);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body_buf);
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
@@ -1382,11 +1612,6 @@ static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) 
     curl_easy_cleanup(curl);
     buffer_free(&body_buf);
     free(resp.content_type);
-
-    /* Clear batch */
-    buffer_free(&producer->batch);
-    buffer_init(&producer->batch);
-    producer->batch_item_count = 0;
 
     if (res != CURLE_OK) {
         producer->last_error = DS_ERR_NETWORK;
@@ -1407,13 +1632,12 @@ static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) 
     } else if (http_code == 403) {
         /* Stale epoch */
         if (producer->auto_claim && result.current_epoch >= 0) {
-            /* Try to claim with new epoch */
+            /* Claim with new epoch and retry the batch */
             producer->epoch = result.current_epoch + 1;
             producer->seq = 0;
             ds_result_cleanup(&result);
-            /* Retry would need re-queuing the data - for now return error */
-            producer->last_error = DS_ERR_STALE_EPOCH;
-            return DS_ERR_STALE_EPOCH;
+            /* Retry with the same data */
+            return producer_send_batch_internal(producer, data, data_len, timeout_ms, retry_count + 1);
         }
         err = DS_ERR_STALE_EPOCH;
     } else if (http_code == 409) {
@@ -1432,6 +1656,37 @@ static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) 
 
     producer->last_error = err;
     ds_result_cleanup(&result);
+
+    return err;
+}
+
+static ds_error_t producer_send_batch(ds_producer_t *producer, long timeout_ms) {
+    if (producer->batch.size == 0) return DS_OK;
+
+    /* Finalize JSON array */
+    char *norm_ct = normalize_content_type(producer->content_type);
+    bool is_json = norm_ct && strcmp(norm_ct, "application/json") == 0;
+    free(norm_ct);
+
+    if (is_json) {
+        buffer_append(&producer->batch, "]", 1);
+    }
+
+    /* Save batch data for potential retry */
+    char *batch_data = producer->batch.data;
+    size_t batch_size = producer->batch.size;
+
+    /* Detach batch from producer (don't free yet) */
+    producer->batch.data = NULL;
+    producer->batch.size = 0;
+    producer->batch.capacity = 0;
+    producer->batch_item_count = 0;
+
+    /* Send the batch (may retry on autoClaim) */
+    ds_error_t err = producer_send_batch_internal(producer, batch_data, batch_size, timeout_ms, 0);
+
+    /* Free the batch data */
+    free(batch_data);
 
     return err;
 }
