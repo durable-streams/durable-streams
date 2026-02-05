@@ -2,7 +2,7 @@
 
 ## Summary
 
-Serverless functions and AI agents need to react to events without holding persistent connections, but Durable Streams currently only supports pull-based consumption. This RFC adds webhook-based push delivery: register a subscription with a glob pattern and webhook URL, and the server will POST notifications when matching streams receive events. Each matched stream spawns a consumer instance that can dynamically subscribe to additional streams (e.g., an agent subscribing to its task queue plus shared filesystem and tool outputs), with the server tracking cursor positions across all subscribed streams as a unit. Consumers read events using the standard Durable Streams client, use a scoped callback URL to acknowledge progress and manage subscriptions, and signal completion when done—or get re-woken when new events arrive. The implementation adds subscription CRUD endpoints, consumer instance lifecycle management, exponential backoff retry for failed webhooks, and OpenTelemetry integration for debugging.
+Serverless functions and AI agents need to react to events without holding persistent connections, but Durable Streams currently only supports pull-based consumption. This RFC adds webhook-based push delivery: register a subscription with a glob pattern and webhook URL, and the server will POST notifications when matching streams receive events. Each matched stream spawns a consumer instance that can dynamically subscribe to additional streams (e.g., an agent subscribing to its task queue plus shared filesystem and tool outputs), with the server tracking offsets across all subscribed streams as a unit. Consumers read events using the standard Durable Streams client, use a scoped callback URL to acknowledge progress and manage subscriptions, and signal completion when done—or get re-woken when new events arrive. The implementation adds subscription CRUD endpoints, consumer instance lifecycle management, exponential backoff retry for failed webhooks, and OpenTelemetry integration for debugging.
 
 ## Background
 
@@ -26,7 +26,7 @@ Serverless functions cannot efficiently consume Durable Streams today. The curre
 This gap blocks a key use case: **multi-agent systems** where each agent instance needs to:
 - React to events on its primary task stream
 - Dynamically subscribe to additional streams (shared filesystem, tool outputs, coordination channels)
-- Maintain cursor positions across all subscribed streams as a unit
+- Maintain offsets across all subscribed streams as a unit
 - Resume exactly where it left off after being idle
 
 Without server-side push, building this requires external orchestration (separate queue systems, workflow engines) that duplicates what Durable Streams already provides—durable, resumable, ordered event delivery.
@@ -44,8 +44,8 @@ Without server-side push, building this requires external orchestration (separat
 Add a webhook-based push delivery system to Durable Streams. The core concepts:
 
 - **Subscription**: A registration that maps a glob pattern to a webhook URL. When streams matching the pattern receive events, the server notifies the webhook.
-- **Consumer Instance**: Spawned when a stream matches a subscription's pattern. Each instance has its own identity, cursor positions, and can dynamically subscribe to additional streams.
-- **Callback**: A short-lived, scoped URL that consumer instances use to acknowledge progress, subscribe to additional streams, and signal completion.
+- **Consumer Instance**: Spawned when a stream matches a subscription's pattern. Each instance has its own identity, offsets, and can dynamically subscribe to additional streams.
+- **Callback**: A scoped URL that consumer instances use to acknowledge progress, subscribe to additional streams, and signal completion.
 
 ### Subscription Model
 
@@ -54,8 +54,11 @@ A subscription is registered via HTTP API and consists of:
 - `pattern`: Glob pattern matching stream paths (e.g., `/agents/*`)
 - `webhook`: URL to POST notifications to
 - `description`: Optional human-readable description
+- `internal`: Optional boolean flag indicating this is an internal subscription (for secondary stream coordination)
 
 When a stream is created or receives events that match the pattern, the server spawns a consumer instance (if one doesn't exist) and wakes it.
+
+Subscriptions marked as `internal: true` may be routed differently by implementations (e.g., direct function calls instead of HTTP in single-server deployments), but the behavior is identical.
 
 **Glob patterns** support simple wildcards only:
 - `*` matches exactly one path segment
@@ -81,6 +84,7 @@ Stream matches subscription pattern
 │  state: WAKING                  │
 │  POST webhook with notification │
 │  (connection held open)         │
+│  30s timeout to receive callback│
 └───────────────┬─────────────────┘
                 │
         ┌───────┴───────┐
@@ -89,7 +93,7 @@ Stream matches subscription pattern
    (callback)    (webhook responds
                   { done: true })
         │               │
-        ▼               │
+        ▼               ▼
 ┌───────────────┐       │
 │  state: LIVE  │◄──┐   │
 │  processing   │   │   │
@@ -99,8 +103,8 @@ Stream matches subscription pattern
         │ activity  │   │
         └───────────┘   │
         │               │
-        │ timeout OR    │
-        │ { done: true }│
+        │ 30s timeout   │
+        │ OR { done }   │
         ▼               │
 ┌───────────────────────┴─────────┐
 │  state: IDLE                    │
@@ -108,13 +112,16 @@ Stream matches subscription pattern
 └─────────────────────────────────┘
 ```
 
-**Two paths from WAKING:**
-1. **WAKING → LIVE → IDLE** (normal flow): Consumer calls callback to signal liveness, processes events, eventually times out or signals done
-2. **WAKING → IDLE** (synchronous): Consumer handles everything in the webhook handler and responds with `{ done: true }`
+**State transitions:**
+
+1. **IDLE → WAKING**: Events arrive on any subscribed stream
+2. **WAKING → LIVE**: Consumer calls the callback (any callback request)
+3. **WAKING → IDLE**: Consumer responds with `{ done: true }` (synchronous processing), OR 30-second timeout with no callback
+4. **LIVE → IDLE**: Consumer sends `{ done: true }` in callback, OR 30-second timeout with no callback activity
+
+**WAKING timeout:** If the consumer neither calls the callback nor responds with `{ done: true }` within 30 seconds, the consumer transitions back to IDLE and will be re-woken on the next retry attempt.
 
 **Consumer instance identity** is `{handler_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity (paths contain `/`). Multiple subscriptions can match the same stream, each creating independent consumer instances.
-
-The transition from WAKING → LIVE happens when the consumer **calls the callback**, not when it responds to the webhook. This lets the serverless function hold the HTTP connection open (keeping the platform from killing it) while signaling liveness through the callback.
 
 ### Wake-up Notification
 
@@ -125,19 +132,19 @@ POST https://my-agent.workers.dev/handler
 Content-Type: application/json
 
 {
-  "consumer_id": "sub_a1b2c3:%2Fagents%2Ftask-123",
+  "consumer_id": "sub_a1b2c3d4:%2Fagents%2Ftask-123",
   "primary_stream": "/agents/task-123",
   "streams": [
     { "path": "/agents/task-123", "offset": "1002" },
     { "path": "/shared-filesystem/task-123", "offset": "500" }
   ],
   "triggered_by": ["/agents/task-123", "/shared-filesystem/task-123"],
-  "callback": "https://streams.example.com/callback?token=eyJ..."
+  "callback": "https://streams.example.com/callback/sub_a1b2c3d4/%2Fagents%2Ftask-123"
 }
 ```
 
 - `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
-- `triggered_by`: Array of stream paths that have pending events (multiple streams may have accumulated events while consumer was IDLE)
+- `triggered_by`: Array of stream paths that have pending events (informational—consumer should read from all streams based on their offsets, not just triggered ones)
 - `callback`: Scoped URL for acknowledgments and subscription changes
 
 The webhook can respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing).
@@ -154,12 +161,11 @@ This separation keeps the webhook system focused on coordination while leveragin
 
 ### Callback API
 
-The callback URL is scoped to the specific consumer instance and has a fixed TTL (default: 5 minutes). The token is a signed JWT containing the consumer_id and expiry timestamp—implementers can use any signing method appropriate for their deployment.
-
-Consumers use the callback to:
+The callback URL is scoped to the specific consumer instance and has a fixed TTL (default: 1 hour). The token is passed via the `Authorization` header to avoid logging exposure.
 
 ```http
 POST {callback}
+Authorization: Bearer eyJ...
 Content-Type: application/json
 
 {
@@ -175,7 +181,12 @@ Content-Type: application/json
 
 All fields are optional.
 
-**Response:**
+**Callback semantics:**
+- Callbacks are processed **serially** per consumer instance (no concurrent processing)
+- All operations are **idempotent**—safe to retry on timeout
+- Requests are **atomic**—entire request succeeds or fails together
+
+**Success response:**
 ```json
 {
   "ok": true,
@@ -188,26 +199,51 @@ All fields are optional.
 }
 ```
 
-- `token`: New callback token (always included; refreshed when near expiry)
-- `streams`: Updated list of all subscribed streams with current offsets (included when subscriptions change)
+- `token`: New callback token (always included; consumer should use this for subsequent requests)
+- `streams`: Current list of all subscribed streams with their offsets (always included)
 
-If the token has already expired, the server returns 4xx with a new token; the consumer should retry.
+**Error responses:**
+
+| Status | Code | Description |
+|--------|------|-------------|
+| 400 | `INVALID_REQUEST` | Malformed JSON, unknown fields |
+| 401 | `TOKEN_EXPIRED` | Callback token has expired (response includes new token) |
+| 401 | `TOKEN_INVALID` | Callback token is malformed or signature invalid |
+| 404 | `STREAM_NOT_FOUND` | Stream in `subscribe` does not exist |
+| 409 | `INVALID_OFFSET` | Ack offset is invalid (e.g., beyond stream tail) |
+| 410 | `CONSUMER_GONE` | Consumer instance no longer exists (subscription deleted) |
+
+Error response body:
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "TOKEN_EXPIRED",
+    "message": "Callback token has expired"
+  },
+  "token": "eyJ..."
+}
+```
+
+For `TOKEN_EXPIRED`, a new token is included in the error response—consumer should retry with the new token.
 
 **Subscribe behavior:**
 - New subscriptions start at offset `-1` (beginning of stream)
 - Consumer controls effective position through acks (can immediately ack to current tail to skip history)
-- Subscribe fails with error if the stream doesn't exist
+- Subscribe fails with `STREAM_NOT_FOUND` if the stream doesn't exist
 
 **Unsubscribe behavior:**
 - Consumer can unsubscribe from any stream including its primary
 - Unsubscribing from primary is valid—any remaining subscribed stream can still wake the consumer
 - Unsubscribing from all streams removes the consumer instance
 
+**Stream removal:** If a subscribed stream is deleted, it is silently removed from the consumer's subscription list. The next callback response will show the updated `streams` array without the deleted stream.
+
 ### Secondary Subscriptions (Internal Webhooks)
 
 When a consumer subscribes to streams beyond its primary, the coordination works via internal webhooks:
 
-1. Primary stream's server creates a subscription on the secondary stream
+1. Primary stream's server creates a subscription on the secondary stream (marked as `internal: true`)
 2. Secondary stream sends webhook notifications to the primary stream's server (not directly to the consumer)
 3. Primary stream decides whether to wake the consumer (if IDLE) or let the callback loop handle it (if LIVE)
 
@@ -216,7 +252,7 @@ This model:
 - Works naturally in distributed deployments where streams live on different servers
 - Keeps the primary stream as single source of truth for consumer state
 
-For single-server deployments, this is just internal routing. For distributed deployments, it's HTTP between servers.
+For single-server deployments, implementations may optimize internal subscriptions (e.g., direct function calls). For distributed deployments, it's HTTP between servers. The routing optimization is implementation-specific.
 
 ### Failure Handling
 
@@ -282,7 +318,7 @@ DELETE /subscriptions/{handler_id}
 → 204 No Content
 ```
 
-When a subscription is deleted, all its consumer instances are immediately removed.
+When a subscription is deleted, all its consumer instances are immediately removed. Any in-flight callback requests will receive `410 CONSUMER_GONE`.
 
 Subscriptions are immutable—to change the webhook URL, delete and recreate.
 
@@ -312,9 +348,14 @@ export default {
     const startTime = Date.now()
 
     // Subscribe to additional streams and get updated list
-    const subRes = await fetch(callback, {
+    // First callback transitions WAKING → LIVE
+    let token = extractInitialToken(callback)  // implementation-specific
+    let subRes = await fetch(callback, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
       body: JSON.stringify({
         subscribe: [
           `/shared-filesystem/${consumer_id}`,
@@ -322,7 +363,8 @@ export default {
         ]
       })
     })
-    const { streams: allStreams } = await subRes.json()
+    let { streams: allStreams, token: newToken } = await subRes.json()
+    token = newToken
 
     let lastMessageTime = Date.now()
     const pendingAcks: Promise<Response>[] = []
@@ -346,10 +388,16 @@ export default {
           // Track ack promises so we can flush before exit
           pendingAcks.push(fetch(callback, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
             body: JSON.stringify({
               acks: [{ path: s.path, offset: batch.offset }]
             })
+          }).then(res => res.json()).then(data => {
+            token = data.token  // keep token fresh
+            return data
           }))
         })
       })
@@ -382,8 +430,32 @@ function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function extractInitialToken(callbackUrl: string): string {
+  // Implementation-specific: extract initial token from callback URL or request
+  return ''
+}
+
 declare function processEvent(path: string, item: unknown): Promise<void>
 ```
+
+### Security Considerations
+
+While authentication is handled at the deployment layer, implementations should consider:
+
+**Webhook URL validation (SSRF prevention):**
+- Require HTTPS for webhook URLs (except localhost in development)
+- Block private IP ranges (RFC 1918, link-local, loopback)
+- Block cloud metadata endpoints (169.254.169.254)
+- Consider allowlisting webhook domains
+
+**Callback token security:**
+- Tokens are passed via `Authorization` header to avoid logging exposure
+- Tokens should be signed JWTs with consumer_id and expiry
+- Implementations should validate token signatures on every callback
+
+**Webhook ownership verification:**
+- Consider challenge-response verification during subscription creation
+- Consider signing webhook payloads so receivers can verify authenticity
 
 ### Implementation Scope
 
@@ -401,7 +473,7 @@ declare function processEvent(path: string, item: unknown): Promise<void>
 - Consumer instance listing/inspection APIs
 - Complex glob patterns (`**`, character classes)
 - Authentication (handled at deployment layer)
-- Configurable callback TTL (fixed at 5 minutes for v1)
+- Configurable callback TTL (fixed at 1 hour for v1)
 
 ## Definition of Success
 
@@ -410,7 +482,7 @@ This feature is successful when a multi-agent system running on serverless funct
 **Functional requirements:**
 - Agents wake reliably when events arrive on any subscribed stream
 - Dynamic subscribe/unsubscribe works correctly mid-session
-- Cursor positions are preserved across wake cycles
+- Offsets are preserved across wake cycles
 - Agents can stay alive processing live events, then cleanly exit
 - Failed webhooks retry indefinitely and recover automatically after deploys/fixes
 
