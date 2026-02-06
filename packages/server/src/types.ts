@@ -177,6 +177,14 @@ export interface TestServerOptions {
    * Default: October 9, 2024 00:00:00 UTC.
    */
   cursorEpoch?: Date
+
+  /**
+   * Enable webhook subscriptions.
+   * When true, the server handles subscription CRUD, consumer lifecycle,
+   * and callback API endpoints.
+   * Default: false.
+   */
+  webhooks?: boolean
 }
 
 /**

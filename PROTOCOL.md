@@ -32,13 +32,24 @@ Copyright (c) 2025 ElectricSQL
    - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
    - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
    - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
-6. [Offsets](#6-offsets)
-7. [Content Types](#7-content-types)
-8. [Caching and Collapsing](#8-caching-and-collapsing)
-9. [Extensibility](#9-extensibility)
-10. [Security Considerations](#10-security-considerations)
-11. [IANA Considerations](#11-iana-considerations)
-12. [References](#12-references)
+6. [Webhook Subscriptions](#6-webhook-subscriptions)
+   - 6.1. [Subscription Model](#61-subscription-model)
+   - 6.2. [Consumer Instance Lifecycle](#62-consumer-instance-lifecycle)
+   - 6.3. [Wake-up Notification](#63-wake-up-notification)
+   - 6.4. [Webhook Signature Verification](#64-webhook-signature-verification)
+   - 6.5. [Callback API](#65-callback-api)
+   - 6.6. [Dynamic Subscribe/Unsubscribe](#66-dynamic-subscribeunsubscribe)
+   - 6.7. [Secondary Subscriptions](#67-secondary-subscriptions)
+   - 6.8. [Failure Handling](#68-failure-handling)
+   - 6.9. [Subscription HTTP API](#69-subscription-http-api)
+   - 6.10. [Garbage Collection](#610-garbage-collection)
+7. [Offsets](#7-offsets)
+8. [Content Types](#8-content-types)
+9. [Caching and Collapsing](#9-caching-and-collapsing)
+10. [Extensibility](#10-extensibility)
+11. [Security Considerations](#11-security-considerations)
+12. [IANA Considerations](#12-iana-considerations)
+13. [References](#13-references)
 
 ---
 
@@ -465,7 +476,7 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
-- `Cache-Control`: See Section 8
+- `Cache-Control`: See Section 9
 
 #### Caching Guidance
 
@@ -556,13 +567,13 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 #### Response Headers (on 200)
 
 - Same as catch-up reads (Section 5.6), plus:
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 9.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 8.1.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 9.1.
 - `Stream-Closed: true`: **MUST** be present when the stream is closed (see Section 5.6 for semantics). A `204 No Content` with `Stream-Closed: true` indicates EOF.
 
 **EOF Signaling Across Modes:**
@@ -639,7 +650,7 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Base64 encoding affects only `event: data` payloads. `event: control` events remain JSON as specified and are not encoded.
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset`. See Section 8.1.
+  - **MUST** include `streamNextOffset`. See Section 9.1.
   - **MUST** include `streamCursor` when the stream is open. Servers **MAY** omit `streamCursor` when `streamClosed` is true (cursor is unnecessary when no reconnection is expected).
   - **MUST** include `upToDate: true` when the client is caught up with all available data. Note: `streamClosed: true` implies `upToDate: true` (a closed stream at the final offset is by definition up-to-date), so `upToDate` **MAY** be omitted when `streamClosed` is true.
   - **MUST** include `streamClosed: true` when the stream is closed and all data up to the final offset has been sent.
@@ -704,7 +715,341 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 - Client **MUST** reconnect using the last received `streamNextOffset` value from the control event
 - Client **MUST NOT** reconnect if the last control event included `streamClosed: true`
 
-## 6. Offsets
+## 6. Webhook Subscriptions
+
+Webhook subscriptions enable push-based delivery for serverless functions and AI agents that cannot maintain persistent connections. A subscription maps a glob pattern to a webhook URL; when matching streams receive events, the server POSTs notifications to the webhook. Each matched stream spawns a consumer instance that tracks offsets, supports dynamic subscription to additional streams, and uses a callback API for acknowledgments and lifecycle management.
+
+### 6.1. Subscription Model
+
+A subscription consists of:
+
+- **`subscription_id`**: Client-provided identifier for this subscription
+- **`pattern`**: Glob pattern matching stream paths (e.g., `/agents/*`)
+- **`webhook`**: URL to POST notifications to
+- **`webhook_secret`**: Server-generated secret for signature verification (returned on creation only, not stored retrievably)
+- **`description`**: Optional human-readable description
+
+Subscriptions are **immutable** — to change the webhook URL or pattern, delete and recreate the subscription.
+
+When a stream is created or receives events that match the pattern, the server spawns a consumer instance (if one doesn't exist) and wakes it.
+
+**Glob patterns** support wildcards:
+
+- `*` matches exactly one path segment
+- `**` matches zero or more path segments (recursive)
+- `/agents/*` matches `/agents/task-123` but not `/agents/foo/bar`
+- `/agents/**` matches `/agents/task-123` and `/agents/foo/bar/baz`
+- `/agents/*/inbox` matches `/agents/worker-1/inbox`
+
+**Existing streams:** When a subscription is created and matching streams already exist, consumer instances are created in IDLE state. They wake only when new events arrive, not immediately.
+
+### 6.2. Consumer Instance Lifecycle
+
+A consumer instance is spawned when a stream matches a subscription's pattern. Each instance has its own identity, epoch, offset tracking, and can dynamically subscribe to additional streams.
+
+**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumer instances.
+
+**States:**
+
+- **IDLE**: No pending work; waiting for events
+- **WAKING**: Webhook notification sent; waiting for callback claim
+- **LIVE**: Actively processing; callback claimed
+
+**Pending work** exists when any subscribed stream has unprocessed events:
+
+```
+pending_work = any(tail[path] > acked[path] for path in subscribed_streams)
+```
+
+Where `acked[path]` is the last acknowledged offset (inclusive — this event was processed), `tail[path]` is the current tail offset of the stream, and offset `-1` means "before any events" (nothing acked yet).
+
+**State transitions:**
+
+1. **IDLE → WAKING**: `pending_work` becomes true; epoch is incremented, new `wake_id` generated
+2. **WAKING → LIVE**: First callback claims the `wake_id` (subsequent callbacks with same `wake_id` receive `409 ALREADY_CLAIMED`)
+3. **WAKING → IDLE**: Consumer responds to webhook with `{ "done": true }` AND `pending_work` is false
+4. **LIVE → IDLE**: Consumer sends `{ "done": true }` in callback AND `pending_work` is false, OR 45-second liveness timeout with no callback activity
+5. **Re-wake**: If `{ "done": true }` is received but `pending_work` is still true, immediately trigger a new wake (increment epoch, new `wake_id`)
+
+**Epoch** is a monotonically increasing counter that increments on each IDLE → WAKING transition. Callbacks with a stale epoch **MUST** be rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in Section 5.2.1.
+
+**`wake_id`** is a unique identifier for each wake attempt. The first callback claiming a `wake_id` wins; subsequent callbacks with the same `wake_id` **MUST** receive `409 ALREADY_CLAIMED`. This handles duplicate webhook deliveries from retries.
+
+**Re-wake until claimed:** The server **MUST** continue retrying the webhook (with exponential backoff) until a callback claims the `wake_id`. A successful HTTP 2xx response to the webhook is not sufficient — the consumer **MUST** call the callback to claim the wake.
+
+**Liveness timeout (45 seconds):** Any callback request (including empty `{}`) resets the timeout. If no callback activity occurs within 45 seconds, the consumer transitions to IDLE. Consumers doing slow processing **SHOULD** send periodic callbacks to stay alive.
+
+**Wake-up batching:** If multiple events arrive on subscribed streams while the consumer is IDLE, they are batched into a single wake-up. The server **MUST NOT** wake the consumer multiple times — one wake-up per IDLE → WAKING transition.
+
+**No re-wake while LIVE:** If the consumer is already LIVE, new events on subscribed streams **MUST NOT** trigger additional wake-ups.
+
+### 6.3. Wake-up Notification
+
+When waking a consumer, the server **MUST** POST to the webhook URL:
+
+```http
+POST {webhook_url}
+Content-Type: application/json
+Webhook-Signature: t=<timestamp>,sha256=<signature>
+
+{
+  "consumer_id": "{subscription_id}:{url_encoded_stream_path}",
+  "epoch": 7,
+  "wake_id": "w_f8a3b2c1",
+  "primary_stream": "/agents/task-123",
+  "streams": [
+    { "path": "/agents/task-123", "offset": "1002" },
+    { "path": "/shared-filesystem/task-123", "offset": "500" }
+  ],
+  "triggered_by": ["/agents/task-123"],
+  "callback": "{callback_base_url}/callback/{subscription_id}/{url_encoded_stream_path}",
+  "token": "eyJhbGciOiJIUzI1NiIs..."
+}
+```
+
+**Headers:**
+
+- `Webhook-Signature`: HMAC-SHA256 signature for verification (see Section 6.4)
+
+**Payload fields:**
+
+- `consumer_id`: Unique identifier for this consumer instance
+- `epoch`: Current epoch; consumers **MUST** include this in callback requests for fencing
+- `wake_id`: Unique identifier for this wake attempt; consumers **MUST** include this in their first callback to claim the wake
+- `primary_stream`: The stream path that originally matched the subscription pattern
+- `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
+- `triggered_by`: Array of stream paths that have pending events (informational)
+- `callback`: Scoped URL for acknowledgments and subscription changes
+- `token`: Initial callback token; use in `Authorization: Bearer` header for first callback
+
+The webhook **MAY** respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing). This counts as claiming the wake — the server **MUST NOT** redeliver.
+
+### 6.4. Webhook Signature Verification
+
+All webhook notifications **MUST** be signed. Consumers **SHOULD** verify signatures before processing.
+
+**Signature format:**
+
+```
+Webhook-Signature: t=<timestamp>,sha256=<signature>
+```
+
+- `t`: Unix timestamp (seconds) when the signature was generated
+- `sha256`: Hex-encoded HMAC-SHA256 of `<timestamp>.<raw_body>` using the subscription's `webhook_secret`
+
+**Verification steps:**
+
+1. Extract timestamp and signature from the `Webhook-Signature` header
+2. Check timestamp is within acceptable window (±5 minutes) to prevent replay attacks
+3. Compute expected signature: `HMAC-SHA256(webhook_secret, "<timestamp>.<raw_body>")`
+4. Compare signatures using constant-time comparison
+
+Implementations **MUST** use the raw request body bytes for signature verification. Parsing and re-serializing JSON can change whitespace or key order and break the signature.
+
+### 6.5. Callback API
+
+The callback URL is scoped to the specific consumer instance. Consumers authenticate via the `Authorization` header with the token from the webhook payload or the most recent callback response.
+
+```http
+POST {callback_url}
+Authorization: Bearer {token}
+Content-Type: application/json
+
+{
+  "epoch": 7,
+  "wake_id": "w_f8a3b2c1",
+  "acks": [
+    { "path": "/agents/task-123", "offset": "1005" }
+  ],
+  "subscribe": ["/tools/task-123"],
+  "unsubscribe": ["/some-old-stream"],
+  "done": true
+}
+```
+
+**Required fields:**
+
+- `epoch`: **MUST** match current consumer epoch (fencing)
+- `wake_id`: **MUST** be included in the first callback to claim the wake; **OPTIONAL** in subsequent callbacks
+
+**Optional fields:**
+
+- `acks`: Array of `{ path, offset }` pairs acknowledging processed events
+- `subscribe`: Array of stream paths to subscribe to
+- `unsubscribe`: Array of stream paths to unsubscribe from
+- `done`: Boolean indicating the consumer is finished processing
+
+**Callback semantics:**
+
+- Callbacks are processed **serially** per consumer instance
+- All operations are **idempotent** — safe to retry on timeout
+- Requests are **atomic** — entire request succeeds or fails together
+- Any callback (even empty `{}`) resets the 45-second liveness timeout
+
+**Success response:**
+
+```json
+{
+  "ok": true,
+  "token": "eyJ...",
+  "streams": [
+    { "path": "/agents/task-123", "offset": "1005" },
+    { "path": "/tools/task-123", "offset": "42" }
+  ]
+}
+```
+
+- `token`: New callback token (always included; consumer **MUST** use this for subsequent requests)
+- `streams`: Current list of all subscribed streams with their offsets (always included)
+
+**Offset semantics:** Offsets are "last processed inclusive" — the offset value represents the last event that was successfully processed. Offset `"-1"` means no events have been processed yet.
+
+**Error responses:**
+
+| Status | Code              | Description                                              |
+| ------ | ----------------- | -------------------------------------------------------- |
+| 400    | `INVALID_REQUEST` | Malformed JSON or unknown fields                         |
+| 401    | `TOKEN_EXPIRED`   | Callback token has expired (response includes new token) |
+| 401    | `TOKEN_INVALID`   | Callback token is malformed or signature invalid         |
+| 409    | `ALREADY_CLAIMED` | This `wake_id` was already claimed by another callback   |
+| 409    | `INVALID_OFFSET`  | Ack offset is invalid (e.g., beyond stream tail)         |
+| 409    | `STALE_EPOCH`     | Callback epoch is older than current consumer epoch      |
+| 410    | `CONSUMER_GONE`   | Consumer instance no longer exists                       |
+
+Error response body:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "STALE_EPOCH",
+    "message": "Consumer epoch 5 is stale; current epoch is 7"
+  },
+  "token": "eyJ..."
+}
+```
+
+For `TOKEN_EXPIRED`, a new token is included in the error response — the consumer **SHOULD** retry with the new token. For `STALE_EPOCH` and `ALREADY_CLAIMED`, the consumer **SHOULD** stop processing.
+
+**Token rotation:** Every callback response (success or error) **MUST** include a new `token`. Consumers **MUST** use the most recently received token for subsequent requests.
+
+### 6.6. Dynamic Subscribe/Unsubscribe
+
+Consumers **MAY** subscribe to additional streams or unsubscribe from existing streams via the callback API.
+
+**Subscribe behavior:**
+
+- New subscriptions start at current tail (new events only)
+- Subscribing to a non-existent stream is allowed — the consumer will be woken when the stream is created and receives its first event
+- No validation of stream paths
+
+**Unsubscribe behavior:**
+
+- Consumers **MAY** unsubscribe from any stream including the primary stream
+- Unsubscribing from all streams removes the consumer instance
+- If a subscribed stream is deleted, it is silently removed from the consumer's subscription list
+
+### 6.7. Secondary Subscriptions
+
+When a consumer subscribes to streams beyond its primary, the coordination works via internal webhooks:
+
+1. The primary stream's server creates a subscription on the secondary stream (marked as internal)
+2. The secondary stream sends webhook notifications to the primary stream's server
+3. The primary stream decides whether to wake the consumer (if IDLE) or let the callback loop handle it (if LIVE)
+
+For single-server deployments, implementations **MAY** optimize internal subscriptions with direct function calls. For distributed deployments, servers **MUST** use the same HMAC signature verification for internal webhooks.
+
+### 6.8. Failure Handling
+
+**Webhook request timeout:** Servers **MUST** wait up to 30 seconds for a response from the webhook endpoint. If the endpoint does not respond within this window, the request is considered failed.
+
+**Webhook delivery retries** use exponential backoff:
+
+- Initial retry with exponential backoff up to 30 seconds between attempts
+- Then retry every 60 seconds with jitter
+- Retries continue until claimed, but consumer instances are garbage collected after 3 days of consecutive webhook failures (see Section 6.10)
+
+**Delivery guarantee** is at-least-once. Consumers **MUST** handle duplicate events idempotently.
+
+### 6.9. Subscription HTTP API
+
+Subscriptions use the glob pattern as the URL path, with query parameters for CRUD operations.
+
+**Create subscription:**
+
+```http
+PUT /{pattern}?subscription={id}
+Content-Type: application/json
+
+{
+  "webhook": "https://my-agent.workers.dev/handler",
+  "description": "Agent task processor"
+}
+
+→ 201 Created
+{
+  "subscription_id": "{id}",
+  "pattern": "/{pattern}",
+  "webhook": "https://my-agent.workers.dev/handler",
+  "webhook_secret": "whsec_abc123def456...",
+  "description": "Agent task processor"
+}
+```
+
+The `webhook_secret` is only returned on creation. It cannot be retrieved later.
+
+Creating a subscription with an existing ID and identical configuration **MUST** return `200 OK` (idempotent). Creating with an existing ID but different configuration **MUST** return `409 Conflict`.
+
+**URL encoding:** Servers **MUST** treat `*` and `%2A` as equivalent in URL paths.
+
+**List subscriptions under a pattern:**
+
+```http
+GET /{pattern}?subscriptions
+→ 200 OK
+{ "subscriptions": [...] }
+```
+
+**List all subscriptions:**
+
+```http
+GET /**?subscriptions
+→ 200 OK
+{ "subscriptions": [...] }
+```
+
+**Get subscription by ID:**
+
+```http
+GET /**?subscription={id}
+→ 200 OK
+{ "subscription_id": "{id}", "pattern": "/{pattern}", ... }
+```
+
+The response **MUST NOT** include `webhook_secret`.
+
+**Delete subscription:**
+
+```http
+DELETE /{pattern}?subscription={id}
+→ 204 No Content
+```
+
+When a subscription is deleted, all its consumer instances **MUST** be immediately removed. Any in-flight callback requests **MUST** receive `410 CONSUMER_GONE`.
+
+### 6.10. Garbage Collection
+
+Consumer instances **MUST** be removed when:
+
+- The primary stream is deleted
+- Webhook errors continuously for 3 days
+- The consumer unsubscribes from all streams (including primary)
+
+When a consumer instance is removed, all its internal webhook subscriptions to secondary streams **MUST** also be cleaned up.
+
+When a subscription is deleted, all its consumer instances **MUST** be removed immediately (cascade delete).
+
+## 7. Offsets
 
 Offsets are opaque tokens that identify positions within a stream. They have the following properties:
 
@@ -724,7 +1069,7 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
   **Catch-up mode** (`offset=now` without `live` parameter):
   - Servers **MUST** return `200 OK` with an empty response body appropriate to the stream's content type:
-    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 7.1
+    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 8.1
     - For all other content types: the body **MUST** be 0 bytes (empty)
   - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
   - Servers **MUST** include `Stream-Up-To-Date: true` header
@@ -760,7 +1105,7 @@ The opaque nature of offsets enables important server-side optimizations. For ex
 
 Clients **MUST** use the `Stream-Next-Offset` value returned in responses for subsequent read requests. They **SHOULD** persist offsets locally (e.g., in browser local storage or a database) to enable resumability after disconnection or restart.
 
-## 7. Content Types
+## 8. Content Types
 
 The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
 
@@ -776,15 +1121,15 @@ Clients **MAY** use any content type for their streams, including:
 - `text/plain` for plain text
 - Custom types for application-specific formats
 
-### 7.1. JSON Mode
+### 8.1. JSON Mode
 
 Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
 
-#### Message Boundaries
+#### 8.1.1. Message Boundaries
 
 For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
 
-#### Array Flattening for Batch Operations
+#### 8.1.2. Array Flattening for Batch Operations
 
 When a POST request body contains a JSON array, servers **MUST** flatten exactly one level of the array, treating each element as a separate message. This enables clients to batch multiple messages in a single HTTP request while preserving individual message semantics.
 
@@ -797,17 +1142,17 @@ When a POST request body contains a JSON array, servers **MUST** flatten exactly
 
 **Note:** Client libraries **MAY** automatically wrap individual values in arrays for batching. For example, a client calling `append({"x": 1})` might send POST body `[{"x": 1}]` to the server, which flattens it to store one message: `{"x": 1}`.
 
-#### Empty Arrays
+#### 8.1.3. Empty Arrays
 
 Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays in append operations represent no-op operations with no semantic meaning and likely indicate a client bug.
 
 PUT requests with an empty array body (`[]`) are valid and create an empty stream. The empty array simply means no initial messages are being written.
 
-#### JSON Validation
+#### 8.1.4. JSON Validation
 
 Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
 
-#### Response Format
+#### 8.1.5. Response Format
 
 GET responses for `application/json` streams **MUST** return `Content-Type: application/json` with a body containing a JSON array of all messages in the requested range:
 
@@ -820,9 +1165,9 @@ Content-Type: application/json
 
 If no messages exist in the range, servers **MUST** return an empty JSON array `[]`.
 
-## 8. Caching and Collapsing
+## 9. Caching and Collapsing
 
-### 8.1. Catch-up and Long-poll Reads
+### 9.1. Catch-up and Long-poll Reads
 
 For **shared, non-user-specific streams**, servers **SHOULD** return:
 
@@ -906,15 +1251,15 @@ GET /stream?offset=123&live=long-poll&cursor=1000
 
 CDNs and proxies **SHOULD NOT** cache `204 No Content` responses from long-poll requests in most cases. Long-poll `200 OK` responses are safe to cache when keyed by `offset`, `cursor`, and authentication credentials.
 
-### 8.2. SSE
+### 9.2. SSE
 
 SSE connections **SHOULD** be closed by the server approximately every 60 seconds. This enables new clients to collapse onto edge requests rather than maintaining long-lived connections to origin servers.
 
-## 9. Extensibility
+## 10. Extensibility
 
 The Durable Streams Protocol is designed to be extended for specific use cases and implementations. Extensions **SHOULD** be pure supersets of the base protocol, ensuring compatibility with any client that implements the base protocol.
 
-### 9.1. Protocol Extensions
+### 10.1. Protocol Extensions
 
 Implementations **MAY** extend the protocol with additional query parameters, headers, or response fields to support domain-specific semantics. For example, a database synchronization implementation might add query parameters to filter by table or schema, or include additional metadata in response headers.
 
@@ -926,37 +1271,37 @@ Extensions **SHOULD** follow these principles:
 
 - **Version Independence**: Extensions **SHOULD** work with any version of a client that implements the base protocol. Extension negotiation **MAY** be handled through headers or query parameters, but base protocol operations **MUST** remain functional without extension support.
 
-### 9.2. Authentication Extensions
+### 10.2. Authentication Extensions
 
-See Section 10.1 for authentication and authorization details. Implementations **MAY** extend the protocol with authentication-related query parameters or headers (e.g., API keys, OAuth tokens, custom authentication headers).
+See Section 11.1 for authentication and authorization details. Implementations **MAY** extend the protocol with authentication-related query parameters or headers (e.g., API keys, OAuth tokens, custom authentication headers).
 
-## 10. Security Considerations
+## 11. Security Considerations
 
-### 10.1. Authentication and Authorization
+### 11.1. Authentication and Authorization
 
-Authentication and authorization are explicitly out of scope for this protocol specification. Clients **SHOULD** implement all standard HTTP authentication primitives (e.g., Basic Authentication [RFC7617], Bearer tokens [RFC6750], Digest Authentication [RFC7616]). Implementations **MUST** provide appropriate access controls to prevent unauthorized stream creation, modification, or deletion, but may do so using any mechanism they choose, including extending the protocol with authentication-related parameters or headers as described in Section 9.2.
+Authentication and authorization are explicitly out of scope for this protocol specification. Clients **SHOULD** implement all standard HTTP authentication primitives (e.g., Basic Authentication [RFC7617], Bearer tokens [RFC6750], Digest Authentication [RFC7616]). Implementations **MUST** provide appropriate access controls to prevent unauthorized stream creation, modification, or deletion, but may do so using any mechanism they choose, including extending the protocol with authentication-related parameters or headers as described in Section 10.2.
 
-### 10.2. Multi-tenant Safety
+### 11.2. Multi-tenant Safety
 
 If stream URLs are guessable, servers **MUST** enforce access controls even when using shared caches. Servers **SHOULD** validate and sanitize stream URLs to prevent path traversal attacks and ensure URL components are within acceptable limits.
 
-### 10.3. Untrusted Content
+### 11.3. Untrusted Content
 
 Clients **MUST** treat stream contents as untrusted input and **MUST NOT** evaluate or execute stream data without appropriate validation. This is particularly important for append-only streams used as logs, where log injection attacks are a concern.
 
-### 10.4. Content Type Validation
+### 11.4. Content Type Validation
 
 Servers **MUST** validate that appended content types match the stream's declared content type to prevent type confusion attacks.
 
-### 10.5. Rate Limiting
+### 11.5. Rate Limiting
 
 Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many Requests` response code indicates rate limit exhaustion.
 
-### 10.6. Sequence Validation
+### 11.6. Sequence Validation
 
 The optional `Stream-Seq` header provides protection against out-of-order writes in multi-writer scenarios. Servers **MUST** reject sequence regressions to maintain stream integrity.
 
-### 10.7. Browser Security Headers
+### 11.7. Browser Security Headers
 
 When serving streams to browser clients, servers **SHOULD** include the following headers to prevent MIME-sniffing attacks, cross-origin embedding exploits, and cache-related vulnerabilities:
 
@@ -967,26 +1312,43 @@ When serving streams to browser clients, servers **SHOULD** include the followin
   - Servers **SHOULD** include this header to explicitly control cross-origin embedding. Use `cross-origin` to allow cross-origin access via `fetch()`, `same-site` to restrict to the same registrable domain, or `same-origin` for strict same-origin only. This prevents Cross-Origin Read Blocking (CORB) issues and protects against Spectre-like side-channel attacks.
 
 - `Cache-Control: no-store`
-  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 8.
+  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 9.
 
 - `Content-Disposition: attachment` (optional)
   - Servers **MAY** include this header for `application/octet-stream` responses to prevent inline rendering if a user navigates directly to the stream URL.
 
 These headers provide defense-in-depth for scenarios where stream URLs might be accessed outside the intended programmatic fetch context (e.g., direct navigation, malicious cross-origin embedding via `<script>` or `<img>` tags).
 
-### 10.8. TLS
+### 11.8. Webhook URL Validation (SSRF Prevention)
+
+Implementations supporting webhook subscriptions **MUST** validate webhook URLs to prevent Server-Side Request Forgery (SSRF) attacks:
+
+- **MUST** require HTTPS for webhook URLs in production (HTTP **MAY** be allowed for localhost in development)
+- **SHOULD** block private IP ranges (RFC 1918), link-local addresses, and loopback addresses
+- **SHOULD** block cloud metadata endpoints (e.g., `169.254.169.254`)
+- **MAY** implement domain allowlisting for webhook URLs
+
+### 11.9. Callback Token Security
+
+Callback tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the consumer ID, epoch, and expiry. Implementations **MUST** validate token signatures on every callback request. Tokens have a fixed 1-hour TTL and are rotated on every callback response.
+
+### 11.10. Webhook Signature Security
+
+Webhook signatures (Section 6.4) prevent spoofing of notifications. The `webhook_secret` is generated by the server and returned only on subscription creation. Consumers **SHOULD** verify signatures before processing any webhook payload. Timestamps in signatures prevent replay attacks within the ±5-minute tolerance window.
+
+### 11.11. TLS
 
 All protocol operations **MUST** be performed over HTTPS (TLS) in production environments to protect data in transit.
 
-## 11. IANA Considerations
+## 12. IANA Considerations
 
-### 11.1. Default Port
+### 12.1. Default Port
 
 The default port for standalone Durable Streams servers is **4437/tcp** (with 4437/udp reserved for future use).
 
 This port was selected from the IANA unassigned range 4434-4440. Standalone server implementations **SHOULD** use port 4437 as the default when no explicit port is configured. When Durable Streams is integrated into an existing web server or application framework, it **SHOULD** use the host server's port instead.
 
-### 11.2. HTTP Headers
+### 12.2. HTTP Headers
 
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
@@ -999,6 +1361,7 @@ This document requests registration of the following HTTP headers in the "Perman
 | `Stream-Next-Offset` | permanent | This document |
 | `Stream-Up-To-Date`  | permanent | This document |
 | `Stream-Closed`      | permanent | This document |
+| `Webhook-Signature`  | permanent | This document |
 
 **Descriptions:**
 
@@ -1009,10 +1372,11 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
+- `Webhook-Signature`: HMAC-SHA256 signature for webhook notification verification (Section 6.4)
 
-## 12. References
+## 13. References
 
-### 12.1. Normative References
+### 13.1. Normative References
 
 [RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 2119, DOI 10.17487/RFC2119, March 1997, <https://www.rfc-editor.org/info/rfc2119>.
 
@@ -1030,7 +1394,7 @@ This document requests registration of the following HTTP headers in the "Perman
 
 [RFC7616] Shekh-Yusef, R., Ed., Ahrens, D., and S. Bremer, "HTTP Digest Access Authentication", RFC 7616, DOI 10.17487/RFC7616, September 2015, <https://www.rfc-editor.org/info/rfc7616>.
 
-### 12.2. Informative References
+### 13.2. Informative References
 
 [SSE] Hickson, I., "Server-Sent Events", W3C Recommendation, February 2015, <https://www.w3.org/TR/eventsource/>.
 

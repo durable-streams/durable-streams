@@ -13,6 +13,7 @@ import {
   STREAM_SEQ_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "@durable-streams/client"
+import { webhook } from "./webhook-dsl"
 
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
@@ -7554,6 +7555,745 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(headAfter.status).toBe(404)
       })
+    })
+  })
+
+  // ============================================================================
+  // Webhook Subscriptions
+  // ============================================================================
+
+  describe(`Webhook Subscriptions`, () => {
+    const ts = () => Date.now()
+
+    // ----------------------------------------------------------------
+    // Tier 1: Subscription CRUD
+    // ----------------------------------------------------------------
+
+    describe(`Subscription CRUD`, () => {
+      test(`should create a subscription`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-create-${ts()}`)
+          .run())
+
+      test(`should return 200 for idempotent create with same config`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-idempotent-${ts()}`)
+          .custom(async (ctx) => {
+            // Re-create with same webhook URL → 200 (no secret)
+            const res = await fetch(
+              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
+              {
+                method: `PUT`,
+                headers: { "content-type": `application/json` },
+                body: JSON.stringify({
+                  webhook: `${ctx.receiver.url}/webhook`,
+                }),
+              }
+            )
+            expect(res.status).toBe(200)
+            const body = (await res.json()) as Record<string, unknown>
+            expect(body.webhook_secret).toBeUndefined()
+          })
+          .run())
+
+      test(`should return 409 for create with different config`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-conflict-${ts()}`)
+          .custom(async (ctx) => {
+            const res = await fetch(
+              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
+              {
+                method: `PUT`,
+                headers: { "content-type": `application/json` },
+                body: JSON.stringify({
+                  webhook: `http://different-host.example.com/webhook`,
+                }),
+              }
+            )
+            expect(res.status).toBe(409)
+          })
+          .run())
+
+      test(`should list subscriptions under a pattern`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-list-${ts()}`)
+          .custom(async (ctx) => {
+            const res = await fetch(`${ctx.baseUrl}/agents/*?subscriptions`)
+            expect(res.status).toBe(200)
+            const body = (await res.json()) as {
+              subscriptions: Array<Record<string, unknown>>
+            }
+            const found = body.subscriptions.find(
+              (s) => s.subscription_id === ctx.subscriptionId
+            )
+            expect(found).toBeDefined()
+            expect(found!.webhook_secret).toBeUndefined()
+          })
+          .run())
+
+      test(`should list all subscriptions with ** pattern`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-list-all-${ts()}`)
+          .custom(async (ctx) => {
+            const res = await fetch(`${ctx.baseUrl}/**?subscriptions`)
+            expect(res.status).toBe(200)
+            const body = (await res.json()) as {
+              subscriptions: Array<Record<string, unknown>>
+            }
+            const found = body.subscriptions.find(
+              (s) => s.subscription_id === ctx.subscriptionId
+            )
+            expect(found).toBeDefined()
+          })
+          .run())
+
+      test(`should get subscription by ID`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-get-${ts()}`)
+          .custom(async (ctx) => {
+            const res = await fetch(
+              `${ctx.baseUrl}/**?subscription=${ctx.subscriptionId}`
+            )
+            expect(res.status).toBe(200)
+            const body = (await res.json()) as Record<string, unknown>
+            expect(body.subscription_id).toBe(ctx.subscriptionId)
+            expect(body.webhook_secret).toBeUndefined()
+          })
+          .run())
+
+      test(`should delete a subscription`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `crud-delete-${ts()}`)
+          .custom(async (ctx) => {
+            const res = await fetch(
+              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
+              { method: `DELETE` }
+            )
+            expect(res.status).toBe(204)
+
+            const getRes = await fetch(
+              `${ctx.baseUrl}/**?subscription=${ctx.subscriptionId}`
+            )
+            expect(getRes.status).toBe(404)
+          })
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: State Machine — Single Wake Cycle
+    // ----------------------------------------------------------------
+
+    describe(`State Machine: Wake Cycle`, () => {
+      test(`full cycle: IDLE → WAKING → LIVE → IDLE`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wake-full-${ts()}`)
+          .stream(`/agents/wake-full-${ts()}`)
+          .append({ event: `created` })
+          .expectWake()
+          .claimWake()
+          .ackAll()
+          .done()
+          .expectIdle()
+          .run())
+
+      test(`synchronous done: IDLE → WAKING → IDLE`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wake-sync-${ts()}`)
+          .stream(`/agents/wake-sync-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .respondDone()
+          .run())
+
+      test(`re-wake after synchronous done`, () => {
+        const path = `/agents/wake-rewake-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wake-rewake-${ts()}`)
+          .stream(path)
+          .append({ event: `first` })
+          .expectWake()
+          .respondDone()
+          .append({ event: `second` })
+          .expectWake({ epochIncremented: true })
+          .respondDone()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Done with Pending Work
+    // ----------------------------------------------------------------
+
+    describe(`Done with Pending Work`, () => {
+      test(`done without ack → immediate re-wake`, () => {
+        const path = `/agents/pending-noack-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `pending-noack-${ts()}`)
+          .stream(path)
+          .append({ event: `first` })
+          .expectWake()
+          .claimWake()
+          .append({ event: `second` })
+          .done()
+          .expectWake({ epochIncremented: true })
+          .respondDone()
+          .run()
+      })
+
+      test(`done with full ack → IDLE (no re-wake)`, () => {
+        const path = `/agents/pending-acked-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `pending-acked-${ts()}`)
+          .stream(path)
+          .append({ event: `first` })
+          .expectWake()
+          .claimWake()
+          .ackAll()
+          .done()
+          .expectIdle()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Offset Management
+    // ----------------------------------------------------------------
+
+    describe(`Offset Management`, () => {
+      test(`acked offsets persist across wake cycles`, () => {
+        const path = `/agents/ack-persist-${ts()}`
+        return (
+          webhook(getBaseUrl())
+            .subscription(`/agents/*`, `ack-persist-${ts()}`)
+            .stream(path)
+            .append([{ event: `a` }, { event: `b` }])
+            .expectWake()
+            .claimWake()
+            .ackAll()
+            .done()
+            .expectIdle()
+            // Second wake — offset should reflect previous ack
+            .append({ event: `c` })
+            .expectWake({ epochIncremented: true })
+            .custom(async (ctx) => {
+              const streamInfo = ctx.notification!.parsed.streams.find(
+                (s: { path: string }) => s.path === path
+              )
+              expect(streamInfo).toBeDefined()
+              // Offset should NOT be the initial offset
+              expect(streamInfo!.offset).not.toBe(
+                `0000000000000000_0000000000000000`
+              )
+            })
+            .respondDone()
+            .run()
+        )
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Dynamic Subscriptions
+    // ----------------------------------------------------------------
+
+    describe(`Dynamic Subscribe/Unsubscribe`, () => {
+      test(`subscribe to additional streams via callback`, () => {
+        const primary = `/agents/dynsub-${ts()}`
+        const secondary = `/tools/dynsub-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `dynsub-${ts()}`)
+          .stream(primary)
+          .stream(secondary)
+          .append({ event: `start` })
+          .expectWake()
+          .claimWake()
+          .subscribe([secondary])
+          .expectCallbackOk()
+          .expectStreams([primary, secondary])
+          .done()
+          .run()
+      })
+
+      test(`unsubscribe from streams via callback`, () => {
+        const primary = `/agents/unsub-${ts()}`
+        const secondary = `/tools/unsub-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `dynunsub-${ts()}`)
+          .stream(primary)
+          .stream(secondary)
+          .append({ event: `start` })
+          .expectWake()
+          .claimWake()
+          .subscribe([secondary])
+          .unsubscribe([secondary])
+          .expectCallbackOk()
+          .custom(async (ctx) => {
+            const streams = ctx.lastCallbackResult!.body.streams as Array<{
+              path: string
+            }>
+            expect(streams.find((s) => s.path === secondary)).toBeUndefined()
+          })
+          .done()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Token Management
+    // ----------------------------------------------------------------
+
+    describe(`Token Management`, () => {
+      test(`token rotates on every successful callback`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `token-rotate-${ts()}`)
+          .stream(`/agents/token-rotate-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          // Token rotation is verified by invariant checker S5
+          .done()
+          .run())
+
+      test(`invalid token is rejected`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `token-invalid-${ts()}`)
+          .stream(`/agents/token-invalid-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .rawCallback({ epoch: 1, wake_id: `fake` }, `totally-invalid-token`)
+          .expectError(`TOKEN_INVALID`, 401)
+          .respondDone()
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Webhook Signatures
+    // ----------------------------------------------------------------
+
+    describe(`Webhook Signatures`, () => {
+      test(`signature header present and verifiable`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `sig-${ts()}`)
+          .stream(`/agents/sig-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          // Signature verification is handled by invariant checker S8
+          .respondDone()
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Garbage Collection
+    // ----------------------------------------------------------------
+
+    describe(`Garbage Collection`, () => {
+      test(`delete primary stream → consumer gone`, () => {
+        const path = `/agents/gc-stream-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `gc-stream-${ts()}`)
+          .stream(path)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          .deleteStream(path)
+          .expectGone()
+          .run()
+      })
+
+      test(`delete subscription → all consumers gone`, () => {
+        const subId = `gc-sub-${ts()}`
+        const path = `/agents/gc-sub-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, subId)
+          .stream(path)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          .deleteSubscription(subId)
+          .expectGone()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 1: Glob Pattern Matching
+    // ----------------------------------------------------------------
+
+    describe(`Glob Pattern Matching`, () => {
+      test(`* matches exactly one path segment`, () => {
+        const path = `/agents/glob-match-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `glob-star-${ts()}`)
+          .stream(path)
+          .append({ event: `match` })
+          .expectWake()
+          .custom(async (ctx) => {
+            expect(ctx.notification!.parsed.primary_stream).toBe(path)
+          })
+          .respondDone()
+          .run()
+      })
+
+      test(`* does not match multiple path segments`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `glob-star-no-multi-${ts()}`)
+          .stream(`/agents/foo/bar-${ts()}`)
+          .append({ event: `no-match` })
+          .expectIdle()
+          .run())
+
+      test(`** matches recursively`, () => {
+        const path = `/agents/foo/bar/deep-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/**`, `glob-dblstar-${ts()}`)
+          .stream(path)
+          .append({ event: `deep` })
+          .expectWake()
+          .custom(async (ctx) => {
+            expect(ctx.notification!.parsed.primary_stream).toBe(path)
+          })
+          .respondDone()
+          .run()
+      })
+
+      test(`literal prefix with * suffix`, () => {
+        const path = `/agents/workers/task-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/workers/*`, `glob-prefix-${ts()}`)
+          .stream(path)
+          .append({ event: `match` })
+          .expectWake()
+          .respondDone()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 2: Adversarial — Epoch Attacks
+    // ----------------------------------------------------------------
+
+    describe(`Adversarial: Epoch Fencing`, () => {
+      test(`stale epoch callback → 409 STALE_EPOCH`, () => {
+        const path = `/agents/epoch-stale-${ts()}`
+        return (
+          webhook(getBaseUrl())
+            .subscription(`/agents/*`, `epoch-stale-${ts()}`)
+            .stream(path)
+            .append({ event: `first` })
+            .expectWake()
+            .respondDone()
+            // Second wake (new epoch)
+            .append({ event: `second` })
+            .expectWake({ epochIncremented: true })
+            .claimWake()
+            // Send callback with epoch from first wake (stale)
+            .custom(async (ctx) => {
+              const staleEpoch = ctx.currentEpoch! - 1
+              const result = await fetch(ctx.callbackUrl!, {
+                method: `POST`,
+                headers: {
+                  "content-type": `application/json`,
+                  authorization: `Bearer ${ctx.currentToken}`,
+                },
+                body: JSON.stringify({ epoch: staleEpoch }),
+              })
+              const body = await result.json()
+              expect(result.status).toBe(409)
+              expect((body as Record<string, unknown>).error).toHaveProperty(
+                `code`,
+                `STALE_EPOCH`
+              )
+            })
+            .done()
+            .run()
+        )
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 2: Adversarial — Token Attacks
+    // ----------------------------------------------------------------
+
+    describe(`Adversarial: Token Attacks`, () => {
+      test(`invalid token → 401 TOKEN_INVALID`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `token-bad-${ts()}`)
+          .stream(`/agents/token-bad-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .rawCallback({ epoch: 1, wake_id: `w_fake` }, `totally-invalid-token`)
+          .expectError(`TOKEN_INVALID`, 401)
+          .respondDone()
+          .run())
+
+      test(`missing Authorization header → 401`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `token-missing-${ts()}`)
+          .stream(`/agents/token-missing-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .custom(async (ctx) => {
+            const result = await fetch(ctx.callbackUrl!, {
+              method: `POST`,
+              headers: { "content-type": `application/json` },
+              body: JSON.stringify({ epoch: ctx.currentEpoch }),
+            })
+            expect(result.status).toBe(401)
+          })
+          .respondDone()
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 2: Adversarial — Wake ID Attacks
+    // ----------------------------------------------------------------
+
+    describe(`Adversarial: Wake ID`, () => {
+      test(`double claim same wake_id → 409 ALREADY_CLAIMED`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wakeid-double-${ts()}`)
+          .stream(`/agents/wakeid-double-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          .rawCallback({
+            epoch: 0, // Will be overridden below
+            wake_id: `placeholder`,
+          })
+          .custom(async (ctx) => {
+            // Re-send the same wake_id that was already claimed
+            const result = await fetch(ctx.callbackUrl!, {
+              method: `POST`,
+              headers: {
+                "content-type": `application/json`,
+                authorization: `Bearer ${ctx.currentToken}`,
+              },
+              body: JSON.stringify({
+                epoch: ctx.currentEpoch,
+                wake_id: ctx.currentWakeId,
+              }),
+            })
+            const body = (await result.json()) as Record<string, unknown>
+            expect(result.status).toBe(409)
+            expect(body.error).toHaveProperty(`code`, `ALREADY_CLAIMED`)
+          })
+          .done()
+          .run())
+
+      test(`fabricated wake_id → 409 ALREADY_CLAIMED`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wakeid-fake-${ts()}`)
+          .stream(`/agents/wakeid-fake-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .rawCallback({
+            epoch: 1,
+            wake_id: `w_totally_fabricated`,
+          })
+          .custom(async (ctx) => {
+            // Fabricated wake_id should be rejected
+            expect(ctx.lastCallbackResult!.status).toBe(409)
+          })
+          .respondDone()
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 2: Adversarial — Malformed Requests
+    // ----------------------------------------------------------------
+
+    describe(`Adversarial: Malformed Requests`, () => {
+      test(`missing epoch field → 400`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `malformed-noepoch-${ts()}`)
+          .stream(`/agents/malformed-noepoch-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .custom(async (ctx) => {
+            const result = await fetch(ctx.callbackUrl!, {
+              method: `POST`,
+              headers: {
+                "content-type": `application/json`,
+                authorization: `Bearer ${ctx.currentToken}`,
+              },
+              body: JSON.stringify({ wake_id: `w_foo` }),
+            })
+            expect(result.status).toBe(400)
+          })
+          .respondDone()
+          .run())
+
+      test(`non-JSON body → 400`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `malformed-nonjson-${ts()}`)
+          .stream(`/agents/malformed-nonjson-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .skipInvariants()
+          .custom(async (ctx) => {
+            const result = await fetch(ctx.callbackUrl!, {
+              method: `POST`,
+              headers: {
+                "content-type": `application/json`,
+                authorization: `Bearer ${ctx.currentToken}`,
+              },
+              body: `not json at all {{{`,
+            })
+            expect(result.status).toBe(400)
+          })
+          .respondDone()
+          .run())
+    })
+
+    // ----------------------------------------------------------------
+    // Tier 2: Adversarial — Race Conditions
+    // ----------------------------------------------------------------
+
+    describe(`Adversarial: Race Conditions`, () => {
+      test(`callback after subscription deleted → 410`, () => {
+        const subId = `race-subdel-${ts()}`
+        const path = `/agents/race-subdel-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, subId)
+          .stream(path)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          .deleteSubscription(subId)
+          .expectGone()
+          .run()
+      })
+
+      test(`callback after stream deleted → 410`, () => {
+        const path = `/agents/race-streamdel-${ts()}`
+        return webhook(getBaseUrl())
+          .subscription(`/agents/*`, `race-streamdel-${ts()}`)
+          .stream(path)
+          .append({ event: `test` })
+          .expectWake()
+          .claimWake()
+          .deleteStream(path)
+          .expectGone()
+          .run()
+      })
+    })
+
+    // ----------------------------------------------------------------
+    // Property-Based: Random Action Sequences
+    // ----------------------------------------------------------------
+
+    describe(`Property-Based: Random Action Sequences`, () => {
+      // Action types that can be applied during a LIVE consumer session
+      const liveActionArb = fc.oneof(
+        { weight: 40, arbitrary: fc.constant(`append` as const) },
+        { weight: 25, arbitrary: fc.constant(`ack` as const) },
+        { weight: 10, arbitrary: fc.constant(`subscribe` as const) },
+        { weight: 5, arbitrary: fc.constant(`unsubscribe-secondary` as const) },
+        { weight: 20, arbitrary: fc.constant(`keepalive` as const) }
+      )
+
+      test(`random action sequences preserve safety invariants`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.array(liveActionArb, { minLength: 2, maxLength: 8 }),
+            fc.boolean(),
+            async (actions, ackBeforeDone) => {
+              const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+              const primary = `/agents/prop-${id}`
+              const secondary = `/tools/prop-${id}`
+
+              const scenario = webhook(getBaseUrl())
+                .subscription(`/agents/*`, `sub-${id}`)
+                .stream(primary)
+                .stream(secondary)
+                .append({ event: `init` })
+                .expectWake()
+                .claimWake()
+
+              let subscribedToSecondary = false
+
+              for (const action of actions) {
+                switch (action) {
+                  case `append`:
+                    scenario.append({
+                      event: `prop-event`,
+                      ts: Date.now(),
+                    })
+                    break
+                  case `ack`:
+                    scenario.ackAll()
+                    break
+                  case `subscribe`:
+                    if (!subscribedToSecondary) {
+                      scenario.subscribe([secondary])
+                      subscribedToSecondary = true
+                    }
+                    break
+                  case `unsubscribe-secondary`:
+                    if (subscribedToSecondary) {
+                      scenario.unsubscribe([secondary])
+                      subscribedToSecondary = false
+                    }
+                    break
+                  case `keepalive`:
+                    scenario.callback({})
+                    break
+                }
+              }
+
+              if (ackBeforeDone) {
+                scenario.ackAll()
+              }
+              scenario.done()
+
+              await scenario.run()
+            }
+          ),
+          { numRuns: 20, endOnFailure: true }
+        )
+      }, 30_000)
+
+      test(`wake cycles with varying ack strategies preserve epoch monotonicity`, async () => {
+        await fc.assert(
+          fc.asyncProperty(
+            fc.integer({ min: 1, max: 3 }),
+            fc.array(fc.boolean(), { minLength: 1, maxLength: 3 }),
+            async (numCycles, ackDecisions) => {
+              const id = `prop-epoch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+              const path = `/agents/prop-epoch-${id}`
+
+              const scenario = webhook(getBaseUrl())
+                .subscription(`/agents/*`, `sub-epoch-${id}`)
+                .stream(path)
+
+              for (let i = 0; i < numCycles; i++) {
+                scenario.append({ event: `cycle-${i}` })
+                scenario.expectWake(
+                  i > 0 ? { epochIncremented: true } : undefined
+                )
+
+                const shouldAck = ackDecisions[i % ackDecisions.length]
+                if (shouldAck) {
+                  scenario.respondDone()
+                } else {
+                  scenario.claimWake()
+                  scenario.done()
+                  // Pending work causes re-wake — consume it
+                  scenario.expectWake({ epochIncremented: true })
+                  scenario.respondDone()
+                }
+              }
+
+              await scenario.run()
+            }
+          ),
+          { numRuns: 10, endOnFailure: true }
+        )
+      }, 30_000)
     })
   })
 }

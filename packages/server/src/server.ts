@@ -7,6 +7,8 @@ import { deflateSync, gzipSync } from "node:zlib"
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
+import { WebhookManager } from "./webhook-manager"
+import { WebhookRoutes } from "./webhook-routes"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
@@ -157,6 +159,7 @@ export class DurableStreamTestServer {
       | `compression`
       | `cursorIntervalSeconds`
       | `cursorEpoch`
+      | `webhooks`
     >
   > & {
     dataDir?: string
@@ -164,12 +167,15 @@ export class DurableStreamTestServer {
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>
     compression: boolean
     cursorOptions: CursorOptions
+    webhooks: boolean
   }
   private _url: string | null = null
   private activeSSEResponses = new Set<ServerResponse>()
   private isShuttingDown = false
   /** Injected faults for testing retry/resilience */
   private injectedFaults = new Map<string, InjectedFault>()
+  private webhookManager: WebhookManager | null = null
+  private webhookRoutes: WebhookRoutes | null = null
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -193,6 +199,7 @@ export class DurableStreamTestServer {
         intervalSeconds: options.cursorIntervalSeconds,
         epoch: options.cursorEpoch,
       },
+      webhooks: options.webhooks ?? false,
     }
   }
 
@@ -224,6 +231,19 @@ export class DurableStreamTestServer {
         } else if (addr) {
           this._url = `http://${this.options.host}:${addr.port}`
         }
+
+        // Initialize webhook components after URL is known
+        if (this.options.webhooks) {
+          this.webhookManager = new WebhookManager({
+            callbackBaseUrl: this._url!,
+            getTailOffset: (path: string) => {
+              const stream = this.store.get(path)
+              return stream ? stream.currentOffset : `-1`
+            },
+          })
+          this.webhookRoutes = new WebhookRoutes(this.webhookManager)
+        }
+
         resolve(this._url!)
       })
     })
@@ -239,6 +259,13 @@ export class DurableStreamTestServer {
 
     // Mark as shutting down to stop SSE handlers
     this.isShuttingDown = true
+
+    // Shut down webhook manager (cancel all retry/liveness timers)
+    if (this.webhookManager) {
+      this.webhookManager.shutdown()
+      this.webhookManager = null
+      this.webhookRoutes = null
+    }
 
     // Cancel all pending long-polls and SSE waits to unblock connection handlers
     if (`cancelAllWaits` in this.store) {
@@ -488,6 +515,18 @@ export class DurableStreamTestServer {
       }
     }
 
+    // Handle webhook subscription/callback routes
+    if (this.webhookRoutes && method) {
+      const handled = await this.webhookRoutes.handleRequest(
+        method,
+        url,
+        path,
+        req,
+        res
+      )
+      if (handled) return
+    }
+
     try {
       switch (method) {
         case `PUT`:
@@ -634,6 +673,15 @@ export class DurableStreamTestServer {
           timestamp: Date.now(),
         })
       )
+    }
+
+    // Notify webhook manager of new stream
+    if (isNew && this.webhookManager) {
+      this.webhookManager.onStreamCreated(path)
+      // If stream was created with initial data, also trigger append
+      if (body.length > 0) {
+        this.webhookManager.onStreamAppend(path)
+      }
     }
 
     // Return 201 for new streams, 200 for idempotent creates
@@ -1423,6 +1471,11 @@ export class DurableStreamTestServer {
         const statusCode = producerId !== undefined ? 200 : 204
         res.writeHead(statusCode, responseHeaders)
         res.end()
+
+        // Notify webhook manager of append
+        if (this.webhookManager) {
+          this.webhookManager.onStreamAppend(path)
+        }
         return
       }
 
@@ -1485,6 +1538,11 @@ export class DurableStreamTestServer {
     }
     res.writeHead(204, responseHeaders)
     res.end()
+
+    // Notify webhook manager of append
+    if (this.webhookManager) {
+      this.webhookManager.onStreamAppend(path)
+    }
   }
 
   /**
@@ -1508,6 +1566,11 @@ export class DurableStreamTestServer {
           timestamp: Date.now(),
         })
       )
+    }
+
+    // Notify webhook manager of deletion
+    if (this.webhookManager) {
+      this.webhookManager.onStreamDeleted(path)
     }
 
     res.writeHead(204)
