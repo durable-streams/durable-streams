@@ -2801,6 +2801,154 @@ type Step = (ctx: RunContext) => Promise<void>
 | Works for async protocols  | ⚠ Partial  | Needs timing/ordering as first-class concern   |
 | Property-based integration | ⚠ Partial  | Powerful but sharp edges (timeouts, shrinking) |
 
+### 12.8 Case Study: Stream-FS (Shared Filesystem for AI Agents)
+
+A team building a shared filesystem abstraction for AI agents on top of Durable Streams applied the guide's recommendations. Their results: **95 → 425 tests**, **3+ bugs caught**, and a formal specification that serves as documentation.
+
+#### What They Built
+
+| Component           | Guide Concept          | Implementation                                                |
+| ------------------- | ---------------------- | ------------------------------------------------------------- |
+| SPEC.md             | Formal specification   | 11 invariants (I1-I11), 10 constraints (C1-C10)               |
+| scenario-builder.ts | Fluent DSL             | `scenario("name").createFile(...).expectContent(...).run(fs)` |
+| invariants.ts       | Invariant checkers     | Functions verifying structural properties on any snapshot     |
+| random.ts           | Seeded RNG             | LCG-based `SeededRandom` for reproducible fuzz tests          |
+| fuzz.test.ts        | Property-based testing | Random operation sequences verified against invariants        |
+| path-properties.ts  | Algebraic properties   | Idempotence, canonical form tests for path normalization      |
+| patch-properties.ts | Roundtrip properties   | `apply(diff(a,b), a) === b` for 100+ random text pairs        |
+| multi-agent.test.ts | Concurrency testing    | 2-10 agent convergence scenarios                              |
+| adversarial.test.ts | Tier-2 DSL             | Raw event injection, constraint violation tests               |
+| exhaustive.test.ts  | Small-scope hypothesis | All 2-operation sequences, complete lifecycle coverage        |
+
+#### Bug 1: Path Normalization Edge Case
+
+**Found by**: Exhaustive small-scope testing of path operations.
+
+```typescript
+// This test failed initially
+it(`handles paths with multiple slashes`, async () => {
+  await fs.mkdir(`/double`)
+  await fs.createFile(`//double//slashes.txt`, `content`)
+  expect(fs.exists(`/double/slashes.txt`)).toBe(true)
+})
+```
+
+**Root cause**: Path was normalized for storage, but parent directory lookup happened _before_ normalization. Trivial fix once identified, but nearly impossible to find through manual testing.
+
+**Lesson**: Systematically test all path edge cases (leading slashes, double slashes, dots, parent references).
+
+#### Bug 2: Sync vs Async Method Confusion
+
+**Found by**: Building the fluent DSL forced explicit modeling of sync vs async operations.
+
+```typescript
+// BEFORE: async methods that never awaited
+async exists(path: string): Promise<boolean> {
+  return this.files.has(normalizePath(path))  // No await needed!
+}
+
+// AFTER: sync methods for read-only operations
+exists(path: string): boolean {
+  return this.files.has(normalizePath(path))
+}
+```
+
+**Root cause**: Copy-paste from async write methods. The `Promise<boolean>` return type was misleading and could cause subtle bugs in calling code.
+
+**Lesson**: The DSL forced explicit thinking about operation semantics. Building the `Step` type system required clarity on what each operation actually does.
+
+#### Bug 3: Missing Ancestor Chain Validation
+
+**Found by**: Adversarial tests for constraint C2 ("Parent Exists").
+
+```typescript
+// This should fail but didn't initially
+await fs.createFile(`/a/b/c/d/e/file.txt`, `content`)
+```
+
+**Root cause**: Validated immediate parent but not the full ancestor chain.
+
+**Lesson**: Systematic constraint testing catches validation gaps.
+
+#### What the Formal Specification Revealed
+
+Writing SPEC.md forced clarity on ambiguous behaviors:
+
+| Ambiguity               | Before                         | After (in SPEC.md)                                              |
+| ----------------------- | ------------------------------ | --------------------------------------------------------------- |
+| Delete + recreate file  | Undefined, might keep metadata | I5: New file gets fresh timestamps                              |
+| Multi-agent consistency | "Eventual consistency"         | I8: After refresh, file/directory sets identical (not content!) |
+| Patch failure semantics | "Fails if it doesn't apply"    | C10: Failure doesn't modify file; I7: Empty patch is identity   |
+
+> "Writing SPEC.md was the most valuable exercise. We originally thought content would also be identical after refresh, but that's only true if no concurrent writes happened. The spec forced us to be precise."
+
+#### Property Testing in Practice
+
+**Path normalization properties**:
+
+```typescript
+// Idempotence: normalizing twice equals normalizing once
+expect(normalizePath(normalizePath(path))).toBe(normalizePath(path))
+
+// Canonical form: result always starts with /
+expect(normalizePath(path).startsWith("/")).toBe(true)
+```
+
+Tested against 50 random paths plus edge cases. Found that `normalizePath("")` returned `""` instead of `"/"`. Fixed.
+
+**Patch roundtrip properties**:
+
+```typescript
+// Roundtrip: apply(diff(a, b), a) === b
+const patch = createPatch(original, modified)
+const result = applyPatch(original, patch)
+expect(result).toBe(modified)
+```
+
+Tested with 100 random text pairs. All passed—confidence in the diff/patch integration.
+
+#### Multi-Agent Testing: Operational Insights
+
+They tested 2, 3, 5, and 10 agent scenarios with concurrent operations.
+
+**Unexpected finding**: The 10-agent stress test revealed that test infrastructure was the bottleneck. Each agent creates its own HTTP connection, and at 10 agents × 5 operations, they saw connection pool exhaustion in CI (not in the library itself).
+
+> "This is exactly the kind of operational insight you only get from realistic concurrency testing."
+
+#### Metrics: Before and After
+
+| Metric             | Before | After      |
+| ------------------ | ------ | ---------- |
+| Test count         | 95     | 425        |
+| Test files         | 4      | 10         |
+| Lines of test code | ~800   | ~3,600     |
+| Formal invariants  | 0      | 11         |
+| Formal constraints | 0      | 10         |
+| Bugs caught        | -      | 3+         |
+| Edge cases covered | Ad-hoc | Systematic |
+
+#### What They'd Do Differently
+
+1. **Write SPEC.md first**: They wrote implementation first, then spec. The spec was partly descriptive rather than prescriptive. Next time: invariants and constraints _before_ coding.
+
+2. **Integrate fuzz testing earlier**: Fuzz tests found the path normalization bug. Running them during development would have caught it sooner. "Fuzz tests aren't just for hardening—they're for development."
+
+3. **Add mutation testing**: Deliberately breaking code to verify tests catch it. Worth the investment.
+
+#### Summary: Stream-FS Lessons
+
+| Guide Claim              | Validated? | Notes                                        |
+| ------------------------ | ---------- | -------------------------------------------- |
+| SPEC.md as documentation | ✓ Yes      | "Most valuable exercise"                     |
+| Two-tier DSL             | ✓ Yes      | Tier 1 for valid ops, Tier 2 for adversarial |
+| Exhaustive small-scope   | ✓ Yes      | Found path normalization bug                 |
+| Algebraic properties     | ✓ Yes      | Idempotence, roundtrip tests                 |
+| Seeded randomness        | ✓ Yes      | Reproducible fuzz tests                      |
+| Multi-agent concurrency  | ✓ Yes      | Found operational (not correctness) issues   |
+| Investment ratio         | ✓ Yes      | 3,600 lines test / 1,500 lines impl = 2.4x   |
+
+> "The guide's core insight—that tests should be derived from formal specifications, not just 'does this work?' checks—fundamentally changed how we approached stream-fs testing."
+
 ---
 
 ## Part 13: DSLs for Async and Concurrent Systems
@@ -3136,6 +3284,359 @@ fc.assert(
 
 // Reproduce with: REPRO_SEED=12345 npm test
 ```
+
+---
+
+## Part 15: DSL Implementation Patterns
+
+Practical patterns for building robust testing DSLs, based on lessons from case studies.
+
+### 15.1 Modeling Sync vs Async Operations
+
+The Stream-FS team discovered that DSLs must explicitly model operation semantics. When your system has both sync and async operations, the DSL's type system should reflect this.
+
+**The problem**: Copy-pasting async signatures onto synchronous operations creates misleading APIs:
+
+```typescript
+// BAD: Async signature for sync operation
+async exists(path: string): Promise<boolean> {
+  return this.files.has(path)  // No await needed!
+}
+
+// Calling code might do unnecessary awaits or miss errors
+```
+
+**Pattern: Separate Step types for sync vs async**
+
+```typescript
+// Sync step: returns immediately
+type SyncStep<T> = (ctx: RunContext) => T
+
+// Async step: returns promise
+type AsyncStep<T> = (ctx: RunContext) => Promise<T>
+
+// Combined step: the builder handles both
+type Step<T> = SyncStep<T> | AsyncStep<T>
+
+// DSL builder distinguishes them
+class ScenarioBuilder {
+  // Sync operations don't need await in the builder
+  expectExists(path: string): this {
+    this.steps.push((ctx) => {
+      if (!ctx.fs.exists(path)) {
+        throw new Error(`Expected ${path} to exist`)
+      }
+    })
+    return this
+  }
+
+  // Async operations are marked explicitly
+  createFile(path: string, content: string): this {
+    this.steps.push(async (ctx) => {
+      await ctx.fs.createFile(path, content)
+    })
+    return this
+  }
+
+  // Runner handles the mix
+  async run(fs: Filesystem): Promise<void> {
+    const ctx = { fs, history: [] }
+    for (const step of this.steps) {
+      const result = step(ctx)
+      if (result instanceof Promise) {
+        await result
+      }
+    }
+  }
+}
+```
+
+**Pattern: Audit via type system**
+
+Force explicit classification during DSL design:
+
+```typescript
+interface OperationClassification {
+  sync: {
+    exists: (path: string) => boolean
+    readFile: (path: string) => string
+    listDir: (path: string) => string[]
+  }
+  async: {
+    createFile: (path: string, content: string) => Promise<void>
+    deleteFile: (path: string) => Promise<void>
+    mkdir: (path: string) => Promise<void>
+  }
+}
+
+// The classification itself documents the semantics
+```
+
+### 15.2 Snapshot Comparison Strategies
+
+Comparing system states across test runs requires careful handling of non-deterministic fields.
+
+**Common pitfalls**:
+
+1. **Floating-point timestamps**: `Date.now()` returns integers, but some systems use floats
+2. **Non-deterministic ordering**: Maps/Sets may iterate in different orders
+3. **Generated IDs**: UUIDs, auto-increment IDs differ between runs
+4. **Metadata noise**: Created-by, version numbers, etc.
+
+**Pattern: Projection before comparison**
+
+Strip non-deterministic fields before comparing:
+
+```typescript
+interface FileSnapshot {
+  path: string
+  content: string
+  size: number
+  mtime: number // Non-deterministic
+  ctime: number // Non-deterministic
+  id: string // Non-deterministic
+}
+
+function projectForComparison(snapshot: FileSnapshot): ComparableSnapshot {
+  return {
+    path: snapshot.path,
+    content: snapshot.content,
+    size: snapshot.size,
+    // Omit mtime, ctime, id
+  }
+}
+
+function snapshotsEqual(a: FileSnapshot[], b: FileSnapshot[]): boolean {
+  const projA = a.map(projectForComparison)
+  const projB = b.map(projectForComparison)
+
+  // Sort for deterministic comparison
+  projA.sort((x, y) => x.path.localeCompare(y.path))
+  projB.sort((x, y) => x.path.localeCompare(y.path))
+
+  return JSON.stringify(projA) === JSON.stringify(projB)
+}
+```
+
+**Pattern: Relative timestamp comparison**
+
+When timestamps matter but absolute values don't:
+
+```typescript
+function timestampsConsistent(snapshots: FileSnapshot[]): boolean {
+  // Check relative ordering, not absolute values
+  for (const file of snapshots) {
+    if (file.mtime < file.ctime) {
+      return false // Modified before created? Invalid.
+    }
+  }
+
+  // Check monotonicity across operations
+  const sorted = [...snapshots].sort((a, b) => a.ctime - b.ctime)
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i].ctime < sorted[i - 1].ctime) {
+      return false // Time went backwards
+    }
+  }
+
+  return true
+}
+```
+
+**Pattern: Canonical forms for ordering**
+
+Convert to deterministic representation:
+
+```typescript
+function canonicalizeSnapshot(snapshot: Map<string, any>): string {
+  // Sort keys, stringify values deterministically
+  const entries = [...snapshot.entries()].sort(([a], [b]) => a.localeCompare(b))
+
+  return JSON.stringify(entries.map(([k, v]) => [k, canonicalizeValue(v)]))
+}
+
+function canonicalizeValue(v: any): any {
+  if (Array.isArray(v)) {
+    return [...v].sort().map(canonicalizeValue)
+  }
+  if (v && typeof v === "object") {
+    return canonicalizeSnapshot(new Map(Object.entries(v)))
+  }
+  return v
+}
+```
+
+### 15.3 Test Performance at Scale
+
+The Stream-FS team ran 425 tests in ~4 seconds. As test suites grow, performance becomes critical.
+
+**Baseline metrics to track**:
+
+| Metric              | Target      | Red Flag    |
+| ------------------- | ----------- | ----------- |
+| Total suite time    | < 30s       | > 2 min     |
+| Per-test average    | < 100ms     | > 500ms     |
+| Setup/teardown      | < 20% total | > 50% total |
+| Parallel efficiency | > 80%       | < 50%       |
+
+**Pattern: Tiered test execution**
+
+Run different test categories at different frequencies:
+
+```typescript
+// vitest.config.ts
+export default {
+  test: {
+    // Fast tests: run always
+    include: ["test/unit/**/*.test.ts", "test/properties/**/*.test.ts"],
+
+    // Slow tests: run in CI only
+    ...(process.env.CI && {
+      include: [
+        "test/unit/**/*.test.ts",
+        "test/properties/**/*.test.ts",
+        "test/exhaustive/**/*.test.ts", // Slower
+        "test/multi-agent/**/*.test.ts", // Much slower
+      ],
+    }),
+  },
+}
+```
+
+**Pattern: Shared fixtures with isolation**
+
+Create expensive resources once, but ensure test isolation:
+
+```typescript
+// Shared server instance (created once)
+let sharedServer: Server | null = null
+
+beforeAll(async () => {
+  sharedServer = await startServer()
+})
+
+afterAll(async () => {
+  await sharedServer?.stop()
+})
+
+// Per-test isolation via namespacing
+beforeEach((ctx) => {
+  // Each test gets its own namespace
+  ctx.namespace = `test-${randomId()}`
+})
+
+afterEach(async (ctx) => {
+  // Clean up only this test's data
+  await sharedServer?.cleanup(ctx.namespace)
+})
+```
+
+**Pattern: Parallel test design**
+
+Ensure tests can run concurrently without interference:
+
+```typescript
+// BAD: Tests share global state
+let globalCounter = 0
+it("increments counter", () => {
+  globalCounter++
+  expect(globalCounter).toBe(1) // Flaky if parallel!
+})
+
+// GOOD: Tests use isolated state
+it("increments counter", () => {
+  const counter = createCounter()
+  counter.increment()
+  expect(counter.value).toBe(1) // Always passes
+})
+```
+
+**Pattern: Connection pooling for multi-agent tests**
+
+The Stream-FS team hit connection pool exhaustion at 10 agents:
+
+```typescript
+// Configure connection limits for tests
+const testHttpAgent = new http.Agent({
+  maxSockets: 50, // Increase from default 5
+  keepAlive: true,
+  keepAliveMsecs: 1000,
+})
+
+// Share agent across test clients
+function createTestClient(agentId: string): Client {
+  return new Client({
+    baseUrl: testServer.url,
+    httpAgent: testHttpAgent, // Shared pool
+    namespace: `agent-${agentId}`,
+  })
+}
+```
+
+**Pattern: Profile before optimizing**
+
+Identify actual bottlenecks:
+
+```typescript
+// Add timing to test setup
+beforeEach(async (ctx) => {
+  const start = performance.now()
+  ctx.fs = await createTestFilesystem()
+  const setup = performance.now() - start
+
+  if (setup > 100) {
+    console.warn(`Slow setup (${setup.toFixed(0)}ms): ${ctx.task.name}`)
+  }
+})
+
+// Aggregate in CI
+afterAll(() => {
+  console.log("Test timing summary:")
+  console.log(`  Slowest setup: ${stats.maxSetup}ms`)
+  console.log(`  Slowest test: ${stats.maxTest}ms`)
+  console.log(
+    `  Total time in setup: ${stats.totalSetup}ms (${stats.setupPercent}%)`
+  )
+})
+```
+
+### 15.4 Mutation Testing for Test Quality
+
+The Stream-FS team mentioned skipping mutation testing. Here's how to add it:
+
+**What is mutation testing?** Deliberately introduce bugs (mutations) into your code and verify that tests catch them. If a mutation survives (tests still pass), you have a coverage gap.
+
+```typescript
+// Original code
+function isValidPath(path: string): boolean {
+  return path.startsWith("/") && !path.includes("..")
+}
+
+// Mutation 1: Change && to ||
+function isValidPath(path: string): boolean {
+  return path.startsWith("/") || !path.includes("..") // MUTANT
+}
+
+// Mutation 2: Negate condition
+function isValidPath(path: string): boolean {
+  return !path.startsWith("/") && !path.includes("..") // MUTANT
+}
+
+// If your tests pass with either mutation, they're incomplete
+```
+
+**Tools**: Use Stryker (JavaScript/TypeScript) for automated mutation testing:
+
+```bash
+npx stryker run
+```
+
+**Focus mutation testing on**:
+
+1. Boundary conditions (`<` vs `<=`, `>` vs `>=`)
+2. Boolean logic (&&, ||, !)
+3. Null/undefined checks
+4. Error handling paths
 
 ---
 
