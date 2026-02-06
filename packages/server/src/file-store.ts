@@ -14,10 +14,11 @@ import {
   formatJsonResponse,
   normalizeContentType,
   processJsonAppend,
-} from "./store"
-import type { AppendOptions, AppendResult } from "./store"
+} from "./protocol"
 import type { Database } from "lmdb"
 import type {
+  AppendOptions,
+  AppendResult,
   PendingLongPoll,
   ProducerState,
   ProducerValidationResult,
@@ -716,7 +717,7 @@ export class FileBackedStreamStore {
     streamPath: string,
     data: Uint8Array,
     options: AppendOptions & { isInitialCreate?: boolean } = {}
-  ): Promise<StreamMessage | AppendResult | null> {
+  ): Promise<StreamMessage | AppendResult> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
 
     if (!streamMeta) {
@@ -803,9 +804,8 @@ export class FileBackedStreamStore {
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
       processedData = processJsonAppend(data, options.isInitialCreate ?? false)
-      // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
-        return null
+        return { message: null }
       }
     }
 
@@ -918,7 +918,7 @@ export class FileBackedStreamStore {
     if (!options.producerId) {
       // No producer - just do a normal append
       const result = await this.append(streamPath, data, options)
-      if (result && `message` in result) {
+      if (`message` in result) {
         return result
       }
       return { message: result }
@@ -932,7 +932,7 @@ export class FileBackedStreamStore {
 
     try {
       const result = await this.append(streamPath, data, options)
-      if (result && `message` in result) {
+      if (`message` in result) {
         return result
       }
       return { message: result }
