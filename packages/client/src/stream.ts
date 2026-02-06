@@ -463,7 +463,7 @@ export class DurableStream {
     // Await promises before buffering
     const resolvedBody = isPromiseLike(body) ? await body : body
 
-    if (this.#batchingEnabled && this.#queue) {
+    if (this.#batchingEnabled && this.#queue && !opts?.ifMatch) {
       return this.#appendWithBatching(resolvedBody, opts)
     }
     return this.#appendDirect(resolvedBody, opts)
@@ -488,7 +488,6 @@ export class DurableStream {
       requestHeaders[STREAM_SEQ_HEADER] = opts.seq
     }
 
-    // Add If-Match header for optimistic concurrency control
     if (opts?.ifMatch) {
       requestHeaders[`if-match`] = opts.ifMatch
     }
@@ -522,7 +521,6 @@ export class DurableStream {
       signal: opts?.signal ?? this.#options.signal,
     })
 
-    // Handle 412 Precondition Failed for If-Match
     if (response.status === 412) {
       const currentETag = response.headers.get(`etag`) ?? undefined
       const currentOffset =

@@ -298,6 +298,9 @@ async def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     if cmd.get("seq") is not None:
         seq = str(cmd["seq"])
 
+    # Get ifMatch if provided
+    if_match = cmd.get("ifMatch")
+
     # Retry loop for 5xx errors (matching TypeScript client behavior)
     max_retries = 3
     base_delay = 0.1  # 100ms
@@ -305,7 +308,7 @@ async def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     for attempt in range(max_retries + 1):
         try:
             ds = AsyncDurableStream(url, content_type=content_type, headers=merged_headers, batching=False)
-            await ds.append(data, seq=seq)
+            await ds.append(data, seq=seq, if_match=if_match)
             head = await ds.head()
             await ds.aclose()
 

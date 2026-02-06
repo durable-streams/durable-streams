@@ -25,7 +25,7 @@ tests:
       - action: append
         path: ${streamPath}
         data: '{"event": "first"}'
-        ifMatch: '"${headResult.nextOffset}"'
+        ifMatch: '"${headResult.offset}"'
         expect:
           status: 200
 
@@ -68,7 +68,7 @@ tests:
       - action: append
         path: ${streamPath}
         data: '{"event": "test"}'
-        ifMatch: "${headResult.nextOffset}"
+        ifMatch: "${headResult.offset}"
         expect:
           status: 412
           errorCode: PRECONDITION_FAILED
@@ -125,7 +125,7 @@ tests:
       - action: append
         path: ${streamPath}
         data: '{"writer": "second"}'
-        ifMatch: '"${initialState.nextOffset}"'
+        ifMatch: '"${initialState.offset}"'
         expect:
           status: 412
           errorCode: PRECONDITION_FAILED
@@ -153,13 +153,13 @@ tests:
       - action: append
         path: ${streamPath}
         data: '{"writer": "second"}'
-        ifMatch: '"${initialState.nextOffset}"'
+        ifMatch: '"${initialState.offset}"'
         expect:
           status: 412
           errorCode: PRECONDITION_FAILED
       - action: append
         path: ${streamPath}
         data: '{"writer": "second"}'
-        ifMatch: '"${firstAppend.nextOffset}"'
+        ifMatch: '"${firstAppend.offset}"'
         expect:
           status: 200

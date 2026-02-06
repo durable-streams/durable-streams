@@ -321,7 +321,7 @@ def error_from_status(
     status: int,
     url: str,
     body: str | bytes | None = None,
-    headers: dict[str, str] | None = None,  # noqa: ARG001 - kept for API compatibility
+    headers: dict[str, str] | None = None,
     operation: str | None = None,
 ) -> DurableStreamError:
     """
@@ -379,7 +379,17 @@ def error_from_status(
         return RetentionGoneError(details=details)
 
     if status == 412:
-        return PreconditionFailedError(url=url)
+        current_etag = headers.get("etag") if headers else None
+        current_offset = headers.get("stream-next-offset") if headers else None
+        stream_closed = (
+            headers.get("stream-closed", "").lower() == "true"
+        ) if headers else False
+        return PreconditionFailedError(
+            url=url,
+            current_etag=current_etag,
+            current_offset=current_offset,
+            stream_closed=stream_closed,
+        )
 
     if status == 429:
         return DurableStreamError(

@@ -461,6 +461,7 @@ class AsyncDurableStream:
         *,
         seq: str | None = None,
         content_type: str | None = None,
+        if_match: str | None = None,
     ) -> AppendResult:
         """
         Append data to the stream.
@@ -472,17 +473,21 @@ class AsyncDurableStream:
         Args:
             data: Data to append. For JSON streams, pass pre-serialized JSON strings.
                   For byte streams, pass bytes or str.
+            seq: Optional sequence number for writer coordination
+            content_type: Optional content type override
+            if_match: Optional If-Match header for optimistic concurrency control.
+                      Format: `"<offset>"` (quoted string per HTTP spec).
+                      When set, the append will only succeed if the stream's
+                      current offset matches this value.
 
         Returns:
             AppendResult with the new tail offset
 
-        Example:
-            # JSON stream - pass pre-serialized JSON
-            await stream.append(json.dumps({"message": "hello"}))
-
-            # Byte stream
-            await stream.append(b"raw bytes")
+        Raises:
+            PreconditionFailedError: If if_match precondition fails (412)
         """
+        if if_match is not None:
+            return await self._append_direct(data, seq, content_type, if_match)
         if self._batching:
             return await self._append_with_batching(data, seq, content_type)
         return await self._append_direct(data, seq, content_type)
@@ -492,6 +497,7 @@ class AsyncDurableStream:
         data: bytes | str,
         seq: str | None,
         content_type: str | None,
+        if_match: str | None = None,
     ) -> AppendResult:
         """Direct append without batching."""
         resolved_headers = await resolve_headers_async(self._headers)
@@ -504,6 +510,9 @@ class AsyncDurableStream:
 
         if seq:
             resolved_headers[STREAM_SEQ_HEADER] = seq
+
+        if if_match:
+            resolved_headers["if-match"] = if_match
 
         if is_json_content_type(ct):
             # For JSON mode, wrap pre-serialized JSON string in array

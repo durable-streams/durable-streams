@@ -240,7 +240,6 @@ func (s *Stream) Append(ctx context.Context, data []byte, opts ...AppendOption) 
 		// Could be sequence conflict or content-type mismatch
 		return nil, newStreamError("append", s.url, resp.StatusCode, ErrSeqConflict)
 	case http.StatusPreconditionFailed:
-		// 412 - If-Match precondition failed (concurrent modification)
 		return nil, newStreamError("append", s.url, resp.StatusCode, &PreconditionFailedError{
 			CurrentETag:   resp.Header.Get(headerETag),
 			CurrentOffset: Offset(resp.Header.Get(headerStreamOffset)),

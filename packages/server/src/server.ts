@@ -4,7 +4,7 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
+import { StreamStore, normalizeContentType } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
 import type { CursorOptions } from "./cursor"
@@ -1231,17 +1231,15 @@ export class DurableStreamTestServer {
       }
     }
 
-    // Check If-Match header for optimistic concurrency control
     const ifMatch = req.headers[`if-match`]
 
-    // If-Match and producer headers are mutually exclusive (per PROTOCOL.md Section 5.2.2)
+    // If-Match and producer headers are mutually exclusive (Section 5.2.2)
     if (ifMatch && hasProducerHeaders) {
       res.writeHead(400, { "content-type": `text/plain` })
       res.end(`If-Match and producer headers are mutually exclusive`)
       return
     }
 
-    // Check stream exists for If-Match validation
     const stream = this.store.get(path)
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
@@ -1251,32 +1249,35 @@ export class DurableStreamTestServer {
 
     const body = await this.readBody(req)
 
-    // Per protocol error precedence, check stream closure before If-Match
-    // IMPORTANT: This early closure check only applies to requests WITHOUT producer headers.
-    // Requests WITH producer headers should go through the producer sequencing logic,
-    // which handles duplicates correctly (returning 204 for idempotent retries).
+    // Error precedence: check stream closure before If-Match.
+    // Skip for close-only requests (idempotent) and producer requests (handled downstream).
     const isCloseOnlyRequest = body.length === 0 && closeStream
 
-    // For non-close, non-producer requests, check if stream is closed first (error precedence: closure before If-Match)
     if (stream.closed && !isCloseOnlyRequest && !hasAllProducerHeaders) {
-      // If there's a body or no Stream-Closed header, this is an append attempt to a closed stream
-      if (body.length > 0 || !closeStream) {
-        res.writeHead(409, {
-          "content-type": `text/plain`,
-          [STREAM_CLOSED_HEADER]: `true`,
-          [STREAM_OFFSET_HEADER]: stream.currentOffset,
-        })
-        res.end(`Stream is closed`)
+      res.writeHead(409, {
+        "content-type": `text/plain`,
+        [STREAM_CLOSED_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: stream.currentOffset,
+      })
+      res.end(`Stream is closed`)
+      return
+    }
+
+    // Content-type mismatch check (before If-Match per error precedence)
+    if (contentType && stream.contentType && body.length > 0) {
+      const providedType = normalizeContentType(contentType)
+      const streamType = normalizeContentType(stream.contentType)
+      if (providedType !== streamType) {
+        res.writeHead(409, { "content-type": `text/plain` })
+        res.end(`Content-type mismatch`)
         return
       }
     }
 
-    // Check If-Match precondition (after closure check per error precedence)
     if (ifMatch) {
       const currentETag = `"${stream.currentOffset}"`
 
       if (ifMatch !== currentETag) {
-        // Precondition failed - return 412 with current ETag
         const headers: Record<string, string> = {
           etag: currentETag,
           [STREAM_OFFSET_HEADER]: stream.currentOffset,

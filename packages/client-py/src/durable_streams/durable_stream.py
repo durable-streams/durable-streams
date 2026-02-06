@@ -626,7 +626,6 @@ class DurableStream:
         if seq:
             resolved_headers[STREAM_SEQ_HEADER] = seq
 
-        # Add If-Match header for optimistic concurrency control
         if if_match:
             resolved_headers["if-match"] = if_match
 
@@ -643,7 +642,6 @@ class DurableStream:
             timeout=self._timeout,
         )
 
-        # Handle 412 Precondition Failed for If-Match
         if response.status_code == 412:
             current_etag = response.headers.get("etag")
             current_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)

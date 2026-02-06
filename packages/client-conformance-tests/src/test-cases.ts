@@ -126,8 +126,12 @@ export interface AppendOperation {
   binaryData?: string
   /** Sequence number for ordering (Stream-Seq header) */
   seq?: number
+  /** If-Match header for optimistic concurrency control */
+  ifMatch?: string
   headers?: Record<string, string>
   expect?: AppendExpectation
+  /** Save the result object into a variable */
+  saveAs?: string
   /** Producer ID for idempotent producers */
   producerId?: string
   /** Producer epoch for idempotent producers */
@@ -291,6 +295,8 @@ export interface HeadOperation {
   path: string
   headers?: Record<string, string>
   expect?: HeadExpectation
+  /** Save the result object into a variable */
+  saveAs?: string
 }
 
 /**

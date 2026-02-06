@@ -701,40 +701,21 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
 	}
 
-	// Check If-Match header for optimistic concurrency control
 	ifMatch := r.Header.Get("If-Match")
 
-	// If-Match and producer headers are mutually exclusive (per PROTOCOL.md Section 5.2.2)
+	// If-Match and producer headers are mutually exclusive (Section 5.2.2)
 	if ifMatch != "" && hasProducerHeaders {
 		return newHTTPError(http.StatusBadRequest, "If-Match and producer headers are mutually exclusive")
 	}
 
-	// Per protocol error precedence, check stream closure before If-Match.
-	// This only applies to non-close, non-producer requests.
+	// Error precedence: check stream closure before If-Match.
+	// Skip for close-only requests (idempotent) and producer requests (handled downstream).
 	isCloseOnlyRequest := len(body) == 0 && closeStream
 	if meta.Closed && !isCloseOnlyRequest && !hasAllProducerHeaders {
-		if len(body) > 0 || !closeStream {
-			w.Header().Set(HeaderStreamClosed, "true")
-			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
-			http.Error(w, "stream is closed", http.StatusConflict)
-			return nil
-		}
-	}
-
-	// Check If-Match precondition (after closure check per error precedence)
-	if ifMatch != "" {
-		currentETag := fmt.Sprintf(`"%s"`, meta.CurrentOffset.String())
-
-		if ifMatch != currentETag {
-			// Precondition failed - return 412 with current ETag
-			w.Header().Set("ETag", currentETag)
-			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
-			if meta.Closed {
-				w.Header().Set(HeaderStreamClosed, "true")
-			}
-			w.WriteHeader(http.StatusPreconditionFailed)
-			return nil
-		}
+		w.Header().Set(HeaderStreamClosed, "true")
+		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+		http.Error(w, "stream is closed", http.StatusConflict)
+		return nil
 	}
 
 	var producerEpoch *int64
@@ -837,6 +818,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		Seq:         r.Header.Get(HeaderStreamSeq),
 		ContentType: contentType,
 		Close:       closeStream,
+		IfMatch:     ifMatch,
 	}
 
 	if hasAllProducerHeaders {
@@ -847,8 +829,17 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 
 	result, err := h.store.Append(path, body, opts)
 	if err != nil {
+		if errors.Is(err, store.ErrPreconditionFailed) {
+			currentETag := fmt.Sprintf(`"%s"`, result.Offset.String())
+			w.Header().Set("ETag", currentETag)
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+			if result.StreamClosed {
+				w.Header().Set(HeaderStreamClosed, "true")
+			}
+			w.WriteHeader(http.StatusPreconditionFailed)
+			return nil
+		}
 		if errors.Is(err, store.ErrStreamClosed) {
-			// Stream is closed - return 409 with Stream-Closed header
 			w.Header().Set(HeaderStreamClosed, "true")
 			http.Error(w, "stream is closed", http.StatusConflict)
 			return nil

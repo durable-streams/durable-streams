@@ -68,6 +68,8 @@ export interface AppendCommand {
   binary?: boolean
   /** Optional sequence number for ordering (Stream-Seq header) */
   seq?: number
+  /** If-Match header for optimistic concurrency control */
+  ifMatch?: string
   /** Custom headers to include */
   headers?: Record<string, string>
   /** Producer ID for idempotent producers */
@@ -803,6 +805,8 @@ export const ErrorCodes = {
   NOT_SUPPORTED: `NOT_SUPPORTED`,
   /** Invalid argument passed to client API */
   INVALID_ARGUMENT: `INVALID_ARGUMENT`,
+  /** If-Match precondition failed (412) */
+  PRECONDITION_FAILED: `PRECONDITION_FAILED`,
 } as const
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes]
