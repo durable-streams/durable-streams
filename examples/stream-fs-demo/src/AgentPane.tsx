@@ -1,205 +1,151 @@
-import { useCallback, useState } from "react"
-import { useFilesystem } from "./useFilesystem"
-import type { WatchLogEntry } from "./useFilesystem"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useAgentLoop } from "./useAgentLoop"
+import type { DurableFilesystem } from "@durable-streams/stream-fs"
+import type { LogEntry } from "./useAgentLoop"
 
 interface AgentPaneProps {
   name: string
-  baseUrl: string
-  streamPrefix: string
+  apiKey: string
+  fs: DurableFilesystem | null
 }
 
-export default function AgentPane({
-  name,
-  baseUrl,
-  streamPrefix,
-}: AgentPaneProps) {
-  const {
-    files,
-    loading,
-    error,
-    selectedFile,
-    content,
-    dirty,
-    conflict,
-    watchLog,
-    selectFile,
-    createFile,
-    saveFile,
-    deleteFile,
-    setContent,
-    clearConflict,
-  } = useFilesystem(baseUrl, streamPrefix)
+export default function AgentPane({ name, apiKey, fs }: AgentPaneProps) {
+  const { log, running, ready, start, stop, clearLog } = useAgentLoop(
+    name,
+    apiKey,
+    fs
+  )
+  const [prompt, setPrompt] = useState(``)
+  const logEndRef = useRef<HTMLDivElement>(null)
 
-  const [newFileName, setNewFileName] = useState(``)
-  const [showNewFile, setShowNewFile] = useState(false)
+  // Auto-scroll to bottom when new log entries appear
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: `smooth` })
+  }, [log.length])
 
-  const handleCreateFile = useCallback(async () => {
-    if (!newFileName.trim()) return
-    const fileName = newFileName.trim().includes(`.`)
-      ? newFileName.trim()
-      : `${newFileName.trim()}.txt`
-    await createFile(fileName, ``)
-    setNewFileName(``)
-    setShowNewFile(false)
-  }, [newFileName, createFile])
+  const handleSubmit = useCallback(
+    (e: React.FormEvent) => {
+      e.preventDefault()
+      const text = prompt.trim()
+      if (!text || !ready) return
+      setPrompt(``)
+      start(text)
+    },
+    [prompt, ready, start]
+  )
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === `Enter`) {
-        handleCreateFile()
-      } else if (e.key === `Escape`) {
-        setShowNewFile(false)
-        setNewFileName(``)
+      if (e.key === `Enter` && !e.shiftKey) {
+        e.preventDefault()
+        handleSubmit(e)
       }
     },
-    [handleCreateFile]
+    [handleSubmit]
   )
-
-  if (loading) {
-    return (
-      <div className="agent-pane">
-        <div className="agent-header">{name}</div>
-        <div className="agent-loading">Connecting...</div>
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="agent-pane">
-        <div className="agent-header">{name}</div>
-        <div className="agent-error">{error}</div>
-      </div>
-    )
-  }
 
   return (
     <div className="agent-pane">
-      <div className="agent-header">{name}</div>
-      <div className="agent-body">
-        {/* File sidebar */}
-        <div className="file-sidebar">
-          <div className="file-list">
-            {files.length === 0 && (
-              <div className="file-empty">No files yet</div>
-            )}
-            {files.map((entry) => {
-              const path = `/${entry.name}`
-              return (
-                <button
-                  key={entry.name}
-                  className={`file-item ${selectedFile === path ? `selected` : ``}`}
-                  onClick={() => selectFile(path)}
-                >
-                  {entry.name}
-                </button>
-              )
-            })}
-          </div>
-          {showNewFile ? (
-            <div className="new-file-input">
-              <input
-                type="text"
-                value={newFileName}
-                onChange={(e) => setNewFileName(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="filename.txt"
-                autoFocus
-              />
-              <button className="btn-sm" onClick={handleCreateFile}>
-                OK
-              </button>
-              <button
-                className="btn-sm btn-cancel"
-                onClick={() => {
-                  setShowNewFile(false)
-                  setNewFileName(``)
-                }}
-              >
-                &times;
-              </button>
-            </div>
-          ) : (
-            <button
-              className="btn-new-file"
-              onClick={() => setShowNewFile(true)}
-            >
-              + New File
+      <div className="agent-header">
+        <span className="agent-name">{name}</span>
+        <div className="agent-header-actions">
+          {running && (
+            <button className="btn btn-stop" onClick={stop}>
+              Stop
             </button>
           )}
-        </div>
-
-        {/* Editor area */}
-        <div className="editor-area">
-          {selectedFile ? (
-            <>
-              <div className="editor-toolbar">
-                <span className="editor-filename">
-                  {selectedFile}
-                  {dirty && <span className="dirty-indicator"> *</span>}
-                </span>
-                <div className="editor-actions">
-                  <button
-                    className="btn btn-save"
-                    onClick={saveFile}
-                    disabled={!dirty}
-                  >
-                    Save
-                  </button>
-                  <button className="btn btn-delete" onClick={deleteFile}>
-                    Delete
-                  </button>
-                </div>
-              </div>
-              {conflict && (
-                <div className="conflict-banner">
-                  Conflict: file was modified by another agent.
-                  <button className="btn-sm" onClick={clearConflict}>
-                    Reload latest
-                  </button>
-                </div>
-              )}
-              <textarea
-                className="editor-textarea"
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                spellCheck={false}
-              />
-            </>
-          ) : (
-            <div className="editor-placeholder">
-              Select a file or create a new one
-            </div>
-          )}
+          <button
+            className="btn btn-clear"
+            onClick={clearLog}
+            disabled={running}
+          >
+            Clear
+          </button>
         </div>
       </div>
 
-      {/* Watch event log */}
-      <div className="watch-log">
-        {watchLog.slice(0, 5).map((entry, i) => (
-          <WatchLogItem key={`${entry.timestamp}-${i}`} entry={entry} />
+      {/* Action log */}
+      <div className="agent-log">
+        {!ready && <div className="agent-loading">Connecting...</div>}
+        {ready && log.length === 0 && (
+          <div className="agent-log-empty">
+            Enter a prompt to start the agent
+          </div>
+        )}
+        {log.map((entry) => (
+          <LogEntryItem key={entry.id} entry={entry} />
         ))}
+        {running && (
+          <div className="agent-log-entry agent-log-thinking">
+            <span className="log-icon">{`\u25CF`}</span>
+            <span className="log-content">Thinking...</span>
+          </div>
+        )}
+        <div ref={logEndRef} />
       </div>
+
+      {/* Prompt input */}
+      <form className="agent-prompt" onSubmit={handleSubmit}>
+        <textarea
+          className="agent-prompt-input"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={
+            !apiKey
+              ? `Set API key first...`
+              : ready
+                ? `Enter a task for this agent...`
+                : `Connecting...`
+          }
+          disabled={!ready || !apiKey}
+          rows={2}
+        />
+        <button
+          className="btn btn-run"
+          type="submit"
+          disabled={!prompt.trim() || !ready || !apiKey}
+        >
+          Run
+        </button>
+      </form>
     </div>
   )
 }
 
-function WatchLogItem({ entry }: { entry: WatchLogEntry }) {
-  const labels: Record<string, string> = {
-    add: `+`,
-    change: `~`,
-    unlink: `-`,
-    addDir: `+D`,
-    unlinkDir: `-D`,
+function LogEntryItem({ entry }: { entry: LogEntry }) {
+  const [expanded, setExpanded] = useState(false)
+
+  const icons: Record<string, string> = {
+    user: `\u25B6`,
+    assistant: `\u2759`,
+    tool_call: `\u2699`,
+    tool_result: `\u2192`,
+    error: `\u2717`,
+    done: `\u2713`,
+    fs_event: `\u26A1`,
   }
-  const label = labels[entry.eventType] || entry.eventType
-  const age = Math.round((Date.now() - entry.timestamp) / 1000)
 
   return (
-    <span className={`watch-entry watch-${entry.eventType}`}>
-      <span className="watch-label">{label}</span>
-      {entry.path}
-      {age > 0 && <span className="watch-age">{age}s</span>}
-    </span>
+    <div className={`agent-log-entry agent-log-${entry.type}`}>
+      <span className="log-icon">{icons[entry.type] || `\u2022`}</span>
+      <div className="log-body">
+        <span
+          className="log-content"
+          onClick={entry.detail ? () => setExpanded(!expanded) : undefined}
+          style={entry.detail ? { cursor: `pointer` } : undefined}
+        >
+          {entry.content}
+          {entry.detail && (
+            <span className="log-expand">
+              {expanded ? ` \u25B4` : ` \u25BE`}
+            </span>
+          )}
+        </span>
+        {expanded && entry.detail && (
+          <pre className="log-detail">{entry.detail}</pre>
+        )}
+      </div>
+    </div>
   )
 }

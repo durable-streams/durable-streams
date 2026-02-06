@@ -137,9 +137,24 @@ importers:
 
   examples/stream-fs-demo:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.50.0
+        version: 0.50.4
+      '@durable-streams/client':
+        specifier: workspace:^
+        version: link:../../packages/client
+      '@durable-streams/state':
+        specifier: workspace:^
+        version: link:../../packages/state
       '@durable-streams/stream-fs':
         specifier: workspace:^
         version: link:../../packages/stream-fs
+      '@tanstack/db':
+        specifier: 0.5.22
+        version: 0.5.22(typescript@5.9.3)
+      '@tanstack/react-db':
+        specifier: 0.1.66
+        version: 0.1.66(react@19.2.3)(typescript@5.9.3)
       react:
         specifier: ^19.2.1
         version: 19.2.3
@@ -479,9 +494,15 @@ importers:
       '@durable-streams/client':
         specifier: workspace:*
         version: link:../client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../state
       diff-match-patch:
         specifier: ^1.0.5
         version: 1.0.5
+      zod:
+        specifier: ^4.3.6
+        version: 4.3.6
     devDependencies:
       '@durable-streams/server':
         specifier: workspace:*
@@ -4195,6 +4216,9 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
+  zod@4.3.6:
+    resolution: {integrity: sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg==}
+
 snapshots:
 
   '@anthropic-ai/sdk@0.50.4': {}
@@ -7904,3 +7928,5 @@ snapshots:
   yocto-queue@0.1.0: {}
 
   zod@3.25.76: {}
+
+  zod@4.3.6: {}

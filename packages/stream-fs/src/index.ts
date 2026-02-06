@@ -26,7 +26,9 @@
  * ```
  */
 
-export { DurableFilesystem } from "./filesystem"
+export { DurableFilesystem, METADATA_COLLECTION_TYPE } from "./filesystem"
+
+export { metadataStateSchema } from "./metadata-state"
 
 export type {
   ContentType,

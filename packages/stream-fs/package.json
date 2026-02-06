@@ -36,7 +36,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.50.0",
     "@durable-streams/client": "workspace:*",
-    "diff-match-patch": "^1.0.5"
+    "@durable-streams/state": "workspace:*",
+    "diff-match-patch": "^1.0.5",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",

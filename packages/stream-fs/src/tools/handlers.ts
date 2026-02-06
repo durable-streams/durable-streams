@@ -49,8 +49,9 @@ export interface DeleteFileInput {
 
 export interface EditFileInput {
   path: string
-  old_str: string
-  new_str: string
+  old_str?: string
+  new_str?: string
+  edits?: Array<{ old_str: string; new_str: string }>
 }
 
 export interface ListDirectoryInput {
@@ -162,31 +163,53 @@ async function handleEditFile(
   fs: DurableFilesystem,
   input: EditFileInput
 ): Promise<ToolResult> {
-  const { path, old_str, new_str } = input
+  const { path } = input
 
-  const currentContent = await fs.readTextFile(path)
-  const occurrences = currentContent.split(old_str).length - 1
-
-  if (occurrences === 0) {
+  // Normalize to an array of edits
+  let edits: Array<{ old_str: string; new_str: string }>
+  if (input.edits && input.edits.length > 0) {
+    edits = input.edits
+  } else if (input.old_str !== undefined && input.new_str !== undefined) {
+    edits = [{ old_str: input.old_str, new_str: input.new_str }]
+  } else {
     return {
       success: false,
-      error: `String not found in file: "${old_str.slice(0, 50)}${old_str.length > 50 ? `...` : ``}"`,
+      error: `Must provide either old_str/new_str or edits array`,
       errorType: `validation`,
     }
   }
 
-  if (occurrences > 1) {
-    return {
-      success: false,
-      error: `String appears ${occurrences} times in file. It must appear exactly once for edit_file to work. Use write_file instead.`,
-      errorType: `validation`,
+  let currentContent = await fs.readTextFile(path)
+
+  // Validate all edits first before applying any
+  for (const edit of edits) {
+    const occurrences = currentContent.split(edit.old_str).length - 1
+
+    if (occurrences === 0) {
+      return {
+        success: false,
+        error: `String not found in file: "${edit.old_str.slice(0, 50)}${edit.old_str.length > 50 ? `...` : ``}"`,
+        errorType: `validation`,
+      }
+    }
+
+    if (occurrences > 1) {
+      return {
+        success: false,
+        error: `String appears ${occurrences} times in file. It must appear exactly once for edit_file to work. Use write_file instead.`,
+        errorType: `validation`,
+      }
     }
   }
 
-  const newContent = currentContent.replace(old_str, () => new_str)
-  await fs.writeFile(path, newContent)
+  // Apply edits sequentially
+  for (const edit of edits) {
+    currentContent = currentContent.replace(edit.old_str, () => edit.new_str)
+  }
 
-  return { success: true, result: { edited: true } }
+  await fs.writeFile(path, currentContent)
+
+  return { success: true, result: { edited: true, edits: edits.length } }
 }
 
 function handleListDirectory(

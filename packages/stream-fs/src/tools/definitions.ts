@@ -77,7 +77,10 @@ export const streamFsTools: Array<Tool> = [
   },
   {
     name: `edit_file`,
-    description: `Edit a file by finding and replacing a string. The old_str must appear exactly once in the file. Returns an error if the string is not found or appears multiple times.`,
+    description: `Edit a file by finding and replacing strings. Supports two modes:
+1. Single edit: provide old_str and new_str at the top level.
+2. Batch edit: provide an edits array of {old_str, new_str} pairs to make multiple changes at once.
+Each old_str must appear exactly once in the file. Returns an error if any string is not found or appears multiple times.`,
     input_schema: {
       type: `object` as const,
       properties: {
@@ -87,14 +90,32 @@ export const streamFsTools: Array<Tool> = [
         },
         old_str: {
           type: `string`,
-          description: `The exact string to find and replace. Must appear exactly once in the file.`,
+          description: `The exact string to find and replace. Must appear exactly once in the file. Use this for single edits.`,
         },
         new_str: {
           type: `string`,
-          description: `The string to replace old_str with`,
+          description: `The string to replace old_str with. Required when old_str is provided.`,
+        },
+        edits: {
+          type: `array`,
+          description: `An array of edits to apply. Use this for batch edits instead of old_str/new_str. Each edit's old_str must appear exactly once in the file.`,
+          items: {
+            type: `object`,
+            properties: {
+              old_str: {
+                type: `string`,
+                description: `The exact string to find and replace`,
+              },
+              new_str: {
+                type: `string`,
+                description: `The string to replace old_str with`,
+              },
+            },
+            required: [`old_str`, `new_str`],
+          },
         },
       },
-      required: [`path`, `old_str`, `new_str`],
+      required: [`path`],
     },
   },
   {

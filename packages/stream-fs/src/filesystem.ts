@@ -29,6 +29,7 @@ import {
   normalizePath,
   now,
 } from "./utils"
+import { metadataStateSchema } from "./metadata-state"
 import type {
   ContentEvent,
   ContentType,
@@ -44,12 +45,11 @@ import type {
   WatchOptions,
   Watcher,
 } from "./types"
+import type { ChangeEvent } from "@durable-streams/state"
 
-interface MetadataEvent {
-  type: `insert` | `update` | `delete`
-  key: string
-  value?: Metadata
-}
+export { METADATA_COLLECTION_TYPE } from "./metadata-state"
+
+const metadataEvents = metadataStateSchema.metadata
 
 type WatchListenerMap = Map<
   string,
@@ -239,7 +239,9 @@ export class DurableFilesystem {
         createdAt: now(),
         modifiedAt: now(),
       }
-      await this.appendMetadata({ type: `insert`, key: `/`, value: rootMeta })
+      await this.appendMetadata(
+        metadataEvents.insert({ value: { path: `/`, ...rootMeta } })
+      )
       this.directories.set(`/`, rootMeta)
     }
 
@@ -336,11 +338,9 @@ export class DurableFilesystem {
     }
 
     try {
-      await this.appendMetadata({
-        type: `insert`,
-        key: normalizedPath,
-        value: fileMeta,
-      })
+      await this.appendMetadata(
+        metadataEvents.insert({ value: { path: normalizedPath, ...fileMeta } })
+      )
       this.files.set(normalizedPath, fileMeta)
     } catch (err) {
       this.contentStreams.delete(contentStreamId)
@@ -411,11 +411,11 @@ export class DurableFilesystem {
       modifiedAt: now(),
     }
     try {
-      await this.appendMetadata({
-        type: `update`,
-        key: normalizedPath,
-        value: updatedMeta,
-      })
+      await this.appendMetadata(
+        metadataEvents.update({
+          value: { path: normalizedPath, ...updatedMeta },
+        })
+      )
       this.files.set(normalizedPath, updatedMeta)
       this.readSnapshots.set(normalizedPath, { ...updatedMeta })
     } catch (err) {
@@ -479,7 +479,7 @@ export class DurableFilesystem {
 
     const fileMeta = this.getFileMeta(normalizedPath)
 
-    await this.appendMetadata({ type: `delete`, key: normalizedPath })
+    await this.appendMetadata(metadataEvents.delete({ key: normalizedPath }))
     this.files.delete(normalizedPath)
     this.readSnapshots.delete(normalizedPath)
 
@@ -542,11 +542,11 @@ export class DurableFilesystem {
       modifiedAt: now(),
     }
     try {
-      await this.appendMetadata({
-        type: `update`,
-        key: normalizedPath,
-        value: updatedMeta,
-      })
+      await this.appendMetadata(
+        metadataEvents.update({
+          value: { path: normalizedPath, ...updatedMeta },
+        })
+      )
       this.files.set(normalizedPath, updatedMeta)
       this.readSnapshots.set(normalizedPath, { ...updatedMeta })
     } catch (err) {
@@ -595,11 +595,9 @@ export class DurableFilesystem {
       modifiedAt: timestamp,
     }
 
-    await this.appendMetadata({
-      type: `insert`,
-      key: normalizedPath,
-      value: dirMeta,
-    })
+    await this.appendMetadata(
+      metadataEvents.insert({ value: { path: normalizedPath, ...dirMeta } })
+    )
     this.directories.set(normalizedPath, dirMeta)
   }
 
@@ -623,7 +621,7 @@ export class DurableFilesystem {
       throw new DirectoryNotEmptyError(normalizedPath)
     }
 
-    await this.appendMetadata({ type: `delete`, key: normalizedPath })
+    await this.appendMetadata(metadataEvents.delete({ key: normalizedPath }))
     this.directories.delete(normalizedPath)
   }
 
@@ -742,7 +740,7 @@ export class DurableFilesystem {
     if (!this.metadataStream) return
 
     this.metadataStream
-      .stream<MetadataEvent>({
+      .stream<ChangeEvent>({
         live: `sse`,
         offset: this._metadataOffset,
         json: true,
@@ -791,14 +789,15 @@ export class DurableFilesystem {
     }
   }
 
-  private handleWatchEvent(event: MetadataEvent): void {
-    if (event.type === `update` && event.value && isFileMetadata(event.value)) {
+  private handleWatchEvent(event: ChangeEvent): void {
+    const meta = event.value as Metadata | undefined
+    if (event.headers.operation === `update` && meta && isFileMetadata(meta)) {
       const oldMeta = this.files.get(event.key)
       if (oldMeta && isFileMetadata(oldMeta)) {
         this.contentCache.delete(oldMeta.contentStreamId)
         this.contentOffsets.delete(oldMeta.contentStreamId)
       }
-    } else if (event.type === `delete`) {
+    } else if (event.headers.operation === `delete`) {
       const oldMeta = this.files.get(event.key)
       if (oldMeta && isFileMetadata(oldMeta)) {
         this.contentCache.delete(oldMeta.contentStreamId)
@@ -808,12 +807,13 @@ export class DurableFilesystem {
     }
   }
 
-  private toWatchEvent(event: MetadataEvent, offset: string): WatchEvent {
+  private toWatchEvent(event: ChangeEvent, offset: string): WatchEvent {
+    const meta = event.value as Metadata | undefined
     let eventType: WatchEventType
 
-    if (event.type === `insert`) {
-      eventType = event.value?.type === `directory` ? `addDir` : `add`
-    } else if (event.type === `update`) {
+    if (event.headers.operation === `insert`) {
+      eventType = meta?.type === `directory` ? `addDir` : `add`
+    } else if (event.headers.operation === `update`) {
       eventType = `change`
     } else {
       eventType = this.directories.has(event.key) ? `unlinkDir` : `unlink`
@@ -822,14 +822,17 @@ export class DurableFilesystem {
     return {
       eventType,
       path: event.key,
-      metadata: event.value,
+      metadata: meta,
       offset,
     }
   }
 
-  private applyMetadataEvent(event: MetadataEvent): void {
-    if (event.type === `insert` || event.type === `update`) {
-      const meta = event.value!
+  private applyMetadataEvent(event: ChangeEvent): void {
+    if (
+      event.headers.operation === `insert` ||
+      event.headers.operation === `update`
+    ) {
+      const meta = event.value as Metadata
       if (isFileMetadata(meta)) {
         this.files.set(event.key, meta)
       } else {
@@ -888,7 +891,7 @@ export class DurableFilesystem {
     return children.sort()
   }
 
-  private async appendMetadata(event: MetadataEvent): Promise<void> {
+  private async appendMetadata(event: ChangeEvent): Promise<void> {
     if (!this.metadataStream) {
       throw new Error(`Metadata stream not initialized`)
     }
@@ -904,7 +907,7 @@ export class DurableFilesystem {
       throw new Error(`Metadata stream not initialized`)
     }
 
-    const response = await this.metadataStream.stream<MetadataEvent>({
+    const response = await this.metadataStream.stream<ChangeEvent>({
       live: false,
       offset: `-1`,
     })
