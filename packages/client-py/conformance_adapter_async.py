@@ -135,6 +135,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
             return ERROR_CODES["PARSE_ERROR"], None
         if code == "BAD_REQUEST":
             return ERROR_CODES["INVALID_OFFSET"], 400
+        if code == "PRECONDITION_FAILED":
+            return "PRECONDITION_FAILED", 412
         if status == 404:
             return ERROR_CODES["NOT_FOUND"], 404
         if code == "STREAM_CLOSED":
