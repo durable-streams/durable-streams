@@ -1446,6 +1446,590 @@ The AWS experience reports are worth calling out: complicated distributed system
 
 **Reference**: [How Amazon Web Services Uses Formal Methods (2015)](https://dl.acm.org/doi/10.1145/2699417)
 
+### 10.10 Deeper TLA+ Lessons: What We Can Actually Steal
+
+TLA+ isn't just "formal methods for distributed systems"—it embodies specific design patterns that make specifications tractable. Here are the actionable ones:
+
+#### 10.10.1 Init/Next Formalism
+
+Every TLA+ spec has the same shape:
+
+```
+Spec == Init ∧ □[Next]_vars
+```
+
+This means: start in an Init state, and every step either satisfies Next or stutters (vars unchanged).
+
+**What to steal**: Make your state machine structure explicit:
+
+```typescript
+// Explicit Init predicate
+function Init(): SystemState {
+  return {
+    transactions: new Map(),
+    store: createMapStore(),
+    committed: new Set(),
+    aborted: new Set(),
+  }
+}
+
+// Explicit Next relation - disjunction of all possible actions
+type Action =
+  | { type: "Begin"; txnId: TxnId; snapshotTs: Timestamp }
+  | { type: "Update"; txnId: TxnId; key: Key; effect: Effect }
+  | { type: "Read"; txnId: TxnId; key: Key }
+  | { type: "Commit"; txnId: TxnId; commitTs: Timestamp }
+  | { type: "Abort"; txnId: TxnId }
+
+function Next(state: SystemState, action: Action): SystemState | null {
+  // Returns new state if action is valid, null if disabled
+  switch (action.type) {
+    case "Begin":
+      if (state.transactions.has(action.txnId)) return null // ENABLED check
+      return { ...state, transactions: new Map([...state.transactions, [action.txnId, { ... }]]) }
+    // ... etc
+  }
+}
+```
+
+This separation makes it trivial to enumerate all possible behaviors.
+
+#### 10.10.2 The ENABLED Predicate
+
+In TLA+, `ENABLED A` is true when action A can be taken from the current state. This is crucial for:
+
+- **Deadlock detection**: System is deadlocked if no action is enabled
+- **Fairness**: Weak fairness says "if A is continuously enabled, A eventually happens"
+
+**What to steal**: Add explicit enabledness checks:
+
+```typescript
+interface ActionEnabledness {
+  Begin: (txnId: TxnId) => boolean
+  Update: (txnId: TxnId) => boolean
+  Read: (txnId: TxnId) => boolean
+  Commit: (txnId: TxnId) => boolean
+  Abort: (txnId: TxnId) => boolean
+}
+
+function getEnabledActions(state: SystemState): ActionEnabledness {
+  return {
+    Begin: (txnId) => !state.transactions.has(txnId),
+    Update: (txnId) => state.transactions.get(txnId)?.status === "running",
+    Read: (txnId) => state.transactions.get(txnId)?.status === "running",
+    Commit: (txnId) => state.transactions.get(txnId)?.status === "running",
+    Abort: (txnId) => state.transactions.get(txnId)?.status === "running",
+  }
+}
+
+// Deadlock check: is ANY action enabled?
+function isDeadlocked(state: SystemState): boolean {
+  const enabled = getEnabledActions(state)
+  // If we have running transactions but none can progress...
+  for (const [txnId, txn] of state.transactions) {
+    if (txn.status === "running") {
+      if (
+        enabled.Update(txnId) ||
+        enabled.Commit(txnId) ||
+        enabled.Abort(txnId)
+      ) {
+        return false // At least one action available
+      }
+    }
+  }
+  return state.transactions.size > 0 // Deadlocked if txns exist but none can act
+}
+```
+
+#### 10.10.3 Stuttering Steps and Refinement
+
+TLA+ allows "stuttering steps" where the state doesn't change. This seems trivial but is essential for refinement: a high-level spec might take one step where the implementation takes three.
+
+**Why it matters**: When checking refinement between MapStore and StreamStore, they might take different numbers of internal steps. Stuttering-closed refinement says: "if I map impl states to spec states, the spec allows at least as many behaviors."
+
+**What to steal**: Your refinement check should tolerate implementation steps that don't change observable state:
+
+```typescript
+function checkRefinementWithStuttering(
+  refStates: State[],
+  implStates: State[],
+  abstractionFn: (implState: State) => State
+): boolean {
+  let refIdx = 0
+
+  for (const implState of implStates) {
+    const abstractState = abstractionFn(implState)
+
+    if (statesEqual(abstractState, refStates[refIdx])) {
+      // Stuttering step - impl moved but abstract state unchanged
+      continue
+    }
+
+    // Non-stuttering step - must match next ref state
+    refIdx++
+    if (
+      refIdx >= refStates.length ||
+      !statesEqual(abstractState, refStates[refIdx])
+    ) {
+      return false // Refinement violation
+    }
+  }
+
+  return true
+}
+```
+
+#### 10.10.4 Fairness Constraints
+
+TLA+ distinguishes:
+
+- **Weak Fairness (WF)**: If action A is _continuously_ enabled, it eventually happens
+- **Strong Fairness (SF)**: If action A is _repeatedly_ enabled, it eventually happens
+
+For liveness properties ("eventually something good happens"), you need fairness assumptions.
+
+**Example**: "Every started transaction eventually commits or aborts"
+
+```typescript
+// This is a liveness property - needs fairness to be meaningful
+function eventuallyCompletes(history: History): boolean {
+  for (const txn of history.transactions) {
+    if (txn.status === "running") {
+      return false // Still running at end of trace
+    }
+  }
+  return true
+}
+
+// To TEST this, you need fairness in your scenario generator:
+function generateFairScenario(rng: RNG): Scenario {
+  const events: Event[] = []
+  const runningTxns = new Set<TxnId>()
+
+  while (events.length < MAX_EVENTS) {
+    // Weak fairness: if a txn has been running "too long", force completion
+    for (const txnId of runningTxns) {
+      if (eventsSinceBegin(events, txnId) > FAIRNESS_BOUND) {
+        // Force commit or abort
+        events.push(
+          rng.choice([
+            { type: "Commit", txnId },
+            { type: "Abort", txnId },
+          ])
+        )
+        runningTxns.delete(txnId)
+      }
+    }
+    // ... normal event generation
+  }
+  return { events }
+}
+```
+
+#### 10.10.5 Invariants vs Temporal Properties
+
+TLA+ cleanly separates:
+
+- **State invariants**: `Invariant == ∀ state: P(state)` — checked at each state
+- **Temporal properties**: `Property == □(P ⇒ ◇Q)` — checked over traces
+
+**What to steal**: Be explicit about which is which:
+
+```typescript
+// STATE INVARIANT: Can be checked at any single state
+// "No transaction is both committed and aborted"
+function Inv_NoDoubleFinish(state: SystemState): boolean {
+  for (const txnId of state.committed) {
+    if (state.aborted.has(txnId)) return false
+  }
+  return true
+}
+
+// TEMPORAL PROPERTY: Requires a trace to check
+// "If a transaction reads a key, it eventually sees a consistent value"
+function Temporal_ReadConsistency(trace: State[]): boolean {
+  // Need to track across states...
+  for (let i = 0; i < trace.length; i++) {
+    const reads = getReadsAt(trace, i)
+    for (const read of reads) {
+      // Check that read value is consistent with some serialization
+      // This requires looking at the whole trace
+    }
+  }
+  return true
+}
+
+// Your test runner should handle both:
+function checkTrace(trace: State[]): CheckResult {
+  // Check invariants at EVERY state
+  for (let i = 0; i < trace.length; i++) {
+    if (!Inv_NoDoubleFinish(trace[i])) {
+      return { valid: false, violation: "invariant", step: i }
+    }
+  }
+
+  // Check temporal properties over the WHOLE trace
+  if (!Temporal_ReadConsistency(trace)) {
+    return { valid: false, violation: "temporal" }
+  }
+
+  return { valid: true }
+}
+```
+
+#### 10.10.6 State Space Explosion and Symmetry
+
+TLA+'s model checker (TLC) faces state explosion. It uses:
+
+- **Symmetry reduction**: If states are equivalent under permutation, check only one
+- **State hashing**: Recognize previously-seen states
+
+**What to steal**: When doing exhaustive testing, reduce the space:
+
+```typescript
+// Instead of testing all permutations of transaction IDs...
+// t1,t2,t3 and t2,t1,t3 and t3,t1,t2 are equivalent under renaming
+
+function canonicalize(scenario: Scenario): Scenario {
+  // Rename transactions to canonical form: first-seen = t0, second-seen = t1, etc.
+  const renaming = new Map<TxnId, TxnId>()
+  let nextId = 0
+
+  const canonicalEvents = scenario.events.map((event) => {
+    if (!renaming.has(event.txnId)) {
+      renaming.set(event.txnId, `t${nextId++}`)
+    }
+    return { ...event, txnId: renaming.get(event.txnId)! }
+  })
+
+  return { events: canonicalEvents }
+}
+
+// Now you can deduplicate:
+const seen = new Set<string>()
+for (const scenario of generateAllScenarios()) {
+  const canonical = canonicalize(scenario)
+  const key = JSON.stringify(canonical)
+  if (seen.has(key)) continue
+  seen.add(key)
+
+  // Only test canonical representatives
+  runTest(canonical)
+}
+```
+
+**Reference**: [Specifying Systems (Lamport)](https://lamport.azurewebsites.net/tla/book.html) - The TLA+ book, free online
+
+#### 10.10.7 LTL Property Patterns
+
+TLA+ and temporal logic have standard patterns that recur constantly. Instead of reinventing them, use the pattern catalog:
+
+| Pattern          | LTL Formula             | Meaning                      |
+| ---------------- | ----------------------- | ---------------------------- |
+| **Absence**      | `□¬P`                   | P never happens (safety)     |
+| **Existence**    | `◇P`                    | P happens at least once      |
+| **Universality** | `□P`                    | P always holds (invariant)   |
+| **Response**     | `□(P ⇒ ◇Q)`             | Whenever P, eventually Q     |
+| **Precedence**   | `¬Q W P` or `□(Q ⇒ ◇P)` | P must happen before Q       |
+| **Until**        | `P U Q`                 | P holds until Q becomes true |
+
+**What to steal**: Build a pattern library:
+
+```typescript
+// LTL pattern library for your DSL
+const ltlPatterns = {
+  // Safety: bad thing never happens
+  absence:
+    <T>(badState: (s: T) => boolean) =>
+    (trace: T[]): boolean =>
+      trace.every((s) => !badState(s)),
+
+  // Liveness: good thing eventually happens
+  existence:
+    <T>(goodState: (s: T) => boolean) =>
+    (trace: T[]): boolean =>
+      trace.some((s) => goodState(s)),
+
+  // Invariant: property always holds
+  universality:
+    <T>(prop: (s: T) => boolean) =>
+    (trace: T[]): boolean =>
+      trace.every((s) => prop(s)),
+
+  // Response: if trigger, then eventually response
+  response:
+    <T>(trigger: (s: T) => boolean, response: (s: T) => boolean) =>
+    (trace: T[]): boolean => {
+      for (let i = 0; i < trace.length; i++) {
+        if (trigger(trace[i])) {
+          // Must find response in suffix
+          const suffix = trace.slice(i)
+          if (!suffix.some((s) => response(s))) return false
+        }
+      }
+      return true
+    },
+
+  // Precedence: if Q happens, P must have happened before
+  precedence:
+    <T>(before: (s: T) => boolean, after: (s: T) => boolean) =>
+    (trace: T[]): boolean => {
+      let seenBefore = false
+      for (const s of trace) {
+        if (before(s)) seenBefore = true
+        if (after(s) && !seenBefore) return false
+      }
+      return true
+    },
+}
+
+// Usage
+const noDoubleCommit = ltlPatterns.absence<TxnState>(
+  (s) => s.committed.size !== new Set(s.committed).size
+)
+
+const commitImpliesBegin = ltlPatterns.precedence<Event>(
+  (e) => e.type === "begin",
+  (e) => e.type === "commit"
+)
+
+const requestGetsResponse = ltlPatterns.response<Event>(
+  (e) => e.type === "read",
+  (e) => e.type === "readResult"
+)
+```
+
+**Reference**: [LTL Property Pattern Catalog (Kansas State)](http://patterns.projects.cs.ksu.edu/)
+
+#### 10.10.8 Assume-Guarantee Decomposition
+
+When testing systems with many interacting components, enumeration explodes. Assume-guarantee lets you verify components in isolation:
+
+```
+Component A: Assume environment provides X, Guarantee A provides Y
+Component B: Assume environment provides Y, Guarantee B provides Z
+Composition: X → A → Y → B → Z (if assumptions form a DAG)
+```
+
+**What to steal**: Test transactions in isolation with explicit assumptions:
+
+```typescript
+interface AssumeGuarantee<S, A> {
+  assume: (state: S, action: A) => boolean // What we assume about environment
+  guarantee: (state: S, action: A, nextState: S) => boolean // What we promise
+}
+
+// Per-transaction contract
+const snapshotIsolationContract: AssumeGuarantee<TxnState, TxnAction> = {
+  // Assume: other transactions don't expose uncommitted writes
+  assume: (state, action) => {
+    if (action.type === "read") {
+      // We assume we only see committed values
+      return state.visibleWrites.every((w) => w.committed)
+    }
+    return true
+  },
+
+  // Guarantee: our reads are consistent with our snapshot
+  guarantee: (state, action, nextState) => {
+    if (action.type === "read") {
+      const readValue = nextState.lastRead
+      const snapshotValue = state.snapshotAt(state.snapshotTs, action.key)
+      return readValue === snapshotValue
+    }
+    return true
+  },
+}
+
+// Verify component in isolation
+function verifyContract<S, A>(
+  contract: AssumeGuarantee<S, A>,
+  trace: Array<{ state: S; action: A; nextState: S }>
+): boolean {
+  for (const step of trace) {
+    // Only check guarantee if assumption holds
+    if (contract.assume(step.state, step.action)) {
+      if (!contract.guarantee(step.state, step.action, step.nextState)) {
+        return false // Guarantee violated
+      }
+    }
+  }
+  return true
+}
+
+// Compose contracts: verify the DAG of assumptions
+function verifyComposition(contracts: AssumeGuarantee<any, any>[]): boolean {
+  // Check that each component's guarantee implies the next's assumption
+  // This is the "circular reasoning" check
+  for (let i = 0; i < contracts.length - 1; i++) {
+    // contracts[i].guarantee ⇒ contracts[i+1].assume
+    // ... verification logic
+  }
+  return true
+}
+```
+
+**Why it matters**: Instead of testing 1000 transactions together (explosion), test each transaction type against its contract, then verify contracts compose.
+
+#### 10.10.9 Spec Composition Patterns
+
+Real systems combine multiple specs. TLA+ has clean composition:
+
+```
+Spec1 ∧ Spec2        // Both must hold (conjunction)
+Spec1 ∨ Spec2        // Either can hold (disjunction)
+∃ x: Spec(x)         // Hiding/existential (internal variables)
+Spec[a ← b]          // Substitution (renaming)
+```
+
+**What to steal**: Build composable spec fragments:
+
+```typescript
+// Spec composition DSL
+type Spec<S> = (trace: S[]) => boolean
+
+const composeSpecs = {
+  // Both specs must hold
+  and:
+    <S>(...specs: Spec<S>[]): Spec<S> =>
+    (trace) =>
+      specs.every((spec) => spec(trace)),
+
+  // At least one spec must hold
+  or:
+    <S>(...specs: Spec<S>[]): Spec<S> =>
+    (trace) =>
+      specs.some((spec) => spec(trace)),
+
+  // Spec holds after projecting away internal details
+  hiding:
+    <S, T>(spec: Spec<T>, project: (s: S) => T): Spec<S> =>
+    (trace) =>
+      spec(trace.map(project)),
+
+  // Spec with renamed variables
+  rename:
+    <S>(spec: Spec<S>, renaming: (s: S) => S): Spec<S> =>
+    (trace) =>
+      spec(trace.map(renaming)),
+}
+
+// Usage: compose transaction spec from parts
+const txnSpec = composeSpecs.and(
+  snapshotIsolationSpec,
+  atomicitySpec,
+  durabilitySpec
+)
+
+// Hide internal buffering details for client-visible spec
+const clientVisibleSpec = composeSpecs.hiding(txnSpec, (s) => ({
+  reads: s.reads,
+  writes: s.committedWrites, // Hide uncommitted
+}))
+```
+
+#### 10.10.10 Systematic Liveness Checking
+
+Beyond fairness constraints, TLA+ uses several strategies for liveness:
+
+1. **Bounded liveness**: Property holds within N steps
+2. **Progress measures**: Ranking function that decreases (proves termination)
+3. **Acceptance conditions**: Büchi automata (trace is accepted if good states visited infinitely)
+
+**What to steal**: Multiple liveness checking strategies:
+
+```typescript
+// Strategy 1: Bounded liveness
+function boundedLiveness<S>(
+  trace: S[],
+  trigger: (s: S) => boolean,
+  response: (s: S) => boolean,
+  bound: number
+): boolean {
+  for (let i = 0; i < trace.length; i++) {
+    if (trigger(trace[i])) {
+      // Response must occur within `bound` steps
+      const window = trace.slice(i, i + bound + 1)
+      if (!window.some(response)) {
+        return false
+      }
+    }
+  }
+  return true
+}
+
+// Strategy 2: Progress measure (ranking function)
+function progressMeasure<S>(
+  trace: S[],
+  rank: (s: S) => number, // Must decrease or stay same
+  decreases: (s1: S, s2: S) => boolean // True if made progress
+): { valid: boolean; stuck?: number } {
+  for (let i = 1; i < trace.length; i++) {
+    const r1 = rank(trace[i - 1])
+    const r2 = rank(trace[i])
+
+    if (r2 > r1) {
+      return { valid: false, stuck: i } // Rank increased - no progress
+    }
+  }
+
+  // Check we eventually reach zero (termination)
+  const finalRank = rank(trace[trace.length - 1])
+  return { valid: finalRank === 0 }
+}
+
+// Strategy 3: Check that "good" states are visited
+function acceptanceCondition<S>(
+  trace: S[],
+  accepting: (s: S) => boolean
+): boolean {
+  // For finite traces: must end in accepting state
+  return accepting(trace[trace.length - 1])
+}
+
+// Combined liveness checker
+function checkLiveness<S>(
+  trace: S[],
+  property: LivenessProperty<S>
+): LivenessResult {
+  switch (property.strategy) {
+    case "bounded":
+      return {
+        valid: boundedLiveness(
+          trace,
+          property.trigger,
+          property.response,
+          property.bound
+        ),
+        strategy: "bounded",
+      }
+
+    case "ranking":
+      return {
+        ...progressMeasure(trace, property.rank, property.decreases),
+        strategy: "ranking",
+      }
+
+    case "acceptance":
+      return {
+        valid: acceptanceCondition(trace, property.accepting),
+        strategy: "acceptance",
+      }
+  }
+}
+
+// Example: "Every begin eventually completes"
+const eventualCompletion: LivenessProperty<TxnTrace> = {
+  strategy: "ranking",
+  rank: (trace) => trace.filter((e) => e.status === "running").length,
+  decreases: (t1, t2) =>
+    t2.filter((e) => e.status === "running").length <
+    t1.filter((e) => e.status === "running").length,
+}
+```
+
+**Reference**: [Temporal Verification of Reactive Systems (Manna & Pnueli)](https://www.springer.com/gp/book/9780387944593)
+
 ---
 
 ## Part 11: Choosing Your Specification Style
