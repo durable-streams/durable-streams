@@ -10,6 +10,45 @@ This guide distills lessons learned from building `@durable-streams/txn-spec`, a
 
 ---
 
+## Part 0: Why—The Bounded Agents Problem
+
+### 0.1 Everyone Has Limited Context
+
+Humans hold roughly 4-7 concepts in working memory. AI agents have literal context limits. Neither can hold a full system in their head.
+
+We live in a world of **multiple bounded agents**—human and AI—trying to co-evolve a shared system. The human can't see everything. The agent can't see everything. They can't even see the same things.
+
+Without explicit contracts, small divergences compound. Tests pass but coherence collapses.
+
+### 0.2 Configurancy: Shared Intelligibility
+
+**Configurancy** (term from [Venkatesh Rao](https://contraptions.venkateshrao.com/p/configurancy)) is the shared intelligibility layer that allows agents with limited context to coherently co-evolve a system.
+
+A configurancy layer establishes shared facts:
+
+- **Affordances** (what you can do): _streams can be paused and resumed_
+- **Invariants** (what you can rely on): _messages are delivered exactly once_
+- **Constraints** (what you can't do): _max 100 concurrent streams per client_
+
+High configurancy = any agent (human or AI) can act coherently.
+Low configurancy = agents make locally correct changes that violate unstated assumptions.
+
+### 0.3 Why DSLs Now?
+
+We've always known specifications were valuable. But specs cost too much to write and more to maintain. So we invested sparingly, specs drifted, and eventually we just read the code.
+
+**What changed is the economics.** Agents can propagate spec changes through implementations at machine speed. Conformance suites verify correctness. The spec becomes the source of truth again, because maintenance is now cheap.
+
+A single spec change can ripple through dozens of files across multiple languages in minutes—verified correct by conformance tests. This makes formal DSLs tractable in ways they never were before.
+
+### 0.4 The 30-Day Test
+
+A useful heuristic: **Could any agent—human or AI—picking up this system after 30 days accurately predict its behavior from the configurancy model?**
+
+If not, either your system is too complex or your model needs work.
+
+---
+
 ## Part 1: Start From Formal Foundations
 
 ### 1.1 Find or Create a Specification
@@ -74,6 +113,43 @@ type Transaction =
 
 // Now TypeScript enforces: committed transactions MUST have commitTs
 ```
+
+### 1.4 Find External Hardness (Oracles)
+
+The best configurancy enforcement relies on **verifiable ground truth that exists outside your system**.
+
+Don't write the spec if someone else already has:
+
+| Domain         | External Oracle                             |
+| -------------- | ------------------------------------------- |
+| SQL semantics  | PostgreSQL (run same query, compare)        |
+| HTML parsing   | html5lib-tests (9,200 browser-vendor tests) |
+| JSON parsing   | JSONTestSuite                               |
+| HTTP semantics | RFC 7230-7235 + curl as reference           |
+| Cryptography   | NIST test vectors                           |
+| Time zones     | IANA tz database                            |
+
+When you can verify against external hardness:
+
+- Agents iterate rapidly (generate attempts, check against oracle)
+- The spec never drifts—you compare against behavior, not documentation
+- You inherit decades of edge-case discovery
+
+```typescript
+// Oracle testing: compare against authoritative source
+async function testSQLExpression(expr: string) {
+  const ourResult = await ourEngine.evaluate(expr)
+  const pgResult = await postgres.query(`SELECT ${expr}`)
+  expect(ourResult).toEqual(pgResult.rows[0])
+}
+
+// Generate hundreds of test cases, compare against oracle
+for (const expr of generateRandomExpressions(1000)) {
+  it(`matches Postgres: ${expr}`, () => testSQLExpression(expr))
+}
+```
+
+If no external oracle exists, your conformance suite becomes the oracle. Invest heavily in its quality—future agents will trust it absolutely.
 
 ---
 
@@ -652,6 +728,51 @@ it("optimized matches reference", async () => {
 })
 ```
 
+### 6.5 Bidirectional Enforcement
+
+The configurancy model only matters if it's enforced. Review in both directions:
+
+**Doc → Code**: If the spec claims an invariant, is it actually enforced?
+
+```
+For each invariant in the spec:
+  [ ] Is it enforced by types?
+  [ ] Is it covered by conformance tests?
+  [ ] Are violations caught at runtime?
+  [ ] If not enforced, why? (document the gap)
+```
+
+**Code → Doc**: If a test encodes an invariant, is it documented?
+
+```
+For each test/type/constraint in the PR:
+  [ ] Does it encode an invariant?
+  [ ] Is that invariant in the spec?
+  [ ] If not, should it be added?
+```
+
+A spec that drifts from enforcement is worse than no spec—it actively misleads agents.
+
+### 6.6 Configurancy Delta
+
+Track **how shared understanding changed**, not just what lines changed:
+
+```
+Affordances:
+  + [NEW] Users can now pause streams
+  ~ [MODIFIED] Delete requires confirmation
+
+Invariants:
+  ↑ [STRENGTHENED] Delivery: at-least-once → exactly-once
+
+Constraints:
+  + [NEW] Max 100 concurrent streams per client
+```
+
+This is what agents need to know. Not the diff—the delta in what they should expect.
+
+**Invisible changes are good**: Bug fixes and refactors should be invisible at the configurancy layer. If your "bug fix" requires updating the shared model, it's a behavior change.
+
 ---
 
 ## Part 7: LLM-Guided Testing
@@ -785,6 +906,53 @@ it("test suite covers all effect type combinations", () => {
   expect(coveredCombinations).toContain("delete")
 })
 ```
+
+---
+
+## Part 9: Where This Breaks Down
+
+This approach has costs and failure modes. Be honest about them:
+
+### 9.1 Upfront Investment
+
+Building conformance suites takes time. For throwaway prototypes or rapidly pivoting products, the overhead isn't worth it. The payoff comes from **reuse**—multiple implementations, long-lived systems, many agents touching the code.
+
+### 9.2 Not Everything Is Specifiable
+
+Some systems have emergent behavior that resists clean specification:
+
+- Neural network edge cases
+- Simulation chaos
+- UI "feel"
+- Performance characteristics
+
+The configurancy layer can describe inputs and outputs, but some interesting behavior happens in between.
+
+### 9.3 Conformance Suite Quality Is Critical
+
+A weak conformance suite gives false confidence. JustHTML works because html5lib-tests is comprehensive and battle-tested over years by browser vendors. Rolling your own suite requires expertise and iteration.
+
+**If your suite has gaps, agents will confidently produce incorrect implementations.**
+
+### 9.4 Agents Propagate Mistakes Fast
+
+If you update the spec incorrectly, agents will dutifully propagate that mistake across dozens of files. The velocity cuts both ways.
+
+Mitigation: The conformance suite catches spec errors that break tests before propagation completes. But this only works if your suite is comprehensive.
+
+### 9.5 Cultural Change Is Hard
+
+Teams need to treat spec updates as first-class changes. If developers bypass the spec and edit code directly, you're back to documentation drift—now with extra steps.
+
+### 9.6 When NOT to Use This Approach
+
+- **Throwaway scripts**: Just write the code
+- **Rapid prototypes**: Spec will change too fast
+- **Emergent behavior**: Can't specify what you don't understand
+- **Solo projects**: You ARE the shared context
+- **Time pressure**: Ship first, formalize later (but actually do it later)
+
+The approach pays off for **stable protocols**, **clear-contract libraries**, and **systems that must evolve without breaking**.
 
 ---
 
