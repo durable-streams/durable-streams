@@ -391,3 +391,39 @@ export {
   // Shrinking
   shrinkFailingCase,
 } from "./fuzz"
+
+// =============================================================================
+// History-Based Verification
+// =============================================================================
+
+export {
+  // History types
+  type OperationType,
+  type OperationStatus,
+  type HistoryOperation,
+  type HistoryTransaction,
+  type History,
+
+  // History builder
+  type HistoryBuilder,
+  createHistoryBuilder,
+
+  // Dependency graph
+  type DependencyType,
+  type DependencyEdge,
+  type DependencyGraph,
+  buildDependencyGraph,
+
+  // Cycle detection
+  hasCycle,
+  findCycle,
+
+  // Consistency checking
+  type ConsistencyCheckResult,
+  checkSerializable,
+  checkSnapshotIsolation,
+
+  // Utilities
+  formatGraph,
+  formatCheckResult,
+} from "./history"
