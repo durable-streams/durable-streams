@@ -37,5 +37,4 @@ export type {
   CallbackSuccess,
   CallbackError,
   CallbackErrorCode,
-  WebhookPayload,
 } from "./webhook-types"

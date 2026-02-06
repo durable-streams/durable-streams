@@ -87,8 +87,7 @@ export function generateCallbackToken(
  */
 export function validateCallbackToken(
   token: string,
-  consumerId: string,
-  _currentEpoch: number
+  consumerId: string
 ): { valid: true } | { valid: false; code: `TOKEN_INVALID` | `TOKEN_EXPIRED` } {
   const parts = token.split(`.`)
   if (parts.length !== 2) {
@@ -97,7 +96,6 @@ export function validateCallbackToken(
 
   const [payloadStr, sig] = parts
 
-  // Verify signature
   const expectedSig = createHmac(`sha256`, TOKEN_KEY)
     .update(payloadStr!)
     .digest(`base64url`)
@@ -110,7 +108,6 @@ export function validateCallbackToken(
     return { valid: false, code: `TOKEN_INVALID` }
   }
 
-  // Decode payload
   let payload: { sub: string; epoch: number; exp: number }
   try {
     payload = JSON.parse(Buffer.from(payloadStr!, `base64url`).toString())
@@ -118,12 +115,10 @@ export function validateCallbackToken(
     return { valid: false, code: `TOKEN_INVALID` }
   }
 
-  // Verify consumer ID matches
   if (payload.sub !== consumerId) {
     return { valid: false, code: `TOKEN_INVALID` }
   }
 
-  // Check expiry
   const now = Math.floor(Date.now() / 1000)
   if (now > payload.exp) {
     return { valid: false, code: `TOKEN_EXPIRED` }

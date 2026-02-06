@@ -30,17 +30,6 @@ export interface ConsumerInstance {
   liveness_timer: ReturnType<typeof setTimeout> | null
 }
 
-export interface WebhookPayload {
-  consumer_id: string
-  epoch: number
-  wake_id: string
-  primary_stream: string
-  streams: Array<{ path: string; offset: string }>
-  triggered_by: Array<string>
-  callback: string
-  token: string
-}
-
 export interface CallbackRequest {
   epoch: number
   wake_id?: string

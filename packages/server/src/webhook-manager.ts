@@ -18,7 +18,7 @@ const LIVENESS_TIMEOUT_MS = 45_000
 const WEBHOOK_REQUEST_TIMEOUT_MS = 30_000
 const MAX_RETRY_DELAY_MS = 30_000
 const STEADY_RETRY_DELAY_MS = 60_000
-const GC_FAILURE_DAYS = 3
+const GC_FAILURE_MS = 3 * 24 * 60 * 60 * 1000 // 3 days
 
 /**
  * Orchestrates webhook delivery, consumer lifecycle, and callbacks.
@@ -95,13 +95,13 @@ export class WebhookManager {
     consumer: ConsumerInstance,
     triggeredBy: Array<string>
   ): void {
-    const { epoch, wake_id } = this.store.transitionToWaking(
-      consumer,
-      triggeredBy
-    )
-
     const sub = this.store.getSubscription(consumer.subscription_id)
-    if (!sub) return
+    if (!sub) {
+      this.store.removeConsumer(consumer.consumer_id)
+      return
+    }
+
+    const { epoch, wake_id } = this.store.transitionToWaking(consumer)
 
     const callbackUrl = this.buildCallbackUrl(consumer.consumer_id)
     const token = generateCallbackToken(consumer.consumer_id, epoch)
@@ -117,7 +117,8 @@ export class WebhookManager {
       token,
     }
 
-    this.deliverWebhook(consumer, sub, payload)
+    // Fire-and-forget — deliverWebhook handles its own errors internally
+    this.deliverWebhook(consumer, sub, payload).catch(() => {})
   }
 
   private async deliverWebhook(
@@ -147,29 +148,27 @@ export class WebhookManager {
 
       clearTimeout(timeoutId)
 
-      // Reset failure tracking on successful delivery
-      consumer.last_webhook_failure_at = null
-      consumer.first_webhook_failure_at = null
-      consumer.retry_count = 0
-
       if (response.ok) {
+        consumer.last_webhook_failure_at = null
+        consumer.first_webhook_failure_at = null
+        consumer.retry_count = 0
+
         // Check if response contains {done: true}
+        let resBody: { done?: boolean } | null = null
         try {
-          const resBody = (await response.json()) as { done?: boolean }
-          if (resBody.done) {
-            // Synchronous done — auto-ack all streams to current tail
-            // and transition to IDLE. The next onStreamAppend will
-            // re-wake if new events arrive.
-            consumer.wake_id_claimed = true
-            for (const [path] of consumer.streams) {
-              const tail = this.getTailOffset(path)
-              consumer.streams.set(path, tail)
-            }
-            this.store.transitionToIdle(consumer)
-            return
-          }
+          resBody = (await response.json()) as { done?: boolean }
         } catch {
           // Empty or non-JSON response body — that's fine
+        }
+
+        if (resBody?.done) {
+          consumer.wake_id_claimed = true
+          for (const [path] of consumer.streams) {
+            const tail = this.getTailOffset(path)
+            consumer.streams.set(path, tail)
+          }
+          this.store.transitionToIdle(consumer)
+          return
         }
       }
 
@@ -188,11 +187,9 @@ export class WebhookManager {
         consumer.first_webhook_failure_at = now
       }
 
-      // Check GC threshold (3 days of continuous failures)
       if (
         consumer.first_webhook_failure_at &&
-        now - consumer.first_webhook_failure_at >
-          GC_FAILURE_DAYS * 24 * 60 * 60 * 1000
+        now - consumer.first_webhook_failure_at > GC_FAILURE_MS
       ) {
         this.store.removeConsumer(consumer.consumer_id)
         return
@@ -266,7 +263,7 @@ export class WebhookManager {
     }
 
     // Validate token
-    const tokenResult = validateCallbackToken(token, consumerId, consumer.epoch)
+    const tokenResult = validateCallbackToken(token, consumerId)
     if (!tokenResult.valid) {
       const newToken = generateCallbackToken(consumerId, consumer.epoch)
       if (tokenResult.code === `TOKEN_EXPIRED`) {
@@ -288,14 +285,14 @@ export class WebhookManager {
       }
     }
 
-    // Validate epoch
-    if (request.epoch < consumer.epoch) {
+    // Validate epoch — must match current epoch exactly
+    if (request.epoch !== consumer.epoch) {
       const newToken = generateCallbackToken(consumerId, consumer.epoch)
       return {
         ok: false,
         error: {
           code: `STALE_EPOCH`,
-          message: `Consumer epoch ${request.epoch} is stale; current epoch is ${consumer.epoch}`,
+          message: `Consumer epoch ${request.epoch} does not match current epoch ${consumer.epoch}`,
         },
         token: newToken,
       }

@@ -802,7 +802,7 @@ Webhook-Signature: t=<timestamp>,sha256=<signature>
     { "path": "/shared-filesystem/task-123", "offset": "500" }
   ],
   "triggered_by": ["/agents/task-123"],
-  "callback": "{callback_base_url}/callback/{subscription_id}/{url_encoded_stream_path}",
+  "callback": "{callback_base_url}/callback/{consumer_id}",
   "token": "eyJhbGciOiJIUzI1NiIs..."
 }
 ```

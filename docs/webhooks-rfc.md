@@ -63,7 +63,7 @@ Add a webhook-based push delivery system to Durable Streams. The core concepts:
 
 A subscription is registered via HTTP API and consists of:
 
-- `subscription_id`: Server-generated UUID identifying this subscription
+- `subscription_id`: Client-provided identifier for this subscription
 - `pattern`: Glob pattern matching stream paths (e.g., `/agents/*`)
 - `webhook`: URL to POST notifications to
 - `webhook_secret`: Server-generated secret for signature verification (returned on creation, not stored retrievably)
@@ -558,14 +558,14 @@ export default {
     })
 
     // Check if another instance already claimed this wake
+    const subBody = await subRes.json()
     if (subRes.status === 409) {
-      const error = await subRes.json()
-      if (error.error?.code === "ALREADY_CLAIMED") {
+      if (subBody.error?.code === "ALREADY_CLAIMED") {
         // Another callback already claimed this wake - exit gracefully
         return new Response("Already claimed", { status: 200 })
       }
     }
-    let { streams: allStreams, token: newToken } = await subRes.json()
+    let { streams: allStreams, token: newToken } = subBody
     token = newToken
 
     let lastMessageTime = Date.now()

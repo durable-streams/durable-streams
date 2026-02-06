@@ -86,13 +86,9 @@ export class WebhookStore {
    * Find all subscriptions whose pattern matches a given stream path.
    */
   findMatchingSubscriptions(streamPath: string): Array<Subscription> {
-    const matches: Array<Subscription> = []
-    for (const sub of this.subscriptions.values()) {
-      if (globMatch(sub.pattern, streamPath)) {
-        matches.push(sub)
-      }
-    }
-    return matches
+    return Array.from(this.subscriptions.values()).filter((sub) =>
+      globMatch(sub.pattern, streamPath)
+    )
   }
 
   // ============================================================================
@@ -154,10 +150,10 @@ export class WebhookStore {
    * Transition consumer to WAKING state.
    * Increments epoch and generates a new wake_id.
    */
-  transitionToWaking(
-    consumer: ConsumerInstance,
-    _triggeredBy: Array<string>
-  ): { epoch: number; wake_id: string } {
+  transitionToWaking(consumer: ConsumerInstance): {
+    epoch: number
+    wake_id: string
+  } {
     consumer.epoch++
     consumer.wake_id = generateWakeId()
     consumer.wake_id_claimed = false
@@ -296,11 +292,7 @@ export class WebhookStore {
   getStreamsData(
     consumer: ConsumerInstance
   ): Array<{ path: string; offset: string }> {
-    const result: Array<{ path: string; offset: string }> = []
-    for (const [path, offset] of consumer.streams) {
-      result.push({ path, offset })
-    }
-    return result
+    return Array.from(consumer.streams, ([path, offset]) => ({ path, offset }))
   }
 
   /**

@@ -4,7 +4,29 @@
 
 import type { WebhookManager } from "./webhook-manager"
 import type { IncomingMessage, ServerResponse } from "node:http"
-import type { CallbackRequest } from "./webhook-types"
+import type { CallbackRequest, Subscription } from "./webhook-types"
+
+const ERROR_CODE_TO_STATUS: Record<string, number> = {
+  INVALID_REQUEST: 400,
+  TOKEN_EXPIRED: 401,
+  TOKEN_INVALID: 401,
+  ALREADY_CLAIMED: 409,
+  INVALID_OFFSET: 409,
+  STALE_EPOCH: 409,
+  CONSUMER_GONE: 410,
+}
+
+/**
+ * Serialize a subscription for API responses, omitting internal fields.
+ */
+function serializeSubscription(sub: Subscription): Record<string, unknown> {
+  return {
+    subscription_id: sub.subscription_id,
+    pattern: sub.pattern,
+    webhook: sub.webhook,
+    description: sub.description,
+  }
+}
 
 /**
  * Handles webhook-related HTTP routes.
@@ -49,7 +71,7 @@ export class WebhookRoutes {
           await this.handleCreateSubscription(path, subscriptionId, req, res)
           return true
         case `GET`:
-          this.handleGetSubscription(path, subscriptionId, res)
+          this.handleGetSubscription(subscriptionId, res)
           return true
         case `DELETE`:
           this.handleDeleteSubscription(subscriptionId, res)
@@ -104,14 +126,7 @@ export class WebhookRoutes {
         parsed.description
       )
 
-      const responseBody: Record<string, unknown> = {
-        subscription_id: subscription.subscription_id,
-        pattern: subscription.pattern,
-        webhook: subscription.webhook,
-        description: subscription.description,
-      }
-
-      // Only include webhook_secret on creation
+      const responseBody = serializeSubscription(subscription)
       if (created) {
         responseBody.webhook_secret = subscription.webhook_secret
       }
@@ -134,7 +149,6 @@ export class WebhookRoutes {
   }
 
   private handleGetSubscription(
-    _pattern: string,
     subscriptionId: string,
     res: ServerResponse
   ): void {
@@ -146,14 +160,7 @@ export class WebhookRoutes {
     }
 
     res.writeHead(200, { "content-type": `application/json` })
-    res.end(
-      JSON.stringify({
-        subscription_id: sub.subscription_id,
-        pattern: sub.pattern,
-        webhook: sub.webhook,
-        description: sub.description,
-      })
-    )
+    res.end(JSON.stringify(serializeSubscription(sub)))
   }
 
   private handleDeleteSubscription(
@@ -167,12 +174,7 @@ export class WebhookRoutes {
 
   private handleListSubscriptions(pattern: string, res: ServerResponse): void {
     const subs = this.manager.store.listSubscriptions(pattern)
-    const sanitized = subs.map((s) => ({
-      subscription_id: s.subscription_id,
-      pattern: s.pattern,
-      webhook: s.webhook,
-      description: s.description,
-    }))
+    const sanitized = subs.map(serializeSubscription)
 
     res.writeHead(200, { "content-type": `application/json` })
     res.end(JSON.stringify({ subscriptions: sanitized }))
@@ -205,7 +207,7 @@ export class WebhookRoutes {
       )
       return
     }
-    const token = authHeader.slice(7)
+    const token = authHeader.slice(`Bearer `.length)
 
     // Parse request body
     const body = await this.readBody(req)
@@ -246,27 +248,9 @@ export class WebhookRoutes {
     // Process callback
     const result = this.manager.handleCallback(consumerId, token, request)
 
-    // Map error codes to HTTP status codes
-    let status = 200
-    if (!result.ok) {
-      switch (result.error.code) {
-        case `INVALID_REQUEST`:
-          status = 400
-          break
-        case `TOKEN_EXPIRED`:
-        case `TOKEN_INVALID`:
-          status = 401
-          break
-        case `ALREADY_CLAIMED`:
-        case `INVALID_OFFSET`:
-        case `STALE_EPOCH`:
-          status = 409
-          break
-        case `CONSUMER_GONE`:
-          status = 410
-          break
-      }
-    }
+    const status = result.ok
+      ? 200
+      : (ERROR_CODE_TO_STATUS[result.error.code] ?? 500)
 
     res.writeHead(status, { "content-type": `application/json` })
     res.end(JSON.stringify(result))

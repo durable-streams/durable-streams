@@ -594,11 +594,10 @@ async function executeStep(ctx: RunContext, step: Step): Promise<void> {
         step.kind === `appendTo` ? step.path : (ctx.currentStream ?? ``)
       if (!path) throw new Error(`No current stream for append`)
 
-      const data = Array.isArray(step.data) ? step.data : step.data
       const res = await fetch(`${ctx.baseUrl}${path}`, {
         method: `POST`,
         headers: { "content-type": `application/json` },
-        body: JSON.stringify(data),
+        body: JSON.stringify(step.data),
       })
       expect(res.status).toBe(204)
       const offset = res.headers.get(STREAM_OFFSET_HEADER)!
@@ -1163,7 +1162,11 @@ function checkTokenRotation(history: Array<HistoryEvent>): void {
     const event = history[i]!
     if (event.type === `callback_sent`) {
       const next = history[i + 1]
-      if (next && next.type === `callback_response` && next.ok && next.token) {
+      if (next && next.type === `callback_response` && next.ok) {
+        expect(
+          next.token,
+          `S5: Successful callback response must include a token`
+        ).toBeDefined()
         expect(
           next.token,
           `S5: Token must rotate — request and response tokens should differ`
