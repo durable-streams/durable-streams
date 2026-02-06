@@ -1544,6 +1544,260 @@ For your transactional store DSL:
 
 ---
 
+## Part 12: Case Study - Applying This Guide to Itself
+
+We applied the techniques in this guide to the `txn-spec` DSL itself. This section documents what we learned—both validations of the approach and surprises.
+
+### 12.1 Exhaustive Testing Found a Real Spec/Implementation Gap
+
+**Technique used**: Small-scope exhaustive testing (Section 10.7)
+
+We wrote exhaustive boundary tests for the visibility rule (OTSP):
+
+```typescript
+// Test ALL combinations of commitTs and snapshotTs from 0-5
+for (let commitTs = 1; commitTs <= 5; commitTs++) {
+  for (let snapshotTs = 0; snapshotTs <= 5; snapshotTs++) {
+    const shouldSee = snapshotTs > commitTs // What we discovered
+
+    it(`commit@${commitTs} ${shouldSee ? "visible" : "invisible"} at snapshot@${snapshotTs}`, () => {
+      const s = scenario("boundary")
+        .transaction("writer", { st: 0 })
+        .update("x", assign(100))
+        .commit({ ct: commitTs })
+        .transaction("reader", { st: snapshotTs })
+        .readExpect("x", shouldSee ? 100 : BOTTOM)
+        .commit({ ct: 10 })
+        .build()
+
+      expect(executeScenario(s, createMapStore()).success).toBe(true)
+    })
+  }
+}
+```
+
+**What we found**: The spec said `T1.commitTs ≤ T2.snapshotTs` for visibility, but the implementation uses strict `<`. A transaction at `snapshotTs=5` does NOT see commits at `commitTs=5`.
+
+This is exactly the kind of boundary bug that's invisible to random fuzzing (low probability of hitting exact boundaries) but obvious to exhaustive enumeration. The small-scope hypothesis paid off.
+
+**Lesson**: Fuzz testing alone isn't enough. Add exhaustive coverage for small scopes, especially around boundary conditions.
+
+### 12.2 Two-Tier DSL Pattern in Practice
+
+**Technique used**: Two-tier language design (Section 2.4)
+
+We implemented both tiers:
+
+**Tier 1 (Typed Builder)** - for well-formed scenarios:
+
+```typescript
+// The builder prevents nonsense at compile time
+scenario("normal-operation")
+  .transaction("t1", { st: 0 })
+  .update("x", assign(10))
+  .commit({ ct: 5 }) // Can only commit an active transaction
+  .build()
+```
+
+**Tier 2 (Raw Events)** - for adversarial testing:
+
+```typescript
+// Direct event injection bypasses all safety checks
+function executeRawEvents(events: RawEvent[]): {
+  success: boolean
+  error?: Error
+  results: unknown[]
+} {
+  const coordinator = createTransactionCoordinator(store, tsGen)
+  for (const event of events) {
+    switch (event.type) {
+      case "begin":
+        coordinator.begin(event.txnId, { st: event.snapshotTs ?? 0 })
+        break
+      case "commit":
+        coordinator.commit(event.txnId, { ct: event.commitTs ?? 100 })
+        break
+      // ... etc
+    }
+  }
+}
+
+// Now we can test malformed sequences
+const result = executeRawEvents([
+  { type: "begin", txnId: "t1", snapshotTs: 0 },
+  { type: "commit", txnId: "t1", commitTs: 5 },
+  { type: "commit", txnId: "t1", commitTs: 10 }, // Double commit!
+])
+expect(result.success).toBe(false)
+expect(result.error?.message).toMatch(/not running|already|committed/i)
+```
+
+**What we tested with Tier 2**:
+
+- Double commits (C2 violation)
+- Operations after commit/abort (C3 violation)
+- Operations on non-existent transactions
+- Duplicate transaction IDs
+
+**Lesson**: The typed builder made it _impossible_ to accidentally write these malformed cases in normal tests. We needed a separate escape hatch to test error handling. Keep both tiers explicit.
+
+### 12.3 Bidirectional Enforcement Checklist
+
+**Technique used**: Spec shape awareness (Part 11) + enforcement tracking
+
+We created a bidirectional checklist in SPEC.md:
+
+**Doc → Code**: Is each invariant actually enforced?
+
+| Invariant              | Types         | Runtime          | Tests         |
+| ---------------------- | ------------- | ---------------- | ------------- |
+| I1: Snapshot Isolation | -             | ✓ Store lookup   | ✓ conformance |
+| I5: Effect Composition | ✓ Effect type | ✓ composeEffects | ✓ algebraic   |
+| I6: Effect Merge       | -             | ✓ mergeEffects   | ✓ algebraic   |
+| I8: OTSP Visibility    | -             | ✓ Store lookup   | ✓ exhaustive  |
+
+**Code → Doc**: Is each test derived from spec?
+
+| Test File                | Spec Section            | Coverage            |
+| ------------------------ | ----------------------- | ------------------- |
+| conformance.test.ts      | Affordances, Invariants | Core behavior       |
+| merge-properties.test.ts | I6 (CAI properties)     | 203 algebraic laws  |
+| exhaustive.test.ts       | I8 boundary             | All timestamp pairs |
+| adversarial.test.ts      | Constraints C2, C3      | Error handling      |
+
+**Gaps identified**:
+
+| Gap                | Status     | Action Taken                 |
+| ------------------ | ---------- | ---------------------------- |
+| C4 (numeric check) | Not tested | Added to adversarial.test.ts |
+| Adversarial inputs | Not tested | Created adversarial.test.ts  |
+
+**Lesson**: The checklist revealed that "adversarial inputs" was listed as a gap. This directly motivated creating the Tier 2 DSL. Bidirectional verification isn't just bookkeeping—it drives development.
+
+### 12.4 Refinement Checking Between Implementations
+
+**Technique used**: Refinement proofs (Section 10.8), adapted to testing
+
+We have two store implementations: `MapStore` (simple reference) and `StreamStore` (optimized). We verify they're equivalent:
+
+```typescript
+function checkRefinement(
+  referenceFactory: () => StoreInterface,
+  implementationFactory: () => StoreInterface,
+  operations: Operation[]
+): RefinementResult {
+  const refStore = referenceFactory()
+  const implStore = implementationFactory()
+  const refCoord = createTransactionCoordinator(refStore, tsGen())
+  const implCoord = createTransactionCoordinator(implStore, tsGen())
+
+  for (let i = 0; i < operations.length; i++) {
+    const op = operations[i]
+
+    // Execute on both
+    executeOp(refCoord, op)
+    executeOp(implCoord, op)
+
+    // After each commit, check refinement
+    if (op.type === "commit") {
+      const refSnapshot = getStoreSnapshot(refStore, allKeys, maxTs)
+      const implSnapshot = getStoreSnapshot(implStore, allKeys, maxTs)
+
+      if (!snapshotsEqual(refSnapshot, implSnapshot)) {
+        return {
+          valid: false,
+          failingStep: i,
+          failingOperation: `${op.type}(${op.txnId})`,
+        }
+      }
+    }
+  }
+  return { valid: true }
+}
+```
+
+**Key insight**: Refinement checking gives you _localization_. When a test fails, you know exactly which step diverged. This is vastly better than "final state doesn't match."
+
+We run this against fuzz-generated scenarios:
+
+```typescript
+for (const seed of [100, 200, 300, 400, 500]) {
+  it(`random scenario (seed=${seed}) refines correctly`, () => {
+    const scenario = generateRandomScenario({ seed, transactionCount: 5 })
+    const result = checkRefinement(
+      createMapStore,
+      createStreamStore,
+      scenario.operations
+    )
+    expect(result.valid).toBe(true)
+  })
+}
+```
+
+**Lesson**: Refinement checking is the testing analog of refinement proofs. If you have a "reference implementation" and an "optimized implementation," check them step-by-step, not just at the end.
+
+### 12.5 Checker Metadata with Soundness/Completeness Labels
+
+**Technique used**: Soundness vs completeness labeling (Section 5.5)
+
+We added explicit metadata to our consistency checkers:
+
+```typescript
+export interface CheckerMetadata {
+  name: string
+  soundness: "sound" | "unsound"
+  completeness: "complete" | "incomplete"
+  scope: string
+  limitations: string[]
+}
+
+export const SERIALIZABILITY_CHECKER: CheckerMetadata = {
+  name: "Cycle-based Serializability",
+  soundness: "sound",
+  completeness: "incomplete",
+  scope: "Single-key read/write operations with known commit order",
+  limitations: [
+    "Predicate-based anomalies (e.g., phantom reads)",
+    "Multi-key constraints",
+    "Operations without explicit read/write logging",
+  ],
+}
+```
+
+The formatted output now includes these labels:
+
+```
+Checker: Cycle-based Serializability
+  Soundness: sound
+  Completeness: incomplete
+  Scope: Single-key read/write operations with known commit order
+
+INVALID: Consistency violation detected
+  Type: cycle
+  Cycle: t1 -> t2 -> t1
+  ...
+
+Note: This checker has limitations:
+  - Predicate-based anomalies (e.g., phantom reads)
+  - Multi-key constraints
+```
+
+**Lesson**: Labeling checkers prevents overconfidence. When someone sees "VALID," they know exactly what was checked and what wasn't.
+
+### 12.6 Summary: What Worked
+
+| Technique                     | Section | Outcome                                  |
+| ----------------------------- | ------- | ---------------------------------------- |
+| Exhaustive small-scope        | 10.7    | Found real spec/impl boundary bug        |
+| Two-tier DSL                  | 2.4     | Clean separation of valid vs adversarial |
+| Bidirectional checklist       | 11.4    | Revealed gaps, drove test creation       |
+| Refinement checking           | 10.8    | Step-by-step equivalence verification    |
+| Soundness/completeness labels | 5.5     | Clear checker guarantees                 |
+
+**Meta-lesson**: These techniques are synergistic. The checklist identified gaps → we built adversarial DSL → we ran exhaustive tests → we found a real bug → we fixed the spec. Each technique fed the next.
+
+---
+
 ## Conclusion
 
 Building a testing DSL for complex systems is an investment that pays dividends:
