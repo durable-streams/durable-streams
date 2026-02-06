@@ -4,7 +4,7 @@
  * Provides filesystem semantics on top of durable streams.
  */
 
-import { DurableStream } from "@durable-streams/client"
+import { DurableStream, FetchError } from "@durable-streams/client"
 import {
   DirectoryNotEmptyError,
   ExistsError,
@@ -12,6 +12,7 @@ import {
   NotDirectoryError,
   NotFoundError,
   PatchApplicationError,
+  PreconditionFailedError,
   isFileMetadata,
 } from "./types"
 import {
@@ -38,89 +39,188 @@ import type {
   FileMetadata,
   Metadata,
   Stat,
+  WatchEvent,
+  WatchEventType,
+  WatchOptions,
+  Watcher,
 } from "./types"
 
-/**
- * Metadata event format in the metadata stream
- */
 interface MetadataEvent {
   type: `insert` | `update` | `delete`
   key: string
   value?: Metadata
 }
 
-/**
- * DurableFilesystem - A shared filesystem for AI agents
- */
+type WatchListenerMap = Map<
+  string,
+  Array<(...args: Array<any>) => void | Promise<void>>
+>
+
+class WatcherImpl implements Watcher {
+  private readonly listeners: WatchListenerMap = new Map()
+  private readonly pathFilter: string | undefined
+  private readonly recursive: boolean
+  private ready = false
+  private _closed = false
+  private closedResolve!: () => void
+  readonly closed: Promise<void>
+
+  constructor(
+    private readonly removeWatcher: (w: WatcherImpl) => void,
+    options?: WatchOptions
+  ) {
+    this.pathFilter = options?.path ? normalizePath(options.path) : undefined
+    this.recursive = options?.recursive ?? true
+    this.closed = new Promise((resolve) => {
+      this.closedResolve = resolve
+    })
+    if (options?.signal) {
+      options.signal.addEventListener(`abort`, () => this.close(), {
+        once: true,
+      })
+    }
+  }
+
+  on(event: string, cb: (...args: Array<any>) => void | Promise<void>): this {
+    const list = this.listeners.get(event) ?? []
+    list.push(cb)
+    this.listeners.set(event, list)
+    return this
+  }
+
+  close(): void {
+    if (this._closed) return
+    this._closed = true
+    this.removeWatcher(this)
+    this.listeners.clear()
+    this.closedResolve()
+  }
+
+  emit(watchEvent: WatchEvent): void {
+    if (this._closed) return
+    if (!this.matchesFilter(watchEvent.path)) return
+
+    const specific = this.listeners.get(watchEvent.eventType)
+    if (specific) {
+      for (const cb of specific) {
+        cb(watchEvent.path, watchEvent.metadata)
+      }
+    }
+
+    const all = this.listeners.get(`all`)
+    if (all) {
+      for (const cb of all) {
+        cb(watchEvent.eventType, watchEvent.path, watchEvent.metadata)
+      }
+    }
+  }
+
+  markReady(): void {
+    if (this.ready || this._closed) return
+    this.ready = true
+    const cbs = this.listeners.get(`ready`)
+    if (cbs) {
+      for (const cb of cbs) {
+        cb()
+      }
+    }
+  }
+
+  emitError(error: Error): void {
+    const cbs = this.listeners.get(`error`)
+    if (cbs) {
+      for (const cb of cbs) {
+        cb(error)
+      }
+    }
+  }
+
+  private matchesFilter(eventPath: string): boolean {
+    if (!this.pathFilter) return true
+
+    if (this.pathFilter === eventPath) return true
+
+    const prefix = this.pathFilter === `/` ? `/` : `${this.pathFilter}/`
+    if (eventPath.startsWith(prefix)) {
+      if (this.recursive) return true
+      const remainder = eventPath.slice(prefix.length)
+      return !remainder.includes(`/`)
+    }
+
+    return false
+  }
+}
+
 export class DurableFilesystem {
   private readonly baseUrl: string
   readonly streamPrefix: string
   private readonly headers?: Record<string, string>
 
-  // Materialized state
   private readonly files = new Map<string, FileMetadata>()
   private readonly directories = new Map<string, DirectoryMetadata>()
 
-  // Content cache
   private readonly contentCache = new Map<string, string>()
 
-  // Stream handles
   private metadataStream: DurableStream | null = null
   private readonly contentStreams = new Map<string, DurableStream>()
 
-  // Offset tracking for OCC
   private _metadataOffset = `-1`
   private readonly contentOffsets = new Map<string, string>()
 
-  /** Current metadata stream offset (for OCC and debugging) */
+  private readonly activeWatchers = new Set<WatcherImpl>()
+  private sseUnsubscribe: (() => void) | null = null
+
+  private readonly readSnapshots = new Map<string, FileMetadata>()
+
   get metadataOffset(): string {
     return this._metadataOffset
   }
 
-  // Initialization state
   private initialized = false
 
   constructor(options: DurableFilesystemOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/$/, ``) // Remove trailing slash
+    this.baseUrl = options.baseUrl.replace(/\/$/, ``)
     this.streamPrefix = options.streamPrefix.startsWith(`/`)
       ? options.streamPrefix
       : `/${options.streamPrefix}`
     this.headers = options.headers
   }
 
-  /**
-   * Build a full stream URL from a stream path
-   */
   private buildStreamUrl(streamPath: string): string {
     const path = streamPath.startsWith(`/`) ? streamPath : `/${streamPath}`
     return `${this.baseUrl}${this.streamPrefix}${path}`
   }
 
-  // ============================================================================
-  // Lifecycle
-  // ============================================================================
+  private getOrCreateContentStream(streamId: string): DurableStream {
+    let stream = this.contentStreams.get(streamId)
+    if (!stream) {
+      stream = new DurableStream({
+        url: this.buildStreamUrl(`/_content/${streamId}`),
+        headers: this.headers,
+        contentType: `application/json`,
+      })
+      this.contentStreams.set(streamId, stream)
+    }
+    return stream
+  }
 
-  /**
-   * Initialize the filesystem by loading metadata from the stream
-   */
+  // Lifecycle
+
   async initialize(): Promise<void> {
     if (this.initialized) {
       return
     }
 
-    // Create metadata stream
     const metadataUrl = this.buildStreamUrl(`/_metadata`)
 
     try {
-      // Try to connect to existing stream
       this.metadataStream = await DurableStream.connect({
         url: metadataUrl,
         headers: this.headers,
         contentType: `application/json`,
       })
     } catch (err) {
-      // Create new stream if it doesn't exist
-      if (err instanceof Error && err.message.includes(`404`)) {
+      if (err instanceof FetchError && err.status === 404) {
         this.metadataStream = await DurableStream.create({
           url: metadataUrl,
           headers: this.headers,
@@ -131,10 +231,8 @@ export class DurableFilesystem {
       }
     }
 
-    // Load and materialize metadata
     await this.refreshMetadata()
 
-    // Ensure root directory exists
     if (!this.directories.has(`/`)) {
       const rootMeta: DirectoryMetadata = {
         type: `directory`,
@@ -148,24 +246,21 @@ export class DurableFilesystem {
     this.initialized = true
   }
 
-  /**
-   * Close all stream handles
-   */
   close(): void {
-    // DurableStream handles don't need explicit closing
+    for (const watcher of this.activeWatchers) {
+      watcher.close()
+    }
+    this.activeWatchers.clear()
+    this.stopSSESubscription()
+    this.readSnapshots.clear()
     this.metadataStream = null
     this.contentStreams.clear()
     this.contentCache.clear()
     this.initialized = false
   }
 
-  // ============================================================================
   // File Operations
-  // ============================================================================
 
-  /**
-   * Create a new file
-   */
   async createFile(
     path: string,
     content: string | Uint8Array,
@@ -174,7 +269,6 @@ export class DurableFilesystem {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    // Check if already exists
     if (
       this.files.has(normalizedPath) ||
       this.directories.has(normalizedPath)
@@ -182,13 +276,11 @@ export class DurableFilesystem {
       throw new ExistsError(normalizedPath)
     }
 
-    // Ensure parent directory exists
     const parentPath = dirname(normalizedPath)
     if (!this.directories.has(parentPath)) {
       throw new NotFoundError(parentPath)
     }
 
-    // Determine content type and MIME type
     const isText =
       typeof content === `string` ||
       (content instanceof Uint8Array &&
@@ -197,24 +289,20 @@ export class DurableFilesystem {
       options?.contentType ?? (isText ? `text` : `binary`)
     const mimeType = options?.mimeType ?? detectMimeType(normalizedPath)
 
-    // Convert content to string for storage
     let contentStr: string
     let size: number
 
     if (typeof content === `string`) {
       contentStr = content
       size = new TextEncoder().encode(content).length
+    } else if (contentType === `text`) {
+      contentStr = new TextDecoder().decode(content)
+      size = content.length
     } else {
-      if (contentType === `text`) {
-        contentStr = new TextDecoder().decode(content)
-        size = content.length
-      } else {
-        contentStr = encodeBase64(content)
-        size = content.length
-      }
+      contentStr = encodeBase64(content)
+      size = content.length
     }
 
-    // Create content stream
     const contentStreamId = generateContentStreamId()
     const contentUrl = this.buildStreamUrl(`/_content/${contentStreamId}`)
     const contentStream = await DurableStream.create({
@@ -224,7 +312,6 @@ export class DurableFilesystem {
     })
     this.contentStreams.set(contentStreamId, contentStream)
 
-    // Create initial content event
     const checksum = await calculateChecksum(contentStr)
     const initEvent: ContentEvent =
       contentType === `binary`
@@ -233,12 +320,10 @@ export class DurableFilesystem {
 
     await contentStream.append(JSON.stringify(initEvent))
 
-    // Get current offset
     const headResult = await contentStream.head()
     this.contentOffsets.set(contentStreamId, headResult.offset ?? `-1`)
     this.contentCache.set(contentStreamId, contentStr)
 
-    // Create file metadata
     const timestamp = now()
     const fileMeta: FileMetadata = {
       type: `file`,
@@ -250,62 +335,48 @@ export class DurableFilesystem {
       modifiedAt: timestamp,
     }
 
-    // Append to metadata stream
-    await this.appendMetadata({
-      type: `insert`,
-      key: normalizedPath,
-      value: fileMeta,
-    })
-    this.files.set(normalizedPath, fileMeta)
+    try {
+      await this.appendMetadata({
+        type: `insert`,
+        key: normalizedPath,
+        value: fileMeta,
+      })
+      this.files.set(normalizedPath, fileMeta)
+    } catch (err) {
+      this.contentStreams.delete(contentStreamId)
+      this.contentOffsets.delete(contentStreamId)
+      this.contentCache.delete(contentStreamId)
+      throw err
+    }
   }
 
-  /**
-   * Write content to an existing file (full replace)
-   */
   async writeFile(path: string, content: string | Uint8Array): Promise<void> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    const fileMeta = this.files.get(normalizedPath)
-    if (!fileMeta) {
-      if (this.directories.has(normalizedPath)) {
-        throw new IsDirectoryError(normalizedPath)
-      }
-      throw new NotFoundError(normalizedPath)
-    }
+    const fileMeta = this.getFileMeta(normalizedPath)
+    this.checkStaleWrite(normalizedPath, fileMeta)
+    const contentStream = this.getOrCreateContentStream(
+      fileMeta.contentStreamId
+    )
 
-    // Get or create content stream handle
-    let contentStream = this.contentStreams.get(fileMeta.contentStreamId)
-    if (!contentStream) {
-      const contentUrl = this.buildStreamUrl(
-        `/_content/${fileMeta.contentStreamId}`
-      )
-      contentStream = new DurableStream({
-        url: contentUrl,
-        headers: this.headers,
-        contentType: `application/json`,
-      })
-      this.contentStreams.set(fileMeta.contentStreamId, contentStream)
-    }
-
-    // Convert content
     let contentStr: string
     let size: number
 
     if (typeof content === `string`) {
       contentStr = content
       size = new TextEncoder().encode(content).length
+    } else if (fileMeta.contentType === `text`) {
+      contentStr = new TextDecoder().decode(content)
+      size = content.length
     } else {
-      if (fileMeta.contentType === `text`) {
-        contentStr = new TextDecoder().decode(content)
-        size = content.length
-      } else {
-        contentStr = encodeBase64(content)
-        size = content.length
-      }
+      contentStr = encodeBase64(content)
+      size = content.length
     }
 
-    // Get current content for patching (text files only)
+    const previousContent = this.contentCache.get(fileMeta.contentStreamId)
+    const previousOffset = this.contentOffsets.get(fileMeta.contentStreamId)
+
     let event: ContentEvent
 
     if (fileMeta.contentType === `text`) {
@@ -313,7 +384,6 @@ export class DurableFilesystem {
       const patch = createPatch(currentContent, contentStr)
       const checksum = await calculateChecksum(contentStr)
 
-      // Use patch if it's smaller than full replace
       if (patch.length < contentStr.length * 0.9) {
         event = { op: `patch`, patch, checksum }
       } else {
@@ -329,44 +399,57 @@ export class DurableFilesystem {
       }
     }
 
-    // Append to stream
     await contentStream.append(JSON.stringify(event))
 
-    // Update offset
     const headResult = await contentStream.head()
     this.contentOffsets.set(fileMeta.contentStreamId, headResult.offset ?? `-1`)
     this.contentCache.set(fileMeta.contentStreamId, contentStr)
 
-    // Update metadata
     const updatedMeta: FileMetadata = {
       ...fileMeta,
       size,
       modifiedAt: now(),
     }
-    await this.appendMetadata({
-      type: `update`,
-      key: normalizedPath,
-      value: updatedMeta,
-    })
-    this.files.set(normalizedPath, updatedMeta)
+    try {
+      await this.appendMetadata({
+        type: `update`,
+        key: normalizedPath,
+        value: updatedMeta,
+      })
+      this.files.set(normalizedPath, updatedMeta)
+      this.readSnapshots.set(normalizedPath, { ...updatedMeta })
+    } catch (err) {
+      if (previousContent !== undefined) {
+        try {
+          const oldChecksum = await calculateChecksum(previousContent)
+          await contentStream.append(
+            JSON.stringify({
+              op: `replace`,
+              content: previousContent,
+              checksum: oldChecksum,
+            })
+          )
+        } catch {
+          /* best-effort compensation */
+        }
+      }
+      if (previousContent !== undefined)
+        this.contentCache.set(fileMeta.contentStreamId, previousContent)
+      else this.contentCache.delete(fileMeta.contentStreamId)
+      if (previousOffset !== undefined)
+        this.contentOffsets.set(fileMeta.contentStreamId, previousOffset)
+      else this.contentOffsets.delete(fileMeta.contentStreamId)
+      throw err
+    }
   }
 
-  /**
-   * Read file content as bytes
-   */
   async readFile(path: string): Promise<Uint8Array> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    const fileMeta = this.files.get(normalizedPath)
-    if (!fileMeta) {
-      if (this.directories.has(normalizedPath)) {
-        throw new IsDirectoryError(normalizedPath)
-      }
-      throw new NotFoundError(normalizedPath)
-    }
-
+    const fileMeta = this.getFileMeta(normalizedPath)
     const content = await this.getFileContent(fileMeta.contentStreamId)
+    this.readSnapshots.set(normalizedPath, { ...fileMeta })
 
     if (fileMeta.contentType === `binary`) {
       return decodeBase64(content)
@@ -375,71 +458,50 @@ export class DurableFilesystem {
     return new TextEncoder().encode(content)
   }
 
-  /**
-   * Read file content as text
-   */
   async readTextFile(path: string): Promise<string> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    const fileMeta = this.files.get(normalizedPath)
-    if (!fileMeta) {
-      if (this.directories.has(normalizedPath)) {
-        throw new IsDirectoryError(normalizedPath)
-      }
-      throw new NotFoundError(normalizedPath)
-    }
+    const fileMeta = this.getFileMeta(normalizedPath)
 
     if (fileMeta.contentType === `binary`) {
       throw new Error(`Cannot read binary file as text: ${normalizedPath}`)
     }
 
-    return this.getFileContent(fileMeta.contentStreamId)
+    const content = await this.getFileContent(fileMeta.contentStreamId)
+    this.readSnapshots.set(normalizedPath, { ...fileMeta })
+    return content
   }
 
-  /**
-   * Delete a file
-   */
   async deleteFile(path: string): Promise<void> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    const fileMeta = this.files.get(normalizedPath)
-    if (!fileMeta) {
-      if (this.directories.has(normalizedPath)) {
-        throw new IsDirectoryError(normalizedPath)
-      }
-      throw new NotFoundError(normalizedPath)
-    }
+    const fileMeta = this.getFileMeta(normalizedPath)
 
-    // Delete content stream
-    const contentUrl = this.buildStreamUrl(
-      `/_content/${fileMeta.contentStreamId}`
-    )
-    await DurableStream.delete({ url: contentUrl, headers: this.headers })
+    await this.appendMetadata({ type: `delete`, key: normalizedPath })
+    this.files.delete(normalizedPath)
+    this.readSnapshots.delete(normalizedPath)
+
+    try {
+      const contentUrl = this.buildStreamUrl(
+        `/_content/${fileMeta.contentStreamId}`
+      )
+      await DurableStream.delete({ url: contentUrl, headers: this.headers })
+    } catch {
+      /* orphaned content stream is harmless */
+    }
     this.contentStreams.delete(fileMeta.contentStreamId)
     this.contentCache.delete(fileMeta.contentStreamId)
     this.contentOffsets.delete(fileMeta.contentStreamId)
-
-    // Remove from metadata
-    await this.appendMetadata({ type: `delete`, key: normalizedPath })
-    this.files.delete(normalizedPath)
   }
 
-  /**
-   * Apply a text patch to a file
-   */
   async applyTextPatch(path: string, patch: string): Promise<void> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    const fileMeta = this.files.get(normalizedPath)
-    if (!fileMeta) {
-      if (this.directories.has(normalizedPath)) {
-        throw new IsDirectoryError(normalizedPath)
-      }
-      throw new NotFoundError(normalizedPath)
-    }
+    const fileMeta = this.getFileMeta(normalizedPath)
+    this.checkStaleWrite(normalizedPath, fileMeta)
 
     if (fileMeta.contentType !== `text`) {
       throw new Error(
@@ -447,24 +509,12 @@ export class DurableFilesystem {
       )
     }
 
-    // Get content stream
-    let contentStream = this.contentStreams.get(fileMeta.contentStreamId)
-    if (!contentStream) {
-      const contentUrl = this.buildStreamUrl(
-        `/_content/${fileMeta.contentStreamId}`
-      )
-      contentStream = new DurableStream({
-        url: contentUrl,
-        headers: this.headers,
-        contentType: `application/json`,
-      })
-      this.contentStreams.set(fileMeta.contentStreamId, contentStream)
-    }
-
-    // Get current content
+    const contentStream = this.getOrCreateContentStream(
+      fileMeta.contentStreamId
+    )
     const currentContent = await this.getFileContent(fileMeta.contentStreamId)
+    const previousOffset = this.contentOffsets.get(fileMeta.contentStreamId)
 
-    // Apply patch locally to validate and get new content
     let newContent: string
     try {
       newContent = applyPatch(currentContent, patch)
@@ -476,45 +526,56 @@ export class DurableFilesystem {
       )
     }
 
-    // Create patch event
     const checksum = await calculateChecksum(newContent)
     const event: ContentEvent = { op: `patch`, patch, checksum }
 
-    // Append to stream
     await contentStream.append(JSON.stringify(event))
 
-    // Update offset
     const headResult = await contentStream.head()
     this.contentOffsets.set(fileMeta.contentStreamId, headResult.offset ?? `-1`)
     this.contentCache.set(fileMeta.contentStreamId, newContent)
 
-    // Update metadata
     const newSize = new TextEncoder().encode(newContent).length
     const updatedMeta: FileMetadata = {
       ...fileMeta,
       size: newSize,
       modifiedAt: now(),
     }
-    await this.appendMetadata({
-      type: `update`,
-      key: normalizedPath,
-      value: updatedMeta,
-    })
-    this.files.set(normalizedPath, updatedMeta)
+    try {
+      await this.appendMetadata({
+        type: `update`,
+        key: normalizedPath,
+        value: updatedMeta,
+      })
+      this.files.set(normalizedPath, updatedMeta)
+      this.readSnapshots.set(normalizedPath, { ...updatedMeta })
+    } catch (err) {
+      try {
+        const oldChecksum = await calculateChecksum(currentContent)
+        await contentStream.append(
+          JSON.stringify({
+            op: `replace`,
+            content: currentContent,
+            checksum: oldChecksum,
+          })
+        )
+      } catch {
+        /* best-effort compensation */
+      }
+      this.contentCache.set(fileMeta.contentStreamId, currentContent)
+      if (previousOffset !== undefined)
+        this.contentOffsets.set(fileMeta.contentStreamId, previousOffset)
+      else this.contentOffsets.delete(fileMeta.contentStreamId)
+      throw err
+    }
   }
 
-  // ============================================================================
   // Directory Operations
-  // ============================================================================
 
-  /**
-   * Create a directory
-   */
   async mkdir(path: string): Promise<void> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
 
-    // Check if already exists
     if (
       this.files.has(normalizedPath) ||
       this.directories.has(normalizedPath)
@@ -522,13 +583,11 @@ export class DurableFilesystem {
       throw new ExistsError(normalizedPath)
     }
 
-    // Ensure parent directory exists
     const parentPath = dirname(normalizedPath)
     if (parentPath !== normalizedPath && !this.directories.has(parentPath)) {
       throw new NotFoundError(parentPath)
     }
 
-    // Create directory metadata
     const timestamp = now()
     const dirMeta: DirectoryMetadata = {
       type: `directory`,
@@ -544,9 +603,6 @@ export class DurableFilesystem {
     this.directories.set(normalizedPath, dirMeta)
   }
 
-  /**
-   * Remove an empty directory
-   */
   async rmdir(path: string): Promise<void> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
@@ -562,7 +618,6 @@ export class DurableFilesystem {
       throw new NotFoundError(normalizedPath)
     }
 
-    // Check if empty
     const children = this.getDirectChildren(normalizedPath)
     if (children.length > 0) {
       throw new DirectoryNotEmptyError(normalizedPath)
@@ -572,9 +627,6 @@ export class DurableFilesystem {
     this.directories.delete(normalizedPath)
   }
 
-  /**
-   * List directory contents
-   */
   list(path: string): Array<Entry> {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
@@ -609,13 +661,8 @@ export class DurableFilesystem {
     })
   }
 
-  // ============================================================================
   // Metadata Operations
-  // ============================================================================
 
-  /**
-   * Check if a path exists
-   */
   exists(path: string): boolean {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
@@ -624,18 +671,12 @@ export class DurableFilesystem {
     )
   }
 
-  /**
-   * Check if a path is a directory
-   */
   isDirectory(path: string): boolean {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
     return this.directories.has(normalizedPath)
   }
 
-  /**
-   * Get file or directory stats
-   */
   stat(path: string): Stat {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
@@ -665,31 +706,23 @@ export class DurableFilesystem {
     throw new NotFoundError(normalizedPath)
   }
 
-  // ============================================================================
   // Synchronization
-  // ============================================================================
 
-  /**
-   * Refresh state from streams
-   */
-  async refresh(): Promise<void> {
+  watch(options?: WatchOptions): Watcher {
     this.ensureInitialized()
 
-    // Refresh metadata
-    await this.refreshMetadata()
+    const watcher = new WatcherImpl((w) => this.removeWatcher(w), options)
+    this.activeWatchers.add(watcher)
 
-    // Clear content cache to force re-read
-    this.contentCache.clear()
-    this.contentOffsets.clear()
+    if (!this.sseUnsubscribe) {
+      this.startSSESubscription()
+    }
+
+    return watcher
   }
 
-  // ============================================================================
   // Cache Management
-  // ============================================================================
 
-  /**
-   * Evict a file from the content cache
-   */
   evictFromCache(path: string): void {
     this.ensureInitialized()
     const normalizedPath = normalizePath(path)
@@ -699,16 +732,114 @@ export class DurableFilesystem {
     }
   }
 
-  /**
-   * Clear all content cache
-   */
   clearContentCache(): void {
     this.contentCache.clear()
   }
 
-  // ============================================================================
   // Private Methods
-  // ============================================================================
+
+  private startSSESubscription(): void {
+    if (!this.metadataStream) return
+
+    this.metadataStream
+      .stream<MetadataEvent>({
+        live: `sse`,
+        offset: this._metadataOffset,
+        json: true,
+      })
+      .then((response) => {
+        this.sseUnsubscribe = response.subscribeJson((batch) => {
+          for (const event of batch.items) {
+            this.handleWatchEvent(event)
+
+            const watchEvent = this.toWatchEvent(event, batch.offset)
+
+            this.applyMetadataEvent(event)
+
+            for (const watcher of this.activeWatchers) {
+              watcher.emit(watchEvent)
+            }
+          }
+
+          this._metadataOffset = batch.offset
+
+          if (batch.upToDate) {
+            for (const watcher of this.activeWatchers) {
+              watcher.markReady()
+            }
+          }
+        })
+      })
+      .catch((err) => {
+        for (const watcher of this.activeWatchers) {
+          watcher.emitError(err instanceof Error ? err : new Error(String(err)))
+        }
+      })
+  }
+
+  private stopSSESubscription(): void {
+    if (this.sseUnsubscribe) {
+      this.sseUnsubscribe()
+      this.sseUnsubscribe = null
+    }
+  }
+
+  private removeWatcher(watcher: WatcherImpl): void {
+    this.activeWatchers.delete(watcher)
+    if (this.activeWatchers.size === 0) {
+      this.stopSSESubscription()
+    }
+  }
+
+  private handleWatchEvent(event: MetadataEvent): void {
+    if (event.type === `update` && event.value && isFileMetadata(event.value)) {
+      const oldMeta = this.files.get(event.key)
+      if (oldMeta && isFileMetadata(oldMeta)) {
+        this.contentCache.delete(oldMeta.contentStreamId)
+        this.contentOffsets.delete(oldMeta.contentStreamId)
+      }
+    } else if (event.type === `delete`) {
+      const oldMeta = this.files.get(event.key)
+      if (oldMeta && isFileMetadata(oldMeta)) {
+        this.contentCache.delete(oldMeta.contentStreamId)
+        this.contentOffsets.delete(oldMeta.contentStreamId)
+        this.contentStreams.delete(oldMeta.contentStreamId)
+      }
+    }
+  }
+
+  private toWatchEvent(event: MetadataEvent, offset: string): WatchEvent {
+    let eventType: WatchEventType
+
+    if (event.type === `insert`) {
+      eventType = event.value?.type === `directory` ? `addDir` : `add`
+    } else if (event.type === `update`) {
+      eventType = `change`
+    } else {
+      eventType = this.directories.has(event.key) ? `unlinkDir` : `unlink`
+    }
+
+    return {
+      eventType,
+      path: event.key,
+      metadata: event.value,
+      offset,
+    }
+  }
+
+  private applyMetadataEvent(event: MetadataEvent): void {
+    if (event.type === `insert` || event.type === `update`) {
+      const meta = event.value!
+      if (isFileMetadata(meta)) {
+        this.files.set(event.key, meta)
+      } else {
+        this.directories.set(event.key, meta)
+      }
+    } else {
+      this.files.delete(event.key)
+      this.directories.delete(event.key)
+    }
+  }
 
   private ensureInitialized(): void {
     if (!this.initialized) {
@@ -716,41 +847,47 @@ export class DurableFilesystem {
     }
   }
 
-  /**
-   * Get direct children of a directory path
-   */
+  private checkStaleWrite(
+    normalizedPath: string,
+    currentMeta: FileMetadata
+  ): void {
+    const snapshot = this.readSnapshots.get(normalizedPath)
+    if (snapshot && snapshot.modifiedAt !== currentMeta.modifiedAt) {
+      throw new PreconditionFailedError(normalizedPath)
+    }
+  }
+
+  private getFileMeta(normalizedPath: string): FileMetadata {
+    const fileMeta = this.files.get(normalizedPath)
+    if (!fileMeta) {
+      if (this.directories.has(normalizedPath)) {
+        throw new IsDirectoryError(normalizedPath)
+      }
+      throw new NotFoundError(normalizedPath)
+    }
+    return fileMeta
+  }
+
   private getDirectChildren(parentPath: string): Array<string> {
     const prefix = parentPath === `/` ? `/` : `${parentPath}/`
     const children: Array<string> = []
 
-    // Check files
     for (const path of this.files.keys()) {
-      if (path.startsWith(prefix)) {
-        const remainder = path.slice(prefix.length)
-        // Direct child has no more slashes
-        if (!remainder.includes(`/`)) {
-          children.push(path)
-        }
+      if (path.startsWith(prefix) && !path.slice(prefix.length).includes(`/`)) {
+        children.push(path)
       }
     }
 
-    // Check directories
     for (const path of this.directories.keys()) {
       if (path === parentPath) continue
-      if (path.startsWith(prefix)) {
-        const remainder = path.slice(prefix.length)
-        if (!remainder.includes(`/`)) {
-          children.push(path)
-        }
+      if (path.startsWith(prefix) && !path.slice(prefix.length).includes(`/`)) {
+        children.push(path)
       }
     }
 
     return children.sort()
   }
 
-  /**
-   * Append to metadata stream
-   */
   private async appendMetadata(event: MetadataEvent): Promise<void> {
     if (!this.metadataStream) {
       throw new Error(`Metadata stream not initialized`)
@@ -758,92 +895,77 @@ export class DurableFilesystem {
 
     await this.metadataStream.append(JSON.stringify(event))
 
-    // Update offset
     const headResult = await this.metadataStream.head()
     this._metadataOffset = headResult.offset ?? `-1`
   }
 
-  /**
-   * Refresh metadata from stream
-   */
   private async refreshMetadata(): Promise<void> {
     if (!this.metadataStream) {
       throw new Error(`Metadata stream not initialized`)
     }
 
-    // Read all events
     const response = await this.metadataStream.stream<MetadataEvent>({
       live: false,
       offset: `-1`,
     })
     const events = await response.json()
 
-    // Update offset
     this._metadataOffset = response.offset
 
-    // Clear and rematerialize
     this.files.clear()
     this.directories.clear()
 
     for (const event of events) {
-      if (event.type === `insert` || event.type === `update`) {
-        const meta = event.value!
-        if (isFileMetadata(meta)) {
-          this.files.set(event.key, meta)
-        } else {
-          this.directories.set(event.key, meta)
-        }
-      } else {
-        // event.type === `delete`
-        this.files.delete(event.key)
-        this.directories.delete(event.key)
-      }
+      this.applyMetadataEvent(event)
     }
   }
 
-  /**
-   * Get file content from cache or stream
-   */
   private async getFileContent(streamId: string): Promise<string> {
-    // Check cache first
     const cached = this.contentCache.get(streamId)
     if (cached !== undefined) {
       return cached
     }
 
-    // Get stream handle
-    let contentStream = this.contentStreams.get(streamId)
-    if (!contentStream) {
-      const contentUrl = this.buildStreamUrl(`/_content/${streamId}`)
-      contentStream = new DurableStream({
-        url: contentUrl,
-        headers: this.headers,
-        contentType: `application/json`,
-      })
-      this.contentStreams.set(streamId, contentStream)
-    }
+    const contentStream = this.getOrCreateContentStream(streamId)
 
-    // Read and replay events
     const response = await contentStream.stream<ContentEvent>({
       live: false,
       offset: `-1`,
     })
     const events = await response.json()
 
-    // Update offset
     this.contentOffsets.set(streamId, response.offset)
 
     let content = ``
+    let lastChecksum: string | undefined
     for (const event of events) {
       if (event.op === `init` || event.op === `replace`) {
         content = event.content
       } else {
-        // event.op === `patch`
-        content = applyPatch(content, event.patch)
+        try {
+          content = applyPatch(content, event.patch)
+        } catch (err) {
+          throw new PatchApplicationError(
+            streamId,
+            `replay failed`,
+            `Failed to replay content stream ${streamId}: ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+      }
+      lastChecksum = event.checksum
+    }
+
+    if (lastChecksum) {
+      const actual = await calculateChecksum(content)
+      if (actual !== lastChecksum) {
+        throw new PatchApplicationError(
+          streamId,
+          `checksum mismatch`,
+          `Content integrity check failed for stream ${streamId}: expected ${lastChecksum}, got ${actual}`
+        )
       }
     }
 
-    // Cache the result
     this.contentCache.set(streamId, content)
 
     return content

@@ -5,10 +5,6 @@
  * you can reproduce it by using the same seed.
  */
 
-// ============================================================================
-// Seeded PRNG (Linear Congruential Generator)
-// ============================================================================
-
 export class SeededRandom {
   private state: number
 
@@ -16,32 +12,19 @@ export class SeededRandom {
     this.state = seed
   }
 
-  /**
-   * Generate next random number in [0, 1)
-   */
   next(): number {
-    // LCG parameters (same as glibc)
     this.state = (this.state * 1103515245 + 12345) & 0x7fffffff
     return this.state / 0x7fffffff
   }
 
-  /**
-   * Generate random integer in [min, max] inclusive
-   */
   int(min: number, max: number): number {
     return Math.floor(this.next() * (max - min + 1)) + min
   }
 
-  /**
-   * Pick random element from array
-   */
   pick<T>(arr: ReadonlyArray<T>): T {
     return arr[this.int(0, arr.length - 1)]!
   }
 
-  /**
-   * Pick multiple unique elements from array
-   */
   pickN<T>(arr: ReadonlyArray<T>, n: number): Array<T> {
     if (n >= arr.length) return [...arr]
     const result: Array<T> = []
@@ -54,16 +37,10 @@ export class SeededRandom {
     return result
   }
 
-  /**
-   * Return true with given probability
-   */
   chance(probability: number): boolean {
     return this.next() < probability
   }
 
-  /**
-   * Shuffle array in place
-   */
   shuffle<T>(arr: Array<T>): Array<T> {
     for (let i = arr.length - 1; i > 0; i--) {
       const j = this.int(0, i)
@@ -72,9 +49,6 @@ export class SeededRandom {
     return arr
   }
 
-  /**
-   * Generate random string
-   */
   string(
     length: number,
     charset: string = `abcdefghijklmnopqrstuvwxyz`
@@ -86,9 +60,6 @@ export class SeededRandom {
     return result
   }
 
-  /**
-   * Generate random alphanumeric string
-   */
   alphanumeric(length: number): string {
     return this.string(
       length,
@@ -96,9 +67,6 @@ export class SeededRandom {
     )
   }
 
-  /**
-   * Generate random filename
-   */
   filename(
     extensions: ReadonlyArray<string> = [`txt`, `md`, `json`, `ts`, `js`]
   ): string {
@@ -107,9 +75,6 @@ export class SeededRandom {
     return `${name}.${ext}`
   }
 
-  /**
-   * Generate random path
-   */
   path(maxDepth: number = 3): string {
     const depth = this.int(1, maxDepth)
     const parts: Array<string> = []
@@ -119,9 +84,6 @@ export class SeededRandom {
     return `/` + parts.join(`/`)
   }
 
-  /**
-   * Generate random text content
-   */
   text(minLength: number, maxLength: number): string {
     const length = this.int(minLength, maxLength)
     const words = [
@@ -152,9 +114,6 @@ export class SeededRandom {
     return result.join(` `).slice(0, length)
   }
 
-  /**
-   * Weighted random pick
-   */
   weightedPick<T>(items: ReadonlyArray<T>, weights: ReadonlyArray<number>): T {
     const totalWeight = weights.reduce((a, b) => a + b, 0)
     let random = this.next() * totalWeight
@@ -166,9 +125,7 @@ export class SeededRandom {
   }
 }
 
-// ============================================================================
 // Fuzz Scenario Generator
-// ============================================================================
 
 export interface FuzzOperation {
   op:

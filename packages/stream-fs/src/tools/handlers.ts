@@ -1,7 +1,5 @@
 /**
  * LLM Tool Handlers for Stream-FS
- *
- * Handles tool invocations from Claude.
  */
 
 import {
@@ -15,9 +13,6 @@ import {
 import type { DurableFilesystem } from "../filesystem"
 import type { StreamFsToolName } from "./definitions"
 
-/**
- * Tool result type
- */
 export interface ToolResult {
   success: boolean
   result?: unknown
@@ -33,9 +28,6 @@ export interface ToolResult {
     | `unknown`
 }
 
-/**
- * Tool input types
- */
 export interface ReadFileInput {
   path: string
 }
@@ -81,9 +73,6 @@ export interface StatInput {
   path: string
 }
 
-/**
- * Union of all tool inputs
- */
 export type ToolInput =
   | ReadFileInput
   | WriteFileInput
@@ -96,9 +85,6 @@ export type ToolInput =
   | ExistsInput
   | StatInput
 
-/**
- * Handle a tool invocation
- */
 export async function handleTool(
   fs: DurableFilesystem,
   toolName: StreamFsToolName,
@@ -117,15 +103,15 @@ export async function handleTool(
       case `edit_file`:
         return await handleEditFile(fs, input as EditFileInput)
       case `list_directory`:
-        return await handleListDirectory(fs, input as ListDirectoryInput)
+        return handleListDirectory(fs, input as ListDirectoryInput)
       case `mkdir`:
         return await handleMkdir(fs, input as MkdirInput)
       case `rmdir`:
         return await handleRmdir(fs, input as RmdirInput)
       case `exists`:
-        return await handleExists(fs, input as ExistsInput)
+        return handleExists(fs, input as ExistsInput)
       case `stat`:
-        return await handleStat(fs, input as StatInput)
+        return handleStat(fs, input as StatInput)
       default:
         return {
           success: false,
@@ -134,41 +120,26 @@ export async function handleTool(
         }
     }
   } catch (err) {
-    return handleError(err)
+    return classifyError(err)
   }
 }
 
-/**
- * Handle read_file tool
- */
 async function handleReadFile(
   fs: DurableFilesystem,
   input: ReadFileInput
 ): Promise<ToolResult> {
   const content = await fs.readTextFile(input.path)
-  return {
-    success: true,
-    result: { content },
-  }
+  return { success: true, result: { content } }
 }
 
-/**
- * Handle write_file tool
- */
 async function handleWriteFile(
   fs: DurableFilesystem,
   input: WriteFileInput
 ): Promise<ToolResult> {
   await fs.writeFile(input.path, input.content)
-  return {
-    success: true,
-    result: { written: true },
-  }
+  return { success: true, result: { written: true } }
 }
 
-/**
- * Handle create_file tool
- */
 async function handleCreateFile(
   fs: DurableFilesystem,
   input: CreateFileInput
@@ -176,39 +147,24 @@ async function handleCreateFile(
   await fs.createFile(input.path, input.content, {
     mimeType: input.mime_type,
   })
-  return {
-    success: true,
-    result: { created: true },
-  }
+  return { success: true, result: { created: true } }
 }
 
-/**
- * Handle delete_file tool
- */
 async function handleDeleteFile(
   fs: DurableFilesystem,
   input: DeleteFileInput
 ): Promise<ToolResult> {
   await fs.deleteFile(input.path)
-  return {
-    success: true,
-    result: { deleted: true },
-  }
+  return { success: true, result: { deleted: true } }
 }
 
-/**
- * Handle edit_file tool
- */
 async function handleEditFile(
   fs: DurableFilesystem,
   input: EditFileInput
 ): Promise<ToolResult> {
   const { path, old_str, new_str } = input
 
-  // Read current content
   const currentContent = await fs.readTextFile(path)
-
-  // Count occurrences
   const occurrences = currentContent.split(old_str).length - 1
 
   if (occurrences === 0) {
@@ -227,24 +183,17 @@ async function handleEditFile(
     }
   }
 
-  // Apply edit
-  const newContent = currentContent.replace(old_str, new_str)
+  const newContent = currentContent.replace(old_str, () => new_str)
   await fs.writeFile(path, newContent)
 
-  return {
-    success: true,
-    result: { edited: true },
-  }
+  return { success: true, result: { edited: true } }
 }
 
-/**
- * Handle list_directory tool
- */
-async function handleListDirectory(
+function handleListDirectory(
   fs: DurableFilesystem,
   input: ListDirectoryInput
-): Promise<ToolResult> {
-  const entries = await fs.list(input.path)
+): ToolResult {
+  const entries = fs.list(input.path)
   return {
     success: true,
     result: {
@@ -258,56 +207,29 @@ async function handleListDirectory(
   }
 }
 
-/**
- * Handle mkdir tool
- */
 async function handleMkdir(
   fs: DurableFilesystem,
   input: MkdirInput
 ): Promise<ToolResult> {
   await fs.mkdir(input.path)
-  return {
-    success: true,
-    result: { created: true },
-  }
+  return { success: true, result: { created: true } }
 }
 
-/**
- * Handle rmdir tool
- */
 async function handleRmdir(
   fs: DurableFilesystem,
   input: RmdirInput
 ): Promise<ToolResult> {
   await fs.rmdir(input.path)
-  return {
-    success: true,
-    result: { removed: true },
-  }
+  return { success: true, result: { removed: true } }
 }
 
-/**
- * Handle exists tool
- */
-async function handleExists(
-  fs: DurableFilesystem,
-  input: ExistsInput
-): Promise<ToolResult> {
-  const exists = await fs.exists(input.path)
-  return {
-    success: true,
-    result: { exists },
-  }
+function handleExists(fs: DurableFilesystem, input: ExistsInput): ToolResult {
+  const exists = fs.exists(input.path)
+  return { success: true, result: { exists } }
 }
 
-/**
- * Handle stat tool
- */
-async function handleStat(
-  fs: DurableFilesystem,
-  input: StatInput
-): Promise<ToolResult> {
-  const stat = await fs.stat(input.path)
+function handleStat(fs: DurableFilesystem, input: StatInput): ToolResult {
+  const stat = fs.stat(input.path)
   return {
     success: true,
     result: {
@@ -321,69 +243,26 @@ async function handleStat(
   }
 }
 
-/**
- * Convert errors to ToolResult
- */
-function handleError(err: unknown): ToolResult {
-  if (err instanceof NotFoundError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `not_found`,
-    }
-  }
+const ERROR_TYPE_MAP: Array<
+  [new (...args: Array<never>) => Error, ToolResult[`errorType`]]
+> = [
+  [NotFoundError, `not_found`],
+  [ExistsError, `exists`],
+  [IsDirectoryError, `is_directory`],
+  [NotDirectoryError, `not_directory`],
+  [DirectoryNotEmptyError, `not_empty`],
+  [PatchApplicationError, `conflict`],
+]
 
-  if (err instanceof ExistsError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `exists`,
-    }
-  }
-
-  if (err instanceof IsDirectoryError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `is_directory`,
-    }
-  }
-
-  if (err instanceof NotDirectoryError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `not_directory`,
-    }
-  }
-
-  if (err instanceof DirectoryNotEmptyError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `not_empty`,
-    }
-  }
-
-  if (err instanceof PatchApplicationError) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `conflict`,
-    }
-  }
-
+function classifyError(err: unknown): ToolResult {
   if (err instanceof Error) {
-    return {
-      success: false,
-      error: err.message,
-      errorType: `unknown`,
+    for (const [ErrorClass, errorType] of ERROR_TYPE_MAP) {
+      if (err instanceof ErrorClass) {
+        return { success: false, error: err.message, errorType }
+      }
     }
+    return { success: false, error: err.message, errorType: `unknown` }
   }
 
-  return {
-    success: false,
-    error: String(err),
-    errorType: `unknown`,
-  }
+  return { success: false, error: String(err), errorType: `unknown` }
 }

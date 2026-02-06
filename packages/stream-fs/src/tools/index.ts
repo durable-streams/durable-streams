@@ -1,7 +1,5 @@
 /**
  * Stream-FS LLM Tools
- *
- * Tools for Claude's function calling to interact with DurableFilesystem.
  */
 
 export {

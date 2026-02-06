@@ -1,8 +1,6 @@
 /**
  * Fluent Scenario Builder for Stream-FS Testing
  *
- * Provides a declarative DSL for writing readable, self-documenting test scenarios.
- *
  * @example
  * ```typescript
  * await scenario("read-after-write")
@@ -33,26 +31,17 @@ import type {
   Step,
 } from "./types"
 
-// ============================================================================
-// Scenario Builder Class
-// ============================================================================
+// Scenario Builder
 
 export class ScenarioBuilder {
   private readonly _name: string
   private _description?: string
   private _tags: Array<string> = []
   private _steps: Array<Step> = []
-  private _nextExpectError?: Step[`op`] extends `expectError`
-    ? Step
-    : never[`errorType`]
 
   constructor(name: string) {
     this._name = name
   }
-
-  // --------------------------------------------------------------------------
-  // Metadata
-  // --------------------------------------------------------------------------
 
   description(desc: string): this {
     this._description = desc
@@ -64,9 +53,7 @@ export class ScenarioBuilder {
     return this
   }
 
-  // --------------------------------------------------------------------------
   // File Operations
-  // --------------------------------------------------------------------------
 
   createFile(
     path: string,
@@ -102,9 +89,7 @@ export class ScenarioBuilder {
     return this
   }
 
-  // --------------------------------------------------------------------------
   // Directory Operations
-  // --------------------------------------------------------------------------
 
   mkdir(path: string): this {
     this._steps.push({ op: `mkdir`, path })
@@ -121,9 +106,7 @@ export class ScenarioBuilder {
     return this
   }
 
-  // --------------------------------------------------------------------------
   // Assertions
-  // --------------------------------------------------------------------------
 
   expectContent(path: string, expected: string): this {
     this._steps.push({ op: `readTextFile`, path, expectContent: expected })
@@ -170,10 +153,6 @@ export class ScenarioBuilder {
     return this
   }
 
-  // --------------------------------------------------------------------------
-  // Error Expectations
-  // --------------------------------------------------------------------------
-
   expectError(
     errorType:
       | `not_found`
@@ -188,18 +167,7 @@ export class ScenarioBuilder {
     return this
   }
 
-  // --------------------------------------------------------------------------
-  // Synchronization
-  // --------------------------------------------------------------------------
-
-  refresh(): this {
-    this._steps.push({ op: `refresh` })
-    return this
-  }
-
-  // --------------------------------------------------------------------------
   // Build & Run
-  // --------------------------------------------------------------------------
 
   build(): ScenarioDefinition {
     return {
@@ -215,9 +183,7 @@ export class ScenarioBuilder {
   }
 }
 
-// ============================================================================
 // Scenario Execution
-// ============================================================================
 
 export async function executeScenario(
   scenarioDef: ScenarioDefinition,
@@ -231,7 +197,6 @@ export async function executeScenario(
     const step = scenarioDef.steps[i]!
     const stepStart = Date.now()
 
-    // Handle expectError step
     if (step.op === `expectError`) {
       expectingError = step.errorType
       history.push({
@@ -246,7 +211,6 @@ export async function executeScenario(
     try {
       const result = await executeStep(fs, step)
 
-      // If we were expecting an error but didn't get one
       if (expectingError) {
         return {
           scenario: scenarioDef,
@@ -268,7 +232,6 @@ export async function executeScenario(
     } catch (err) {
       const errorType = classifyError(err)
 
-      // If we were expecting this error, that's success
       if (expectingError === errorType) {
         history.push({
           timestamp: stepStart,
@@ -282,7 +245,6 @@ export async function executeScenario(
         continue
       }
 
-      // Unexpected error
       history.push({
         timestamp: stepStart,
         step,
@@ -303,7 +265,6 @@ export async function executeScenario(
     }
   }
 
-  // Take final snapshot
   const finalSnapshot = await takeSnapshot(fs)
 
   return {
@@ -370,10 +331,9 @@ async function executeStep(
       const entries = fs.list(step.path)
       if (step.expectEntries) {
         const actual = entries.map((e) => ({ name: e.name, type: e.type }))
-        const expected = step.expectEntries
-        if (!entriesMatch(actual, expected)) {
+        if (!entriesMatch(actual, step.expectEntries)) {
           throw new Error(
-            `Entries mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`
+            `Entries mismatch: expected ${JSON.stringify(step.expectEntries)}, got ${JSON.stringify(actual)}`
           )
         }
       }
@@ -415,12 +375,7 @@ async function executeStep(
       return stat
     }
 
-    case `refresh`:
-      await fs.refresh()
-      return undefined
-
     case `expectError`:
-      // Handled in executeScenario
       return undefined
   }
 }
@@ -465,9 +420,7 @@ function entriesMatch(
   return true
 }
 
-// ============================================================================
 // Snapshot
-// ============================================================================
 
 export async function takeSnapshot(
   fs: DurableFilesystem
@@ -475,7 +428,6 @@ export async function takeSnapshot(
   const files = new Map<string, FileSnapshot>()
   const directories = new Set<string>()
 
-  // Walk the filesystem
   async function walk(path: string): Promise<void> {
     if (!fs.exists(path)) return
 
@@ -511,9 +463,7 @@ export async function takeSnapshot(
   }
 }
 
-// ============================================================================
 // Factory Function
-// ============================================================================
 
 export function scenario(name: string): ScenarioBuilder {
   return new ScenarioBuilder(name)

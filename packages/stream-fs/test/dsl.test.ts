@@ -193,19 +193,6 @@ describe(`DSL Usage`, () => {
     })
   })
 
-  describe(`Refresh Behavior`, () => {
-    it(`refresh clears cache`, async () => {
-      const result = await scenario(`refresh-test`)
-        .createFile(`/cached.txt`, `original`)
-        .expectContent(`/cached.txt`, `original`)
-        .refresh()
-        .expectContent(`/cached.txt`, `original`)
-        .run(fs)
-
-      expect(result.success).toBe(true)
-    })
-  })
-
   describe(`Scenario Metadata`, () => {
     it(`scenario has correct metadata`, () => {
       const scenarioDef = scenario(`test-scenario`)

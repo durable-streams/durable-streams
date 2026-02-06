@@ -26,38 +26,29 @@
  * ```
  */
 
-// ============================================================================
-// Core Filesystem
-// ============================================================================
-
 export { DurableFilesystem } from "./filesystem"
 
-// ============================================================================
-// Types
-// ============================================================================
-
 export type {
-  // Metadata types
   ContentType,
   EntryType,
   BaseMetadata,
   FileMetadata,
   DirectoryMetadata,
   Metadata,
-  // Content event types
   ContentEvent,
   InitContentEvent,
   PatchContentEvent,
   ReplaceContentEvent,
-  // Result types
   Stat,
   Entry,
-  // Options
   CreateFileOptions,
   DurableFilesystemOptions,
+  WatchEventType,
+  WatchEvent,
+  WatchOptions,
+  Watcher,
 } from "./types"
 
-// Type guards
 export {
   isFileMetadata,
   isDirectoryMetadata,
@@ -65,10 +56,6 @@ export {
   isPatchEvent,
   isReplaceEvent,
 } from "./types"
-
-// ============================================================================
-// Errors
-// ============================================================================
 
 export {
   StreamFsError,
@@ -81,34 +68,22 @@ export {
   PreconditionFailedError,
 } from "./types"
 
-// ============================================================================
-// Utilities
-// ============================================================================
-
 export {
-  // Path utilities
   normalizePath,
   dirname,
   basename,
   joinPath,
-  // Content utilities
   generateContentStreamId,
   calculateChecksum,
   createPatch,
   applyPatch,
   canApplyPatch,
-  // MIME type detection
   detectMimeType,
   detectContentType,
   isTextContent,
-  // Binary encoding
   encodeBase64,
   decodeBase64,
 } from "./utils"
-
-// ============================================================================
-// LLM Tools
-// ============================================================================
 
 export {
   streamFsTools,

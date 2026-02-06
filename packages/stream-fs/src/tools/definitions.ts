@@ -6,9 +6,6 @@
 
 import type { Tool } from "@anthropic-ai/sdk/resources/messages"
 
-/**
- * All Stream-FS tools for use with Claude
- */
 export const streamFsTools: Array<Tool> = [
   {
     name: `read_file`,
@@ -172,9 +169,6 @@ export const streamFsTools: Array<Tool> = [
   },
 ]
 
-/**
- * Tool names for type safety
- */
 export type StreamFsToolName =
   | `read_file`
   | `write_file`
@@ -187,9 +181,8 @@ export type StreamFsToolName =
   | `exists`
   | `stat`
 
-/**
- * Check if a tool name is a Stream-FS tool
- */
+const TOOL_NAMES = new Set<string>(streamFsTools.map((t) => t.name))
+
 export function isStreamFsTool(name: string): name is StreamFsToolName {
-  return streamFsTools.some((tool) => tool.name === name)
+  return TOOL_NAMES.has(name)
 }

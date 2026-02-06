@@ -62,8 +62,8 @@ Stream-FS provides POSIX-like filesystem semantics on top of durable streams, en
 ### Synchronization
 
 - **initialize()**: Load state from streams
-- **refresh()**: Reload state from streams
-- **close()**: Close all stream handles
+- **watch(options?)**: Watch for changes via live SSE on metadata stream. Returns a Watcher with chokidar-style events (`add`, `change`, `unlink`, `addDir`, `unlinkDir`). Supports path filtering and `recursive` option.
+- **close()**: Close all stream handles and watchers
 
 ### Cache Management
 
@@ -141,11 +141,11 @@ Patching identical content produces empty patch; empty patch is identity.
 
 ```
 ∀ agents A, B sharing streamPrefix:
-  after A.refresh() and B.refresh():
+  when both are watching (or freshly initialized):
     snapshot(A) = snapshot(B)
 ```
 
-All agents converge to the same state after refresh.
+All agents converge to the same state via watching or re-initialization.
 
 ### I9: Content Stream Replay Determinism
 
@@ -175,6 +175,28 @@ After deleteFile(path):
 ```
 
 Deleting a file removes it completely from all streams.
+
+### I12: Watch-Driven Cache Invalidation
+
+```
+Given: watcher active from offset O
+When:  MetadataEvent for file with cached content arrives
+Then:  contentCache and contentOffsets for that file are invalidated
+Effect: next read returns fresh content from stream without refresh()
+```
+
+A watcher's SSE handler invalidates cached content for modified or deleted files, so subsequent reads return fresh data without requiring an explicit `refresh()`.
+
+### I13: Stale-Write Detection
+
+```
+Given: agent reads file f at metadata state M1
+When:  file f is modified (locally or via watch), producing state M2
+       where M1.modifiedAt ≠ M2.modifiedAt
+Then:  writeFile(f) and applyTextPatch(f) throw PreconditionFailedError
+```
+
+If a file has been modified since the last read, write operations fail with `PreconditionFailedError`. The agent must re-read the file to obtain the current state before writing. This prevents silent data loss from concurrent modifications.
 
 ---
 
@@ -267,14 +289,15 @@ All operations except initialize() require prior initialization.
 
 ## Error Types
 
-| Error                    | Condition                    | POSIX Equivalent |
-| ------------------------ | ---------------------------- | ---------------- |
-| `NotFoundError`          | Path does not exist          | ENOENT           |
-| `ExistsError`            | Path already exists          | EEXIST           |
-| `IsDirectoryError`       | Expected file, got directory | EISDIR           |
-| `NotDirectoryError`      | Expected directory, got file | ENOTDIR          |
-| `DirectoryNotEmptyError` | Directory has children       | ENOTEMPTY        |
-| `PatchApplicationError`  | Patch cannot be applied      | N/A              |
+| Error                     | Condition                     | POSIX Equivalent |
+| ------------------------- | ----------------------------- | ---------------- |
+| `NotFoundError`           | Path does not exist           | ENOENT           |
+| `ExistsError`             | Path already exists           | EEXIST           |
+| `IsDirectoryError`        | Expected file, got directory  | EISDIR           |
+| `NotDirectoryError`       | Expected directory, got file  | ENOTDIR          |
+| `DirectoryNotEmptyError`  | Directory has children        | ENOTEMPTY        |
+| `PatchApplicationError`   | Patch cannot be applied       | N/A              |
+| `PreconditionFailedError` | File modified since last read | N/A (ECONFLICT)  |
 
 ---
 
@@ -284,7 +307,7 @@ Stream-FS provides **eventual consistency** with the following guarantees:
 
 1. **Read-Your-Writes**: Within a single agent instance, reads reflect prior writes
 2. **Monotonic Reads**: Once a value is read, subsequent reads return same or newer value
-3. **Causal Consistency**: If agent A's write causally precedes agent B's read, B sees A's write after refresh
+3. **Causal Consistency**: If agent A's write causally precedes agent B's read, B sees A's write after watching or re-initialization
 
 ### Conflict Resolution
 
@@ -293,13 +316,13 @@ When multiple agents write concurrently:
 - **Metadata conflicts**: Last-writer-wins based on stream append order
 - **Content conflicts**: Last-writer-wins; patches applied in stream order
 
-### Refresh Semantics
+### Watch Semantics
 
-`refresh()` reloads the complete materialized state from streams:
+`watch()` subscribes to the metadata stream via SSE and automatically keeps the in-memory state up to date:
 
-1. Re-read all metadata events from offset -1
-2. Clear and rebuild file/directory maps
-3. Clear content cache (forces re-read on next access)
+1. New metadata events update file/directory maps in real time
+2. Content cache is invalidated when files are modified or deleted (I12)
+3. Stale-write detection triggers on concurrent modifications (I13)
 
 ---
 

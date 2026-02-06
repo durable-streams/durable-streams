@@ -1,14 +1,8 @@
 /**
  * DSL Types for Stream-FS Testing
- *
- * Provides type definitions for the fluent scenario builder and history-based verification.
  */
 
-// Types imported from src/types.ts are re-exported or used inline in this module
-
-// ============================================================================
 // Step Types (Operations in a Scenario)
-// ============================================================================
 
 export interface CreateFileStep {
   op: `createFile`
@@ -81,10 +75,6 @@ export interface StatStep {
   expectSize?: number
 }
 
-export interface RefreshStep {
-  op: `refresh`
-}
-
 export interface ExpectErrorStep {
   op: `expectError`
   errorType:
@@ -110,12 +100,9 @@ export type Step =
   | ExistsStep
   | IsDirectoryStep
   | StatStep
-  | RefreshStep
   | ExpectErrorStep
 
-// ============================================================================
 // History Event Types (Recorded During Execution)
-// ============================================================================
 
 export interface HistoryEvent {
   timestamp: number
@@ -127,9 +114,7 @@ export interface HistoryEvent {
   durationMs: number
 }
 
-// ============================================================================
 // Filesystem Snapshot (State at a Point in Time)
-// ============================================================================
 
 export interface FilesystemSnapshot {
   files: Map<string, FileSnapshot>
@@ -147,9 +132,7 @@ export interface FileSnapshot {
   modifiedAt: string
 }
 
-// ============================================================================
-// Scenario Definition
-// ============================================================================
+// Scenario Definition and Result
 
 export interface ScenarioDefinition {
   name: string
@@ -157,10 +140,6 @@ export interface ScenarioDefinition {
   tags: Array<string>
   steps: Array<Step>
 }
-
-// ============================================================================
-// Scenario Result
-// ============================================================================
 
 export interface ScenarioResult {
   scenario: ScenarioDefinition
@@ -172,9 +151,7 @@ export interface ScenarioResult {
   durationMs: number
 }
 
-// ============================================================================
 // Invariant Checker Types
-// ============================================================================
 
 export interface InvariantCheckResult {
   invariant: string
@@ -187,41 +164,3 @@ export type InvariantChecker = (
   snapshot: FilesystemSnapshot,
   history?: Array<HistoryEvent>
 ) => InvariantCheckResult
-
-// ============================================================================
-// Fuzz Configuration
-// ============================================================================
-
-export interface FuzzConfig {
-  seed: number
-  numOperations: { min: number; max: number }
-  numFiles: { min: number; max: number }
-  numDirs: { min: number; max: number }
-  contentLength: { min: number; max: number }
-  operationWeights: {
-    createFile: number
-    writeFile: number
-    deleteFile: number
-    mkdir: number
-    rmdir: number
-    readFile: number
-    list: number
-  }
-}
-
-export const DEFAULT_FUZZ_CONFIG: FuzzConfig = {
-  seed: 42,
-  numOperations: { min: 10, max: 30 },
-  numFiles: { min: 1, max: 5 },
-  numDirs: { min: 1, max: 3 },
-  contentLength: { min: 1, max: 100 },
-  operationWeights: {
-    createFile: 3,
-    writeFile: 2,
-    deleteFile: 1,
-    mkdir: 2,
-    rmdir: 1,
-    readFile: 2,
-    list: 1,
-  },
-}

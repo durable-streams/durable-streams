@@ -14,9 +14,7 @@ import type {
   InvariantCheckResult,
 } from "./dsl/types"
 
-// ============================================================================
 // I1: Path Normalization Idempotence
-// ============================================================================
 
 export function checkPathNormalizationIdempotence(
   paths: Array<string>
@@ -33,15 +31,10 @@ export function checkPathNormalizationIdempotence(
       }
     }
   }
-  return {
-    invariant: `I1: Path Normalization Idempotence`,
-    passed: true,
-  }
+  return { invariant: `I1: Path Normalization Idempotence`, passed: true }
 }
 
-// ============================================================================
 // I2: Canonical Path Form
-// ============================================================================
 
 export function checkCanonicalPathForm(
   paths: Array<string>
@@ -65,20 +58,14 @@ export function checkCanonicalPathForm(
       }
     }
   }
-  return {
-    invariant: `I2: Canonical Path Form`,
-    passed: true,
-  }
+  return { invariant: `I2: Canonical Path Form`, passed: true }
 }
 
-// ============================================================================
 // I3: Filesystem Tree Consistency
-// ============================================================================
 
 export function checkTreeConsistency(
   snapshot: FilesystemSnapshot
 ): InvariantCheckResult {
-  // Every file must have a parent directory
   for (const [path] of snapshot.files) {
     if (path === `/`) continue
     const parent = dirname(path)
@@ -92,7 +79,6 @@ export function checkTreeConsistency(
     }
   }
 
-  // Every non-root directory must have a parent directory
   for (const path of snapshot.directories) {
     if (path === `/`) continue
     const parent = dirname(path)
@@ -106,15 +92,10 @@ export function checkTreeConsistency(
     }
   }
 
-  return {
-    invariant: `I3: Filesystem Tree Consistency`,
-    passed: true,
-  }
+  return { invariant: `I3: Filesystem Tree Consistency`, passed: true }
 }
 
-// ============================================================================
 // I4: Single Entity Per Path
-// ============================================================================
 
 export function checkSingleEntityPerPath(
   snapshot: FilesystemSnapshot
@@ -129,21 +110,15 @@ export function checkSingleEntityPerPath(
       }
     }
   }
-  return {
-    invariant: `I4: Single Entity Per Path`,
-    passed: true,
-  }
+  return { invariant: `I4: Single Entity Per Path`, passed: true }
 }
 
-// ============================================================================
 // I5: Metadata-Content Consistency
-// ============================================================================
 
 export function checkMetadataContentConsistency(
   snapshot: FilesystemSnapshot
 ): InvariantCheckResult {
   for (const [path, file] of snapshot.files) {
-    // Size should match content length (for text files)
     if (file.contentType === `text`) {
       const contentBytes = new TextEncoder().encode(file.content).length
       if (file.size !== contentBytes) {
@@ -156,26 +131,19 @@ export function checkMetadataContentConsistency(
       }
     }
   }
-  return {
-    invariant: `I5: Metadata-Content Consistency`,
-    passed: true,
-  }
+  return { invariant: `I5: Metadata-Content Consistency`, passed: true }
 }
 
-// ============================================================================
 // I10: Modification Time Monotonicity (History-based)
-// ============================================================================
 
 export function checkModificationTimeMonotonicity(
   history: Array<HistoryEvent>
 ): InvariantCheckResult {
-  // Track modification times per path
   const modTimes = new Map<string, number>()
 
   for (const event of history) {
     if (!event.success) continue
 
-    // For stat operations, record the modification time
     if (event.step.op === `stat` && event.result) {
       const result = event.result as { modifiedAt?: string }
       if (result.modifiedAt) {
@@ -196,21 +164,15 @@ export function checkModificationTimeMonotonicity(
     }
   }
 
-  return {
-    invariant: `I10: Modification Time Monotonicity`,
-    passed: true,
-  }
+  return { invariant: `I10: Modification Time Monotonicity`, passed: true }
 }
 
-// ============================================================================
 // I11: Delete Completeness
-// ============================================================================
 
 export function checkDeleteCompleteness(
   history: Array<HistoryEvent>,
   finalSnapshot: FilesystemSnapshot
 ): InvariantCheckResult {
-  // Find all successful deletes
   const deletedPaths = new Set<string>()
   for (const event of history) {
     if (event.success && event.step.op === `deleteFile`) {
@@ -218,7 +180,6 @@ export function checkDeleteCompleteness(
     }
   }
 
-  // Verify deleted paths don't exist in final snapshot
   for (const path of deletedPaths) {
     if (finalSnapshot.files.has(path)) {
       return {
@@ -230,15 +191,10 @@ export function checkDeleteCompleteness(
     }
   }
 
-  return {
-    invariant: `I11: Delete Completeness`,
-    passed: true,
-  }
+  return { invariant: `I11: Delete Completeness`, passed: true }
 }
 
-// ============================================================================
 // Combined Invariant Check
-// ============================================================================
 
 export interface AllInvariantsResult {
   passed: boolean
@@ -252,12 +208,10 @@ export function checkAllInvariants(
 ): AllInvariantsResult {
   const results: Array<InvariantCheckResult> = []
 
-  // Snapshot-based invariants
   results.push(checkTreeConsistency(snapshot))
   results.push(checkSingleEntityPerPath(snapshot))
   results.push(checkMetadataContentConsistency(snapshot))
 
-  // History-based invariants
   if (history) {
     results.push(checkModificationTimeMonotonicity(history))
     results.push(checkDeleteCompleteness(history, snapshot))
@@ -274,14 +228,11 @@ export function checkAllInvariants(
   }
 }
 
-// ============================================================================
 // Live Filesystem Check
-// ============================================================================
 
 export async function checkLiveFilesystem(
   fs: DurableFilesystem
 ): Promise<AllInvariantsResult> {
-  // Import dynamically to avoid circular dependency
   const { takeSnapshot } = await import(`./dsl/scenario-builder`)
   const snapshot = await takeSnapshot(fs)
   return checkAllInvariants(snapshot)
