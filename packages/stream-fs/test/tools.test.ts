@@ -7,15 +7,19 @@ import { DurableStreamTestServer } from "@durable-streams/server"
 import { StreamFilesystem } from "../src/filesystem"
 import { handleTool, isStreamFsTool, streamFsTools } from "../src/tools"
 import type {
+  AppendFileInput,
+  CopyInput,
   CreateFileInput,
   DeleteFileInput,
   EditFileInput,
   ExistsInput,
   ListDirectoryInput,
   MkdirInput,
+  MoveInput,
   ReadFileInput,
   RmdirInput,
   StatInput,
+  TreeInput,
   WriteFileInput,
 } from "../src/tools"
 
@@ -54,11 +58,19 @@ describe(`LLM Tools`, () => {
       expect(toolNames).toContain(`rmdir`)
       expect(toolNames).toContain(`exists`)
       expect(toolNames).toContain(`stat`)
+      expect(toolNames).toContain(`append_file`)
+      expect(toolNames).toContain(`move`)
+      expect(toolNames).toContain(`copy`)
+      expect(toolNames).toContain(`tree`)
     })
 
     it(`should identify stream-fs tools`, () => {
       expect(isStreamFsTool(`read_file`)).toBe(true)
       expect(isStreamFsTool(`write_file`)).toBe(true)
+      expect(isStreamFsTool(`append_file`)).toBe(true)
+      expect(isStreamFsTool(`move`)).toBe(true)
+      expect(isStreamFsTool(`copy`)).toBe(true)
+      expect(isStreamFsTool(`tree`)).toBe(true)
       expect(isStreamFsTool(`unknown_tool`)).toBe(false)
     })
   })
@@ -312,6 +324,247 @@ describe(`LLM Tools`, () => {
       const stat = result.result as { type: string; size: number }
       expect(stat.type).toBe(`directory`)
       expect(stat.size).toBe(0)
+    })
+  })
+
+  describe(`read_file with offset/limit`, () => {
+    it(`should return full metadata when no offset/limit`, async () => {
+      await fs.createFile(`/lines.txt`, `line1\nline2\nline3`)
+
+      const result = await handleTool(fs, `read_file`, {
+        path: `/lines.txt`,
+      } as ReadFileInput)
+
+      expect(result.success).toBe(true)
+      const r = result.result as {
+        content: string
+        offset: number
+        lines_read: number
+        total_lines: number
+        has_more: boolean
+      }
+      expect(r.content).toBe(`line1\nline2\nline3`)
+      expect(r.offset).toBe(0)
+      expect(r.total_lines).toBe(3)
+      expect(r.lines_read).toBe(3)
+      expect(r.has_more).toBe(false)
+    })
+
+    it(`should paginate with offset and limit`, async () => {
+      await fs.createFile(`/big.txt`, `line0\nline1\nline2\nline3\nline4`)
+
+      const result = await handleTool(fs, `read_file`, {
+        path: `/big.txt`,
+        offset: 1,
+        limit: 2,
+      } as ReadFileInput)
+
+      expect(result.success).toBe(true)
+      const r = result.result as {
+        content: string
+        offset: number
+        lines_read: number
+        total_lines: number
+        has_more: boolean
+      }
+      expect(r.content).toBe(`line1\nline2`)
+      expect(r.offset).toBe(1)
+      expect(r.lines_read).toBe(2)
+      expect(r.total_lines).toBe(5)
+      expect(r.has_more).toBe(true)
+    })
+
+    it(`should handle offset past end of file`, async () => {
+      await fs.createFile(`/short.txt`, `one\ntwo`)
+
+      const result = await handleTool(fs, `read_file`, {
+        path: `/short.txt`,
+        offset: 10,
+      } as ReadFileInput)
+
+      expect(result.success).toBe(true)
+      const r = result.result as {
+        content: string
+        lines_read: number
+        has_more: boolean
+      }
+      expect(r.content).toBe(``)
+      expect(r.lines_read).toBe(0)
+      expect(r.has_more).toBe(false)
+    })
+  })
+
+  describe(`append_file`, () => {
+    it(`should append content to a file`, async () => {
+      await fs.createFile(`/log.txt`, `entry1`)
+
+      const result = await handleTool(fs, `append_file`, {
+        path: `/log.txt`,
+        content: `entry2`,
+      } as AppendFileInput)
+
+      expect(result.success).toBe(true)
+      const content = await fs.readTextFile(`/log.txt`)
+      expect(content).toBe(`entry1\nentry2`)
+    })
+
+    it(`should not double newline if file ends with one`, async () => {
+      await fs.createFile(`/log.txt`, `entry1\n`)
+
+      const result = await handleTool(fs, `append_file`, {
+        path: `/log.txt`,
+        content: `entry2`,
+      } as AppendFileInput)
+
+      expect(result.success).toBe(true)
+      const content = await fs.readTextFile(`/log.txt`)
+      expect(content).toBe(`entry1\nentry2`)
+    })
+
+    it(`should fail for non-existent file`, async () => {
+      const result = await handleTool(fs, `append_file`, {
+        path: `/nonexistent.txt`,
+        content: `data`,
+      } as AppendFileInput)
+
+      expect(result.success).toBe(false)
+      expect(result.errorType).toBe(`not_found`)
+    })
+  })
+
+  describe(`move`, () => {
+    it(`should move a file`, async () => {
+      await fs.createFile(`/source.txt`, `content`)
+
+      const result = await handleTool(fs, `move`, {
+        source: `/source.txt`,
+        destination: `/dest.txt`,
+      } as MoveInput)
+
+      expect(result.success).toBe(true)
+      expect(fs.exists(`/source.txt`)).toBe(false)
+      expect(fs.exists(`/dest.txt`)).toBe(true)
+      expect(await fs.readTextFile(`/dest.txt`)).toBe(`content`)
+    })
+
+    it(`should move a directory with contents`, async () => {
+      await fs.mkdir(`/src`)
+      await fs.createFile(`/src/file.txt`, `hello`)
+
+      const result = await handleTool(fs, `move`, {
+        source: `/src`,
+        destination: `/dst`,
+      } as MoveInput)
+
+      expect(result.success).toBe(true)
+      expect(fs.exists(`/src`)).toBe(false)
+      expect(fs.exists(`/dst`)).toBe(true)
+      expect(fs.exists(`/dst/file.txt`)).toBe(true)
+      expect(await fs.readTextFile(`/dst/file.txt`)).toBe(`hello`)
+    })
+
+    it(`should fail if destination exists`, async () => {
+      await fs.createFile(`/a.txt`, `a`)
+      await fs.createFile(`/b.txt`, `b`)
+
+      const result = await handleTool(fs, `move`, {
+        source: `/a.txt`,
+        destination: `/b.txt`,
+      } as MoveInput)
+
+      expect(result.success).toBe(false)
+      expect(result.errorType).toBe(`exists`)
+    })
+  })
+
+  describe(`copy`, () => {
+    it(`should copy a file`, async () => {
+      await fs.createFile(`/original.txt`, `content`)
+
+      const result = await handleTool(fs, `copy`, {
+        source: `/original.txt`,
+        destination: `/copy.txt`,
+      } as CopyInput)
+
+      expect(result.success).toBe(true)
+      expect(await fs.readTextFile(`/original.txt`)).toBe(`content`)
+      expect(await fs.readTextFile(`/copy.txt`)).toBe(`content`)
+    })
+
+    it(`should fail if destination exists`, async () => {
+      await fs.createFile(`/a.txt`, `a`)
+      await fs.createFile(`/b.txt`, `b`)
+
+      const result = await handleTool(fs, `copy`, {
+        source: `/a.txt`,
+        destination: `/b.txt`,
+      } as CopyInput)
+
+      expect(result.success).toBe(false)
+      expect(result.errorType).toBe(`exists`)
+    })
+
+    it(`should fail for non-existent source`, async () => {
+      const result = await handleTool(fs, `copy`, {
+        source: `/nope.txt`,
+        destination: `/copy.txt`,
+      } as CopyInput)
+
+      expect(result.success).toBe(false)
+      expect(result.errorType).toBe(`not_found`)
+    })
+  })
+
+  describe(`tree`, () => {
+    it(`should return flat list of all entries`, async () => {
+      await fs.mkdir(`/docs`)
+      await fs.createFile(`/docs/readme.md`, `# Hello`)
+      await fs.createFile(`/index.ts`, `export {}`)
+
+      const result = await handleTool(fs, `tree`, {} as TreeInput)
+
+      expect(result.success).toBe(true)
+      const entries = (
+        result.result as { entries: Array<{ path: string; type: string }> }
+      ).entries
+      expect(entries.length).toBe(3)
+      expect(entries.map((e) => e.path)).toEqual([
+        `/docs`,
+        `/docs/readme.md`,
+        `/index.ts`,
+      ])
+    })
+
+    it(`should respect depth limit`, async () => {
+      await fs.mkdir(`/a`)
+      await fs.mkdir(`/a/b`)
+      await fs.createFile(`/a/b/deep.txt`, `deep`)
+
+      const result = await handleTool(fs, `tree`, {
+        depth: 1,
+      } as TreeInput)
+
+      expect(result.success).toBe(true)
+      const entries = (
+        result.result as { entries: Array<{ path: string; type: string }> }
+      ).entries
+      expect(entries.map((e) => e.path)).toEqual([`/a`])
+    })
+
+    it(`should start from specified path`, async () => {
+      await fs.mkdir(`/src`)
+      await fs.createFile(`/src/main.ts`, `code`)
+      await fs.mkdir(`/docs`)
+      await fs.createFile(`/docs/readme.md`, `doc`)
+
+      const result = await handleTool(fs, `tree`, {
+        path: `/src`,
+      } as TreeInput)
+
+      expect(result.success).toBe(true)
+      const entries = (result.result as { entries: Array<{ path: string }> })
+        .entries
+      expect(entries.map((e) => e.path)).toEqual([`/src/main.ts`])
     })
   })
 })

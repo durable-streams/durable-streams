@@ -9,13 +9,21 @@ import type { Tool } from "@anthropic-ai/sdk/resources/messages"
 export const streamFsTools: Array<Tool> = [
   {
     name: `read_file`,
-    description: `Read the contents of a file. Returns the file content as text.`,
+    description: `Read the contents of a file. Returns the file content as text with line metadata. Supports pagination via offset/limit for large files.`,
     input_schema: {
       type: `object` as const,
       properties: {
         path: {
           type: `string`,
           description: `The path to the file to read (e.g., "/docs/readme.md")`,
+        },
+        offset: {
+          type: `integer`,
+          description: `0-based line number to start reading from. Defaults to 0.`,
+        },
+        limit: {
+          type: `integer`,
+          description: `Maximum number of lines to return. Defaults to all lines.`,
         },
       },
       required: [`path`],
@@ -188,6 +196,78 @@ Each old_str must appear exactly once in the file. Returns an error if any strin
       required: [`path`],
     },
   },
+  {
+    name: `append_file`,
+    description: `Append content to the end of an existing file. Creates a newline separator if the file doesn't end with one.`,
+    input_schema: {
+      type: `object` as const,
+      properties: {
+        path: {
+          type: `string`,
+          description: `The path to the file to append to (e.g., "/logs/output.log")`,
+        },
+        content: {
+          type: `string`,
+          description: `The content to append to the file`,
+        },
+      },
+      required: [`path`, `content`],
+    },
+  },
+  {
+    name: `move`,
+    description: `Move or rename a file or directory. The destination parent directory must exist.`,
+    input_schema: {
+      type: `object` as const,
+      properties: {
+        source: {
+          type: `string`,
+          description: `The current path of the file or directory (e.g., "/old/location.txt")`,
+        },
+        destination: {
+          type: `string`,
+          description: `The new path for the file or directory (e.g., "/new/location.txt")`,
+        },
+      },
+      required: [`source`, `destination`],
+    },
+  },
+  {
+    name: `copy`,
+    description: `Copy a file to a new location. Only works with files, not directories.`,
+    input_schema: {
+      type: `object` as const,
+      properties: {
+        source: {
+          type: `string`,
+          description: `The path of the file to copy (e.g., "/docs/readme.md")`,
+        },
+        destination: {
+          type: `string`,
+          description: `The path for the copy (e.g., "/docs/readme-backup.md")`,
+        },
+      },
+      required: [`source`, `destination`],
+    },
+  },
+  {
+    name: `tree`,
+    description: `List all files and directories recursively. Returns a flat list of all paths with their types and sizes.`,
+    input_schema: {
+      type: `object` as const,
+      properties: {
+        path: {
+          type: `string`,
+          description: `The root path to start from (defaults to "/")`,
+        },
+        depth: {
+          type: `integer`,
+          description: `Maximum recursion depth. Omit for unlimited depth.`,
+        },
+      },
+      required: [],
+    },
+  },
 ]
 
 export type StreamFsToolName =
@@ -201,6 +281,10 @@ export type StreamFsToolName =
   | `rmdir`
   | `exists`
   | `stat`
+  | `append_file`
+  | `move`
+  | `copy`
+  | `tree`
 
 const TOOL_NAMES = new Set<string>(streamFsTools.map((t) => t.name))
 

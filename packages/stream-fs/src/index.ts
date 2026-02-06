@@ -104,4 +104,8 @@ export {
   type RmdirInput,
   type ExistsInput,
   type StatInput,
+  type AppendFileInput,
+  type MoveInput,
+  type CopyInput,
+  type TreeInput,
 } from "./tools"

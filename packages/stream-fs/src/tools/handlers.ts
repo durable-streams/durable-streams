@@ -30,6 +30,8 @@ export interface ToolResult {
 
 export interface ReadFileInput {
   path: string
+  offset?: number
+  limit?: number
 }
 
 export interface WriteFileInput {
@@ -74,6 +76,26 @@ export interface StatInput {
   path: string
 }
 
+export interface AppendFileInput {
+  path: string
+  content: string
+}
+
+export interface MoveInput {
+  source: string
+  destination: string
+}
+
+export interface CopyInput {
+  source: string
+  destination: string
+}
+
+export interface TreeInput {
+  path?: string
+  depth?: number
+}
+
 export type ToolInput =
   | ReadFileInput
   | WriteFileInput
@@ -85,6 +107,10 @@ export type ToolInput =
   | RmdirInput
   | ExistsInput
   | StatInput
+  | AppendFileInput
+  | MoveInput
+  | CopyInput
+  | TreeInput
 
 export async function handleTool(
   fs: StreamFilesystem,
@@ -113,6 +139,14 @@ export async function handleTool(
         return handleExists(fs, input as ExistsInput)
       case `stat`:
         return handleStat(fs, input as StatInput)
+      case `append_file`:
+        return await handleAppendFile(fs, input as AppendFileInput)
+      case `move`:
+        return await handleMove(fs, input as MoveInput)
+      case `copy`:
+        return await handleCopy(fs, input as CopyInput)
+      case `tree`:
+        return handleTree(fs, input as TreeInput)
       default:
         return {
           success: false,
@@ -129,8 +163,30 @@ async function handleReadFile(
   fs: StreamFilesystem,
   input: ReadFileInput
 ): Promise<ToolResult> {
-  const content = await fs.readTextFile(input.path)
-  return { success: true, result: { content } }
+  const fullContent = await fs.readTextFile(input.path)
+  const lines = fullContent.split(`\n`)
+  const totalLines = lines.length
+  const offset = input.offset ?? 0
+  const limit = input.limit
+
+  const sliced =
+    limit !== undefined
+      ? lines.slice(offset, offset + limit)
+      : lines.slice(offset)
+  const content = sliced.join(`\n`)
+  const linesRead = sliced.length
+  const hasMore = offset + linesRead < totalLines
+
+  return {
+    success: true,
+    result: {
+      content,
+      offset,
+      lines_read: linesRead,
+      total_lines: totalLines,
+      has_more: hasMore,
+    },
+  }
 }
 
 async function handleWriteFile(
@@ -174,7 +230,7 @@ async function handleEditFile(
   } else {
     return {
       success: false,
-      error: `Must provide either old_str/new_str or edits array`,
+      error: `Must provide either old_str/new_str or edits array. Example: {"path": "/file.txt", "old_str": "text to find", "new_str": "replacement text"} or {"path": "/file.txt", "edits": [{"old_str": "find this", "new_str": "replace with"}]}`,
       errorType: `validation`,
     }
   }
@@ -264,6 +320,67 @@ function handleStat(fs: StreamFilesystem, input: StatInput): ToolResult {
       content_type: stat.contentType,
     },
   }
+}
+
+async function handleAppendFile(
+  fs: StreamFilesystem,
+  input: AppendFileInput
+): Promise<ToolResult> {
+  const existing = await fs.readTextFile(input.path)
+  const separator = existing.length > 0 && !existing.endsWith(`\n`) ? `\n` : ``
+  await fs.writeFile(input.path, existing + separator + input.content)
+  return { success: true, result: { appended: true } }
+}
+
+async function handleMove(
+  fs: StreamFilesystem,
+  input: MoveInput
+): Promise<ToolResult> {
+  await fs.move(input.source, input.destination)
+  return { success: true, result: { moved: true } }
+}
+
+async function handleCopy(
+  fs: StreamFilesystem,
+  input: CopyInput
+): Promise<ToolResult> {
+  const content = await fs.readTextFile(input.source)
+  const stat = fs.stat(input.source)
+  await fs.createFile(input.destination, content, {
+    mimeType: stat.mimeType,
+  })
+  return { success: true, result: { copied: true } }
+}
+
+function handleTree(fs: StreamFilesystem, input: TreeInput): ToolResult {
+  const rootPath = input.path ?? `/`
+  const maxDepth = input.depth
+
+  const entries: Array<{ path: string; type: string; size: number }> = []
+
+  function walk(dirPath: string, currentDepth: number): void {
+    const children = fs.list(dirPath)
+    for (const child of children) {
+      const childPath =
+        dirPath === `/` ? `/${child.name}` : `${dirPath}/${child.name}`
+      entries.push({
+        path: childPath,
+        type: child.type,
+        size: child.size,
+      })
+      if (
+        child.type === `directory` &&
+        (maxDepth === undefined || currentDepth < maxDepth)
+      ) {
+        walk(childPath, currentDepth + 1)
+      }
+    }
+  }
+
+  walk(rootPath, 1)
+  entries.sort((a, b) => a.path.localeCompare(b.path))
+
+  return { success: true, result: { entries } }
 }
 
 const ERROR_TYPE_MAP: Array<

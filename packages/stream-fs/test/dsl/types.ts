@@ -75,6 +75,31 @@ export interface StatStep {
   expectSize?: number
 }
 
+export interface MoveStep {
+  op: `move`
+  source: string
+  destination: string
+}
+
+export interface CopyStep {
+  op: `copy`
+  source: string
+  destination: string
+}
+
+export interface AppendFileStep {
+  op: `appendFile`
+  path: string
+  content: string
+}
+
+export interface TreeStep {
+  op: `tree`
+  path?: string
+  depth?: number
+  expectCount?: number
+}
+
 export interface ExpectErrorStep {
   op: `expectError`
   errorType:
@@ -100,6 +125,10 @@ export type Step =
   | ExistsStep
   | IsDirectoryStep
   | StatStep
+  | MoveStep
+  | CopyStep
+  | AppendFileStep
+  | TreeStep
   | ExpectErrorStep
 
 // History Event Types (Recorded During Execution)

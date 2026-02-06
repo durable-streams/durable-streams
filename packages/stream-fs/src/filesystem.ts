@@ -659,6 +659,122 @@ export class StreamFilesystem {
     })
   }
 
+  // Move Operations
+
+  async move(source: string, destination: string): Promise<void> {
+    this.ensureInitialized()
+    const srcPath = normalizePath(source)
+    const destPath = normalizePath(destination)
+
+    if (srcPath === `/`) {
+      throw new Error(`Cannot move root directory`)
+    }
+
+    if (destPath.startsWith(srcPath + `/`) || destPath === srcPath) {
+      throw new Error(`Cannot move a directory into itself`)
+    }
+
+    const destParent = dirname(destPath)
+    if (!this.directories.has(destParent)) {
+      throw new NotFoundError(destParent)
+    }
+
+    if (this.files.has(destPath) || this.directories.has(destPath)) {
+      throw new ExistsError(destPath)
+    }
+
+    const fileMeta = this.files.get(srcPath)
+    if (fileMeta) {
+      // Move a single file — reuse the same contentStreamId
+      const timestamp = now()
+      const newMeta: FileMetadata = { ...fileMeta, modifiedAt: timestamp }
+
+      await this.appendMetadata(
+        metadataEvents.insert({ value: { path: destPath, ...newMeta } })
+      )
+      await this.appendMetadata(metadataEvents.delete({ key: srcPath }))
+
+      this.files.set(destPath, newMeta)
+      this.files.delete(srcPath)
+      this.readSnapshots.delete(srcPath)
+      return
+    }
+
+    const dirMeta = this.directories.get(srcPath)
+    if (!dirMeta) {
+      throw new NotFoundError(srcPath)
+    }
+
+    // Collect all descendant paths (files and directories)
+    const srcPrefix = srcPath + `/`
+    const childFiles: Array<[string, FileMetadata]> = []
+    const childDirs: Array<[string, DirectoryMetadata]> = []
+
+    for (const [path, meta] of this.files) {
+      if (path.startsWith(srcPrefix)) {
+        childFiles.push([path, meta])
+      }
+    }
+    for (const [path, meta] of this.directories) {
+      if (path.startsWith(srcPrefix)) {
+        childDirs.push([path, meta])
+      }
+    }
+
+    // Sort children by depth (shallowest first) for inserts
+    const allChildren = [
+      ...childDirs.map(([p]) => p),
+      ...childFiles.map(([p]) => p),
+    ].sort()
+
+    const timestamp = now()
+
+    // Insert the destination directory
+    const newDirMeta: DirectoryMetadata = { ...dirMeta, modifiedAt: timestamp }
+    await this.appendMetadata(
+      metadataEvents.insert({ value: { path: destPath, ...newDirMeta } })
+    )
+    this.directories.set(destPath, newDirMeta)
+
+    // Insert all children at new paths
+    for (const childPath of allChildren) {
+      const newChildPath = destPath + childPath.slice(srcPath.length)
+      const childFileMeta = this.files.get(childPath)
+      if (childFileMeta) {
+        const newMeta: FileMetadata = {
+          ...childFileMeta,
+          modifiedAt: timestamp,
+        }
+        await this.appendMetadata(
+          metadataEvents.insert({ value: { path: newChildPath, ...newMeta } })
+        )
+        this.files.set(newChildPath, newMeta)
+      } else {
+        const childDirMeta = this.directories.get(childPath)!
+        const newMeta: DirectoryMetadata = {
+          ...childDirMeta,
+          modifiedAt: timestamp,
+        }
+        await this.appendMetadata(
+          metadataEvents.insert({ value: { path: newChildPath, ...newMeta } })
+        )
+        this.directories.set(newChildPath, newMeta)
+      }
+    }
+
+    // Delete all children at old paths (deepest first)
+    for (const childPath of [...allChildren].reverse()) {
+      await this.appendMetadata(metadataEvents.delete({ key: childPath }))
+      this.files.delete(childPath)
+      this.directories.delete(childPath)
+      this.readSnapshots.delete(childPath)
+    }
+
+    // Delete the source directory
+    await this.appendMetadata(metadataEvents.delete({ key: srcPath }))
+    this.directories.delete(srcPath)
+  }
+
   // Metadata Operations
 
   exists(path: string): boolean {

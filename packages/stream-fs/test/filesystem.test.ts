@@ -362,6 +362,77 @@ describe(`StreamFilesystem`, () => {
     })
   })
 
+  describe(`move`, () => {
+    it(`should move a file to a new path`, async () => {
+      await fs.createFile(`/old.txt`, `content`)
+      await fs.move(`/old.txt`, `/new.txt`)
+
+      expect(fs.exists(`/old.txt`)).toBe(false)
+      expect(fs.exists(`/new.txt`)).toBe(true)
+      expect(await fs.readTextFile(`/new.txt`)).toBe(`content`)
+    })
+
+    it(`should preserve file content stream (no data copy)`, async () => {
+      await fs.createFile(`/src.txt`, `data`)
+      const statBefore = fs.stat(`/src.txt`)
+
+      await fs.move(`/src.txt`, `/dst.txt`)
+      const statAfter = fs.stat(`/dst.txt`)
+
+      expect(statAfter.size).toBe(statBefore.size)
+      expect(statAfter.mimeType).toBe(statBefore.mimeType)
+    })
+
+    it(`should move a directory with all contents`, async () => {
+      await fs.mkdir(`/src`)
+      await fs.createFile(`/src/a.txt`, `a`)
+      await fs.mkdir(`/src/sub`)
+      await fs.createFile(`/src/sub/b.txt`, `b`)
+
+      await fs.move(`/src`, `/dst`)
+
+      expect(fs.exists(`/src`)).toBe(false)
+      expect(fs.exists(`/src/a.txt`)).toBe(false)
+      expect(fs.exists(`/src/sub`)).toBe(false)
+
+      expect(fs.exists(`/dst`)).toBe(true)
+      expect(fs.exists(`/dst/a.txt`)).toBe(true)
+      expect(fs.exists(`/dst/sub`)).toBe(true)
+      expect(fs.exists(`/dst/sub/b.txt`)).toBe(true)
+      expect(await fs.readTextFile(`/dst/a.txt`)).toBe(`a`)
+      expect(await fs.readTextFile(`/dst/sub/b.txt`)).toBe(`b`)
+    })
+
+    it(`should fail if source does not exist`, async () => {
+      await expect(fs.move(`/nope`, `/dest`)).rejects.toThrow(NotFoundError)
+    })
+
+    it(`should fail if destination already exists`, async () => {
+      await fs.createFile(`/a.txt`, `a`)
+      await fs.createFile(`/b.txt`, `b`)
+
+      await expect(fs.move(`/a.txt`, `/b.txt`)).rejects.toThrow(ExistsError)
+    })
+
+    it(`should fail if destination parent does not exist`, async () => {
+      await fs.createFile(`/file.txt`, `content`)
+
+      await expect(
+        fs.move(`/file.txt`, `/nonexistent/file.txt`)
+      ).rejects.toThrow(NotFoundError)
+    })
+
+    it(`should fail when moving root`, async () => {
+      await expect(fs.move(`/`, `/newroot`)).rejects.toThrow()
+    })
+
+    it(`should fail when moving directory into itself`, async () => {
+      await fs.mkdir(`/parent`)
+
+      await expect(fs.move(`/parent`, `/parent/child`)).rejects.toThrow()
+    })
+  })
+
   describe(`multi-agent collaboration`, () => {
     it(`should share state between two filesystem instances`, async () => {
       // Agent 1 creates a file

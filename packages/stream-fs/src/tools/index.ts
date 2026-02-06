@@ -19,4 +19,8 @@ export type {
   RmdirInput,
   ExistsInput,
   StatInput,
+  AppendFileInput,
+  MoveInput,
+  CopyInput,
+  TreeInput,
 } from "./handlers"

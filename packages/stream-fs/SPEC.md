@@ -46,6 +46,7 @@ Stream-FS provides POSIX-like filesystem semantics on top of durable streams, en
 - **readTextFile(path)**: Read file content as text
 - **deleteFile(path)**: Delete a file
 - **applyTextPatch(path, patch)**: Apply a diff-match-patch to text file
+- **move(source, destination)**: Move or rename a file or directory
 
 ### Directory Operations
 
@@ -284,6 +285,19 @@ Cannot apply text patches to binary files.
 ```
 
 All operations except initialize() require prior initialization.
+
+### C11: Move Preconditions
+
+```
+move(source, dest) requires:
+  exists(source)
+  ¬exists(dest)
+  exists(dirname(dest)) ∧ isDirectory(dirname(dest))
+  source ≠ "/"
+  ¬dest.startsWith(source + "/")
+```
+
+Cannot move to an existing path, into a non-existent parent, move root, or move a directory into itself.
 
 ---
 

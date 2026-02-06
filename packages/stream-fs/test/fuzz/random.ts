@@ -136,8 +136,12 @@ export interface FuzzOperation {
     | `rmdir`
     | `readFile`
     | `list`
+    | `move`
+    | `copy`
+    | `appendFile`
   path: string
   content?: string
+  destination?: string
 }
 
 export interface FuzzScenario {
@@ -159,6 +163,9 @@ export interface FuzzGeneratorConfig {
     rmdir: number
     readFile: number
     list: number
+    move: number
+    copy: number
+    appendFile: number
   }
 }
 
@@ -176,6 +183,9 @@ export const DEFAULT_FUZZ_CONFIG: FuzzGeneratorConfig = {
     rmdir: 1,
     readFile: 3,
     list: 2,
+    move: 2,
+    copy: 2,
+    appendFile: 2,
   },
 }
 
@@ -287,6 +297,61 @@ export function generateFuzzScenario(
         if (dirs.length === 0) break
         const path = rng.pick(dirs)
         operations.push({ op: `list`, path })
+        break
+      }
+
+      case `move`: {
+        // Move an existing file to a new location in an existing directory
+        const files = [...existingFiles]
+        if (files.length === 0) break
+        const sourcePath = rng.pick(files)
+        const parentDirs = [...existingDirs]
+        const parent = rng.pick(parentDirs)
+        const filename = rng.filename()
+        const destPath =
+          parent === `/` ? `/${filename}` : `${parent}/${filename}`
+
+        if (!existingFiles.has(destPath) && !existingDirs.has(destPath)) {
+          operations.push({
+            op: `move`,
+            path: sourcePath,
+            destination: destPath,
+          })
+          existingFiles.delete(sourcePath)
+          existingFiles.add(destPath)
+        }
+        break
+      }
+
+      case `copy`: {
+        // Copy an existing file to a new location
+        const files = [...existingFiles]
+        if (files.length === 0) break
+        const sourcePath = rng.pick(files)
+        const parentDirs = [...existingDirs]
+        const parent = rng.pick(parentDirs)
+        const filename = rng.filename()
+        const destPath =
+          parent === `/` ? `/${filename}` : `${parent}/${filename}`
+
+        if (!existingFiles.has(destPath) && !existingDirs.has(destPath)) {
+          operations.push({
+            op: `copy`,
+            path: sourcePath,
+            destination: destPath,
+          })
+          existingFiles.add(destPath)
+        }
+        break
+      }
+
+      case `appendFile`: {
+        // Append to an existing file
+        const files = [...existingFiles]
+        if (files.length === 0) break
+        const path = rng.pick(files)
+        const content = rng.text(cfg.contentLength.min, cfg.contentLength.max)
+        operations.push({ op: `appendFile`, path, content })
         break
       }
     }

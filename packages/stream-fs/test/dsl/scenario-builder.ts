@@ -106,6 +106,28 @@ export class ScenarioBuilder {
     return this
   }
 
+  // Move/Copy/Append/Tree Operations
+
+  move(source: string, destination: string): this {
+    this._steps.push({ op: `move`, source, destination })
+    return this
+  }
+
+  copy(source: string, destination: string): this {
+    this._steps.push({ op: `copy`, source, destination })
+    return this
+  }
+
+  appendFile(path: string, content: string): this {
+    this._steps.push({ op: `appendFile`, path, content })
+    return this
+  }
+
+  tree(path?: string, depth?: number): this {
+    this._steps.push({ op: `tree`, path, depth })
+    return this
+  }
+
   // Assertions
 
   expectContent(path: string, expected: string): this {
@@ -370,6 +392,55 @@ async function executeStep(fs: StreamFilesystem, step: Step): Promise<unknown> {
         )
       }
       return stat
+    }
+
+    case `move`:
+      await fs.move(step.source, step.destination)
+      return undefined
+
+    case `copy`: {
+      const content = await fs.readTextFile(step.source)
+      const stat = fs.stat(step.source)
+      await fs.createFile(step.destination, content, {
+        mimeType: stat.mimeType,
+      })
+      return undefined
+    }
+
+    case `appendFile`: {
+      const existing = await fs.readTextFile(step.path)
+      const separator =
+        existing.length > 0 && !existing.endsWith(`\n`) ? `\n` : ``
+      await fs.writeFile(step.path, existing + separator + step.content)
+      return undefined
+    }
+
+    case `tree`: {
+      const rootPath = step.path ?? `/`
+      const maxDepth = step.depth
+      const expectedCount = step.expectCount
+      const entries: Array<{ path: string; type: string }> = []
+      function walk(dirPath: string, depth: number): void {
+        const children = fs.list(dirPath)
+        for (const child of children) {
+          const childPath =
+            dirPath === `/` ? `/${child.name}` : `${dirPath}/${child.name}`
+          entries.push({ path: childPath, type: child.type })
+          if (
+            child.type === `directory` &&
+            (maxDepth === undefined || depth < maxDepth)
+          ) {
+            walk(childPath, depth + 1)
+          }
+        }
+      }
+      walk(rootPath, 1)
+      if (expectedCount !== undefined && entries.length !== expectedCount) {
+        throw new Error(
+          `tree("${rootPath}") returned ${entries.length} entries, expected ${expectedCount}`
+        )
+      }
+      return entries
     }
 
     case `expectError`:

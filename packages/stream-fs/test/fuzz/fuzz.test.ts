@@ -61,6 +61,27 @@ describe(`Fuzz Tests`, () => {
         case `list`:
           filesystem.list(op.path)
           break
+        case `move`:
+          await filesystem.move(op.path, op.destination!)
+          break
+        case `copy`: {
+          const content = await filesystem.readTextFile(op.path)
+          const stat = filesystem.stat(op.path)
+          await filesystem.createFile(op.destination!, content, {
+            mimeType: stat.mimeType,
+          })
+          break
+        }
+        case `appendFile`: {
+          const existing = await filesystem.readTextFile(op.path)
+          const separator =
+            existing.length > 0 && !existing.endsWith(`\n`) ? `\n` : ``
+          await filesystem.writeFile(
+            op.path,
+            existing + separator + (op.content ?? `appended`)
+          )
+          break
+        }
       }
       return { success: true }
     } catch (err) {
