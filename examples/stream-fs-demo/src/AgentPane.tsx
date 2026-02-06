@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useAgentLoop } from "./useAgentLoop"
-import type { DurableFilesystem } from "@durable-streams/stream-fs"
+import type { StreamFilesystem } from "@durable-streams/stream-fs"
 import type { LogEntry } from "./useAgentLoop"
 
 interface AgentPaneProps {
   name: string
   apiKey: string
-  fs: DurableFilesystem | null
+  fs: StreamFilesystem | null
 }
 
 export default function AgentPane({ name, apiKey, fs }: AgentPaneProps) {

@@ -1,5 +1,5 @@
 /**
- * DurableFilesystem - A shared filesystem for AI agents
+ * StreamFilesystem - A shared filesystem for AI agents
  *
  * Provides filesystem semantics on top of durable streams.
  */
@@ -35,11 +35,11 @@ import type {
   ContentType,
   CreateFileOptions,
   DirectoryMetadata,
-  DurableFilesystemOptions,
   Entry,
   FileMetadata,
   Metadata,
   Stat,
+  StreamFilesystemOptions,
   WatchEvent,
   WatchEventType,
   WatchOptions,
@@ -151,7 +151,7 @@ class WatcherImpl implements Watcher {
   }
 }
 
-export class DurableFilesystem {
+export class StreamFilesystem {
   private readonly baseUrl: string
   readonly streamPrefix: string
   private readonly headers?: Record<string, string>
@@ -178,7 +178,7 @@ export class DurableFilesystem {
 
   private initialized = false
 
-  constructor(options: DurableFilesystemOptions) {
+  constructor(options: StreamFilesystemOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, ``)
     this.streamPrefix = options.streamPrefix.startsWith(`/`)
       ? options.streamPrefix

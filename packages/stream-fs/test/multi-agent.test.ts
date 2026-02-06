@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableFilesystem } from "../src/filesystem"
+import { StreamFilesystem } from "../src/filesystem"
 import { takeSnapshot } from "./dsl/scenario-builder"
 import type { FilesystemSnapshot } from "./dsl/types"
 
@@ -15,7 +15,7 @@ describe(`Multi-Agent Convergence`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
   let streamPrefix: string
-  const agents: Array<DurableFilesystem> = []
+  const agents: Array<StreamFilesystem> = []
 
   beforeEach(async () => {
     server = new DurableStreamTestServer({ port: 0 })
@@ -32,8 +32,8 @@ describe(`Multi-Agent Convergence`, () => {
     await server.stop()
   })
 
-  async function createAgent(): Promise<DurableFilesystem> {
-    const agent = new DurableFilesystem({ baseUrl, streamPrefix })
+  async function createAgent(): Promise<StreamFilesystem> {
+    const agent = new StreamFilesystem({ baseUrl, streamPrefix })
     await agent.initialize()
     agents.push(agent)
     return agent

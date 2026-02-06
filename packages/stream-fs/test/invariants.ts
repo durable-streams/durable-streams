@@ -7,7 +7,7 @@
  */
 
 import { dirname, normalizePath } from "../src/utils"
-import type { DurableFilesystem } from "../src/filesystem"
+import type { StreamFilesystem } from "../src/filesystem"
 import type {
   FilesystemSnapshot,
   HistoryEvent,
@@ -231,7 +231,7 @@ export function checkAllInvariants(
 // Live Filesystem Check
 
 export async function checkLiveFilesystem(
-  fs: DurableFilesystem
+  fs: StreamFilesystem
 ): Promise<AllInvariantsResult> {
   const { takeSnapshot } = await import(`./dsl/scenario-builder`)
   const snapshot = await takeSnapshot(fs)

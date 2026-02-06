@@ -4,7 +4,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableFilesystem } from "../src/filesystem"
+import { StreamFilesystem } from "../src/filesystem"
 import { handleTool, isStreamFsTool, streamFsTools } from "../src/tools"
 import type {
   CreateFileInput,
@@ -22,14 +22,14 @@ import type {
 describe(`LLM Tools`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
-  let fs: DurableFilesystem
+  let fs: StreamFilesystem
 
   beforeEach(async () => {
     server = new DurableStreamTestServer({ port: 0 })
     await server.start()
     baseUrl = server.url
 
-    fs = new DurableFilesystem({
+    fs = new StreamFilesystem({
       baseUrl,
       streamPrefix: `/fs/test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     })

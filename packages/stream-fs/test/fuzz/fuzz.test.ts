@@ -7,7 +7,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableFilesystem } from "../../src/filesystem"
+import { StreamFilesystem } from "../../src/filesystem"
 import { checkLiveFilesystem } from "../invariants"
 import { SeededRandom, generateFuzzScenario } from "./random"
 import type { FuzzOperation } from "./random"
@@ -15,14 +15,14 @@ import type { FuzzOperation } from "./random"
 describe(`Fuzz Tests`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
-  let fs: DurableFilesystem
+  let fs: StreamFilesystem
 
   beforeEach(async () => {
     server = new DurableStreamTestServer({ port: 0 })
     await server.start()
     baseUrl = server.url
 
-    fs = new DurableFilesystem({
+    fs = new StreamFilesystem({
       baseUrl,
       streamPrefix: `/fs/fuzz-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     })
@@ -35,7 +35,7 @@ describe(`Fuzz Tests`, () => {
   })
 
   async function executeFuzzOperation(
-    filesystem: DurableFilesystem,
+    filesystem: StreamFilesystem,
     op: FuzzOperation
   ): Promise<{ success: boolean; error?: string }> {
     try {

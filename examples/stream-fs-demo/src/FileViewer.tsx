@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { eq, useLiveQuery } from "@tanstack/react-db"
-import type { DurableFilesystem } from "@durable-streams/stream-fs"
+import type { StreamFilesystem } from "@durable-streams/stream-fs"
 import type { MetadataDB } from "./useMetadataDB"
 
 interface FileViewerProps {
   metadataDB: MetadataDB | null
-  fs: DurableFilesystem | null
+  fs: StreamFilesystem | null
 }
 
 export default function FileViewer({ metadataDB, fs }: FileViewerProps) {
@@ -26,7 +26,7 @@ function FileViewerReady({
   fs,
 }: {
   metadataDB: MetadataDB
-  fs: DurableFilesystem | null
+  fs: StreamFilesystem | null
 }) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null)
   const [content, setContent] = useState(``)

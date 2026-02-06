@@ -5,7 +5,7 @@ import {
   isStreamFsTool,
   streamFsTools,
 } from "@durable-streams/stream-fs"
-import type { DurableFilesystem, ToolInput } from "@durable-streams/stream-fs"
+import type { StreamFilesystem, ToolInput } from "@durable-streams/stream-fs"
 
 export type LogEntryType =
   | `user`
@@ -43,7 +43,7 @@ const SELF_WRITE_FILTER_MS = 10000
 export function useAgentLoop(
   name: string,
   apiKey: string,
-  fs: DurableFilesystem | null
+  fs: StreamFilesystem | null
 ) {
   const [log, setLog] = useState<Array<LogEntry>>([])
   const [running, setRunning] = useState(false)
@@ -54,7 +54,7 @@ export function useAgentLoop(
   const abortRef = useRef<AbortController | null>(null)
   const runningRef = useRef(false)
   const loopGenRef = useRef(0)
-  const fsRef = useRef<DurableFilesystem | null>(fs)
+  const fsRef = useRef<StreamFilesystem | null>(fs)
   fsRef.current = fs
   const recentWritesRef = useRef<Map<string, number>>(new Map())
   const autoTriggerCountRef = useRef(0)

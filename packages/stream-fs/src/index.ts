@@ -5,9 +5,9 @@
  *
  * @example
  * ```typescript
- * import { DurableFilesystem } from "@durable-streams/stream-fs"
+ * import { StreamFilesystem } from "@durable-streams/stream-fs"
  *
- * const fs = new DurableFilesystem({
+ * const fs = new StreamFilesystem({
  *   baseUrl: "http://localhost:8787",
  *   streamPrefix: "/fs/myproject",
  * })
@@ -26,7 +26,7 @@
  * ```
  */
 
-export { DurableFilesystem, METADATA_COLLECTION_TYPE } from "./filesystem"
+export { StreamFilesystem, METADATA_COLLECTION_TYPE } from "./filesystem"
 
 export { metadataStateSchema } from "./metadata-state"
 
@@ -44,7 +44,7 @@ export type {
   Stat,
   Entry,
   CreateFileOptions,
-  DurableFilesystemOptions,
+  StreamFilesystemOptions,
   WatchEventType,
   WatchEvent,
   WatchOptions,

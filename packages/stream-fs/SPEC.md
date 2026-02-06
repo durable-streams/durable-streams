@@ -14,7 +14,7 @@ Stream-FS provides POSIX-like filesystem semantics on top of durable streams, en
 │                       │         │         │             │
 │                       ▼         ▼         ▼             │
 │              ┌─────────────────────────────────┐        │
-│              │      DurableFilesystem          │        │
+│              │      StreamFilesystem          │        │
 │              │  (materialized view of streams) │        │
 │              └─────────────────────────────────┘        │
 │                              │                          │

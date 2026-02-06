@@ -21,7 +21,7 @@ import {
   NotFoundError,
   PatchApplicationError,
 } from "../../src/types"
-import type { DurableFilesystem } from "../../src/filesystem"
+import type { StreamFilesystem } from "../../src/filesystem"
 import type {
   FileSnapshot,
   FilesystemSnapshot,
@@ -178,7 +178,7 @@ export class ScenarioBuilder {
     }
   }
 
-  async run(fs: DurableFilesystem): Promise<ScenarioResult> {
+  async run(fs: StreamFilesystem): Promise<ScenarioResult> {
     return executeScenario(this.build(), fs)
   }
 }
@@ -187,7 +187,7 @@ export class ScenarioBuilder {
 
 export async function executeScenario(
   scenarioDef: ScenarioDefinition,
-  fs: DurableFilesystem
+  fs: StreamFilesystem
 ): Promise<ScenarioResult> {
   const history: Array<HistoryEvent> = []
   const startTime = Date.now()
@@ -276,10 +276,7 @@ export async function executeScenario(
   }
 }
 
-async function executeStep(
-  fs: DurableFilesystem,
-  step: Step
-): Promise<unknown> {
+async function executeStep(fs: StreamFilesystem, step: Step): Promise<unknown> {
   switch (step.op) {
     case `createFile`:
       await fs.createFile(step.path, step.content, step.options)
@@ -423,7 +420,7 @@ function entriesMatch(
 // Snapshot
 
 export async function takeSnapshot(
-  fs: DurableFilesystem
+  fs: StreamFilesystem
 ): Promise<FilesystemSnapshot> {
   const files = new Map<string, FileSnapshot>()
   const directories = new Set<string>()

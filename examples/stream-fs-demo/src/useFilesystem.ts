@@ -1,18 +1,18 @@
 import { useEffect, useState } from "react"
-import { DurableFilesystem } from "@durable-streams/stream-fs"
+import { StreamFilesystem } from "@durable-streams/stream-fs"
 
-// Singleton: one DurableFilesystem per (baseUrl, streamPrefix)
-const fsCache = new Map<string, Promise<DurableFilesystem>>()
+// Singleton: one StreamFilesystem per (baseUrl, streamPrefix)
+const fsCache = new Map<string, Promise<StreamFilesystem>>()
 
 function getOrCreateFilesystem(
   baseUrl: string,
   streamPrefix: string
-): Promise<DurableFilesystem> {
+): Promise<StreamFilesystem> {
   const key = `${baseUrl}|${streamPrefix}`
   let promise = fsCache.get(key)
   if (!promise) {
     promise = (async () => {
-      const fs = new DurableFilesystem({ baseUrl, streamPrefix })
+      const fs = new StreamFilesystem({ baseUrl, streamPrefix })
       await fs.initialize()
       return fs
     })()
@@ -22,7 +22,7 @@ function getOrCreateFilesystem(
 }
 
 /**
- * Returns a singleton DurableFilesystem.
+ * Returns a singleton StreamFilesystem.
  * Only initializes after `metadataReady` is true — this ensures the
  * metadata stream already exists so initialize() connects (not creates).
  */
@@ -30,8 +30,8 @@ export function useSharedFilesystem(
   baseUrl: string,
   streamPrefix: string,
   metadataReady: boolean
-): DurableFilesystem | null {
-  const [fs, setFs] = useState<DurableFilesystem | null>(null)
+): StreamFilesystem | null {
+  const [fs, setFs] = useState<StreamFilesystem | null>(null)
 
   useEffect(() => {
     if (!metadataReady) return

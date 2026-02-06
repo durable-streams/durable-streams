@@ -133,7 +133,7 @@ This is readable, type-safe, and catches typos at compile time. The `.expectErro
 ```typescript
 // Test that we reject operations on uninitialized filesystem
 it(`should reject operations on uninitialized filesystem`, async () => {
-  const uninitializedFs = new DurableFilesystem(baseUrl, `/uninitialized`)
+  const uninitializedFs = new StreamFilesystem(baseUrl, `/uninitialized`)
   // Don't call initialize()
   await expect(
     uninitializedFs.createFile(`/test.txt`, `content`)

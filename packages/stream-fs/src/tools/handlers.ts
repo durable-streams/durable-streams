@@ -10,7 +10,7 @@ import {
   NotFoundError,
   PatchApplicationError,
 } from "../types"
-import type { DurableFilesystem } from "../filesystem"
+import type { StreamFilesystem } from "../filesystem"
 import type { StreamFsToolName } from "./definitions"
 
 export interface ToolResult {
@@ -87,7 +87,7 @@ export type ToolInput =
   | StatInput
 
 export async function handleTool(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   toolName: StreamFsToolName,
   input: ToolInput
 ): Promise<ToolResult> {
@@ -126,7 +126,7 @@ export async function handleTool(
 }
 
 async function handleReadFile(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: ReadFileInput
 ): Promise<ToolResult> {
   const content = await fs.readTextFile(input.path)
@@ -134,7 +134,7 @@ async function handleReadFile(
 }
 
 async function handleWriteFile(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: WriteFileInput
 ): Promise<ToolResult> {
   await fs.writeFile(input.path, input.content)
@@ -142,7 +142,7 @@ async function handleWriteFile(
 }
 
 async function handleCreateFile(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: CreateFileInput
 ): Promise<ToolResult> {
   await fs.createFile(input.path, input.content, {
@@ -152,7 +152,7 @@ async function handleCreateFile(
 }
 
 async function handleDeleteFile(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: DeleteFileInput
 ): Promise<ToolResult> {
   await fs.deleteFile(input.path)
@@ -160,7 +160,7 @@ async function handleDeleteFile(
 }
 
 async function handleEditFile(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: EditFileInput
 ): Promise<ToolResult> {
   const { path } = input
@@ -213,7 +213,7 @@ async function handleEditFile(
 }
 
 function handleListDirectory(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: ListDirectoryInput
 ): ToolResult {
   const entries = fs.list(input.path)
@@ -231,7 +231,7 @@ function handleListDirectory(
 }
 
 async function handleMkdir(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: MkdirInput
 ): Promise<ToolResult> {
   await fs.mkdir(input.path)
@@ -239,19 +239,19 @@ async function handleMkdir(
 }
 
 async function handleRmdir(
-  fs: DurableFilesystem,
+  fs: StreamFilesystem,
   input: RmdirInput
 ): Promise<ToolResult> {
   await fs.rmdir(input.path)
   return { success: true, result: { removed: true } }
 }
 
-function handleExists(fs: DurableFilesystem, input: ExistsInput): ToolResult {
+function handleExists(fs: StreamFilesystem, input: ExistsInput): ToolResult {
   const exists = fs.exists(input.path)
   return { success: true, result: { exists } }
 }
 
-function handleStat(fs: DurableFilesystem, input: StatInput): ToolResult {
+function handleStat(fs: StreamFilesystem, input: StatInput): ToolResult {
   const stat = fs.stat(input.path)
   return {
     success: true,

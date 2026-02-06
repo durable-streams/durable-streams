@@ -8,7 +8,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableFilesystem } from "../src/filesystem"
+import { StreamFilesystem } from "../src/filesystem"
 import {
   DirectoryNotEmptyError,
   ExistsError,
@@ -20,14 +20,14 @@ import {
 describe(`Adversarial Tests`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
-  let fs: DurableFilesystem
+  let fs: StreamFilesystem
 
   beforeEach(async () => {
     server = new DurableStreamTestServer({ port: 0 })
     await server.start()
     baseUrl = server.url
 
-    fs = new DurableFilesystem({
+    fs = new StreamFilesystem({
       baseUrl,
       streamPrefix: `/fs/adversarial-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     })
@@ -41,7 +41,7 @@ describe(`Adversarial Tests`, () => {
 
   describe(`C10: Operations Before Initialize`, () => {
     it(`should reject operations on uninitialized filesystem`, async () => {
-      const uninitializedFs = new DurableFilesystem({
+      const uninitializedFs = new StreamFilesystem({
         baseUrl,
         streamPrefix: `/fs/uninit`,
       })

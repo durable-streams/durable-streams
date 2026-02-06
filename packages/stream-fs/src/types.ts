@@ -139,7 +139,7 @@ export interface CreateFileOptions {
   contentType?: ContentType
 }
 
-export interface DurableFilesystemOptions {
+export interface StreamFilesystemOptions {
   baseUrl: string
   streamPrefix: string
   headers?: Record<string, string>

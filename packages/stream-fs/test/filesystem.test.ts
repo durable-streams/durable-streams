@@ -1,11 +1,11 @@
 /**
- * DurableFilesystem Tests
+ * StreamFilesystem Tests
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { DurableStream } from "@durable-streams/client"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableFilesystem } from "../src/filesystem"
+import { StreamFilesystem } from "../src/filesystem"
 import { createPatch } from "../src/utils"
 import {
   DirectoryNotEmptyError,
@@ -29,17 +29,17 @@ function waitFor(predicate: () => boolean, timeout = 2000): Promise<void> {
   })
 }
 
-describe(`DurableFilesystem`, () => {
+describe(`StreamFilesystem`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
-  let fs: DurableFilesystem
+  let fs: StreamFilesystem
 
   beforeEach(async () => {
     server = new DurableStreamTestServer({ port: 0 })
     await server.start()
     baseUrl = server.url
 
-    fs = new DurableFilesystem({
+    fs = new StreamFilesystem({
       baseUrl,
       streamPrefix: `/fs/test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     })
@@ -368,7 +368,7 @@ describe(`DurableFilesystem`, () => {
       await fs.createFile(`/shared.txt`, `Hello from Agent 1`)
 
       // Agent 2 connects to the same prefix
-      const fs2 = new DurableFilesystem({
+      const fs2 = new StreamFilesystem({
         baseUrl,
         streamPrefix: fs.streamPrefix,
       })
@@ -384,7 +384,7 @@ describe(`DurableFilesystem`, () => {
     })
 
     it(`should see changes via watching`, async () => {
-      const fs2 = new DurableFilesystem({
+      const fs2 = new StreamFilesystem({
         baseUrl,
         streamPrefix: fs.streamPrefix,
       })
@@ -463,16 +463,16 @@ describe(`DurableFilesystem`, () => {
   })
 
   describe(`watching`, () => {
-    let fs2: DurableFilesystem
+    let fs2: StreamFilesystem
 
     async function syncFs2() {
       fs2.close()
-      fs2 = new DurableFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
+      fs2 = new StreamFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
       await fs2.initialize()
     }
 
     beforeEach(async () => {
-      fs2 = new DurableFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
+      fs2 = new StreamFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
       await fs2.initialize()
     })
 
@@ -697,16 +697,16 @@ describe(`DurableFilesystem`, () => {
   })
 
   describe(`stale-write detection`, () => {
-    let fs2: DurableFilesystem
+    let fs2: StreamFilesystem
 
     async function syncFs2() {
       fs2.close()
-      fs2 = new DurableFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
+      fs2 = new StreamFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
       await fs2.initialize()
     }
 
     beforeEach(async () => {
-      fs2 = new DurableFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
+      fs2 = new StreamFilesystem({ baseUrl, streamPrefix: fs.streamPrefix })
       await fs2.initialize()
     })
 
@@ -820,7 +820,7 @@ describe(`DurableFilesystem`, () => {
     })
 
     it(`should rollback createFile when metadata append fails`, async () => {
-      const spy = vi.spyOn(DurableFilesystem.prototype as any, `appendMetadata`)
+      const spy = vi.spyOn(StreamFilesystem.prototype as any, `appendMetadata`)
       // Allow the root directory insert during initialize (already done),
       // then fail on the next call (createFile's metadata insert)
       spy.mockRejectedValueOnce(new Error(`metadata write failed`))
@@ -841,7 +841,7 @@ describe(`DurableFilesystem`, () => {
     it(`should compensate writeFile when metadata append fails`, async () => {
       await fs.createFile(`/doc.txt`, `original`)
 
-      const spy = vi.spyOn(DurableFilesystem.prototype as any, `appendMetadata`)
+      const spy = vi.spyOn(StreamFilesystem.prototype as any, `appendMetadata`)
       spy.mockRejectedValueOnce(new Error(`metadata write failed`))
 
       await expect(fs.writeFile(`/doc.txt`, `updated`)).rejects.toThrow(
@@ -862,7 +862,7 @@ describe(`DurableFilesystem`, () => {
       await fs.createFile(`/patch.txt`, `line one`)
       const patch = createPatch(`line one`, `line one\nline two`)
 
-      const spy = vi.spyOn(DurableFilesystem.prototype as any, `appendMetadata`)
+      const spy = vi.spyOn(StreamFilesystem.prototype as any, `appendMetadata`)
       spy.mockRejectedValueOnce(new Error(`metadata write failed`))
 
       await expect(fs.applyTextPatch(`/patch.txt`, patch)).rejects.toThrow(
@@ -892,7 +892,7 @@ describe(`DurableFilesystem`, () => {
     })
 
     it(`should maintain consistency after failed createFile`, async () => {
-      const spy = vi.spyOn(DurableFilesystem.prototype as any, `appendMetadata`)
+      const spy = vi.spyOn(StreamFilesystem.prototype as any, `appendMetadata`)
       spy.mockRejectedValueOnce(new Error(`metadata write failed`))
 
       await expect(fs.createFile(`/ghost.txt`, `content`)).rejects.toThrow(
@@ -904,7 +904,7 @@ describe(`DurableFilesystem`, () => {
       expect(fs.exists(`/ghost.txt`)).toBe(false)
 
       // Fresh instance confirms stream state is clean
-      const fresh = new DurableFilesystem({
+      const fresh = new StreamFilesystem({
         baseUrl,
         streamPrefix: fs.streamPrefix,
       })
@@ -916,7 +916,7 @@ describe(`DurableFilesystem`, () => {
     it(`should maintain consistency after failed writeFile`, async () => {
       await fs.createFile(`/stable.txt`, `original`)
 
-      const spy = vi.spyOn(DurableFilesystem.prototype as any, `appendMetadata`)
+      const spy = vi.spyOn(StreamFilesystem.prototype as any, `appendMetadata`)
       spy.mockRejectedValueOnce(new Error(`metadata write failed`))
 
       await expect(fs.writeFile(`/stable.txt`, `updated`)).rejects.toThrow(
@@ -929,7 +929,7 @@ describe(`DurableFilesystem`, () => {
       expect(await fs.readTextFile(`/stable.txt`)).toBe(`original`)
 
       // Fresh instance confirms stream state matches
-      const fresh = new DurableFilesystem({
+      const fresh = new StreamFilesystem({
         baseUrl,
         streamPrefix: fs.streamPrefix,
       })
