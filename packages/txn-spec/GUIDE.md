@@ -114,6 +114,43 @@ type Transaction =
 // Now TypeScript enforces: committed transactions MUST have commitTs
 ```
 
+**Important caveat**: TypeScript's type system is not sound in the PL-theory sense—you can punch through with `any`. Separate three layers of enforcement:
+
+| Layer                  | Purpose                   | Tradeoff                            |
+| ---------------------- | ------------------------- | ----------------------------------- |
+| **Static guardrails**  | Ergonomics, fast feedback | Can be bypassed; best-effort only   |
+| **Runtime validation** | Actual enforcement        | Has cost; can't catch everything    |
+| **Semantic checking**  | The real oracle           | May be slow; run on test/fuzz cases |
+
+```typescript
+// Layer 1: Static - TypeScript catches at compile time
+function commit(txn: PendingTransaction): CommittedTransaction // Type error if wrong status
+
+// Layer 2: Runtime - Explicit validation
+function commit(txn: Transaction): CommittedTransaction {
+  if (txn.status !== "pending") {
+    throw new Error(`Cannot commit ${txn.status} transaction`)
+  }
+  // ...
+}
+
+// Layer 3: Semantic - Check invariants over entire history
+function checkInvariant(history: History): boolean {
+  // "No transaction commits twice"
+  const commitCounts = new Map<TxnId, number>()
+  for (const op of history) {
+    if (op.type === "commit") {
+      const count = (commitCounts.get(op.txnId) ?? 0) + 1
+      if (count > 1) return false
+      commitCounts.set(op.txnId, count)
+    }
+  }
+  return true
+}
+```
+
+This separation is an important formal-methods lesson: proofs/specs always have a _trusted computing base_; you want it small and explicit.
+
 ### 1.4 Find External Hardness (Oracles)
 
 The best configurancy enforcement relies on **verifiable ground truth that exists outside your system**.
@@ -150,6 +187,33 @@ for (const expr of generateRandomExpressions(1000)) {
 ```
 
 If no external oracle exists, your conformance suite becomes the oracle. Invest heavily in its quality—future agents will trust it absolutely.
+
+**Important tradeoff**: When you use an external oracle, it becomes part of your spec. If the oracle has quirks, you inherit them. You've chosen a _reference model_, and you must document the gaps where the oracle is underspecified, nondeterministic, or "bug-compatible."
+
+```typescript
+// Document oracle limitations explicitly
+const ORACLE_GAPS = {
+  postgres: {
+    "NULL comparison":
+      "Postgres NULL semantics differ from SQL standard in some edge cases",
+    "float precision": "Postgres may round differently than IEEE 754 strict",
+  },
+}
+
+// Test against oracle, but track known divergences
+async function testAgainstOracle(expr: string) {
+  const ourResult = await ourEngine.evaluate(expr)
+  const pgResult = await postgres.query(`SELECT ${expr}`)
+
+  if (isKnownDivergence(expr, ORACLE_GAPS.postgres)) {
+    // Log but don't fail - this is documented behavior difference
+    console.log(`Known divergence for: ${expr}`)
+    return
+  }
+
+  expect(ourResult).toEqual(pgResult.rows[0])
+}
+```
 
 ---
 
@@ -220,6 +284,15 @@ class ScenarioBuilder {
     return this
   }
 
+  abort(): this {
+    this.steps.push({
+      type: "abort",
+      txnId: this.currentTxn!,
+    })
+    this.currentTxn = null
+    return this
+  }
+
   build(): ScenarioDefinition {
     return { steps: this.steps /* metadata */ }
   }
@@ -259,6 +332,51 @@ export const standardScenarios = [
 scenario("concurrent-counters").tags("concurrent", "crdt", "increment")
 // ...
 ```
+
+### 2.4 Two-Tier Language Design
+
+There are two distinct DSL jobs, and conflating them causes problems:
+
+1. **Valid-behavior DSL** (high configurancy): Makes it hard to write nonsense, guides authors to meaningful scenarios. This is what typed builders give you.
+
+2. **Adversarial DSL** (low-level): Deliberately constructs "illegal" sequences to test defensive behavior, error handling, and robustness.
+
+Formal verification history is littered with disasters where the spec excluded behaviors that later happened in reality—often because the spec quietly assumed something about the environment.
+
+**Design pattern**: A "typed builder DSL" for well-formed histories, plus a "raw event DSL" (or mutation layer) for malformed, reordered, duplicated, replayed, or partitioned scenarios.
+
+```typescript
+// Tier 1: Typed builder - makes illegal states hard to express
+const validScenario = scenario("normal-operation")
+  .transaction("t1", { st: 0 })
+  .update("x", assign(10))
+  .commit({ ct: 5 }) // Builder enforces: can only commit active transactions
+
+// Tier 2: Raw events - for adversarial testing
+const adversarialScenario = rawEvents([
+  { type: "begin", txnId: "t1", snapshotTs: 0 },
+  { type: "commit", txnId: "t1", commitTs: 5 }, // Commit without any operations
+  { type: "commit", txnId: "t1", commitTs: 6 }, // Double commit!
+  { type: "update", txnId: "t1", key: "x", effect: assign(10) }, // Update after commit!
+])
+
+// Tier 2: Mutation layer - corrupt valid scenarios
+const corruptedScenario = validScenario
+  .mutate()
+  .duplicateEvent(2) // Replay an event
+  .reorderEvents(1, 3) // Swap event order
+  .dropEvent(4) // Lose an event
+  .build()
+```
+
+The typed builder is for authors writing test cases. The raw layer is for:
+
+- Testing error handling and recovery
+- Simulating Byzantine failures
+- Fuzzing protocol parsers
+- Verifying defensive checks work
+
+Your nemesis/fault injection (Part 5.3) is one example of this pattern. Make it explicit.
 
 ---
 
@@ -348,6 +466,10 @@ class SeededRandom {
 
   pick<T>(arr: T[]): T {
     return arr[this.int(0, arr.length - 1)]
+  }
+
+  chance(probability: number): boolean {
+    return this.next() < probability
   }
 }
 
@@ -467,7 +589,7 @@ async function runFuzzTest(
 
 ### 4.4 Shrinking Failing Cases
 
-When a fuzz test fails, minimize the scenario:
+When a fuzz test fails, minimize the scenario. This is essentially **delta debugging**—systematically minimize failure-inducing inputs while preserving the failure.
 
 ```typescript
 async function shrinkFailingCase(
@@ -498,6 +620,45 @@ async function shrinkFailingCase(
   return current // Minimal failing case
 }
 ```
+
+**Critical constraint**: Shrinking must respect _semantic well-formedness_. Don't delete the begin of a transaction but keep its commit—that's a malformed history. QuickCheck-style shrinkers bake these constraints into their shrink functions.
+
+```typescript
+function shrinkTransaction(txn: Transaction): Transaction[] {
+  const candidates: Transaction[] = []
+
+  // Can shrink operations, but must keep begin and commit/abort
+  for (let i = 0; i < txn.operations.length; i++) {
+    candidates.push({
+      ...txn,
+      operations: [
+        ...txn.operations.slice(0, i),
+        ...txn.operations.slice(i + 1),
+      ],
+    })
+  }
+
+  // Can shrink values, but must maintain types
+  for (let i = 0; i < txn.operations.length; i++) {
+    const op = txn.operations[i]
+    if (op.type === "assign" && typeof op.value === "number" && op.value > 0) {
+      candidates.push({
+        ...txn,
+        operations: txn.operations.map((o, j) =>
+          j === i ? { ...o, value: Math.floor(op.value / 2) } : o
+        ),
+      })
+    }
+  }
+
+  return candidates
+}
+```
+
+**References**:
+
+- [Delta Debugging: Simplifying and Isolating Failure-Inducing Input](https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf)
+- [QuickCheck: A Lightweight Tool for Random Testing](https://www.cs.tufts.edu/~nr/cs257/archive/john-hughes/quick.pdf)
 
 ---
 
@@ -553,6 +714,16 @@ Read Uncommitted
     ↓
 Eventual Consistency (weakest)
 ```
+
+**Important nuance**: This ladder is pedagogically useful but can mislead. The real picture is a _partial order_ with incomparable points:
+
+- "Eventual consistency" isn't one model—there's causal, PRAM, session guarantees, etc.
+- Transactional isolation levels and distributed consistency models form different axes.
+- Some pairs are incomparable: Snapshot Isolation vs Strict Serializability have different tradeoffs.
+
+Ground your hierarchy in one formalism (e.g., [Adya-style dependency graphs](https://publications.csail.mit.edu/lcs/pubs/pdf/MIT-LCS-TR-786.pdf)) and admit the ladder is a projection.
+
+**Reference**: [A Critique of ANSI SQL Isolation Levels](https://arxiv.org/abs/cs/0701157)
 
 ```typescript
 const consistencyCheckers = {
@@ -631,6 +802,54 @@ function checkSerializable(graph: DependencyGraph): boolean {
   return !hasCycle(graph)
 }
 ```
+
+### 5.5 Soundness vs Completeness
+
+Formal methods people are allergic to unstated tradeoffs. Every checker makes a choice:
+
+| Property     | Definition                                                 | Tradeoff                                   |
+| ------------ | ---------------------------------------------------------- | ------------------------------------------ |
+| **Sound**    | Never false positives—if it says "violation," there is one | May miss real bugs (false negatives)       |
+| **Complete** | Never false negatives—finds all real bugs in scope         | May flag spurious issues (false positives) |
+
+Most practical checkers are **sound but incomplete**—they guarantee no false alarms but may miss bugs. This is usually the right choice for CI/CD, where false positives erode trust.
+
+**Label your checkers explicitly**:
+
+```typescript
+interface Checker<T> {
+  name: string
+  /**
+   * Soundness guarantee:
+   * - "sound": no false positives (if returns violation, it's real)
+   * - "unsound": may have false positives
+   */
+  soundness: "sound" | "unsound"
+  /**
+   * Completeness guarantee:
+   * - "complete": finds all violations in scope
+   * - "incomplete": may miss some violations
+   */
+  completeness: "complete" | "incomplete"
+  /** What scope/bounds does this checker operate within? */
+  scope: string
+  check(input: T): CheckResult
+}
+
+const serializabilityChecker: Checker<History> = {
+  name: "Cycle-based serializability",
+  soundness: "sound", // No false positives
+  completeness: "incomplete", // May miss predicate-based anomalies
+  scope: "Single-key read/write operations",
+  check: checkSerializable,
+}
+```
+
+Elle's claims are carefully scoped—e.g., predicate anomalies are excluded in some contexts. Your guide should teach readers to label their checkers the same way.
+
+**Linearizability is NP-complete**: Checking a history for linearizability is computationally hard in general. That matters because it shapes DSL design: you want histories that are _informative_ (expose dependency structure) but also _checkable_. Practical checkers use heuristics, pruning, and bounded search.
+
+**Reference**: [Testing for Linearizability (Lowe)](https://www.cs.ox.ac.uk/people/gavin.lowe/LinearizabiltyTesting/paper.pdf)
 
 ---
 
@@ -956,6 +1175,375 @@ The approach pays off for **stable protocols**, **clear-contract libraries**, an
 
 ---
 
+## Part 10: Formal Verification Background
+
+Understanding the history of formal verification helps you make better DSL design decisions. Each milestone introduced ideas you can steal for testing work.
+
+### 10.1 Hoare Logic (1969): Contracts and Pre/Post Conditions
+
+**Core idea**: Correctness can be stated as compositional pre/post conditions on program fragments.
+
+Hoare's 1969 paper introduced what became known as Hoare triples `{P} C {Q}`—a way to reason about programs by local reasoning rules. This is the intellectual ancestor of all design-by-contract systems.
+
+**What you can steal**:
+
+- Your DSL steps are essentially commands; you can attach pre/post assertions to each step and have the runner check them as runtime contracts.
+- This naturally suggests **assume/guarantee** style scenario blocks: "under these environment assumptions, these guarantees must hold."
+
+```typescript
+scenario("transfer-funds")
+  .assume({ balance: { gte: 100 } }) // Precondition
+  .transaction("t1", { st: 0 })
+  .update("balance", increment(-100))
+  .guarantee({ balance: { gte: 0 } }) // Postcondition
+  .commit({ ct: 5 })
+```
+
+**Reference**: [Hoare, "An Axiomatic Basis for Computer Programming" (1969)](https://dl.acm.org/doi/10.1145/363235.363259)
+
+### 10.2 Dijkstra's Guarded Commands (1975): Nondeterminism as a Feature
+
+**Core idea**: Instead of testing after the fact, derive programs from specs using calculational reasoning. Nondeterminism is a first-class modeling tool.
+
+**What you can steal**:
+
+- Treat nondeterminism as a spec feature, not a bug. Your DSL can express "any of these schedules" or "any of these interleavings," and your checker verifies properties across all of them.
+- This is why TLA+/model checking work well for distributed systems—nondeterminism is explicit.
+
+```typescript
+// Express "any ordering is valid"
+scenario("concurrent-writes")
+  .anyOrder([
+    () => builder.transaction("t1").update("x", assign(1)).commit(),
+    () => builder.transaction("t2").update("x", assign(2)).commit(),
+  ])
+  .verify((result) => result.x === 1 || result.x === 2)
+```
+
+**Reference**: [Dijkstra, "Guarded Commands, Nondeterminacy and Formal Derivation of Programs" (1975)](https://dl.acm.org/doi/10.1145/360933.360975)
+
+### 10.3 Abstract Interpretation (1977): Sound Approximation
+
+**Core idea**: Analyze programs by mapping them into an abstract domain that's cheaper to explore, while staying sound (no false negatives for properties you care about).
+
+Cousot & Cousot introduced abstract interpretation as a unified theory of static analysis. It's the philosophical antidote to "we can't hold it all in our heads"—a theory of compressing semantics.
+
+**What you can steal**:
+
+- Your "configurancy layer" is an abstraction boundary. Make it explicit: what observations matter, what internal details are abstracted away.
+- Your fuzz generator is selecting points in the abstract domain; your oracle/checker is validating projected properties.
+
+```typescript
+// Abstract domain: just track whether value is BOTTOM, ZERO, POSITIVE, NEGATIVE
+type AbstractValue = "bottom" | "zero" | "positive" | "negative"
+
+function abstractIncrement(v: AbstractValue, delta: number): AbstractValue {
+  if (v === "bottom")
+    return delta > 0 ? "positive" : delta < 0 ? "negative" : "zero"
+  // ... sound over-approximation
+}
+```
+
+**Reference**: [Cousot & Cousot, "Abstract Interpretation: A Unified Lattice Model" (1977)](https://www.di.ens.fr/~cousot/publications.www/CousotCousot-POPL-77-ACM-p238--252-1977.pdf)
+
+### 10.4 Temporal Logic (1977): From States to Traces
+
+**Core idea**: For concurrent/distributed systems, correctness is about sequences over time, not just single end states.
+
+Pnueli's 1977 work introduced temporal logic into program reasoning. Lamport later developed TLA ("Temporal Logic of Actions") and emphasized specs as formulas over behaviors.
+
+**What you can steal**:
+
+- Your history-based verification is already trace-thinking. Add explicit mention of **safety vs liveness**:
+  - **Safety**: "nothing bad happens" (bad state not reachable)
+  - **Liveness**: "something good eventually happens" (progress, no deadlock/starvation)
+- Your DSL currently centers safety; nemesis/fault injection introduces liveness bugs (can the system make progress under failure?).
+
+```typescript
+// Safety property: no overdraft ever occurs
+const noOverdraft: SafetyProperty = (history) =>
+  history.every((state) => state.balance >= 0)
+
+// Liveness property: every request eventually completes
+const eventualCompletion: LivenessProperty = (history) =>
+  history
+    .filter((e) => e.type === "request")
+    .every((req) =>
+      history.some(
+        (resp) => resp.type === "response" && resp.requestId === req.id
+      )
+    )
+```
+
+**Reference**: [Pnueli, "The Temporal Logic of Programs" (1977)](https://amturing.acm.org/bib/pnueli_4725172.cfm)
+
+### 10.5 Model Checking (1980s): Exhaustive but Disciplined
+
+**Core idea**: Exhaustively explore a finite state space automatically, find counterexamples you didn't imagine.
+
+Clarke, Emerson, and Sifakis received the 2007 Turing Award for model checking. It became one of the big success stories of formal verification.
+
+**What you can steal**:
+
+- Your fuzzing is "Monte Carlo model checking"—random exploration of the state space.
+- Add a **state-space budget** as a first-class concept: max states, max depth, max transactions.
+- Model checking wins by producing counterexample traces. Your shrinker is already trying to get there—lean into that.
+
+```typescript
+interface ExplorationBudget {
+  maxStates: number
+  maxDepth: number
+  maxTransactions: number
+  timeoutMs: number
+}
+
+function explore(
+  initial: State,
+  budget: ExplorationBudget
+): Counterexample | null {
+  const visited = new Set<StateHash>()
+  const queue: Array<{ state: State; trace: Step[] }> = [
+    { state: initial, trace: [] },
+  ]
+
+  while (queue.length > 0 && visited.size < budget.maxStates) {
+    const { state, trace } = queue.shift()!
+    if (violatesInvariant(state)) {
+      return { trace, finalState: state }
+    }
+    for (const next of successors(state)) {
+      if (!visited.has(hash(next))) {
+        visited.add(hash(next))
+        queue.push({ state: next, trace: [...trace, lastStep] })
+      }
+    }
+  }
+  return null
+}
+```
+
+**Reference**: [Clarke, Emerson, Sifakis, "Model Checking" (2007 Turing Award)](https://www-verimag.imag.fr/~sifakis/TuringAwardPaper-Apr14.pdf)
+
+### 10.6 SAT/SMT and Bounded Model Checking (2000s): Verification Meets Constraint Solving
+
+**Core idea**: Translate bounded executions into SAT/SMT and let solvers find counterexamples.
+
+Bounded model checking (BMC) is a key bridge: you don't explore the whole system, you explore all behaviors up to depth _k_ using solvers. Then CEGAR (counterexample-guided abstraction refinement) turns this into a loop: start abstract, get a counterexample, refine if spurious, repeat.
+
+**What you can steal**:
+
+- Your "shrinking failing cases" is a cousin of CEGAR: refining toward the smallest real counterexample.
+- Consider making the checker explain failures in a solver-friendly way (constraints, witnesses), not just "expected vs got."
+
+A killer example in your domain: **Cobra** uses SMT to check serializability for transactional KV stores at scale. It's "Elle + solver horsepower + engineering."
+
+```typescript
+// Encode serializability as constraints
+function encodeAsConstraints(history: History): SMTFormula {
+  const constraints: Clause[] = []
+
+  // For each pair of transactions, one must come before the other
+  for (const t1 of history.transactions) {
+    for (const t2 of history.transactions) {
+      if (t1.id !== t2.id) {
+        constraints.push(or(before(t1, t2), before(t2, t1)))
+      }
+    }
+  }
+
+  // Dependencies must be respected
+  for (const edge of buildDependencyEdges(history)) {
+    constraints.push(before(edge.from, edge.to))
+  }
+
+  return and(...constraints) // SAT iff serializable
+}
+```
+
+**References**:
+
+- [Bounded Model Checking (CMU)](https://www.cs.cmu.edu/~emc/papers/Books%20and%20Edited%20Volumes/Bounded%20Model%20Checking.pdf)
+- [CEGAR (Stanford)](https://web.stanford.edu/class/cs357/cegar.pdf)
+- [Cobra: Verifiably Serializable KV Stores (OSDI '20)](https://www.usenix.org/conference/osdi20/presentation/tan)
+
+### 10.7 Alloy and the Small Scope Hypothesis (2000s)
+
+**Core idea**: Most design bugs show up in small counterexamples; search small scopes exhaustively.
+
+Daniel Jackson's Alloy work popularized this: you don't prove, you _find counterexamples fast_ within a bound, guided by the "small scope hypothesis."
+
+**What you can steal**:
+
+- Your "start simple, add complexity" is the same tactic.
+- Make **scope** explicit in DSL and fuzz configs: number of transactions, keys, concurrency degree, failure injections.
+- Consider an "exhaust small scope" mode in addition to fuzzing—surprisingly potent.
+
+```typescript
+// Exhaustively test all scenarios with ≤3 transactions, ≤2 keys
+function exhaustSmallScope(): void {
+  for (const numTxns of [1, 2, 3]) {
+    for (const numKeys of [1, 2]) {
+      for (const scenario of generateAllScenarios(numTxns, numKeys)) {
+        const result = executeScenario(scenario, store())
+        expect(result.valid).toBe(true)
+      }
+    }
+  }
+}
+```
+
+**Reference**: [Jackson, "Alloy: A Language and Tool for Exploring Software Designs" (2019)](https://groups.csail.mit.edu/sdg/pubs/2019/alloy-cacm-18-feb-22-2019.pdf)
+
+### 10.8 Refinement Proofs: seL4 and CompCert
+
+**Core idea**: Prove that an implementation _refines_ a spec; then properties proven about the spec carry to the implementation.
+
+- **seL4**: Formally verified OS kernel using refinement across multiple specification layers.
+- **CompCert**: Formally verified C compiler demonstrating semantic preservation across compilation.
+
+**What you can steal**:
+
+- Your "ReferenceStore" section is a testing analog of refinement: implementation should match a simpler model.
+- Formalize this: define a refinement relation `R(impl_state, spec_state)` and check it dynamically after each step. That gives you localization: the failure happens at the first step where `R` breaks.
+
+```typescript
+interface RefinementCheck<ImplState, SpecState> {
+  abstract(impl: ImplState): SpecState
+  equivalent(impl: ImplState, spec: SpecState): boolean
+}
+
+function checkRefinement<I, S>(
+  impl: Store<I>,
+  spec: Store<S>,
+  scenario: ScenarioDefinition,
+  refinement: RefinementCheck<I, S>
+): { valid: boolean; failingStep?: number } {
+  for (let i = 0; i < scenario.steps.length; i++) {
+    executeStep(impl, scenario.steps[i])
+    executeStep(spec, scenario.steps[i])
+
+    if (!refinement.equivalent(impl.getState(), spec.getState())) {
+      return { valid: false, failingStep: i }
+    }
+  }
+  return { valid: true }
+}
+```
+
+**References**:
+
+- [seL4: Formal Verification of an OS Kernel (2009)](https://read.seas.harvard.edu/~kohler/class/cs260r-17/klein10sel4.pdf)
+- [CompCert: Formal Verification of a Realistic Compiler (2009)](https://xavierleroy.org/publi/compcert-CACM.pdf)
+
+### 10.9 Industrial Adoption: TLA+ at Amazon
+
+The AWS experience reports are worth calling out: complicated distributed systems produce subtle bugs that tests miss; a small spec can catch them earlier.
+
+**What you can steal**:
+
+- Treat the DSL as a _design tool_ as much as a test tool. The spec is not post-hoc documentation; it's how you think.
+- Amazon found TLA+ caught bugs in DynamoDB, S3, EBS, and other services—bugs that extensive testing had missed.
+
+**Reference**: [How Amazon Web Services Uses Formal Methods (2015)](https://dl.acm.org/doi/10.1145/2699417)
+
+---
+
+## Part 11: Choosing Your Specification Style
+
+There are stable "spec shapes," and picking one early prevents later pain.
+
+### 11.1 Operational Spec (State Machine / Interpreter)
+
+**Shape**: An executable model that steps through states.
+
+```typescript
+function interpret(state: State, command: Command): State {
+  switch (command.type) {
+    case "assign":
+      return { ...state, [command.key]: command.value }
+    case "increment":
+      return {
+        ...state,
+        [command.key]: (state[command.key] ?? 0) + command.delta,
+      }
+    case "delete":
+      const { [command.key]: _, ...rest } = state
+      return rest
+  }
+}
+```
+
+**Pros**: Easy to execute, easy to diff-test, natural for DSL runners.
+**Cons**: Can obscure invariants in procedural logic.
+**Best for**: Implementation reference, fuzz oracle.
+
+### 11.2 Axiomatic/Declarative Spec (Constraints on Histories)
+
+**Shape**: Properties that must hold over execution traces.
+
+```typescript
+// "Snapshot isolation" as a constraint on histories
+function satisfiesSnapshotIsolation(history: History): boolean {
+  // No write-write conflicts between concurrent transactions
+  for (const t1 of history.transactions) {
+    for (const t2 of history.transactions) {
+      if (t1.id !== t2.id && overlap(t1, t2)) {
+        if (writeConflict(t1, t2)) return false
+      }
+    }
+  }
+  // Each transaction's reads are consistent with some snapshot
+  for (const txn of history.transactions) {
+    if (!readsFromConsistentSnapshot(txn, history)) return false
+  }
+  return true
+}
+```
+
+**Pros**: Natural for isolation/consistency; matches Adya/Elle style.
+**Cons**: Harder to execute directly; often needs solvers for checking.
+**Best for**: Consistency model verification, anomaly detection.
+
+### 11.3 Algebraic/Equational Spec (Laws of Operators)
+
+**Shape**: Equations that operators must satisfy.
+
+```typescript
+// Merge forms a semilattice
+const mergeLaws = {
+  commutativity: (a, b) => equal(merge(a, b), merge(b, a)),
+  associativity: (a, b, c) =>
+    equal(merge(merge(a, b), c), merge(a, merge(b, c))),
+  idempotence: (a) => equal(merge(a, a), a), // For applicable types
+}
+
+// Apply effect is monotonic
+const applyLaws = {
+  identity: (v) => equal(apply(v, BOTTOM), v),
+  composition: (v, e1, e2) =>
+    equal(apply(apply(v, e1), e2), apply(v, compose(e1, e2))),
+}
+```
+
+**Pros**: Perfect for CRDT-ish merge/effect algebras; enables algebraic property testing.
+**Cons**: Not all systems have clean algebraic structure.
+**Best for**: Merge semantics, effect composition, conflict resolution.
+
+### 11.4 Hybrid Approaches
+
+Mature systems usually need _more than one_ spec style, connected by refinement/simulation arguments. That's the seL4 lesson: multiple abstraction layers, each with its own spec style, with proofs that adjacent layers refine correctly.
+
+For your transactional store DSL:
+
+| Component          | Best Spec Style | Why                                       |
+| ------------------ | --------------- | ----------------------------------------- |
+| Effect application | Algebraic       | Clean equations for merge, apply, compose |
+| Transaction model  | Operational     | State machine semantics                   |
+| Isolation checking | Axiomatic       | Constraints over histories (Adya-style)   |
+| Store interface    | Operational     | Reference implementation for diff-testing |
+
+---
+
 ## Conclusion
 
 Building a testing DSL for complex systems is an investment that pays dividends:
@@ -974,11 +1562,45 @@ The key insight: **Testing complex systems is itself a complex system**. Treat y
 
 ## References
 
+### Testing Tools & Frameworks
+
 - [Jepsen](https://jepsen.io) - Distributed systems testing
 - [Elle](https://github.com/jepsen-io/elle) - Black-box transactional consistency checker
 - [QuickCheck](https://hackage.haskell.org/package/QuickCheck) - Property-based testing origin
 - [Hypothesis](https://hypothesis.readthedocs.io/) - Python property-based testing
+- [Hermitage](https://github.com/ept/hermitage) - Testing transaction isolation levels
+- [Delta Debugging](https://www.cs.purdue.edu/homes/xyzhang/fall07/Papers/delta-debugging.pdf) - Simplifying failure-inducing input
+
+### Formal Specification Languages
+
 - [TLA+](https://lamport.azurewebsites.net/tla/tla.html) - Formal specification language
 - [Alloy](https://alloytools.org/) - Relational logic modeling
-- [CobbleDB Paper](https://dl.acm.org/doi/10.1145/3582016.3582042) - Formal transactional storage specification
-- [Hermitage](https://github.com/ept/hermitage) - Testing transaction isolation levels
+- CobbleDB Paper: "Formalising Transactional Storage Systems" - Formal transactional storage specification (ASPLOS '23)
+
+### Foundational Papers
+
+- [Hoare, "An Axiomatic Basis for Computer Programming" (1969)](https://dl.acm.org/doi/10.1145/363235.363259)
+- [Dijkstra, "Guarded Commands" (1975)](https://dl.acm.org/doi/10.1145/360933.360975)
+- [Cousot & Cousot, "Abstract Interpretation" (1977)](https://www.di.ens.fr/~cousot/publications.www/CousotCousot-POPL-77-ACM-p238--252-1977.pdf)
+- [Pnueli, "Temporal Logic of Programs" (1977)](https://amturing.acm.org/bib/pnueli_4725172.cfm)
+
+### Verification Techniques
+
+- [Clarke, Emerson, Sifakis, "Model Checking" (2007 Turing Award)](https://www-verimag.imag.fr/~sifakis/TuringAwardPaper-Apr14.pdf)
+- [Bounded Model Checking (CMU)](https://www.cs.cmu.edu/~emc/papers/Books%20and%20Edited%20Volumes/Bounded%20Model%20Checking.pdf)
+- [CEGAR (Stanford)](https://web.stanford.edu/class/cs357/cegar.pdf)
+- [Testing for Linearizability (Lowe)](https://www.cs.ox.ac.uk/people/gavin.lowe/LinearizabiltyTesting/paper.pdf)
+
+### Industrial Applications
+
+- [How Amazon Web Services Uses Formal Methods (2015)](https://dl.acm.org/doi/10.1145/2699417)
+- [Cobra: Verifiably Serializable KV Stores (OSDI '20)](https://www.usenix.org/conference/osdi20/presentation/tan)
+- [seL4: Formal Verification of an OS Kernel (2009)](https://read.seas.harvard.edu/~kohler/class/cs260r-17/klein10sel4.pdf)
+- [CompCert: Formal Verification of a Realistic Compiler (2009)](https://xavierleroy.org/publi/compcert-CACM.pdf)
+- [Jackson, "Alloy" (2019)](https://groups.csail.mit.edu/sdg/pubs/2019/alloy-cacm-18-feb-22-2019.pdf)
+
+### Consistency & Isolation
+
+- [Adya, "Weak Consistency" (MIT TR-786)](https://publications.csail.mit.edu/lcs/pubs/pdf/MIT-LCS-TR-786.pdf)
+- [A Critique of ANSI SQL Isolation Levels](https://arxiv.org/abs/cs/0701157)
+- [Elle: Inferring Isolation Anomalies (VLDB '20)](https://www.vldb.org/pvldb/vol14/p268-alvaro.pdf)
