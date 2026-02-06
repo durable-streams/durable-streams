@@ -418,6 +418,11 @@ export {
   hasCycle,
   findCycle,
 
+  // Checker metadata (soundness, completeness, scope)
+  type CheckerMetadata,
+  SERIALIZABILITY_CHECKER,
+  SNAPSHOT_ISOLATION_CHECKER,
+
   // Consistency checking
   type ConsistencyCheckResult,
   checkSerializable,

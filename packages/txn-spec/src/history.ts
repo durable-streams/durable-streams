@@ -436,11 +436,63 @@ export function findCycle(graph: DependencyGraph): Array<TxnId> | null {
 // =============================================================================
 
 /**
+ * Checker metadata - documents soundness, completeness, and scope
+ *
+ * Following formal methods conventions:
+ * - Sound: Never false positives (if it says "violation," there is one)
+ * - Complete: Never false negatives (finds all violations in scope)
+ *
+ * Most practical checkers are sound but incomplete.
+ */
+export interface CheckerMetadata {
+  name: string
+  /** Sound = no false positives */
+  soundness: `sound` | `unsound`
+  /** Complete = finds all violations in scope */
+  completeness: `complete` | `incomplete`
+  /** What this checker covers */
+  scope: string
+  /** What this checker does NOT cover */
+  limitations: Array<string>
+}
+
+/**
+ * Metadata for the serializability checker
+ */
+export const SERIALIZABILITY_CHECKER: CheckerMetadata = {
+  name: `Cycle-based Serializability`,
+  soundness: `sound`,
+  completeness: `incomplete`,
+  scope: `Single-key read/write operations with known commit order`,
+  limitations: [
+    `Predicate-based anomalies (e.g., phantom reads)`,
+    `Multi-key constraints`,
+    `Operations without explicit read/write logging`,
+  ],
+}
+
+/**
+ * Metadata for the snapshot isolation checker
+ */
+export const SNAPSHOT_ISOLATION_CHECKER: CheckerMetadata = {
+  name: `SI via WW/WR Graph`,
+  soundness: `sound`,
+  completeness: `incomplete`,
+  scope: `Write-write and write-read conflicts`,
+  limitations: [
+    `Write skew detection (allowed by SI, but may indicate bugs)`,
+    `Lost update anomalies under certain schedules`,
+  ],
+}
+
+/**
  * Result of a consistency check
  */
 export interface ConsistencyCheckResult {
   /** Whether the history satisfies the consistency model */
   valid: boolean
+  /** Metadata about the checker used */
+  checker: CheckerMetadata
   /** If invalid, describes the violation */
   violation?: {
     type: `cycle`
@@ -459,15 +511,16 @@ export interface ConsistencyCheckResult {
  */
 export function checkSerializable(history: History): ConsistencyCheckResult {
   const graph = buildDependencyGraph(history)
+  const checker = SERIALIZABILITY_CHECKER
 
   if (!hasCycle(graph)) {
-    return { valid: true, graph }
+    return { valid: true, checker, graph }
   }
 
   const cycle = findCycle(graph)
   if (!cycle) {
     // Shouldn't happen, but handle gracefully
-    return { valid: false, graph }
+    return { valid: false, checker, graph }
   }
 
   // Find edges in the cycle
@@ -481,6 +534,7 @@ export function checkSerializable(history: History): ConsistencyCheckResult {
 
   return {
     valid: false,
+    checker,
     violation: {
       type: `cycle`,
       cycle,
@@ -502,6 +556,7 @@ export function checkSnapshotIsolation(
   history: History
 ): ConsistencyCheckResult {
   const fullGraph = buildDependencyGraph(history)
+  const checker = SNAPSHOT_ISOLATION_CHECKER
 
   // For SI, only consider WW and WR edges
   const siGraph: DependencyGraph = {
@@ -510,12 +565,12 @@ export function checkSnapshotIsolation(
   }
 
   if (!hasCycle(siGraph)) {
-    return { valid: true, graph: siGraph }
+    return { valid: true, checker, graph: siGraph }
   }
 
   const cycle = findCycle(siGraph)
   if (!cycle) {
-    return { valid: false, graph: siGraph }
+    return { valid: false, checker, graph: siGraph }
   }
 
   const cycleEdges: Array<DependencyEdge> = []
@@ -528,6 +583,7 @@ export function checkSnapshotIsolation(
 
   return {
     valid: false,
+    checker,
     violation: {
       type: `cycle`,
       cycle,
@@ -558,11 +614,20 @@ export function formatGraph(graph: DependencyGraph): string {
  * Format a consistency check result as a string
  */
 export function formatCheckResult(result: ConsistencyCheckResult): string {
+  const lines: Array<string> = []
+
+  // Include checker metadata
+  lines.push(`Checker: ${result.checker.name}`)
+  lines.push(`  Soundness: ${result.checker.soundness}`)
+  lines.push(`  Completeness: ${result.checker.completeness}`)
+  lines.push(`  Scope: ${result.checker.scope}`)
+  lines.push(``)
+
   if (result.valid) {
-    return `VALID: History is consistent`
+    lines.push(`VALID: History is consistent`)
+    return lines.join(`\n`)
   }
 
-  const lines: Array<string> = []
   lines.push(`INVALID: Consistency violation detected`)
 
   if (result.violation) {
@@ -571,6 +636,14 @@ export function formatCheckResult(result: ConsistencyCheckResult): string {
     lines.push(`  Edges:`)
     for (const edge of result.violation.edges) {
       lines.push(`    ${edge.from} --[${edge.type}:${edge.key}]--> ${edge.to}`)
+    }
+  }
+
+  if (result.checker.limitations.length > 0) {
+    lines.push(``)
+    lines.push(`Note: This checker has limitations:`)
+    for (const limitation of result.checker.limitations) {
+      lines.push(`  - ${limitation}`)
     }
   }
 

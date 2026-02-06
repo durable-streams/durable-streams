@@ -145,9 +145,9 @@ For any committed transaction: `snapshotTs < commitTs`
 ### I8: Visibility Rule (OTSP)
 
 Transaction T2 sees transaction T1's effects if and only if:
-`T1.commitTs ≤ T2.snapshotTs`
+`T1.commitTs < T2.snapshotTs`
 
-This is the **Ordered Timestamp Pair (OTSP)** rule from the paper.
+This is the **Ordered Timestamp Pair (OTSP)** rule. Note: The implementation uses **strict inequality** (`<`), meaning a transaction at snapshotTs=5 does NOT see commits at commitTs=5. This was verified through exhaustive boundary testing.
 
 ### I9: Increment on Bottom
 
@@ -297,6 +297,137 @@ This specification implements **Snapshot Isolation (SI)** with the following pro
 4. **Write Skew Possible**: SI does not prevent all anomalies
 
 For **Serializable** isolation, additional checks (like write-write conflict detection) would be needed.
+
+---
+
+## Safety vs Liveness
+
+Following temporal logic conventions, we categorize properties:
+
+### Safety Properties ("Nothing Bad Happens")
+
+These properties can be violated by a finite trace. If violated, we can point to the exact moment it went wrong.
+
+| Property                   | Description                      | Invariant |
+| -------------------------- | -------------------------------- | --------- |
+| **No Double Commit** (C2)  | Transaction commits at most once | I3        |
+| **Snapshot Consistency**   | Reads within a txn are stable    | I1        |
+| **Atomic Visibility**      | All-or-nothing commit            | I3        |
+| **Timestamp Ordering**     | commitTs > snapshotTs            | I7, C1    |
+| **Effect Well-Formedness** | Increments on non-numeric fail   | C4        |
+
+### Liveness Properties ("Something Good Eventually Happens")
+
+These require infinite traces to verify. We currently focus on safety; liveness would apply to distributed/async extensions.
+
+| Property                 | Description                                    | Status                      |
+| ------------------------ | ---------------------------------------------- | --------------------------- |
+| **Transaction Progress** | Every transaction eventually commits or aborts | Not specified (single-node) |
+| **Conflict Resolution**  | Concurrent writes eventually merge             | Implicit in merge rules     |
+
+**Current scope**: This spec focuses on safety properties. Liveness properties become relevant when extending to distributed systems with network partitions, crash recovery, etc.
+
+---
+
+## Specification Shapes
+
+This specification uses multiple "spec shapes" for different components:
+
+| Component           | Spec Shape  | Why                                                |
+| ------------------- | ----------- | -------------------------------------------------- |
+| **Effects**         | Algebraic   | Clean equations for composition and merge (I5, I6) |
+| **Transactions**    | Operational | State machine: pending → committed \| aborted      |
+| **Isolation**       | Axiomatic   | Constraints on observable histories (I1, I8)       |
+| **Store Interface** | Operational | Reference implementation for diff-testing          |
+
+### Algebraic (Effects)
+
+Effects satisfy algebraic laws that can be tested exhaustively:
+
+```
+Merge Laws:
+  merge(a, b) = merge(b, a)                    // Commutativity
+  merge(merge(a, b), c) = merge(a, merge(b, c)) // Associativity
+  merge(⊥, a) = a                              // Identity
+
+Compose Laws:
+  compose(compose(a, b), c) = compose(a, compose(b, c)) // Associativity
+```
+
+### Operational (Transactions)
+
+Transaction lifecycle as a state machine:
+
+```
+         begin(st)
+            │
+            ▼
+       ┌─────────┐
+       │ pending │──────────────┐
+       └────┬────┘              │
+            │                   │
+      ┌─────┴─────┐        abort()
+      │           │             │
+  commit(ct)      │             │
+      │           │             ▼
+      ▼           │      ┌──────────┐
+┌───────────┐     │      │ aborted  │
+│ committed │     │      └──────────┘
+└───────────┘     │
+                  └──────────────────────────
+```
+
+### Axiomatic (Isolation)
+
+Isolation expressed as constraints on histories (Adya-style):
+
+```
+Snapshot Isolation:
+  ∀ T1, T2: concurrent(T1, T2) ∧ writeSet(T1) ∩ writeSet(T2) ≠ ∅
+    → conflict detected (abort one)
+
+  ∀ T, read r in T:
+    value(r) = latest write where write.commitTs ≤ T.snapshotTs
+```
+
+---
+
+## Enforcement Checklist
+
+Bidirectional verification that spec and implementation match.
+
+### Doc → Code: Is Each Invariant Enforced?
+
+| Invariant               | Types         | Runtime          | Tests          | Notes     |
+| ----------------------- | ------------- | ---------------- | -------------- | --------- |
+| I1: Snapshot Isolation  | -             | ✓ Store lookup   | ✓ conformance  |           |
+| I2: Read Own Writes     | -             | ✓ Txn buffer     | ✓ conformance  |           |
+| I3: Atomic Commits      | -             | ✓ Store.commit   | ✓ conformance  |           |
+| I4: Aborted No Effect   | -             | ✓ Skip in lookup | ✓ conformance  |           |
+| I5: Effect Composition  | ✓ Effect type | ✓ composeEffects | ✓ algebraic    |           |
+| I6: Effect Merge        | -             | ✓ mergeEffects   | ✓ algebraic    | 203 tests |
+| I7: Timestamp Ordering  | -             | ✓ Coordinator    | ✓ spec-vectors |           |
+| I8: OTSP Visibility     | -             | ✓ Store lookup   | ✓ conformance  |           |
+| I9: Increment on Bottom | -             | ✓ applyEffect    | ✓ spec-vectors |           |
+
+### Code → Doc: Is Each Test Derived From Spec?
+
+| Test File                | Spec Section            | Coverage           |
+| ------------------------ | ----------------------- | ------------------ |
+| conformance.test.ts      | Affordances, Invariants | Core behavior      |
+| merge-properties.test.ts | I6 (CAI properties)     | Algebraic laws     |
+| spec-vectors.test.ts     | Test Vectors TV1-TV7    | Paper examples     |
+| history.test.ts          | Consistency Model       | SI/Serializability |
+| fuzz.test.ts             | All                     | Random exploration |
+
+### Gaps
+
+| Gap                   | Status       | Notes                       |
+| --------------------- | ------------ | --------------------------- |
+| C4 (numeric check)    | Not tested   | Need error case tests       |
+| Adversarial inputs    | Not tested   | Need malformed scenario DSL |
+| Multi-key constraints | Out of scope | Single-key only             |
+| Predicate anomalies   | Out of scope | Checker limitation          |
 
 ---
 
