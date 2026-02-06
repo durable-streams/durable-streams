@@ -615,17 +615,27 @@ async function executeStep(ctx: RunContext, step: Step): Promise<void> {
 
     case `expectWake`: {
       const timeoutMs = step.opts?.timeoutMs ?? 10_000
-      const notification = await ctx.receiver.waitForNotification(timeoutMs)
+      let notification = await ctx.receiver.waitForNotification(timeoutMs)
+
+      // If we expect a new epoch but receive a stale retry (same or lower
+      // epoch from the previous wake cycle), auto-respond with {done: true}
+      // and wait for the real notification. This handles CI timing races
+      // where a retry fires before the server processes the done response.
+      if (step.opts?.epochIncremented && ctx.currentEpoch !== null) {
+        while (notification.parsed.epoch <= ctx.currentEpoch) {
+          notification.resolve({
+            status: 200,
+            body: JSON.stringify({ done: true }),
+          })
+          notification = await ctx.receiver.waitForNotification(timeoutMs)
+        }
+      }
 
       expect(notification.parsed.consumer_id).toBeDefined()
       expect(notification.parsed.epoch).toBeGreaterThan(0)
       expect(notification.parsed.wake_id).toBeDefined()
       expect(notification.parsed.callback).toBeDefined()
       expect(notification.parsed.token).toBeDefined()
-
-      if (step.opts?.epochIncremented && ctx.currentEpoch !== null) {
-        expect(notification.parsed.epoch).toBeGreaterThan(ctx.currentEpoch)
-      }
 
       if (step.opts?.triggeredBy) {
         for (const path of step.opts.triggeredBy) {
