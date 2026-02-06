@@ -157,7 +157,7 @@ export function useAgentLoop(
               if (isStreamFsTool(block.name)) {
                 const result = await handleTool(
                   currentFs,
-                  block.name as StreamFsToolName,
+                  block.name,
                   block.input as ToolInput
                 )
                 const resultStr = result.success
