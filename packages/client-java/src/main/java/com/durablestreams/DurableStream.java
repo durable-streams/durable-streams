@@ -195,7 +195,7 @@ public final class DurableStream implements AutoCloseable {
             if (data == null || data.length == 0) {
                 return CompletableFuture.failedFuture(new DurableStreamException("Cannot append empty data"));
             }
-            HttpRequest request = buildAppendRequest(url, data, null);
+            HttpRequest request = buildAppendRequest(url, data, null, null);
             return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                     .thenApply(response -> parseAppendResponse(response, url, null));
         } catch (Exception e) {
