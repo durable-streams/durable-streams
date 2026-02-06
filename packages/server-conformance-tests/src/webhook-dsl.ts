@@ -1083,6 +1083,7 @@ export function checkInvariants(
   history: Array<HistoryEvent>,
   webhookSecret: string | null
 ): void {
+  // Safety invariants (S1-S8)
   checkEpochMonotonicity(history)
   checkWakeIdUniqueness(history)
   checkSingleClaim(history)
@@ -1090,6 +1091,14 @@ export function checkInvariants(
   if (webhookSecret) {
     checkSignaturePresence(history, webhookSecret)
   }
+
+  // Temporal / liveness properties (L1, L3)
+  checkAppendTriggersWake(history)
+  checkDoneWithPendingRewake(history)
+
+  // Structural properties
+  checkClaimPrecedesWake(history)
+  checkAckMonotonicity(history)
 }
 
 /** S1: Epoch values in webhook notifications must be monotonically increasing. */
@@ -1183,6 +1192,252 @@ function checkSignaturePresence(
       )
       expect(valid, `S8: Webhook-Signature must be valid`).toBe(true)
     }
+  }
+}
+
+// ============================================================================
+// Temporal / Liveness Property Checkers
+// ============================================================================
+
+/**
+ * L1 (bounded): After events_appended, if the consumer was idle (the previous
+ * wake cycle ended with done), a webhook_received must eventually appear in the
+ * remaining trace.
+ *
+ * Pattern: □(P ⇒ ◇Q) over finite trace — "whenever P, eventually Q"
+ */
+function checkAppendTriggersWake(history: Array<HistoryEvent>): void {
+  let consumerIdle = false
+
+  for (let i = 0; i < history.length; i++) {
+    const event = history[i]!
+
+    // Track idle state: consumer becomes idle after a done callback response
+    if (event.type === `callback_sent` && event.done === true) {
+      const next = history[i + 1]
+      if (next && next.type === `callback_response` && next.ok) {
+        consumerIdle = true
+      }
+    }
+
+    // Also idle after respondDone (webhook_responded with done:true)
+    if (
+      event.type === `webhook_responded` &&
+      typeof event.body === `object` &&
+      event.body !== null &&
+      (event.body as Record<string, unknown>).done === true
+    ) {
+      consumerIdle = true
+    }
+
+    // Consumer is no longer idle once woken
+    if (event.type === `webhook_received`) {
+      consumerIdle = false
+    }
+
+    // Trigger: events_appended while consumer is idle
+    if (event.type === `events_appended` && consumerIdle) {
+      // Scan suffix for a webhook_received
+      let found = false
+      for (let j = i + 1; j < history.length; j++) {
+        if (history[j]!.type === `webhook_received`) {
+          found = true
+          break
+        }
+      }
+      if (!found) {
+        throw new Error(
+          `L1: events_appended at index ${i} (path: ${event.path}) while consumer was idle, ` +
+            `but no webhook_received followed in the trace`
+        )
+      }
+    }
+  }
+}
+
+/**
+ * L3 (bounded): If callback_sent has done:true AND events were appended since
+ * the last webhook_received, a new webhook_received must follow in the trace.
+ *
+ * This catches the "done with pending work triggers re-wake" invariant.
+ */
+function checkDoneWithPendingRewake(history: Array<HistoryEvent>): void {
+  // Track the latest appended offset per stream and latest acked offset per stream.
+  // "Pending work" = any stream where appended offset > acked offset.
+  const appendedOffsets = new Map<string, string>()
+  const ackedOffsets = new Map<string, string>()
+
+  for (let i = 0; i < history.length; i++) {
+    const event = history[i]!
+
+    if (event.type === `webhook_received`) {
+      // New wake cycle resets our tracking
+      appendedOffsets.clear()
+      ackedOffsets.clear()
+    }
+
+    if (event.type === `events_appended`) {
+      appendedOffsets.set(event.path, event.offset)
+    }
+
+    // Track successful acks
+    if (event.type === `callback_sent` && event.acks) {
+      const next = history[i + 1]
+      if (next && next.type === `callback_response` && next.ok) {
+        for (const ack of event.acks) {
+          const prev = ackedOffsets.get(ack.path)
+          if (prev === undefined || ack.offset > prev) {
+            ackedOffsets.set(ack.path, ack.offset)
+          }
+        }
+      }
+    }
+
+    // Trigger: done callback sent — check if there's genuinely pending work
+    if (event.type === `callback_sent` && event.done === true) {
+      const next = history[i + 1]
+      if (!next || next.type !== `callback_response` || !next.ok) continue
+
+      // Determine if any stream has un-acked events
+      let hasPending = false
+      for (const [path, appendedOffset] of appendedOffsets) {
+        const ackedOffset = ackedOffsets.get(path)
+        if (ackedOffset === undefined || appendedOffset > ackedOffset) {
+          hasPending = true
+          break
+        }
+      }
+
+      if (!hasPending) continue
+
+      // Scan suffix for a new webhook_received
+      let found = false
+      for (let j = i + 2; j < history.length; j++) {
+        if (history[j]!.type === `webhook_received`) {
+          found = true
+          break
+        }
+      }
+      if (!found) {
+        throw new Error(
+          `L3: callback_sent done:true at index ${i} with un-acked events, ` +
+            `but no re-wake (webhook_received) followed in the trace`
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Precedence: ¬Q W P — "P must happen before Q"
+ *
+ * A wake_id claim (callback_sent with wake_id) must be preceded by a
+ * webhook_received containing that same wake_id.
+ */
+function checkClaimPrecedesWake(history: Array<HistoryEvent>): void {
+  const receivedWakeIds = new Set<string>()
+
+  for (let i = 0; i < history.length; i++) {
+    const event = history[i]!
+
+    if (event.type === `webhook_received`) {
+      receivedWakeIds.add(event.wake_id)
+    }
+
+    if (event.type === `callback_sent` && event.wake_id) {
+      // Only flag successful claims — rejected claims (409) are fine
+      const next = history[i + 1]
+      if (!next || next.type !== `callback_response` || !next.ok) continue
+
+      if (!receivedWakeIds.has(event.wake_id)) {
+        throw new Error(
+          `Precedence: callback_sent claimed wake_id ${event.wake_id} ` +
+            `but no webhook_received with that wake_id preceded it`
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Absence: □¬P — "P never happens"
+ *
+ * Ack offsets for a given stream must never go backwards. A successful ack
+ * callback with an offset less than a previously acked offset is a violation.
+ */
+function checkAckMonotonicity(history: Array<HistoryEvent>): void {
+  const lastAckByStream = new Map<string, string>()
+
+  for (let i = 0; i < history.length; i++) {
+    const event = history[i]!
+    if (event.type !== `callback_sent` || !event.acks) continue
+
+    // Check that the ack was successful
+    const next = history[i + 1]
+    if (!next || next.type !== `callback_response` || !next.ok) continue
+
+    for (const ack of event.acks) {
+      const prev = lastAckByStream.get(ack.path)
+      if (prev !== undefined && ack.offset < prev) {
+        throw new Error(
+          `AckMonotonicity: ack for ${ack.path} went backwards: ` +
+            `${prev} → ${ack.offset} at history index ${i}`
+        )
+      }
+      lastAckByStream.set(ack.path, ack.offset)
+    }
+  }
+}
+
+// ============================================================================
+// ENABLED Predicate & Consumer State Model
+// ============================================================================
+
+/** Action types that can be applied during a LIVE consumer session */
+export type LiveAction =
+  | `append`
+  | `ack`
+  | `subscribe`
+  | `unsubscribe-secondary`
+  | `keepalive`
+
+/** Minimal consumer state model — tracks what's needed for ENABLED filtering */
+export interface ConsumerModel {
+  phase: `LIVE`
+  subscribedToSecondary: boolean
+  hasUnackedEvents: boolean
+  appendCount: number
+}
+
+/** Returns which actions are valid in the current consumer state */
+export function enabledActions(state: ConsumerModel): Array<LiveAction> {
+  const enabled: Array<LiveAction> = [`append`, `keepalive`]
+  if (state.hasUnackedEvents) enabled.push(`ack`)
+  if (!state.subscribedToSecondary) enabled.push(`subscribe`)
+  if (state.subscribedToSecondary) enabled.push(`unsubscribe-secondary`)
+  return enabled
+}
+
+/** Advance the consumer model after taking an action */
+export function applyAction(
+  state: ConsumerModel,
+  action: LiveAction
+): ConsumerModel {
+  switch (action) {
+    case `append`:
+      return {
+        ...state,
+        hasUnackedEvents: true,
+        appendCount: state.appendCount + 1,
+      }
+    case `ack`:
+      return { ...state, hasUnackedEvents: false }
+    case `subscribe`:
+      return { ...state, subscribedToSecondary: true }
+    case `unsubscribe-secondary`:
+      return { ...state, subscribedToSecondary: false }
+    case `keepalive`:
+      return state
   }
 }
 

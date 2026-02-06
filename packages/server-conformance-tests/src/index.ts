@@ -13,7 +13,8 @@ import {
   STREAM_SEQ_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "@durable-streams/client"
-import { webhook } from "./webhook-dsl"
+import { applyAction, enabledActions, webhook } from "./webhook-dsl"
+import type { ConsumerModel, LiveAction } from "./webhook-dsl"
 
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
@@ -8187,8 +8188,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     // ----------------------------------------------------------------
 
     describe(`Property-Based: Random Action Sequences`, () => {
-      // Action types that can be applied during a LIVE consumer session
-      const liveActionArb = fc.oneof(
+      // Action types generated uniformly, then filtered by ENABLED predicate
+      const liveActionArb: fc.Arbitrary<LiveAction> = fc.oneof(
         { weight: 40, arbitrary: fc.constant(`append` as const) },
         { weight: 25, arbitrary: fc.constant(`ack` as const) },
         { weight: 10, arbitrary: fc.constant(`subscribe` as const) },
@@ -8214,9 +8215,18 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                 .expectWake()
                 .claimWake()
 
-              let subscribedToSecondary = false
+              // ENABLED-predicate model: generate all actions, skip disabled ones
+              let model: ConsumerModel = {
+                phase: `LIVE`,
+                subscribedToSecondary: false,
+                hasUnackedEvents: true, // init append is unacked
+                appendCount: 1,
+              }
 
               for (const action of actions) {
+                const valid = enabledActions(model)
+                if (!valid.includes(action)) continue
+
                 switch (action) {
                   case `append`:
                     scenario.append({
@@ -8228,27 +8238,30 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
                     scenario.ackAll()
                     break
                   case `subscribe`:
-                    if (!subscribedToSecondary) {
-                      scenario.subscribe([secondary])
-                      subscribedToSecondary = true
-                    }
+                    scenario.subscribe([secondary])
                     break
                   case `unsubscribe-secondary`:
-                    if (subscribedToSecondary) {
-                      scenario.unsubscribe([secondary])
-                      subscribedToSecondary = false
-                    }
+                    scenario.unsubscribe([secondary])
                     break
                   case `keepalive`:
                     scenario.callback({})
                     break
                 }
+                model = applyAction(model, action)
               }
 
               if (ackBeforeDone) {
                 scenario.ackAll()
+                model = applyAction(model, `ack`)
               }
               scenario.done()
+
+              // L3: if there are un-acked events at done time, the server
+              // will re-wake — we must consume it to satisfy the liveness check
+              if (model.hasUnackedEvents) {
+                scenario.expectWake({ epochIncremented: true })
+                scenario.respondDone()
+              }
 
               await scenario.run()
             }
