@@ -7,7 +7,8 @@
 
 Add Optimistic Concurrency Control (OCC) support via If-Match header
 
-- Protocol: Add If-Match header support for append operations enabling clients to detect concurrent writes
-- Servers: Implement 412 Precondition Failed response when ETag doesn't match
-- Clients: Add ifMatch/if_match option to append methods with PreconditionFailedError for 412 responses
-- Tests: Add server and client conformance tests for OCC behavior
+- Protocol: Add `If-Match` header for append operations enabling compare-and-swap semantics
+- Servers: Implement atomic CAS with `412 Precondition Failed` when ETag doesn't match, proper error precedence (409 closure > 412 precondition), `ETag` on 204 success for chained CAS
+- Clients: Add `ifMatch`/`if_match` option to append methods with `PreconditionFailedError` for 412 responses
+- Tests: Server and client conformance tests covering matching, stale, wildcard rejection, chained CAS, error precedence, and malformed values
+- Spec: Formal OCC specification (OCC_SPEC.md) with invariants, affordances, and conformance test mapping

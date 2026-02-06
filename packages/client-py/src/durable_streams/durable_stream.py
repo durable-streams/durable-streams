@@ -588,9 +588,9 @@ class DurableStream:
             seq: Optional sequence number for writer coordination
             content_type: Optional content type override
             if_match: Optional If-Match header for optimistic concurrency control.
-                      Format: `"<offset>"` (quoted string per HTTP spec) or `*`
-                      for any state. When set, the append will only succeed if
-                      the stream's current offset matches this value.
+                      Format: `"<offset>"` (quoted string per HTTP spec).
+                      When set, the append will only succeed if the stream's
+                      current offset matches this value.
 
         Returns:
             AppendResult with the new tail offset

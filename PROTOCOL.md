@@ -232,7 +232,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - Enables optimistic concurrency control (OCC). The append will only succeed if the stream's current ETag matches the provided value.
   - The ETag corresponds to the stream's current tail offset (the value that would be returned in `Stream-Next-Offset` for a HEAD request).
   - Format: `If-Match: "<offset>"` (quoted string per HTTP spec, [RFC 9110 Section 8.8.3](https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3))
-  - `If-Match: *` matches any existing stream state (useful for "append if exists" semantics).
+  - The wildcard form `If-Match: *` is intentionally **not supported**. Since POST to a non-existent stream already returns `404 Not Found`, "append if exists" semantics are the default behavior.
   - If the ETag does not match, the server **MUST** return `412 Precondition Failed` with the current ETag in the response headers.
   - **MUST NOT** be used together with idempotent producer headers (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`). If both `If-Match` and any producer header are present, servers **MUST** return `400 Bad Request`. These mechanisms solve different problems and have conflicting retry semantics (see Section 5.2.2).
 
@@ -254,6 +254,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+- `ETag: "<offset>"`: The new tail offset as a quoted ETag (same value as `Stream-Next-Offset` but in ETag format). Enables chained CAS operations without a separate HEAD request.
 - `Stream-Closed: true`: Present when the stream is now closed (either by this request or previously)
 
 #### Response Headers (on 409 Conflict due to closed stream)
@@ -438,8 +439,20 @@ The `If-Match` header provides optimistic concurrency control for append operati
 
 1. Client performs a HEAD request to get the current `Stream-Next-Offset` (which serves as the ETag)
 2. Client sends POST with `If-Match: "<offset>"` header
-3. If the stream's current offset matches, append succeeds
+3. If the stream's current offset matches, append succeeds with `ETag` in the response (enabling chained CAS)
 4. If another writer appended since the HEAD, server returns `412 Precondition Failed` with the current ETag
+
+#### Atomicity
+
+The ETag comparison and append **MUST** be performed atomically. No other append may interleave between the comparison and the write. This ensures that a successful `If-Match` response guarantees the append was applied at exactly the expected offset.
+
+#### Retry Guidance
+
+OCC is a single-shot compare-and-swap: each attempt either succeeds or fails with `412`. There is no built-in retry mechanism.
+
+When a `412` response is received, clients can retry by using the offset from the `412` response's `Stream-Next-Offset` header (or `ETag`) as the new `If-Match` value. This is safe because the `412` response always reflects the stream's current state.
+
+Clients **SHOULD** limit retries (recommended maximum: 3 attempts) to avoid unbounded contention loops under high concurrency. If retries are exhausted, the client should surface the conflict to the application layer.
 
 #### Mutual Exclusivity with Idempotent Producers
 

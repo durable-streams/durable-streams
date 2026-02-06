@@ -709,12 +709,23 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return newHTTPError(http.StatusBadRequest, "If-Match and producer headers are mutually exclusive")
 	}
 
-	// Check If-Match precondition
+	// Per protocol error precedence, check stream closure before If-Match.
+	// This only applies to non-close, non-producer requests.
+	isCloseOnlyRequest := len(body) == 0 && closeStream
+	if meta.Closed && !isCloseOnlyRequest && !hasAllProducerHeaders {
+		if len(body) > 0 || !closeStream {
+			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
+			http.Error(w, "stream is closed", http.StatusConflict)
+			return nil
+		}
+	}
+
+	// Check If-Match precondition (after closure check per error precedence)
 	if ifMatch != "" {
 		currentETag := fmt.Sprintf(`"%s"`, meta.CurrentOffset.String())
 
-		// Handle wildcard - matches any existing stream state
-		if ifMatch != "*" && ifMatch != currentETag {
+		if ifMatch != currentETag {
 			// Precondition failed - return 412 with current ETag
 			w.Header().Set("ETag", currentETag)
 			w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
@@ -879,6 +890,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
+	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, result.Offset.String()))
 
 	// Include Stream-Closed header if stream was closed
 	if result.StreamClosed {

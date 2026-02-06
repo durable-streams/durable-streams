@@ -426,7 +426,7 @@ export interface AppendOptions {
    * offset matches this value. Use the offset from a previous HEAD
    * or read operation.
    *
-   * Format: `"<offset>"` (quoted string per HTTP spec) or `*` for any state.
+   * Format: `"<offset>"` (quoted string per HTTP spec).
    *
    * If the offset doesn't match (another writer modified the stream),
    * throws `PreconditionFailedError` with the current offset.

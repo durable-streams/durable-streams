@@ -51,26 +51,27 @@ tests:
           status: 412
           errorCode: PRECONDITION_FAILED
 
-  - id: append-with-wildcard-if-match
-    name: Append with If-Match wildcard succeeds
-    description: Client should successfully append when If-Match is wildcard (*)
+  - id: append-with-unquoted-if-match
+    name: Unquoted If-Match value returns 412
+    description: If-Match values must be quoted per HTTP spec; unquoted values should not match
     operations:
       - action: create
         as: streamPath
         contentType: application/json
         expect:
           status: 201
-      - action: append
+      - action: head
         path: ${streamPath}
-        data: '{"event": "first"}'
         expect:
           status: 200
+        saveAs: headResult
       - action: append
         path: ${streamPath}
-        data: '{"event": "second"}'
-        ifMatch: "*"
+        data: '{"event": "test"}'
+        ifMatch: "${headResult.nextOffset}"
         expect:
-          status: 200
+          status: 412
+          errorCode: PRECONDITION_FAILED
 
   - id: append-if-match-nonexistent
     name: Append with If-Match to non-existent stream returns 404

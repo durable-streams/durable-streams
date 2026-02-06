@@ -1275,8 +1275,7 @@ export class DurableStreamTestServer {
     if (ifMatch) {
       const currentETag = `"${stream.currentOffset}"`
 
-      // Handle wildcard - matches any existing stream state
-      if (ifMatch !== `*` && ifMatch !== currentETag) {
+      if (ifMatch !== currentETag) {
         // Precondition failed - return 412 with current ETag
         const headers: Record<string, string> = {
           etag: currentETag,
@@ -1536,6 +1535,7 @@ export class DurableStreamTestServer {
     const message = result as { offset: string }
     const responseHeaders: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: message.offset,
+      etag: `"${message.offset}"`,
     }
     // Include Stream-Closed if stream was closed with this append
     if (closeStream) {
