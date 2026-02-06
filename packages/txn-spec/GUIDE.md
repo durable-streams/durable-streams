@@ -2030,6 +2030,226 @@ const eventualCompletion: LivenessProperty<TxnTrace> = {
 
 **Reference**: [Temporal Verification of Reactive Systems (Manna & Pnueli)](https://www.springer.com/gp/book/9780387944593)
 
+### 10.11 Industrial Lessons: What Actually Works in Practice
+
+Research into TLA+ adoption at Amazon, FoundationDB, and other companies reveals patterns worth stealing.
+
+#### 10.11.1 The 35-Step Bug
+
+Amazon's DynamoDB team found a bug requiring 35 steps to trigger—a sequence no human reviewer would discover. The model checker found it in minutes.
+
+**Lesson**: Exhaustive exploration beats human intuition for edge cases. Your DSL should make long scenario exploration easy:
+
+```typescript
+// Exploration tiers - scale bounds based on confidence needed
+const EXPLORATION_TIERS = {
+  // Fast feedback during development
+  unit: { keys: 1, txns: 2, effects: 3, expectedStates: "~1K" },
+
+  // Thorough integration testing
+  integration: { keys: 2, txns: 4, effects: 5, expectedStates: "~100K" },
+
+  // Pre-release stress testing
+  stress: { keys: 3, txns: 6, effects: 7, expectedStates: "~10M" },
+}
+
+function exhaustiveTest(tier: keyof typeof EXPLORATION_TIERS) {
+  const bounds = EXPLORATION_TIERS[tier]
+  for (const scenario of generateBounded(bounds)) {
+    runAndVerify(scenario)
+  }
+}
+```
+
+#### 10.11.2 Quint: Modern TLA+ with TypeScript Vibes
+
+[Quint](https://github.com/informalsystems/quint) is a modern alternative to TLA+ with programming-style syntax:
+
+| TLA+ Pain Point  | Quint Solution         | Your DSL Advantage       |
+| ---------------- | ---------------------- | ------------------------ |
+| Math notation    | `and`, `or`, `not`     | Native TypeScript        |
+| No type checking | Built-in types & modes | TypeScript's type system |
+| Slow feedback    | REPL, instant feedback | Vitest watch mode        |
+| Not executable   | `run` for test exec    | Already executable       |
+
+**Key Quint concept**: Explicit modes distinguish stateless functions from state-modifying actions:
+
+```quint
+// Quint's mode system
+pure def double(x: int): int = x * 2           // Stateless, deterministic
+action increment(x): bool = x' = x + 1         // State transition
+temporal eventually_zero = eventually(x == 0)  // Temporal property
+```
+
+**What to steal**: Consider adding explicit annotations for different specification modes:
+
+```typescript
+// Mode-aware specification
+const spec = {
+  // Pure: no side effects, deterministic
+  pure: {
+    applyEffect: (value: Value, effect: Effect) => Value,
+    mergeEffects: (e1: Effect, e2: Effect) => Effect,
+  },
+
+  // Action: state transitions
+  actions: {
+    begin: (state: State, txnId: TxnId) => State,
+    commit: (state: State, txnId: TxnId) => State,
+  },
+
+  // Temporal: properties over traces
+  temporal: {
+    eventuallyCommits: (trace: State[]) => boolean,
+    alwaysConsistent: (trace: State[]) => boolean,
+  },
+}
+```
+
+#### 10.11.3 Deterministic Simulation Testing (FoundationDB's Secret)
+
+FoundationDB had only 1-2 customer-reported bugs ever. Kyle Kingsbury (Jepsen) refused to test it because their simulator already stress-tested more thoroughly than Jepsen could.
+
+**The formula**: `DST = no parallelism + quantized execution + deterministic behavior`
+
+```typescript
+// Deterministic simulation framework
+interface DeterministicSimulator {
+  // All randomness flows through seeded RNG
+  rng: SeededRNG
+
+  // Time is simulated, not real
+  clock: SimulatedClock
+
+  // Network is simulated with controllable faults
+  network: SimulatedNetwork
+
+  // Storage is simulated with crash/recovery
+  storage: SimulatedStorage
+}
+
+function runDeterministicSimulation(
+  seed: number,
+  scenario: Scenario,
+  faults: FaultInjector
+): SimulationResult {
+  const sim = createSimulator(seed)
+
+  for (const event of scenario.events) {
+    // Inject faults at deterministic points
+    if (faults.shouldInjectAt(sim.clock.now())) {
+      faults.inject(sim)
+    }
+
+    // Execute event
+    sim.execute(event)
+
+    // Check invariants
+    if (!checkInvariants(sim.state)) {
+      return { failed: true, seed, step: sim.stepCount }
+    }
+  }
+
+  return { failed: false, seed }
+}
+
+// Key: same seed = exact same execution
+const result1 = runDeterministicSimulation(42, scenario, faults)
+const result2 = runDeterministicSimulation(42, scenario, faults)
+assert(deepEqual(result1, result2)) // Always true
+```
+
+**Datadog's layered approach**: They combined three techniques:
+
+1. **TLA+ (5.5M states)**: Verified correctness properties exhaustively
+2. **SimPy simulations**: Quantified performance under failure
+3. **Chaos testing**: Validated simulation predictions against reality
+
+#### 10.11.4 Counterexample Minimization
+
+When a test fails with a 50-step trace, debugging is painful. Delta debugging systematically shrinks it:
+
+```typescript
+// Delta debugging for trace minimization
+function minimizeCounterexample(
+  trace: Operation[],
+  stillFails: (t: Operation[]) => boolean
+): Operation[] {
+  if (trace.length <= 1) return trace
+
+  // Try removing halves
+  const mid = Math.floor(trace.length / 2)
+  const firstHalf = trace.slice(0, mid)
+  const secondHalf = trace.slice(mid)
+
+  // Try each half
+  if (stillFails(firstHalf)) {
+    return minimizeCounterexample(firstHalf, stillFails)
+  }
+  if (stillFails(secondHalf)) {
+    return minimizeCounterexample(secondHalf, stillFails)
+  }
+
+  // Neither half alone fails - try removing individual elements
+  for (let i = 0; i < trace.length; i++) {
+    const without = [...trace.slice(0, i), ...trace.slice(i + 1)]
+    if (stillFails(without)) {
+      return minimizeCounterexample(without, stillFails)
+    }
+  }
+
+  // Can't shrink further
+  return trace
+}
+
+// Usage
+const minimalTrace = minimizeCounterexample(failingTrace, (t) => {
+  try {
+    executeAndVerify(t)
+    return false // Didn't fail
+  } catch {
+    return true // Still fails
+  }
+})
+
+console.log(
+  `Reduced from ${failingTrace.length} to ${minimalTrace.length} steps`
+)
+```
+
+#### 10.11.5 The Spec-Implementation Gap
+
+Amazon acknowledged a critical limitation: they don't verify that code correctly implements specs. TLA+ catches design flaws, not implementation bugs.
+
+**Implications for your DSL**:
+
+1. **Conformance tests bridge the gap**: Your `conformance.test.ts` tests real implementations against the spec
+2. **Refinement checking helps**: Your `refinement.test.ts` verifies implementations match reference
+3. **But there's always a gap**: The spec is a model, not the code
+
+```typescript
+// The verification pyramid
+//
+//     ┌─────────────────┐
+//     │   TLA+/Spec     │  ← Design correctness
+//     │   (SPEC.md)     │
+//     └────────┬────────┘
+//              │ refinement
+//     ┌────────▼────────┐
+//     │ Reference Impl  │  ← Executable oracle
+//     │   (MapStore)    │
+//     └────────┬────────┘
+//              │ conformance
+//     ┌────────▼────────┐
+//     │  Production     │  ← Real implementation
+//     │  (StreamStore)  │
+//     └─────────────────┘
+//
+// Each layer can have bugs not caught by the layer above
+```
+
+**Reference**: [How Amazon Web Services Uses Formal Methods (2015)](https://cacm.acm.org/research/how-amazon-web-services-uses-formal-methods/)
+
 ---
 
 ## Part 11: Choosing Your Specification Style
