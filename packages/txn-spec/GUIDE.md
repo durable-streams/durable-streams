@@ -2600,6 +2600,444 @@ Note: This checker has limitations:
 
 **Meta-lesson**: These techniques are synergistic. The checklist identified gaps → we built adversarial DSL → we ran exhaustive tests → we found a real bug → we fixed the spec. Each technique fed the next.
 
+### 12.7 Case Study: Webhook Testing DSL
+
+A team implementing a webhook delivery protocol used this guide to build their testing DSL. Their reflections validate core ideas and reveal gaps—particularly around async/concurrent systems.
+
+#### What Worked: History-Based Verification Was "Transformative"
+
+> "The single most impactful idea was recording every observable event into an ordered trace and then running invariant checkers over the complete history. Before this, each test was a bespoke imperative script—assert this status code, check that header, verify this field. After adopting history-based verification, the safety invariants run automatically on every scenario."
+
+Their safety invariants (epoch monotonicity, wake_id uniqueness, single claim, token rotation, signature verification) caught a real bug that individual assertions would have missed:
+
+> "The epoch confusion bug where responding to an old webhook after a done callback caused the server to retry stale payloads."
+
+**Key insight**: Once invariant checkers run automatically, the testing question shifts from "did I assert enough?" to "do my scenarios visit enough states for the invariants to be meaningful?"
+
+#### What Worked: Two-Tier Design Was "Essential, Not Optional"
+
+> "Tier 1 (the fluent builder) makes happy-path tests readable and concise... But the adversarial tests for epoch fencing, token attacks, and malformed requests needed to break the builder's invariants. Forcing those through the builder would have made it either unsafe or unusable. The raw `callCallback` escape hatch was the right answer."
+
+Their builder achieved remarkable compression:
+
+```typescript
+// Before: ~40 lines of imperative fetch/assert code
+// After: ~8 lines of declarative scenario description
+
+webhook(url)
+  .subscription("/agents/*", "sub-1")
+  .stream(primary)
+  .append({ event: "hello" })
+  .expectWake()
+  .claimWake()
+  .ack(primary)
+  .done()
+  .run()
+```
+
+> "When you read `.append({event: "hello"}).expectWake().claimWake().ack(stream).done()`, you understand the full wake cycle without parsing HTTP mechanics."
+
+#### What Was Hard: Timing in Async Protocols
+
+> "The guide talks about DSLs in fairly synchronous terms—build steps, execute them. But webhook testing is fundamentally concurrent: the server delivers webhooks asynchronously, re-wakes can arrive before you process the first notification, and the order you respond to pending webhooks vs. send callbacks changes observable behavior."
+
+Their hardest bugs were timing-related:
+
+1. Responding to a webhook after sending a done callback caused stale payload retries
+2. `receiver.clear()` wiped re-wake notifications that arrived between done and clear
+3. Fix: "consumedCount pattern"—tracking an index instead of clearing a queue
+
+**Their key insight**: "Step execution order in the DSL doesn't always match the order the system-under-test processes those steps. The DSL needs to manage response timing as a first-class concern, not just request ordering."
+
+#### What Was Hard: The "Last Mile" Problem
+
+> "The clean builder works beautifully for the common path. But protocol edge cases—like 'what happens when done() has pending work and the server re-wakes immediately'—required understanding the internal machinery."
+
+Their `.done()` step required ~30 lines of careful orchestration:
+
+1. Respond to any pending webhook first
+2. Send the done callback
+3. Check if a re-wake arrived
+4. Record the right history events
+
+> "The abstraction was right (callers shouldn't worry about this), but getting the implementation right required deep protocol knowledge that the DSL was supposed to abstract away."
+
+**Pattern that helped**: Extensive comments inside step implementations explaining why the ordering matters, even though the external API is simple.
+
+#### What Was Hard: Property-Based Testing Integration
+
+> "fast-check generating random action sequences and feeding them through the DSL builder was powerful—it found that our keepalive action was accidentally overriding the auto-injected epoch with `{ epoch: 0 }`."
+
+But challenges emerged:
+
+- **Timeouts**: Each property test runs a full HTTP scenario (subscription, stream, webhook, callbacks). 10 runs × 3 cycles = 30 wake cycles needs 30s timeout.
+- **Shrinking limitations**: Scenarios have ordering dependencies—can't remove arbitrary actions without breaking the sequence
+- **Cascading failures**: `endOnFailure: true` was essential to avoid server state corruption
+
+#### New Pattern: RunContext (Mutable State Through Steps)
+
+> "Each step reads and mutates a shared context (current epoch, token, wake notification, consumer ID). This felt imperative and un-functional, but for an async protocol with stateful entities, it was exactly right."
+
+```typescript
+interface RunContext {
+  currentEpoch: number
+  token: string | null
+  pendingWake: WakeNotification | null
+  consumerId: string
+  history: HistoryEvent[]
+}
+
+// Each step receives and mutates context
+type Step = (ctx: RunContext) => Promise<void>
+```
+
+#### Summary: Webhook DSL Lessons
+
+| Guide Claim                | Validated? | Notes                                          |
+| -------------------------- | ---------- | ---------------------------------------------- |
+| History-based verification | ✓ Yes      | "Transformative" - caught epoch confusion bug  |
+| Two-tier design            | ✓ Yes      | "Essential, not optional"                      |
+| Fluent builders compress   | ✓ Yes      | 40 lines → 8 lines                             |
+| DSL = documentation        | ✓ Yes      | "Better than the spec itself"                  |
+| Works for async protocols  | ⚠ Partial  | Needs timing/ordering as first-class concern   |
+| Property-based integration | ⚠ Partial  | Powerful but sharp edges (timeouts, shrinking) |
+
+---
+
+## Part 13: DSLs for Async and Concurrent Systems
+
+The webhook case study revealed that synchronous DSL patterns don't directly translate to async protocols. This section addresses the gap.
+
+### 13.1 The Core Problem: Execution Order ≠ Processing Order
+
+In synchronous systems, DSL step order matches system processing order:
+
+```typescript
+// Synchronous: steps execute in order, system processes in order
+scenario()
+  .write("x", 1) // System sees write first
+  .read("x") // System sees read second
+  .commit() // System sees commit third
+```
+
+In async systems, the system may process events in different order than you send them:
+
+```typescript
+// Async: steps execute in order, but system may process differently
+webhook()
+  .append(event1) // Sends append request
+  .append(event2) // Sends second append
+  .expectWake() // Server may wake for event1, event2, or both
+  .respond(200) // Which wake are we responding to?
+```
+
+### 13.2 Pattern: Response Timing as First-Class Concern
+
+Model pending notifications explicitly:
+
+```typescript
+interface AsyncContext {
+  // Pending notifications from the system (may arrive out of order)
+  pendingNotifications: Queue<Notification>
+
+  // Track which notifications we've processed
+  consumedCount: number
+
+  // Current protocol state
+  state: ProtocolState
+}
+
+// Steps that SEND requests
+function append(ctx: AsyncContext, event: Event): void {
+  sendToServer({ type: "append", event })
+  // Don't assume immediate processing
+}
+
+// Steps that WAIT for responses
+async function expectWake(ctx: AsyncContext): Promise<WakeNotification> {
+  // May need to wait for notification to arrive
+  const wake = await ctx.pendingNotifications.waitForNext()
+  return wake
+}
+
+// Steps that RESPOND to pending work
+function respondToWake(
+  ctx: AsyncContext,
+  wake: WakeNotification,
+  status: number
+): void {
+  // Explicitly respond to a specific notification
+  sendResponse(wake.requestId, status)
+  ctx.consumedCount++
+}
+```
+
+### 13.3 Pattern: The consumedCount Index
+
+Don't clear queues—track consumption:
+
+```typescript
+// WRONG: Clearing loses notifications that arrive during processing
+function processWakes(ctx: AsyncContext): void {
+  for (const wake of ctx.pendingNotifications) {
+    process(wake)
+  }
+  ctx.pendingNotifications.clear() // Race condition!
+}
+
+// RIGHT: Track index, never lose notifications
+function processWakes(ctx: AsyncContext): void {
+  while (ctx.consumedCount < ctx.pendingNotifications.length) {
+    const wake = ctx.pendingNotifications[ctx.consumedCount]
+    process(wake)
+    ctx.consumedCount++
+  }
+  // New notifications can still arrive and be processed later
+}
+```
+
+### 13.4 Pattern: Ordering-Sensitive Step Implementations
+
+When a single DSL step must orchestrate multiple protocol actions:
+
+```typescript
+// The .done() step hides significant complexity
+async function doneStep(ctx: AsyncContext): Promise<void> {
+  // 1. Respond to any pending webhooks FIRST
+  //    (Otherwise server sees us as still processing)
+  while (ctx.consumedCount < ctx.pendingNotifications.length) {
+    const pending = ctx.pendingNotifications[ctx.consumedCount]
+    await respondToWake(ctx, pending, 200)
+  }
+
+  // 2. Send the done callback
+  //    (Tells server we're finished with this batch)
+  await sendDoneCallback(ctx.token)
+
+  // 3. Check if server re-woke us during the callback
+  //    (Race window between done send and server processing)
+  await sleep(REAWAKE_WINDOW_MS)
+
+  // 4. Record history events in correct order
+  ctx.history.push({ type: "done_sent", epoch: ctx.currentEpoch })
+  if (ctx.pendingNotifications.length > ctx.consumedCount) {
+    ctx.history.push({ type: "reawake_received", epoch: ctx.currentEpoch })
+  }
+}
+```
+
+**Key principle**: Document WHY the ordering matters inside the implementation, even though the external API hides it.
+
+### 13.5 Testing Async DSLs: Timing Invariants
+
+Add invariants that check temporal ordering:
+
+```typescript
+// Safety invariant: responses must be to valid pending requests
+function S_ValidResponses(history: HistoryEvent[]): boolean {
+  const pending = new Set<string>()
+
+  for (const event of history) {
+    if (event.type === "wake_received") {
+      pending.add(event.wakeId)
+    }
+    if (event.type === "wake_responded") {
+      if (!pending.has(event.wakeId)) {
+        return false // Responded to non-existent wake!
+      }
+      pending.delete(event.wakeId)
+    }
+  }
+  return true
+}
+
+// Safety invariant: done callbacks only after all responses
+function S_DoneAfterResponses(history: HistoryEvent[]): boolean {
+  let pendingResponses = 0
+
+  for (const event of history) {
+    if (event.type === "wake_received") pendingResponses++
+    if (event.type === "wake_responded") pendingResponses--
+    if (event.type === "done_sent" && pendingResponses > 0) {
+      return false // Sent done with pending responses!
+    }
+  }
+  return true
+}
+```
+
+---
+
+## Part 14: Property-Based Testing with DSLs
+
+The webhook team's experience revealed that property-based testing is the "natural endgame" of invariant checkers, but the combination has practical challenges.
+
+### 14.1 The Pattern: Generate Actions, Not Scenarios
+
+Let fast-check generate individual actions; let the DSL compose them:
+
+```typescript
+// Define action generators
+const appendAction = fc.record({
+  type: fc.constant("append"),
+  event: fc.record({ data: fc.string() }),
+})
+
+const ackAction = fc.record({
+  type: fc.constant("ack"),
+  streamId: fc.constantFrom("primary", "secondary"),
+})
+
+const keepaliveAction = fc.record({
+  type: fc.constant("keepalive"),
+})
+
+// Generate action sequences
+const actionSequence = fc.array(
+  fc.oneof(appendAction, ackAction, keepaliveAction),
+  {
+    minLength: 1,
+    maxLength: 20,
+  }
+)
+
+// Property: all action sequences satisfy safety invariants
+fc.assert(
+  fc.asyncProperty(actionSequence, async (actions) => {
+    const ctx = createContext()
+    const builder = webhook(url).subscription(pattern, subId).stream(primary)
+
+    // Apply each action through the builder
+    for (const action of actions) {
+      builder.action(action)
+    }
+
+    const result = await builder.run()
+
+    // Universal assertion: all invariants hold
+    return allInvariantsHold(result.history)
+  })
+)
+```
+
+### 14.2 Timeout Management for I/O Properties
+
+Each property run may involve real I/O. Budget time accordingly:
+
+```typescript
+// Estimate timeout based on action count
+function estimateTimeout(actions: Action[]): number {
+  const BASE_MS = 5000 // Setup/teardown
+  const PER_ACTION_MS = 500 // Each action may involve HTTP round-trip
+  const SAFETY_MULTIPLIER = 2
+
+  return (BASE_MS + actions.length * PER_ACTION_MS) * SAFETY_MULTIPLIER
+}
+
+fc.assert(
+  fc.asyncProperty(actionSequence, async (actions) => {
+    // ... test body
+  }),
+  {
+    timeout: 60000, // Global timeout for all runs
+    numRuns: 20, // Fewer runs due to I/O cost
+    endOnFailure: true, // Stop on first failure to preserve state
+  }
+)
+```
+
+### 14.3 Shrinking Limitations in Stateful Tests
+
+Standard shrinking removes arbitrary elements, but action sequences have dependencies:
+
+```typescript
+// This sequence is minimal and valid:
+// [begin, append, commit]
+
+// Shrinking might try:
+// [begin, commit]      ← Invalid: nothing to commit
+// [append, commit]     ← Invalid: no active transaction
+// [begin, append]      ← Invalid: never completes
+
+// Solution: Custom shrinker that preserves validity
+const validActionSequence = fc
+  .array(action)
+  .filter(isValidSequence)
+  .map((seq) => {
+    // Only shrink to valid subsequences
+    return {
+      value: seq,
+      shrink: () => validSubsequences(seq),
+    }
+  })
+```
+
+Alternative: Accept limited shrinking and rely on good action labeling:
+
+```typescript
+// Label actions for better failure messages
+fc.assert(
+  fc.asyncProperty(actionSequence, async (actions) => {
+    fc.pre(isValidSequence(actions)) // Skip invalid sequences
+
+    for (const action of actions) {
+      // Label each action for failure reporting
+      fc.label(`action:${action.type}`)
+    }
+
+    return runAndCheckInvariants(actions)
+  })
+)
+```
+
+### 14.4 The endOnFailure Pattern
+
+For stateful systems, cascading failures corrupt subsequent runs:
+
+```typescript
+fc.assert(
+  fc.asyncProperty(actionSequence, async (actions) => {
+    const server = await startFreshServer() // Isolated state
+
+    try {
+      return await runTest(server, actions)
+    } finally {
+      await server.cleanup()
+    }
+  }),
+  {
+    endOnFailure: true, // CRITICAL: Stop on first failure
+    // Otherwise, server state from failed run affects subsequent runs
+  }
+)
+```
+
+### 14.5 When Shrinking Matters vs. When It Doesn't
+
+| Scenario                  | Shrinking Value | Recommendation                        |
+| ------------------------- | --------------- | ------------------------------------- |
+| Pure functions            | High            | Use default shrinking                 |
+| Independent actions       | Medium          | Use default, accept partial shrinking |
+| Dependent action sequence | Low             | Skip shrinking, use small sequences   |
+| Stateful I/O              | Very Low        | `endOnFailure: true`, manual repro    |
+
+For highly stateful tests, the failing seed is often more useful than a shrunk example:
+
+```typescript
+// Log the seed for reproduction
+fc.assert(
+  fc.asyncProperty(actionSequence, async (actions) => {
+    console.log(`Testing seed: ${fc.seed()}`)
+    return runTest(actions)
+  }),
+  {
+    seed: process.env.REPRO_SEED ? parseInt(process.env.REPRO_SEED) : undefined,
+  }
+)
+
+// Reproduce with: REPRO_SEED=12345 npm test
+```
+
 ---
 
 ## Conclusion
