@@ -1,0 +1,362 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --surface-hover: #242836;
+  --border: #2e3348;
+  --text: #e1e4ed;
+  --text-muted: #7a8099;
+  --accent: #6c8aff;
+  --accent-dim: #3d5199;
+  --green: #4ade80;
+  --red: #f87171;
+  --yellow: #fbbf24;
+  --font-mono: "SF Mono", "Cascadia Code", "Fira Code", monospace;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --radius: 6px;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* App layout */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.app-header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.app-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.info-label {
+  color: var(--text-muted);
+}
+
+.app-info code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  background: var(--border);
+}
+
+/* Agent pane */
+.agent-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  min-height: 0;
+}
+
+.agent-header {
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  letter-spacing: 0.02em;
+}
+
+.agent-body {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-loading,
+.agent-error {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.agent-error {
+  color: var(--red);
+}
+
+/* File sidebar */
+.file-sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  overflow-y: auto;
+}
+
+.file-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.file-empty {
+  padding: 16px 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.file-item {
+  display: block;
+  width: 100%;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.file-item:hover {
+  background: var(--surface-hover);
+}
+
+.file-item.selected {
+  background: var(--surface-hover);
+  border-left-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-new-file {
+  padding: 8px 12px;
+  font-size: 11px;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+  border-top: 1px solid var(--border);
+}
+
+.btn-new-file:hover {
+  background: var(--surface-hover);
+}
+
+.new-file-input {
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.new-file-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  outline: none;
+}
+
+.new-file-input input:focus {
+  border-color: var(--accent);
+}
+
+.btn-sm {
+  padding: 2px 6px;
+  font-size: 11px;
+  border: none;
+  background: var(--accent-dim);
+  color: var(--text);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.btn-cancel {
+  background: none;
+  color: var(--text-muted);
+}
+
+/* Editor */
+.editor-area {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.editor-filename {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.dirty-indicator {
+  color: var(--yellow);
+}
+
+.editor-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-save {
+  background: var(--accent);
+  color: white;
+}
+
+.btn-save:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn-delete {
+  background: none;
+  color: var(--red);
+  border: 1px solid var(--red);
+  opacity: 0.6;
+}
+
+.btn-delete:hover {
+  opacity: 1;
+}
+
+.conflict-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #3b1a1a;
+  color: var(--red);
+  font-size: 12px;
+  border-bottom: 1px solid #5c2020;
+}
+
+.editor-textarea {
+  flex: 1;
+  resize: none;
+  padding: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  background: var(--bg);
+  color: var(--text);
+  border: none;
+  outline: none;
+  tab-size: 2;
+}
+
+.editor-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* Watch log */
+.watch-log {
+  display: flex;
+  gap: 8px;
+  padding: 4px 12px;
+  min-height: 26px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  overflow-x: auto;
+  align-items: center;
+}
+
+.watch-entry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  color: var(--text-muted);
+  animation: flash 0.3s ease-out;
+}
+
+.watch-label {
+  font-weight: 700;
+  font-size: 9px;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: var(--surface-hover);
+}
+
+.watch-add .watch-label { color: var(--green); }
+.watch-change .watch-label { color: var(--yellow); }
+.watch-unlink .watch-label { color: var(--red); }
+.watch-addDir .watch-label { color: var(--green); }
+.watch-unlinkDir .watch-label { color: var(--red); }
+
+.watch-age {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+@keyframes flash {
+  from { background: rgba(108, 138, 255, 0.15); }
+  to { background: transparent; }
+}
