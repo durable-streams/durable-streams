@@ -2641,28 +2641,119 @@ webhook(url)
 
 > "The guide talks about DSLs in fairly synchronous terms—build steps, execute them. But webhook testing is fundamentally concurrent: the server delivers webhooks asynchronously, re-wakes can arrive before you process the first notification, and the order you respond to pending webhooks vs. send callbacks changes observable behavior."
 
-Their hardest bugs were timing-related:
+Their hardest bugs were timing-related. The "epoch confusion bug" was a DSL bug (test-side timing): when `.done()` was called with pending un-acked work, the server would schedule a re-wake. But if the test hadn't responded to the old webhook before sending the done callback, the server would retry the old payload with unexpected epoch/wake_id.
 
-1. Responding to a webhook after sending a done callback caused stale payload retries
-2. `receiver.clear()` wiped re-wake notifications that arrived between done and clear
-3. Fix: "consumedCount pattern"—tracking an index instead of clearing a queue
+**The fix** (in the DSL's `.done()` step executor):
 
-**Their key insight**: "Step execution order in the DSL doesn't always match the order the system-under-test processes those steps. The DSL needs to manage response timing as a first-class concern, not just request ordering."
+```typescript
+case `done`: {
+  // Respond to pending webhook BEFORE done callback to avoid
+  // the server scheduling retries of the old payload
+  if (ctx.notification) {
+    ctx.notification.resolve({
+      status: 200,
+      body: JSON.stringify({}),
+    })
+    ctx.notification = null
+  }
+  // ... then send done callback
+}
+```
+
+**Key insight**: "Step execution order in the DSL doesn't always match the order the system-under-test processes those steps. The DSL needs to manage response timing as a first-class concern, not just request ordering."
+
+#### The consumedCount Pattern: Never Clear, Always Index
+
+The second timing bug came from clearing notification queues. The fix: append-only with a consumption cursor.
+
+```typescript
+// BEFORE (broken — race condition):
+async waitForNotification(): Promise<WebhookNotification> {
+  // BUG: Webhook delivery can arrive BEFORE the test calls this method.
+  // If we clear/shift, we lose notifications that arrived between calls.
+  if (this.notifications.length > 0) {
+    return this.notifications.shift()!  // clearing loses late arrivals
+  }
+  // ... wait for next one
+}
+
+// AFTER (fixed — index-based consumption):
+private consumedCount = 0
+
+async waitForNotification(timeoutMs = 10_000): Promise<WebhookNotification> {
+  const targetIdx = this.consumedCount
+  this.consumedCount++
+
+  // Already arrived? Return immediately.
+  if (this.notifications.length > targetIdx) {
+    return this.notifications[targetIdx]!
+  }
+
+  // Not yet — wait for it
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(...), timeoutMs)
+    const check = () => {
+      if (this.notifications.length > targetIdx) {
+        clearTimeout(timeout)
+        resolve(this.notifications[targetIdx]!)
+      } else {
+        this.waitResolvers.push(check)
+      }
+    }
+    check()
+  })
+}
+```
+
+**The key insight**: Never clear the array, never shift. Append-only with a consumption cursor. Re-wakes can arrive before the test expects them—the cursor ensures ordering is preserved.
 
 #### What Was Hard: The "Last Mile" Problem
 
 > "The clean builder works beautifully for the common path. But protocol edge cases—like 'what happens when done() has pending work and the server re-wakes immediately'—required understanding the internal machinery."
 
-Their `.done()` step required ~30 lines of careful orchestration:
+Their `.done()` step hides significant complexity. The user writes `scenario.done()`—one line. The DSL handles ordering constraints, history recording, token rotation, and timing:
 
-1. Respond to any pending webhook first
-2. Send the done callback
-3. Check if a re-wake arrived
-4. Record the right history events
+```typescript
+case `done`: {
+  if (!ctx.callbackUrl || !ctx.currentToken)
+    throw new Error(`No callback context`)
+
+  // 1. Respond to pending webhook FIRST (ordering matters!)
+  if (ctx.notification) {
+    ctx.notification.resolve({ status: 200, body: JSON.stringify({}) })
+    ctx.notification = null
+  }
+
+  // 2. Record to history trace (for invariant checking)
+  ctx.history.push({
+    type: `callback_sent`,
+    token: ctx.currentToken,
+    epoch: ctx.currentEpoch!,
+    done: true,
+  })
+
+  // 3. Send the actual done callback to the server
+  const result = await callCallback(ctx.callbackUrl, ctx.currentToken, {
+    epoch: ctx.currentEpoch,
+    done: true,
+  })
+
+  // 4. Rotate token if successful
+  if (result.body.ok) {
+    ctx.currentToken = result.body.token as string
+  }
+
+  // 5. Record response to history
+  ctx.history.push({ type: `callback_response`, ... })
+
+  // 6. Wait for server state transition
+  await new Promise((r) => setTimeout(r, 100))
+}
+```
 
 > "The abstraction was right (callers shouldn't worry about this), but getting the implementation right required deep protocol knowledge that the DSL was supposed to abstract away."
 
-**Pattern that helped**: Extensive comments inside step implementations explaining why the ordering matters, even though the external API is simple.
+A single `.done()` call replaces ~15 lines of carefully-ordered async code in each test.
 
 #### What Was Hard: Property-Based Testing Integration
 
@@ -2670,9 +2761,17 @@ Their `.done()` step required ~30 lines of careful orchestration:
 
 But challenges emerged:
 
-- **Timeouts**: Each property test runs a full HTTP scenario (subscription, stream, webhook, callbacks). 10 runs × 3 cycles = 30 wake cycles needs 30s timeout.
-- **Shrinking limitations**: Scenarios have ordering dependencies—can't remove arbitrary actions without breaking the sequence
-- **Cascading failures**: `endOnFailure: true` was essential to avoid server state corruption
+- **Timeouts**: Each property test runs a full HTTP scenario. 10 runs × 3 cycles needs 30s timeout.
+- **Shrinking limitations**: Scenarios have ordering dependencies—can't remove arbitrary actions.
+- **Cascading failures**: `endOnFailure: true` was essential.
+
+**Their timeout heuristic** (not yet codified, but what doesn't flake):
+
+```
+base_time + (num_wake_cycles × 600ms) + (num_actions × 150ms)
+```
+
+Then 2-3× that for the test timeout. The tightest constraints are `wait(100ms)` after done and `expectNoNotification(500ms)` in idle checks.
 
 #### New Pattern: RunContext (Mutable State Through Steps)
 
