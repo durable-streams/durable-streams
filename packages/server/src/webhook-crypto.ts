@@ -82,13 +82,20 @@ export function generateCallbackToken(
   return `${payloadStr}.${sig}`
 }
 
+/** Seconds before expiry at which a token should be refreshed. */
+const TOKEN_REFRESH_THRESHOLD = 300 // 5 minutes
+
 /**
  * Validate a callback token. Returns the decoded payload or null.
+ * On success, includes `exp` (unix seconds) so callers can decide
+ * whether the token needs refreshing.
  */
 export function validateCallbackToken(
   token: string,
   consumerId: string
-): { valid: true } | { valid: false; code: `TOKEN_INVALID` | `TOKEN_EXPIRED` } {
+):
+  | { valid: true; exp: number }
+  | { valid: false; code: `TOKEN_INVALID` | `TOKEN_EXPIRED` } {
   const parts = token.split(`.`)
   if (parts.length !== 2) {
     return { valid: false, code: `TOKEN_INVALID` }
@@ -124,5 +131,13 @@ export function validateCallbackToken(
     return { valid: false, code: `TOKEN_EXPIRED` }
   }
 
-  return { valid: true }
+  return { valid: true, exp: payload.exp }
+}
+
+/**
+ * Check whether a token is close enough to expiry that it should be refreshed.
+ */
+export function tokenNeedsRefresh(exp: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return exp - now <= TOKEN_REFRESH_THRESHOLD
 }

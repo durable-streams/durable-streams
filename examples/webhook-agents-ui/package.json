@@ -1,0 +1,45 @@
+{
+  "name": "@durable-streams/example-webhook-agents-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/server": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "@fontsource/inter": "^5.2.8",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.57.0",
+    "@opentelemetry/sdk-node": "^0.57.0",
+    "@radix-ui/themes": "^3.2.1",
+    "dotenv": "^16.4.0",
+    "@tanstack/db": "0.5.25",
+    "@tanstack/react-db": "latest",
+    "@tanstack/react-router": "^1.157.17",
+    "@tanstack/react-start": "^1.157.17",
+    "@tanstack/router-plugin": "^1.157.17",
+    "@anthropic-ai/sdk": "^0.74.0",
+    "@mariozechner/pi-agent-core": "latest",
+    "@mariozechner/pi-ai": "latest",
+    "@sinclair/typebox": "^0.34.0",
+    "detect-port": "^2.1.0",
+    "lucide-react": "^0.561.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "streamdown": "latest",
+    "vite-tsconfig-paths": "^6.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.7.2",
+    "vite": "^7.1.7"
+  }
+}

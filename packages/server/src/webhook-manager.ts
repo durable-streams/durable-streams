@@ -2,12 +2,25 @@
  * Webhook orchestration: wake cycles, retry scheduling, timeout management.
  */
 
+import { SpanStatusCode, context, trace } from "@opentelemetry/api"
 import { WebhookStore } from "./webhook-store"
 import {
   generateCallbackToken,
   signWebhookPayload,
+  tokenNeedsRefresh,
   validateCallbackToken,
 } from "./webhook-crypto"
+import {
+  ATTR,
+  EVENT,
+  SPAN_CONSUMER_CALLBACK,
+  SPAN_WAKE_CYCLE,
+  SPAN_WEBHOOK_DELIVER,
+  endWakeCycleSpan,
+  injectTraceHeaders,
+  recordStateTransition,
+  tracer,
+} from "./webhook-telemetry"
 import type {
   CallbackRequest,
   CallbackResponse,
@@ -103,6 +116,22 @@ export class WebhookManager {
 
     const { epoch, wake_id } = this.store.transitionToWaking(consumer)
 
+    // Create root wake cycle span
+    const wakeCycleSpan = tracer.startSpan(SPAN_WAKE_CYCLE, {
+      attributes: {
+        [ATTR.CONSUMER_ID]: consumer.consumer_id,
+        [ATTR.SUBSCRIPTION_ID]: consumer.subscription_id,
+        [ATTR.PRIMARY_STREAM]: consumer.primary_stream,
+        [ATTR.EPOCH]: epoch,
+        [ATTR.WAKE_ID]: wake_id,
+        [ATTR.TRIGGERED_BY]: triggeredBy,
+      },
+    })
+    const wakeCycleCtx = trace.setSpan(context.active(), wakeCycleSpan)
+    consumer.wake_cycle_span = wakeCycleSpan
+    consumer.wake_cycle_ctx = wakeCycleCtx
+    recordStateTransition(wakeCycleSpan, `IDLE`, `WAKING`)
+
     const callbackUrl = this.buildCallbackUrl(consumer.consumer_id)
     const token = generateCallbackToken(consumer.consumer_id, epoch)
 
@@ -126,8 +155,27 @@ export class WebhookManager {
     sub: { webhook: string; webhook_secret: string },
     payload: Record<string, unknown>
   ): Promise<void> {
+    const parentCtx = consumer.wake_cycle_ctx ?? context.active()
+    const deliverSpan = tracer.startSpan(
+      SPAN_WEBHOOK_DELIVER,
+      {
+        attributes: {
+          "http.method": `POST`,
+          "http.url": sub.webhook,
+          [ATTR.RETRY_COUNT]: consumer.retry_count,
+        },
+      },
+      parentCtx
+    )
+
     const body = JSON.stringify(payload)
     const signature = signWebhookPayload(body, sub.webhook_secret)
+
+    const headers: Record<string, string> = {
+      "content-type": `application/json`,
+      "webhook-signature": signature,
+    }
+    injectTraceHeaders(trace.setSpan(parentCtx, deliverSpan), headers)
 
     const controller = new AbortController()
     const timeoutId = setTimeout(
@@ -138,15 +186,13 @@ export class WebhookManager {
     try {
       const response = await fetch(sub.webhook, {
         method: `POST`,
-        headers: {
-          "content-type": `application/json`,
-          "webhook-signature": signature,
-        },
+        headers,
         body,
         signal: controller.signal,
       })
 
       clearTimeout(timeoutId)
+      deliverSpan.setAttribute(`http.status_code`, response.status)
 
       if (response.ok) {
         consumer.last_webhook_failure_at = null
@@ -167,18 +213,41 @@ export class WebhookManager {
             const tail = this.getTailOffset(path)
             consumer.streams.set(path, tail)
           }
+          deliverSpan.end()
           this.store.transitionToIdle(consumer)
           return
         }
+
+        // 2xx response without {done:true} — the consumer has received
+        // the notification and is processing. Transition to LIVE and let
+        // the liveness timeout (45s) handle crash recovery from here.
+        if (consumer.state === `WAKING`) {
+          consumer.wake_id_claimed = true
+          consumer.state = `LIVE`
+          consumer.last_callback_at = Date.now()
+          this.resetLivenessTimeout(consumer)
+        }
+        deliverSpan.end()
+        return
       }
 
-      // If wake hasn't been claimed yet (no callback arrived, no done:true),
-      // schedule retry
+      // Non-2xx response — retry with backoff
+      deliverSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: `HTTP ${response.status}`,
+      })
+      deliverSpan.end()
       if (!consumer.wake_id_claimed && consumer.state === `WAKING`) {
         this.scheduleRetry(consumer, sub, payload)
       }
-    } catch {
+    } catch (err) {
       clearTimeout(timeoutId)
+
+      deliverSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: err instanceof Error ? err.message : `Unknown error`,
+      })
+      deliverSpan.end()
 
       // Track failures for GC
       const now = Date.now()
@@ -211,6 +280,13 @@ export class WebhookManager {
 
     consumer.retry_count++
     const delay = this.calculateRetryDelay(consumer.retry_count)
+
+    if (consumer.wake_cycle_span) {
+      consumer.wake_cycle_span.addEvent(EVENT.RETRY_SCHEDULED, {
+        [ATTR.RETRY_COUNT]: consumer.retry_count,
+        delay_ms: delay,
+      })
+    }
 
     consumer.retry_timer = setTimeout(() => {
       consumer.retry_timer = null
@@ -262,10 +338,36 @@ export class WebhookManager {
       }
     }
 
+    // Create child callback span under wake cycle context
+    const parentCtx = consumer.wake_cycle_ctx ?? context.active()
+    const callbackAction = request.done
+      ? `done`
+      : request.wake_id
+        ? `claim`
+        : request.acks
+          ? `ack`
+          : `other`
+    const callbackSpan = tracer.startSpan(
+      SPAN_CONSUMER_CALLBACK,
+      {
+        attributes: {
+          [ATTR.CONSUMER_ID]: consumerId,
+          [ATTR.EPOCH]: consumer.epoch,
+          [ATTR.CALLBACK_ACTION]: callbackAction,
+        },
+      },
+      parentCtx
+    )
+
     // Validate token
     const tokenResult = validateCallbackToken(token, consumerId)
     if (!tokenResult.valid) {
       const newToken = generateCallbackToken(consumerId, consumer.epoch)
+      callbackSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: tokenResult.code,
+      })
+      callbackSpan.end()
       if (tokenResult.code === `TOKEN_EXPIRED`) {
         return {
           ok: false,
@@ -288,6 +390,11 @@ export class WebhookManager {
     // Validate epoch — must match current epoch exactly
     if (request.epoch !== consumer.epoch) {
       const newToken = generateCallbackToken(consumerId, consumer.epoch)
+      callbackSpan.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: `STALE_EPOCH`,
+      })
+      callbackSpan.end()
       return {
         ok: false,
         error: {
@@ -298,22 +405,17 @@ export class WebhookManager {
       }
     }
 
-    // Handle wake_id claim
+    // Handle wake_id claim (idempotent — claiming an already-claimed wake
+    // for the same consumer is a success, since the 2xx webhook response
+    // may have already transitioned the consumer to LIVE).
     if (request.wake_id) {
-      if (consumer.wake_id_claimed) {
-        const newToken = generateCallbackToken(consumerId, consumer.epoch)
-        return {
-          ok: false,
-          error: {
-            code: `ALREADY_CLAIMED`,
-            message: `Wake ID ${request.wake_id} was already claimed`,
-          },
-          token: newToken,
-        }
-      }
-
       if (!this.store.claimWakeId(consumer, request.wake_id)) {
         const newToken = generateCallbackToken(consumerId, consumer.epoch)
+        callbackSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: `ALREADY_CLAIMED`,
+        })
+        callbackSpan.end()
         return {
           ok: false,
           error: {
@@ -323,6 +425,7 @@ export class WebhookManager {
           token: newToken,
         }
       }
+      callbackSpan.addEvent(EVENT.WAKE_CLAIMED)
     }
 
     // Reset liveness timeout
@@ -332,6 +435,9 @@ export class WebhookManager {
     // Process acks
     if (request.acks) {
       this.store.updateAcks(consumer, request.acks)
+      callbackSpan.addEvent(EVENT.ACKS_PROCESSED, {
+        count: request.acks.length,
+      })
     }
 
     // Process subscribes
@@ -350,6 +456,7 @@ export class WebhookManager {
         request.unsubscribe
       )
       if (shouldRemove) {
+        callbackSpan.end()
         this.store.removeConsumer(consumerId)
         return {
           ok: false,
@@ -364,20 +471,34 @@ export class WebhookManager {
     // Process done
     if (request.done) {
       if (this.store.hasPendingWork(consumer, this.getTailOffset)) {
-        // Re-wake immediately
+        callbackSpan.addEvent(EVENT.DONE_WITH_REWAKE)
+        callbackSpan.end()
+        // Re-wake immediately — end callback span before transitionToIdle
+        // so child span ends before parent
         this.store.transitionToIdle(consumer)
         this.wakeConsumer(consumer, [consumer.primary_stream])
       } else {
+        callbackSpan.addEvent(EVENT.DONE_RECEIVED)
+        callbackSpan.end()
         this.store.transitionToIdle(consumer)
       }
+    } else {
+      callbackSpan.end()
     }
 
-    // Generate new token
-    const newToken = generateCallbackToken(consumerId, consumer.epoch)
+    // Only generate a new token if the current one is nearing expiry;
+    // otherwise pass it back as-is to avoid unnecessary crypto work.
+    const responseToken = tokenNeedsRefresh(tokenResult.exp)
+      ? generateCallbackToken(consumerId, consumer.epoch)
+      : token
+
+    if (responseToken !== token && consumer.wake_cycle_span) {
+      consumer.wake_cycle_span.addEvent(EVENT.TOKEN_REFRESHED)
+    }
 
     return {
       ok: true,
-      token: newToken,
+      token: responseToken,
       streams: this.store.getStreamsData(consumer),
     }
   }
@@ -394,7 +515,9 @@ export class WebhookManager {
     consumer.liveness_timer = setTimeout(() => {
       consumer.liveness_timer = null
       if (consumer.state === `LIVE` && !this.isShuttingDown) {
-        // Timeout — transition to IDLE
+        if (consumer.wake_cycle_span) {
+          consumer.wake_cycle_span.addEvent(EVENT.LIVENESS_TIMEOUT)
+        }
         this.store.transitionToIdle(consumer)
         // Check if there's pending work and re-wake
         if (this.store.hasPendingWork(consumer, this.getTailOffset)) {
@@ -417,6 +540,13 @@ export class WebhookManager {
    */
   shutdown(): void {
     this.isShuttingDown = true
+    for (const consumer of this.store.getAllConsumers()) {
+      if (consumer.wake_cycle_span) {
+        endWakeCycleSpan(consumer.wake_cycle_span, EVENT.SERVER_SHUTDOWN)
+        consumer.wake_cycle_span = null
+        consumer.wake_cycle_ctx = null
+      }
+    }
     this.store.shutdown()
   }
 }

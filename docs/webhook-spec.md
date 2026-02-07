@@ -87,21 +87,24 @@ Rules:
               │          │    wake_id new     │          │    │
               └──────────┘                    └────┬─────┘    │
                     ▲                              │          │
-                    │                         ┌────┴────┐     │
-                    │                         │         │     │
-                    │                   callback    webhook   │
-                    │                   claims     responds   │
-                    │                   wake_id    {done}     │
-                    │                         │         │     │
-                    │                         ▼         │     │
-                    │                    ┌─────────┐    │     │
+                    │                    ┌─────────┼────┐     │
                     │                    │         │    │     │
-                    │  done + ¬pending   │  LIVE   │────┘     │
-                    │  OR 45s timeout    │         │          │
-                    └────────────────────┴─────────┘          │
-                    │                                          │
-                    │  done + pending_work                     │
-                    └──────────────────────────────────────────┘
+                    │              callback   webhook   │     │
+                    │              claims     2xx or    │     │
+                    │              wake_id    {done}    │     │
+                    │                    │         │    │     │
+                    │                    ▼         │    │     │
+                    │               ┌─────────┐   │    │     │
+                    │               │         │   │    │     │
+                    │ done+¬pending │  LIVE   │───┘    │     │
+                    │ OR 45s timeout│         │        │     │
+                    └───────────────┴─────────┘        │     │
+                    │                                   │     │
+                    │  done + pending_work               │     │
+                    └───────────────────────────────────┘     │
+                                                              │
+                    10s timeout, no 2xx, no callback ──────────┘
+                    (retry webhook delivery)
 ```
 
 ### State Transitions
@@ -109,7 +112,7 @@ Rules:
 | From   | To      | Trigger                                                          | Side Effects                       |
 | ------ | ------- | ---------------------------------------------------------------- | ---------------------------------- |
 | IDLE   | WAKING  | `pending_work` becomes true                                      | epoch++, new wake_id, webhook POST |
-| WAKING | LIVE    | Callback claims wake_id                                          | Liveness timeout starts            |
+| WAKING | LIVE    | Webhook responds 2xx, OR callback claims wake_id                 | Liveness timeout starts            |
 | WAKING | IDLE    | Webhook responds `{done: true}` and `¬pending_work`              | Auto-ack to tail                   |
 | LIVE   | IDLE    | Callback `{done: true}` and `¬pending_work`                      | —                                  |
 | LIVE   | IDLE    | 45-second liveness timeout                                       | —                                  |
@@ -126,9 +129,11 @@ the current one.
 ### Wake ID
 
 Unique identifier generated for each wake attempt. The first callback that
-includes a matching `wake_id` claims the wake (WAKING → LIVE). Subsequent
-callbacks with the same `wake_id` receive `409 ALREADY_CLAIMED`. This handles
-duplicate webhook deliveries caused by retries.
+includes a matching `wake_id` claims the wake (WAKING → LIVE). Claiming an
+already-claimed `wake_id` is **idempotent** — the callback succeeds. This
+handles the case where a 2xx webhook response already transitioned the consumer
+to LIVE before the callback arrives. Callbacks with a non-matching `wake_id`
+receive `409 ALREADY_CLAIMED`.
 
 ### Liveness Timeout
 
@@ -195,11 +200,16 @@ Multiple events arriving while the consumer is IDLE produce a single wake.
 Events arriving while the consumer is WAKING or LIVE do not trigger additional
 wakes — the consumer reads new events through its existing connections.
 
-### Re-wake Until Claimed
+### WAKING Timeout
 
-The server retries the webhook (with exponential backoff) until a callback claims
-the wake_id. A successful HTTP 2xx response alone is not sufficient. This ensures
-exactly one consumer instance processes each wake cycle.
+The server waits up to 10 seconds after sending a webhook for the consumer to
+transition to LIVE (via 2xx response or callback claim). If neither occurs, the
+server retries the webhook with exponential backoff.
+
+A 2xx webhook response means the consumer has received the notification and is
+actively processing — the server transitions immediately to LIVE. The 45-second
+liveness timeout covers crash recovery from that point. This design supports
+serverless functions that hold the webhook connection open during processing.
 
 ---
 
@@ -272,7 +282,7 @@ Content-Type: application/json
 }
 ```
 
-- `token` — New bearer token for the next callback (always rotated)
+- `token` — Bearer token for the next callback (refreshed when nearing expiry)
 - `streams` — Current subscribed streams with offsets (always included)
 
 ### Error Responses
@@ -282,7 +292,7 @@ Content-Type: application/json
 | 400    | `INVALID_REQUEST` | Malformed JSON, missing epoch                    |
 | 401    | `TOKEN_EXPIRED`   | Token TTL exceeded (response includes new token) |
 | 401    | `TOKEN_INVALID`   | Token is malformed or signature invalid          |
-| 409    | `ALREADY_CLAIMED` | wake_id was already claimed                      |
+| 409    | `ALREADY_CLAIMED` | wake_id does not match current wake              |
 | 409    | `INVALID_OFFSET`  | Ack offset is invalid (e.g., beyond tail)        |
 | 409    | `STALE_EPOCH`     | Callback epoch < current epoch (zombie)          |
 | 410    | `CONSUMER_GONE`   | Consumer instance no longer exists               |
@@ -298,7 +308,8 @@ Error response body:
 ```
 
 For `TOKEN_EXPIRED`, the new token in the error response can be used to retry.
-For `STALE_EPOCH` and `ALREADY_CLAIMED`, the consumer should stop processing.
+For `STALE_EPOCH`, the consumer should stop processing. For `ALREADY_CLAIMED`,
+the wake_id does not match the current wake — the consumer should stop.
 
 ### Offset Semantics
 
@@ -322,7 +333,7 @@ Offsets are **"last processed inclusive"**:
 ### Callback Tokens
 
 - Tokens are HMAC-signed with a 1-hour TTL
-- Every successful response includes a new token
+- Every successful response includes a token (refreshed when nearing expiry)
 - Tokens encode consumer_id, epoch, and expiry
 - Passed via `Authorization: Bearer` header
 
@@ -395,12 +406,14 @@ considered failed.
 
 ### Retry Schedule
 
-Exponential backoff:
+Failed webhook deliveries (timeout, network error, non-2xx response) are retried
+with exponential backoff:
 
 - Retries 1-10: `min(2^n × 100ms, 30s)` + up to 1s jitter
 - Retries 11+: 60s + up to 5s jitter
 
-Retries continue until the wake is claimed (not just until HTTP 2xx).
+A 2xx response stops retries — the consumer transitions to LIVE and the liveness
+timeout handles recovery if the consumer crashes.
 
 ### Delivery Guarantee
 
@@ -439,13 +452,14 @@ consumer are strictly increasing.
 **S2 — Wake ID Uniqueness**: Each wake_id appears at most once per consumer
 across all webhook notifications.
 
-**S3 — Single Claim**: A wake_id can be successfully claimed at most once.
+**S3 — Idempotent Claim**: Claiming the current wake_id is idempotent. Callbacks
+with a non-matching wake_id are rejected with `ALREADY_CLAIMED`.
 
 **S4 — Offset Monotonicity**: Acknowledged offsets for a given stream are
 monotonically non-decreasing.
 
-**S5 — Token Rotation**: Every successful callback response includes a token
-different from the request token.
+**S5 — Token Present**: Every successful callback response includes a `token`
+field. The server may return the same token if it is not nearing expiry.
 
 **S6 — Stale Epoch Rejection**: Callbacks with epoch < current consumer epoch
 are rejected with `STALE_EPOCH`.

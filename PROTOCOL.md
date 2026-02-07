@@ -766,18 +766,18 @@ Where `acked[path]` is the last acknowledged offset (inclusive — this event wa
 **State transitions:**
 
 1. **IDLE → WAKING**: `pending_work` becomes true; epoch is incremented, new `wake_id` generated
-2. **WAKING → LIVE**: First callback claims the `wake_id` (subsequent callbacks with same `wake_id` receive `409 ALREADY_CLAIMED`)
+2. **WAKING → LIVE**: Consumer responds to webhook with 2xx, OR a callback claims the `wake_id` (whichever happens first)
 3. **WAKING → IDLE**: Consumer responds to webhook with `{ "done": true }` AND `pending_work` is false
 4. **LIVE → IDLE**: Consumer sends `{ "done": true }` in callback AND `pending_work` is false, OR 45-second liveness timeout with no callback activity
 5. **Re-wake**: If `{ "done": true }` is received but `pending_work` is still true, immediately trigger a new wake (increment epoch, new `wake_id`)
 
 **Epoch** is a monotonically increasing counter that increments on each IDLE → WAKING transition. Callbacks with a stale epoch **MUST** be rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in Section 5.2.1.
 
-**`wake_id`** is a unique identifier for each wake attempt. The first callback claiming a `wake_id` wins; subsequent callbacks with the same `wake_id` **MUST** receive `409 ALREADY_CLAIMED`. This handles duplicate webhook deliveries from retries.
+**`wake_id`** is a unique identifier for each wake attempt. The first callback claiming a `wake_id` transitions the consumer to LIVE. Claiming an already-claimed `wake_id` is **idempotent** — the callback succeeds. This handles the case where a 2xx webhook response already transitioned the consumer to LIVE before the callback arrives. Callbacks with a non-matching `wake_id` **MUST** receive `409 ALREADY_CLAIMED`.
 
-**Re-wake until claimed:** The server **MUST** continue retrying the webhook (with exponential backoff) until a callback claims the `wake_id`. A successful HTTP 2xx response to the webhook is not sufficient — the consumer **MUST** call the callback to claim the wake.
+**WAKING timeout (10 seconds):** If the consumer has not transitioned to LIVE within 10 seconds of a webhook delivery attempt (no 2xx response and no callback), the server retries the webhook delivery with exponential backoff (see Section 6.8). This handles cases where the webhook endpoint is unreachable or slow to start. A 2xx response means the consumer has received the notification and is actively processing — the server transitions immediately to LIVE, and the 45-second liveness timeout takes over from there.
 
-**Liveness timeout (45 seconds):** Any callback request (including empty `{}`) resets the timeout. If no callback activity occurs within 45 seconds, the consumer transitions to IDLE. Consumers doing slow processing **SHOULD** send periodic callbacks to stay alive.
+**Liveness timeout (45 seconds):** Once LIVE, any callback request (including empty `{}`) resets the timeout. If no callback activity occurs within 45 seconds, the consumer transitions to IDLE. Consumers doing slow processing **SHOULD** send periodic callbacks to stay alive. Serverless functions that hold the webhook connection open are covered by the HTTP request timeout (30 seconds) — when the response arrives, it transitions to LIVE and the liveness timeout begins.
 
 **Wake-up batching:** If multiple events arrive on subscribed streams while the consumer is IDLE, they are batched into a single wake-up. The server **MUST NOT** wake the consumer multiple times — one wake-up per IDLE → WAKING transition.
 
@@ -911,7 +911,7 @@ Content-Type: application/json
 | 400    | `INVALID_REQUEST` | Malformed JSON or unknown fields                         |
 | 401    | `TOKEN_EXPIRED`   | Callback token has expired (response includes new token) |
 | 401    | `TOKEN_INVALID`   | Callback token is malformed or signature invalid         |
-| 409    | `ALREADY_CLAIMED` | This `wake_id` was already claimed by another callback   |
+| 409    | `ALREADY_CLAIMED` | `wake_id` does not match current wake                    |
 | 409    | `INVALID_OFFSET`  | Ack offset is invalid (e.g., beyond stream tail)         |
 | 409    | `STALE_EPOCH`     | Callback epoch is older than current consumer epoch      |
 | 410    | `CONSUMER_GONE`   | Consumer instance no longer exists                       |
@@ -931,7 +931,7 @@ Error response body:
 
 For `TOKEN_EXPIRED`, a new token is included in the error response — the consumer **SHOULD** retry with the new token. For `STALE_EPOCH` and `ALREADY_CLAIMED`, the consumer **SHOULD** stop processing.
 
-**Token rotation:** Every callback response (success or error) **MUST** include a new `token`. Consumers **MUST** use the most recently received token for subsequent requests.
+**Token refresh:** Every callback response **MUST** include a `token` field. The server **MAY** return the same token if it is not nearing expiry, or a fresh token if the current one will expire soon (e.g., within 5 minutes). Error responses that include a token always provide a fresh one. Consumers **MUST** use the most recently received token for subsequent requests.
 
 ### 6.6. Dynamic Subscribe/Unsubscribe
 
@@ -963,11 +963,13 @@ For single-server deployments, implementations **MAY** optimize internal subscri
 
 **Webhook request timeout:** Servers **MUST** wait up to 30 seconds for a response from the webhook endpoint. If the endpoint does not respond within this window, the request is considered failed.
 
-**Webhook delivery retries** use exponential backoff:
+**WAKING timeout:** The server **MUST** wait at least 10 seconds for the consumer to transition from WAKING to LIVE (via 2xx response or callback claim). If neither occurs, the server retries the webhook delivery. A 2xx webhook response transitions the consumer to LIVE — no retry is needed because the consumer has acknowledged the notification.
+
+**Webhook delivery retries** use exponential backoff for failed deliveries:
 
 - Initial retry with exponential backoff up to 30 seconds between attempts
 - Then retry every 60 seconds with jitter
-- Retries continue until claimed, but consumer instances are garbage collected after 3 days of consecutive webhook failures (see Section 6.10)
+- Retries continue until the consumer transitions to LIVE, but consumer instances are garbage collected after 3 days of consecutive webhook failures (see Section 6.10)
 
 **Delivery guarantee** is at-least-once. Consumers **MUST** handle duplicate events idempotently.
 
@@ -1330,7 +1332,7 @@ Implementations supporting webhook subscriptions **MUST** validate webhook URLs 
 
 ### 11.9. Callback Token Security
 
-Callback tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the consumer ID, epoch, and expiry. Implementations **MUST** validate token signatures on every callback request. Tokens have a fixed 1-hour TTL and are rotated on every callback response.
+Callback tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the consumer ID, epoch, and expiry. Implementations **MUST** validate token signatures on every callback request. Tokens have a 1-hour TTL and are refreshed only when nearing expiry (e.g., within 5 minutes); otherwise the same token is returned to avoid unnecessary cryptographic overhead.
 
 ### 11.10. Webhook Signature Security
 

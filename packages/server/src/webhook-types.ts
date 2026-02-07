@@ -2,6 +2,8 @@
  * Types for webhook subscriptions.
  */
 
+import type { Context, Span } from "@opentelemetry/api"
+
 export interface Subscription {
   subscription_id: string
   pattern: string
@@ -28,6 +30,8 @@ export interface ConsumerInstance {
   retry_count: number
   retry_timer: ReturnType<typeof setTimeout> | null
   liveness_timer: ReturnType<typeof setTimeout> | null
+  wake_cycle_span: Span | null
+  wake_cycle_ctx: Context | null
 }
 
 export interface CallbackRequest {

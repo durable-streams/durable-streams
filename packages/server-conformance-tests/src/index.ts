@@ -7843,14 +7843,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     // ----------------------------------------------------------------
 
     describe(`Token Management`, () => {
-      test(`token rotates on every successful callback`, () =>
+      test(`token is present in every successful callback response`, () =>
         webhook(getBaseUrl())
           .subscription(`/agents/*`, `token-rotate-${ts()}`)
           .stream(`/agents/token-rotate-${ts()}`)
           .append({ event: `test` })
           .expectWake()
           .claimWake()
-          // Token rotation is verified by invariant checker S5
+          // Token presence is verified by invariant checker S5
           .done()
           .run())
 
@@ -8052,19 +8052,17 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     // ----------------------------------------------------------------
 
     describe(`Adversarial: Wake ID`, () => {
-      test(`double claim same wake_id → 409 ALREADY_CLAIMED`, () =>
+      test(`double claim same wake_id is idempotent (200)`, () =>
         webhook(getBaseUrl())
           .subscription(`/agents/*`, `wakeid-double-${ts()}`)
           .stream(`/agents/wakeid-double-${ts()}`)
           .append({ event: `test` })
           .expectWake()
           .claimWake()
-          .rawCallback({
-            epoch: 0, // Will be overridden below
-            wake_id: `placeholder`,
-          })
           .custom(async (ctx) => {
-            // Re-send the same wake_id that was already claimed
+            // Re-send the same wake_id that was already claimed —
+            // should succeed idempotently since the 2xx webhook response
+            // or a prior callback may have already claimed it.
             const result = await fetch(ctx.callbackUrl!, {
               method: `POST`,
               headers: {
@@ -8077,9 +8075,21 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               }),
             })
             const body = (await result.json()) as Record<string, unknown>
-            expect(result.status).toBe(409)
-            expect(body.error).toHaveProperty(`code`, `ALREADY_CLAIMED`)
+            expect(result.status).toBe(200)
+            expect(body).toHaveProperty(`ok`, true)
           })
+          .done()
+          .run())
+
+      test(`2xx webhook response then callback claim is idempotent`, () =>
+        webhook(getBaseUrl())
+          .subscription(`/agents/*`, `wakeid-2xx-claim-${ts()}`)
+          .stream(`/agents/wakeid-2xx-claim-${ts()}`)
+          .append({ event: `test` })
+          .expectWake()
+          .respondOk()
+          .wait(200)
+          .claimWake()
           .done()
           .run())
 

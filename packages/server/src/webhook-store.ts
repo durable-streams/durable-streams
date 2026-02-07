@@ -4,6 +4,11 @@
 
 import { globMatch } from "./webhook-glob"
 import { generateWakeId, generateWebhookSecret } from "./webhook-crypto"
+import {
+  EVENT,
+  endWakeCycleSpan,
+  recordStateTransition,
+} from "./webhook-telemetry"
 import type { ConsumerInstance, Subscription } from "./webhook-types"
 
 /**
@@ -132,6 +137,8 @@ export class WebhookStore {
       retry_count: 0,
       retry_timer: null,
       liveness_timer: null,
+      wake_cycle_span: null,
+      wake_cycle_ctx: null,
     }
 
     this.consumers.set(consumerId, consumer)
@@ -162,14 +169,19 @@ export class WebhookStore {
   }
 
   /**
-   * Claim a wake_id. Returns true if claim succeeds.
+   * Claim a wake_id. Returns true if claim succeeds or was already claimed
+   * for this wake (idempotent). Returns false if the wake_id doesn't match.
    */
   claimWakeId(consumer: ConsumerInstance, wakeId: string): boolean {
     if (consumer.wake_id !== wakeId) return false
-    if (consumer.wake_id_claimed) return false
+    if (consumer.wake_id_claimed) return true
     consumer.wake_id_claimed = true
+    const prevState = consumer.state
     consumer.state = `LIVE`
     consumer.last_callback_at = Date.now()
+    if (consumer.wake_cycle_span) {
+      recordStateTransition(consumer.wake_cycle_span, prevState, `LIVE`)
+    }
     return true
   }
 
@@ -177,12 +189,19 @@ export class WebhookStore {
    * Transition consumer to IDLE state.
    */
   transitionToIdle(consumer: ConsumerInstance): void {
+    const prevState = consumer.state
     consumer.state = `IDLE`
     consumer.wake_id = null
     consumer.wake_id_claimed = false
     if (consumer.liveness_timer) {
       clearTimeout(consumer.liveness_timer)
       consumer.liveness_timer = null
+    }
+    if (consumer.wake_cycle_span) {
+      recordStateTransition(consumer.wake_cycle_span, prevState, `IDLE`)
+      consumer.wake_cycle_span.end()
+      consumer.wake_cycle_span = null
+      consumer.wake_cycle_ctx = null
     }
   }
 
@@ -248,6 +267,12 @@ export class WebhookStore {
       clearTimeout(consumer.liveness_timer)
     }
 
+    if (consumer.wake_cycle_span) {
+      endWakeCycleSpan(consumer.wake_cycle_span, EVENT.CONSUMER_GC, true)
+      consumer.wake_cycle_span = null
+      consumer.wake_cycle_ctx = null
+    }
+
     // Clean up stream indexes
     for (const path of consumer.streams.keys()) {
       this.removeStreamIndex(path, consumerId)
@@ -270,6 +295,13 @@ export class WebhookStore {
   getConsumersForStream(streamPath: string): Array<string> {
     const set = this.streamConsumers.get(streamPath)
     return set ? Array.from(set) : []
+  }
+
+  /**
+   * Get all consumer instances (for shutdown span cleanup).
+   */
+  getAllConsumers(): IterableIterator<ConsumerInstance> {
+    return this.consumers.values()
   }
 
   /**
