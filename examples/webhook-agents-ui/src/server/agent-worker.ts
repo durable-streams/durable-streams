@@ -311,7 +311,6 @@ export async function processWake(
 
     // Create the agent adapter for this wake cycle
     const conversationHistory = buildConversationHistory(events)
-    console.log({ conversationHistory, events })
     const adapter = createPiAgentAdapter({
       handle,
       streamPath,
@@ -355,7 +354,7 @@ export async function processWake(
     try {
       liveRes = await handle.stream<StreamEvent>({
         offset: catchUp.offset,
-        live: true,
+        live: `sse`,
         signal: idleController.signal,
       })
 
