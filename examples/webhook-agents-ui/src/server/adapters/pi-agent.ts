@@ -16,7 +16,6 @@ export function createPiAgentAdapter(
   let totalInputTokens = 0
   let totalOutputTokens = 0
   let running = false
-  let prompted = false
   let disposed = false
 
   const model = getModel(`anthropic`, `claude-sonnet-4-5-20250929`)
@@ -165,17 +164,11 @@ export function createPiAgentAdapter(
           }
         )
 
-        const action = prompted
-          ? agent.followUp({
-              role: `user`,
-              content: [{ type: `text`, text: message }],
-              timestamp: Date.now(),
-            })
-          : agent.prompt(message)
+        // prompt() preserves conversation history and starts a new loop.
+        // followUp() only works mid-execution (queues to a dead loop otherwise).
+        const action = agent.prompt(message)
 
-        prompted = true
-
-        // agent.prompt / followUp return void in pi-agent-core;
+        // agent.prompt returns void in pi-agent-core;
         // the agent_end event signals completion via the subscription
         Promise.resolve(action).catch(async (err) => {
           running = false
