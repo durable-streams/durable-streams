@@ -41,7 +41,7 @@ type StreamEvent = {
   value?: StreamEvent
 }
 
-const IDLE_TIMEOUT = 60_000
+const IDLE_TIMEOUT = 10_000
 const HEARTBEAT_INTERVAL = 30_000
 
 /**
@@ -234,8 +234,10 @@ export async function processWake(
       return data
     })
 
+    // Read from the beginning (-1) so we have full history for conversation
+    // reconstruction, not just events after the last ack.
     const readPromise = handle
-      .stream<StreamEvent>({ offset: streamOffset, live: false })
+      .stream<StreamEvent>({ offset: `-1`, live: false })
       .then(async (catchUpRes) => {
         const items = await catchUpRes.json()
         readSpan.setAttribute(`agent.event_count`, items.length)
@@ -309,6 +311,7 @@ export async function processWake(
 
     // Create the agent adapter for this wake cycle
     const conversationHistory = buildConversationHistory(events)
+    console.log({ conversationHistory, events })
     const adapter = createPiAgentAdapter({
       handle,
       streamPath,
