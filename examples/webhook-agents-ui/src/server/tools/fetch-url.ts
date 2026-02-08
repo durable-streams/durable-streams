@@ -1,14 +1,15 @@
 import { Type } from "@sinclair/typebox"
 import Anthropic from "@anthropic-ai/sdk"
 import { Readability } from "@mozilla/readability"
-import { JSDOM } from "jsdom"
+import { JSDOM, VirtualConsole } from "jsdom"
 import TurndownService from "turndown"
 import { gfm } from "turndown-plugin-gfm"
 
 const MAX_RAW_CHARS = 100_000
 
 function htmlToMarkdown(html: string, url: string): string {
-  const dom = new JSDOM(html, { url })
+  const virtualConsole = new VirtualConsole()
+  const dom = new JSDOM(html, { url, virtualConsole })
   const reader = new Readability(dom.window.document)
   const article = reader.parse()
 
