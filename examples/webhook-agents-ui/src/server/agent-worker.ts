@@ -31,11 +31,121 @@ interface WebhookNotification {
 type StreamEvent = {
   type: string
   task?: string
-  value?: { type: string; task?: string }
+  text?: string
+  toolCallId?: string
+  toolName?: string
+  args?: Record<string, unknown>
+  result?: string
+  isError?: boolean
+  timestamp?: number
+  value?: StreamEvent
 }
 
 const IDLE_TIMEOUT = 60_000
 const HEARTBEAT_INTERVAL = 30_000
+
+/**
+ * Reconstruct pi-agent-core conversation history from stream events.
+ * Includes only complete turns (up through the last agent_done).
+ */
+function buildConversationHistory(
+  events: ReadonlyArray<StreamEvent>
+): Array<Record<string, unknown>> {
+  // Find the last agent_done — only include complete turns
+  let lastDoneIdx = -1
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]
+    const t = e.type === `event` ? e.value?.type : e.type
+    if (t === `agent_done`) {
+      lastDoneIdx = i
+      break
+    }
+  }
+  if (lastDoneIdx === -1) return []
+
+  const messages: Array<Record<string, unknown>> = []
+  let assistantContent: Array<Record<string, unknown>> = []
+  const toolNames = new Map<string, string>()
+
+  function flushAssistant(ts: number): void {
+    if (assistantContent.length === 0) return
+    messages.push({
+      role: `assistant`,
+      content: assistantContent,
+      timestamp: ts,
+      api: `anthropic-messages`,
+      provider: `anthropic`,
+      model: `claude-sonnet-4-5-20250929`,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+      },
+      stopReason: `stop`,
+    })
+    assistantContent = []
+  }
+
+  for (let i = 0; i <= lastDoneIdx; i++) {
+    const e = events[i]
+    const evt = e.type === `event` ? e.value : e
+    if (!evt) continue
+    const evtType = e.type === `event` ? e.value?.type : e.type
+
+    switch (evtType) {
+      case `assigned`:
+      case `follow_up`:
+        flushAssistant(evt.timestamp ?? Date.now())
+        messages.push({
+          role: `user`,
+          content: [{ type: `text`, text: evt.task ?? `` }],
+          timestamp: evt.timestamp ?? Date.now(),
+        })
+        break
+
+      case `llm_text`: {
+        const last = assistantContent.at(-1)
+        if (last?.type === `text`) {
+          ;(last as any).text += evt.text ?? ``
+        } else {
+          assistantContent.push({ type: `text`, text: evt.text ?? `` })
+        }
+        break
+      }
+
+      case `tool_call`:
+        toolNames.set(evt.toolCallId ?? ``, evt.toolName ?? ``)
+        assistantContent.push({
+          type: `toolCall`,
+          id: evt.toolCallId ?? ``,
+          name: evt.toolName ?? ``,
+          arguments: evt.args ?? {},
+        })
+        break
+
+      case `tool_result`:
+        // Tool results must follow the assistant message with tool calls
+        flushAssistant(evt.timestamp ?? Date.now())
+        messages.push({
+          role: `toolResult`,
+          toolCallId: evt.toolCallId ?? ``,
+          toolName: toolNames.get(evt.toolCallId ?? ``) ?? `unknown`,
+          content: [{ type: `text`, text: evt.result ?? `` }],
+          isError: evt.isError ?? false,
+          timestamp: evt.timestamp ?? Date.now(),
+        })
+        break
+
+      case `agent_done`:
+        flushAssistant(evt.timestamp ?? Date.now())
+        break
+    }
+  }
+
+  return messages
+}
 
 function findActionable(
   events: ReadonlyArray<StreamEvent>
@@ -198,11 +308,13 @@ export async function processWake(
     }
 
     // Create the agent adapter for this wake cycle
+    const conversationHistory = buildConversationHistory(events)
     const adapter = createPiAgentAdapter({
       handle,
       streamPath,
       epoch,
       parentCtx: rootCtx,
+      messages: conversationHistory,
     })
 
     // Process initial task

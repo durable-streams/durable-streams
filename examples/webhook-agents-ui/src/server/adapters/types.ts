@@ -13,6 +13,8 @@ export interface AgentAdapterOptions {
   streamPath: string
   epoch: number
   parentCtx: Context
+  /** Conversation history from previous wake cycles (pi-agent-core message format). */
+  messages: Array<Record<string, unknown>>
 }
 
 export type CreateAgentAdapter = (options: AgentAdapterOptions) => AgentAdapter

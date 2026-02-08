@@ -9,7 +9,7 @@ import type { AgentAdapter, AgentAdapterOptions } from "./types"
 export function createPiAgentAdapter(
   options: AgentAdapterOptions
 ): AgentAdapter {
-  const { handle, streamPath, epoch } = options
+  const { handle, streamPath, epoch, messages } = options
   const shortName = streamPath.split(`/`).pop()!
 
   let messageIndex = 0
@@ -20,12 +20,18 @@ export function createPiAgentAdapter(
 
   const model = getModel(`anthropic`, `claude-sonnet-4-5-20250929`)
 
+  if (messages.length > 0) {
+    console.log(
+      `[agent] ${shortName} — restoring ${messages.length} messages from history`
+    )
+  }
+
   const agent = new Agent({
     initialState: {
       systemPrompt: `You are a helpful assistant with web search and URL fetching capabilities. Use web_search to find current information, then fetch_url to read full pages when you need more detail. Be concise and informative. The current year is 2026`,
       model,
       tools: [webSearchTool, fetchUrlTool] as any,
-      messages: [],
+      messages: messages as any,
     },
   })
 
