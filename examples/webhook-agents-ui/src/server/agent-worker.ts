@@ -35,6 +35,7 @@ type StreamEvent = {
 }
 
 const IDLE_TIMEOUT = 60_000
+const HEARTBEAT_INTERVAL = 30_000
 
 function findActionable(
   events: ReadonlyArray<StreamEvent>
@@ -83,6 +84,7 @@ export async function processWake(
     parentCtx
   )
   const rootCtx = trace.setSpan(parentCtx, rootSpan)
+  let heartbeat: ReturnType<typeof setInterval> | null = null
 
   try {
     const streamOffset =
@@ -153,15 +155,38 @@ export async function processWake(
       `[agent] ${shortName} — claimed → LIVE, got ${events.length} event(s)`
     )
 
+    // Use the refreshed token from claim response if available
+    let activeToken = claimData.token ?? token
+
+    // Heartbeat keeps the server's liveness timer alive during long-running work
+    heartbeat = setInterval(() => {
+      fetch(callback, {
+        method: `POST`,
+        headers: {
+          "content-type": `application/json`,
+          authorization: `Bearer ${activeToken}`,
+        },
+        body: JSON.stringify({ epoch }),
+      })
+        .then(async (res) => {
+          const data = (await res.json()) as { ok: boolean; token?: string }
+          if (data.token) activeToken = data.token
+        })
+        .catch((err) => {
+          console.error(`[agent] ${shortName} — heartbeat error:`, err)
+        })
+    }, HEARTBEAT_INTERVAL)
+
     const actionable = findActionable(events)
     if (!actionable) {
       console.log(`[agent] ${shortName} — no actionable events, acking + done`)
       rootSpan.addEvent(`no_actionable_events`)
+      clearInterval(heartbeat)
       await fetch(callback, {
         method: `POST`,
         headers: {
           "content-type": `application/json`,
-          authorization: `Bearer ${token}`,
+          authorization: `Bearer ${activeToken}`,
         },
         body: JSON.stringify({
           epoch,
@@ -258,6 +283,7 @@ export async function processWake(
     }
 
     clearTimeout(idleTimer)
+    clearInterval(heartbeat)
     adapter.dispose()
     listenSpan.addEvent(`idle_timeout`)
     listenSpan.setAttribute(`agent.follow_up_count`, followUpCount)
@@ -279,7 +305,7 @@ export async function processWake(
       method: `POST`,
       headers: {
         "content-type": `application/json`,
-        authorization: `Bearer ${token}`,
+        authorization: `Bearer ${activeToken}`,
       },
       body: JSON.stringify({
         epoch,
@@ -297,6 +323,7 @@ export async function processWake(
     })
     throw err
   } finally {
+    if (heartbeat) clearInterval(heartbeat)
     rootSpan.end()
   }
 }
