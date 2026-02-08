@@ -1,29 +1,20 @@
 import { Type } from "@sinclair/typebox"
 import Anthropic from "@anthropic-ai/sdk"
+import { Readability } from "@mozilla/readability"
+import { JSDOM } from "jsdom"
+import TurndownService from "turndown"
+import { gfm } from "turndown-plugin-gfm"
 
-const MAX_RAW_CHARS = 80_000
+const MAX_RAW_CHARS = 100_000
 
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ``)
-    .replace(/<style[\s\S]*?<\/style>/gi, ``)
-    .replace(/<nav[\s\S]*?<\/nav>/gi, ``)
-    .replace(/<footer[\s\S]*?<\/footer>/gi, ``)
-    .replace(/<header[\s\S]*?<\/header>/gi, ``)
-    .replace(
-      /<\/?(p|div|br|h[1-6]|li|tr|blockquote|section|article)[^>]*>/gi,
-      `\n`
-    )
-    .replace(/<[^>]+>/g, ``)
-    .replace(/&amp;/g, `&`)
-    .replace(/&lt;/g, `<`)
-    .replace(/&gt;/g, `>`)
-    .replace(/&quot;/g, `"`)
-    .replace(/&#39;/g, `'`)
-    .replace(/&nbsp;/g, ` `)
-    .replace(/[ \t]+/g, ` `)
-    .replace(/\n{3,}/g, `\n\n`)
-    .trim()
+function htmlToMarkdown(html: string, url: string): string {
+  const dom = new JSDOM(html, { url })
+  const reader = new Readability(dom.window.document)
+  const article = reader.parse()
+
+  const turndown = new TurndownService({ headingStyle: `atx` })
+  turndown.use(gfm)
+  return turndown.turndown(article?.content ?? html)
 }
 
 let anthropic: Anthropic | null = null
@@ -91,9 +82,11 @@ export const fetchUrlTool = {
 
       const contentType = res.headers.get(`content-type`) ?? ``
       const raw = await res.text()
-      const text = contentType.includes(`text/html`) ? htmlToText(raw) : raw
+      const markdown = contentType.includes(`text/html`)
+        ? htmlToMarkdown(raw, params.url)
+        : raw
 
-      const extracted = await extractWithLLM(text, params.prompt)
+      const extracted = await extractWithLLM(markdown, params.prompt)
 
       return {
         content: [{ type: `text` as const, text: extracted }],
