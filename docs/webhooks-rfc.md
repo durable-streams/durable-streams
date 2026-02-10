@@ -111,7 +111,9 @@ Stream matches subscription pattern
         ▼               ▼
    (callback       (webhook responds
     claims           { done: true })
-    wake_id)              │
+    wake_id,              │
+    OR webhook            │
+    returns 2xx)          │
         │                 │
         ▼                 ▼
 ┌───────────────┐         │
@@ -153,7 +155,7 @@ This definition drives wake decisions, re-wake after timeouts, and whether `{don
 **State transitions:**
 
 1. **IDLE → WAKING**: `pending_work` becomes true; epoch is incremented, new `wake_id` generated
-2. **WAKING → LIVE**: First callback claims the `wake_id` (subsequent callbacks with same wake_id receive `409 ALREADY_CLAIMED`)
+2. **WAKING → LIVE**: Webhook responds 2xx, OR first callback claims the `wake_id` (subsequent callbacks with same wake_id are idempotent; callbacks with a non-matching wake_id receive `409 ALREADY_CLAIMED`)
 3. **WAKING → IDLE**: Consumer responds with `{ done: true }` AND `pending_work` is false
 4. **LIVE → IDLE**: Consumer sends `{ done: true }` in callback AND `pending_work` is false, OR 45-second timeout with no callback activity
 5. **Re-wake**: If `{done: true}` is received but `pending_work` is still true, immediately trigger a new wake (increment epoch, new wake_id)
@@ -163,7 +165,7 @@ This definition drives wake decisions, re-wake after timeouts, and whether `{don
 - **`epoch`**: Monotonically increasing counter that increments on each IDLE → WAKING transition. Callbacks with a stale epoch are rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in the existing Durable Streams protocol.
 - **`wake_id`**: Unique identifier for each wake attempt within an epoch. The first callback claiming a `wake_id` wins; subsequent callbacks with the same `wake_id` receive `409 ALREADY_CLAIMED`. This handles duplicate webhook deliveries (retries before claim).
 
-**Re-wake until claimed:** The server continues retrying the webhook (with exponential backoff) until a callback claims the `wake_id`. A successful HTTP 2xx response to the webhook is not sufficient—the consumer must call the callback to claim the wake. This ensures exactly one consumer instance processes each wake cycle, even with unreliable networks.
+**Wake transition:** A 2xx webhook response means the consumer has received the notification and is actively processing — the server transitions immediately to LIVE. The 45-second liveness timeout covers crash recovery from that point. This design supports serverless functions that hold the webhook connection open during processing. If the webhook fails (non-2xx, timeout, network error), the server retries with exponential backoff until a callback claims the `wake_id` or the webhook succeeds.
 
 **Webhook connection model:** The webhook connection can be held open for the platform's execution limit (e.g., 15 minutes on some serverless platforms). The server tracks consumer liveness via callback activity, not the webhook connection. Consumers should call the callback regularly (at least every 45 seconds) to stay alive. If the webhook connection closes without `{ done: true }` and no recent callback activity, the server treats this as a crash and will re-wake if there's pending work.
 
@@ -401,7 +403,7 @@ For single-server deployments, implementations may optimize internal subscriptio
 
 **Webhook request timeout:** The server waits up to 30 seconds for a response from the webhook endpoint. If the endpoint hangs beyond this, the request is considered failed and enters the retry loop.
 
-**Re-wake until claimed:** The server continues retrying webhook delivery until a callback claims the `wake_id`. A successful HTTP 2xx response is not sufficient—the consumer must call the callback to claim the wake. This ensures exactly one consumer instance processes each wake cycle, even with unreliable networks or slow consumers that respond before processing.
+**Retry on failure:** The server retries webhook delivery on failure (non-2xx, timeout, network error) until a callback claims the `wake_id` or a 2xx response transitions the consumer to LIVE. A 2xx response means the consumer is actively processing — the liveness timeout handles crash recovery.
 
 **Webhook delivery retries** use exponential backoff (AWS standard algorithm):
 
@@ -691,7 +693,7 @@ While authentication is handled at the deployment layer, implementations should 
 - Subscription CRUD API
 - Consumer instance lifecycle (IDLE → WAKING → LIVE → IDLE, and WAKING → IDLE shortcut)
 - Consumer epochs and wake_ids for fencing zombie consumers and duplicate deliveries
-- Re-wake until callback claim (not just until HTTP 2xx)
+- Webhook 2xx transitions to LIVE; retry on failure until claimed or 2xx
 - Webhook signature verification
 - Wake-up notifications and callback API
 - Dynamic subscribe/unsubscribe for secondary streams

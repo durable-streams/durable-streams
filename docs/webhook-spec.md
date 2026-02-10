@@ -39,6 +39,11 @@ Identity: `{subscription_id}:{url_encoded_stream_path}`
 The stream path is URL-encoded in the consumer ID to avoid parsing ambiguity.
 Multiple subscriptions matching the same stream create independent consumers.
 
+**Implementation note:** When extracting the consumer ID from callback URLs
+(e.g., `/callback/{consumer_id}`), implementations MUST use the raw
+percent-encoded path, not a decoded version. HTTP frameworks often decode
+`%2F` → `/` in URL paths automatically, which would break consumer ID lookups.
+
 ### Pending Work
 
 Pending work exists when any subscribed stream has unprocessed events:
@@ -49,7 +54,9 @@ pending_work = any(tail[path] > acked[path] for path in subscribed_streams)
 
 Where `acked[path]` is the last acknowledged offset (inclusive — the event at
 this offset was processed) and `tail[path]` is the current stream end. An acked
-offset of `-1` means no events have been processed yet.
+offset of `-1` means no events have been processed yet. Offset comparison uses
+the fixed-width lexicographic format defined in the main protocol (see
+PROTOCOL.md § Offsets).
 
 ---
 
@@ -449,8 +456,9 @@ These properties must hold for any conforming implementation:
 **S1 — Epoch Monotonicity**: Epoch values in webhook notifications for a given
 consumer are strictly increasing.
 
-**S2 — Wake ID Uniqueness**: Each wake_id appears at most once per consumer
-across all webhook notifications.
+**S2 — Wake ID Uniqueness**: Each wake cycle produces exactly one wake_id.
+Retries of the same webhook notification reuse the same wake_id — uniqueness is
+per wake cycle (IDLE → WAKING transition), not per HTTP request.
 
 **S3 — Idempotent Claim**: Claiming the current wake_id is idempotent. Callbacks
 with a non-matching wake_id are rejected with `ALREADY_CLAIMED`.
