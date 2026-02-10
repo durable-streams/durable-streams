@@ -149,10 +149,12 @@ func (m *Manager) deliverWebhook(consumer *ConsumerInstance, sub *Subscription, 
 
 		if resBody.Done != nil && *resBody.Done {
 			consumer.WakeIDClaimed = true
+			consumer.mu.Lock()
 			for path := range consumer.Streams {
 				tail := m.getTailOffset(path)
 				consumer.Streams[path] = tail
 			}
+			consumer.mu.Unlock()
 			m.Store.TransitionToIdle(consumer)
 			return
 		}

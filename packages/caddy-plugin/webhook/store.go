@@ -182,6 +182,8 @@ func (s *Store) TransitionToIdle(c *ConsumerInstance) {
 
 // UpdateAcks updates acked offsets for a consumer.
 func (s *Store) UpdateAcks(c *ConsumerInstance, acks []AckEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for _, ack := range acks {
 		if _, ok := c.Streams[ack.Path]; ok {
 			c.Streams[ack.Path] = ack.Offset
@@ -193,6 +195,8 @@ func (s *Store) UpdateAcks(c *ConsumerInstance, acks []AckEntry) {
 func (s *Store) SubscribeStreams(c *ConsumerInstance, paths []string, getTailOffset func(string) string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for _, path := range paths {
 		if _, ok := c.Streams[path]; !ok {
@@ -208,6 +212,8 @@ func (s *Store) SubscribeStreams(c *ConsumerInstance, paths []string, getTailOff
 func (s *Store) UnsubscribeStreams(c *ConsumerInstance, paths []string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	for _, path := range paths {
 		delete(c.Streams, path)
@@ -218,6 +224,8 @@ func (s *Store) UnsubscribeStreams(c *ConsumerInstance, paths []string) bool {
 
 // HasPendingWork checks if a consumer has unprocessed events.
 func (s *Store) HasPendingWork(c *ConsumerInstance, getTailOffset func(string) string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	for path, ackedOffset := range c.Streams {
 		tail := getTailOffset(path)
 		if tail > ackedOffset {
@@ -229,6 +237,8 @@ func (s *Store) HasPendingWork(c *ConsumerInstance, getTailOffset func(string) s
 
 // GetStreamsData returns the consumer's streams as a slice.
 func (s *Store) GetStreamsData(c *ConsumerInstance) []StreamEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	result := make([]StreamEntry, 0, len(c.Streams))
 	for path, offset := range c.Streams {
 		result = append(result, StreamEntry{Path: path, Offset: offset})

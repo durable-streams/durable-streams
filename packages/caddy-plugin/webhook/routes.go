@@ -22,9 +22,17 @@ func NewRoutes(manager *Manager) *Routes {
 func (rt *Routes) HandleRequest(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
 
+	// Use RawPath for callback routes to preserve percent-encoded consumer IDs.
+	// Consumer IDs contain encoded stream paths (e.g. sub:%2Fv1%2Fstream),
+	// but net/http decodes r.URL.Path, causing lookup mismatches.
+	rawPath := r.URL.RawPath
+	if rawPath == "" {
+		rawPath = path
+	}
+
 	// Check for callback routes: /callback/{consumer_id}
-	if strings.HasPrefix(path, "/callback/") {
-		rt.handleCallback(w, r, path)
+	if strings.HasPrefix(rawPath, "/callback/") {
+		rt.handleCallback(w, r, rawPath)
 		return true
 	}
 
