@@ -717,7 +717,9 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 
 ## 6. Webhook Subscriptions
 
-Webhook subscriptions enable push-based delivery for serverless functions and AI agents that cannot maintain persistent connections. A subscription maps a glob pattern to a webhook URL; when matching streams receive events, the server POSTs notifications to the webhook. Each matched stream spawns a consumer instance that tracks offsets, supports dynamic subscription to additional streams, and uses a callback API for acknowledgments and lifecycle management.
+Webhook subscriptions enable serverless functions and AI agents to react to stream events without maintaining persistent connections. Unlike traditional webhooks that deliver data inline, Durable Streams webhooks are **wake-up signals** — the notification tells the consumer _which_ streams have new events, and the consumer reads the actual data using the standard HTTP protocol (Sections 3–4).
+
+The lifecycle works like this: a subscription maps a glob pattern to a webhook URL. When a matching stream receives events, the server POSTs a notification to wake the consumer. The consumer claims the wake, reads events through normal Durable Streams reads, acknowledges progress via a callback API, and signals completion when done. The server tracks offsets across all subscribed streams so the consumer resumes exactly where it left off on the next wake.
 
 ### 6.1. Subscription Model
 
@@ -747,7 +749,7 @@ When a stream is created or receives events that match the pattern, the server s
 
 A consumer instance is spawned when a stream matches a subscription's pattern. Each instance has its own identity, epoch, offset tracking, and can dynamically subscribe to additional streams.
 
-**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumer instances.
+**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many streams — each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. The consumer ID encodes both the subscription and the specific stream it tracks. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumer instances.
 
 **States:**
 

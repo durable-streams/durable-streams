@@ -2,10 +2,17 @@
 
 ## Overview
 
-Webhook subscriptions add push-based event delivery to Durable Streams. When
-streams matching a glob pattern receive events, the server POSTs a notification
-to a registered webhook URL, waking a consumer instance that reads events using
-the standard protocol and reports progress via a scoped callback API.
+Webhook subscriptions enable serverless functions and AI agents to react to
+stream events without maintaining persistent connections. Unlike traditional
+webhooks that deliver data inline, Durable Streams webhooks are **wake-up
+signals** — the notification tells the consumer which streams have new events,
+and the consumer reads the actual data using the standard Durable Streams HTTP
+protocol.
+
+The lifecycle: a subscription maps a glob pattern to a webhook URL. When a
+matching stream receives events, the server POSTs a notification to wake the
+consumer. The consumer claims the wake, reads events through normal reads,
+acknowledges progress via a callback API, and signals completion when done.
 
 This specification defines the complete behavior that any conforming
 implementation must exhibit. It covers subscription registration, consumer
@@ -36,8 +43,12 @@ own offsets across one or more streams and cycles through states independently.
 
 Identity: `{subscription_id}:{url_encoded_stream_path}`
 
-The stream path is URL-encoded in the consumer ID to avoid parsing ambiguity.
-Multiple subscriptions matching the same stream create independent consumers.
+Because a subscription uses a glob pattern (e.g., `/agents/*`), a single
+subscription can match many streams — each matched stream gets its own consumer
+instance with independent state, offsets, and lifecycle. The consumer ID encodes
+both the subscription and the specific stream it tracks. The stream path is
+URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same
+stream create independent consumers.
 
 **Implementation note:** When extracting the consumer ID from callback URLs
 (e.g., `/callback/{consumer_id}`), implementations MUST use the raw
