@@ -827,8 +827,8 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	result, err := h.store.Append(path, body, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamClosed) {
-			// Stream is closed - return 409 with Stream-Closed header
 			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
 			http.Error(w, "stream is closed", http.StatusConflict)
 			return nil
 		}
