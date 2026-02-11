@@ -394,158 +394,6 @@ export class StreamResponseImpl<
   }
 
   /**
-   * Extract stream metadata from Response headers.
-   * Used by subscriber APIs to get the correct offset/cursor/upToDate/streamClosed for each
-   * specific Response, rather than reading from `this` which may be stale due to
-   * ReadableStream prefetching or timing issues.
-   */
-  #getMetadataFromResponse(response: Response): {
-    offset: Offset
-    cursor: string | undefined
-    upToDate: boolean
-    streamClosed: boolean
-  } {
-    const offset = response.headers.get(STREAM_OFFSET_HEADER)
-    const cursor = response.headers.get(STREAM_CURSOR_HEADER)
-    const upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
-    const streamClosed =
-      response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
-    return {
-      offset: offset ?? this.offset, // Fall back to instance state if no header
-      cursor: cursor ?? this.cursor,
-      upToDate,
-      streamClosed: streamClosed || this.streamClosed, // Once closed, always closed
-    }
-  }
-
-  /**
-   * Decode base64 string to Uint8Array.
-   * Per protocol: concatenate data lines, remove \n and \r, then decode.
-   */
-  #decodeBase64(base64Str: string): Uint8Array {
-    // Remove all newlines and carriage returns per protocol
-    const cleaned = base64Str.replace(/[\n\r]/g, ``)
-
-    // Empty string is valid
-    if (cleaned.length === 0) {
-      return new Uint8Array(0)
-    }
-
-    // Validate length is multiple of 4
-    if (cleaned.length % 4 !== 0) {
-      throw new DurableStreamError(
-        `Invalid base64 data: length ${cleaned.length} is not a multiple of 4`,
-        `PARSE_ERROR`
-      )
-    }
-
-    try {
-      // Prefer Buffer (native C++ in Node) over atob (requires JS charCodeAt loop)
-      if (typeof Buffer !== `undefined`) {
-        return new Uint8Array(Buffer.from(cleaned, `base64`))
-      } else {
-        const binaryStr = atob(cleaned)
-        const bytes = new Uint8Array(binaryStr.length)
-        for (let i = 0; i < binaryStr.length; i++) {
-          bytes[i] = binaryStr.charCodeAt(i)
-        }
-        return bytes
-      }
-    } catch (err) {
-      throw new DurableStreamError(
-        `Failed to decode base64 data: ${err instanceof Error ? err.message : String(err)}`,
-        `PARSE_ERROR`
-      )
-    }
-  }
-
-  /**
-   * Create a synthetic Response from SSE data with proper headers.
-   * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
-   */
-  #createSSESyntheticResponse(
-    data: string,
-    offset: Offset,
-    cursor: string | undefined,
-    upToDate: boolean,
-    streamClosed: boolean
-  ): Response {
-    return this.#createSSESyntheticResponseFromParts(
-      [data],
-      offset,
-      cursor,
-      upToDate,
-      streamClosed
-    )
-  }
-
-  /**
-   * Create a synthetic Response from multiple SSE data parts.
-   * For base64 mode, each part is independently encoded, so we decode each
-   * separately and concatenate the binary results.
-   * For text mode, parts are simply concatenated as strings.
-   */
-  #createSSESyntheticResponseFromParts(
-    dataParts: Array<string>,
-    offset: Offset,
-    cursor: string | undefined,
-    upToDate: boolean,
-    streamClosed: boolean
-  ): Response {
-    const headers: Record<string, string> = {
-      "content-type": this.contentType ?? `application/json`,
-      [STREAM_OFFSET_HEADER]: String(offset),
-    }
-    if (cursor) {
-      headers[STREAM_CURSOR_HEADER] = cursor
-    }
-    if (upToDate) {
-      headers[STREAM_UP_TO_DATE_HEADER] = `true`
-    }
-    if (streamClosed) {
-      headers[STREAM_CLOSED_HEADER] = `true`
-    }
-
-    // Decode base64 if encoding is used
-    let body: BodyInit
-    if (this.#encoding === `base64`) {
-      // Each data part is independently base64 encoded, decode each separately
-      const decodedParts = dataParts
-        .filter((part) => part.length > 0)
-        .map((part) => this.#decodeBase64(part))
-
-      if (decodedParts.length === 0) {
-        // No data - return empty body
-        body = new ArrayBuffer(0)
-      } else if (decodedParts.length === 1) {
-        // Single part - use directly
-        const decoded = decodedParts[0]!
-        body = decoded.buffer.slice(
-          decoded.byteOffset,
-          decoded.byteOffset + decoded.byteLength
-        ) as ArrayBuffer
-      } else {
-        // Multiple parts - concatenate binary data
-        const totalLength = decodedParts.reduce(
-          (sum, part) => sum + part.length,
-          0
-        )
-        const combined = new Uint8Array(totalLength)
-        let offset = 0
-        for (const part of decodedParts) {
-          combined.set(part, offset)
-          offset += part.length
-        }
-        body = combined.buffer
-      }
-    } else {
-      body = dataParts.join(``)
-    }
-
-    return new Response(body, { status: 200, headers })
-  }
-
-  /**
    * Update instance state from an SSE control event.
    */
   #updateStateFromSSEControl(controlEvent: SSEControlEvent): void {
@@ -691,12 +539,14 @@ export class StreamResponseImpl<
     // If upToDate is signaled, yield an empty response so subscribers receive the signal
     // This is important for empty streams and for subscribers waiting for catch-up completion
     if (event.upToDate) {
-      const response = this.#createSSESyntheticResponse(
+      const response = createSSESyntheticResponse(
         ``,
         event.streamNextOffset,
         event.streamCursor,
         true,
-        event.streamClosed ?? false
+        event.streamClosed ?? false,
+        this.contentType,
+        this.#encoding
       )
       return { type: `response`, response }
     }
@@ -734,12 +584,14 @@ export class StreamResponseImpl<
 
       if (controlDone) {
         // Stream ended without control event - yield buffered data with current state
-        const response = this.#createSSESyntheticResponseFromParts(
+        const response = createSSESyntheticResponseFromParts(
           bufferedDataParts,
           this.offset,
           this.cursor,
           this.upToDate,
-          this.streamClosed
+          this.streamClosed,
+          this.contentType,
+          this.#encoding
         )
 
         // Try to reconnect
@@ -762,12 +614,14 @@ export class StreamResponseImpl<
       if (controlEvent.type === `control`) {
         // Update state and create response with correct metadata
         this.#updateStateFromSSEControl(controlEvent)
-        const response = this.#createSSESyntheticResponseFromParts(
+        const response = createSSESyntheticResponseFromParts(
           bufferedDataParts,
           controlEvent.streamNextOffset,
           controlEvent.streamCursor,
           controlEvent.upToDate ?? false,
-          controlEvent.streamClosed ?? false
+          controlEvent.streamClosed ?? false,
+          this.contentType,
+          this.#encoding
         )
         return { type: `response`, response }
       }
@@ -1241,7 +1095,12 @@ export class StreamResponseImpl<
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
           const { offset, cursor, upToDate, streamClosed } =
-            this.#getMetadataFromResponse(response)
+            getMetadataFromResponse(
+              response,
+              this.offset,
+              this.cursor,
+              this.streamClosed
+            )
 
           // Get response text first (handles empty responses gracefully)
           const text = await response.text()
@@ -1309,7 +1168,12 @@ export class StreamResponseImpl<
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
           const { offset, cursor, upToDate, streamClosed } =
-            this.#getMetadataFromResponse(response)
+            getMetadataFromResponse(
+              response,
+              this.offset,
+              this.cursor,
+              this.streamClosed
+            )
 
           const buffer = await response.arrayBuffer()
 
@@ -1363,7 +1227,12 @@ export class StreamResponseImpl<
           // Get metadata from Response headers (not from `this` which may be stale)
           const response = result.value
           const { offset, cursor, upToDate, streamClosed } =
-            this.#getMetadataFromResponse(response)
+            getMetadataFromResponse(
+              response,
+              this.offset,
+              this.cursor,
+              this.streamClosed
+            )
 
           const text = await response.text()
 
@@ -1414,4 +1283,169 @@ export class StreamResponseImpl<
   get closed(): Promise<void> {
     return this.#closed
   }
+}
+
+// =================================
+// Pure helper functions
+// =================================
+
+/**
+ * Extract stream metadata from Response headers.
+ * Falls back to the provided defaults when headers are absent.
+ */
+function getMetadataFromResponse(
+  response: Response,
+  fallbackOffset: Offset,
+  fallbackCursor: string | undefined,
+  fallbackStreamClosed: boolean
+): {
+  offset: Offset
+  cursor: string | undefined
+  upToDate: boolean
+  streamClosed: boolean
+} {
+  const offset = response.headers.get(STREAM_OFFSET_HEADER)
+  const cursor = response.headers.get(STREAM_CURSOR_HEADER)
+  const upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
+  const streamClosed =
+    response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
+  return {
+    offset: offset ?? fallbackOffset,
+    cursor: cursor ?? fallbackCursor,
+    upToDate,
+    streamClosed: streamClosed || fallbackStreamClosed,
+  }
+}
+
+/**
+ * Decode base64 string to Uint8Array.
+ * Per protocol: concatenate data lines, remove \n and \r, then decode.
+ */
+function decodeBase64(base64Str: string): Uint8Array {
+  // Remove all newlines and carriage returns per protocol
+  const cleaned = base64Str.replace(/[\n\r]/g, ``)
+
+  // Empty string is valid
+  if (cleaned.length === 0) {
+    return new Uint8Array(0)
+  }
+
+  // Validate length is multiple of 4
+  if (cleaned.length % 4 !== 0) {
+    throw new DurableStreamError(
+      `Invalid base64 data: length ${cleaned.length} is not a multiple of 4`,
+      `PARSE_ERROR`
+    )
+  }
+
+  try {
+    // Prefer Buffer (native C++ in Node) over atob (requires JS charCodeAt loop)
+    if (typeof Buffer !== `undefined`) {
+      return new Uint8Array(Buffer.from(cleaned, `base64`))
+    } else {
+      const binaryStr = atob(cleaned)
+      const bytes = new Uint8Array(binaryStr.length)
+      for (let i = 0; i < binaryStr.length; i++) {
+        bytes[i] = binaryStr.charCodeAt(i)
+      }
+      return bytes
+    }
+  } catch (err) {
+    throw new DurableStreamError(
+      `Failed to decode base64 data: ${err instanceof Error ? err.message : String(err)}`,
+      `PARSE_ERROR`
+    )
+  }
+}
+
+/**
+ * Create a synthetic Response from SSE data with proper headers.
+ * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
+ */
+function createSSESyntheticResponse(
+  data: string,
+  offset: Offset,
+  cursor: string | undefined,
+  upToDate: boolean,
+  streamClosed: boolean,
+  contentType: string | undefined,
+  encoding: `base64` | undefined
+): Response {
+  return createSSESyntheticResponseFromParts(
+    [data],
+    offset,
+    cursor,
+    upToDate,
+    streamClosed,
+    contentType,
+    encoding
+  )
+}
+
+/**
+ * Create a synthetic Response from multiple SSE data parts.
+ * For base64 mode, each part is independently encoded, so we decode each
+ * separately and concatenate the binary results.
+ * For text mode, parts are simply concatenated as strings.
+ */
+function createSSESyntheticResponseFromParts(
+  dataParts: Array<string>,
+  offset: Offset,
+  cursor: string | undefined,
+  upToDate: boolean,
+  streamClosed: boolean,
+  contentType: string | undefined,
+  encoding: `base64` | undefined
+): Response {
+  const headers: Record<string, string> = {
+    "content-type": contentType ?? `application/json`,
+    [STREAM_OFFSET_HEADER]: String(offset),
+  }
+  if (cursor) {
+    headers[STREAM_CURSOR_HEADER] = cursor
+  }
+  if (upToDate) {
+    headers[STREAM_UP_TO_DATE_HEADER] = `true`
+  }
+  if (streamClosed) {
+    headers[STREAM_CLOSED_HEADER] = `true`
+  }
+
+  // Decode base64 if encoding is used
+  let body: BodyInit
+  if (encoding === `base64`) {
+    // Each data part is independently base64 encoded, decode each separately
+    const decodedParts = dataParts
+      .filter((part) => part.length > 0)
+      .map((part) => decodeBase64(part))
+
+    if (decodedParts.length === 0) {
+      // No data - return empty body
+      body = new ArrayBuffer(0)
+    } else if (decodedParts.length === 1) {
+      // Single part - use directly
+      const decoded = decodedParts[0]!
+      body = decoded.buffer.slice(
+        decoded.byteOffset,
+        decoded.byteOffset + decoded.byteLength
+      ) as ArrayBuffer
+    } else {
+      // Multiple parts - concatenate binary data
+      const totalLength = decodedParts.reduce(
+        (sum, part) => sum + part.length,
+        0
+      )
+      const combined = new Uint8Array(totalLength)
+      let offset = 0
+      for (const part of decodedParts) {
+        combined.set(part, offset)
+        offset += part.length
+      }
+      body = combined.buffer
+    }
+  } else {
+    body = dataParts.join(``)
+  }
+
+  return new Response(body, { status: 200, headers })
 }
