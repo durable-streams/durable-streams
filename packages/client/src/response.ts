@@ -566,7 +566,7 @@ export class StreamResponseImpl<
         streamClosed: this.#syncState.streamClosed,
       })
     }
-    this.#syncState = this.#syncState.startConnection(Date.now())
+    this.#syncState = (this.#syncState as SSEState).startConnection(Date.now())
   }
 
   /**
