@@ -14,8 +14,10 @@ import {
 } from "./constants"
 import { DurableStreamError } from "./error"
 import { parseSSEStream } from "./sse"
+import { LongPollState, PausedState, SSEState } from "./stream-response-state"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEControlEvent, SSEEvent } from "./sse"
+import type { StreamResponseState } from "./stream-response-state"
 import type {
   ByteChunk,
   StreamResponse as IStreamResponse,
@@ -100,11 +102,8 @@ export class StreamResponseImpl<
   #ok: boolean
   #isLoading: boolean
 
-  // --- Evolving state ---
-  #offset: Offset
-  #cursor?: string
-  #upToDate: boolean
-  #streamClosed: boolean
+  // --- Evolving state (immutable state machine) ---
+  #syncState: StreamResponseState
 
   // --- Internal state ---
   #isJsonMode: boolean
@@ -123,13 +122,9 @@ export class StreamResponseImpl<
   #unsubscribeFromVisibilityChanges?: () => void
   #pausePromise?: Promise<void>
   #pauseResolve?: () => void
-  #justResumedFromPause = false
 
-  // --- SSE Resilience State ---
+  // --- SSE Resilience Config ---
   #sseResilience: Required<SSEResilienceOptions>
-  #lastSSEConnectionStartTime?: number
-  #consecutiveShortSSEConnections = 0
-  #sseFallbackToLongPoll = false
 
   // --- SSE Encoding State ---
   #encoding?: `base64`
@@ -142,10 +137,18 @@ export class StreamResponseImpl<
     this.contentType = config.contentType
     this.live = config.live
     this.startOffset = config.startOffset
-    this.#offset = config.initialOffset
-    this.#cursor = config.initialCursor
-    this.#upToDate = config.initialUpToDate
-    this.#streamClosed = config.initialStreamClosed
+
+    // Initialize immutable state machine — SSEState if SSE is available,
+    // LongPollState otherwise. The type encodes whether SSE has fallen back.
+    const syncFields = {
+      offset: config.initialOffset,
+      cursor: config.initialCursor,
+      upToDate: config.initialUpToDate,
+      streamClosed: config.initialStreamClosed,
+    }
+    this.#syncState = config.startSSE
+      ? new SSEState(syncFields)
+      : new LongPollState(syncFields)
 
     // Initialize response metadata from first response
     this.#headers = config.firstResponse.headers
@@ -246,6 +249,8 @@ export class StreamResponseImpl<
   #pause(): void {
     if (this.#state === `active`) {
       this.#state = `pause-requested`
+      // Wrap state in PausedState to preserve it across pause/resume
+      this.#syncState = this.#syncState.pause()
       // Create promise that pull() will await
       this.#pausePromise = new Promise((resolve) => {
         this.#pauseResolve = resolve
@@ -266,9 +271,13 @@ export class StreamResponseImpl<
         return
       }
 
+      // Unwrap PausedState to restore the inner state
+      if (this.#syncState instanceof PausedState) {
+        this.#syncState = this.#syncState.resume().state
+      }
+
       // Transition to active and resolve the pause promise
       this.#state = `active`
-      this.#justResumedFromPause = true // Flag for single-shot skip of live param
       this.#pauseResolve?.()
       this.#pausePromise = undefined
       this.#pauseResolve = undefined
@@ -297,22 +306,22 @@ export class StreamResponseImpl<
     return this.#isLoading
   }
 
-  // --- Evolving state getters ---
+  // --- Evolving state getters (delegated to state machine) ---
 
   get offset(): Offset {
-    return this.#offset
+    return this.#syncState.offset
   }
 
   get cursor(): string | undefined {
-    return this.#cursor
+    return this.#syncState.cursor
   }
 
   get upToDate(): boolean {
-    return this.#upToDate
+    return this.#syncState.upToDate
   }
 
   get streamClosed(): boolean {
-    return this.#streamClosed
+    return this.#syncState.streamClosed
   }
 
   // =================================
@@ -358,29 +367,24 @@ export class StreamResponseImpl<
    * and whether we've received upToDate or streamClosed.
    */
   #shouldContinueLive(): boolean {
-    // Stop if we've received upToDate and a consumption method wants to stop after upToDate
-    if (this.#stopAfterUpToDate && this.upToDate) return false
-    // Stop if live mode is explicitly disabled
-    if (this.live === false) return false
-    // Stop if stream is closed (EOF) - no more data will ever be appended
-    if (this.#streamClosed) return false
-    return true
+    return this.#syncState.shouldContinueLive(
+      this.#stopAfterUpToDate,
+      this.live
+    )
   }
 
   /**
    * Update state from response headers.
    */
   #updateStateFromResponse(response: Response): void {
-    // Update stream-specific state
-    const offset = response.headers.get(STREAM_OFFSET_HEADER)
-    if (offset) this.#offset = offset
-    const cursor = response.headers.get(STREAM_CURSOR_HEADER)
-    if (cursor) this.#cursor = cursor
-    this.#upToDate = response.headers.has(STREAM_UP_TO_DATE_HEADER)
-    const streamClosedHeader = response.headers.get(STREAM_CLOSED_HEADER)
-    if (streamClosedHeader?.toLowerCase() === `true`) {
-      this.#streamClosed = true
-    }
+    // Immutable state transition
+    this.#syncState = this.#syncState.withResponseMetadata({
+      offset: response.headers.get(STREAM_OFFSET_HEADER) || undefined,
+      cursor: response.headers.get(STREAM_CURSOR_HEADER) || undefined,
+      upToDate: response.headers.has(STREAM_UP_TO_DATE_HEADER),
+      streamClosed:
+        response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`,
+    })
 
     // Update response metadata to reflect latest server response
     this.#headers = response.headers
@@ -545,82 +549,24 @@ export class StreamResponseImpl<
    * Update instance state from an SSE control event.
    */
   #updateStateFromSSEControl(controlEvent: SSEControlEvent): void {
-    this.#offset = controlEvent.streamNextOffset
-    if (controlEvent.streamCursor) {
-      this.#cursor = controlEvent.streamCursor
-    }
-    if (controlEvent.upToDate !== undefined) {
-      this.#upToDate = controlEvent.upToDate
-    }
-    if (controlEvent.streamClosed) {
-      this.#streamClosed = true
-      // A closed stream is definitionally up-to-date - no more data will ever be appended
-      this.#upToDate = true
-    }
+    this.#syncState = this.#syncState.withSSEControl(controlEvent)
   }
 
   /**
    * Mark the start of an SSE connection for duration tracking.
+   * If the state is not SSEState (e.g., auto-detected SSE from content-type),
+   * transitions to SSEState first.
    */
   #markSSEConnectionStart(): void {
-    this.#lastSSEConnectionStartTime = Date.now()
-  }
-
-  /**
-   * Handle SSE connection end - check duration and manage fallback state.
-   * Returns a delay to wait before reconnecting, or null if should not reconnect.
-   */
-  async #handleSSEConnectionEnd(): Promise<number | null> {
-    if (this.#lastSSEConnectionStartTime === undefined) {
-      return 0 // No tracking, allow immediate reconnect
+    if (!(this.#syncState instanceof SSEState)) {
+      this.#syncState = new SSEState({
+        offset: this.#syncState.offset,
+        cursor: this.#syncState.cursor,
+        upToDate: this.#syncState.upToDate,
+        streamClosed: this.#syncState.streamClosed,
+      })
     }
-
-    const connectionDuration = Date.now() - this.#lastSSEConnectionStartTime
-    const wasAborted = this.#abortController.signal.aborted
-
-    if (
-      connectionDuration < this.#sseResilience.minConnectionDuration &&
-      !wasAborted
-    ) {
-      // Connection was too short - likely proxy buffering or misconfiguration
-      this.#consecutiveShortSSEConnections++
-
-      if (
-        this.#consecutiveShortSSEConnections >=
-        this.#sseResilience.maxShortConnections
-      ) {
-        // Too many short connections - fall back to long polling
-        this.#sseFallbackToLongPoll = true
-
-        if (this.#sseResilience.logWarnings) {
-          console.warn(
-            `[Durable Streams] SSE connections are closing immediately (possibly due to proxy buffering or misconfiguration). ` +
-              `Falling back to long polling. ` +
-              `Your proxy must support streaming SSE responses (not buffer the complete response). ` +
-              `Configuration: Nginx add 'X-Accel-Buffering: no', Caddy add 'flush_interval -1' to reverse_proxy.`
-          )
-        }
-        return null // Signal to not reconnect SSE
-      } else {
-        // Add exponential backoff with full jitter to prevent tight infinite loop
-        // Formula: random(0, min(cap, base * 2^attempt))
-        const maxDelay = Math.min(
-          this.#sseResilience.backoffMaxDelay,
-          this.#sseResilience.backoffBaseDelay *
-            Math.pow(2, this.#consecutiveShortSSEConnections)
-        )
-        const delayMs = Math.floor(Math.random() * maxDelay)
-        await new Promise((resolve) => setTimeout(resolve, delayMs))
-        return delayMs
-      }
-    } else if (
-      connectionDuration >= this.#sseResilience.minConnectionDuration
-    ) {
-      // Connection was healthy - reset counter
-      this.#consecutiveShortSSEConnections = 0
-    }
-
-    return 0 // Allow immediate reconnect
+    this.#syncState = this.#syncState.startConnection(Date.now())
   }
 
   /**
@@ -632,8 +578,8 @@ export class StreamResponseImpl<
     void,
     undefined
   > | null> {
-    // Check if we should fall back to long-poll due to repeated short connections
-    if (this.#sseFallbackToLongPoll) {
+    // Check if we should fall back to long-poll (state type encodes this)
+    if (!this.#syncState.shouldUseSse()) {
       return null // Will cause fallback to long-poll
     }
 
@@ -641,10 +587,35 @@ export class StreamResponseImpl<
       return null
     }
 
-    // Handle short connection detection and backoff
-    const delayOrNull = await this.#handleSSEConnectionEnd()
-    if (delayOrNull === null) {
+    // Pure state transition: check connection duration, manage counters
+    const result = (this.#syncState as SSEState).handleConnectionEnd(
+      Date.now(),
+      this.#abortController.signal.aborted,
+      this.#sseResilience
+    )
+    this.#syncState = result.state
+
+    if (result.action === `fallback`) {
+      if (this.#sseResilience.logWarnings) {
+        console.warn(
+          `[Durable Streams] SSE connections are closing immediately (possibly due to proxy buffering or misconfiguration). ` +
+            `Falling back to long polling. ` +
+            `Your proxy must support streaming SSE responses (not buffer the complete response). ` +
+            `Configuration: Nginx add 'X-Accel-Buffering: no', Caddy add 'flush_interval -1' to reverse_proxy.`
+        )
+      }
       return null // Fallback to long-poll was triggered
+    }
+
+    if (result.action === `reconnect`) {
+      // Host applies jitter/delay — state machine only returns backoffAttempt
+      const maxDelay = Math.min(
+        this.#sseResilience.backoffMaxDelay,
+        this.#sseResilience.backoffBaseDelay *
+          Math.pow(2, result.backoffAttempt)
+      )
+      const delayMs = Math.floor(Math.random() * maxDelay)
+      await new Promise((resolve) => setTimeout(resolve, delayMs))
     }
 
     // Track new connection start
@@ -918,8 +889,10 @@ export class StreamResponseImpl<
 
           // Long-poll mode: continue with live updates if needed
           if (this.#shouldContinueLive()) {
-            // If paused or pause-requested, await the pause promise
-            // This blocks pull() until resume() is called, avoiding deadlock
+            // Determine if we're resuming from pause — local variable replaces
+            // the old #justResumedFromPause one-shot field. If we enter the pause
+            // branch and wake up without abort, we just resumed.
+            let resumingFromPause = false
             if (this.#state === `pause-requested` || this.#state === `paused`) {
               this.#state = `paused`
               if (this.#pausePromise) {
@@ -931,6 +904,7 @@ export class StreamResponseImpl<
                 controller.close()
                 return
               }
+              resumingFromPause = true
             }
 
             if (this.#abortController.signal.aborted) {
@@ -938,10 +912,6 @@ export class StreamResponseImpl<
               controller.close()
               return
             }
-
-            // Consume the single-shot resume flag (only first fetch after resume skips live param)
-            const resumingFromPause = this.#justResumedFromPause
-            this.#justResumedFromPause = false
 
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
