@@ -23,6 +23,7 @@ import {
   saveSessionCredentials,
 } from "./storage"
 import type {
+  ConnectResponse,
   DurableFetch,
   DurableFetchOptions,
   DurableFetchRequestOptions,
@@ -104,13 +105,14 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
     sessionId: clientSessionId,
     getSessionId: clientGetSessionId,
     streamSignedUrlTtl,
+    connectUrl,
     renewUrl,
   } = options
 
   // Normalize trailing slash
   const normalizedProxyUrl = proxyUrl.replace(/\/+$/, ``)
 
-  return async (
+  const durableFetch = async (
     upstreamUrl: string | URL,
     init?: DurableFetchRequestOptions
   ): Promise<DurableResponse> => {
@@ -422,6 +424,102 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
       }
     )
   }
+
+  /**
+   * Connect to a session.
+   *
+   * POSTs to the proxy with Session-Id header. The proxy derives a stream ID,
+   * ensures the stream exists, and forwards to the connect handler. Returns
+   * the origin's response body (e.g., message history) + signed URL + offset.
+   */
+  durableFetch.connect = async (
+    init?: Omit<
+      DurableFetchRequestOptions,
+      `requestId` | `sessionId` | `method`
+    >
+  ): Promise<ConnectResponse> => {
+    // Resolve session ID (connect doesn't accept per-request sessionId override)
+    const effectiveSessionId = clientGetSessionId
+      ? clientGetSessionId(``, init as DurableFetchRequestOptions | undefined)
+      : clientSessionId
+
+    if (!effectiveSessionId) {
+      throw new Error(`connect() requires a sessionId to be configured`)
+    }
+
+    if (!connectUrl) {
+      throw new Error(`connect() requires a connectUrl to be configured`)
+    }
+
+    const connectEndpoint = new URL(normalizedProxyUrl)
+    connectEndpoint.searchParams.set(`secret`, proxyAuthorization)
+
+    const normalized = normalizeHeaders(init?.headers)
+    const proxyHeaders: Record<string, string> = {
+      "Upstream-URL": connectUrl,
+      "Session-Id": effectiveSessionId,
+    }
+
+    if (streamSignedUrlTtl !== undefined) {
+      proxyHeaders[`Stream-Signed-URL-TTL`] = String(streamSignedUrlTtl)
+    }
+
+    for (const [key, value] of Object.entries(normalized)) {
+      const lower = key.toLowerCase()
+      if (lower === `authorization`) {
+        proxyHeaders[`Upstream-Authorization`] = value
+      } else if (lower === `host`) {
+        continue
+      } else {
+        proxyHeaders[key] = value
+      }
+    }
+
+    const response = await fetchFn(connectEndpoint.toString(), {
+      method: `POST`,
+      headers: proxyHeaders,
+      body: init?.body,
+      signal: init?.signal,
+    })
+
+    if (!response.ok) {
+      throw new Error(
+        `Connect failed with status ${response.status}: ${await response.text().catch(() => ``)}`
+      )
+    }
+
+    const locationHeader = response.headers.get(`Location`)
+    if (!locationHeader) {
+      throw new Error(`Missing Location header in connect response`)
+    }
+
+    const streamUrl = new URL(locationHeader, normalizedProxyUrl).toString()
+    const streamId = extractStreamIdFromUrl(streamUrl)
+    const offset = response.headers.get(`Stream-Offset`) ?? undefined
+    const upstreamContentType =
+      response.headers.get(`Upstream-Content-Type`) ?? undefined
+
+    // Store session credentials
+    saveSessionCredentials(
+      storage,
+      storagePrefix,
+      normalizedProxyUrl,
+      effectiveSessionId,
+      { streamUrl, streamId }
+    )
+
+    return {
+      body: response.body,
+      streamUrl,
+      streamId,
+      offset,
+      upstreamContentType,
+      status: response.status,
+      headers: response.headers,
+    }
+  }
+
+  return durableFetch as DurableFetch
 }
 
 /**

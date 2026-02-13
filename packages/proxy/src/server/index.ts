@@ -117,4 +117,5 @@ export {
   filterHeadersForUpstream,
   HOP_BY_HOP_HEADERS,
 } from "./allowlist"
+export { deriveStreamId } from "./derive-stream-id"
 export { sendError, sendJson } from "./response"

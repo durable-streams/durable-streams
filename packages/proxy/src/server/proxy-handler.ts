@@ -4,6 +4,7 @@
  * Routes requests to the appropriate handlers based on URL path and method.
  */
 
+import { handleConnectStream } from "./connect-stream"
 import { handleCreateStream } from "./create-stream"
 import { handleReadStream } from "./read-stream"
 import { handleHeadStream } from "./head-stream"
@@ -32,7 +33,7 @@ function setCorsHeaders(res: ServerResponse): void {
   )
   res.setHeader(
     `Access-Control-Allow-Headers`,
-    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Renew-Stream-URL, Stream-Signed-URL-TTL`
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Renew-Stream-URL, Session-Id, Stream-Signed-URL-TTL`
   )
   res.setHeader(
     `Access-Control-Expose-Headers`,
@@ -41,6 +42,7 @@ function setCorsHeaders(res: ServerResponse): void {
       `Upstream-Content-Type`,
       `Upstream-Status`,
       `Stream-Next-Offset`,
+      `Stream-Offset`,
       `Stream-Up-To-Date`,
       `Stream-Total-Size`,
       `Stream-Write-Units`,
@@ -81,14 +83,20 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy - Create, append, or renew stream
-      // Dispatch based on header:
-      //   - Renew-Stream-URL header → renew (get fresh signed URL)
-      //   - Use-Stream-URL header → append (write to existing stream)
-      //   - Neither → create (new stream)
+      // Route: POST /v1/proxy - Create, append, connect, or renew stream
+      // Dispatch based on header (checked in priority order):
+      //   1. Renew-Stream-URL header → renew (get fresh signed URL)
+      //   2. Use-Stream-URL header → append (write to existing stream)
+      //   3. Session-Id header → connect (initialize/reconnect session)
+      //   4. None → create (new stream)
       if (PROXY_BASE.test(path) && method === `POST`) {
         if (req.headers[`renew-stream-url`]) {
           await handleRenewStream(req, res, options, isAllowed)
+        } else if (
+          req.headers[`session-id`] &&
+          !req.headers[`use-stream-url`]
+        ) {
+          await handleConnectStream(req, res, options, isAllowed)
         } else {
           await handleCreateStream(
             req,

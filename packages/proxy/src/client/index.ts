@@ -25,6 +25,7 @@ export {
 
 // Types
 export type {
+  ConnectResponse,
   DurableStorage,
   StreamCredentials,
   SessionCredentials,
