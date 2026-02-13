@@ -89,6 +89,14 @@ export interface DurableFetchOptions {
    */
   streamSignedUrlTtl?: number
   /**
+   * Optional URL for the connect handler (origin endpoint).
+   * When a session connects, the proxy forwards the request to this URL
+   * with a Stream-Id header. The handler authorizes the session, reads
+   * the raw stream to materialize message history, and returns the
+   * history body + optional Stream-Offset header.
+   */
+  connectUrl?: string
+  /**
    * Optional URL for renewing expired signed URLs.
    * When a read URL expires, the client will POST to /v1/proxy
    * with Renew-Stream-URL header and this as the Upstream-URL
@@ -140,12 +148,53 @@ export interface DurableResponse extends Response {
 }
 
 /**
- * A durable fetch function.
+ * Response from a connect operation.
+ */
+export interface ConnectResponse {
+  /** The origin's response body */
+  body: Response[`body`]
+  /** The pre-signed stream URL */
+  streamUrl: string
+  /** The stream ID */
+  streamId: string
+  /** Byte offset for SSE subscription (from origin's Stream-Offset header) */
+  offset?: string
+  /** The upstream content type */
+  upstreamContentType?: string
+  /** HTTP status code (200 for existing session, 201 for new) */
+  status: number
+  /** Full response headers */
+  headers: Headers
+}
+
+/**
+ * A durable fetch function with optional connect method.
  *
  * Signature mirrors standard fetch: (url, init) -> Response.
  * Everything in init is aimed at the upstream; proxy config is captured at creation time.
  */
-export type DurableFetch = (
-  upstreamUrl: string | URL,
-  init?: DurableFetchRequestOptions
-) => Promise<DurableResponse>
+export interface DurableFetch {
+  (
+    upstreamUrl: string | URL,
+    init?: DurableFetchRequestOptions
+  ): Promise<DurableResponse>
+
+  /**
+   * Connect to a session.
+   *
+   * Sends a connect operation to the proxy, which derives a stream ID
+   * from the session ID, ensures the stream exists, and forwards the
+   * request to the connect handler. Returns the origin's response body
+   * (e.g., message history) along with the signed stream URL and offset.
+   *
+   * Requires `connectUrl` and `sessionId` to be configured.
+   *
+   * @param init - Optional request options (headers, body, signal)
+   */
+  connect: (
+    init?: Omit<
+      DurableFetchRequestOptions,
+      `requestId` | `sessionId` | `method`
+    >
+  ) => Promise<ConnectResponse>
+}
