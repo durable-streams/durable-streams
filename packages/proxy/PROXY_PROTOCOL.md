@@ -506,10 +506,10 @@ The specific CORS policy (allowed origins, max age, etc.) is implementation-defi
 
 ## 11. Error Codes
 
-The proxy protocol defines the following error codes. Servers **SHOULD** return errors as JSON objects with `error` and `message` fields:
+The proxy protocol defines the following error codes. Servers **SHOULD** return errors as JSON objects with a nested `error` object containing `code` and `message` fields:
 
 ```json
-{ "error": "ERROR_CODE", "message": "Human-readable description" }
+{ "error": { "code": "ERROR_CODE", "message": "Human-readable description" } }
 ```
 
 ### 11.1. Request Validation Errors
@@ -526,7 +526,8 @@ The proxy protocol defines the following error codes. Servers **SHOULD** return 
 
 | HTTP Status | Error Code          | Description                                    |
 | ----------- | ------------------- | ---------------------------------------------- |
-| 401         | `UNAUTHORIZED`      | Missing or invalid service authentication      |
+| 401         | `MISSING_SECRET`    | No service authentication provided             |
+| 401         | `INVALID_SECRET`    | Service authentication credentials are invalid |
 | 401         | `SIGNATURE_EXPIRED` | Pre-signed URL has expired                     |
 | 401         | `SIGNATURE_INVALID` | Pre-signed URL signature verification failed   |
 | 401         | `MISSING_SIGNATURE` | Pre-signed URL parameters required but missing |
@@ -542,13 +543,15 @@ The proxy protocol defines the following error codes. Servers **SHOULD** return 
 | HTTP Status | Error Code         | Description                                                                  |
 | ----------- | ------------------ | ---------------------------------------------------------------------------- |
 | 502         | `UPSTREAM_ERROR`   | Upstream returned a non-2xx, non-3xx response (see `Upstream-Status` header) |
+| 502         | `STORAGE_ERROR`    | Failed to create or write to the durable stream backend                      |
 | 504         | `UPSTREAM_TIMEOUT` | Upstream did not respond within the header resolution timeout                |
 
 ### 11.5. Standard Errors
 
-| HTTP Status | Error Code  | Description                    |
-| ----------- | ----------- | ------------------------------ |
-| 404         | `NOT_FOUND` | Stream or route does not exist |
+| HTTP Status | Error Code         | Description                         |
+| ----------- | ------------------ | ----------------------------------- |
+| 404         | `NOT_FOUND`        | Route does not exist                |
+| 404         | `STREAM_NOT_FOUND` | The specified stream does not exist |
 
 ## 12. Security Considerations
 
