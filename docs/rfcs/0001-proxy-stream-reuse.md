@@ -317,7 +317,6 @@ If `Upstream-URL` is omitted, the proxy trusts service authentication alone (sui
 | `400 Bad Request`  | `Use-Stream-URL` header malformed                                                                                    |
 | `401 Unauthorized` | HMAC signature invalid (expired HMAC is accepted on write paths), or auth endpoint rejected the request (connect)    |
 | `404 Not Found`    | Specified stream does not exist                                                                                      |
-| `409 Conflict`     | Stream is closed, cannot append                                                                                      |
 
 #### Response Headers
 
@@ -352,13 +351,13 @@ Content-Type: application/json
 
 The `renewable` field indicates whether the client can obtain a fresh URL:
 
-- **`true`** for session-based streams (those created via a `Session-Id`) — client can reconnect via `POST /v1/proxy` with `Session-Id` to obtain a fresh URL
-- **`false`** for single-request streams (those created without a `Session-Id`) — client cannot obtain a fresh URL
+- **`true`** for streams created via a `Session-Id` (connect) — client can reconnect via `POST /v1/proxy` with `Session-Id` to obtain a fresh URL
+- **`false`** for streams created without a `Session-Id` — client has no mechanism to obtain a fresh URL
 
 This distinguishes between three failure modes:
 
-- **Expired and renewable**: Valid HMAC, expired timestamp, session-based stream — client can reconnect via `POST /v1/proxy` with `Session-Id`
-- **Expired but not renewable**: Valid HMAC, expired timestamp, single-request stream — no recovery possible
+- **Expired and renewable**: Valid HMAC, expired timestamp — client can reconnect via `POST /v1/proxy` with `Session-Id`
+- **Expired but not renewable**: Valid HMAC, expired timestamp — no recovery possible
 - **Invalid**: Bad HMAC — no recovery possible, return `SIGNATURE_INVALID`
 
 The client uses this signal to trigger auto-renewal if a `connectUrl` is configured.
@@ -388,7 +387,7 @@ All data written to proxy streams uses a binary framing format. Each upstream re
 
 **Response lifecycle**: `Start (S) → Data (D)* → Complete (C) | Abort (A) | Error (E)`
 
-Response IDs are assigned sequentially starting from `1`. The framing applies to all proxy streams (including single-request streams), so the format is consistent regardless of whether the stream contains one response or many.
+Response IDs are assigned sequentially starting from `1`. The framing applies to all proxy streams, so the format is consistent regardless of whether the stream contains one response or many.
 
 **Key design decisions:**
 
@@ -434,7 +433,7 @@ The existing `StreamCredentials` remains unchanged and continues to store per-re
 4. Reconnect → POST /v1/proxy (Session-Id header)       → fresh URL (same as step 1)
 ```
 
-Session-based streams remain open indefinitely — there is no explicit "close session" operation. The stream stays open for future appends until it is deleted or the implementation applies its own retention/expiry policy.
+Stream closure is not managed by the proxy protocol — each response has its own terminal frame, so readers always know when a response is complete. Closing or deleting a stream is an application-level concern. Clients can use the base Durable Streams Protocol to close a stream when it is no longer needed, or delete it via the proxy's DELETE operation.
 
 ### Client Flow
 
@@ -735,7 +734,7 @@ Add `deriveStreamId(sessionId: string): string` utility:
 Update read handler error responses:
 
 - When HMAC is valid but URL is expired, return structured JSON error response with `code: "SIGNATURE_EXPIRED"`
-- Set `renewable: true` for session-based streams, `false` for single-request streams
+- Set `renewable: true` for streams created via `Session-Id`, `false` for streams created without
 - Include `streamId` in the error response for convenience
 - Distinguish between "expired" (valid HMAC) and "invalid" (bad HMAC)
 
@@ -786,8 +785,7 @@ Modify `createDurableFetch` to:
 5. After successful response:
    - Store/update session credentials (streamUrl, streamId only)
    - Store request credentials (with current offset as starting point)
-6. Handle `409 Conflict` (stream closed) by falling back to new stream creation
-7. Add auto-renewal logic:
+6. Add auto-renewal logic:
    - Intercept 401 on reads
    - Check for `renewable: true` in response
    - If `connectUrl` configured and `sessionId` available, POST `/v1/proxy` with `Session-Id` header (reconnect)
@@ -808,11 +806,10 @@ New test file covering:
 6. Expired HMAC rejected on read path with `renewable: true` in response
 7. Invalid HMAC rejected on all paths
 8. Non-existent stream returns 404
-9. Closed stream returns 409, client creates new stream
-10. Resume (requestId) works within session stream
-11. Mixed session/non-session requests
-12. Session override per-request
-13. getSessionId derivation
+9. Resume (requestId) works within session stream
+10. Mixed session/non-session requests
+11. Session override per-request
+12. getSessionId derivation
 
 #### File: `packages/proxy/src/__tests__/connect-stream.test.ts`
 
@@ -946,7 +943,7 @@ Have the connect handler return message history in the response body, along with
 - The server returns a fresh signed URL on every response (both `200` and `201`).
 - TTL is configurable via `Stream-Signed-URL-TTL` header, defaulting to a server-configured value. Servers MAY enforce a maximum TTL.
 - On write paths (`POST /v1/proxy` with `Use-Stream-URL`), HMAC is validated but expiry is ignored. Authorization flows through the upstream.
-- On read paths (`GET /v1/proxy/{id}`), both HMAC and expiry are enforced. Expired-but-valid-HMAC responses include `renewable: true` (for session streams) or `renewable: false` (for single-request streams).
+- On read paths (`GET /v1/proxy/{id}`), both HMAC and expiry are enforced. Expired-but-valid-HMAC responses include `renewable: true` (for streams created via `Session-Id`) or `renewable: false` (for streams created without).
 - URL renewal uses the connect operation — the client simply reconnects with the same `Session-Id` to obtain a fresh URL. No separate renew operation is needed.
 - Client-side: optional `connectUrl` and `streamSignedUrlTtl` configuration. Simple deployments use long TTLs with no auth endpoint. Security-sensitive deployments use short TTL + auth endpoint.
 
@@ -963,9 +960,9 @@ All operations (create, append, connect) use `POST /v1/proxy`. The operation is 
 
 Stream IDs for session-based operations are derived via UUIDv5 from the session ID using a fixed namespace. For stream-per-request operations (no session), a random UUID is used. This maintains the stateless proxy requirement.
 
-### Stream Closed Detection
+### Stream Closure
 
-When a stream is closed between requests, the proxy returns `409 Conflict`. The client clears session credentials and creates a new stream.
+Stream closure is not managed by the proxy protocol. Each response has its own terminal frame (Complete, Abort, or Error), so readers always know when a response is complete regardless of the stream's open/closed state. Closing or deleting a stream is an application-level concern — clients can use the base Durable Streams Protocol to close a stream when it is no longer needed.
 
 ### Connect vs Renew (Unified)
 

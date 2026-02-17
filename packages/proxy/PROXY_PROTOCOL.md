@@ -32,7 +32,7 @@ Copyright (c) 2026 ElectricSQL
    - 4.6. [Abort Upstream](#46-abort-upstream)
    - 4.7. [Stream Metadata](#47-stream-metadata)
    - 4.8. [Delete Proxy Stream](#48-delete-proxy-stream)
-   - 4.9. [Session Stream Lifecycle](#49-session-stream-lifecycle)
+   - 4.9. [Stream Lifecycle](#49-stream-lifecycle)
 5. [Stream Framing Format](#5-stream-framing-format)
    - 5.1. [Frame Structure](#51-frame-structure)
    - 5.2. [Frame Types](#52-frame-types)
@@ -324,7 +324,7 @@ The response ID for the appended response is the next sequential ID for this str
 - **`400 Bad Request`** with `MALFORMED_STREAM_URL`: `Use-Stream-URL` is not a valid URL or cannot be parsed.
 - **`401 Unauthorized`** with `SIGNATURE_INVALID`: HMAC signature on `Use-Stream-URL` is invalid.
 - **`404 Not Found`** with `STREAM_NOT_FOUND`: The stream referenced by `Use-Stream-URL` does not exist.
-- **`409 Conflict`** with `STREAM_CLOSED`: The stream is closed and cannot accept new data.
+- **`409 Conflict`** with `STREAM_CLOSED`: The stream has been closed (via the base protocol) and cannot accept new data.
 - All other errors from Section 4.2 (upstream errors, redirect blocking, etc.) apply.
 
 ### 4.4. Connect Session
@@ -485,12 +485,12 @@ Content-Type: application/json
 }
 ```
 
-The `renewable` field indicates whether the client can obtain a fresh URL. It **MUST** be `true` for session-based streams (those created via a `Session-Id`) and **MUST** be `false` for single-request streams (those created without a `Session-Id`). When `renewable` is `true`, the client can obtain a fresh URL by reconnecting with its `Session-Id` (Section 4.4). The `streamId` field is included for convenience.
+The `renewable` field indicates whether the client can obtain a fresh URL. It **MUST** be `true` for streams created via a Connect operation (Section 4.4) with a `Session-Id`, and **MUST** be `false` for streams created without a `Session-Id`. When `renewable` is `true`, the client can obtain a fresh URL by reconnecting with its `Session-Id` (Section 4.4). The `streamId` field is included for convenience.
 
 This distinguishes between three failure modes:
 
-- **Expired and renewable**: Valid HMAC, expired timestamp, session-based stream — client can reconnect via `POST {proxy-url}` with `Session-Id`
-- **Expired but not renewable**: Valid HMAC, expired timestamp, single-request stream — client cannot obtain a fresh URL
+- **Expired and renewable**: Valid HMAC, expired timestamp — client can reconnect via `POST {proxy-url}` with `Session-Id`
+- **Expired but not renewable**: Valid HMAC, expired timestamp — client has no mechanism to obtain a fresh URL
 - **Invalid**: Bad HMAC — no recovery possible, return `SIGNATURE_INVALID`
 
 ### 4.6. Abort Upstream
@@ -518,8 +518,6 @@ Pre-signed URL only. Servers **MUST NOT** fall back to service authentication fo
 - For each active response, an Abort frame (`A`) is written to the stream (see Section 5.2).
 - Data written before the abort is preserved and readable.
 - **Idempotent**: Aborting a stream with no active upstream connections succeeds silently.
-
-> **Note:** The behavior of the stream's closure state after an abort (whether the stream is marked closed or left open) is not specified in this version of the protocol and will be defined in a future revision.
 
 #### Response
 
@@ -577,11 +575,15 @@ Service authentication only (see Section 10). Pre-signed URLs are not accepted f
 HTTP/1.1 204 No Content
 ```
 
-### 4.9. Session Stream Lifecycle
+### 4.9. Stream Lifecycle
 
-Session-based streams (those created via `Session-Id`) remain open indefinitely — there is no explicit "close session" operation. The stream stays open for future appends until it is deleted (Section 4.8) or the implementation applies its own retention/expiry policy.
+The proxy protocol does not manage stream closure. Each upstream response is self-contained within its frame sequence (Start → Data\* → terminal frame), so readers always know when a response is complete regardless of the stream's open/closed state.
 
-Clients that want to end a session and preserve its data should simply stop appending. Implementations **MAY** close idle session streams after an implementation-defined inactivity period.
+Closing or deleting a stream is an application-level concern:
+
+- **Delete** (Section 4.8): Removes the stream and all persisted data, aborting any in-flight upstream connections.
+- **Close via base protocol**: Applications can close a stream using the base Durable Streams Protocol (e.g., `Stream-Closed: true` on a write), preventing further appends while preserving existing data for reads.
+- **Retention policies**: Implementations **MAY** apply their own retention or expiry policies to clean up idle streams.
 
 ## 5. Stream Framing Format
 
@@ -843,7 +845,7 @@ After the proxy receives a 2xx response from upstream and returns `201 Created` 
    - **Abort** (`A`): The stream was aborted (see Section 9.3).
    - **Error** (`E`): An error occurred during piping (network error, storage error, inactivity timeout).
 
-4. **Stream closure**: When the proxy determines that no more responses will be written to the stream, it **SHOULD** close the stream by sending `Stream-Closed: true` on the final write to the underlying durable stream. A stream is considered **single-request** when it was created via a Create operation (Section 4.1) without an accompanying `Session-Id` header — such streams are closed after the terminal frame. A stream is considered **session-based** when it was created via a Connect operation (Section 4.4) with a `Session-Id` — such streams remain open for future appends. Implementations **MUST** track whether a stream is session-based (e.g., by recording the presence of a session ID at creation time).
+The proxy protocol does not manage stream closure — each response has its own terminal frame, so readers always know when a response is complete. Closing the underlying durable stream (via `Stream-Closed: true` in the base protocol) is an application-level concern. Clients or operators can close a stream using the base Durable Streams Protocol when it is no longer needed.
 
 ### 9.3. Abort Behavior
 
@@ -852,8 +854,6 @@ When an abort is received:
 1. All active upstream connections for the stream are cancelled.
 2. For each active response, any buffered data is flushed as a Data frame, followed by an Abort frame (`A`).
 3. Data received before the abort is preserved and readable.
-
-> **Note:** The handling of the stream's closure state after an abort (whether the stream is marked closed or left open) is not specified in this version of the protocol and will be defined in a future revision.
 
 ## 10. Authentication
 
@@ -950,9 +950,9 @@ The proxy protocol defines the following error codes. Servers **SHOULD** return 
 
 ### 12.5. Stream State Errors
 
-| HTTP Status | Error Code      | Description                                                   |
-| ----------- | --------------- | ------------------------------------------------------------- |
-| 409         | `STREAM_CLOSED` | Stream is closed and cannot accept new data (append rejected) |
+| HTTP Status | Error Code      | Description                                                               |
+| ----------- | --------------- | ------------------------------------------------------------------------- |
+| 409         | `STREAM_CLOSED` | Stream has been closed (via the base protocol) and cannot accept new data |
 
 ### 12.6. Standard Errors
 
