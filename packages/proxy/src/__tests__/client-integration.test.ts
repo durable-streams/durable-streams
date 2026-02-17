@@ -8,6 +8,7 @@ import {
   loadRequestIdMapping,
 } from "../client"
 import { createDurableAdapter } from "../transports/tanstack"
+import { createDurableChatTransport } from "../transports/vercel"
 import { createAIStreamingResponse, createTestContext } from "./harness"
 
 const ctx = createTestContext()
@@ -118,6 +119,58 @@ describe(`createDurableSession`, () => {
     await session.abort()
     session.close()
   })
+
+  it(`supports concurrent fetch calls on one session`, async () => {
+    ctx.upstream.setResponse(createAIStreamingResponse([`parallel`], 10))
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      sessionId: `session-concurrent`,
+      storage: new MemoryStorage(),
+    })
+
+    const [first, second] = await Promise.all([
+      session.fetch(ctx.urls.upstream + `/v1/chat`, {
+        method: `POST`,
+        requestId: `parallel-1`,
+        body: JSON.stringify({ messages: [{ role: `user`, content: `A` }] }),
+      }),
+      session.fetch(ctx.urls.upstream + `/v1/chat`, {
+        method: `POST`,
+        requestId: `parallel-2`,
+        body: JSON.stringify({ messages: [{ role: `user`, content: `B` }] }),
+      }),
+    ])
+
+    expect([first.responseId, second.responseId].sort((a, b) => a - b)).toEqual(
+      [1, 2]
+    )
+    expect(first.body).toBeDefined()
+    expect(second.body).toBeDefined()
+    session.close()
+  })
+
+  it(`shares the same response object between fetch and responses`, async () => {
+    ctx.upstream.setResponse(createAIStreamingResponse([`shared`], 10))
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      sessionId: `session-shared-response`,
+      storage: new MemoryStorage(),
+    })
+
+    const iterator = session.responses()[Symbol.asyncIterator]()
+    const fetched = await session.fetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      requestId: `shared-1`,
+      body: JSON.stringify({ messages: [] }),
+    })
+    const yielded = await iterator.next()
+
+    expect(yielded.done).toBe(false)
+    expect(yielded.value).toBe(fetched)
+    session.close()
+  })
 })
 
 describe(`transport integration`, () => {
@@ -152,5 +205,23 @@ describe(`transport integration`, () => {
     expect(response.streamUrl).toBeDefined()
     const abort = createAbortFn(response.streamUrl as string)
     await abort()
+  })
+
+  it(`vercel transport sends and receives stream`, async () => {
+    ctx.upstream.setResponse(createAIStreamingResponse([`Vercel`], 20))
+    const transport = createDurableChatTransport({
+      api: ctx.urls.upstream + `/v1/chat`,
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      storage: new MemoryStorage(),
+      getRequestId: () => `vercel-request`,
+    })
+
+    const result = await transport.send({
+      messages: [{ role: `user`, content: `hello` }],
+    })
+
+    expect(result.status).toBe(200)
+    expect(result.stream).toBeDefined()
   })
 })
