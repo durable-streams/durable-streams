@@ -6,9 +6,9 @@ import {
   createDurableSession,
   createRequestIdStorageKey,
   loadRequestIdMapping,
-} from "../client"
-import { createDurableAdapter } from "../transports/tanstack"
-import { createDurableChatTransport } from "../transports/vercel"
+} from "../src/client"
+import { createDurableAdapter } from "../src/transports/tanstack"
+import { createDurableChatTransport } from "../src/transports/vercel"
 import { createAIStreamingResponse, createTestContext } from "./harness"
 
 const ctx = createTestContext()

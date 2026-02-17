@@ -18,9 +18,9 @@
  */
 
 import { DurableStreamTestServer } from "@durable-streams/server"
-import { createProxyServer } from "../../server"
+import { createProxyServer } from "../../src/server"
 import { createMockUpstream } from "./mock-upstream"
-import type { ProxyServer } from "../../server"
+import type { ProxyServer } from "../../src/server"
 import type { MockUpstreamServer } from "./mock-upstream"
 
 /**

@@ -5,7 +5,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { generatePreSignedUrl } from "../server/tokens"
+import { generatePreSignedUrl } from "../src/server/tokens"
 import {
   createAIStreamingResponse,
   createStream,

@@ -8,7 +8,7 @@ import {
   parsePreSignedUrl,
   validateHmac,
   validatePreSignedUrl,
-} from "../server/tokens"
+} from "../src/server/tokens"
 
 const TEST_SECRET = `test-secret-key-for-development`
 const TEST_STREAM_ID = `550e8400-e29b-41d4-a716-446655440000`

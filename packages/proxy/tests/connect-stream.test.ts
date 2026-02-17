@@ -5,7 +5,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { deriveStreamId } from "../server/derive-stream-id"
+import { deriveStreamId } from "../src/server/derive-stream-id"
 import { createTestContext } from "./harness"
 
 const ctx = createTestContext()
