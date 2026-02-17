@@ -124,6 +124,7 @@ describe(`stream reuse with Use-Stream-URL`, () => {
     const reuse = await createStreamWithReuse(streamUrl)
 
     expect(reuse.status).toBe(200)
+    expect(reuse.headers.get(`Stream-Response-Id`)).toBe(`2`)
   })
 
   it(`returns fresh signed URL in Location header on reuse`, async () => {
@@ -208,7 +209,7 @@ describe(`stream reuse with Use-Stream-URL`, () => {
 
     expect(response.status).toBe(400)
     const body = await response.json()
-    expect(body.error.code).toBe(`INVALID_USE_STREAM_URL`)
+    expect(body.error.code).toBe(`MALFORMED_STREAM_URL`)
   })
 
   it(`returns 401 for invalid HMAC signature`, async () => {
@@ -319,8 +320,8 @@ describe(`Stream-Signed-URL-TTL header`, () => {
   })
 })
 
-describe(`409 Conflict for closed streams`, () => {
-  it(`returns 409 when trying to reuse a stream that completed`, async () => {
+describe(`reuse after completed response`, () => {
+  it(`allows append to stream after a prior response completed`, async () => {
     // Create a stream with regular response
     ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
 
@@ -333,10 +334,10 @@ describe(`409 Conflict for closed streams`, () => {
     expect(result.status).toBe(201)
     await waitForStreamReady(ctx.urls.proxy, result.streamId!)
 
-    // Wait for the stream to complete (upstream finishes, proxy closes stream)
+    // Wait for the response to complete.
     await new Promise((r) => setTimeout(r, 500))
 
-    // Try to reuse the completed/closed stream
+    // Reuse the same stream again.
     ctx.upstream.setResponse(createAIStreamingResponse([` World`]))
 
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
@@ -353,10 +354,8 @@ describe(`409 Conflict for closed streams`, () => {
       body: JSON.stringify({}),
     })
 
-    // Stream should be closed after upstream completes
-    expect(response.status).toBe(409)
-    const body = await response.json()
-    expect(body.error.code).toBe(`STREAM_CLOSED`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get(`Location`)).toBeDefined()
   })
 })
 

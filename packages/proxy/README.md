@@ -147,9 +147,47 @@ Returns `200 OK` with `{"status":"ok"}`.
 
 The package includes a client library for browser and Node.js applications, available at `@durable-streams/proxy/client`.
 
+### createDurableSession
+
+Session API for multi-request streams. A single session appends multiple upstream
+responses to one durable stream and returns demultiplexed `ProxyResponse` objects.
+
+```typescript
+import { createDurableSession } from "@durable-streams/proxy/client"
+
+const session = createDurableSession({
+  proxyUrl: "https://my-proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
+  storage: localStorage,
+})
+
+await session.connect() // optional; auto-runs on first fetch/responses call
+
+const response = await session.fetch(
+  "https://api.openai.com/v1/chat/completions",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer sk-...", // becomes Upstream-Authorization
+    },
+    body: JSON.stringify({
+      model: "gpt-4",
+      messages: [{ role: "user", content: "Hello" }],
+      stream: true,
+    }),
+    requestId: "turn-1",
+  }
+)
+
+console.log(response.responseId) // numeric stream response ID
+```
+
 ### createDurableFetch
 
-A fetch-like wrapper that routes requests through the proxy, persists stream credentials, and automatically resumes interrupted streams.
+One-off wrapper for non-session usage. Each call creates a stream and returns a
+demultiplexed `ProxyResponse` for that request.
 
 ```typescript
 import { createDurableFetch } from "@durable-streams/proxy/client"
@@ -157,34 +195,24 @@ import { createDurableFetch } from "@durable-streams/proxy/client"
 const durableFetch = createDurableFetch({
   proxyUrl: "https://my-proxy.example.com/v1/proxy",
   proxyAuthorization: "service-secret",
-  autoResume: true,
-  storage: localStorage, // or sessionStorage, or MemoryStorage
 })
 
 const response = await durableFetch(
   "https://api.openai.com/v1/chat/completions",
   {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer sk-...", // Transparently becomes Upstream-Authorization
-    },
     body: JSON.stringify({
-      model: "gpt-4",
       messages: [{ role: "user", content: "Hello" }],
       stream: true,
     }),
-    requestId: "conversation-123", // Optional: enables resume across sessions
+    requestId: "req-abc",
   }
 )
-
-// response.body is a ReadableStream
-// response.wasResumed indicates if this was a resume
-// response.streamUrl is the pre-signed URL for manual operations
-// response.streamId is the stream UUID
 ```
 
-Everything passed to `durableFetch` is aimed at the upstream service. The client transparently relabels `Authorization` to `Upstream-Authorization` and `method` to `Upstream-Method` when sending to the proxy.
+Everything passed to client request calls is aimed at upstream. `Authorization`
+is relabeled to `Upstream-Authorization`, and method is relabeled to
+`Upstream-Method`.
 
 ### createAbortFn
 
@@ -201,7 +229,10 @@ await abort() // Sends PATCH ?action=abort to stop the upstream connection
 
 ### Credential Storage
 
-The client persists stream credentials (pre-signed URL, offset, content type) to enable resume across page reloads and network interruptions. Credentials are scoped by `proxyUrl + requestId` to prevent cross-domain leakage.
+The client stores `requestId -> responseId` mappings for idempotent retry:
+
+- Session key: `{prefix}{proxyUrl}:{sessionId}:{requestId} -> { responseId }`
+- One-off key: `{prefix}{proxyUrl}::{requestId} -> { responseId, streamUrl }`
 
 - **Browser**: Uses `localStorage` by default
 - **Node.js**: Uses `MemoryStorage` (in-process only)

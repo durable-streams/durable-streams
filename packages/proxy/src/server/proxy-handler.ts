@@ -10,7 +10,6 @@ import { handleReadStream } from "./read-stream"
 import { handleHeadStream } from "./head-stream"
 import { handleAbortStream } from "./abort-stream"
 import { handleDeleteStream } from "./delete-stream"
-import { handleRenewStream } from "./renew-stream"
 import { createAllowlistValidator } from "./allowlist"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
@@ -33,7 +32,7 @@ function setCorsHeaders(res: ServerResponse): void {
   )
   res.setHeader(
     `Access-Control-Allow-Headers`,
-    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Renew-Stream-URL, Session-Id, Stream-Signed-URL-TTL`
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Session-Id, Stream-Signed-URL-TTL`
   )
   res.setHeader(
     `Access-Control-Expose-Headers`,
@@ -41,6 +40,8 @@ function setCorsHeaders(res: ServerResponse): void {
       `Location`,
       `Upstream-Content-Type`,
       `Upstream-Status`,
+      `Stream-Response-Id`,
+      `Stream-Id`,
       `Stream-Next-Offset`,
       `Stream-Offset`,
       `Stream-Up-To-Date`,
@@ -66,6 +67,7 @@ export function createProxyHandler(
 
   // Content type store for tracking upstream content types
   const contentTypeStore = new Map<string, string>()
+  const sessionStreamIds = new Set<string>()
 
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
@@ -83,20 +85,20 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy - Create, append, connect, or renew stream
+      // Route: POST /v1/proxy - Create, append, or connect stream
       // Dispatch based on header (checked in priority order):
-      //   1. Renew-Stream-URL header → renew (get fresh signed URL)
-      //   2. Use-Stream-URL header → append (write to existing stream)
-      //   3. Session-Id header → connect (initialize/reconnect session)
-      //   4. None → create (new stream)
+      //   1. Use-Stream-URL header → append (write to existing stream)
+      //   2. Session-Id header → connect (initialize/reconnect session)
+      //   3. None → create (new stream)
       if (PROXY_BASE.test(path) && method === `POST`) {
-        if (req.headers[`renew-stream-url`]) {
-          await handleRenewStream(req, res, options, isAllowed)
-        } else if (
-          req.headers[`session-id`] &&
-          !req.headers[`use-stream-url`]
-        ) {
-          await handleConnectStream(req, res, options, isAllowed)
+        if (req.headers[`session-id`] && !req.headers[`use-stream-url`]) {
+          await handleConnectStream(
+            req,
+            res,
+            options,
+            isAllowed,
+            sessionStreamIds
+          )
         } else {
           await handleCreateStream(
             req,
@@ -121,7 +123,8 @@ export function createProxyHandler(
               res,
               streamId,
               options,
-              contentTypeStore
+              contentTypeStore,
+              sessionStreamIds
             )
             return
 

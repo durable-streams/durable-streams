@@ -7,7 +7,7 @@
  */
 
 import { validateServiceJwt } from "./tokens"
-import { abortConnection } from "./upstream"
+import { abortConnections, clearStreamState } from "./upstream"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -50,11 +50,12 @@ export async function handleDeleteStream(
     return
   }
 
-  // 1. Abort any in-flight upstream request
-  abortConnection(streamId)
+  // 1. Abort any in-flight upstream requests for this stream.
+  abortConnections(streamId)
 
   // 2. Clean up content type store
   contentTypeStore.delete(streamId)
+  clearStreamState(streamId)
 
   // 3. Delete from underlying durable streams server
   const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)

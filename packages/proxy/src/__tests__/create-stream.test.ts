@@ -34,6 +34,7 @@ describe(`stream creation`, () => {
     expect(result.status).toBe(201)
     expect(result.streamUrl).toBeDefined()
     expect(result.streamId).toBeDefined()
+    expect(result.headers.get(`Stream-Response-Id`)).toBe(`1`)
     // Stream ID should be a UUID
     expect(result.streamId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
@@ -132,6 +133,7 @@ describe(`stream creation`, () => {
     expect(result.status).toBe(201)
     expect(result.upstreamContentType).toBeDefined()
     expect(result.upstreamContentType).toContain(`text/event-stream`)
+    expect(result.headers.get(`Stream-Response-Id`)).toBe(`1`)
   })
 })
 

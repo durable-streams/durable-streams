@@ -48,5 +48,5 @@ export function sendExpiredUrlError(
   streamId: string
 ): void {
   res.writeHead(401, { "Content-Type": `application/json` })
-  res.end(JSON.stringify({ error: code, message, renewable, streamId }))
+  res.end(JSON.stringify({ error: { code, message, renewable, streamId } }))
 }

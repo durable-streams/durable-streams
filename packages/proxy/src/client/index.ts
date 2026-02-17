@@ -9,11 +9,16 @@
 
 // Main API
 export { createDurableFetch, createAbortFn } from "./durable-fetch"
+export { createDurableSession } from "./proxy-session"
 
 // Storage utilities
 export {
   MemoryStorage,
   getDefaultStorage,
+  createRequestIdStorageKey,
+  saveRequestIdMapping,
+  loadRequestIdMapping,
+  removeRequestIdMapping,
   createStorageKey,
   saveCredentials,
   loadCredentials,
@@ -25,12 +30,16 @@ export {
 
 // Types
 export type {
-  ConnectResponse,
   DurableStorage,
-  StreamCredentials,
+  RequestIdMapping,
   SessionCredentials,
   DurableFetchOptions,
+  ProxySessionOptions,
+  ProxyFetchOptions,
+  ProxyResponse,
+  DurableProxySession,
+  DurableFetch,
   DurableFetchRequestOptions,
   DurableResponse,
-  DurableFetch,
+  ConnectResponse,
 } from "./types"

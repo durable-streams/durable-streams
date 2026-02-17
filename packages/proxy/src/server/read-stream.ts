@@ -26,7 +26,8 @@ export async function handleReadStream(
   res: ServerResponse,
   streamId: string,
   options: ProxyServerOptions,
-  contentTypeStore: Map<string, string>
+  contentTypeStore: Map<string, string>,
+  sessionStreamIds: Set<string>
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -51,7 +52,7 @@ export async function handleReadStream(
           res,
           code,
           `Pre-signed URL has expired`,
-          result.hmacValid,
+          result.hmacValid && sessionStreamIds.has(streamId),
           streamId
         )
       } else {

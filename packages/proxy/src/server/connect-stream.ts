@@ -1,13 +1,13 @@
 /**
  * Handler for the connect operation.
  *
- * POST /v1/proxy with Session-Id header (without Use-Stream-URL or Renew-Stream-URL)
+ * POST /v1/proxy with Session-Id header (without Use-Stream-URL)
  *
  * Initializes or reconnects a session by:
  * 1. Deriving a stream ID deterministically from the session ID
  * 2. Ensuring the stream exists (HEAD/PUT)
- * 3. Forwarding the request to the connect handler (Upstream-URL) with Stream-Id header
- * 4. Returning the origin's response body + Location (signed URL) + Stream-Offset
+ * 3. Optionally forwarding to an auth endpoint (Upstream-URL) with Stream-Id header
+ * 4. Returning a fresh signed URL in Location header (no response body)
  */
 
 import { generatePreSignedUrl, validateServiceJwt } from "./tokens"
@@ -26,11 +26,6 @@ const DEFAULT_URL_EXPIRATION_SECONDS = 604800
  * Upstream request timeout in milliseconds.
  */
 const UPSTREAM_TIMEOUT_MS = 30000
-
-/**
- * Maximum response body size to read from the connect handler.
- */
-const MAX_CONNECT_BODY_SIZE = 10 * 1024 * 1024 // 10MB
 
 /**
  * Collect request body as a Buffer.
@@ -55,7 +50,8 @@ export async function handleConnectStream(
   req: IncomingMessage,
   res: ServerResponse,
   options: ProxyServerOptions,
-  isAllowed: (url: string) => boolean
+  isAllowed: (url: string) => boolean,
+  sessionStreamIds: Set<string>
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -86,33 +82,8 @@ export async function handleConnectStream(
     return
   }
 
-  // Step 3: Validate Upstream-URL header (the connect handler URL)
+  // Step 3: Optional Upstream-URL header (auth endpoint).
   const upstreamUrl = req.headers[`upstream-url`]
-  if (!upstreamUrl || Array.isArray(upstreamUrl)) {
-    sendError(
-      res,
-      400,
-      `MISSING_UPSTREAM_URL`,
-      `Upstream-URL header is required`
-    )
-    return
-  }
-
-  const parsedUpstreamUrl = validateUpstreamUrl(upstreamUrl)
-  if (!parsedUpstreamUrl) {
-    sendError(res, 403, `UPSTREAM_NOT_ALLOWED`, `Invalid upstream URL`)
-    return
-  }
-
-  if (!isAllowed(upstreamUrl)) {
-    sendError(
-      res,
-      403,
-      `UPSTREAM_NOT_ALLOWED`,
-      `Upstream URL is not in allowlist`
-    )
-    return
-  }
 
   // Step 4: Derive stream ID deterministically from session ID
   const streamId = deriveStreamId(sessionId)
@@ -159,79 +130,83 @@ export async function handleConnectStream(
     return
   }
 
-  // Step 6: Forward request to connect handler with Stream-Id header
-  const upstreamHeaders = filterHeadersForUpstream(
-    req.headers as Record<string, string | Array<string> | undefined>,
-    parsedUpstreamUrl.hostname
-  )
-  upstreamHeaders[`Stream-Id`] = streamId
+  // Step 6: If Upstream-URL is provided, authorize via auth endpoint.
+  if (upstreamUrl && !Array.isArray(upstreamUrl)) {
+    const parsedUpstreamUrl = validateUpstreamUrl(upstreamUrl)
+    if (!parsedUpstreamUrl) {
+      sendError(res, 403, `UPSTREAM_NOT_ALLOWED`, `Invalid upstream URL`)
+      return
+    }
 
-  const body = await collectRequestBody(req)
-
-  const abortController = new AbortController()
-  const timeoutId = setTimeout(
-    () => abortController.abort(),
-    UPSTREAM_TIMEOUT_MS
-  )
-
-  let upstreamResponse: Response
-  try {
-    upstreamResponse = await fetch(upstreamUrl, {
-      method: `POST`,
-      headers: upstreamHeaders,
-      body: body.length > 0 ? (body as unknown as BodyInit) : undefined,
-      signal: abortController.signal,
-      redirect: `manual`,
-    })
-    clearTimeout(timeoutId)
-  } catch (error) {
-    clearTimeout(timeoutId)
-
-    if (error instanceof Error && error.name === `AbortError`) {
+    if (!isAllowed(upstreamUrl)) {
       sendError(
         res,
-        504,
-        `UPSTREAM_TIMEOUT`,
-        `Upstream server did not respond in time`
+        403,
+        `UPSTREAM_NOT_ALLOWED`,
+        `Upstream URL is not in allowlist`
       )
       return
     }
 
-    const message = error instanceof Error ? error.message : `Unknown error`
-    sendError(res, 502, `UPSTREAM_ERROR`, message)
-    return
-  }
+    const upstreamHeaders = filterHeadersForUpstream(
+      req.headers as Record<string, string | Array<string> | undefined>,
+      parsedUpstreamUrl.hostname
+    )
+    upstreamHeaders[`Stream-Id`] = streamId
+    const body = await collectRequestBody(req)
 
-  // Step 7: Handle upstream response
-  // If upstream returns non-2xx, forward status to client
-  if (!upstreamResponse.ok) {
-    const errorBody = await readResponseBody(
-      upstreamResponse,
-      MAX_CONNECT_BODY_SIZE
+    const abortController = new AbortController()
+    const timeoutId = setTimeout(
+      () => abortController.abort(),
+      UPSTREAM_TIMEOUT_MS
     )
 
-    res.writeHead(upstreamResponse.status, {
-      "Content-Type":
-        upstreamResponse.headers.get(`content-type`) ?? `text/plain`,
-      "Upstream-Status": String(upstreamResponse.status),
-    })
-    res.end(errorBody)
+    let upstreamResponse: Response
+    try {
+      upstreamResponse = await fetch(upstreamUrl, {
+        method: `POST`,
+        headers: upstreamHeaders,
+        body: body.length > 0 ? (body as unknown as BodyInit) : undefined,
+        signal: abortController.signal,
+        redirect: `manual`,
+      })
+      clearTimeout(timeoutId)
+    } catch (error) {
+      clearTimeout(timeoutId)
+      if (error instanceof Error && error.name === `AbortError`) {
+        sendError(
+          res,
+          504,
+          `UPSTREAM_TIMEOUT`,
+          `Upstream server did not respond in time`
+        )
+        return
+      }
+      const message = error instanceof Error ? error.message : `Unknown error`
+      sendError(res, 502, `UPSTREAM_ERROR`, message)
+      return
+    }
+
+    if (!upstreamResponse.ok) {
+      sendError(
+        res,
+        401,
+        `CONNECT_REJECTED`,
+        `Auth endpoint rejected session access`
+      )
+      return
+    }
+  } else if (Array.isArray(upstreamUrl)) {
+    sendError(
+      res,
+      400,
+      `MALFORMED_UPSTREAM_URL`,
+      `Upstream-URL header must be a single value`
+    )
     return
   }
 
-  // Step 8: Read origin response body
-  const originBody = await readResponseBody(
-    upstreamResponse,
-    MAX_CONNECT_BODY_SIZE
-  )
-
-  const upstreamContentType =
-    upstreamResponse.headers.get(`content-type`) ?? `application/octet-stream`
-
-  // Get Stream-Offset from connect handler if provided
-  const streamOffset = upstreamResponse.headers.get(`stream-offset`)
-
-  // Step 9: Generate pre-signed URL
+  // Step 7: Generate pre-signed URL
   const signedUrlTtlHeader = req.headers[`stream-signed-url-ttl`]
   let urlExpirationSeconds =
     options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
@@ -253,54 +228,14 @@ export async function handleConnectStream(
     expiresAt
   )
 
-  // Step 10: Return origin body + headers
+  // Step 8: Return no body, only Location header.
   const statusCode = isNewSession ? 201 : 200
-  const responseHeaders: Record<string, string> = {
+  sessionStreamIds.add(streamId)
+  const responseHeaders = {
     Location: location,
-    "Upstream-Content-Type": upstreamContentType,
-    "Content-Type": upstreamContentType,
-    "Access-Control-Expose-Headers": `Location, Upstream-Content-Type, Stream-Offset`,
+    "Stream-Id": streamId,
+    "Access-Control-Expose-Headers": `Location, Stream-Id`,
   }
-
-  if (streamOffset) {
-    responseHeaders[`Stream-Offset`] = streamOffset
-  }
-
   res.writeHead(statusCode, responseHeaders)
-  res.end(originBody)
-}
-
-/**
- * Read response body up to a maximum size.
- */
-async function readResponseBody(
-  response: Response,
-  maxSize: number
-): Promise<Buffer> {
-  const reader = response.body?.getReader()
-  if (!reader) {
-    return Buffer.alloc(0)
-  }
-
-  const chunks: Array<Uint8Array> = []
-  let totalSize = 0
-
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      chunks.push(value)
-      totalSize += value.length
-
-      if (totalSize >= maxSize) {
-        break
-      }
-    }
-  } finally {
-    reader.releaseLock()
-  }
-
-  const result = Buffer.concat(chunks)
-  return result.subarray(0, Math.min(result.length, maxSize))
+  res.end()
 }

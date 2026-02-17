@@ -155,7 +155,7 @@ describe(`stream reading - expired URLs`, () => {
     await new Promise((r) => setTimeout(r, 100))
   })
 
-  it(`returns structured error with renewable:true for expired URL with valid HMAC`, async () => {
+  it(`returns structured error with renewable:false for non-session streams`, async () => {
     // Generate an expired URL with valid HMAC
     const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
     const expiredUrl = generatePreSignedUrl(
@@ -171,10 +171,43 @@ describe(`stream reading - expired URLs`, () => {
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error).toBe(`SIGNATURE_EXPIRED`)
-    expect(body.message).toBe(`Pre-signed URL has expired`)
-    expect(body.renewable).toBe(true)
-    expect(body.streamId).toBe(streamId)
+    expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
+    expect(body.error.message).toBe(`Pre-signed URL has expired`)
+    expect(body.error.renewable).toBe(false)
+    expect(body.error.streamId).toBe(streamId)
+  })
+
+  it(`returns structured error with renewable:true for session streams`, async () => {
+    const connectUrl = new URL(`/v1/proxy`, ctx.urls.proxy)
+    connectUrl.searchParams.set(`secret`, TEST_SECRET)
+    const connectRes = await fetch(connectUrl.toString(), {
+      method: `POST`,
+      headers: {
+        "Session-Id": `read-expiry-session-1`,
+      },
+    })
+    expect([200, 201]).toContain(connectRes.status)
+
+    const location = connectRes.headers.get(`Location`)
+    expect(location).toBeTruthy()
+    const connectedUrl = new URL(location!, ctx.urls.proxy)
+    const connectedStreamId = connectedUrl.pathname.split(`/`).pop()!
+    const expiredAt = Math.floor(Date.now() / 1000) - 3600
+    const expiredUrl = generatePreSignedUrl(
+      ctx.urls.proxy,
+      connectedStreamId,
+      TEST_SECRET,
+      expiredAt
+    )
+    const url = new URL(expiredUrl)
+    url.searchParams.set(`offset`, `-1`)
+
+    const response = await fetch(url.toString())
+    expect(response.status).toBe(401)
+    const body = await response.json()
+    expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
+    expect(body.error.renewable).toBe(true)
+    expect(body.error.streamId).toBe(connectedStreamId)
   })
 
   it(`returns structured error with renewable:false for expired URL with invalid HMAC`, async () => {
@@ -189,10 +222,10 @@ describe(`stream reading - expired URLs`, () => {
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error).toBe(`SIGNATURE_EXPIRED`)
-    expect(body.message).toBe(`Pre-signed URL has expired`)
-    expect(body.renewable).toBe(false)
-    expect(body.streamId).toBe(streamId)
+    expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
+    expect(body.error.message).toBe(`Pre-signed URL has expired`)
+    expect(body.error.renewable).toBe(false)
+    expect(body.error.streamId).toBe(streamId)
   })
 })
 

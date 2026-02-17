@@ -1,87 +1,167 @@
 /**
- * Upstream connection management and body piping.
- *
- * Handles the lifecycle of connections to upstream servers and streams
- * their response bodies to durable storage with batching.
+ * Upstream connection management and framed body piping.
  */
 
+import { randomUUID } from "node:crypto"
 import type { UpstreamConnection } from "./types"
 
-/**
- * Registry of active upstream connections.
- * Keyed by stream ID for lookup on abort requests.
- */
-const activeConnections = new Map<string, UpstreamConnection>()
+const FRAME_HEADER_SIZE = 9
 
-/**
- * Register an active upstream connection.
- *
- * @param streamId - The stream ID
- * @param connection - The connection state
- */
-export function registerConnection(
-  streamId: string,
-  connection: UpstreamConnection
-): void {
-  activeConnections.set(streamId, connection)
+const FRAME_TYPE = {
+  START: 0x53, // S
+  DATA: 0x44, // D
+  COMPLETE: 0x43, // C
+  ABORT: 0x41, // A
+  ERROR: 0x45, // E
+} as const
+
+const activeConnections = new Map<string, Map<string, UpstreamConnection>>()
+const streamResponseCounters = new Map<string, number>()
+const responseIdLocks = new Map<string, Promise<void>>()
+
+export interface StartFramePayload {
+  status: number
+  headers: Record<string, string>
 }
 
-/**
- * Unregister an upstream connection.
- *
- * @param streamId - The stream ID
- */
-export function unregisterConnection(streamId: string): void {
+export interface ErrorFramePayload {
+  code: string
+  message: string
+}
+
+async function withStreamLock<T>(
+  streamId: string,
+  fn: () => Promise<T>
+): Promise<T> {
+  const prev = responseIdLocks.get(streamId) ?? Promise.resolve()
+  let release: () => void = () => {}
+  const current = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  responseIdLocks.set(
+    streamId,
+    prev.then(() => current)
+  )
+
+  await prev
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (responseIdLocks.get(streamId) === current) {
+      responseIdLocks.delete(streamId)
+    }
+  }
+}
+
+async function bootstrapResponseCounter(
+  durableStreamsUrl: string,
+  streamId: string
+): Promise<number> {
+  const url = new URL(`/v1/streams/${streamId}`, durableStreamsUrl)
+  url.searchParams.set(`offset`, `-1`)
+
+  const response = await fetch(url.toString(), { method: `GET` })
+  if (!response.ok) {
+    return 0
+  }
+
+  const bytes = new Uint8Array(await response.arrayBuffer())
+  let maxResponseId = 0
+  let offset = 0
+
+  while (offset + FRAME_HEADER_SIZE <= bytes.length) {
+    const view = new DataView(
+      bytes.buffer,
+      bytes.byteOffset + offset,
+      FRAME_HEADER_SIZE
+    )
+    const responseId = view.getUint32(1, false)
+    const payloadLength = view.getUint32(5, false)
+    if (offset + FRAME_HEADER_SIZE + payloadLength > bytes.length) {
+      break
+    }
+    if (responseId > maxResponseId) {
+      maxResponseId = responseId
+    }
+    offset += FRAME_HEADER_SIZE + payloadLength
+  }
+
+  return maxResponseId
+}
+
+export async function nextResponseId(
+  durableStreamsUrl: string,
+  streamId: string
+): Promise<number> {
+  return withStreamLock(streamId, async () => {
+    if (!streamResponseCounters.has(streamId)) {
+      try {
+        const previousMax = await bootstrapResponseCounter(
+          durableStreamsUrl,
+          streamId
+        )
+        streamResponseCounters.set(streamId, previousMax)
+      } catch {
+        streamResponseCounters.set(streamId, 0)
+      }
+    }
+
+    const next = (streamResponseCounters.get(streamId) ?? 0) + 1
+    streamResponseCounters.set(streamId, next)
+    return next
+  })
+}
+
+export function clearStreamState(streamId: string): void {
+  streamResponseCounters.delete(streamId)
   activeConnections.delete(streamId)
 }
 
-/**
- * Get an active connection by stream ID.
- *
- * @param streamId - The stream ID
- * @returns The connection if found, undefined otherwise
- */
-export function getConnection(
-  streamId: string
-): UpstreamConnection | undefined {
-  return activeConnections.get(streamId)
+export function registerConnection(connection: UpstreamConnection): void {
+  let streamConnections = activeConnections.get(connection.streamId)
+  if (!streamConnections) {
+    streamConnections = new Map<string, UpstreamConnection>()
+    activeConnections.set(connection.streamId, streamConnections)
+  }
+  streamConnections.set(connection.connectionId, connection)
 }
 
-/**
- * Abort an active connection.
- *
- * @param streamId - The stream ID
- */
-export function abortConnection(streamId: string): void {
-  const connection = activeConnections.get(streamId)
-  if (connection?.abortController) {
+export function unregisterConnection(
+  streamId: string,
+  connectionId: string
+): void {
+  const streamConnections = activeConnections.get(streamId)
+  if (!streamConnections) return
+  streamConnections.delete(connectionId)
+  if (streamConnections.size === 0) {
+    activeConnections.delete(streamId)
+  }
+}
+
+export function abortConnections(streamId: string): void {
+  const streamConnections = activeConnections.get(streamId)
+  if (!streamConnections) return
+
+  for (const connection of streamConnections.values()) {
     connection.abortController.abort()
   }
-  // Always clear the reference (idempotent)
-  activeConnections.delete(streamId)
 }
 
-/**
- * Options for piping upstream response body to durable storage.
- */
-export interface PipeUpstreamOptions {
-  /** URL of the durable streams server */
-  durableStreamsUrl: string
-  /** The stream ID */
-  streamId: string
-  /** AbortSignal for cancellation */
-  signal: AbortSignal
-  /** Size threshold for flushing batches (default: 4KB) */
-  batchSizeThreshold?: number
-  /** Time threshold for flushing batches in ms (default: 50ms) */
-  batchTimeThreshold?: number
-  /** Inactivity timeout in ms (default: 10 minutes) */
-  inactivityTimeout?: number
+export function createConnection(
+  streamId: string,
+  responseId: number,
+  abortController?: AbortController
+): UpstreamConnection {
+  return {
+    connectionId: randomUUID(),
+    abortController: abortController ?? new AbortController(),
+    streamId,
+    responseId,
+    startedAt: Date.now(),
+  }
 }
 
-/**
- * Concatenate multiple Uint8Arrays into one.
- */
 function concatUint8Arrays(arrays: Array<Uint8Array>): Uint8Array {
   const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0)
   const result = new Uint8Array(totalLength)
@@ -93,99 +173,150 @@ function concatUint8Arrays(arrays: Array<Uint8Array>): Uint8Array {
   return result
 }
 
-/**
- * Pipe an upstream response body to durable storage.
- *
- * Implements batching and inactivity timeout per spec:
- * - Flush when 4KB accumulated OR 50ms since first chunk in batch
- * - 10 minute inactivity timeout
- * - Mark stream closed when body ends
- * - On abort: flush accumulated data but don't close stream
- *
- * @param body - The response body stream
- * @param options - Piping options
- */
+function toUtf8Bytes(value: string): Uint8Array {
+  return new TextEncoder().encode(value)
+}
+
+function buildFrame(
+  type: number,
+  responseId: number,
+  payload?: Uint8Array
+): Uint8Array {
+  const data = payload ?? new Uint8Array(0)
+  const frame = new Uint8Array(FRAME_HEADER_SIZE + data.length)
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength)
+  frame[0] = type
+  view.setUint32(1, responseId, false)
+  view.setUint32(5, data.length, false)
+  if (data.length > 0) {
+    frame.set(data, FRAME_HEADER_SIZE)
+  }
+  return frame
+}
+
+function normalizeHeaders(headers: Headers): Record<string, string> {
+  const out: Record<string, string> = {}
+  headers.forEach((value, key) => {
+    out[key.toLowerCase()] = value
+  })
+  return out
+}
+
+async function postFrame(
+  durableStreamsUrl: string,
+  streamId: string,
+  frame: Uint8Array
+): Promise<void> {
+  const url = new URL(`/v1/streams/${streamId}`, durableStreamsUrl)
+  const response = await fetch(url.toString(), {
+    method: `POST`,
+    headers: { "Content-Type": `application/octet-stream` },
+    body: frame as unknown as BodyInit,
+  })
+  if (!response.ok) {
+    throw new Error(
+      `Failed to write frame to stream ${streamId}: ${response.status}`
+    )
+  }
+}
+
+export interface PipeUpstreamOptions {
+  durableStreamsUrl: string
+  streamId: string
+  responseId: number
+  signal: AbortSignal
+  upstreamStatus: number
+  upstreamHeaders: Headers
+  batchSizeThreshold?: number
+  batchTimeThreshold?: number
+  inactivityTimeout?: number
+}
+
 export async function pipeUpstreamBody(
-  body: ReadableStream<Uint8Array>,
+  body: ReadableStream<Uint8Array> | null,
   options: PipeUpstreamOptions
 ): Promise<void> {
   const {
     durableStreamsUrl,
     streamId,
+    responseId,
     signal,
-    batchSizeThreshold = 4096, // 4KB
-    batchTimeThreshold = 50, // 50ms
-    inactivityTimeout = 600000, // 10 minutes
+    upstreamStatus,
+    upstreamHeaders,
+    batchSizeThreshold = 4096,
+    batchTimeThreshold = 50,
+    inactivityTimeout = 600000,
   } = options
 
-  const streamPath = `/v1/streams/${streamId}`
+  const startPayload = toUtf8Bytes(
+    JSON.stringify({
+      status: upstreamStatus,
+      headers: normalizeHeaders(upstreamHeaders),
+    } satisfies StartFramePayload)
+  )
+  await postFrame(
+    durableStreamsUrl,
+    streamId,
+    buildFrame(FRAME_TYPE.START, responseId, startPayload)
+  )
 
+  if (!body) {
+    await postFrame(
+      durableStreamsUrl,
+      streamId,
+      buildFrame(FRAME_TYPE.COMPLETE, responseId)
+    )
+    return
+  }
+
+  let terminalWritten = false
+  const reader = body.getReader()
   let buffer: Array<Uint8Array> = []
   let bufferSize = 0
   let batchStartTime: number | null = null
   let inactivityTimer: ReturnType<typeof setTimeout> | null = null
-  let inactivityTimedOut = false
+  let terminalReason = `complete`
 
-  const reader = body.getReader()
+  const writeTerminalFrame = async (
+    type: number,
+    payload?: Uint8Array
+  ): Promise<void> => {
+    if (terminalWritten) return
+    terminalWritten = true
+    await postFrame(
+      durableStreamsUrl,
+      streamId,
+      buildFrame(type, responseId, payload)
+    )
+  }
+
+  const clearInactivityTimer = () => {
+    if (!inactivityTimer) return
+    clearTimeout(inactivityTimer)
+    inactivityTimer = null
+  }
 
   const resetInactivityTimer = () => {
-    if (inactivityTimer) {
-      clearTimeout(inactivityTimer)
-    }
+    clearInactivityTimer()
     inactivityTimer = setTimeout(() => {
-      inactivityTimedOut = true
+      terminalReason = `timeout`
       reader.cancel(`Inactivity timeout`).catch(() => {
-        // Ignore cancel errors
+        // Ignore cancellation errors.
       })
     }, inactivityTimeout)
   }
 
-  const clearInactivityTimer = () => {
-    if (inactivityTimer) {
-      clearTimeout(inactivityTimer)
-      inactivityTimer = null
-    }
-  }
-
-  const flush = async (): Promise<void> => {
+  const flushData = async (): Promise<void> => {
     if (bufferSize === 0) return
-
-    const data = concatUint8Arrays(buffer)
+    const payload = concatUint8Arrays(buffer)
     buffer = []
     bufferSize = 0
     batchStartTime = null
-
-    // POST to underlying stream
-    const url = new URL(streamPath, durableStreamsUrl)
-    const response = await fetch(url.toString(), {
-      method: `POST`,
-      headers: {
-        "Content-Type": `application/octet-stream`,
-      },
-      body: data as unknown as BodyInit,
-    })
-
-    if (!response.ok) {
-      throw new Error(
-        `Failed to flush data to stream ${streamId}: ${response.status}`
-      )
-    }
-  }
-
-  const closeStream = async (): Promise<void> => {
-    // Mark the stream as closed
-    const url = new URL(streamPath, durableStreamsUrl)
-    const response = await fetch(url.toString(), {
-      method: `POST`,
-      headers: {
-        "Stream-Closed": `true`,
-        "Content-Length": `0`,
-      },
-    })
-
-    if (!response.ok) {
-      console.error(`Failed to close stream ${streamId}: ${response.status}`)
-    }
+    await postFrame(
+      durableStreamsUrl,
+      streamId,
+      buildFrame(FRAME_TYPE.DATA, responseId, payload)
+    )
   }
 
   try {
@@ -195,29 +326,52 @@ export async function pipeUpstreamBody(
       const { done, value } = await reader.read()
 
       if (done) {
-        // Stream completed - flush remaining and close
         clearInactivityTimer()
-        await flush()
-        await closeStream()
+        await flushData()
+        if (signal.aborted) {
+          terminalReason = `abort`
+        }
+        if (terminalReason === `abort`) {
+          await writeTerminalFrame(FRAME_TYPE.ABORT)
+        } else if (terminalReason === `timeout`) {
+          await writeTerminalFrame(
+            FRAME_TYPE.ERROR,
+            toUtf8Bytes(
+              JSON.stringify({
+                code: `INACTIVITY_TIMEOUT`,
+                message: `Upstream response timed out due to inactivity`,
+              } satisfies ErrorFramePayload)
+            )
+          )
+        } else {
+          await writeTerminalFrame(FRAME_TYPE.COMPLETE)
+        }
         break
       }
 
       if (signal.aborted) {
-        // Aborted - flush but do NOT close (data remains readable)
         clearInactivityTimer()
-        await flush()
+        await flushData()
+        terminalReason = `abort`
+        await writeTerminalFrame(FRAME_TYPE.ABORT)
         break
       }
 
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Set by timeout callback
-      if (inactivityTimedOut) {
-        // Inactivity timeout - flush but do NOT close
+      if (terminalReason === `timeout`) {
         clearInactivityTimer()
-        await flush()
+        await flushData()
+        await writeTerminalFrame(
+          FRAME_TYPE.ERROR,
+          toUtf8Bytes(
+            JSON.stringify({
+              code: `INACTIVITY_TIMEOUT`,
+              message: `Upstream response timed out due to inactivity`,
+            } satisfies ErrorFramePayload)
+          )
+        )
         break
       }
 
-      // Accumulate chunk
       buffer.push(value)
       bufferSize += value.length
       if (!batchStartTime) {
@@ -225,26 +379,37 @@ export async function pipeUpstreamBody(
       }
       resetInactivityTimer()
 
-      // Flush on size or time threshold
       if (
         bufferSize >= batchSizeThreshold ||
         Date.now() - batchStartTime >= batchTimeThreshold
       ) {
-        await flush()
+        await flushData()
       }
     }
   } catch (error) {
     clearInactivityTimer()
-
-    // Try to flush any accumulated data
     try {
-      await flush()
+      await flushData()
     } catch {
-      // Ignore flush errors on error path
+      // Ignore flush errors while handling error terminal frame.
     }
-
-    // Don't close stream on error - data remains readable up to this point
-    // Rethrow so caller knows about the error
+    try {
+      if (!signal.aborted) {
+        await writeTerminalFrame(
+          FRAME_TYPE.ERROR,
+          toUtf8Bytes(
+            JSON.stringify({
+              code: `UPSTREAM_PIPE_ERROR`,
+              message: error instanceof Error ? error.message : `Unknown error`,
+            } satisfies ErrorFramePayload)
+          )
+        )
+      } else {
+        await writeTerminalFrame(FRAME_TYPE.ABORT)
+      }
+    } catch {
+      // Best-effort terminal frame.
+    }
     throw error
   } finally {
     clearInactivityTimer()

@@ -7,7 +7,7 @@
  */
 
 import { validatePreSignedUrl } from "./tokens"
-import { abortConnection } from "./upstream"
+import { abortConnections } from "./upstream"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -74,8 +74,8 @@ export function handleAbortStream(
     return
   }
 
-  // Abort the connection (idempotent - always succeeds)
-  abortConnection(streamId)
+  // Abort all active connections for this stream (idempotent).
+  abortConnections(streamId)
 
   // 204 No Content
   res.writeHead(204)

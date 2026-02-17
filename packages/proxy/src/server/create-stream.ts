@@ -15,6 +15,8 @@ import {
 } from "./tokens"
 import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
 import {
+  createConnection,
+  nextResponseId,
   pipeUpstreamBody,
   registerConnection,
   unregisterConnection,
@@ -185,7 +187,7 @@ export async function handleCreateStream(
       sendError(
         res,
         400,
-        `INVALID_USE_STREAM_URL`,
+        `MALFORMED_STREAM_URL`,
         `Use-Stream-URL header is malformed`
       )
       return
@@ -354,6 +356,7 @@ export async function handleCreateStream(
   // Step 9: Create or reuse durable stream (2xx success path)
   const upstreamContentType =
     upstreamResponse.headers.get(`content-type`) ?? `application/octet-stream`
+  const responseId = await nextResponseId(options.durableStreamsUrl, streamId)
 
   // Store upstream content type for GET/HEAD responses
   contentTypeStore.set(streamId, upstreamContentType)
@@ -423,52 +426,38 @@ export async function handleCreateStream(
   const statusCode = isStreamReuse ? 200 : 201
   res.writeHead(statusCode, {
     Location: location,
+    "Stream-Id": streamId,
     "Upstream-Content-Type": upstreamContentType,
-    "Access-Control-Expose-Headers": `Location, Upstream-Content-Type`,
+    "Stream-Response-Id": String(responseId),
+    "Access-Control-Expose-Headers": `Location, Stream-Id, Upstream-Content-Type, Stream-Response-Id`,
   })
   res.end() // No body
 
   // Step 11: Start background piping
-  registerConnection(streamId, {
-    abortController,
-    streamId,
-    startedAt: Date.now(),
-  })
+  const connection = createConnection(streamId, responseId, abortController)
+  registerConnection(connection)
 
   // Pipe in background (don't await)
-  if (upstreamResponse.body) {
-    pipeUpstreamBody(upstreamResponse.body, {
-      durableStreamsUrl: options.durableStreamsUrl,
-      streamId,
-      signal: abortController.signal,
+  pipeUpstreamBody(upstreamResponse.body, {
+    durableStreamsUrl: options.durableStreamsUrl,
+    streamId,
+    responseId,
+    signal: abortController.signal,
+    upstreamStatus: upstreamResponse.status,
+    upstreamHeaders: upstreamResponse.headers,
+  })
+    .catch((error) => {
+      if (
+        abortController.signal.aborted ||
+        (error instanceof Error &&
+          (error.name === `AbortError` ||
+            (error.name === `TypeError` && error.message === `fetch failed`)))
+      ) {
+        return
+      }
+      console.error(`Error piping upstream body for stream ${streamId}:`, error)
     })
-      .catch(async (error) => {
-        console.error(
-          `Error piping upstream body for stream ${streamId}:`,
-          error
-        )
-        // Attempt to close the stream so readers don't hang indefinitely
-        try {
-          const closeUrl = new URL(
-            `/v1/streams/${streamId}`,
-            options.durableStreamsUrl
-          )
-          await fetch(closeUrl.toString(), {
-            method: `POST`,
-            headers: {
-              "Stream-Closed": `true`,
-              "Content-Length": `0`,
-            },
-          })
-        } catch {
-          // Best-effort close
-        }
-      })
-      .finally(() => {
-        unregisterConnection(streamId)
-      })
-  } else {
-    // No body - unregister immediately
-    unregisterConnection(streamId)
-  }
+    .finally(() => {
+      unregisterConnection(streamId, connection.connectionId)
+    })
 }

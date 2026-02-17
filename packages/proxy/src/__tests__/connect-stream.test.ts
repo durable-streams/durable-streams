@@ -25,7 +25,7 @@ afterAll(async () => {
  */
 async function connectSession(options: {
   sessionId: string
-  upstreamUrl: string
+  upstreamUrl?: string
   body?: string
   headers?: Record<string, string>
   secret?: string
@@ -33,8 +33,6 @@ async function connectSession(options: {
   status: number
   streamUrl?: string
   streamId?: string
-  streamOffset?: string
-  upstreamContentType?: string
   body: string
   headers: Headers
 }> {
@@ -43,8 +41,10 @@ async function connectSession(options: {
 
   const requestHeaders: Record<string, string> = {
     "Session-Id": options.sessionId,
-    "Upstream-URL": options.upstreamUrl,
     ...options.headers,
+  }
+  if (options.upstreamUrl) {
+    requestHeaders[`Upstream-URL`] = options.upstreamUrl
   }
 
   const response = await fetch(url.toString(), {
@@ -71,16 +71,13 @@ async function connectSession(options: {
     status: response.status,
     streamUrl,
     streamId,
-    streamOffset: response.headers.get(`Stream-Offset`) ?? undefined,
-    upstreamContentType:
-      response.headers.get(`Upstream-Content-Type`) ?? undefined,
     body,
     headers: response.headers,
   }
 }
 
 describe(`POST /v1/proxy with Session-Id (connect)`, () => {
-  it(`creates a new session and returns 201 with origin body`, async () => {
+  it(`creates a new session and returns 201 with empty body`, async () => {
     ctx.upstream.setResponse({
       status: 200,
       headers: { "Content-Type": `application/json` },
@@ -97,10 +94,8 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     expect(result.status).toBe(201)
     expect(result.streamUrl).toBeDefined()
     expect(result.streamId).toBeDefined()
-
-    // Body is the origin's response (message history)
-    const parsed = JSON.parse(result.body)
-    expect(parsed.messages[0].content).toBe(`Hi`)
+    expect(result.headers.get(`Stream-Id`)).toBe(result.streamId)
+    expect(result.body).toBe(``)
   })
 
   it(`reconnects to existing session and returns 200`, async () => {
@@ -132,6 +127,17 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
     expect(second.status).toBe(200)
     expect(second.streamId).toBe(first.streamId)
+  })
+
+  it(`works without Upstream-URL (service-auth-only mode)`, async () => {
+    const result = await connectSession({
+      sessionId: `session-no-upstream-url`,
+    })
+
+    expect(result.status).toBe(201)
+    expect(result.streamUrl).toBeDefined()
+    expect(result.streamId).toBeDefined()
+    expect(result.body).toBe(``)
   })
 
   it(`derives deterministic stream ID from session ID`, () => {
@@ -167,24 +173,6 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     expect(receivedStreamId).toBe(expectedStreamId)
   })
 
-  it(`forwards Stream-Offset from connect handler to client`, async () => {
-    ctx.upstream.setHandler((_req, res) => {
-      res.writeHead(200, {
-        "Content-Type": `application/json`,
-        "Stream-Offset": `42`,
-      })
-      res.end(JSON.stringify({ messages: [] }))
-    })
-
-    const result = await connectSession({
-      sessionId: `session-offset-1`,
-      upstreamUrl: ctx.urls.upstream + `/connect`,
-    })
-
-    expect(result.status).toBe(201)
-    expect(result.streamOffset).toBe(`42`)
-  })
-
   it(`returns fresh signed URL in Location header`, async () => {
     ctx.upstream.setResponse({
       status: 200,
@@ -215,28 +203,13 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
 
-    expect(result.status).toBe(403)
-    const parsed = JSON.parse(result.body)
-    expect(parsed.error).toBe(`Forbidden`)
-  })
-
-  it(`returns Upstream-Content-Type header`, async () => {
-    ctx.upstream.setResponse({
-      status: 200,
-      headers: { "Content-Type": `application/json; charset=utf-8` },
-      body: JSON.stringify({}),
-    })
-
-    const result = await connectSession({
-      sessionId: `session-content-type-1`,
-      upstreamUrl: ctx.urls.upstream + `/connect`,
-    })
-
-    expect(result.upstreamContentType).toBe(`application/json; charset=utf-8`)
+    expect(result.status).toBe(401)
+    const parsed = JSON.parse(result.body) as { error: { code: string } }
+    expect(parsed.error.code).toBe(`CONNECT_REJECTED`)
   })
 
   it(`returns 400 when Session-Id header is missing`, async () => {
-    // Without Session-Id and without Use-Stream-URL or Renew-Stream-URL,
+    // Without Session-Id and without Use-Stream-URL,
     // this falls through to the create handler which requires Upstream-Method
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
@@ -252,22 +225,6 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     // Without Session-Id, this is a normal create request (not a connect)
     // It should proceed as create (we're just verifying dispatch works correctly)
     expect([200, 201, 502]).toContain(response.status)
-  })
-
-  it(`returns 400 when Upstream-URL is missing`, async () => {
-    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
-    url.searchParams.set(`secret`, TEST_SECRET)
-
-    const response = await fetch(url.toString(), {
-      method: `POST`,
-      headers: {
-        "Session-Id": `session-no-url`,
-      },
-    })
-
-    expect(response.status).toBe(400)
-    const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_UPSTREAM_URL`)
   })
 
   it(`returns 401 when service secret is missing`, async () => {
