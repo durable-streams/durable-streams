@@ -221,11 +221,13 @@ The request body is forwarded to the upstream service as-is.
 HTTP/1.1 201 Created
 Location: {proxy-url}/{stream-id}?expires={timestamp}&signature={sig}
 Upstream-Content-Type: {content-type}
+Stream-Response-Id: {response-id}
 ```
 
 - **`201 Created`**: The proxy successfully received a 2xx response from upstream, created a durable stream, and began writing the upstream response in the background using the framing format (Section 5).
 - **`Location`**: A pre-signed capability URL for reading from and aborting the stream (see Section 8).
 - **`Upstream-Content-Type`**: The `Content-Type` of the upstream response. Clients can use this to interpret the stream data without parsing the Start frame.
+- **`Stream-Response-Id`**: The numeric response ID assigned to this upstream response within the stream. Clients use this to demultiplex the correct response from the framed stream data.
 - **No response body**: The upstream response body is written as framed data to the durable stream in the background.
 
 The proxy **MUST** return the `201` response before the upstream response body is fully consumed. The piping runs asynchronously — the client begins reading the stream via GET while the proxy continues writing to it.
@@ -310,14 +312,14 @@ Service authentication is required (see Section 10). The `Use-Stream-URL` header
 HTTP/1.1 200 OK
 Location: {proxy-url}/{stream-id}?expires={timestamp}&signature={sig}
 Upstream-Content-Type: {content-type}
+Stream-Response-Id: {response-id}
 ```
 
 - **`200 OK`**: The upstream response is being appended to the existing stream.
 - **`Location`**: A **fresh** pre-signed URL. The server **MUST** return a fresh pre-signed URL on every successful response.
 - **`Upstream-Content-Type`**: The `Content-Type` of this upstream response.
+- **`Stream-Response-Id`**: The numeric response ID assigned to this appended upstream response. This is the next sequential ID for the stream (e.g., if the stream already contains responses 1 and 2, the appended response is assigned ID 3).
 - **No response body**.
-
-The response ID for the appended response is the next sequential ID for this stream (e.g., if the stream already contains responses 1 and 2, the appended response is assigned ID 3).
 
 #### Response — Errors
 
@@ -719,6 +721,15 @@ When forwarding the client's request to upstream, the proxy applies the followin
 
 For connect operations (Section 4.4), the proxy adds a `Stream-Id` header to the forwarded request containing the derived stream ID.
 
+The following headers are returned by the proxy in responses and are **not** request headers:
+
+| Response Header         | Description                                                              |
+| ----------------------- | ------------------------------------------------------------------------ |
+| `Location`              | Pre-signed URL for the stream.                                           |
+| `Upstream-Content-Type` | The `Content-Type` of the upstream response.                             |
+| `Upstream-Status`       | The HTTP status code of the upstream response (on `502` errors).         |
+| `Stream-Response-Id`    | The numeric response ID assigned to the upstream response in the stream. |
+
 ### 6.2. Hop-by-Hop Header Filtering
 
 The proxy **MUST** strip the following hop-by-hop headers before forwarding to upstream, as they are specific to the client-proxy connection and not meaningful for the proxy-upstream connection:
@@ -897,7 +908,7 @@ Servers **MUST** respond to `OPTIONS` requests with appropriate CORS headers and
 
 Servers **MUST** expose the following headers via `Access-Control-Expose-Headers` (or equivalent) so that browser clients can read them:
 
-- `Location`, `Upstream-Content-Type`, and `Upstream-Status` (proxy-specific)
+- `Location`, `Upstream-Content-Type`, `Upstream-Status`, and `Stream-Response-Id` (proxy-specific)
 - All `Stream-*` headers from the base protocol that the server returns
 
 Servers **MUST** allow the proxy-specific request headers (`Upstream-URL`, `Upstream-Authorization`, `Upstream-Method`, `Use-Stream-URL`, `Session-Id`, `Stream-Signed-URL-TTL`) via `Access-Control-Allow-Headers`.

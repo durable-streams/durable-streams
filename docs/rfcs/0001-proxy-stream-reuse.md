@@ -26,7 +26,7 @@ All upstream response data is written using a binary framing format that encapsu
 
 6. **Binary Framing**: All upstream response data MUST be written using a binary framing format that encapsulates response metadata and body, enabling multiplexing of multiple responses onto a single stream.
 
-7. **Resume Compatibility**: The existing `requestId`-based resume mechanism MUST continue to work, including for requests that are part of a session stream.
+7. **Client-Side Idempotency**: The `requestId` mechanism MUST prevent duplicate upstream requests on retry. When a `requestId` has a stored `responseId` mapping, the client MUST skip the POST and read the existing response from the stream. The server returns a `Stream-Response-Id` header on create and append responses to enable this mapping.
 
 8. **Security**: Stream reuse MUST validate that the caller has permission to append to the stream using the existing pre-signed URL mechanism.
 
@@ -93,11 +93,11 @@ Currently, each `POST /v1/proxy` creates a **new stream**. There is no way to:
 
 Introduce `sessionId` as a distinct concept from `requestId`:
 
-| Concept     | Purpose                                 | Affects                                                                      |
-| ----------- | --------------------------------------- | ---------------------------------------------------------------------------- |
-| `requestId` | Resume reading an interrupted response  | Client-side (skip POST, read from offset)                                    |
-| `sessionId` | Group multiple requests into one stream | Server-side (append vs create)                                               |
-| `connect`   | Initialize/reconnect a session          | Server-side (derive stream, optionally auth via endpoint, return signed URL) |
+| Concept     | Purpose                                          | Affects                                                                      |
+| ----------- | ------------------------------------------------ | ---------------------------------------------------------------------------- |
+| `requestId` | Client-side idempotency (prevent duplicate POST) | Client-side (maps requestId → responseId in storage, skips POST on retry)    |
+| `sessionId` | Group multiple requests into one stream          | Server-side (append vs create)                                               |
+| `connect`   | Initialize/reconnect a session                   | Server-side (derive stream, optionally auth via endpoint, return signed URL) |
 
 They are orthogonal and can be used together.
 
@@ -105,71 +105,239 @@ They are orthogonal and can be used together.
 
 ### Client API Changes
 
-#### `DurableFetchOptions` (client instantiation)
+The previous `createDurableFetch` API is replaced entirely by a session-centric model. The new API has two entry points:
+
+1. **`createDurableProxySession`** — creates a session that manages a single durable stream, supporting multiple requests (append), response demultiplexing, and client-side idempotent retry via `requestId`.
+2. **`createDurableFetch`** — a thin wrapper with a fetch-like API for one-off requests that don't need session semantics.
+
+#### `ProxySessionOptions` (session instantiation)
 
 ```typescript
-interface DurableFetchOptions {
-  // ... existing options ...
+interface ProxySessionOptions {
+  /** Full base URL of the proxy endpoint */
+  proxyUrl: string
 
-  /**
-   * Static session ID for stream reuse.
-   * All requests made with this client will append to the same stream.
-   */
-  sessionId?: string
+  /** Authorization for the proxy (service secret) */
+  proxyAuthorization: string
 
-  /**
-   * Derive session ID from request parameters.
-   * Called for each request to determine the session ID.
-   * Takes precedence over static sessionId if both are provided.
-   *
-   * @param upstreamUrl - The upstream URL being requested
-   * @param init - The request options
-   * @returns Session ID string, or undefined to create a new stream
-   */
-  getSessionId?: (
-    upstreamUrl: string,
-    init?: DurableFetchRequestOptions
-  ) => string | undefined
-
-  /**
-   * Optional TTL in seconds for signed URLs.
-   * Sent as Stream-Signed-URL-TTL header. Server uses this as the expiry
-   * duration for generated signed URLs.
-   * Default: server-configured (typically 7 days).
-   */
-  streamSignedUrlTtl?: number
+  /** Session ID. Used to derive a deterministic stream ID via UUIDv5. */
+  sessionId: string
 
   /**
    * Optional URL for the auth endpoint.
-   * When a session connects, the proxy forwards a POST request to this
-   * URL with a Stream-Id header. The endpoint authorizes the session
-   * by returning 2xx (approved) or non-2xx (rejected). The response
-   * body is discarded — only the status code matters.
-   *
+   * When a session connects, the proxy forwards a POST to this URL
+   * with a Stream-Id header. The endpoint authorizes the session
+   * by returning 2xx (approved) or non-2xx (rejected).
    * If not configured, the proxy trusts service authentication alone.
-   *
-   * When a signed URL expires, the client automatically reconnects
-   * with the same Session-Id, which re-invokes this auth endpoint
-   * to verify the client still has access before issuing a fresh URL.
    */
   connectUrl?: string
-}
-```
-
-#### `DurableFetchRequestOptions` (per-request)
-
-```typescript
-interface DurableFetchRequestOptions {
-  // ... existing options ...
 
   /**
-   * Override session ID for this specific request.
-   * Takes precedence over client-level sessionId/getSessionId.
-   * Set to undefined to explicitly create a new stream.
+   * Optional TTL in seconds for signed URLs.
+   * Sent as Stream-Signed-URL-TTL header.
+   * Default: server-configured (implementation-defined).
    */
-  sessionId?: string
+  streamSignedUrlTtl?: number
+
+  /** Storage for persisting requestId -> responseId mappings (default: localStorage) */
+  storage?: DurableStorage
+
+  /** Prefix for storage keys (default: 'durable-streams:') */
+  storagePrefix?: string
+
+  /** Custom fetch implementation */
+  fetch?: typeof fetch
 }
 ```
+
+#### `ProxyFetchOptions` (per-request)
+
+```typescript
+interface ProxyFetchOptions extends Omit<RequestInit, "method"> {
+  /** HTTP method for the upstream request (default: POST) */
+  method?: string
+
+  /**
+   * Client-side idempotency key.
+   * If provided, the client checks local storage for a stored responseId
+   * mapped to this key. If found, the POST is skipped and the existing
+   * response is read from the stream. If not found, the POST proceeds
+   * and the returned Stream-Response-Id is stored for future retries.
+   */
+  requestId?: string
+}
+```
+
+#### `ProxyResponse`
+
+`ProxyResponse` extends the standard [Fetch API `Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response), adding the `responseId` from the stream framing. All standard `Response` properties and methods are available: `.status`, `.ok`, `.headers`, `.body`, `.json()`, `.text()`, `.blob()`, `.clone()`, etc.
+
+The `Response` is constructed from the Start frame's status code and headers, with the body being a `ReadableStream` of the demultiplexed Data frames for this response ID only.
+
+```typescript
+interface ProxyResponse extends Response {
+  /** The numeric response ID within the stream (from framing) */
+  responseId: number
+}
+```
+
+#### `DurableProxySession`
+
+```typescript
+interface DurableProxySession {
+  /**
+   * Send a new request through the proxy.
+   * Returns the demultiplexed response for THIS request only.
+   *
+   * On first call, automatically calls connect() to initialize the
+   * session and obtain a signed URL. The connect operation creates
+   * the stream, so all fetch() calls send an append POST (with
+   * Use-Stream-URL header) — never a create POST.
+   *
+   * If requestId is provided and credentials exist in storage,
+   * skips the POST and reads the existing response from the stream.
+   */
+  fetch(url: string | URL, options?: ProxyFetchOptions): Promise<ProxyResponse>
+
+  /**
+   * Subscribe to ALL responses on the stream.
+   * Yields a ProxyResponse as soon as each response's Start frame
+   * arrives — multiple responses can be in flight concurrently.
+   * Each response's body is an independent ReadableStream that
+   * receives data as its interleaved frames arrive.
+   */
+  responses(): AsyncIterable<ProxyResponse>
+
+  /**
+   * Connect/reconnect to obtain a fresh signed URL.
+   * Called automatically on first fetch() or responses(), but can
+   * be called manually. The connect operation ensures the stream
+   * exists (creating it if necessary) and returns a signed URL.
+   */
+  connect(): Promise<void>
+
+  /** Current signed stream URL (null before first connect) */
+  readonly streamUrl: string | null
+
+  /** Session ID */
+  readonly sessionId: string
+
+  /**
+   * Derived stream ID (UUIDv5 from sessionId).
+   * Computed locally using deterministic derivation — available
+   * immediately after construction, before connect() is called.
+   */
+  readonly streamId: string
+
+  /**
+   * Abort ALL active upstream requests for this stream.
+   * Sends PATCH {streamUrl}?action=abort to the proxy, which cancels
+   * all in-flight upstream connections and writes Abort frames.
+   * Idempotent — safe to call when no requests are active.
+   */
+  abort(): Promise<void>
+
+  /** Tear down the session (close subscriptions, clean up) */
+  close(): void
+}
+```
+
+#### One-Off Usage (`createDurableFetch`)
+
+For simple single-request usage without session semantics, `createDurableFetch` provides a thin wrapper with a fetch-like API. Configure it once, call it many times — each call creates a new stream.
+
+```typescript
+interface DurableFetchOptions {
+  /** Full base URL of the proxy endpoint */
+  proxyUrl: string
+
+  /** Authorization for the proxy (service secret) */
+  proxyAuthorization: string
+
+  /** Storage for persisting requestId -> responseId mappings (default: localStorage) */
+  storage?: DurableStorage
+
+  /** Prefix for storage keys (default: 'durable-streams:') */
+  storagePrefix?: string
+
+  /** Custom fetch implementation */
+  fetch?: typeof fetch
+}
+
+type DurableFetch = (
+  url: string | URL,
+  options?: ProxyFetchOptions
+) => Promise<ProxyResponse>
+
+function createDurableFetch(options: DurableFetchOptions): DurableFetch
+```
+
+Each call to the returned function sends a Create POST (no `Session-Id`, no `Use-Stream-URL`) and returns the single demultiplexed `ProxyResponse`. The `requestId` option works the same way — if stored credentials exist, the POST is skipped and the existing response is read from the stream. Since there is no session, the stored value includes the `streamUrl` so the client can read the response without a connect step (see storage format below).
+
+#### `requestId` Flow (Client-Side Idempotency)
+
+`requestId` is a client-side only mechanism. No server-side deduplication is involved.
+
+**Session usage (`createDurableProxySession`):**
+
+1. `session.fetch(url, { requestId: 'turn-3' })` is called
+2. Client checks storage for key `{prefix}{proxyUrl}:{sessionId}:turn-3`
+3. **If found**: stored value contains `{ responseId: 3 }`. Client skips the POST, reads response ID 3 from the stream (using `session.streamUrl`, connecting first if needed), and returns it as a `ProxyResponse`
+4. **If not found**: Client POSTs to proxy (append). Server returns `Stream-Response-Id: 3` header. Client stores `{ responseId: 3 }` under the `requestId` key, then reads response 3 from the stream
+
+Storage key: `{storagePrefix}{proxyUrl}:{sessionId}:{requestId}` → `{ responseId: number }`
+
+**One-off usage (`createDurableFetch`):**
+
+1. `durableFetch(url, { requestId: 'req-abc' })` is called
+2. Client checks storage for key `{prefix}{proxyUrl}::req-abc`
+3. **If found**: stored value contains `{ responseId: 1, streamUrl: "..." }`. Client skips the POST, reads the stream directly using the stored `streamUrl`, and returns the demultiplexed `ProxyResponse`
+4. **If not found**: Client POSTs to proxy (create). Server returns `Stream-Response-Id: 1` and `Location` headers. Client stores `{ responseId: 1, streamUrl }` under the `requestId` key, then reads from the stream
+
+Storage key: `{storagePrefix}{proxyUrl}::{requestId}` → `{ responseId: number, streamUrl: string }`
+
+The double colon (`::`) in the one-off key indicates the absence of a `sessionId` component.
+
+#### Concurrent Response Consumption
+
+Multiple upstream responses may be in flight simultaneously (e.g., a multi-agent AI chat session where several LLM generations emit into the same session stream). Their frames are interleaved on the stream:
+
+```
+S(ID=3) → D(ID=3) → S(ID=4) → D(ID=3) → D(ID=4) → D(ID=3) → C(ID=3) → D(ID=4) → C(ID=4)
+```
+
+The demuxer handles this by yielding each `ProxyResponse` as soon as its **Start frame** arrives — it does not wait for one response to complete before yielding the next. Each `ProxyResponse.body` is an independent `ReadableStream` backed by a per-response buffer in the demuxer. As interleaved Data frames arrive, the demuxer routes each frame to the correct response's body stream by response ID.
+
+This means consumers can read multiple response bodies concurrently:
+
+```typescript
+for await (const response of session.responses()) {
+  // Don't await — start processing each response body immediately
+  processResponse(response)
+}
+
+async function processResponse(response: ProxyResponse) {
+  const reader = response.body.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    // Process chunks as they arrive (interleaved with other responses)
+  }
+}
+```
+
+**Backpressure:** If a consumer does not read a response's body, its Data frames accumulate in the demuxer's per-response buffer. This does not block other responses — the demuxer continues routing frames to other response streams. Implementations **SHOULD** bound the per-response buffer size and apply backpressure to the underlying SSE connection when any buffer is full, preventing memory exhaustion.
+
+When `fetch()` and `responses()` are used concurrently, the body can be consumed from either reference (they are the same `ProxyResponse` object). If a `fetch()` caller drains the body, the `responses()` consumer can skip it (checking `response.bodyUsed`).
+
+#### `AbortSignal` Support
+
+`ProxyFetchOptions` inherits `signal` from `RequestInit`. The `signal` controls client-side cancellation only:
+
+- **On `session.fetch()`**: Aborting the signal cancels the client's read of the demultiplexed response body. It does **not** send a PATCH abort to the proxy — the upstream request continues piping to the stream. Use `session.abort()` to cancel upstream requests.
+- **On `createDurableFetch`**: Aborting the signal cancels both the POST request (if still in flight) and the subsequent stream read.
+
+This separation is intentional: the stream is durable, so other consumers may still be reading it. Client-side cancellation is a local concern; upstream cancellation requires explicit `abort()`.
 
 ### Server API Changes
 
@@ -317,6 +485,7 @@ If `Upstream-URL` is omitted, the proxy trusts service authentication alone (sui
 | `400 Bad Request`  | `Use-Stream-URL` header malformed                                                                                    |
 | `401 Unauthorized` | HMAC signature invalid (expired HMAC is accepted on write paths), or auth endpoint rejected the request (connect)    |
 | `404 Not Found`    | Specified stream does not exist                                                                                      |
+| `409 Conflict`     | Stream has been closed (via the base protocol) and cannot accept new data (`STREAM_CLOSED`, append only)             |
 
 #### Response Headers
 
@@ -325,11 +494,12 @@ On successful create (`201 Created`), append (`200 OK`), and connect (`201 Creat
 ```
 Location: <fresh-pre-signed-url>
 Upstream-Content-Type: <content-type>   (create and append only)
+Stream-Response-Id: <response-id>      (create and append only)
 ```
 
 The server MUST return a fresh pre-signed URL in the `Location` header on every response. The TTL clock starts at response time. This ensures that active sessions automatically have their read tokens extended on every successful operation.
 
-The `Upstream-Content-Type` header is only returned on create and append responses (where an upstream request was made). It is not returned on connect responses.
+The `Upstream-Content-Type` and `Stream-Response-Id` headers are only returned on create and append responses (where an upstream request was made). They are not returned on connect responses. The `Stream-Response-Id` contains the numeric response ID assigned to the upstream response within the stream, enabling clients to associate a `requestId` with a specific response for idempotent retry.
 
 #### Read Path Error Response for Expired URLs
 
@@ -399,30 +569,25 @@ Response IDs are assigned sequentially starting from `1`. The framing applies to
 
 ### Storage Changes
 
-Two storage key patterns:
+Storage is used for client-side `requestId` → `responseId` mappings, enabling idempotent retry without duplicate upstream calls. Two key formats are used:
 
-```typescript
-// Session storage: stream URL shared across requests in a session
-`{prefix}session:{scope}:{sessionId}` → SessionCredentials
+**Session usage (`createDurableProxySession`):**
 
-// Request storage: per-request resume point (existing, with modifications)
-`{prefix}{scope}:{requestId}` → StreamCredentials
+```
+{storagePrefix}{proxyUrl}:{sessionId}:{requestId} → { responseId: number }
 ```
 
-#### Type: `SessionCredentials`
+The session itself holds `streamUrl` in memory (obtained via `connect()`). Only the `requestId` mappings are persisted to storage.
 
-```typescript
-interface SessionCredentials {
-  /** The pre-signed stream URL (may be expired - still valid for writes) */
-  streamUrl: string
-  /** The stream ID */
-  streamId: string
-}
+**One-off usage (`createDurableFetch`):**
+
+```
+{storagePrefix}{proxyUrl}::{requestId} → { responseId: number, streamUrl: string }
 ```
 
-The client doesn't need to proactively track expiry - it reacts to 401 responses from the read path.
+Since there is no session, the `streamUrl` is stored alongside the `responseId` so the client can read the response without a connect step. The double colon (`::`) indicates the absence of a `sessionId`.
 
-The existing `StreamCredentials` remains unchanged and continues to store per-request resume state including `offset`.
+The client does not proactively track URL expiry — it reacts to `401` responses with `renewable: true` on the read path and auto-renews via `connect()` when possible.
 
 ### Session Lifecycle
 
@@ -437,182 +602,318 @@ Stream closure is not managed by the proxy protocol — each response has its ow
 
 ### Client Flow
 
+#### `session.fetch(url, options)` Flow
+
 ```
-durableFetch(url, { requestId, sessionId, body })
-                    │
-                    ▼
-       ┌───────────────────────────┐
-       │ Resolve sessionId:        │
-       │ 1. init.sessionId         │
-       │ 2. getSessionId(url,init) │
-       │ 3. options.sessionId      │
-       └───────────────────────────┘
-                    │
-                    ▼
-       ┌───────────────────────────┐
-       │ connectUrl configured     │
-       │ && no session credentials?│
-       └───────────────────────────┘
-              │           │
-             YES          NO
-              │           │
-              ▼           │
-    ┌──────────────────┐  │
-    │ POST /v1/proxy   │  │
-    │ Session-Id hdr   │  │
-    │ (connect)        │  │
-    │ → signed URL     │  │
-    └──────────────────┘  │
-              │           │
-              ▼           ▼
-       ┌───────────────────────────┐
-       │ requestId credentials     │
-       │ exist?                    │
-       └───────────────────────────┘
-              │           │
-             YES          NO
-              │           │
-              ▼           ▼
-    ┌──────────────┐  ┌───────────────────────────┐
-    │ SKIP POST    │  │ sessionId credentials     │
-    │ Resume read  │  │ exist?                    │
-    │ from offset  │  └───────────────────────────┘
-    │ (existing)   │         │           │
-    └──────────────┘        YES          NO
-                             │           │
-                             ▼           ▼
-                   ┌──────────────┐  ┌──────────────┐
-                   │ POST with    │  │ POST without │
-                   │ Use-Stream-  │  │ URL header   │
-                   │ URL header   │  │ (create new) │
-                   │ → 200 OK     │  │ → 201 Created│
-                   └──────────────┘  └──────────────┘
-                             │           │
-                             └─────┬─────┘
-                                   ▼
-                   ┌───────────────────────────────┐
-                   │ Store/update credentials:     │
-                   │ - Session: streamUrl          │
-                   │ - Request: streamUrl + offset │
-                   └───────────────────────────────┘
-                                   │
-                                   ▼
-                   ┌───────────────────────────────┐
-                   │ Read from stream using        │
-                   │ @durable-streams/client       │
-                   └───────────────────────────────┘
+session.fetch(url, { requestId, body })
+         │
+         ▼
+┌───────────────────────────┐
+│ session.streamUrl exists? │
+└───────────────────────────┘
+       │           │
+      YES          NO
+       │           │
+       │           ▼
+       │  ┌───────────────────┐
+       │  │ session.connect() │
+       │  │ → signed URL      │
+       │  └───────────────────┘
+       │           │
+       ▼           ▼
+┌───────────────────────────┐
+│ requestId provided?       │
+└───────────────────────────┘
+       │           │
+      YES          NO
+       │           │
+       ▼           │
+┌───────────────────────────┐
+│ Check storage for         │
+│ requestId → responseId    │
+└───────────────────────────┘
+       │           │
+    FOUND       NOT FOUND
+       │           │
+       ▼           │
+┌──────────────────┐  │
+│ SKIP POST        │  │
+│ Read responseId  │  │
+│ from stream via  │  │
+│ demultiplexer    │  │
+└──────────────────┘  │
+       │              │
+       │              ▼
+       │  ┌───────────────────────────┐
+       │  │ POST to proxy with        │
+       │  │ Use-Stream-URL (append)   │
+       │  │ ← Stream-Response-Id hdr  │
+       │  │ ← Location hdr            │
+       │  └───────────────────────────┘
+       │              │
+       │              ▼
+       │  ┌───────────────────────────┐
+       │  │ Store requestId →         │
+       │  │ { responseId } if         │
+       │  │ requestId was provided    │
+       │  └───────────────────────────┘
+       │              │
+       └──────┬───────┘
+              ▼
+┌───────────────────────────────┐
+│ Read demultiplexed response   │
+│ for this responseId from the  │
+│ stream → return ProxyResponse │
+└───────────────────────────────┘
 ```
+
+#### `session.responses()` Flow
+
+```
+session.responses()
+         │
+         ▼
+┌───────────────────────────┐
+│ session.streamUrl exists? │
+└───────────────────────────┘
+       │           │
+      YES          NO
+       │           │
+       │           ▼
+       │  ┌───────────────────┐
+       │  │ session.connect() │
+       │  │ → signed URL      │
+       │  └───────────────────┘
+       │           │
+       ▼           ▼
+┌───────────────────────────────┐
+│ GET signed URL (SSE live)     │
+│ → raw framed byte stream      │
+└───────────────────────────────┘
+         │
+         ▼
+┌───────────────────────────────┐
+│ Frame demultiplexer:          │
+│ Parse S/D/C/A/E frames,      │
+│ yield ProxyResponse on each   │
+│ Start frame (concurrent)      │
+└───────────────────────────────┘
+```
+
+#### Shared Demuxer Architecture
+
+A `DurableProxySession` maintains a single SSE connection to the durable stream and a shared frame demultiplexer. Both `session.fetch()` and `session.responses()` consume from this shared demuxer, not from separate connections.
+
+```
+                   ┌──────────────────────────────────────┐
+                   │        DurableProxySession           │
+                   │                                      │
+                   │  ┌──────────────────────────────┐    │
+                   │  │ Single SSE connection         │    │
+                   │  │ GET {streamUrl}?live=sse      │    │
+                   │  └──────────┬───────────────────┘    │
+                   │             │ raw framed bytes       │
+                   │             ▼                        │
+                   │  ┌──────────────────────────────┐    │
+                   │  │ Shared Frame Demultiplexer    │    │
+                   │  │ Parses S/D/C/A/E frames,     │    │
+                   │  │ creates one ProxyResponse per │    │
+                   │  │ response lifecycle            │    │
+                   │  └──────────┬───────────────────┘    │
+                   │             │                        │
+                   │             │ same ProxyResponse     │
+                   │             │ object instance        │
+                   │         ┌───┴───┐                    │
+                   │         │       │                    │
+                   │         ▼       ▼                    │
+                   │     fetch()  responses()             │
+                   │     (by ID)  (all)                   │
+                   └──────────────────────────────────────┘
+```
+
+**How it works:**
+
+- The demuxer reads frames sequentially from the single underlying stream.
+- When a Start frame arrives, the demuxer constructs a single `ProxyResponse` object for that response ID. The `ProxyResponse` body is an independent `ReadableStream` backed by a per-response buffer. Subsequent Data frames for that response ID are routed to this buffer.
+- `session.responses()` yields each `ProxyResponse` immediately when its Start frame is parsed — it does not wait for the response to complete. Multiple responses can be in flight concurrently, with their frames interleaved on the stream.
+- `session.fetch()` awaits the `ProxyResponse` for the specific response ID it triggered (returned via the `Stream-Response-Id` header after the append POST).
+
+**Same object, no duplication:**
+
+When both `fetch()` and `responses()` are active, the demuxer creates exactly one `ProxyResponse` per response lifecycle. The **same object instance** is both returned from `session.fetch()` and yielded by `session.responses()`. Since both references point to the same `Response` object:
+
+- There is only one `body` ReadableStream — the user reads it from whichever reference they prefer.
+- `response.bodyUsed` reflects whether the body has been read, regardless of which reference was used.
+- No data is duplicated or tee'd. No special null-body handling is needed.
+
+This means the consumer iterating `responses()` can check `response.bodyUsed` to determine whether a `fetch()` call already consumed the body. This is standard `Response` semantics.
+
+**Concurrent `fetch()` calls:**
+
+Multiple concurrent `fetch()` calls are supported — each registers for its own response ID and receives the corresponding `ProxyResponse` when its Start frame arrives.
 
 #### Client Auto-Renewal Behavior
 
 When the client encounters an expired read URL (401 with `renewable: true`):
 
-1. **If `connectUrl` is configured and `sessionId` is available:**
-   - Automatically `POST /v1/proxy` with `Session-Id` header and `connectUrl` as `Upstream-URL` (reconnect)
-   - On success: update stored session credentials with fresh signed URL, retry the read
-   - On failure: surface error to caller (auth endpoint rejected — user no longer authorized)
+1. Automatically `POST /v1/proxy` with `Session-Id` header (reconnect)
+2. If `connectUrl` is configured, the proxy calls the auth endpoint to verify the client is still authorized
+3. On success: update `session.streamUrl` with fresh signed URL, retry the read
+4. On failure (auth endpoint rejected): surface error to caller
 
-2. **If `connectUrl` is not configured or stream is not session-based:**
-   - Surface the expiry error to the caller
+Session streams can always auto-renew by reconnecting with `Session-Id`. The `connectUrl` is optional — without it, the proxy trusts service authentication alone and the reconnect always succeeds. With `connectUrl`, the auth endpoint provides an opportunity to revoke access.
 
-This auto-renewal is transparent to the consumer reading the stream.
+For non-session streams (created via `createDurableFetch` with no `Session-Id`), the `renewable` field is `false` and there is no auto-renewal mechanism — the expiry error is surfaced to the caller.
+
+This auto-renewal is transparent — both `session.fetch()` and `session.responses()` handle it internally.
 
 ### Usage Examples
 
-#### Example 1: Static Session ID
+#### Example 1: Session with Multiple Requests
 
 ```typescript
-const durableFetch = createDurableFetch({
-  proxyUrl: 'https://proxy.example.com/v1/proxy',
-  proxyAuthorization: 'service-secret',
-  sessionId: 'conversation-123',  // All requests use this session
+import { createDurableProxySession } from "@durable-streams/proxy/client"
+
+const session = createDurableProxySession({
+  proxyUrl: "https://proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
 })
 
-// First request: creates stream, stores session credentials
-const res1 = await durableFetch('https://api.openai.com/v1/chat/completions', {
-  requestId: 'turn-1',
-  body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
-})
+// First request: connects, creates stream, appends response
+const res1 = await session.fetch(
+  "https://api.openai.com/v1/chat/completions",
+  {
+    requestId: "turn-1",
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "Hello" }],
+      stream: true,
+    }),
+  }
+)
+
+// Read the demultiplexed response body
+const reader = res1.body.getReader()
+for (;;) {
+  const { done, value } = await reader.read()
+  if (done) break
+  // Process chunk (only data for this response, not other responses)
+}
 
 // Second request: appends to same stream
-const res2 = await durableFetch('https://api.openai.com/v1/chat/completions', {
-  requestId: 'turn-2',
-  body: JSON.stringify({ messages: [...] }),
-})
-
-// Both responses read from the same stream
-// A consumer following res1.streamUrl sees all responses in sequence
+const res2 = await session.fetch(
+  "https://api.openai.com/v1/chat/completions",
+  {
+    requestId: "turn-2",
+    body: JSON.stringify({ messages: [...], stream: true }),
+  }
+)
+// res2.responseId === 2 (sequential)
 ```
 
-#### Example 2: Derived Session ID
+#### Example 2: Resume After Interruption (requestId)
 
 ```typescript
-const durableFetch = createDurableFetch({
-  proxyUrl: 'https://proxy.example.com/v1/proxy',
-  proxyAuthorization: 'service-secret',
-  getSessionId: (url, init) => {
-    // Extract conversation ID from request body
-    const body = JSON.parse(init?.body as string)
-    return body.conversationId
-  },
+const session = createDurableProxySession({
+  proxyUrl: "https://proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
 })
 
-// Session ID derived from each request's body
-await durableFetch(apiUrl, {
-  body: JSON.stringify({ conversationId: 'conv-456', messages: [...] }),
-})
-```
-
-#### Example 3: Resume After Interruption
-
-```typescript
-// Request 2 is interrupted mid-stream
-const res2 = await durableFetch(apiUrl, {
-  requestId: 'turn-2',
-  sessionId: 'conversation-123',
+// Request is interrupted mid-stream
+const res = await session.fetch(apiUrl, {
+  requestId: "turn-2",
   body: JSON.stringify({ messages: [...] }),
 })
-// ... connection drops ...
+// ... app crashes while reading res.body ...
 
-// Retry - requestId credentials exist, so we SKIP POST and resume reading
-const res2Retry = await durableFetch(apiUrl, {
-  requestId: 'turn-2',
-  sessionId: 'conversation-123',
+// After restart: same session, same requestId
+const session2 = createDurableProxySession({
+  proxyUrl: "https://proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
+})
+
+// requestId 'turn-2' is found in storage with responseId 2
+// Skips POST, reads response 2 from the stream directly
+const resRetry = await session2.fetch(apiUrl, {
+  requestId: "turn-2",
   body: JSON.stringify({ messages: [...] }),
 })
-// res2Retry.wasResumed === true
-// Continues reading from stored offset, no new POST made
+// resRetry.responseId === 2, no duplicate upstream call
 ```
 
-#### Example 4: Override Session Per-Request
+#### Example 3: Subscribing to All Responses
 
 ```typescript
-const durableFetch = createDurableFetch({
-  proxyUrl: "...",
-  proxyAuthorization: "...",
-  sessionId: "default-session",
+const session = createDurableProxySession({
+  proxyUrl: "https://proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
 })
 
-// Uses default session
-await durableFetch(apiUrl, { body: "..." })
+// Subscribe to ALL responses on the stream (history + live)
+for await (const response of session.responses()) {
+  console.log(
+    `Response ${response.responseId}:`,
+    response.headers.get("content-type")
+  )
 
-// Override: create new stream (no session reuse)
-await durableFetch(apiUrl, {
-  sessionId: undefined, // Explicitly no session
-  body: "...",
+  const reader = response.body.getReader()
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    // Process each response's body independently
+  }
+}
+```
+
+#### Example 4: Connect with Auth Endpoint (Concurrent Read + Write)
+
+```typescript
+const session = createDurableProxySession({
+  proxyUrl: "https://proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
+  connectUrl: "https://api.example.com/auth/check-access",
 })
 
-// Override: use different session
-await durableFetch(apiUrl, {
-  sessionId: "other-session",
-  body: "...",
+// Connect — initializes session, authorizes via auth endpoint
+await session.connect()
+// session.streamUrl is a fresh signed URL
+
+// Subscribe to live updates in a separate async task.
+// responses() is a long-lived iterator that follows the stream,
+// so it must run concurrently with fetch() calls.
+const readTask = (async () => {
+  for await (const response of session.responses()) {
+    console.log(`Response ${response.responseId}:`, response.status)
+    const reader = response.body.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      // Process each response's body
+    }
+  }
+})()
+
+// Send messages (appends to the stream) — runs concurrently with readTask
+const res = await session.fetch("https://api.openai.com/v1/chat/completions", {
+  requestId: "turn-1",
+  body: JSON.stringify({
+    messages: [{ role: "user", content: "Hello" }],
+  }),
 })
+// res is the demultiplexed response for turn-1 only
+
+// Clean up when done
+session.close()
 ```
 
 #### Example 5: Short TTL with Auto-Renewal
 
 ```typescript
-const durableFetch = createDurableFetch({
+const session = createDurableProxySession({
   proxyUrl: "https://proxy.example.com/v1/proxy",
   proxyAuthorization: "service-secret",
   sessionId: "conversation-123",
@@ -620,41 +921,47 @@ const durableFetch = createDurableFetch({
   connectUrl: "https://api.example.com/auth/check-access",
 })
 
-// Signed URLs expire after 5 minutes of inactivity
+// Signed URLs expire after 5 minutes
 // When reading an expired stream, the client automatically:
 // 1. POSTs to /v1/proxy with Session-Id header (reconnect)
-// 2. The proxy forwards to api.example.com/auth/check-access
+// 2. The proxy calls api.example.com/auth/check-access
 // 3. If the user is still authorized, receives a fresh signed URL
 // 4. Retries the read transparently
+for await (const response of session.responses()) {
+  // Auto-renewal is transparent — the iterator handles reconnects
+}
 ```
 
-#### Example 6: Session with Connect
+#### Example 6: One-Off Request (`createDurableFetch`)
 
 ```typescript
+import { createDurableFetch } from "@durable-streams/proxy/client"
+
+// Configure once
 const durableFetch = createDurableFetch({
   proxyUrl: "https://proxy.example.com/v1/proxy",
   proxyAuthorization: "service-secret",
-  sessionId: "conversation-123",
-  connectUrl: "https://api.example.com/auth/check-access",
 })
 
-// 1. Connect — initializes session, authorizes via auth endpoint, returns signed URL
-const connectRes = await durableFetch.connect()
-// connectRes.streamUrl is a fresh signed URL
-// No response body — all data comes from reading the stream
-
-// 2. Subscribe — read live updates via SSE
-const stream = await durableFetch.subscribe()
-
-// 3. Send — append a new message to the stream
-const sendRes = await durableFetch(
+// Each call creates a new stream (no session reuse)
+const response = await durableFetch(
   "https://api.openai.com/v1/chat/completions",
   {
-    requestId: "turn-1",
-    body: JSON.stringify({ messages: [{ role: "user", content: "Hello" }] }),
+    requestId: "req-abc",
+    body: JSON.stringify({
+      messages: [{ role: "user", content: "Hello" }],
+      stream: true,
+    }),
   }
 )
-// sendRes.streamUrl is a fresh signed URL (extended TTL)
+
+// response.responseId === 1 (always 1 for single-request streams)
+const reader = response.body.getReader()
+for (;;) {
+  const { done, value } = await reader.read()
+  if (done) break
+  // Process chunk
+}
 ```
 
 ## Implementation Plan
@@ -691,8 +998,8 @@ Modify `handleCreateStream` to:
    - Check stream is not closed
    - Skip stream creation (no PUT)
    - Pipe upstream response to existing stream (POST)
-   - Return `200 OK` with fresh signed URL in `Location` header
-3. If not present: existing behavior (create new stream, return `201 Created`)
+   - Return `200 OK` with fresh signed URL in `Location` header and `Stream-Response-Id` header
+3. If not present: existing behavior (create new stream, return `201 Created` with `Stream-Response-Id: 1`)
 
 Support `Stream-Signed-URL-TTL` header:
 
@@ -742,55 +1049,124 @@ Update read handler error responses:
 
 #### File: `packages/proxy/src/client/types.ts`
 
-1. Update `SessionCredentials` interface (remove `expiresAtSecs`)
-2. Add `streamSignedUrlTtl` and `connectUrl` to `DurableFetchOptions`
+Replace existing types with the session-based API:
+
+```typescript
+// Session options
+interface ProxySessionOptions {
+  proxyUrl: string
+  proxyAuthorization: string
+  sessionId: string
+  connectUrl?: string
+  streamSignedUrlTtl?: number
+  storage?: DurableStorage
+  storagePrefix?: string
+  fetch?: typeof fetch
+}
+
+// Per-request options (used by both session.fetch and createDurableFetch)
+interface ProxyFetchOptions extends Omit<RequestInit, "method"> {
+  method?: string
+  requestId?: string
+}
+
+// Demultiplexed response — extends standard Fetch API Response
+interface ProxyResponse extends Response {
+  responseId: number
+}
+
+// One-shot wrapper options
+interface DurableFetchOptions {
+  proxyUrl: string
+  proxyAuthorization: string
+  storage?: DurableStorage
+  storagePrefix?: string
+  fetch?: typeof fetch
+}
+
+type DurableFetch = (
+  url: string | URL,
+  options?: ProxyFetchOptions
+) => Promise<ProxyResponse>
+
+// Session interface
+interface DurableProxySession {
+  fetch(url: string | URL, options?: ProxyFetchOptions): Promise<ProxyResponse>
+  responses(): AsyncIterable<ProxyResponse>
+  connect(): Promise<void>
+  readonly streamUrl: string | null
+  readonly sessionId: string
+  readonly streamId: string // Computed locally from sessionId, available immediately
+  abort(): Promise<void> // Aborts ALL active upstream requests for this stream
+  close(): void
+}
+```
 
 #### File: `packages/proxy/src/client/storage.ts`
 
-Add session credential storage functions:
+Update storage functions for the new `requestId` → `responseId` mapping:
 
 ```typescript
-function createSessionStorageKey(
+// Session-scoped requestId storage
+function createRequestIdStorageKey(
   prefix: string,
-  scope: string,
-  sessionId: string
+  proxyUrl: string,
+  sessionId: string,
+  requestId: string
 ): string
-function saveSessionCredentials(
-  storage,
-  prefix,
-  scope,
-  sessionId,
-  credentials
+
+function saveRequestIdMapping(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string,
+  requestId: string,
+  responseId: number
 ): void
-function loadSessionCredentials(
-  storage,
-  prefix,
-  scope,
-  sessionId
-): SessionCredentials | null
-function removeSessionCredentials(storage, prefix, scope, sessionId): void
+
+function loadRequestIdMapping(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string,
+  requestId: string
+): { responseId: number } | null
 ```
+
+For `createDurableFetch` (no session), use a double-colon key format (`{prefix}{proxyUrl}::{requestId}`) and store both `responseId` and `streamUrl` in the value, since there is no session to derive a stream URL from.
+
+#### File: `packages/proxy/src/client/proxy-session.ts` (new)
+
+Implement `createDurableProxySession`:
+
+1. Manages a single stream for the session lifetime
+2. `connect()`: POST with `Session-Id` header, store signed URL
+3. `fetch(url, options)`:
+   - If no `streamUrl`, call `connect()` first (connect creates the stream)
+   - If `requestId` provided, check storage for existing `responseId` mapping
+   - If mapping found: skip POST, read that response from the stream (connect first if no `streamUrl`)
+   - If not found: POST with `Use-Stream-URL` header (always append — connect already created the stream), read `Stream-Response-Id` from response header, store mapping if `requestId` provided
+   - Return `ProxyResponse` by demultiplexing the stream
+4. `responses()`: Subscribe to the full stream via GET (SSE), demultiplex frames, yield `ProxyResponse` for each response lifecycle
+5. Auto-renewal: on 401 with `renewable: true`, automatically reconnect and retry
+
+#### File: `packages/proxy/src/client/frame-demuxer.ts` (new)
+
+Implement the frame demultiplexer:
+
+1. Parse the binary framing format (S/D/C/A/E frames) from the raw stream
+2. On Start frame: construct a single `ProxyResponse` object (extends `Response`) with status, headers from the Start frame payload, and a `ReadableStream` body fed by subsequent Data frames
+3. Route the same `ProxyResponse` object to both `fetch()` (by registered response ID) and `responses()` (all responses)
+4. On terminal frame (C/A/E): close the response's body stream and signal completion
 
 #### File: `packages/proxy/src/client/durable-fetch.ts`
 
-Modify `createDurableFetch` to:
+Rewrite `createDurableFetch` as a thin wrapper:
 
-1. Accept `sessionId`, `getSessionId`, `streamSignedUrlTtl`, and `connectUrl` options
-2. Send `Stream-Signed-URL-TTL` header when `streamSignedUrlTtl` is configured
-3. Resolve effective sessionId for each request (priority: request > getSessionId > options)
-4. Before making POST:
-   - Check requestId credentials (existing resume path)
-   - Check sessionId credentials
-   - If session credentials exist, add `Use-Stream-URL` header
-5. After successful response:
-   - Store/update session credentials (streamUrl, streamId only)
-   - Store request credentials (with current offset as starting point)
-6. Add auto-renewal logic:
-   - Intercept 401 on reads
-   - Check for `renewable: true` in response
-   - If `connectUrl` configured and `sessionId` available, POST `/v1/proxy` with `Session-Id` header (reconnect)
-   - Update stored credentials with fresh URL
-   - Retry the read
+1. Each call creates a new stream (no `Session-Id`, no `Use-Stream-URL`)
+2. POST to proxy, read `Stream-Response-Id` and `Location` from response
+3. Read the stream, demultiplex the single response, return `ProxyResponse`
+4. If `requestId` provided: check storage first (skip POST if mapping exists), store mapping on POST
 
 ### Phase 3: Tests
 
@@ -801,15 +1177,13 @@ New test file covering:
 1. First request creates stream, stores session credentials
 2. Second request with same sessionId appends to stream (200 OK)
 3. Fresh signed URL returned on every `200` and `201`
-4. `Stream-Signed-URL-TTL` respected in generated URLs
-5. Expired HMAC accepted on write path when upstream returns 2xx
-6. Expired HMAC rejected on read path with `renewable: true` in response
-7. Invalid HMAC rejected on all paths
-8. Non-existent stream returns 404
-9. Resume (requestId) works within session stream
-10. Mixed session/non-session requests
-11. Session override per-request
-12. getSessionId derivation
+4. `Stream-Response-Id` header returned on create and append
+5. `Stream-Signed-URL-TTL` respected in generated URLs
+6. Expired HMAC accepted on write path when upstream returns 2xx
+7. Expired HMAC rejected on read path with `renewable: true` in response
+8. Invalid HMAC rejected on all paths
+9. Non-existent stream returns 404
+10. Resume (requestId) works within session stream — skips POST, reads existing responseId
 
 #### File: `packages/proxy/src/__tests__/connect-stream.test.ts`
 
@@ -828,15 +1202,29 @@ New test file covering:
 11. Client auto-renewal via reconnect with `connectUrl` configured
 12. Client error surfacing without `connectUrl` configured
 
+#### File: `packages/proxy/src/__tests__/proxy-session.test.ts` (new)
+
+New test file covering:
+
+1. `session.fetch()` auto-connects and appends on first call
+2. `session.fetch()` appends on subsequent calls (already connected)
+3. `session.fetch()` with `requestId` skips POST when mapping exists
+4. `session.fetch()` stores `requestId` → `responseId` mapping on POST
+5. `session.responses()` yields all responses from the stream
+6. `session.connect()` called automatically on first `fetch()`
+7. Auto-renewal on expired URLs
+8. `session.close()` cleans up subscriptions
+
 ### Phase 4: Export Updates
 
 #### File: `packages/proxy/src/client/index.ts`
 
-Export new types:
+Export:
 
-- `SessionCredentials`
-
-No new function exports needed - session handling is internal to `createDurableFetch`.
+- `createDurableProxySession` function
+- `createDurableFetch` function
+- `ProxySessionOptions`, `ProxyFetchOptions`, `ProxyResponse`, `DurableFetchOptions`, `DurableFetch`, `DurableProxySession` types
+- `DurableStorage` interface
 
 ## Security Considerations
 
@@ -976,6 +1364,15 @@ The original design had the connect handler returning message history in the res
 
 All proxy streams use a binary framing format to encapsulate upstream responses, solving the problem of byte interleaving when multiple responses are written to the same stream. The format uses ASCII type bytes (S/D/C/A/E), 4-byte response IDs, and always-present payload lengths. See the [Proxy Protocol Specification](../../packages/proxy/PROXY_PROTOCOL.md) Section 5 for the full format.
 
+### Session-Based Client API
+
+The original `createDurableFetch` API was designed for single-request streams. With the introduction of multi-request streams and binary framing, the client API was redesigned around sessions:
+
+- `createDurableProxySession` is the primary API for multi-request usage, managing a single durable stream with `fetch()` for sending requests and `responses()` for subscribing to demultiplexed responses.
+- `createDurableFetch` is retained as a thin wrapper for one-shot fetch-to-stream usage (no session semantics).
+- `requestId` is preserved as a client-side idempotency mechanism that maps to a `responseId` (the framing response number), preventing duplicate upstream calls on retry.
+- The `Stream-Response-Id` response header was added to the protocol (Sections 4.2 and 4.3) so the client can associate a `requestId` with the assigned response ID without parsing the stream.
+
 ## Open Questions
 
 1. **UUIDv5 Namespace**: What fixed namespace UUID should be used for deriving stream IDs from session IDs? Options include a well-known UUID specific to the durable-streams project or a configurable namespace.
@@ -990,5 +1387,8 @@ All proxy streams use a binary framing format to encapsulate upstream responses,
 - `packages/proxy/src/server/proxy-handler.ts` - Request dispatch logic
 - `packages/proxy/src/server/connect-stream.ts` - Connect operation handler (new)
 - `packages/proxy/src/server/derive-stream-id.ts` - Deterministic stream ID derivation (new)
-- `packages/proxy/src/client/durable-fetch.ts` - Current client implementation
-- `packages/proxy/src/client/storage.ts` - Credential storage utilities
+- `packages/proxy/src/client/proxy-session.ts` - Session-based client implementation (new)
+- `packages/proxy/src/client/frame-demuxer.ts` - Frame demultiplexer for response extraction (new)
+- `packages/proxy/src/client/durable-fetch.ts` - One-shot fetch wrapper (rewritten)
+- `packages/proxy/src/client/types.ts` - Client type definitions (rewritten)
+- `packages/proxy/src/client/storage.ts` - Credential and requestId storage utilities
