@@ -1,7 +1,8 @@
 import path from "node:path"
 import { defineConfig } from "vitest/config"
+import type { ViteUserConfigExport } from "vitest/config"
 
-export default defineConfig({
+const config: ViteUserConfigExport = defineConfig({
   test: {
     include: [`tests/**/*.test.ts`],
     exclude: [`**/node_modules/**`],
@@ -17,3 +18,5 @@ export default defineConfig({
     },
   },
 })
+
+export default config
