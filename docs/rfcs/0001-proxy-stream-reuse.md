@@ -1,12 +1,14 @@
 # RFC 0001: Proxy Stream Reuse
 
-**Status:** Draft
+**Status:** Accepted (incorporated into [PROXY_PROTOCOL.md](../../packages/proxy/PROXY_PROTOCOL.md))
 **Created:** 2026-02-01
 **Package:** `@durable-streams/proxy`
 
 ## Summary
 
-This RFC proposes adding stream reuse and session management capabilities to the proxy package. It specifies four operations — **create**, **append**, **connect**, and **renew** — all dispatched via `POST /v1/proxy` using header-based routing. This enables session-based streaming where a client can initialize a session (connect), consume and resume a single stream across an entire conversation (append), and maintain read access through URL renewal (renew).
+This RFC proposes adding stream reuse, session management, and binary framing capabilities to the proxy package. It specifies three operations — **create**, **append**, and **connect** — all dispatched via `POST /v1/proxy` using header-based routing. This enables session-based streaming where a client can initialize a session (connect), consume and resume a single stream across an entire conversation (append), and obtain fresh signed URLs when they expire (reconnect via connect).
+
+All upstream response data is written using a binary framing format that encapsulates response metadata and body data, allowing multiple responses to be multiplexed onto a single stream and reconstructed independently by readers. The framing format is defined in the [Proxy Protocol Specification](../../packages/proxy/PROXY_PROTOCOL.md) Section 5.
 
 ## Requirements
 
@@ -16,13 +18,13 @@ This RFC proposes adding stream reuse and session management capabilities to the
 
 2. **Session Identification**: The client MUST be able to specify a session identifier that groups multiple requests into a single stream.
 
-3. **Connect Operation**: The proxy MUST support a connect operation that derives a stream ID deterministically from a session ID, ensures the stream exists, proxies the request to a developer-provided connect handler (upstream), and returns the origin's response body along with a signed stream URL and current offset.
+3. **Connect Operation**: The proxy MUST support a connect operation that derives a stream ID deterministically from a session ID, ensures the stream exists, optionally authorizes the client via a developer-provided auth endpoint, and returns a signed stream URL. Connect does not return a response body — all stream data is read via the signed URL.
 
 4. **Deterministic Stream IDs**: When a `Session-Id` is provided, the stream ID MUST be derived deterministically from the session ID (e.g., UUIDv5 with a fixed namespace). This MUST be stateless and reproducible — the same session ID always yields the same stream ID.
 
-5. **Header-Based Dispatch**: All write operations MUST be dispatched via `POST /v1/proxy` using header presence to determine the operation (create, append, connect, or renew).
+5. **Header-Based Dispatch**: All write operations MUST be dispatched via `POST /v1/proxy` using header presence to determine the operation (create, append, or connect).
 
-6. **Backward Compatibility**: The default behavior MUST remain unchanged - each request creates a new stream unless stream reuse is explicitly requested.
+6. **Binary Framing**: All upstream response data MUST be written using a binary framing format that encapsulates response metadata and body, enabling multiplexing of multiple responses onto a single stream.
 
 7. **Resume Compatibility**: The existing `requestId`-based resume mechanism MUST continue to work, including for requests that are part of a session stream.
 
@@ -83,7 +85,7 @@ Currently, each `POST /v1/proxy` creates a **new stream**. There is no way to:
 
 - Append multiple upstream responses to the same stream
 - Create a session-level stream that accumulates all responses
-- Initialize a session (connect, authorize, hydrate message history) or derive a stream ID from a session identity
+- Initialize a session (connect, authorize) or derive a stream ID from a session identity
 
 ## Proposal
 
@@ -91,15 +93,15 @@ Currently, each `POST /v1/proxy` creates a **new stream**. There is no way to:
 
 Introduce `sessionId` as a distinct concept from `requestId`:
 
-| Concept     | Purpose                                 | Affects                                                               |
-| ----------- | --------------------------------------- | --------------------------------------------------------------------- |
-| `requestId` | Resume reading an interrupted response  | Client-side (skip POST, read from offset)                             |
-| `sessionId` | Group multiple requests into one stream | Server-side (append vs create)                                        |
-| `connect`   | Initialize/reconnect a session          | Server-side (derive stream, proxy to connect handler, return history) |
+| Concept     | Purpose                                 | Affects                                                                      |
+| ----------- | --------------------------------------- | ---------------------------------------------------------------------------- |
+| `requestId` | Resume reading an interrupted response  | Client-side (skip POST, read from offset)                                    |
+| `sessionId` | Group multiple requests into one stream | Server-side (append vs create)                                               |
+| `connect`   | Initialize/reconnect a session          | Server-side (derive stream, optionally auth via endpoint, return signed URL) |
 
 They are orthogonal and can be used together.
 
-**Session Lifecycle**: A typical session follows this sequence: **connect** (first operation — initializes the session, returns message history and stream URL) → **subscribe** (GET the signed stream URL with offset — SSE stream for real-time updates) → **send** (append POST — writes new messages to the stream).
+**Session Lifecycle**: A typical session follows this sequence: **connect** (first operation — initializes the session, optionally authorizes via auth endpoint, returns signed URL) → **subscribe** (GET the signed stream URL — SSE stream for real-time updates) → **send** (append POST — writes new messages to the stream). When a signed URL expires, the client simply **connects** again with the same `Session-Id` to obtain a fresh URL.
 
 ### Client API Changes
 
@@ -138,24 +140,19 @@ interface DurableFetchOptions {
   streamSignedUrlTtl?: number
 
   /**
-   * Optional URL for the connect handler (origin endpoint).
-   * When a session connects, the proxy forwards the request to this URL
-   * with a Stream-Id header. The handler authorizes the session, reads
-   * the raw stream to materialize message history, and returns the
-   * history body + optional Stream-Offset header.
+   * Optional URL for the auth endpoint.
+   * When a session connects, the proxy forwards a POST request to this
+   * URL with a Stream-Id header. The endpoint authorizes the session
+   * by returning 2xx (approved) or non-2xx (rejected). The response
+   * body is discarded — only the status code matters.
+   *
+   * If not configured, the proxy trusts service authentication alone.
+   *
+   * When a signed URL expires, the client automatically reconnects
+   * with the same Session-Id, which re-invokes this auth endpoint
+   * to verify the client still has access before issuing a fresh URL.
    */
   connectUrl?: string
-
-  /**
-   * Optional URL for renewing expired signed URLs.
-   * When a read URL expires, the client will POST /v1/proxy with
-   * Renew-Stream-URL header, using this as the Upstream-URL to obtain
-   * a fresh signed URL. The endpoint must accept the client's auth
-   * headers and return 2xx if the client is still authorized.
-   *
-   * If not configured, expired URLs surface as errors to the caller.
-   */
-  renewUrl?: string
 }
 ```
 
@@ -211,8 +208,8 @@ Stream-Signed-URL-TTL: <seconds>
 **Server Behavior:**
 
 - If provided, the server uses this value as the expiry duration for the signed URL it generates.
-- Default: 7 days (604800 seconds), configurable server-side.
-- No server-enforced ceiling - infinite TTL is supported by setting to `0` or omitting entirely when the server default is infinite.
+- Default: server-configured (implementation-defined).
+- Servers MAY enforce a maximum TTL, clamping to the maximum rather than rejecting the request.
 
 #### Header-Based Dispatch
 
@@ -220,12 +217,11 @@ All write operations use `POST /v1/proxy`. The proxy determines the operation by
 
 | Header Present                          | Operation   |
 | --------------------------------------- | ----------- |
-| `Renew-Stream-URL`                      | **Renew**   |
 | `Use-Stream-URL`                        | **Append**  |
 | `Session-Id` (without `Use-Stream-URL`) | **Connect** |
 | None of the above                       | **Create**  |
 
-Headers are checked in this order. For example, a request with both `Session-Id` and `Use-Stream-URL` is an **append** (not a connect), because `Use-Stream-URL` is checked first.
+Headers are checked in this order. For example, a request with both `Session-Id` and `Use-Stream-URL` is an **append** (not a connect), because `Use-Stream-URL` takes priority.
 
 #### Server Validation (Append)
 
@@ -240,146 +236,167 @@ When `Use-Stream-URL` header is present:
 
 **HMAC vs Expiry Validation by Path:**
 
-| Path                                             | HMAC                         | Expiry      |
-| ------------------------------------------------ | ---------------------------- | ----------- |
-| `POST /v1/proxy` with `Use-Stream-URL` (append)  | Validate (reject if invalid) | **Ignore**  |
-| `POST /v1/proxy` with `Renew-Stream-URL` (renew) | Validate (reject if invalid) | **Ignore**  |
-| `GET /v1/proxy/{id}` (read)                      | Validate (reject if invalid) | **Enforce** |
+| Path                                            | HMAC                         | Expiry      |
+| ----------------------------------------------- | ---------------------------- | ----------- |
+| `POST /v1/proxy` with `Use-Stream-URL` (append) | Validate (reject if invalid) | **Ignore**  |
+| `GET /v1/proxy/{id}` (read)                     | Validate (reject if invalid) | **Enforce** |
+| `PATCH /v1/proxy/{id}` (abort)                  | Validate (reject if invalid) | **Enforce** |
 
-**Rationale**: On write and renew paths, the real authorization is the upstream accepting the forwarded request. The HMAC proves the client received this URL from the proxy (prior legitimate access). Expiry is irrelevant because the upstream is the authority. On read paths, the signed URL is the sole authorization - both HMAC and expiry must be valid.
+**Rationale**: On write paths, the real authorization is the upstream accepting the forwarded request. The HMAC proves the client received this URL from the proxy (prior legitimate access). Expiry is irrelevant because the upstream is the authority. On read and abort paths, the signed URL is the sole authorization — both HMAC and expiry must be valid.
 
 #### Connect Operation (`Session-Id` header)
 
-When `POST /v1/proxy` includes a `Session-Id` header (without `Use-Stream-URL` or `Renew-Stream-URL`), the proxy performs a **connect** operation. This initializes or reconnects a session by deriving a stream, proxying to the developer's connect handler, and returning message history.
+When `POST /v1/proxy` includes a `Session-Id` header (without `Use-Stream-URL`), the proxy performs a **connect** operation. This initializes or reconnects a session by deriving a stream ID, optionally authorizing the client via a developer-provided auth endpoint, and returning a pre-signed URL. Connect does not return a response body — all stream data is read by the client via the pre-signed URL.
+
+This operation serves as both the initial session setup and the mechanism for obtaining fresh signed URLs — when a URL expires, the client simply connects again with the same `Session-Id`.
+
+The proxy always uses the `POST` method when calling the auth endpoint. The `Upstream-Method` header is not used for connect operations.
 
 **Request:**
 
 ```
 POST /v1/proxy?secret=xxx HTTP/1.1
 Session-Id: <session-id>
-Upstream-URL: <connect-handler-url>
-Authorization: <client's upstream auth headers>
-Content-Type: application/json
+Upstream-URL: <auth-endpoint-url>       (optional)
+Upstream-Authorization: <client-auth>   (optional)
+Stream-Signed-URL-TTL: <seconds>        (optional)
 
-{...optional body...}
+{...optional body forwarded to auth endpoint...}
 ```
 
 **Server behavior:**
 
-1. **Authenticate**: Validate service JWT (existing proxy auth)
-2. **Derive Stream ID**: `streamId = UUIDv5(sessionId, FIXED_NAMESPACE)` — deterministic, stateless, reproducible
-3. **Ensure Stream Exists**: HEAD request to check stream existence; PUT to create if needed
-4. **Forward to Connect Handler**: Forward the request to `Upstream-URL` with:
-   - `Stream-Id: <derived-stream-id>` header
-   - Client's original auth headers (e.g., `Authorization`)
-   - Original request body
-5. **Origin Processes**: The connect handler authorizes the session, reads the raw stream to materialize messages, and returns:
-   - Response body (message history)
-   - Optional `Stream-Offset` header (byte offset for SSE subscription)
-6. **Proxy Returns**: Origin's response body + proxy-added headers
+1. **Authenticate**: Validate service authentication (existing proxy auth)
+2. **Derive Stream ID**: `streamId = UUIDv5(NAMESPACE, sessionId)` — deterministic, stateless, reproducible
+3. **Authorize** (if `Upstream-URL` is provided):
+   - Forward a POST request to `Upstream-URL` with:
+     - `Stream-Id: <derived-stream-id>` header
+     - Client's original auth headers (e.g., `Authorization` via `Upstream-Authorization`)
+     - Original request body
+   - If auth endpoint returns non-2xx: return `401 Unauthorized` with `CONNECT_REJECTED`
+4. **Ensure Stream Exists**: Check if stream exists; create it if not
+5. **Generate URL**: Generate a fresh pre-signed URL for the stream
+6. **Return**: Return the signed URL to the client
 
 **Response (`200 OK` for existing session, `201 Created` for new session):**
 
 ```
-HTTP/1.1 200 OK
-Location: <fresh-pre-signed-stream-url>
-Stream-Offset: <byte-offset>
-Upstream-Content-Type: <content-type>
-
-{...origin response body (message history)...}
-```
-
-**Key distinction from create/append**: The connect operation returns the **origin's response body** (message history) to the client. In create/append, the upstream body is piped to the stream — the client reads it via SSE. In connect, the body goes directly to the client.
-
-##### Connect Handler Contract
-
-The developer-provided connect handler (the `Upstream-URL` for connect operations) receives the forwarded request and is responsible for:
-
-- **Input**: Receives the original client request with an additional `Stream-Id` header identifying the durable stream
-- **Authorization**: Validates the client's credentials and determines whether the session is permitted
-- **History Materialization**: Reads the raw durable stream (using the stream ID) and materializes it into a response body (e.g., message history in the AI framework's format)
-- **Output**: Returns:
-  - Response body containing message history (format is opaque to the proxy — framework-specific)
-  - Optional `Stream-Offset` header indicating the byte offset for SSE subscription
-- **Rejection**: Returns non-2xx status to reject the connect (proxy forwards the status to the client)
-
-Framework-aware helpers for parsing the raw stream into messages are out of scope for this RFC (referenced only as a concern for individual framework integrations).
-
-#### Renew Operation (`Renew-Stream-URL` header)
-
-When `POST /v1/proxy` includes a `Renew-Stream-URL` header, the proxy performs a **renew** operation. This allows clients to obtain a fresh signed URL for an existing stream without producing a write. This is for re-activating read access when the signed URL has expired and the client doesn't have a pending real request to make.
-
-**Request:**
-
-```
-POST /v1/proxy?secret=xxx HTTP/1.1
-Renew-Stream-URL: <stream-url-with-valid-hmac>
-Upstream-URL: <renewUrl>
-Authorization: <client's upstream auth headers>
-```
-
-**Server behavior:**
-
-1. Validate HMAC on stream URL (ignore expiry)
-2. Forward request to `Upstream-URL` (the renewUrl) with client's auth headers
-3. Upstream returns 2xx → generate fresh signed URL for the stream → return it
-4. Upstream returns 4xx → return `401 Unauthorized`
-
-**No stream writes. No body piping.** The renewUrl response body is discarded by the proxy. This is a pure auth-check → re-sign operation.
-
-**Response (`200 OK`):**
-
-```
-HTTP/1.1 200 OK
+HTTP/1.1 201 Created
 Location: <fresh-pre-signed-stream-url>
 ```
 
-**Important**: The user's renewUrl handler should perform a real authorization check (e.g., "does this user still have access to this conversation"), not just return 200 unconditionally. The renewUrl is the user's opportunity to revoke access.
+- **`201 Created`** when the stream was newly created, **`200 OK`** when reconnecting to an existing stream.
+- **`Location`**: A fresh pre-signed URL for the stream.
+- **No response body**.
+
+##### Auth Endpoint Contract
+
+The developer-provided auth endpoint (the `Upstream-URL` for connect operations) is responsible for deciding whether the client is allowed to access this session. The proxy calls it with a `POST` request containing:
+
+- The client's auth headers (e.g., `Authorization` via `Upstream-Authorization`)
+- A `Stream-Id` header identifying the durable stream
+- The original request body (if any)
+
+The auth endpoint returns:
+
+- **2xx**: Approved — proxy generates a signed URL
+- **Non-2xx**: Rejected — proxy returns `401 Unauthorized` with `CONNECT_REJECTED` to the client
+
+The auth endpoint's response body is discarded by the proxy. Only the status code matters.
+
+Implementers **SHOULD NOT** return `200` unconditionally from their auth endpoint. The auth endpoint is the developer's opportunity to revoke access to a session. An auth endpoint that always approves effectively grants permanent access, regardless of the signed URL's expiration.
+
+If `Upstream-URL` is omitted, the proxy trusts service authentication alone (suitable for simple deployments without user-level authorization).
 
 #### Response Codes
 
-| Status             | Condition                                                                                                                                        |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `200 OK`           | Append: response appended to existing stream. Connect: existing session reconnected. Renew: fresh URL generated. Fresh signed URL in `Location`. |
-| `201 Created`      | Create: new stream created. Connect: new session initialized. Fresh signed URL in `Location`.                                                    |
-| `400 Bad Request`  | `Use-Stream-URL` or `Renew-Stream-URL` header malformed, or `Session-Id` provided without required `Upstream-URL`                                |
-| `401 Unauthorized` | HMAC signature invalid (not just expired - expired HMAC is accepted on write/renew paths), or upstream rejected the request (renew/connect)      |
-| `404 Not Found`    | Specified stream does not exist                                                                                                                  |
-| `409 Conflict`     | Stream is closed, cannot append                                                                                                                  |
+| Status             | Condition                                                                                                            |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `200 OK`           | Append: response appended to existing stream. Connect: existing session reconnected. Fresh signed URL in `Location`. |
+| `201 Created`      | Create: new stream created. Connect: new session initialized. Fresh signed URL in `Location`.                        |
+| `400 Bad Request`  | `Use-Stream-URL` header malformed                                                                                    |
+| `401 Unauthorized` | HMAC signature invalid (expired HMAC is accepted on write paths), or auth endpoint rejected the request (connect)    |
+| `404 Not Found`    | Specified stream does not exist                                                                                      |
+| `409 Conflict`     | Stream is closed, cannot append                                                                                      |
 
-#### Response Headers (Stream Reuse)
+#### Response Headers
 
-On successful stream reuse (`200 OK`) and new stream creation (`201 Created`):
+On successful create (`201 Created`), append (`200 OK`), and connect (`201 Created` / `200 OK`):
 
 ```
 Location: <fresh-pre-signed-url>
-Upstream-Content-Type: <content-type>
+Upstream-Content-Type: <content-type>   (create and append only)
 ```
 
-The server MUST return a fresh pre-signed URL on every response (both `200 OK` and `201 Created`). The TTL clock starts at response time. This ensures that active sessions automatically have their read tokens extended on every successful write.
+The server MUST return a fresh pre-signed URL in the `Location` header on every response. The TTL clock starts at response time. This ensures that active sessions automatically have their read tokens extended on every successful operation.
+
+The `Upstream-Content-Type` header is only returned on create and append responses (where an upstream request was made). It is not returned on connect responses.
 
 #### Read Path Error Response for Expired URLs
 
-When a `GET /v1/proxy/{id}` request fails due to an expired (but HMAC-valid) signature, the response includes structured information indicating the URL is renewable:
+When a `GET /v1/proxy/{id}` request fails due to an expired (but HMAC-valid) signature, the response includes structured information:
 
 ```
 HTTP/1.1 401 Unauthorized
 Content-Type: application/json
 
 {
-  "error": "expired",
-  "message": "Pre-signed URL has expired",
-  "renewable": true,
-  "streamId": "<stream-id>"
+  "error": {
+    "code": "SIGNATURE_EXPIRED",
+    "message": "Pre-signed URL has expired",
+    "renewable": true,
+    "streamId": "<stream-id>"
+  }
 }
 ```
 
-This distinguishes between:
+The `renewable` field indicates whether the client can obtain a fresh URL:
 
-- **"expired but renewable"**: Valid HMAC, expired timestamp - client can POST `/v1/proxy` with `Renew-Stream-URL` to obtain a fresh URL
-- **"invalid"**: Bad HMAC - no recovery possible
+- **`true`** for session-based streams (those created via a `Session-Id`) — client can reconnect via `POST /v1/proxy` with `Session-Id` to obtain a fresh URL
+- **`false`** for single-request streams (those created without a `Session-Id`) — client cannot obtain a fresh URL
 
-The client uses this signal to trigger auto-renewal if a `renewUrl` is configured.
+This distinguishes between three failure modes:
+
+- **Expired and renewable**: Valid HMAC, expired timestamp, session-based stream — client can reconnect via `POST /v1/proxy` with `Session-Id`
+- **Expired but not renewable**: Valid HMAC, expired timestamp, single-request stream — no recovery possible
+- **Invalid**: Bad HMAC — no recovery possible, return `SIGNATURE_INVALID`
+
+The client uses this signal to trigger auto-renewal if a `connectUrl` is configured.
+
+### Binary Framing Format
+
+All data written to proxy streams uses a binary framing format. Each upstream response is encapsulated as a sequence of frames carrying a response ID, enabling multiple responses to be multiplexed onto a single stream and reconstructed independently by readers. The full specification is in the [Proxy Protocol Specification](../../packages/proxy/PROXY_PROTOCOL.md) Section 5.
+
+**Frame structure** — every frame has a fixed 9-byte header followed by a variable-length payload:
+
+```
+┌──────────┬─────────────────┬────────────────────┬─────────────────┐
+│ Type     │ Response ID     │ Payload Length      │ Payload         │
+│ (1 byte) │ (4 bytes, BE)   │ (4 bytes, BE)      │ (variable)      │
+└──────────┴─────────────────┴────────────────────┴─────────────────┘
+```
+
+**Frame types:**
+
+| Type     | Byte   | ASCII | Payload            | Description                                  |
+| -------- | ------ | ----- | ------------------ | -------------------------------------------- |
+| Start    | `0x53` | `S`   | JSON object        | Upstream response metadata (status, headers) |
+| Data     | `0x44` | `D`   | Raw bytes          | Upstream response body chunk                 |
+| Complete | `0x43` | `C`   | Empty (length `0`) | Response completed successfully              |
+| Abort    | `0x41` | `A`   | Empty (length `0`) | Response was aborted by the client           |
+| Error    | `0x45` | `E`   | JSON object        | Response failed due to an error              |
+
+**Response lifecycle**: `Start (S) → Data (D)* → Complete (C) | Abort (A) | Error (E)`
+
+Response IDs are assigned sequentially starting from `1`. The framing applies to all proxy streams (including single-request streams), so the format is consistent regardless of whether the stream contains one response or many.
+
+**Key design decisions:**
+
+- ASCII type bytes (inspired by PostgreSQL's wire protocol) for human-readable debugging
+- 4-byte response IDs (future-proof for long-running sessions)
+- Always-present payload length (even for empty payloads) for uniform parsing
+- Start frame carries status + headers as JSON for easy cross-language parsing
+- Data frames carry raw bytes (not JSON-wrapped) for zero-copy efficiency
 
 ### Storage Changes
 
@@ -411,11 +428,13 @@ The existing `StreamCredentials` remains unchanged and continues to store per-re
 ### Session Lifecycle
 
 ```
-1. Connect   → POST /v1/proxy (Session-Id header)      → history + URL + offset
-2. Subscribe → GET signed-url?offset=<offset>           → SSE stream
+1. Connect   → POST /v1/proxy (Session-Id header)      → signed URL
+2. Subscribe → GET signed-url                           → SSE stream
 3. Send      → POST /v1/proxy (Use-Stream-URL header)   → fresh URL
-4. Renew     → POST /v1/proxy (Renew-Stream-URL header) → fresh URL
+4. Reconnect → POST /v1/proxy (Session-Id header)       → fresh URL (same as step 1)
 ```
+
+Session-based streams remain open indefinitely — there is no explicit "close session" operation. The stream stays open for future appends until it is deleted or the implementation applies its own retention/expiry policy.
 
 ### Client Flow
 
@@ -443,8 +462,7 @@ durableFetch(url, { requestId, sessionId, body })
     │ POST /v1/proxy   │  │
     │ Session-Id hdr   │  │
     │ (connect)        │  │
-    │ → history + URL  │  │
-    │   + offset       │  │
+    │ → signed URL     │  │
     └──────────────────┘  │
               │           │
               ▼           ▼
@@ -490,12 +508,12 @@ durableFetch(url, { requestId, sessionId, body })
 
 When the client encounters an expired read URL (401 with `renewable: true`):
 
-1. **If `renewUrl` is configured:**
-   - Automatically `POST /v1/proxy` with `Renew-Stream-URL` header (the expired stream URL) and the renewUrl as `Upstream-URL`
+1. **If `connectUrl` is configured and `sessionId` is available:**
+   - Automatically `POST /v1/proxy` with `Session-Id` header and `connectUrl` as `Upstream-URL` (reconnect)
    - On success: update stored session credentials with fresh signed URL, retry the read
-   - On failure: surface error to caller (upstream rejected - user no longer authorized)
+   - On failure: surface error to caller (auth endpoint rejected — user no longer authorized)
 
-2. **If `renewUrl` is not configured:**
+2. **If `connectUrl` is not configured or stream is not session-based:**
    - Surface the expiry error to the caller
 
 This auto-renewal is transparent to the consumer reading the stream.
@@ -600,12 +618,12 @@ const durableFetch = createDurableFetch({
   proxyAuthorization: "service-secret",
   sessionId: "conversation-123",
   streamSignedUrlTtl: 300, // 5 minute signed URLs
-  renewUrl: "https://api.example.com/auth/check-access",
+  connectUrl: "https://api.example.com/auth/check-access",
 })
 
 // Signed URLs expire after 5 minutes of inactivity
 // When reading an expired stream, the client automatically:
-// 1. POSTs to /v1/proxy with Renew-Stream-URL header
+// 1. POSTs to /v1/proxy with Session-Id header (reconnect)
 // 2. The proxy forwards to api.example.com/auth/check-access
 // 3. If the user is still authorized, receives a fresh signed URL
 // 4. Retries the read transparently
@@ -618,19 +636,16 @@ const durableFetch = createDurableFetch({
   proxyUrl: "https://proxy.example.com/v1/proxy",
   proxyAuthorization: "service-secret",
   sessionId: "conversation-123",
-  connectUrl: "https://api.example.com/connect",
+  connectUrl: "https://api.example.com/auth/check-access",
 })
 
-// 1. Connect — initializes session, returns message history
+// 1. Connect — initializes session, authorizes via auth endpoint, returns signed URL
 const connectRes = await durableFetch.connect()
-// connectRes.body contains message history from origin
 // connectRes.streamUrl is a fresh signed URL
-// connectRes.offset is the byte offset for subscription
+// No response body — all data comes from reading the stream
 
 // 2. Subscribe — read live updates via SSE
-const stream = await durableFetch.subscribe({
-  offset: connectRes.offset,
-})
+const stream = await durableFetch.subscribe()
 
 // 3. Send — append a new message to the stream
 const sendRes = await durableFetch(
@@ -690,22 +705,22 @@ Support `Stream-Signed-URL-TTL` header:
 
 Update request dispatch to check headers in priority order:
 
-1. `Renew-Stream-URL` present → route to renew handler
-2. `Use-Stream-URL` present → route to append handler (existing `handleCreateStream` with append logic)
-3. `Session-Id` present → route to connect handler
-4. None → route to create handler (existing `handleCreateStream`)
+1. `Use-Stream-URL` present → route to append handler (existing `handleCreateStream` with append logic)
+2. `Session-Id` present → route to connect handler
+3. None → route to create handler (existing `handleCreateStream`)
 
 #### File: `packages/proxy/src/server/connect-stream.ts` (new)
 
 Add `handleConnectStream` handler:
 
 1. Extract `Session-Id` header
-2. Derive `streamId = UUIDv5(sessionId, FIXED_NAMESPACE)` using `deriveStreamId()` utility
-3. HEAD to check stream existence; PUT to create if needed
-4. Forward request to `Upstream-URL` with `Stream-Id` header + client auth headers
-5. If upstream returns 2xx: return origin body + `Location` (fresh signed URL) + `Stream-Offset` + `Upstream-Content-Type`
-6. If upstream returns non-2xx: forward the status to the client
-7. Return `201 Created` for new sessions, `200 OK` for existing sessions
+2. Derive `streamId = UUIDv5(NAMESPACE, sessionId)` using `deriveStreamId()` utility
+3. If `Upstream-URL` is provided:
+   - Forward POST request to `Upstream-URL` with `Stream-Id` header + client auth headers + body
+   - If auth endpoint returns non-2xx: return `401 Unauthorized` with `CONNECT_REJECTED`
+4. Check if stream exists; create if needed
+5. Generate fresh signed URL
+6. Return `201 Created` for new sessions, `200 OK` for existing sessions (no response body)
 
 #### File: `packages/proxy/src/server/derive-stream-id.ts` (new)
 
@@ -715,30 +730,21 @@ Add `deriveStreamId(sessionId: string): string` utility:
 - Deterministic: same session ID always produces same stream ID
 - Stateless: no lookup tables or stored mappings
 
-#### File: `packages/proxy/src/server/renew-stream.ts` (new)
-
-Add `handleRenewStream` handler for `POST /v1/proxy` with `Renew-Stream-URL` header:
-
-1. Parse `Renew-Stream-URL` header, validate HMAC (ignore expiry)
-2. Parse `Upstream-URL` header (the renewUrl)
-3. Forward request to renewUrl with client's auth headers
-4. If upstream returns 2xx: generate fresh signed URL, return 200 with `Location`
-5. If upstream returns 4xx: return 401 Unauthorized
-6. If stream doesn't exist: return 404 Not Found
-
 #### File: `packages/proxy/src/server/read-stream.ts`
 
 Update read handler error responses:
 
-- When HMAC is valid but URL is expired, return structured JSON response with `renewable: true`
-- Distinguish between "expired but renewable" and "invalid HMAC"
+- When HMAC is valid but URL is expired, return structured JSON error response with `code: "SIGNATURE_EXPIRED"`
+- Set `renewable: true` for session-based streams, `false` for single-request streams
+- Include `streamId` in the error response for convenience
+- Distinguish between "expired" (valid HMAC) and "invalid" (bad HMAC)
 
 ### Phase 2: Client-Side Changes
 
 #### File: `packages/proxy/src/client/types.ts`
 
 1. Update `SessionCredentials` interface (remove `expiresAtSecs`)
-2. Add `streamSignedUrlTtl`, `connectUrl`, and `renewUrl` to `DurableFetchOptions`
+2. Add `streamSignedUrlTtl` and `connectUrl` to `DurableFetchOptions`
 
 #### File: `packages/proxy/src/client/storage.ts`
 
@@ -770,7 +776,7 @@ function removeSessionCredentials(storage, prefix, scope, sessionId): void
 
 Modify `createDurableFetch` to:
 
-1. Accept `sessionId`, `getSessionId`, `streamSignedUrlTtl`, `connectUrl`, and `renewUrl` options
+1. Accept `sessionId`, `getSessionId`, `streamSignedUrlTtl`, and `connectUrl` options
 2. Send `Stream-Signed-URL-TTL` header when `streamSignedUrlTtl` is configured
 3. Resolve effective sessionId for each request (priority: request > getSessionId > options)
 4. Before making POST:
@@ -784,7 +790,7 @@ Modify `createDurableFetch` to:
 7. Add auto-renewal logic:
    - Intercept 401 on reads
    - Check for `renewable: true` in response
-   - If `renewUrl` configured, POST `/v1/proxy` with `Renew-Stream-URL` header
+   - If `connectUrl` configured and `sessionId` available, POST `/v1/proxy` with `Session-Id` header (reconnect)
    - Update stored credentials with fresh URL
    - Retry the read
 
@@ -812,25 +818,18 @@ New test file covering:
 
 New test file covering:
 
-1. First connect creates stream and returns message history (`201 Created`)
-2. Reconnect to existing session returns history (`200 OK`)
-3. Connect handler rejection (non-2xx) forwarded to client
-4. Deterministic stream ID: same session ID always yields same stream ID
-5. `Stream-Id` header forwarded to connect handler
-6. `Stream-Offset` header forwarded from connect handler to client
-7. Fresh signed URL generated in `Location` header
-
-#### File: `packages/proxy/src/__tests__/renew-stream.test.ts`
-
-New test file covering:
-
-1. Renew success path: valid HMAC + upstream 2xx → fresh URL
-2. Renew failure path: valid HMAC + upstream 4xx → 401
-3. Renew failure path: invalid HMAC → 401
-4. Renew with non-existent stream → 404
-5. Client auto-renewal with `renewUrl` configured
-6. Client error surfacing without `renewUrl` configured
-7. Infinite TTL: URL never expires on reads
+1. First connect creates stream and returns signed URL (`201 Created`)
+2. Reconnect to existing session returns signed URL (`200 OK`)
+3. Connect with auth endpoint — 2xx approval returns signed URL
+4. Connect with auth endpoint — non-2xx rejection returns `401 CONNECT_REJECTED`
+5. Connect without auth endpoint (no `Upstream-URL`) — trusts service auth alone
+6. Auth endpoint receives `Stream-Id` header and client's auth headers
+7. Auth endpoint called before stream creation (reject doesn't leak resources)
+8. Deterministic stream ID: same session ID always yields same stream ID
+9. Fresh signed URL generated in `Location` header
+10. No response body returned on connect
+11. Client auto-renewal via reconnect with `connectUrl` configured
+12. Client error surfacing without `connectUrl` configured
 
 ### Phase 4: Export Updates
 
@@ -856,13 +855,13 @@ No new function exports needed - session handling is internal to `createDurableF
 
    Both are required. Stream IDs are UUIDs - unguessable.
 
-5. **Renewal Endpoint Security**: The renew endpoint requires valid HMAC + upstream acceptance via the renewUrl. The renewUrl handler is the user's opportunity to enforce access control decisions (e.g., revoke access to a conversation). Implementers should NOT return 200 unconditionally from their renewUrl handler.
+5. **Auth Endpoint Security**: The auth endpoint used in connect operations is the developer's opportunity to enforce access control decisions (e.g., revoke access to a conversation). Implementers SHOULD NOT return 200 unconditionally from their auth endpoint. An auth endpoint that always approves effectively grants permanent access, regardless of the signed URL's expiration.
 
 6. **No Cross-Tenant Access**: Stream IDs are UUIDs with signed URLs. A client cannot guess or forge access to another client's stream.
 
-7. **Infinite TTL**: When TTL is set to infinite, signed URLs never expire. This is appropriate for trusted environments or when the signed URL is stored securely. The HMAC still prevents forgery. Simple deployments can use long/infinite TTL with no renewal infrastructure.
+7. **Infinite TTL**: When TTL is set to infinite, signed URLs never expire. This is appropriate for trusted environments or when the signed URL is stored securely. The HMAC still prevents forgery. Simple deployments can use long/infinite TTL with no auth endpoint.
 
-8. **Connect Authorization**: The proxy validates the service JWT (existing proxy auth) and defers session-level authorization to the origin connect handler. The connect handler receives the client's original auth headers and decides whether to permit the session. This two-layer model (proxy auth + origin auth) is consistent with the append path.
+8. **Connect Authorization**: The proxy validates service authentication (existing proxy auth) and optionally defers session-level authorization to the auth endpoint. The auth endpoint receives the client's original auth headers and decides whether to permit the session. The auth endpoint's response body is discarded — only the status code matters. This two-layer model (proxy auth + auth endpoint) is consistent with the append path.
 
 9. **Deterministic Stream IDs**: Stream IDs for sessions are derived via UUIDv5 (SHA-1 based). The derivation is one-way — knowing a stream ID does not reveal the session ID. Security does not rely on stream ID unguessability; it relies on HMAC-signed URLs for access control.
 
@@ -918,20 +917,42 @@ Let the client derive stream IDs and manage the connect flow.
 - Deterministic server-side derivation is stateless and requires no stored mappings
 - Centralizing derivation in the proxy ensures consistency across client implementations
 
+### Alternative 6: Separate Renew Operation (`Renew-Stream-URL` header)
+
+Add a dedicated renew operation that validates an expired signed URL's HMAC, forwards to a `renewUrl` for authorization, and returns a fresh signed URL without writing to the stream.
+
+**Rejected because:**
+
+- Connect already serves this purpose — the client reconnects with the same `Session-Id` to obtain a fresh URL
+- Adds a fourth operation (renew) when three (create, append, connect) are sufficient
+- Requires a separate `renewUrl` client configuration option alongside `connectUrl`
+- The auth endpoint in connect handles both initial authorization and re-authorization on the same code path
+
+### Alternative 7: Connect Returns Message History
+
+Have the connect handler return message history in the response body, along with a `Stream-Offset` header for SSE subscription.
+
+**Rejected because:**
+
+- Conflates two concerns: authorization/URL-generation and data delivery
+- All stream data should flow through the read path (GET with pre-signed URL) for consistency
+- The auth endpoint contract is simpler when it only needs to return a status code
+- History materialization is a framework-specific concern better handled outside the proxy protocol
+
 ## Resolved Questions
 
 ### URL Refresh and Expiry
 
 - The server returns a fresh signed URL on every response (both `200` and `201`).
-- TTL is configurable via `Stream-Signed-URL-TTL` header, defaulting to 7 days. No server-enforced ceiling - infinite TTL is supported.
+- TTL is configurable via `Stream-Signed-URL-TTL` header, defaulting to a server-configured value. Servers MAY enforce a maximum TTL.
 - On write paths (`POST /v1/proxy` with `Use-Stream-URL`), HMAC is validated but expiry is ignored. Authorization flows through the upstream.
-- On read paths (`GET /v1/proxy/{id}`), both HMAC and expiry are enforced. Expired-but-valid-HMAC responses indicate the URL is renewable.
-- Renewal uses `POST /v1/proxy` with `Renew-Stream-URL` header (not a separate endpoint), obtaining a fresh signed URL by proving upstream authorization, without producing a stream write.
-- Client-side: optional `renewUrl` and `streamSignedUrlTtl` configuration. Simple deployments use long/infinite TTL. Security-sensitive deployments use short TTL + renewUrl.
+- On read paths (`GET /v1/proxy/{id}`), both HMAC and expiry are enforced. Expired-but-valid-HMAC responses include `renewable: true` (for session streams) or `renewable: false` (for single-request streams).
+- URL renewal uses the connect operation — the client simply reconnects with the same `Session-Id` to obtain a fresh URL. No separate renew operation is needed.
+- Client-side: optional `connectUrl` and `streamSignedUrlTtl` configuration. Simple deployments use long TTLs with no auth endpoint. Security-sensitive deployments use short TTL + auth endpoint.
 
 ### Header-Based Dispatch
 
-All operations (create, append, connect, renew) use `POST /v1/proxy`. The operation is determined by header presence, checked in priority order: `Renew-Stream-URL` → `Use-Stream-URL` → `Session-Id` → none.
+All operations (create, append, connect) use `POST /v1/proxy`. The operation is determined by header presence, checked in priority order: `Use-Stream-URL` → `Session-Id` → none.
 
 ### Header Naming
 
@@ -946,16 +967,27 @@ Stream IDs for session-based operations are derived via UUIDv5 from the session 
 
 When a stream is closed between requests, the proxy returns `409 Conflict`. The client clears session credentials and creates a new stream.
 
+### Connect vs Renew (Unified)
+
+The original design had a separate `Renew-Stream-URL` operation for obtaining fresh signed URLs. This was unified into the connect operation — when a signed URL expires, the client simply reconnects with the same `Session-Id`. This simplifies the protocol (3 operations instead of 4) and eliminates the need for a separate `renewUrl` client option.
+
+### Connect Does Not Return Body
+
+The original design had the connect handler returning message history in the response body. This was changed so that connect is purely an auth + URL-generation operation with no response body. All stream data is read by the client via the pre-signed URL. This simplifies the connect contract and separates concerns: the auth endpoint decides access, the stream provides data.
+
+### Binary Framing Format
+
+All proxy streams use a binary framing format to encapsulate upstream responses, solving the problem of byte interleaving when multiple responses are written to the same stream. The format uses ASCII type bytes (S/D/C/A/E), 4-byte response IDs, and always-present payload lengths. See the [Proxy Protocol Specification](../../packages/proxy/PROXY_PROTOCOL.md) Section 5 for the full format.
+
 ## Open Questions
 
-1. **Connect Handler Body Format**: Should the connect handler response body format be opaque (framework-specific) or specified by this RFC? Current proposal: opaque — the proxy passes through whatever the origin returns.
+1. **UUIDv5 Namespace**: What fixed namespace UUID should be used for deriving stream IDs from session IDs? Options include a well-known UUID specific to the durable-streams project or a configurable namespace.
 
-2. **UUIDv5 Namespace**: What fixed namespace UUID should be used for deriving stream IDs from session IDs? Options include a well-known UUID specific to the durable-streams project or a configurable namespace.
-
-3. **Concurrent Appends**: What happens if two requests try to append to the same stream simultaneously? The underlying durable streams protocol handles this via sequencing, but should the proxy add any coordination?
+2. **Concurrent Appends**: What happens if two requests try to append to the same stream simultaneously? The underlying durable streams protocol handles this via sequencing, but should the proxy add any coordination? The framing format supports interleaved frames from different response IDs, so concurrent appends are safe at the protocol level.
 
 ## References
 
+- `packages/proxy/PROXY_PROTOCOL.md` - The Durable Streams Proxy Protocol specification (authoritative)
 - `packages/proxy/src/server/create-stream.ts` - Current stream creation logic
 - `packages/proxy/src/server/tokens.ts` - Pre-signed URL generation and validation
 - `packages/proxy/src/server/proxy-handler.ts` - Request dispatch logic
@@ -963,4 +995,3 @@ When a stream is closed between requests, the proxy returns `409 Conflict`. The 
 - `packages/proxy/src/server/derive-stream-id.ts` - Deterministic stream ID derivation (new)
 - `packages/proxy/src/client/durable-fetch.ts` - Current client implementation
 - `packages/proxy/src/client/storage.ts` - Credential storage utilities
-- PRD: Phase 3.1 (Proxy connect operation), Phase 3.4 (Session lifecycle)
