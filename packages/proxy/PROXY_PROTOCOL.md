@@ -12,7 +12,7 @@
 
 This document specifies the Durable Streams Proxy Protocol, an extension to the [Durable Streams Protocol](../../PROTOCOL.md) that adds proxy operations for forwarding HTTP requests to upstream servers while persisting their streaming responses to durable streams. This enables clients to make any HTTP streaming response resumable — if a connection drops mid-stream, the client reconnects to the durable stream and continues reading from where it left off, without data loss or repeating the upstream request.
 
-The proxy protocol supports both single-request and multi-request streams. Multiple upstream responses can be appended to the same stream, enabling session-based patterns where an entire conversation accumulates in a single durable stream. All upstream response data is written using a binary framing format that encapsulates response metadata and body data, allowing readers to reconstruct individual responses from the multiplexed stream.
+The proxy protocol supports both single-request and multi-request streams. Multiple upstream responses can be appended to the same stream using explicit, client-chosen stream IDs, enabling session-based patterns where an entire conversation accumulates in a single durable stream. All upstream response data is written using a binary framing format that encapsulates response metadata and body data, allowing readers to reconstruct individual responses from the multiplexed stream.
 
 ## Copyright Notice
 
@@ -24,10 +24,10 @@ Copyright (c) 2026 ElectricSQL
 2. [Terminology](#2-terminology)
 3. [Protocol Overview](#3-protocol-overview)
 4. [HTTP Operations](#4-http-operations)
-   - 4.1. [Header-Based Dispatch](#41-header-based-dispatch)
+   - 4.1. [URL-Based Dispatch](#41-url-based-dispatch)
    - 4.2. [Create Proxy Stream](#42-create-proxy-stream)
-   - 4.3. [Append to Proxy Stream](#43-append-to-proxy-stream)
-   - 4.4. [Connect Session](#44-connect-session)
+   - 4.3. [Create or Append to Proxy Stream](#43-create-or-append-to-proxy-stream)
+   - 4.4. [Connect](#44-connect)
    - 4.5. [Read Proxy Stream](#45-read-proxy-stream)
    - 4.6. [Abort Upstream](#46-abort-upstream)
    - 4.7. [Stream Metadata](#47-stream-metadata)
@@ -48,7 +48,7 @@ Copyright (c) 2026 ElectricSQL
    - 8.2. [Signature Generation and Verification](#82-signature-generation-and-verification)
    - 8.3. [Scope](#83-scope)
    - 8.4. [Expiration and TTL](#84-expiration-and-ttl)
-   - 8.5. [Write-Path Validation](#85-write-path-validation)
+   - 8.5. [Write and Connect Paths](#85-write-and-connect-paths)
 9. [Upstream Fetch Lifecycle](#9-upstream-fetch-lifecycle)
    - 9.1. [Timeouts](#91-timeouts)
    - 9.2. [Response Piping and Framing](#92-response-piping-and-framing)
@@ -76,9 +76,9 @@ The Proxy Protocol extension solves this by introducing a server-side proxy that
 3. Creates a durable stream and pipes the upstream response into it in the background, using a binary framing format
 4. Returns a capability URL (pre-signed URL) that grants the client read and abort access to the stream
 
-The proxy supports **stream reuse** — multiple upstream responses can be appended to the same stream via the **append** operation. Combined with the binary framing format, this enables session-based patterns where an entire conversation (multiple request/response turns) accumulates in a single durable stream. Each response is encapsulated in frames that carry a response ID, allowing readers to reconstruct individual responses from the multiplexed stream.
+The proxy supports **stream reuse** — multiple upstream responses can be appended to the same stream. Clients address streams by name using explicit IDs in the URL path, so no session-to-stream mapping is needed. Combined with the binary framing format, this enables session-based patterns where an entire conversation (multiple request/response turns) accumulates in a single durable stream. Each response is encapsulated in frames that carry a response ID, allowing readers to reconstruct individual responses from the multiplexed stream.
 
-For session-based use cases, the proxy supports a **connect** operation that derives a stream ID deterministically from a session identifier, optionally authorizes the client via a developer-provided auth endpoint, and returns a pre-signed URL. Connect serves as both the initial session setup and the mechanism for obtaining fresh signed URLs when they expire — the client simply reconnects with the same session ID.
+For session-based use cases, the proxy supports a **connect** operation that optionally authorizes the client via a developer-provided auth endpoint and returns a pre-signed read URL for the stream. Connect serves as both the initial session setup and the mechanism for obtaining fresh signed URLs when they expire — the client simply connects again to the same stream ID.
 
 ```
 ┌──────────┐        ┌──────────────────┐        ┌──────────────┐
@@ -104,7 +104,7 @@ The proxy protocol adds:
 
 - A creation mechanism that combines upstream fetching with stream creation
 - Stream reuse via the append operation
-- Session-based stream management via the connect operation
+- Stream-level authorization via the connect operation
 - A binary framing format for encapsulating upstream responses
 - Pre-signed capability URLs for per-stream authentication
 - Configurable signed URL TTL
@@ -129,51 +129,51 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Service Authentication**: Authentication that identifies a trusted caller authorized to create and manage proxy streams. The mechanism is implementation-defined (see Section 10).
 
-**Session**: A logical grouping of multiple upstream requests whose responses are accumulated in a single stream. Identified by a client-provided session ID.
-
 **Response ID**: A 4-byte unsigned integer that identifies a specific upstream response within a stream. Assigned sequentially starting from 1.
 
 **Frame**: A binary envelope that wraps upstream response data written to the stream (see Section 5).
 
 ## 3. Protocol Overview
 
-The proxy protocol defines operations on two URL patterns:
+The proxy protocol defines operations using URL paths and query parameters for dispatch:
 
-| Method | Path                      | Description                                  |
-| ------ | ------------------------- | -------------------------------------------- |
-| POST   | `{proxy-url}`             | Create, append, or connect (see Section 4.1) |
-| GET    | `{proxy-url}/{stream-id}` | Read framed data from a proxy stream         |
-| HEAD   | `{proxy-url}/{stream-id}` | Get stream metadata                          |
-| PATCH  | `{proxy-url}/{stream-id}` | Abort upstream connection                    |
-| DELETE | `{proxy-url}/{stream-id}` | Delete a proxy stream                        |
-
-The POST operation is multiplexed — the specific operation (create, append, or connect) is determined by header-based dispatch (see Section 4.1).
+| Method | Path                                                   | Description                                     |
+| ------ | ------------------------------------------------------ | ----------------------------------------------- |
+| POST   | `{proxy-url}`                                          | Create a new stream (server-generated ID) (4.2) |
+| POST   | `{proxy-url}/{stream-id}`                              | Create or append to a named stream (4.3)        |
+| POST   | `{proxy-url}/{stream-id}?action=connect`               | Connect — obtain a pre-signed read URL (4.4)    |
+| GET    | `{proxy-url}/{stream-id}?expires=&signature=`          | Read framed data from a proxy stream (4.5)      |
+| HEAD   | `{proxy-url}/{stream-id}`                              | Get stream metadata (4.7)                       |
+| PATCH  | `{proxy-url}/{stream-id}?action=abort[&response={id}]` | Abort upstream connection(s) (4.6)              |
+| DELETE | `{proxy-url}/{stream-id}`                              | Delete a proxy stream (4.8)                     |
 
 The protocol does not prescribe a specific URL structure. The examples in this document use `/v1/proxy` as the base URL, but implementations **MAY** use any URL scheme they choose. The protocol is defined by the HTTP methods, query parameters, and headers applied to the proxy URLs.
 
-**Stream IDs** are server-generated. For standard create operations, implementations **SHOULD** use UUIDs or another scheme that produces unique, URL-safe identifiers. For session-based connect operations, stream IDs are derived deterministically from the session ID (see Section 4.4).
+**Stream IDs** may be server-generated or client-specified. For `POST {proxy-url}` (no stream ID in the path), the server generates a unique ID. For `POST {proxy-url}/{stream-id}`, the client specifies the stream ID directly. Implementations **SHOULD** accept any URL-safe string as a stream ID and **SHOULD** use UUIDs or another scheme for server-generated IDs.
 
 **Multi-phase flow:**
 
-1. **Create** (POST): Client sends upstream request details to the proxy. The proxy creates a stream, fetches from upstream, and writes the response using the framing format (Section 5). Returns a pre-signed URL in the `Location` header.
-2. **Connect** (POST): Client provides a `Session-Id`. The proxy derives the stream ID, optionally authorizes via an auth endpoint, and returns a pre-signed URL. No data is written to the stream.
-3. **Read** (GET): Client reads from the pre-signed URL, which returns the framed stream data. Supports offset-based resumption and live modes from the base protocol.
-4. **Append** (POST, optional): Client sends additional upstream requests to the same stream. The proxy appends new framed responses to the existing stream.
-5. **Reconnect** (POST, optional): When a signed URL expires, the client connects again with the same `Session-Id` to obtain a fresh URL (same operation as step 2).
+1. **Create** (POST without stream ID): Client sends upstream request details to the proxy. The proxy generates a stream ID, creates a stream, fetches from upstream, and writes the response using the framing format (Section 5). Returns a pre-signed URL in the `Location` header.
+2. **Create or Append** (POST with stream ID): Client sends upstream request details to a named stream. If the stream doesn't exist, it is created; if it exists, the response is appended. Returns a pre-signed URL.
+3. **Connect** (POST with `?action=connect`): Client requests a pre-signed read URL for a named stream, optionally authorized via a developer-provided auth endpoint. No data is written to the stream.
+4. **Read** (GET): Client reads from the pre-signed URL, which returns the framed stream data. Supports offset-based resumption and live modes from the base protocol.
+5. **Reconnect**: When a signed URL expires, the client connects again to the same stream ID to obtain a fresh URL (same operation as step 3).
 
 ## 4. HTTP Operations
 
-### 4.1. Header-Based Dispatch
+### 4.1. URL-Based Dispatch
 
-All write operations use `POST {proxy-url}`. The proxy determines the specific operation by checking request headers in priority order:
+The proxy determines the operation from the URL path and query parameters:
 
-| Header Present                          | Operation                                           |
-| --------------------------------------- | --------------------------------------------------- |
-| `Use-Stream-URL`                        | **Append** — append to an existing stream (4.3)     |
-| `Session-Id` (without `Use-Stream-URL`) | **Connect** — initialize or reconnect session (4.4) |
-| None of the above                       | **Create** — create a new stream (4.2)              |
+| URL Pattern                                   | Operation                                           |
+| --------------------------------------------- | --------------------------------------------------- |
+| `POST {proxy-url}`                            | **Create** — new stream, server-generated ID (4.2)  |
+| `POST {proxy-url}/{stream-id}`                | **Create or Append** — upsert to named stream (4.3) |
+| `POST {proxy-url}/{stream-id}?action=connect` | **Connect** — obtain pre-signed read URL (4.4)      |
 
-Headers are checked in this order. For example, a request with both `Session-Id` and `Use-Stream-URL` is an **append** (not a connect), because `Use-Stream-URL` takes priority.
+Write operations (create, create-or-append) require the `Upstream-URL` header. Connect operations do not fetch from upstream (though they may optionally forward to an auth endpoint via `Upstream-URL`).
+
+If the `action` query parameter is present and its value is not recognized for the given HTTP method, the server **MUST** return `400 Bad Request` with error code `INVALID_ACTION`. Servers **MUST NOT** fall through to another operation when an unrecognized `action` is specified.
 
 ### 4.2. Create Proxy Stream
 
@@ -269,44 +269,51 @@ The proxy **MUST NOT** follow HTTP redirects from upstream. See Section 7.1.
 
 See Section 12 for the full error code table.
 
-### 4.3. Append to Proxy Stream
+### 4.3. Create or Append to Proxy Stream
 
 #### Request
 
 ```
-POST {proxy-url}
-Use-Stream-URL: {pre-signed-stream-url}
+POST {proxy-url}/{stream-id}
 Upstream-URL: {upstream-url}
 Upstream-Method: {method}
 ```
 
-Appends a new upstream response to an existing proxy stream. The upstream response is written as a new sequence of frames (Start, Data..., terminal) with the next sequential response ID.
+Creates a new proxy stream with the specified ID, or appends to it if it already exists (**upsert** semantics). The upstream response is written using the framing format (Section 5) — as the first response if the stream is new, or the next sequential response if appending.
 
 #### Request Headers
 
-All headers from Section 4.2 (Create), plus:
+Same as Section 4.2 (Create):
 
-- `Use-Stream-URL` (required)
-  - A pre-signed URL for the target stream (as returned in the `Location` header of a previous create, append, or connect response).
-  - The server validates the signature but **ignores** the expiration timestamp (see Section 8.5).
-
+- `Upstream-URL` (required)
+- `Upstream-Method` (required)
+- `Upstream-Authorization` (optional)
 - `Stream-Signed-URL-TTL` (optional)
-  - TTL in seconds for the fresh pre-signed URL returned in the response (see Section 8.4).
+- `Content-Type` (optional)
+- Other headers forwarded to upstream (see Section 6)
 
 #### Authentication
 
-Service authentication is required (see Section 10). The `Use-Stream-URL` header value provides stream-level authentication via its HMAC signature.
+Service authentication is required (see Section 10).
 
 #### Validation
 
 1. Validate service authentication
-2. Parse `Use-Stream-URL`: extract stream ID and signature
-3. Validate HMAC signature (reject if invalid; ignore expiry)
-4. Verify stream exists (return `404` if not)
-5. Verify stream is not closed (return `409` if closed)
-6. Validate `Upstream-URL` against allowlist
+2. If stream exists, verify it is not closed (return `409` if closed)
+3. Validate `Upstream-URL` against allowlist
 
-#### Response — Success (upstream 2xx)
+#### Response — Success (upstream 2xx, new stream)
+
+```http
+HTTP/1.1 201 Created
+Location: {proxy-url}/{stream-id}?expires={timestamp}&signature={sig}
+Upstream-Content-Type: {content-type}
+Stream-Response-Id: {response-id}
+```
+
+- **`201 Created`**: The stream was newly created.
+
+#### Response — Success (upstream 2xx, existing stream)
 
 ```http
 HTTP/1.1 200 OK
@@ -316,38 +323,39 @@ Stream-Response-Id: {response-id}
 ```
 
 - **`200 OK`**: The upstream response is being appended to the existing stream.
-- **`Location`**: A **fresh** pre-signed URL. The server **MUST** return a fresh pre-signed URL on every successful response.
-- **`Upstream-Content-Type`**: The `Content-Type` of this upstream response.
-- **`Stream-Response-Id`**: The numeric response ID assigned to this appended upstream response. This is the next sequential ID for the stream (e.g., if the stream already contains responses 1 and 2, the appended response is assigned ID 3).
-- **No response body**.
+
+Both responses include:
+
+- **`Location`**: A pre-signed capability URL for reading from and aborting the stream (see Section 8). The server **MUST** return a fresh pre-signed URL on every successful response.
+- **`Upstream-Content-Type`**: The `Content-Type` of the upstream response.
+- **`Stream-Response-Id`**: The numeric response ID assigned to this upstream response. The first response in a stream is `1`, the next is `2`, and so on.
+- **No response body**. The upstream response body is written to the durable stream in the background.
 
 #### Response — Errors
 
-- **`400 Bad Request`** with `MALFORMED_STREAM_URL`: `Use-Stream-URL` is not a valid URL or cannot be parsed.
-- **`401 Unauthorized`** with `SIGNATURE_INVALID`: HMAC signature on `Use-Stream-URL` is invalid.
-- **`404 Not Found`** with `STREAM_NOT_FOUND`: The stream referenced by `Use-Stream-URL` does not exist.
 - **`409 Conflict`** with `STREAM_CLOSED`: The stream has been closed (via the base protocol) and cannot accept new data.
 - All other errors from Section 4.2 (upstream errors, redirect blocking, etc.) apply.
 
-### 4.4. Connect Session
+### 4.4. Connect
 
 #### Request
 
 ```
-POST {proxy-url}
-Session-Id: {session-id}
+POST {proxy-url}/{stream-id}?action=connect
 ```
 
-Connects to a session. The proxy derives a stream ID deterministically from the session ID, ensures the stream exists, optionally authorizes the client via a developer-provided auth endpoint, and returns a pre-signed URL for the stream.
+Obtains a pre-signed read URL for a named stream, optionally authorizing the client via a developer-provided auth endpoint. Connect does not write data to the stream and does not return a response body.
 
-Connect does not write data to the stream and does not return a response body. All stream data is read by the client via the pre-signed URL (Section 4.5). This operation serves as both the initial session setup and the mechanism for obtaining fresh signed URLs — when a URL expires, the client simply connects again with the same `Session-Id`.
+This operation serves as both the initial session setup and the mechanism for obtaining fresh signed URLs — when a URL expires, the client simply connects again to the same stream ID. If the stream does not yet exist, it is created.
 
 The proxy always uses the `POST` method when calling the auth endpoint. The `Upstream-Method` header is not used for connect operations.
 
-#### Request Headers
+#### Query Parameters
 
-- `Session-Id` (required)
-  - A client-provided session identifier. The proxy derives the stream ID deterministically from this value.
+- `action=connect` (required) — Identifies this as a connect operation.
+- Any additional query parameters (e.g., `offset`, `live`, `cursor`) are preserved in the returned `Location` URL (see Response below).
+
+#### Request Headers
 
 - `Upstream-URL` (optional)
   - The URL of an auth endpoint. If provided, the proxy forwards the request to this URL for an authorization check before returning the signed URL.
@@ -364,37 +372,40 @@ The proxy always uses the `POST` method when calling the auth endpoint. The `Ups
 
 If `Upstream-URL` is provided, the request body is forwarded to the auth endpoint as-is.
 
-#### Stream ID Derivation
-
-The stream ID **MUST** be derived deterministically from the session ID. Implementations **SHOULD** use UUIDv5 with a fixed namespace:
-
-```
-streamId = UUIDv5(NAMESPACE, sessionId)
-```
-
-The namespace UUID is implementation-defined but **MUST** be fixed and consistent. This ensures:
-
-- The same session ID always produces the same stream ID (stateless)
-- No stored session-to-stream mappings are required
-- The derivation is one-way — knowing a stream ID does not reveal the session ID
-
 #### Server Behavior
 
 1. Validate service authentication
-2. Derive stream ID from `Session-Id`
+2. Extract stream ID from the URL path
 3. If `Upstream-URL` is provided:
    - Forward a POST request to `Upstream-URL` with:
-     - `Stream-Id: {derived-stream-id}` header
+     - `Stream-Id: {stream-id}` header
      - Client's original headers (per Section 6.1)
      - Original request body
    - If auth endpoint returns non-2xx: return `401 Unauthorized` with `CONNECT_REJECTED`
 4. Check if stream exists; create it if not
 5. Generate a fresh pre-signed URL for the stream
-6. Return the signed URL to the client
+6. If the client included additional query parameters (e.g., `offset`, `live`), append them to the generated URL
+7. Return the signed URL to the client
+
+#### Query Parameter Passthrough
+
+When the client includes query parameters beyond `action=connect`, the server preserves them in the returned `Location` URL. For example:
+
+```
+POST {proxy-url}/my-stream?action=connect&offset=4096&live=sse
+```
+
+Returns:
+
+```
+Location: {proxy-url}/my-stream?expires={ts}&signature={sig}&offset=4096&live=sse
+```
+
+The signature covers only the stream ID and expiry — the additional parameters are unsigned and included for client convenience. This allows clients to obtain a ready-to-use read URL that resumes from a specific offset without an additional request.
 
 #### Auth Endpoint Contract
 
-The auth endpoint is a developer-provided endpoint responsible for deciding whether the client is allowed to access this session. The proxy calls it with a `POST` request containing:
+The auth endpoint is a developer-provided endpoint responsible for deciding whether the client is allowed to access this stream. The proxy calls it with a `POST` request containing:
 
 - The client's auth headers (e.g., `Authorization` via `Upstream-Authorization`)
 - A `Stream-Id` header identifying the durable stream
@@ -407,29 +418,29 @@ The auth endpoint **SHOULD** perform a real authorization check (e.g., "does thi
 
 The auth endpoint's response body is discarded by the proxy. Only the status code matters.
 
-Implementers **SHOULD NOT** return `200` unconditionally from their auth endpoint. The auth endpoint is the developer's opportunity to revoke access to a session. An auth endpoint that always approves effectively grants permanent access, regardless of the signed URL's expiration.
+Implementers **SHOULD NOT** return `200` unconditionally from their auth endpoint. The auth endpoint is the developer's opportunity to revoke access to a stream. An auth endpoint that always approves effectively grants permanent access, regardless of the signed URL's expiration.
 
-#### Response — Success (new session)
+#### Response — Success (new stream)
 
 ```http
 HTTP/1.1 201 Created
 Location: {proxy-url}/{stream-id}?expires={timestamp}&signature={sig}
 ```
 
-#### Response — Success (existing session)
+#### Response — Success (existing stream)
 
 ```http
 HTTP/1.1 200 OK
 Location: {proxy-url}/{stream-id}?expires={timestamp}&signature={sig}
 ```
 
-- **`201 Created`** or **`200 OK`**: `201` when the stream was newly created, `200` when reconnecting to an existing stream.
-- **`Location`**: A fresh pre-signed URL for the stream.
+- **`201 Created`** or **`200 OK`**: `201` when the stream was newly created, `200` when connecting to an existing stream.
+- **`Location`**: A fresh pre-signed URL for the stream (with any passthrough query parameters appended).
 - **No response body**.
 
 #### Response — Errors
 
-- **`401 Unauthorized`** with `CONNECT_REJECTED`: The auth endpoint returned a non-2xx response (client is not authorized for this session).
+- **`401 Unauthorized`** with `CONNECT_REJECTED`: The auth endpoint returned a non-2xx response (client is not authorized for this stream).
 
 ### 4.5. Read Proxy Stream
 
@@ -481,18 +492,16 @@ Content-Type: application/json
   "error": {
     "code": "SIGNATURE_EXPIRED",
     "message": "Pre-signed URL has expired",
-    "renewable": true,
     "streamId": "{stream-id}"
   }
 }
 ```
 
-The `renewable` field indicates whether the client can obtain a fresh URL. It **MUST** be `true` for streams created via a Connect operation (Section 4.4) with a `Session-Id`, and **MUST** be `false` for streams created without a `Session-Id`. When `renewable` is `true`, the client can obtain a fresh URL by reconnecting with its `Session-Id` (Section 4.4). The `streamId` field is included for convenience.
+The `streamId` field identifies the stream so the client can reconnect. A caller with valid service authentication (and, if configured, auth endpoint approval) can obtain a fresh URL via the connect operation: `POST {proxy-url}/{stream-id}?action=connect` (Section 4.4). Note that connect requires service authentication — a holder of only a pre-signed URL cannot refresh it directly; the request must be issued by a caller with service credentials (typically the client's backend).
 
-This distinguishes between three failure modes:
+This distinguishes between two failure modes:
 
-- **Expired and renewable**: Valid HMAC, expired timestamp — client can reconnect via `POST {proxy-url}` with `Session-Id`
-- **Expired but not renewable**: Valid HMAC, expired timestamp — client has no mechanism to obtain a fresh URL
+- **Expired**: Valid HMAC, expired timestamp — caller with service auth can reconnect via connect to obtain a fresh URL
 - **Invalid**: Bad HMAC — no recovery possible, return `SIGNATURE_INVALID`
 
 ### 4.6. Abort Upstream
@@ -500,26 +509,28 @@ This distinguishes between three failure modes:
 #### Request
 
 ```
-PATCH {proxy-url}/{stream-id}?expires={ts}&signature={sig}&action=abort
+PATCH {proxy-url}/{stream-id}?action=abort[&response={response-id}]
 ```
 
-Aborts all active upstream connections for a stream. This is useful for cancelling expensive operations (e.g., stopping AI text generation mid-response).
+Aborts active upstream connections for a stream. If the `response` query parameter is provided, only the specified response is aborted; otherwise, all active responses are aborted. This is useful for cancelling expensive operations (e.g., stopping AI text generation mid-response).
 
 #### Authentication
 
-Pre-signed URL only. Servers **MUST NOT** fall back to service authentication for abort requests. This ensures that only the holder of the pre-signed URL can abort the upstream connection.
+Authenticates via pre-signed URL parameters (`expires` and `signature`) or via service authentication as a fallback. See Sections 8 and 10.
 
 #### Query Parameters
 
 - `action=abort` (required) — Specifies the abort action.
+- `response` (optional) — The numeric response ID to abort. If omitted, all active responses are aborted.
 - `expires`, `signature` — Pre-signed URL authentication (see Section 8).
 
 #### Behavior
 
-- Cancels all active upstream connections for this stream.
-- For each active response, an Abort frame (`A`) is written to the stream (see Section 5.2).
+- If `response` is specified: cancels the upstream connection for that response ID only. Other active responses continue unaffected.
+- If `response` is omitted: cancels all active upstream connections for this stream.
+- For each aborted response, any buffered data is flushed as a Data frame, followed by an Abort frame (`A`) (see Section 5.2).
 - Data written before the abort is preserved and readable.
-- **Idempotent**: Aborting a stream with no active upstream connections succeeds silently.
+- **Idempotent**: Aborting a response that is not active (already completed, already aborted, or does not exist) succeeds silently.
 
 #### Response
 
@@ -712,14 +723,12 @@ When forwarding the client's request to upstream, the proxy applies the followin
 | `Upstream-Authorization` | Sent as `Authorization` to upstream.                         |
 | `Upstream-URL`           | Used as the upstream request URL. Not forwarded as a header. |
 | `Upstream-Method`        | Used as the upstream HTTP method. Not forwarded as a header. |
-| `Use-Stream-URL`         | Proxy-specific. Not forwarded to upstream.                   |
-| `Session-Id`             | Proxy-specific. Not forwarded to upstream.                   |
 | `Stream-Signed-URL-TTL`  | Proxy-specific. Not forwarded to upstream.                   |
 | `Host`                   | Set to the upstream host. Client's `Host` is not forwarded.  |
 | Hop-by-hop headers       | Stripped (see Section 6.2).                                  |
 | All other headers        | Forwarded as-is to upstream.                                 |
 
-For connect operations (Section 4.4), the proxy adds a `Stream-Id` header to the forwarded request containing the derived stream ID.
+For connect operations (Section 4.4), the proxy adds a `Stream-Id` header to the forwarded request containing the stream ID from the URL path.
 
 The following headers are returned by the proxy in responses and are **not** request headers:
 
@@ -747,7 +756,7 @@ Additionally, the proxy **MUST** strip:
 
 - `Host` (replaced with the upstream host)
 - `Authorization` (replaced by `Upstream-Authorization` if provided)
-- `Upstream-URL`, `Upstream-Method`, `Upstream-Authorization`, `Use-Stream-URL`, `Session-Id`, `Stream-Signed-URL-TTL` (proxy-specific headers, not forwarded)
+- `Upstream-URL`, `Upstream-Method`, `Upstream-Authorization`, `Stream-Signed-URL-TTL` (proxy-specific headers, not forwarded)
 
 ## 7. Upstream URL Allowlist
 
@@ -789,10 +798,10 @@ A pre-signed URL grants:
 
 - **Read access** (GET) to the specified stream
 - **Abort access** (PATCH with `action=abort`) to the specified stream
-- **Append access** (POST with `Use-Stream-URL`) to the specified stream (see Section 8.5)
 
 A pre-signed URL does **NOT** grant:
 
+- **Write access** (POST) — requires service authentication
 - **Metadata access** (HEAD) — requires service authentication
 - **Delete access** (DELETE) — requires service authentication
 - **Access to other streams** — the signature is bound to a specific stream ID
@@ -803,7 +812,7 @@ Implementations **SHOULD** set a default expiration period. The expiration perio
 
 #### `Stream-Signed-URL-TTL` Header
 
-Clients **MAY** request a specific TTL for generated pre-signed URLs by including the `Stream-Signed-URL-TTL` header on create, append, or connect requests:
+Clients **MAY** request a specific TTL for generated pre-signed URLs by including the `Stream-Signed-URL-TTL` header on create, create-or-append, or connect requests:
 
 ```
 Stream-Signed-URL-TTL: {seconds}
@@ -814,21 +823,20 @@ Stream-Signed-URL-TTL: {seconds}
 - If omitted, the server uses its configured default.
 - Servers **MAY** enforce a maximum TTL. If the requested TTL exceeds the server's maximum, the server **SHOULD** clamp to the maximum rather than rejecting the request.
 
-The server **MUST** return a fresh pre-signed URL in the `Location` header on every successful create (`201`), append (`200`), and connect response. This ensures that active sessions automatically have their read tokens refreshed on every successful operation.
+The server **MUST** return a fresh pre-signed URL in the `Location` header on every successful create (`201`), create-or-append (`201`/`200`), and connect response. This ensures that active streams automatically have their read tokens refreshed on every successful operation.
 
-### 8.5. Write-Path Validation
+### 8.5. Write and Connect Paths
 
-On write paths (`POST {proxy-url}` with `Use-Stream-URL`), the server validates the HMAC signature but **ignores** the expiration timestamp. This differs from read and abort paths where both signature and expiry are enforced.
+Write operations (`POST {proxy-url}` and `POST {proxy-url}/{stream-id}`) use service authentication (see Section 10), not pre-signed URLs. Read and abort operations use pre-signed URLs as the standard authentication mechanism, with service auth as an optional fallback for reads (see Section 10.2).
 
-| Path                                | HMAC     | Expiry      |
-| ----------------------------------- | -------- | ----------- |
-| POST with `Use-Stream-URL` (append) | Validate | **Ignore**  |
-| GET (read)                          | Validate | **Enforce** |
-| PATCH (abort)                       | Validate | **Enforce** |
+| Path                            | Authentication                                   |
+| ------------------------------- | ------------------------------------------------ |
+| POST (create, create-or-append) | Service auth                                     |
+| POST with `?action=connect`     | Service auth                                     |
+| GET (read)                      | Pre-signed URL (service auth fallback, see 10.2) |
+| PATCH (abort)                   | Pre-signed URL (service auth fallback, see 10.2) |
 
-**Rationale**: On write paths, the real authorization flows through the upstream — the upstream service must accept the forwarded request. The HMAC proves prior legitimate access (the client received this URL from the proxy). Expiry is irrelevant because the upstream is the authority on whether the write should proceed.
-
-> **Note:** Connect operations do not use pre-signed URLs — they use `Session-Id` for stream identification and optionally defer to an auth endpoint for authorization. When a signed URL expires on the read path, the client reconnects via `Session-Id` to obtain a fresh URL.
+When a pre-signed read URL expires, a caller with valid service authentication can obtain a fresh URL via the connect operation: `POST {proxy-url}/{stream-id}?action=connect` (Section 4.4).
 
 ## 9. Upstream Fetch Lifecycle
 
@@ -862,9 +870,10 @@ The proxy protocol does not manage stream closure — each response has its own 
 
 When an abort is received:
 
-1. All active upstream connections for the stream are cancelled.
-2. For each active response, any buffered data is flushed as a Data frame, followed by an Abort frame (`A`).
+1. If a specific response ID was requested, the upstream connection for that response is cancelled. Otherwise, all active upstream connections for the stream are cancelled.
+2. For each aborted response, any buffered data is flushed as a Data frame, followed by an Abort frame (`A`).
 3. Data received before the abort is preserved and readable.
+4. Non-targeted responses continue piping unaffected.
 
 ## 10. Authentication
 
@@ -872,9 +881,9 @@ Authentication and authorization mechanisms are implementation-defined. The prox
 
 ### 10.1. Service Authentication
 
-Service authentication authorizes callers to create and manage proxy streams. It is required for:
+Service authentication authorizes callers to create and manage proxy streams. It is required for all write and management operations:
 
-- **POST** (create, append, connect)
+- **POST** (create, create-or-append, connect)
 - **HEAD** (stream metadata)
 - **DELETE** (delete stream)
 
@@ -894,7 +903,7 @@ Stream authentication authorizes callers to read from and abort specific streams
 
 For **GET** (read stream), servers **SHOULD** accept both pre-signed URLs and service authentication as fallback. This allows both direct client access (via pre-signed URL) and server-side access (via service credentials).
 
-For **PATCH** (abort), servers **MUST** require pre-signed URL authentication only, with no service authentication fallback. This scopes abort capability to the holder of the pre-signed URL.
+For **PATCH** (abort), servers **SHOULD** accept both pre-signed URLs and service authentication. This allows both direct client access (via pre-signed URL) and server-side access (via service credentials).
 
 ## 11. CORS
 
@@ -911,7 +920,7 @@ Servers **MUST** expose the following headers via `Access-Control-Expose-Headers
 - `Location`, `Upstream-Content-Type`, `Upstream-Status`, and `Stream-Response-Id` (proxy-specific)
 - All `Stream-*` headers from the base protocol that the server returns
 
-Servers **MUST** allow the proxy-specific request headers (`Upstream-URL`, `Upstream-Authorization`, `Upstream-Method`, `Use-Stream-URL`, `Session-Id`, `Stream-Signed-URL-TTL`) via `Access-Control-Allow-Headers`.
+Servers **MUST** allow the proxy-specific request headers (`Upstream-URL`, `Upstream-Authorization`, `Upstream-Method`, `Stream-Signed-URL-TTL`) via `Access-Control-Allow-Headers`.
 
 The specific CORS policy (allowed origins, max age, etc.) is implementation-defined.
 
@@ -931,19 +940,18 @@ The proxy protocol defines the following error codes. Servers **SHOULD** return 
 | 400         | `MISSING_UPSTREAM_METHOD` | `Upstream-Method` header is required but missing              |
 | 400         | `INVALID_UPSTREAM_METHOD` | `Upstream-Method` is not one of GET, POST, PUT, PATCH, DELETE |
 | 400         | `REDIRECT_NOT_ALLOWED`    | Upstream returned a 3xx redirect                              |
-| 400         | `INVALID_ACTION`          | Unknown action in PATCH request (only `abort` is supported)   |
-| 400         | `MALFORMED_STREAM_URL`    | `Use-Stream-URL` header value cannot be parsed                |
+| 400         | `INVALID_ACTION`          | Unknown `action` query parameter value                        |
 
 ### 12.2. Authentication Errors
 
-| HTTP Status | Error Code          | Description                                                         |
-| ----------- | ------------------- | ------------------------------------------------------------------- |
-| 401         | `MISSING_SECRET`    | No service authentication provided                                  |
-| 401         | `INVALID_SECRET`    | Service authentication credentials are invalid                      |
-| 401         | `SIGNATURE_EXPIRED` | Pre-signed URL has expired (see Section 4.5 for renewable response) |
-| 401         | `SIGNATURE_INVALID` | Pre-signed URL signature verification failed                        |
-| 401         | `MISSING_SIGNATURE` | Pre-signed URL parameters required but missing                      |
-| 401         | `CONNECT_REJECTED`  | Auth endpoint returned non-2xx (client not authorized for session)  |
+| HTTP Status | Error Code          | Description                                                                |
+| ----------- | ------------------- | -------------------------------------------------------------------------- |
+| 401         | `MISSING_SECRET`    | No service authentication provided                                         |
+| 401         | `INVALID_SECRET`    | Service authentication credentials are invalid                             |
+| 401         | `SIGNATURE_EXPIRED` | Pre-signed URL has expired (client can reconnect via connect, Section 4.4) |
+| 401         | `SIGNATURE_INVALID` | Pre-signed URL signature verification failed                               |
+| 401         | `MISSING_SIGNATURE` | Pre-signed URL parameters required but missing                             |
+| 401         | `CONNECT_REJECTED`  | Auth endpoint returned non-2xx (client not authorized for stream)          |
 
 ### 12.3. Authorization Errors
 
@@ -1003,14 +1011,9 @@ Implementations **SHOULD**:
 - Avoid logging pre-signed URLs in plain text
 - Consider binding URLs to additional context (IP address, user agent) for high-security scenarios
 
-### 13.3. Write-Path HMAC Validation
+### 13.3. Write-Path Authentication
 
-On append paths, HMAC is validated but expiry is ignored (Section 8.5). An attacker would need both:
-
-- A valid HMAC (proving they once received the URL from the proxy)
-- Valid upstream credentials (the upstream must accept their request)
-
-Both are required for a successful append. Stream IDs are UUIDs — unguessable without a valid pre-signed URL.
+Write operations (create, create-or-append) require service authentication (Section 10). Pre-signed URLs are not used for writes. An attacker would need valid service credentials to initiate upstream requests, and the upstream service must also accept the forwarded request. Stream IDs specified by clients are not secrets — access control is enforced by service authentication, not by stream ID obscurity.
 
 ### 13.4. Auth Endpoint Security
 
@@ -1030,9 +1033,9 @@ All protocol operations **MUST** be performed over HTTPS (TLS) in production env
 - `Upstream-Authorization` headers contain upstream credentials
 - Upstream response bodies may contain sensitive data
 
-### 13.7. Deterministic Stream IDs
+### 13.7. Client-Specified Stream IDs
 
-Stream IDs for sessions are derived deterministically (e.g., UUIDv5 with SHA-1). The derivation is one-way — knowing a stream ID does not reveal the session ID. Security does not rely on stream ID unguessability; it relies on HMAC-signed URLs for access control.
+Stream IDs may be specified by clients and are visible in URL paths. Security does not rely on stream ID unguessability — access control is enforced by service authentication for writes and HMAC-signed URLs for reads. Clients **SHOULD** use non-guessable stream IDs (e.g., UUIDs) to prevent enumeration, but this is a defense-in-depth measure, not the primary access control.
 
 ## 14. References
 
@@ -1043,8 +1046,6 @@ Stream IDs for sessions are derived deterministically (e.g., UUIDv5 with SHA-1).
 [RFC8174] Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words", BCP 14, RFC 8174, DOI 10.17487/RFC8174, May 2017, <https://www.rfc-editor.org/info/rfc8174>.
 
 [RFC9110] Fielding, R., Ed., Nottingham, M., Ed., and J. Reschke, Ed., "HTTP Semantics", STD 97, RFC 9110, DOI 10.17487/RFC9110, June 2022, <https://www.rfc-editor.org/info/rfc9110>.
-
-[RFC4122] Leach, P., Mealling, M., and R. Salz, "A Universally Unique IDentifier (UUID) URN Namespace", RFC 4122, DOI 10.17487/RFC4122, July 2005, <https://www.rfc-editor.org/info/rfc4122>.
 
 [BASE-PROTOCOL] ElectricSQL, "The Durable Streams Protocol", 2025, <../../PROTOCOL.md>.
 
