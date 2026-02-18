@@ -46,6 +46,7 @@ export interface ProxyFetchOptions extends Omit<RequestInit, `method`> {
 
 export interface ProxyResponse extends Response {
   responseId: number
+  abort: () => Promise<void>
 }
 
 export interface DurableProxySession {
@@ -57,7 +58,7 @@ export interface DurableProxySession {
   ) => Promise<ProxyResponse>
   responses: () => AsyncIterable<ProxyResponse>
   connect: () => Promise<void>
-  abort: () => Promise<void>
+  abort: (responseId?: number) => Promise<void>
   close: () => void
 }
 

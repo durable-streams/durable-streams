@@ -264,7 +264,7 @@ describe(`validatePreSignedUrl`, () => {
     }
   })
 
-  it(`returns SIGNATURE_EXPIRED for expired URL with invalid HMAC`, () => {
+  it(`returns SIGNATURE_INVALID for expired URL with invalid HMAC`, () => {
     const expiredAt = Math.floor(Date.now() / 1000) - 3600
     const url = generatePreSignedUrl(
       TEST_ORIGIN,
@@ -283,11 +283,11 @@ describe(`validatePreSignedUrl`, () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
+      expect(result.code).toBe(`SIGNATURE_INVALID`)
     }
   })
 
-  it(`returns SIGNATURE_EXPIRED for invalid expires format`, () => {
+  it(`returns SIGNATURE_INVALID for invalid expires format`, () => {
     const result = validatePreSignedUrl(
       TEST_STREAM_ID,
       `not-a-number`,
@@ -297,7 +297,7 @@ describe(`validatePreSignedUrl`, () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
+      expect(result.code).toBe(`SIGNATURE_INVALID`)
     }
   })
 

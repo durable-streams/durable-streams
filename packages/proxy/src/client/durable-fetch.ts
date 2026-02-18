@@ -39,7 +39,11 @@ async function readResponseFromStream(
   streamUrl: string,
   responseId: number
 ): Promise<ProxyResponse> {
-  const demuxer = new FrameDemuxer()
+  const demuxer = new FrameDemuxer({
+    onAbortResponse: async (targetResponseId) => {
+      await createAbortFn(streamUrl, fetchFn, targetResponseId)()
+    },
+  })
   const responsePromise = demuxer.waitForResponse(responseId)
 
   for (let attempt = 0; attempt < 80; attempt++) {
@@ -175,11 +179,15 @@ export function createDurableFetch(options: DurableFetchOptions): DurableFetch {
 
 export function createAbortFn(
   streamUrl: string,
-  fetchFn: typeof fetch = fetch
+  fetchFn: typeof fetch = fetch,
+  responseId?: number
 ): () => Promise<void> {
   return async () => {
     const abortUrl = new URL(streamUrl)
     abortUrl.searchParams.set(`action`, `abort`)
+    if (responseId !== undefined) {
+      abortUrl.searchParams.set(`response`, String(responseId))
+    }
     const response = await fetchFn(abortUrl.toString(), { method: `PATCH` })
     if (!response.ok) {
       throw new Error(`Abort request failed: ${response.status}`)

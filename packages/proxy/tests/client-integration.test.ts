@@ -219,6 +219,99 @@ describe(`createDurableSession`, () => {
     session.close()
   })
 
+  it(`supports targeted abort through ProxyResponse.abort`, async () => {
+    const startPayload = encoder.encode(
+      JSON.stringify({
+        status: 200,
+        headers: { "content-type": `text/plain` },
+      })
+    )
+    const framed = concatBytes(
+      encodeFrame(`S`, 7, startPayload),
+      encodeFrame(`D`, 7, encoder.encode(`abortable`))
+    )
+    const sse = [
+      `event: data`,
+      `data: ${toBase64(framed)}`,
+      ``,
+      `event: control`,
+      `data: {"streamNextOffset":"7_7"}`,
+      ``,
+    ].join(`\n`)
+
+    const patchUrls: Array<string> = []
+    let readCallCount = 0
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/targeted-abort-session?expires=1&signature=sig`,
+          },
+        })
+      }
+      if (
+        init?.method === `POST` &&
+        url.includes(`/v1/proxy/targeted-abort-session`)
+      ) {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/targeted-abort-session?expires=1&signature=sig`,
+            "Stream-Response-Id": `7`,
+          },
+        })
+      }
+      if (
+        init?.method !== `POST` &&
+        init?.method !== `PATCH` &&
+        url.includes(`/v1/proxy/targeted-abort-session`)
+      ) {
+        readCallCount += 1
+        if (readCallCount === 1) {
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              "stream-sse-data-encoding": `base64`,
+            },
+          })
+        }
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"5_5"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
+      }
+      if (init?.method === `PATCH`) {
+        patchUrls.push(url)
+        return new Response(null, { status: 204 })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId: `targeted-abort-session`,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    const response = await session.fetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+    })
+    await response.abort()
+
+    expect(patchUrls[0]).toContain(`action=abort`)
+    expect(patchUrls[0]).toContain(`response=7`)
+    session.close()
+  })
+
   it(`decodes base64 SSE data and parses framed response bytes`, async () => {
     const startPayload = encoder.encode(
       JSON.stringify({
@@ -284,7 +377,13 @@ describe(`createDurableSession`, () => {
             },
           })
         }
-        return new Response(``, { status: 500 })
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"9_9"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
       }
       throw new Error(`unexpected request: ${url}`)
     }
@@ -372,7 +471,13 @@ describe(`createDurableSession`, () => {
             }
           )
         }
-        return new Response(``, { status: 500 })
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"23_23"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
       }
       throw new Error(`unexpected request: ${url}`)
     }
@@ -467,7 +572,13 @@ describe(`createDurableSession`, () => {
             }
           )
         }
-        return new Response(``, { status: 500 })
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"7_7"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
       }
       throw new Error(`unexpected request: ${url}`)
     }
@@ -490,6 +601,77 @@ describe(`createDurableSession`, () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
     expect(readUrls[0]).toContain(`offset=-1`)
     expect(readUrls[1]).toContain(`offset=22_22`)
+    session.close()
+  })
+
+  it(`rejects unknown frame types from SSE stream`, async () => {
+    const unknownFrame = encodeFrame(`X`, 1, encoder.encode(`bad`))
+    const sse = [`event: data`, `data: ${toBase64(unknownFrame)}`, ``, ``].join(
+      `\n`
+    )
+
+    let readCallCount = 0
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/unknown-frame-session?expires=1&signature=sig`,
+          },
+        })
+      }
+      if (
+        init?.method === `POST` &&
+        url.includes(`/v1/proxy/unknown-frame-session`)
+      ) {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/unknown-frame-session?expires=1&signature=sig`,
+            "Stream-Response-Id": `1`,
+          },
+        })
+      }
+      if (
+        init?.method !== `POST` &&
+        url.includes(`/v1/proxy/unknown-frame-session`)
+      ) {
+        readCallCount += 1
+        if (readCallCount === 1) {
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              "stream-sse-data-encoding": `base64`,
+            },
+          })
+        }
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"2_2"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId: `unknown-frame-session`,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    await expect(
+      session.fetch(ctx.urls.upstream + `/v1/chat`, {
+        method: `POST`,
+        body: JSON.stringify({ messages: [] }),
+      })
+    ).rejects.toThrow(`Unknown frame type`)
     session.close()
   })
 })

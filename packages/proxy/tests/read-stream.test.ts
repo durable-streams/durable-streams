@@ -219,7 +219,7 @@ describe(`stream reading - expired URLs`, () => {
     expect(body.error.streamId).toBe(connectedStreamId)
   })
 
-  it(`returns structured SIGNATURE_EXPIRED error for expired URL with invalid HMAC`, async () => {
+  it(`returns SIGNATURE_INVALID for expired URL with invalid HMAC`, async () => {
     // Construct URL with invalid signature
     const url = new URL(`/v1/proxy/${streamId}`, ctx.urls.proxy)
     const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
@@ -231,9 +231,8 @@ describe(`stream reading - expired URLs`, () => {
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
-    expect(body.error.message).toBe(`Pre-signed URL has expired`)
-    expect(body.error.streamId).toBe(streamId)
+    expect(body.error.code).toBe(`SIGNATURE_INVALID`)
+    expect(body.error.message).toBe(`Invalid signature`)
   })
 })
 

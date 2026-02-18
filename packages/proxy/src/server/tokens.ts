@@ -153,16 +153,15 @@ export function validatePreSignedUrl(
   signature: string,
   secret: string
 ): PreSignedUrlResult {
+  const hmacResult = validateHmac(streamId, expires, signature, secret)
+  if (!hmacResult.ok) {
+    return hmacResult
+  }
+
   // Check expiration
   const expiresAt = parseInt(expires, 10)
   if (isNaN(expiresAt) || Date.now() > expiresAt * 1000) {
     return { ok: false, code: `SIGNATURE_EXPIRED` }
-  }
-
-  // If we get here, not expired, so check HMAC
-  const hmacResult = validateHmac(streamId, expires, signature, secret)
-  if (!hmacResult.ok) {
-    return hmacResult
   }
 
   return { ok: true }

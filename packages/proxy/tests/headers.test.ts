@@ -125,6 +125,33 @@ describe(`header forwarding`, () => {
     expect(lastRequest).toBeDefined()
   })
 
+  it(`does not forward proxy-only headers to upstream`, async () => {
+    ctx.upstream.setResponse({ status: 200, body: `ok` })
+
+    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+    url.searchParams.set(`secret`, `test-secret-key-for-development`)
+
+    await fetch(url.toString(), {
+      method: `POST`,
+      headers: {
+        "Content-Type": `application/json`,
+        "Upstream-URL": ctx.urls.upstream + `/v1/chat`,
+        "Upstream-Method": `POST`,
+        "Stream-Signed-URL-TTL": `60`,
+        trailers: `x-debug`,
+      },
+      body: `{}`,
+    })
+
+    // Wait for async upstream request
+    await new Promise((r) => setTimeout(r, 100))
+
+    const lastRequest = ctx.upstream.getLastRequest()
+    expect(lastRequest).toBeDefined()
+    expect(lastRequest!.headers[`stream-signed-url-ttl`]).toBeUndefined()
+    expect(lastRequest!.headers[`trailers`]).toBeUndefined()
+  })
+
   it(`forwards the request body to upstream`, async () => {
     ctx.upstream.setResponse({ status: 200, body: `ok` })
 

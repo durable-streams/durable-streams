@@ -16,6 +16,10 @@ interface StartPayload {
   headers: Record<string, string>
 }
 
+interface FrameDemuxerOptions {
+  onAbortResponse?: (responseId: number) => Promise<void>
+}
+
 const MAX_FRAME_BUFFER_BYTES = 4 * 1024 * 1024
 
 class AsyncQueue<T> {
@@ -75,13 +79,20 @@ function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
 export class FrameDemuxer {
   private buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0)
   private closed = false
+  private terminalError: unknown = null
   private readonly responsesById = new Map<number, ResponseState>()
+  private readonly completedById = new Map<number, ProxyResponse>()
   private readonly pendingById = new Map<
     number,
     { resolve: (r: ProxyResponse) => void; reject: (e: unknown) => void }
   >()
   private readonly queue = new AsyncQueue<ProxyResponse>()
   private readonly textDecoder = new TextDecoder()
+  private readonly onAbortResponse?: (responseId: number) => Promise<void>
+
+  constructor(options?: FrameDemuxerOptions) {
+    this.onAbortResponse = options?.onAbortResponse
+  }
 
   async consume(chunks: AsyncIterable<Uint8Array>): Promise<void> {
     for await (const chunk of chunks) {
@@ -112,9 +123,17 @@ export class FrameDemuxer {
   }
 
   waitForResponse(responseId: number): Promise<ProxyResponse> {
+    if (this.terminalError !== null) {
+      return Promise.reject(this.terminalError)
+    }
     const existing = this.responsesById.get(responseId)
     if (existing) {
       return Promise.resolve(existing.response)
+    }
+    const completed = this.completedById.get(responseId)
+    if (completed) {
+      this.completedById.delete(responseId)
+      return Promise.resolve(completed)
     }
     return new Promise<ProxyResponse>((resolve, reject) => {
       this.pendingById.set(responseId, { resolve, reject })
@@ -134,6 +153,9 @@ export class FrameDemuxer {
       return
     }
     this.closed = true
+    if (this.terminalError === null) {
+      this.terminalError = new Error(`Frame stream closed`)
+    }
     for (const state of this.responsesById.values()) {
       try {
         state.controller.close()
@@ -142,6 +164,11 @@ export class FrameDemuxer {
       }
     }
     this.responsesById.clear()
+    this.completedById.clear()
+    for (const pending of this.pendingById.values()) {
+      pending.reject(this.terminalError)
+    }
+    this.pendingById.clear()
     this.queue.close()
   }
 
@@ -150,6 +177,7 @@ export class FrameDemuxer {
       return
     }
     this.closed = true
+    this.terminalError = error
     for (const state of this.responsesById.values()) {
       try {
         state.controller.error(error)
@@ -162,6 +190,7 @@ export class FrameDemuxer {
     }
     this.pendingById.clear()
     this.responsesById.clear()
+    this.completedById.clear()
     this.queue.close()
   }
 
@@ -182,6 +211,12 @@ export class FrameDemuxer {
           headers: payload.headers,
         }) as ProxyResponse
         response.responseId = frame.responseId
+        response.abort = async () => {
+          if (!this.onAbortResponse) {
+            throw new Error(`Response abort is not supported in this context`)
+          }
+          await this.onAbortResponse(frame.responseId)
+        }
         const state: ResponseState = {
           response,
           controller: controllerRef,
@@ -203,11 +238,19 @@ export class FrameDemuxer {
       case `C`: {
         const state = this.responsesById.get(frame.responseId)
         state?.controller.close()
+        if (state?.response) {
+          this.completedById.set(frame.responseId, state.response)
+        }
+        this.responsesById.delete(frame.responseId)
         break
       }
       case `A`: {
         const state = this.responsesById.get(frame.responseId)
         state?.controller.error(new Error(`Response aborted by server`))
+        if (state?.response) {
+          this.completedById.set(frame.responseId, state.response)
+        }
+        this.responsesById.delete(frame.responseId)
         break
       }
       case `E`: {
@@ -221,10 +264,18 @@ export class FrameDemuxer {
           // Keep raw message.
         }
         state?.controller.error(new Error(message))
+        if (state?.response) {
+          this.completedById.set(frame.responseId, state.response)
+        }
+        this.responsesById.delete(frame.responseId)
         break
       }
       default:
-        break
+        this.error(
+          new Error(
+            `Unknown frame type "${frame.type}" for response ${frame.responseId}`
+          )
+        )
     }
   }
 }

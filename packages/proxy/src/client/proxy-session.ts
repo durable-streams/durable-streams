@@ -34,6 +34,12 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === `AbortError`
+    : error instanceof Error && error.name === `AbortError`
+}
+
 function decodeBase64Payload(payload: string): Uint8Array {
   const normalized = payload.replace(/[\n\r]/g, ``)
   if (typeof globalThis.atob === `function`) {
@@ -247,7 +253,11 @@ export function createDurableSession(
   } = options
 
   const normalizedProxyUrl = proxyUrl.replace(/\/+$/, ``)
-  const demuxer = new FrameDemuxer()
+  const demuxer = new FrameDemuxer({
+    onAbortResponse: async (responseId) => {
+      await abort(responseId)
+    },
+  })
   const textEncoder = new TextEncoder()
 
   const state = {
@@ -256,6 +266,7 @@ export function createDurableSession(
     closed: false,
     readerTask: null as Promise<void> | null,
     connectTask: null as Promise<void> | null,
+    readerAbortController: null as AbortController | null,
   }
 
   function parseStreamIdFromLocation(location: string): string {
@@ -324,9 +335,12 @@ export function createDurableSession(
           const readUrl = new URL(state.streamUrl)
           readUrl.searchParams.set(`offset`, offset)
           readUrl.searchParams.set(`live`, `sse`)
+          const readAbortController = new AbortController()
+          state.readerAbortController = readAbortController
 
           const response = await fetchFn(readUrl.toString(), {
             headers: { Accept: `text/event-stream` },
+            signal: readAbortController.signal,
           })
           if (!response.ok) {
             throw await errorFromResponse(response)
@@ -362,13 +376,20 @@ export function createDurableSession(
               }
             },
           })
+          await delay(25)
         } catch (error) {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+          if (state.closed && isAbortError(error)) {
+            break
+          }
           if (isRenewableReadError(error, state.streamId)) {
             await connect()
             continue
           }
           demuxer.error(error)
           break
+        } finally {
+          state.readerAbortController = null
         }
       }
     })().finally(() => {
@@ -458,10 +479,13 @@ export function createDurableSession(
     return waitForResponseWithSignal(demuxer, responseId, signal)
   }
 
-  async function abort(): Promise<void> {
+  async function abort(responseId?: number): Promise<void> {
     if (!state.streamUrl) return
     const url = new URL(state.streamUrl)
     url.searchParams.set(`action`, `abort`)
+    if (responseId !== undefined) {
+      url.searchParams.set(`response`, String(responseId))
+    }
     const response = await fetchFn(url.toString(), { method: `PATCH` })
     if (!response.ok) {
       throw new Error(`Abort failed: ${response.status}`)
@@ -478,6 +502,8 @@ export function createDurableSession(
 
   function close(): void {
     state.closed = true
+    state.readerAbortController?.abort()
+    state.readerAbortController = null
     demuxer.close()
   }
 
