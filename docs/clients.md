@@ -16,18 +16,30 @@ All client libraries share the same core capabilities:
 
 ## Summary
 
-| Language | Package | Install |
-|----------|---------|---------|
-| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client` |
-| [Python](#python) | `durable-streams` | `pip install durable-streams` |
-| [Go](#go) | `durablestreams` | `go get github.com/durable-streams/durable-streams/packages/client-go` |
-| [Elixir](#elixir) | `durable_streams` | `{:durable_streams, "~> 0.1.0"}` in `mix.exs` |
-| [C# / .NET](#c--net) | `DurableStreams` | `dotnet add package DurableStreams` |
-| [Swift](#swift) | `DurableStreams` | Swift Package Manager |
-| [PHP](#php) | `durable-streams/client` | `composer require durable-streams/client` |
-| [Java](#java) | `durable-streams` | Maven / Gradle |
-| [Rust](#rust) | `durable-streams` | `cargo add durable-streams` |
-| [Ruby](#ruby) | `durable_streams` | `gem install durable_streams` |
+| Language | Package | Install | Maturity |
+|----------|---------|---------|----------|
+| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client` | Production-Proven |
+| [Python](#python) | `durable-streams` | `pip install durable-streams` | Expert-Reviewed |
+| [Go](#go) | `durablestreams` | `go get github.com/durable-streams/durable-streams/packages/client-go` | Expert-Reviewed |
+| [Elixir](#elixir) | `durable_streams` | `{:durable_streams, "~> 0.1.0"}` in `mix.exs` | Vibe-Engineered |
+| [C# / .NET](#c--net) | `DurableStreams` | `dotnet add package DurableStreams` | Vibe-Engineered |
+| [Swift](#swift) | `DurableStreams` | Swift Package Manager | Vibe-Engineered |
+| [PHP](#php) | `durable-streams/client` | `composer require durable-streams/client` | Vibe-Engineered |
+| [Java](#java) | `durable-streams` | Maven / Gradle | Vibe-Engineered |
+| [Rust](#rust) | `durable-streams` | `cargo add durable-streams` | Vibe-Engineered |
+| [Ruby](#ruby) | `durable_streams` | `gem install durable_streams` | Vibe-Engineered |
+
+## Maturity Levels
+
+Each client follows a maturity progression:
+
+- **Vibe-Engineered** -- implements the core protocol, passes the conformance test suite, and has basic documentation. API may change based on ecosystem feedback. Suitable for prototyping and non-critical workloads.
+- **Expert-Reviewed** -- reviewed by a language/ecosystem expert for idiomatic API design, error handling, and performance. Suitable for production use.
+- **Production-Proven** -- used in production by multiple organizations with a track record of stability and active maintenance. The TypeScript client is at this level with 1.5+ years of production use at Electric.
+
+All clients pass the conformance test suite regardless of maturity level. The difference is in API polish, idiomatic patterns, and battle-testing.
+
+If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client Maturity Model](../CLIENT_MATURITY.md) for the review process and checklist.
 
 ---
 
