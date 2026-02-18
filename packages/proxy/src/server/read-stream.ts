@@ -114,6 +114,7 @@ export async function handleReadStream(
       `stream-closed`,
       `stream-expires-at`,
       `stream-cursor`,
+      `stream-sse-data-encoding`,
     ]
 
     for (const header of streamHeaders) {
@@ -145,6 +146,7 @@ export async function handleReadStream(
       `Stream-Closed`,
       `Stream-Expires-At`,
       `Stream-Cursor`,
+      `Stream-SSE-Data-Encoding`,
       `Upstream-Content-Type`,
     ].join(`, `)
 

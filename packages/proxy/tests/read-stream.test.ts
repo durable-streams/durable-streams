@@ -330,4 +330,67 @@ describe(`stream reading - cursor forwarding`, () => {
 
     vi.unstubAllGlobals()
   })
+
+  it(`forwards Stream-SSE-Data-Encoding header from durable streams`, async () => {
+    const fetchMock = vi.fn(() => {
+      return new Response(
+        `event: control\ndata: {"streamNextOffset":"1_1"}\n\n`,
+        {
+          status: 200,
+          headers: {
+            "content-type": `text/event-stream`,
+            "stream-sse-data-encoding": `base64`,
+            "stream-next-offset": `1_1`,
+          },
+        }
+      )
+    })
+    vi.stubGlobal(`fetch`, fetchMock)
+
+    const req = {
+      url: `/v1/proxy/stream-sse-encoding?secret=${encodeURIComponent(TEST_SECRET)}&offset=-1&live=sse`,
+      headers: { host: `proxy.test`, accept: `text/event-stream` },
+      method: `GET`,
+    } as unknown as IncomingMessage
+
+    const responseHeaders: Record<string, string> = {}
+    const res = {
+      headersSent: false,
+      writeHead(_status: number, headers: Record<string, string>) {
+        Object.assign(responseHeaders, headers)
+        return undefined
+      },
+      end() {
+        return undefined
+      },
+      write() {
+        return true
+      },
+      once(_event: string, listener: () => void) {
+        listener()
+        return undefined
+      },
+      setHeader(name: string, value: string) {
+        responseHeaders[name] = value
+      },
+    } as unknown as ServerResponse
+
+    await handleReadStream(
+      req,
+      res,
+      `stream-sse-encoding`,
+      {
+        durableStreamsUrl: `http://durable.example`,
+        jwtSecret: TEST_SECRET,
+      },
+      new Map()
+    )
+
+    expect(responseHeaders[`stream-sse-data-encoding`]).toBe(`base64`)
+    expect(responseHeaders[`Access-Control-Expose-Headers`]).toContain(
+      `Stream-SSE-Data-Encoding`
+    )
+
+    vi.unstubAllGlobals()
+  })
 })

@@ -20,8 +20,142 @@ interface RenewableErrorResponse {
   }
 }
 
+type SseDataEncoding = `base64` | undefined
+
+interface ConsumeSSEOptions {
+  encoding: SseDataEncoding
+  onData: (payload: string) => void
+  onControl: (payload: string) => void
+}
+
+const STREAM_SSE_DATA_ENCODING_HEADER = `stream-sse-data-encoding`
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function decodeBase64Payload(payload: string): Uint8Array {
+  const normalized = payload.replace(/[\n\r]/g, ``)
+  if (typeof globalThis.atob === `function`) {
+    const decoded = globalThis.atob(normalized)
+    const bytes = new Uint8Array(decoded.length)
+    for (let i = 0; i < decoded.length; i += 1) {
+      bytes[i] = decoded.charCodeAt(i)
+    }
+    return bytes
+  }
+  const maybeBuffer = globalThis as unknown as {
+    Buffer?: { from: (input: string, encoding: string) => Uint8Array }
+  }
+  if (maybeBuffer.Buffer) {
+    return new Uint8Array(maybeBuffer.Buffer.from(normalized, `base64`))
+  }
+  throw new Error(`No base64 decoder available in this environment`)
+}
+
+function decodeSSEDataPayload(
+  payload: string,
+  encoding: SseDataEncoding,
+  textEncoder: TextEncoder
+): Uint8Array {
+  if (encoding === `base64`) {
+    return decodeBase64Payload(payload)
+  }
+  return textEncoder.encode(payload)
+}
+
+async function consumeSSEBody(
+  body: ReadableStream<Uint8Array>,
+  options: ConsumeSSEOptions
+): Promise<void> {
+  const reader = body.getReader()
+  const decoder = new TextDecoder()
+
+  let buffer = ``
+  let eventType = `message`
+  let dataLines: Array<string> = []
+
+  const dispatchEvent = () => {
+    if (dataLines.length === 0) {
+      eventType = `message`
+      return
+    }
+    const payload = dataLines.join(`\n`)
+    if (eventType === `data`) {
+      options.onData(payload)
+    } else if (eventType === `control`) {
+      options.onControl(payload)
+    }
+    eventType = `message`
+    dataLines = []
+  }
+
+  const processLine = (line: string) => {
+    if (line === ``) {
+      dispatchEvent()
+      return
+    }
+    if (line.startsWith(`:`)) return
+
+    const separatorIndex = line.indexOf(`:`)
+    const field =
+      separatorIndex === -1 ? line : line.slice(0, Math.max(separatorIndex, 0))
+    let value = separatorIndex === -1 ? `` : line.slice(separatorIndex + 1)
+    if (value.startsWith(` `)) {
+      value = value.slice(1)
+    }
+
+    if (field === `event`) {
+      eventType = value
+    } else if (field === `data`) {
+      dataLines.push(value)
+    }
+  }
+
+  const processBuffer = (flush: boolean) => {
+    for (;;) {
+      let lineBreakIndex = -1
+      let lineBreakLength = 0
+      for (let i = 0; i < buffer.length; i += 1) {
+        const char = buffer[i]
+        if (char === `\n`) {
+          lineBreakIndex = i
+          lineBreakLength = 1
+          break
+        }
+        if (char === `\r`) {
+          lineBreakIndex = i
+          lineBreakLength =
+            i + 1 < buffer.length && buffer[i + 1] === `\n` ? 2 : 1
+          break
+        }
+      }
+      if (lineBreakIndex < 0) break
+      const line = buffer.slice(0, lineBreakIndex)
+      buffer = buffer.slice(lineBreakIndex + lineBreakLength)
+      processLine(line)
+    }
+    if (flush && buffer.length > 0) {
+      processLine(buffer)
+      buffer = ``
+      dispatchEvent()
+    }
+  }
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) {
+        buffer += decoder.decode()
+        processBuffer(true)
+        break
+      }
+      buffer += decoder.decode(value, { stream: true })
+      processBuffer(false)
+    }
+  } finally {
+    reader.releaseLock()
+  }
 }
 
 function isRenewableReadError(error: unknown, streamId: string): boolean {
@@ -114,6 +248,7 @@ export function createDurableSession(
 
   const normalizedProxyUrl = proxyUrl.replace(/\/+$/, ``)
   const demuxer = new FrameDemuxer()
+  const textEncoder = new TextEncoder()
 
   const state = {
     streamUrl: null as string | null,
@@ -188,26 +323,45 @@ export function createDurableSession(
         try {
           const readUrl = new URL(state.streamUrl)
           readUrl.searchParams.set(`offset`, offset)
-          readUrl.searchParams.set(`live`, `long-poll`)
+          readUrl.searchParams.set(`live`, `sse`)
 
-          const response = await fetchFn(readUrl.toString())
+          const response = await fetchFn(readUrl.toString(), {
+            headers: { Accept: `text/event-stream` },
+          })
           if (!response.ok) {
             throw await errorFromResponse(response)
           }
+          const encodingHeader = response.headers
+            .get(STREAM_SSE_DATA_ENCODING_HEADER)
+            ?.toLowerCase()
+          const encoding: SseDataEncoding =
+            encodingHeader === `base64` ? `base64` : undefined
 
-          const nextOffset = response.headers.get(`Stream-Next-Offset`)
-          if (nextOffset) {
-            offset = nextOffset
-          }
-
-          const bytes = new Uint8Array(await response.arrayBuffer())
-          if (bytes.length > 0) {
-            demuxer.pushChunk(bytes)
-          }
-
-          if (response.headers.get(`Stream-Up-To-Date`) === `true`) {
+          if (!response.body) {
             await delay(75)
+            continue
           }
+          await consumeSSEBody(response.body, {
+            encoding,
+            onData: (payload) => {
+              const bytes = decodeSSEDataPayload(payload, encoding, textEncoder)
+              if (bytes.length > 0) {
+                demuxer.pushChunk(bytes)
+              }
+            },
+            onControl: (payload) => {
+              try {
+                const control = JSON.parse(payload) as {
+                  streamNextOffset?: string
+                }
+                if (control.streamNextOffset) {
+                  offset = control.streamNextOffset
+                }
+              } catch {
+                // Ignore malformed control payloads.
+              }
+            },
+          })
         } catch (error) {
           if (isRenewableReadError(error, state.streamId)) {
             await connect()
