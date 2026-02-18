@@ -1,0 +1,58 @@
+{
+  "name": "@durable-streams/stream-fs",
+  "version": "0.1.0",
+  "description": "Filesystem semantics on top of durable streams - a shared filesystem for AI agents",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.50.0",
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "diff-match-patch": "^1.0.5",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "@types/diff-match-patch": "^1.0.36",
+    "tsdown": "^0.9.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "durable-streams",
+    "filesystem",
+    "ai-agents",
+    "shared-filesystem",
+    "optimistic-concurrency"
+  ]
+}
