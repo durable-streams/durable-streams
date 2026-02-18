@@ -17,6 +17,7 @@ Durable Streams is a persistent stream primitive and HTTP protocol for reliable,
 | [State Protocol](state.md) | Structured state sync (insert/update/delete) over durable streams |
 | [Use Cases](use-cases.md) | Common patterns: AI streaming, database sync, event sourcing, and more |
 | [Deployment](deployment.md) | Production deployment with Caddy and Electric Cloud |
+| [Benchmarking](benchmarking.md) | Measure server latency and throughput |
 
 ## Additional Resources
 

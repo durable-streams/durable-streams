@@ -229,4 +229,4 @@ See [Servers](servers.md) for usage details on both.
 
 ---
 
-See also: [Protocol Specification](../PROTOCOL.md) | [Core Concepts](concepts.md) | [Building a Client](building-a-client.md)
+See also: [Protocol Specification](../PROTOCOL.md) | [Core Concepts](concepts.md) | [Benchmarking](benchmarking.md) | [Building a Client](building-a-client.md)
