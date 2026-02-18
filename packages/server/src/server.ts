@@ -4,9 +4,11 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
-import { FileBackedStreamStore } from "./file-store"
+import { MemoryStore } from "./memory-store"
+import { FileStore } from "./file-store"
+import { StreamManager } from "./stream-manager"
 import { generateResponseCursor } from "./cursor"
+import type { Store } from "./store"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
@@ -146,12 +148,13 @@ interface InjectedFault {
 }
 
 export class DurableStreamTestServer {
-  readonly store: StreamStore | FileBackedStreamStore
+  readonly store: StreamManager
   private server: Server | null = null
   private options: Required<
     Omit<
       TestServerOptions,
       | `dataDir`
+      | `storage`
       | `onStreamCreated`
       | `onStreamDeleted`
       | `compression`
@@ -172,14 +175,15 @@ export class DurableStreamTestServer {
   private injectedFaults = new Map<string, InjectedFault>()
 
   constructor(options: TestServerOptions = {}) {
-    // Choose store based on dataDir option
-    if (options.dataDir) {
-      this.store = new FileBackedStreamStore({
-        dataDir: options.dataDir,
-      })
+    let storage: Store
+    if (options.storage) {
+      storage = options.storage
+    } else if (options.dataDir) {
+      storage = new FileStore({ dataDir: options.dataDir })
     } else {
-      this.store = new StreamStore()
+      storage = new MemoryStore()
     }
+    this.store = new StreamManager(storage)
 
     this.options = {
       port: options.port ?? 4437,
@@ -241,9 +245,7 @@ export class DurableStreamTestServer {
     this.isShuttingDown = true
 
     // Cancel all pending long-polls and SSE waits to unblock connection handlers
-    if (`cancelAllWaits` in this.store) {
-      ;(this.store as { cancelAllWaits: () => void }).cancelAllWaits()
-    }
+    this.store.cancelAllWaits()
 
     // Force-close all active SSE connections
     for (const res of this.activeSSEResponses) {
@@ -259,11 +261,7 @@ export class DurableStreamTestServer {
         }
 
         try {
-          // Close file-backed store if used
-          if (this.store instanceof FileBackedStreamStore) {
-            await this.store.close()
-          }
-
+          await this.store.close()
           this.server = null
           this._url = null
           this.isShuttingDown = false
@@ -494,7 +492,7 @@ export class DurableStreamTestServer {
           await this.handleCreate(path, req, res)
           break
         case `HEAD`:
-          this.handleHead(path, res)
+          await this.handleHead(path, res)
           break
         case `GET`:
           await this.handleRead(path, url, req, res)
@@ -609,20 +607,17 @@ export class DurableStreamTestServer {
     // Read body if present
     const body = await this.readBody(req)
 
-    const isNew = !this.store.has(path)
+    const isNew = !(await this.store.has(path))
 
-    // Support both sync (StreamStore) and async (FileBackedStreamStore) create
-    await Promise.resolve(
-      this.store.create(path, {
-        contentType,
-        ttlSeconds,
-        expiresAt: expiresAtHeader,
-        initialData: body.length > 0 ? body : undefined,
-        closed: createClosed,
-      })
-    )
+    await this.store.create(path, {
+      contentType,
+      ttlSeconds,
+      expiresAt: expiresAtHeader,
+      initialData: body.length > 0 ? body : undefined,
+      closed: createClosed,
+    })
 
-    const stream = this.store.get(path)!
+    const stream = (await this.store.get(path))!
 
     // Call lifecycle hook for new streams
     if (isNew && this.options.onStreamCreated) {
@@ -659,8 +654,8 @@ export class DurableStreamTestServer {
   /**
    * Handle HEAD - get metadata
    */
-  private handleHead(path: string, res: ServerResponse): void {
-    const stream = this.store.get(path)
+  private async handleHead(path: string, res: ServerResponse): Promise<void> {
+    const stream = await this.store.get(path)
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
       res.end()
@@ -701,7 +696,7 @@ export class DurableStreamTestServer {
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
-    const stream = this.store.get(path)
+    const stream = await this.store.get(path)
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
       res.end(`Stream not found`)
@@ -801,7 +796,7 @@ export class DurableStreamTestServer {
     }
 
     // Read current messages
-    let { messages, upToDate } = this.store.read(path, effectiveOffset)
+    let { messages, upToDate } = await this.store.read(path, effectiveOffset)
 
     // Only wait in long-poll if:
     // 1. long-poll mode is enabled
@@ -853,7 +848,7 @@ export class DurableStreamTestServer {
           this.options.cursorOptions
         )
         // Check if stream was closed during the wait
-        const currentStream = this.store.get(path)
+        const currentStream = await this.store.get(path)
         const timeoutHeaders: Record<string, string> = {
           [STREAM_OFFSET_HEADER]: effectiveOffset ?? stream.currentOffset,
           [STREAM_UP_TO_DATE_HEADER]: `true`,
@@ -898,7 +893,7 @@ export class DurableStreamTestServer {
 
     // Include Stream-Closed when stream is closed AND client is at tail AND upToDate
     // Re-fetch stream to get current state (may have been closed during request)
-    const currentStream = this.store.get(path)
+    const currentStream = await this.store.get(path)
     const clientAtTail = responseOffset === currentStream?.currentOffset
     if (currentStream?.closed && clientAtTail && upToDate) {
       headers[STREAM_CLOSED_HEADER] = `true`
@@ -921,7 +916,7 @@ export class DurableStreamTestServer {
     }
 
     // Format response (wraps JSON in array brackets)
-    const responseData = this.store.formatResponse(path, messages)
+    const responseData = await this.store.formatResponse(path, messages)
 
     // Apply compression if enabled and response is large enough
     let finalData: Uint8Array = responseData
@@ -951,7 +946,7 @@ export class DurableStreamTestServer {
    */
   private async handleSSE(
     path: string,
-    stream: ReturnType<StreamStore[`get`]>,
+    stream: Awaited<ReturnType<StreamManager[`get`]>>,
     initialOffset: string,
     cursor: string | undefined,
     useBase64: boolean,
@@ -1004,7 +999,7 @@ export class DurableStreamTestServer {
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     while (isConnected && !this.isShuttingDown) {
       // Read current messages from offset
-      const { messages, upToDate } = this.store.read(path, currentOffset)
+      const { messages, upToDate } = await this.store.read(path, currentOffset)
 
       // Send data events for each message
       for (const message of messages) {
@@ -1015,7 +1010,7 @@ export class DurableStreamTestServer {
           dataPayload = Buffer.from(message.data).toString(`base64`)
         } else if (isJsonStream) {
           // Use formatResponse to get properly formatted JSON (strips trailing commas)
-          const jsonBytes = this.store.formatResponse(path, [message])
+          const jsonBytes = await this.store.formatResponse(path, [message])
           dataPayload = decoder.decode(jsonBytes)
         } else {
           dataPayload = decoder.decode(message.data)
@@ -1031,7 +1026,7 @@ export class DurableStreamTestServer {
 
       // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset
       // Re-fetch stream to get current state (may have been closed)
-      const currentStream = this.store.get(path)
+      const currentStream = await this.store.get(path)
       const controlOffset =
         messages[messages.length - 1]?.offset ?? currentStream!.currentOffset
 
@@ -1118,7 +1113,7 @@ export class DurableStreamTestServer {
           )
 
           // Check if stream was closed during the wait
-          const streamAfterWait = this.store.get(path)
+          const streamAfterWait = await this.store.get(path)
           if (streamAfterWait?.closed) {
             const closedControlData: Record<string, string | boolean> = {
               [SSE_OFFSET_FIELD]: currentOffset,
@@ -1293,11 +1288,11 @@ export class DurableStreamTestServer {
 
         // Stream already closed by a different producer - conflict
         if (closeResult.producerResult?.status === `stream_closed`) {
-          const stream = this.store.get(path)
+          const streamInfo = await this.store.get(path)
           res.writeHead(409, {
             "content-type": `text/plain`,
             [STREAM_CLOSED_HEADER]: `true`,
-            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
+            [STREAM_OFFSET_HEADER]: streamInfo?.currentOffset ?? ``,
           })
           res.end(`Stream is closed`)
           return
@@ -1314,7 +1309,7 @@ export class DurableStreamTestServer {
       }
 
       // Close-only without producer headers (simple idempotent close)
-      const closeResult = this.store.closeStream(path)
+      const closeResult = await this.store.closeStream(path)
       if (!closeResult) {
         res.writeHead(404, { "content-type": `text/plain` })
         res.end(`Stream not found`)
@@ -1358,12 +1353,11 @@ export class DurableStreamTestServer {
     if (producerId !== undefined) {
       result = await this.store.appendWithProducer(path, body, appendOptions)
     } else {
-      result = await Promise.resolve(
-        this.store.append(path, body, appendOptions)
-      )
+      result = await this.store.append(path, body, appendOptions)
     }
 
     // Handle AppendResult with producer validation or streamClosed
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     if (result && typeof result === `object` && `message` in result) {
       const { message, producerResult, streamClosed } = result as {
         message: { offset: string } | null
@@ -1381,9 +1375,9 @@ export class DurableStreamTestServer {
       if (streamClosed && !message) {
         // Check if this is an idempotent producer duplicate (matching closing tuple)
         if (producerResult?.status === `duplicate`) {
-          const stream = this.store.get(path)
+          const streamInfo = await this.store.get(path)
           res.writeHead(204, {
-            [STREAM_OFFSET_HEADER]: stream?.currentOffset ?? ``,
+            [STREAM_OFFSET_HEADER]: streamInfo?.currentOffset ?? ``,
             [STREAM_CLOSED_HEADER]: `true`,
             [PRODUCER_EPOCH_HEADER]: producerEpoch!.toString(),
             [PRODUCER_SEQ_HEADER]: producerResult.lastSeq!.toString(),
@@ -1393,7 +1387,7 @@ export class DurableStreamTestServer {
         }
 
         // Not a duplicate - stream was closed by different request, return 409
-        const closedStream = this.store.get(path)
+        const closedStream = await this.store.get(path)
         res.writeHead(409, {
           "content-type": `text/plain`,
           [STREAM_CLOSED_HEADER]: `true`,
@@ -1491,13 +1485,13 @@ export class DurableStreamTestServer {
    * Handle DELETE - delete stream
    */
   private async handleDelete(path: string, res: ServerResponse): Promise<void> {
-    if (!this.store.has(path)) {
+    if (!(await this.store.has(path))) {
       res.writeHead(404, { "content-type": `text/plain` })
       res.end(`Stream not found`)
       return
     }
 
-    this.store.delete(path)
+    await this.store.delete(path)
 
     // Call lifecycle hook
     if (this.options.onStreamDeleted) {
