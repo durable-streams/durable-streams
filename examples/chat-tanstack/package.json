@@ -1,0 +1,34 @@
+{
+  "name": "@durable-streams/example-chat-tanstack",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:durable\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:durable": "tsx server/durable-proxy.ts",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:client": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
+    "@durable-streams/proxy": "workspace:*",
+    "@durable-streams/server": "workspace:*",
+    "@tanstack/ai-react": "^0.2.0",
+    "@tanstack/react-router": "^1.95.0",
+    "dotenv": "^17.2.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
+    "vite": "^6.0.0"
+  }
+}
