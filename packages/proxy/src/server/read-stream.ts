@@ -26,8 +26,7 @@ export async function handleReadStream(
   res: ServerResponse,
   streamId: string,
   options: ProxyServerOptions,
-  contentTypeStore: Map<string, string>,
-  sessionStreamIds: Set<string>
+  contentTypeStore: Map<string, string>
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -47,14 +46,8 @@ export async function handleReadStream(
     if (!result.ok) {
       const { code } = result
       if (code === `SIGNATURE_EXPIRED`) {
-        // Return structured error with renewable flag for expired URLs
-        sendExpiredUrlError(
-          res,
-          code,
-          `Pre-signed URL has expired`,
-          result.hmacValid && sessionStreamIds.has(streamId),
-          streamId
-        )
+        // Return structured error with streamId for client reconnect.
+        sendExpiredUrlError(res, code, `Pre-signed URL has expired`, streamId)
       } else {
         sendError(res, 401, code, `Invalid signature`)
       }
@@ -88,12 +81,16 @@ export async function handleReadStream(
   // Forward query parameters
   const offset = url.searchParams.get(`offset`)
   const live = url.searchParams.get(`live`)
+  const cursor = url.searchParams.get(`cursor`)
 
   if (offset) {
     dsUrl.searchParams.set(`offset`, offset)
   }
   if (live) {
     dsUrl.searchParams.set(`live`, live)
+  }
+  if (cursor) {
+    dsUrl.searchParams.set(`cursor`, cursor)
   }
 
   try {
@@ -116,6 +113,7 @@ export async function handleReadStream(
       `stream-write-units`,
       `stream-closed`,
       `stream-expires-at`,
+      `stream-cursor`,
     ]
 
     for (const header of streamHeaders) {
@@ -146,6 +144,7 @@ export async function handleReadStream(
       `Stream-Write-Units`,
       `Stream-Closed`,
       `Stream-Expires-At`,
+      `Stream-Cursor`,
       `Upstream-Content-Type`,
     ].join(`, `)
 

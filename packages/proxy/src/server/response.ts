@@ -35,18 +35,13 @@ export function sendJson(
 
 /**
  * Send a structured error response for expired URLs.
- *
- * This response includes `renewable` to indicate whether the URL
- * can be renewed (HMAC was valid but expired) and `streamId` for
- * the client to use in renewal requests.
  */
 export function sendExpiredUrlError(
   res: ServerResponse,
   code: string,
   message: string,
-  renewable: boolean,
   streamId: string
 ): void {
   res.writeHead(401, { "Content-Type": `application/json` })
-  res.end(JSON.stringify({ error: { code, message, renewable, streamId } }))
+  res.end(JSON.stringify({ error: { code, message, streamId } }))
 }

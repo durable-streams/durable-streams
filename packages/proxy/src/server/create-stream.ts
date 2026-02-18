@@ -7,12 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto"
-import {
-  generatePreSignedUrl,
-  parsePreSignedUrl,
-  validateHmac,
-  validateServiceJwt,
-} from "./tokens"
+import { generatePreSignedUrl, validateServiceJwt } from "./tokens"
 import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
 import {
   createConnection,
@@ -152,7 +147,8 @@ export async function handleCreateStream(
   res: ServerResponse,
   options: ProxyServerOptions,
   isAllowed: (url: string) => boolean,
-  contentTypeStore: Map<string, string>
+  contentTypeStore: Map<string, string>,
+  explicitStreamId?: string
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -176,56 +172,23 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 2: Check for stream reuse via Use-Stream-URL header
-  const useStreamUrlHeader = req.headers[`use-stream-url`]
-  let reuseStreamId: string | null = null
+  // Step 2: Check for explicit stream ID path (create-or-append route).
+  let isStreamReuse = false
 
-  if (useStreamUrlHeader && !Array.isArray(useStreamUrlHeader)) {
-    // Parse and validate the pre-signed URL
-    const parsedStreamUrl = parsePreSignedUrl(useStreamUrlHeader)
-    if (!parsedStreamUrl) {
-      sendError(
-        res,
-        400,
-        `MALFORMED_STREAM_URL`,
-        `Use-Stream-URL header is malformed`
-      )
-      return
-    }
-
-    // Validate HMAC (ignoring expiry on write path)
-    const hmacResult = validateHmac(
-      parsedStreamUrl.streamId,
-      parsedStreamUrl.expires,
-      parsedStreamUrl.signature,
-      options.jwtSecret
-    )
-
-    if (!hmacResult.ok) {
-      sendError(res, 401, `SIGNATURE_INVALID`, `Invalid stream URL signature`)
-      return
-    }
-
-    // Verify stream exists and is not closed
+  if (explicitStreamId) {
     const verifyResult = await verifyStreamExists(
       options.durableStreamsUrl,
-      parsedStreamUrl.streamId
+      explicitStreamId
     )
-
-    if (!verifyResult.ok) {
-      if (verifyResult.code === `NOT_FOUND`) {
-        sendError(res, 404, `STREAM_NOT_FOUND`, `Stream does not exist`)
-        return
-      }
-      if (verifyResult.code === `STREAM_CLOSED`) {
-        sendError(res, 409, `STREAM_CLOSED`, `Stream is closed`)
-        return
-      }
+    if (verifyResult.ok) {
+      isStreamReuse = true
+    } else if (verifyResult.code === `STREAM_CLOSED`) {
+      sendError(res, 409, `STREAM_CLOSED`, `Stream is closed`)
+      return
+    } else if (verifyResult.code === `STORAGE_ERROR`) {
       sendError(res, 502, `STORAGE_ERROR`, `Failed to verify stream`)
       return
     }
-
-    reuseStreamId = parsedStreamUrl.streamId
   }
 
   // Step 3: Validate required headers
@@ -280,9 +243,8 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 6: Determine stream ID (reuse or generate new)
-  const streamId = reuseStreamId ?? randomUUID()
-  const isStreamReuse = reuseStreamId !== null
+  // Step 6: Determine stream ID.
+  const streamId = explicitStreamId ?? randomUUID()
 
   // Step 7: Prepare upstream request
   const upstreamHeaders = filterHeadersForUpstream(

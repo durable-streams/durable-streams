@@ -16,24 +16,24 @@ const DEFAULT_PREFIX = `durable-streams:`
 interface RenewableErrorResponse {
   error?: {
     code?: string
-    renewable?: boolean
+    streamId?: string
   }
-  renewable?: boolean
 }
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function isRenewableReadError(error: unknown): boolean {
+function isRenewableReadError(error: unknown, streamId: string): boolean {
   if (!(error instanceof Error)) return false
   const err = error as Error & {
     status?: number
     details?: RenewableErrorResponse
   }
   if (err.status !== 401) return false
+  const readError = err.details?.error
   return (
-    err.details?.error?.renewable === true || err.details?.renewable === true
+    readError?.code === `SIGNATURE_EXPIRED` && readError.streamId === streamId
   )
 }
 
@@ -104,12 +104,12 @@ export function createDurableSession(
   const {
     proxyUrl,
     proxyAuthorization,
+    streamId,
     connectUrl,
     streamSignedUrlTtl,
     storage = getDefaultStorage(),
     storagePrefix = DEFAULT_PREFIX,
     fetch: fetchFn = fetch,
-    sessionId,
   } = options
 
   const normalizedProxyUrl = proxyUrl.replace(/\/+$/, ``)
@@ -117,7 +117,7 @@ export function createDurableSession(
 
   const state = {
     streamUrl: null as string | null,
-    streamId: null as string | null,
+    streamId,
     closed: false,
     readerTask: null as Promise<void> | null,
     connectTask: null as Promise<void> | null,
@@ -126,11 +126,11 @@ export function createDurableSession(
   function parseStreamIdFromLocation(location: string): string {
     const url = new URL(location, normalizedProxyUrl)
     const parts = url.pathname.split(`/`).filter(Boolean)
-    const streamId = parts.at(-1)
-    if (!streamId) {
+    const parsedStreamId = parts.at(-1)
+    if (!parsedStreamId) {
       throw new Error(`Unable to extract stream ID from location`)
     }
-    return decodeURIComponent(streamId)
+    return decodeURIComponent(parsedStreamId)
   }
 
   async function connect(): Promise<void> {
@@ -141,10 +141,10 @@ export function createDurableSession(
 
     state.connectTask = (async () => {
       const url = new URL(normalizedProxyUrl)
+      url.pathname = `${url.pathname.replace(/\/+$/, ``)}/${encodeURIComponent(streamId)}`
       url.searchParams.set(`secret`, proxyAuthorization)
-      const headers: Record<string, string> = {
-        "Session-Id": sessionId,
-      }
+      url.searchParams.set(`action`, `connect`)
+      const headers: Record<string, string> = {}
       if (connectUrl) {
         headers[`Upstream-URL`] = connectUrl
       }
@@ -166,8 +166,7 @@ export function createDurableSession(
       }
 
       state.streamUrl = new URL(location, normalizedProxyUrl).toString()
-      state.streamId =
-        response.headers.get(`Stream-Id`) ?? parseStreamIdFromLocation(location)
+      state.streamId = parseStreamIdFromLocation(location)
     })()
 
     try {
@@ -196,21 +195,21 @@ export function createDurableSession(
             throw await errorFromResponse(response)
           }
 
-          const bytes = new Uint8Array(await response.arrayBuffer())
-          if (bytes.length > 0) {
-            demuxer.pushChunk(bytes)
-          }
-
           const nextOffset = response.headers.get(`Stream-Next-Offset`)
           if (nextOffset) {
             offset = nextOffset
+          }
+
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          if (bytes.length > 0) {
+            demuxer.pushChunk(bytes)
           }
 
           if (response.headers.get(`Stream-Up-To-Date`) === `true`) {
             await delay(75)
           }
         } catch (error) {
-          if (isRenewableReadError(error)) {
+          if (isRenewableReadError(error, state.streamId)) {
             await connect()
             continue
           }
@@ -242,7 +241,7 @@ export function createDurableSession(
         storagePrefix,
         normalizedProxyUrl,
         requestId,
-        sessionId
+        streamId
       )
       if (existing) {
         ensureReader()
@@ -253,7 +252,6 @@ export function createDurableSession(
     const requestHeaders: Record<string, string> = {
       "Upstream-URL": String(upstreamUrl),
       "Upstream-Method": method,
-      "Use-Stream-URL": state.streamUrl as string,
       ...normalizeHeaders(headers),
     }
     const auth = requestHeaders.Authorization ?? requestHeaders.authorization
@@ -267,6 +265,7 @@ export function createDurableSession(
     }
 
     const url = new URL(normalizedProxyUrl)
+    url.pathname = `${url.pathname.replace(/\/+$/, ``)}/${encodeURIComponent(streamId)}`
     url.searchParams.set(`secret`, proxyAuthorization)
     const response = await fetchFn(url.toString(), {
       method: `POST`,
@@ -287,8 +286,7 @@ export function createDurableSession(
     const location = response.headers.get(`Location`)
     if (location) {
       state.streamUrl = new URL(location, normalizedProxyUrl).toString()
-      state.streamId =
-        response.headers.get(`Stream-Id`) ?? parseStreamIdFromLocation(location)
+      state.streamId = parseStreamIdFromLocation(location)
     }
 
     if (requestId) {
@@ -298,7 +296,7 @@ export function createDurableSession(
         normalizedProxyUrl,
         requestId,
         { responseId },
-        sessionId
+        streamId
       )
     }
 
@@ -333,7 +331,6 @@ export function createDurableSession(
     get streamUrl() {
       return state.streamUrl
     },
-    sessionId,
     get streamId() {
       return state.streamId
     },

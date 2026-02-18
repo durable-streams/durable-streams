@@ -148,6 +148,19 @@ export function abortConnections(streamId: string): void {
   }
 }
 
+export function abortConnectionByResponseId(
+  streamId: string,
+  responseId: number
+): void {
+  const streamConnections = activeConnections.get(streamId)
+  if (!streamConnections) return
+  for (const connection of streamConnections.values()) {
+    if (connection.responseId === responseId) {
+      connection.abortController.abort()
+    }
+  }
+}
+
 export function createConnection(
   streamId: string,
   responseId: number,

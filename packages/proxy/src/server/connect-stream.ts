@@ -1,10 +1,10 @@
 /**
  * Handler for the connect operation.
  *
- * POST /v1/proxy with Session-Id header (without Use-Stream-URL)
+ * POST /v1/proxy/:streamId?action=connect
  *
  * Initializes or reconnects a session by:
- * 1. Deriving a stream ID deterministically from the session ID
+ * 1. Using the stream ID from the URL path
  * 2. Ensuring the stream exists (HEAD/PUT)
  * 3. Optionally forwarding to an auth endpoint (Upstream-URL) with Stream-Id header
  * 4. Returning a fresh signed URL in Location header (no response body)
@@ -12,7 +12,6 @@
 
 import { generatePreSignedUrl, validateServiceJwt } from "./tokens"
 import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
-import { deriveStreamId } from "./derive-stream-id"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -49,9 +48,9 @@ async function collectRequestBody(req: IncomingMessage): Promise<Buffer> {
 export async function handleConnectStream(
   req: IncomingMessage,
   res: ServerResponse,
+  streamId: string,
   options: ProxyServerOptions,
-  isAllowed: (url: string) => boolean,
-  sessionStreamIds: Set<string>
+  isAllowed: (url: string) => boolean
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -75,18 +74,20 @@ export async function handleConnectStream(
     return
   }
 
-  // Step 2: Extract Session-Id header
-  const sessionId = req.headers[`session-id`]
-  if (!sessionId || Array.isArray(sessionId)) {
-    sendError(res, 400, `MISSING_SESSION_ID`, `Session-Id header is required`)
+  // Step 2: Validate action query for connect route.
+  const action = url.searchParams.get(`action`)
+  if (action !== `connect`) {
+    sendError(
+      res,
+      400,
+      `INVALID_ACTION`,
+      `Query parameter action must be "connect"`
+    )
     return
   }
 
   // Step 3: Optional Upstream-URL header (auth endpoint).
   const upstreamUrl = req.headers[`upstream-url`]
-
-  // Step 4: Derive stream ID deterministically from session ID
-  const streamId = deriveStreamId(sessionId)
 
   // Step 5: If Upstream-URL is provided, authorize via auth endpoint.
   if (upstreamUrl && !Array.isArray(upstreamUrl)) {
@@ -221,19 +222,23 @@ export async function handleConnectStream(
   const expiresAt = Math.floor(Date.now() / 1000) + urlExpirationSeconds
   const proto = req.headers[`x-forwarded-proto`] ?? `http`
   const origin = `${proto}://${req.headers.host}`
-  const location = generatePreSignedUrl(
+  const signedLocation = generatePreSignedUrl(
     origin,
     streamId,
     options.jwtSecret,
     expiresAt
   )
+  const locationUrl = new URL(signedLocation)
+  // Preserve additional query params from connect request.
+  for (const [key, value] of url.searchParams.entries()) {
+    if (key === `action` || key === `secret`) continue
+    locationUrl.searchParams.set(key, value)
+  }
 
   // Step 8: Return no body, only Location header.
   const statusCode = isNewSession ? 201 : 200
-  sessionStreamIds.add(streamId)
   const responseHeaders = {
-    Location: location,
-    "Stream-Id": streamId,
+    Location: locationUrl.toString(),
   }
   res.writeHead(statusCode, responseHeaders)
   res.end()

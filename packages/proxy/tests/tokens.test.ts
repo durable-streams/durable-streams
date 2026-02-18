@@ -259,8 +259,8 @@ describe(`validatePreSignedUrl`, () => {
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
-      expect(result.hmacValid).toBe(true)
+    if (!result.ok) {
+      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
     }
   })
 
@@ -282,8 +282,8 @@ describe(`validatePreSignedUrl`, () => {
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
-      expect(result.hmacValid).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
     }
   })
 
@@ -296,9 +296,8 @@ describe(`validatePreSignedUrl`, () => {
     )
 
     expect(result.ok).toBe(false)
-    if (!result.ok && result.code === `SIGNATURE_EXPIRED`) {
-      // Invalid expires is treated as expired, HMAC will also be invalid
-      expect(result.hmacValid).toBe(false)
+    if (!result.ok) {
+      expect(result.code).toBe(`SIGNATURE_EXPIRED`)
     }
   })
 

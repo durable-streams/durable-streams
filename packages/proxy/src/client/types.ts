@@ -34,7 +34,7 @@ export interface DurableFetchOptions {
 }
 
 export interface ProxySessionOptions extends DurableFetchOptions {
-  sessionId: string
+  streamId: string
   connectUrl?: string
   streamSignedUrlTtl?: number
 }
@@ -50,8 +50,7 @@ export interface ProxyResponse extends Response {
 
 export interface DurableProxySession {
   readonly streamUrl: string | null
-  readonly sessionId: string
-  readonly streamId: string | null
+  readonly streamId: string
   fetch: (
     upstreamUrl: string | URL,
     options?: ProxyFetchOptions

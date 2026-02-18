@@ -77,14 +77,16 @@ describe(`binary framing`, () => {
     expect(first.headers.get(`Stream-Response-Id`)).toBe(`1`)
 
     ctx.upstream.setResponse(createAIStreamingResponse([`two`]))
-    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+    const url = new URL(
+      `/v1/proxy/${encodeURIComponent(first.streamId!)}`,
+      ctx.urls.proxy
+    )
     url.searchParams.set(`secret`, `test-secret-key-for-development`)
     const append = await fetch(url.toString(), {
       method: `POST`,
       headers: {
         "Upstream-URL": ctx.urls.upstream + `/v1/chat`,
         "Upstream-Method": `POST`,
-        "Use-Stream-URL": first.streamUrl!,
       },
       body: JSON.stringify({}),
     })

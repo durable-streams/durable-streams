@@ -35,7 +35,7 @@ describe(`stream abort`, () => {
 
     expect(response.status).toBe(401)
     const body = await response.json()
-    expect(body.error.code).toBe(`MISSING_SIGNATURE`)
+    expect(body.error.code).toBe(`MISSING_SECRET`)
   })
 
   it(`returns 204 for already completed streams (idempotent)`, async () => {

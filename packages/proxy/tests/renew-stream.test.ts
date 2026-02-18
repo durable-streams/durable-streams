@@ -1,8 +1,7 @@
 /**
  * Legacy Renew-Stream-URL behavior tests.
  *
- * Renew-Stream-URL is no longer a dedicated operation. Requests are dispatched
- * by Use-Stream-URL and Session-Id only.
+ * Renew-Stream-URL is not part of URL-based dispatch and is ignored.
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
@@ -39,7 +38,7 @@ describe(`legacy Renew-Stream-URL header`, () => {
     expect(response.headers.get(`Location`)).toBeDefined()
   })
 
-  it(`still requires create headers when no Session-Id is provided`, async () => {
+  it(`still requires create headers even when Renew-Stream-URL is set`, async () => {
     const url = new URL(`/v1/proxy`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
     const response = await fetch(url.toString(), {

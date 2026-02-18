@@ -4,14 +4,24 @@
  * GET /v1/proxy/:streamId?expires=...&signature=...&offset=...&live=...
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest"
 import { generatePreSignedUrl } from "../src/server/tokens"
+import { handleReadStream } from "../src/server/read-stream"
 import {
   createSSEChunks,
   createStream,
   createTestContext,
   readStream,
 } from "./harness"
+import type { IncomingMessage, ServerResponse } from "node:http"
 
 const TEST_SECRET = `test-secret-key-for-development`
 
@@ -155,7 +165,7 @@ describe(`stream reading - expired URLs`, () => {
     await new Promise((r) => setTimeout(r, 100))
   })
 
-  it(`returns structured error with renewable:false for non-session streams`, async () => {
+  it(`returns structured SIGNATURE_EXPIRED error for expired signed URLs`, async () => {
     // Generate an expired URL with valid HMAC
     const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
     const expiredUrl = generatePreSignedUrl(
@@ -173,18 +183,18 @@ describe(`stream reading - expired URLs`, () => {
     const body = await response.json()
     expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
     expect(body.error.message).toBe(`Pre-signed URL has expired`)
-    expect(body.error.renewable).toBe(false)
     expect(body.error.streamId).toBe(streamId)
   })
 
-  it(`returns structured error with renewable:true for session streams`, async () => {
-    const connectUrl = new URL(`/v1/proxy`, ctx.urls.proxy)
+  it(`returns structured SIGNATURE_EXPIRED error for connect-created streams`, async () => {
+    const connectUrl = new URL(
+      `/v1/proxy/read-expiry-session-1`,
+      ctx.urls.proxy
+    )
     connectUrl.searchParams.set(`secret`, TEST_SECRET)
+    connectUrl.searchParams.set(`action`, `connect`)
     const connectRes = await fetch(connectUrl.toString(), {
       method: `POST`,
-      headers: {
-        "Session-Id": `read-expiry-session-1`,
-      },
     })
     expect([200, 201]).toContain(connectRes.status)
 
@@ -206,11 +216,10 @@ describe(`stream reading - expired URLs`, () => {
     expect(response.status).toBe(401)
     const body = await response.json()
     expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
-    expect(body.error.renewable).toBe(true)
     expect(body.error.streamId).toBe(connectedStreamId)
   })
 
-  it(`returns structured error with renewable:false for expired URL with invalid HMAC`, async () => {
+  it(`returns structured SIGNATURE_EXPIRED error for expired URL with invalid HMAC`, async () => {
     // Construct URL with invalid signature
     const url = new URL(`/v1/proxy/${streamId}`, ctx.urls.proxy)
     const expiredAt = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
@@ -224,7 +233,6 @@ describe(`stream reading - expired URLs`, () => {
     const body = await response.json()
     expect(body.error.code).toBe(`SIGNATURE_EXPIRED`)
     expect(body.error.message).toBe(`Pre-signed URL has expired`)
-    expect(body.error.renewable).toBe(false)
     expect(body.error.streamId).toBe(streamId)
   })
 })
@@ -260,5 +268,66 @@ describe(`stream reading - offset=-1 replay`, () => {
     expect(result.body).toContain(`"seq": 1`)
     expect(result.body).toContain(`"seq": 2`)
     expect(result.body).toContain(`"seq": 3`)
+  })
+})
+
+describe(`stream reading - cursor forwarding`, () => {
+  it(`forwards cursor query parameter to durable streams`, async () => {
+    const fetchMock = vi.fn(() => {
+      return new Response(``, {
+        status: 200,
+        headers: {
+          "content-type": `application/octet-stream`,
+        },
+      })
+    })
+    vi.stubGlobal(`fetch`, fetchMock)
+
+    const req = {
+      url: `/v1/proxy/cursor-forwarded?secret=${encodeURIComponent(TEST_SECRET)}&offset=-1&live=long-poll&cursor=cursor-token`,
+      headers: { host: `proxy.test` },
+      method: `GET`,
+    } as unknown as IncomingMessage
+
+    const responseHeaders: Record<string, string> = {}
+    const res = {
+      headersSent: false,
+      writeHead(_status: number, headers: Record<string, string>) {
+        Object.assign(responseHeaders, headers)
+        return undefined
+      },
+      end() {
+        return undefined
+      },
+      write() {
+        return true
+      },
+      once(_event: string, listener: () => void) {
+        listener()
+        return undefined
+      },
+      setHeader(name: string, value: string) {
+        responseHeaders[name] = value
+      },
+    } as unknown as ServerResponse
+
+    await handleReadStream(
+      req,
+      res,
+      `cursor-forwarded`,
+      {
+        durableStreamsUrl: `http://durable.example`,
+        jwtSecret: TEST_SECRET,
+      },
+      new Map()
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const mockCalls = fetchMock.mock.calls as Array<Array<unknown>>
+    const calledUrl = String(mockCalls[0]?.[0] ?? ``)
+    const dsUrl = new URL(calledUrl)
+    expect(dsUrl.searchParams.get(`cursor`)).toBe(`cursor-token`)
+
+    vi.unstubAllGlobals()
   })
 })

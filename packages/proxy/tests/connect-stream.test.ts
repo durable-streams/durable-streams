@@ -1,11 +1,10 @@
 /**
  * Tests for the connect operation.
  *
- * POST /v1/proxy with Session-Id header
+ * POST /v1/proxy/:streamId?action=connect
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { deriveStreamId } from "../src/server/derive-stream-id"
 import { createTestContext } from "./harness"
 
 const ctx = createTestContext()
@@ -24,7 +23,7 @@ afterAll(async () => {
  * Helper to POST a connect request.
  */
 async function connectSession(options: {
-  sessionId: string
+  streamId: string
   upstreamUrl?: string
   body?: string
   headers?: Record<string, string>
@@ -36,11 +35,14 @@ async function connectSession(options: {
   body: string
   headers: Headers
 }> {
-  const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+  const url = new URL(
+    `/v1/proxy/${encodeURIComponent(options.streamId)}`,
+    ctx.urls.proxy
+  )
   url.searchParams.set(`secret`, options.secret ?? TEST_SECRET)
+  url.searchParams.set(`action`, `connect`)
 
   const requestHeaders: Record<string, string> = {
-    "Session-Id": options.sessionId,
     ...options.headers,
   }
   if (options.upstreamUrl) {
@@ -76,7 +78,7 @@ async function connectSession(options: {
   }
 }
 
-describe(`POST /v1/proxy with Session-Id (connect)`, () => {
+describe(`POST /v1/proxy/:streamId?action=connect`, () => {
   it(`creates a new session and returns 201 with empty body`, async () => {
     ctx.upstream.setResponse({
       status: 200,
@@ -87,19 +89,18 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const result = await connectSession({
-      sessionId: `session-new-1`,
+      streamId: `session-new-1`,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
 
     expect(result.status).toBe(201)
     expect(result.streamUrl).toBeDefined()
     expect(result.streamId).toBeDefined()
-    expect(result.headers.get(`Stream-Id`)).toBe(result.streamId)
     expect(result.body).toBe(``)
   })
 
   it(`reconnects to existing session and returns 200`, async () => {
-    const sessionId = `session-reconnect-1`
+    const streamId = `session-reconnect-1`
 
     // First connect - creates the session
     ctx.upstream.setResponse({
@@ -109,7 +110,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const first = await connectSession({
-      sessionId,
+      streamId,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
     expect(first.status).toBe(201)
@@ -122,7 +123,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const second = await connectSession({
-      sessionId,
+      streamId,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
     expect(second.status).toBe(200)
@@ -131,7 +132,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
 
   it(`works without Upstream-URL (service-auth-only mode)`, async () => {
     const result = await connectSession({
-      sessionId: `session-no-upstream-url`,
+      streamId: `session-no-upstream-url`,
     })
 
     expect(result.status).toBe(201)
@@ -140,23 +141,8 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     expect(result.body).toBe(``)
   })
 
-  it(`derives deterministic stream ID from session ID`, () => {
-    const id1 = deriveStreamId(`session-abc`)
-    const id2 = deriveStreamId(`session-abc`)
-    const id3 = deriveStreamId(`session-xyz`)
-
-    expect(id1).toBe(id2)
-    expect(id1).not.toBe(id3)
-
-    // Should be a valid UUID format
-    expect(id1).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-    )
-  })
-
   it(`forwards Stream-Id header to connect handler`, async () => {
-    const sessionId = `session-forward-id`
-    const expectedStreamId = deriveStreamId(sessionId)
+    const streamId = `session-forward-id`
 
     let receivedStreamId: string | undefined
     ctx.upstream.setHandler((req, res) => {
@@ -166,11 +152,11 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     await connectSession({
-      sessionId,
+      streamId,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
 
-    expect(receivedStreamId).toBe(expectedStreamId)
+    expect(receivedStreamId).toBe(streamId)
   })
 
   it(`returns fresh signed URL in Location header`, async () => {
@@ -181,7 +167,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const result = await connectSession({
-      sessionId: `session-signed-url-1`,
+      streamId: `session-signed-url-1`,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
 
@@ -199,7 +185,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const result = await connectSession({
-      sessionId: `session-rejected-1`,
+      streamId: `session-rejected-1`,
       upstreamUrl: ctx.urls.upstream + `/connect`,
     })
 
@@ -208,35 +194,28 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     expect(parsed.error.code).toBe(`CONNECT_REJECTED`)
   })
 
-  it(`returns 400 when Session-Id header is missing`, async () => {
-    // Without Session-Id and without Use-Stream-URL,
-    // this falls through to the create handler which requires Upstream-Method
-    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+  it(`returns 400 when action is invalid`, async () => {
+    const url = new URL(`/v1/proxy/session-invalid-action`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
+    url.searchParams.set(`action`, `invalid`)
 
     const response = await fetch(url.toString(), {
       method: `POST`,
-      headers: {
-        "Upstream-URL": ctx.urls.upstream + `/connect`,
-        "Upstream-Method": `POST`,
-      },
     })
 
-    // Without Session-Id, this is a normal create request (not a connect)
-    // It should proceed as create (we're just verifying dispatch works correctly)
-    expect([200, 201, 502]).toContain(response.status)
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error.code).toBe(`INVALID_ACTION`)
   })
 
   it(`returns 401 when service secret is missing`, async () => {
-    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+    const url = new URL(`/v1/proxy/session-no-secret`, ctx.urls.proxy)
+    url.searchParams.set(`action`, `connect`)
     // No secret parameter
 
     const response = await fetch(url.toString(), {
       method: `POST`,
-      headers: {
-        "Session-Id": `session-no-secret`,
-        "Upstream-URL": ctx.urls.upstream + `/connect`,
-      },
+      headers: { "Upstream-URL": ctx.urls.upstream + `/connect` },
     })
 
     expect(response.status).toBe(401)
@@ -252,7 +231,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     const result = await connectSession({
-      sessionId: `session-ttl-1`,
+      streamId: `session-ttl-1`,
       upstreamUrl: ctx.urls.upstream + `/connect`,
       headers: {
         "Stream-Signed-URL-TTL": `1800`,
@@ -276,7 +255,7 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     })
 
     await connectSession({
-      sessionId: `session-auth-1`,
+      streamId: `session-auth-1`,
       upstreamUrl: ctx.urls.upstream + `/connect`,
       headers: {
         "Upstream-Authorization": `Bearer user-token-123`,
@@ -286,11 +265,10 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     expect(receivedAuthHeader).toBe(`Bearer user-token-123`)
   })
 
-  it(`dispatches to append (not connect) when both Session-Id and Use-Stream-URL are present`, async () => {
-    // When both Session-Id and Use-Stream-URL are present,
-    // dispatch should route to append (Use-Stream-URL takes priority)
-    const url = new URL(`/v1/proxy`, ctx.urls.proxy)
+  it(`dispatches by URL path even when legacy headers are present`, async () => {
+    const url = new URL(`/v1/proxy/session-dispatch-test`, ctx.urls.proxy)
     url.searchParams.set(`secret`, TEST_SECRET)
+    url.searchParams.set(`action`, `connect`)
 
     ctx.upstream.setResponse({
       status: 200,
@@ -301,17 +279,10 @@ describe(`POST /v1/proxy with Session-Id (connect)`, () => {
     const response = await fetch(url.toString(), {
       method: `POST`,
       headers: {
-        "Session-Id": `session-dispatch-test`,
         "Use-Stream-URL": `${ctx.urls.proxy}/v1/proxy/fake-id?expires=999&signature=bad`,
-        "Upstream-URL": ctx.urls.upstream + `/chat`,
-        "Upstream-Method": `POST`,
       },
     })
 
-    // Should be treated as append, not connect.
-    // Invalid signature → 401 (not 400 for missing Session-Id)
-    expect(response.status).toBe(401)
-    const body = await response.json()
-    expect(body.error.code).toBe(`SIGNATURE_INVALID`)
+    expect(response.status).toBe(201)
   })
 })

@@ -89,7 +89,7 @@ describe(`createDurableSession`, () => {
     const session = createDurableSession({
       proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
       proxyAuthorization: TEST_SECRET,
-      sessionId: `session-1`,
+      streamId: `session-1`,
       storage: new MemoryStorage(),
     })
 
@@ -112,7 +112,7 @@ describe(`createDurableSession`, () => {
     const session = createDurableSession({
       proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
       proxyAuthorization: TEST_SECRET,
-      sessionId: `session-abort`,
+      streamId: `session-abort`,
       storage: new MemoryStorage(),
     })
     await session.connect()
@@ -125,7 +125,7 @@ describe(`createDurableSession`, () => {
     const session = createDurableSession({
       proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
       proxyAuthorization: TEST_SECRET,
-      sessionId: `session-concurrent`,
+      streamId: `session-concurrent`,
       storage: new MemoryStorage(),
     })
 
@@ -155,7 +155,7 @@ describe(`createDurableSession`, () => {
     const session = createDurableSession({
       proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
       proxyAuthorization: TEST_SECRET,
-      sessionId: `session-shared-response`,
+      streamId: `session-shared-response`,
       storage: new MemoryStorage(),
     })
 

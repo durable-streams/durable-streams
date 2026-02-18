@@ -32,7 +32,7 @@ function setCorsHeaders(res: ServerResponse): void {
   )
   res.setHeader(
     `Access-Control-Allow-Headers`,
-    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Use-Stream-URL, Session-Id, Stream-Signed-URL-TTL`
+    `Upstream-URL, Upstream-Authorization, Upstream-Method, Content-Type, Authorization, Stream-Signed-URL-TTL`
   )
   res.setHeader(
     `Access-Control-Expose-Headers`,
@@ -67,7 +67,6 @@ export function createProxyHandler(
 
   // Content type store for tracking upstream content types
   const contentTypeStore = new Map<string, string>()
-  const sessionStreamIds = new Set<string>()
 
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
@@ -85,29 +84,19 @@ export function createProxyHandler(
     }
 
     try {
-      // Route: POST /v1/proxy - Create, append, or connect stream
-      // Dispatch based on header (checked in priority order):
-      //   1. Use-Stream-URL header → append (write to existing stream)
-      //   2. Session-Id header → connect (initialize/reconnect session)
-      //   3. None → create (new stream)
+      // Route: POST /v1/proxy - Create (server-generated stream ID)
       if (PROXY_BASE.test(path) && method === `POST`) {
-        if (req.headers[`session-id`] && !req.headers[`use-stream-url`]) {
-          await handleConnectStream(
-            req,
+        const action = url.searchParams.get(`action`)
+        if (action) {
+          sendError(
             res,
-            options,
-            isAllowed,
-            sessionStreamIds
+            400,
+            `INVALID_ACTION`,
+            `Unknown action for POST: ${action}`
           )
-        } else {
-          await handleCreateStream(
-            req,
-            res,
-            options,
-            isAllowed,
-            contentTypeStore
-          )
+          return
         }
+        await handleCreateStream(req, res, options, isAllowed, contentTypeStore)
         return
       }
 
@@ -117,14 +106,36 @@ export function createProxyHandler(
         const streamId = decodeURIComponent(match[1]!)
 
         switch (method) {
+          case `POST`: {
+            const action = url.searchParams.get(`action`)
+            if (action === `connect`) {
+              await handleConnectStream(req, res, streamId, options, isAllowed)
+            } else if (action) {
+              sendError(
+                res,
+                400,
+                `INVALID_ACTION`,
+                `Unknown action for POST: ${action}`
+              )
+            } else {
+              await handleCreateStream(
+                req,
+                res,
+                options,
+                isAllowed,
+                contentTypeStore,
+                streamId
+              )
+            }
+            return
+          }
           case `GET`:
             await handleReadStream(
               req,
               res,
               streamId,
               options,
-              contentTypeStore,
-              sessionStreamIds
+              contentTypeStore
             )
             return
 
