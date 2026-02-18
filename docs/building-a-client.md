@@ -1,271 +1,86 @@
 # Building a Client
 
-The Durable Streams protocol is designed to have many client implementations. The protocol is pure HTTP -- any language that can make HTTP requests can implement a client. This guide covers what you need to build a client library and how to validate it against the conformance test suite.
+The Durable Streams protocol is pure HTTP -- any language that can make HTTP requests can implement a client. This guide covers the implementation considerations beyond what the protocol specifies, and how to validate your client against the [conformance test suite](#conformance-tests).
 
-For the full protocol specification, see [PROTOCOL.md](../PROTOCOL.md).
+The [Protocol Specification](../PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/client-conformance-tests`](../packages/client-conformance-tests/) package validates your implementation against it -- start your server, wire up an adapter, and the suite tells you what's passing and what's not.
 
-## What a Client Needs to Do
+- [What to Implement](#what-to-implement)
+- [Implementation Notes](#implementation-notes)
+- [Conformance Tests](#conformance-tests)
+- [Reference Implementations](#reference-implementations)
 
-A Durable Streams client makes standard HTTP requests to stream URLs and tracks offsets for resumption. At minimum, a client must:
+## What to Implement
 
-- Make HTTP requests (`PUT`, `POST`, `GET`, `HEAD`, `DELETE`) to stream URLs
-- Read and store opaque offset strings from response headers
-- Handle the two content modes: byte streams and JSON mode
-- Implement retry logic for transient errors
+A complete client covers six HTTP operations (create, append, read, head, close, delete), two live modes (long-poll and SSE), JSON mode, idempotent producers, and retry logic. Not all of these are required -- a useful client can start with just append and catch-up reads.
 
-## Core Operations
+A typical client library exposes:
 
-### Create a Stream
+- **Stream creation** -- `PUT` with content type and optional TTL/expiry
+- **Append** -- `POST` with body data, tracking `Stream-Next-Offset` from responses
+- **Read** -- `GET` with offset tracking, supporting catch-up, long-poll, and SSE modes
+- **Metadata** -- `HEAD` for stream info without transferring data
+- **Close** -- `POST` with `Stream-Closed: true` header
+- **Delete** -- `DELETE` to remove a stream
+- **Idempotent producer** -- a higher-level abstraction that manages `Producer-Id`, `Producer-Epoch`, and `Producer-Seq` headers, with auto-claim and sequence tracking
 
-```
-PUT /{path}
-Content-Type: text/plain
-```
+### Read-Only API
 
-Creates a new stream at the given URL. The `Content-Type` header sets the stream's content type for its lifetime. If omitted, the server may default to `application/octet-stream`.
+Many use cases only consume streams -- they never create, append, or delete. Where your language supports it, consider offering a separate read-only entry point with a smaller dependency footprint. The [TypeScript client](../packages/client/) does this with a `stream()` function (a fetch-like API for consuming streams) alongside the full `DurableStream` class. This keeps bundle sizes small for browser consumers that only need to read.
 
-**Response codes:**
+## Implementation Notes
 
-- `201 Created` -- stream created
-- `200 OK` -- stream already exists with matching configuration (idempotent)
-- `409 Conflict` -- stream exists with different configuration
+These are things the protocol specification defines but that are easy to get wrong, or where client libraries need to make design decisions.
 
-**Response headers:**
+### Offsets Are Opaque
 
-- `Stream-Next-Offset` -- the tail offset (where the next append will go)
+Offsets are strings. Never parse them, never construct them, never assume a format. The only operations you can rely on are:
 
-Optional request headers include `Stream-TTL` (seconds), `Stream-Expires-At` (RFC 3339 timestamp), and `Stream-Closed: true` (create in closed state).
+- **Lexicographic comparison** -- for ordering
+- **Equality** -- for deduplication
 
-### Append Data
+Always store and forward the `Stream-Next-Offset` header value exactly as received.
 
-```
-POST /{path}
-Content-Type: text/plain
+### Error Classification
 
-Hello, world!
-```
+The protocol defines which HTTP status codes are retryable. Your client should classify errors so callers don't need to interpret status codes:
 
-Appends bytes to an existing stream. The `Content-Type` must match the stream's configured type.
+| Retryable | Non-retryable |
+|-----------|---------------|
+| `500 Internal Server Error` | `400 Bad Request` |
+| `503 Service Unavailable` | `404 Not Found` |
+| `429 Too Many Requests` | `409 Conflict` |
+| | `403 Forbidden` |
+| | `413 Payload Too Large` |
 
-**Response codes:**
+For `429`, respect the `Retry-After` header. For all retryable errors, use exponential backoff with jitter.
 
-- `204 No Content` -- append successful
-- `404 Not Found` -- stream does not exist
-- `409 Conflict` -- content type mismatch, sequence conflict, or stream is closed
+### Idempotent Producer Abstraction
 
-**Response headers:**
+The protocol defines the `Producer-Id` / `Producer-Epoch` / `Producer-Seq` headers, but clients typically wrap these in an `IdempotentProducer` abstraction that:
 
-- `Stream-Next-Offset` -- the new tail offset after the append
+- Tracks the current sequence number automatically
+- Increments the epoch on restart
+- Implements auto-claim: start at `(epoch=0, seq=0)`, and if the server returns `403` with a `Producer-Epoch` header, retry with `(epoch=serverEpoch+1, seq=0)`
+- Handles `409 Conflict` for sequence gaps (retry with the expected sequence)
+- Reports duplicate detection (`204` responses) separately from successful appends
 
-### Read (Catch-up)
+### SSE Reconnection
 
-```
-GET /{path}?offset=0a1b2c
-```
+For SSE mode, the server eventually closes the connection (controlled by its `sse_reconnect_interval`). Your client should:
 
-Returns data from the specified offset. If no data exists beyond the offset, returns an empty body.
+1. Track the last `streamNextOffset` from control events
+2. Reconnect with that offset when the connection drops
+3. Stop reconnecting when `streamClosed: true` appears in a control event
 
-**Response codes:**
+### Cursor Forwarding
 
-- `200 OK` -- data available (or empty body if at tail)
-- `404 Not Found` -- stream does not exist
+In long-poll mode, the server may return a `Stream-Cursor` header. Echo it back as `cursor=<value>` on the next request. This enables CDN request collapsing -- multiple clients waiting at the same offset share a single upstream connection.
 
-**Response headers:**
+## Conformance Tests
 
-- `Stream-Next-Offset` -- the offset to use for the next read
-- `Stream-Up-To-Date: true` -- present when the response includes all currently available data
-- `Stream-Closed: true` -- present when the stream is closed and the client has reached the final offset (EOF)
+The conformance test suite validates that your client correctly implements the protocol. It covers producer operations, consumer reads (catch-up, long-poll, SSE), idempotent producers, stream lifecycle, error handling, and more.
 
-### Read (Long-poll)
-
-```
-GET /{path}?offset=0a1b2c&live=long-poll
-```
-
-If no data is available, the server holds the connection open until new data arrives or a timeout expires.
-
-**Response codes:**
-
-- `200 OK` -- new data arrived
-- `204 No Content` -- timeout with no new data
-
-A `204` with `Stream-Closed: true` indicates EOF -- the stream is closed and no more data will arrive.
-
-**Response headers:**
-
-- `Stream-Next-Offset` -- the offset for the next request
-- `Stream-Cursor` -- echo this as `cursor=<value>` on the next request (enables CDN collapsing)
-
-### Read (SSE)
-
-```
-GET /{path}?offset=0a1b2c&live=sse
-```
-
-Returns a `text/event-stream` response with two event types:
-
-- `data` -- contains stream data (base64-encoded for binary content types)
-- `control` -- JSON object with `streamNextOffset`, `streamCursor`, `upToDate`, and optionally `streamClosed`
-
-```
-event: data
-data: Hello, world!
-
-event: control
-data: {"streamNextOffset":"0a1b2c","streamCursor":"abc","upToDate":true}
-```
-
-When `streamClosed: true` appears in a control event, the client must not reconnect. The server closes the connection after sending the final control event.
-
-For reconnection, use the last `streamNextOffset` value.
-
-### Stream Metadata
-
-```
-HEAD /{path}
-```
-
-Returns stream metadata in headers without transferring a body.
-
-**Response headers:**
-
-- `Content-Type` -- the stream's content type
-- `Stream-Next-Offset` -- the current tail offset
-- `Stream-Closed: true` -- present if the stream is closed
-
-### Delete a Stream
-
-```
-DELETE /{path}
-```
-
-Deletes the stream and all its data. Returns `204 No Content` on success, `404 Not Found` if the stream does not exist.
-
-### Close a Stream
-
-```
-POST /{path}
-Stream-Closed: true
-```
-
-Closes the stream without appending data. Once closed, no further appends are accepted. To atomically append final data and close, include a body with the `Stream-Closed: true` header.
-
-Returns `204 No Content` on success. Closing is idempotent -- closing an already-closed stream succeeds.
-
-## Idempotent Producer
-
-Durable Streams supports Kafka-style idempotent producers for exactly-once write semantics. This eliminates duplicates from client retries.
-
-### Headers
-
-All three headers must be provided together or not at all:
-
-- `Producer-Id` -- a stable string identifier for the producer (e.g., `"order-service-1"`)
-- `Producer-Epoch` -- a non-negative integer, incremented on producer restart
-- `Producer-Seq` -- a non-negative integer, monotonically increasing within an epoch, starting at 0
-
-### How It Works
-
-The server tracks the last accepted `(epoch, seq)` per `(stream, producerId)`:
-
-- **Same `(epoch, seq)` as a previous request** -- returns `204 No Content` (duplicate, idempotent success, no data written)
-- **`seq == lastSeq + 1`** -- accepted, data appended, returns `200 OK`
-- **`seq > lastSeq + 1`** -- gap detected, returns `409 Conflict` with `Producer-Expected-Seq` and `Producer-Received-Seq` headers
-- **`epoch > server epoch`** with `seq == 0` -- new epoch accepted, old epoch fenced
-- **`epoch < server epoch`** -- stale producer, returns `403 Forbidden` with `Producer-Epoch` header showing the current epoch
-
-### Epoch-based Fencing
-
-When a producer restarts, it increments its epoch and starts `seq` at 0. The server accepts the new epoch and fences the old one. Any requests from the old epoch receive `403 Forbidden`.
-
-### Auto-claim Flow
-
-For ephemeral producers that don't persist their epoch:
-
-1. Start with `(epoch=0, seq=0)`
-2. If the server returns `403` with `Producer-Epoch: 5`, retry with `(epoch=6, seq=0)`
-3. The server accepts the new epoch
-
-This is opt-in client behavior and trades strict fencing for convenience.
-
-## JSON Mode
-
-Streams created with `Content-Type: application/json` get special message boundary handling:
-
-- **POST with a JSON array** flattens one level -- each element is stored as a separate message
-- **POST with a non-array JSON value** stores it as a single message
-- **GET** returns a JSON array of all messages in the requested range
-- **Empty range** returns `[]`
-
-```
-POST /{path}
-Content-Type: application/json
-
-[{"event":"a"},{"event":"b"}]
-```
-
-This stores two messages. A subsequent `GET` returns:
-
-```
-HTTP/1.1 200 OK
-Content-Type: application/json
-
-[{"event":"a"},{"event":"b"}]
-```
-
-Empty JSON arrays (`[]`) in POST requests are rejected with `400 Bad Request`.
-
-## Offset Handling
-
-Offsets are **opaque strings**. Never parse, construct, or make assumptions about their internal structure. They have two important properties:
-
-- **Lexicographically sortable** -- you can compare two offsets to determine ordering
-- **Monotonically increasing** -- later data always has a higher offset
-
-### Special Values
-
-| Value  | Meaning                                             |
-| ------ | --------------------------------------------------- |
-| `"-1"` | Beginning of the stream (equivalent to omitting offset) |
-| `"now"` | Current tail position (skip existing data)          |
-
-### Usage
-
-Always use the `Stream-Next-Offset` value from responses for subsequent reads. Persist offsets client-side for resumption across restarts and reconnects.
-
-```
-GET /{path}?offset=-1         # read from beginning
-GET /{path}?offset=0a1b2c     # resume from saved offset
-GET /{path}?offset=now        # skip to current tail
-```
-
-## Error Handling
-
-### Retryable Errors
-
-Retry these with exponential backoff:
-
-- `500 Internal Server Error`
-- `503 Service Unavailable`
-- `429 Too Many Requests` -- respect the `Retry-After` header when present
-
-### Non-retryable Errors
-
-Do **not** retry these:
-
-- `400 Bad Request` -- malformed request
-- `404 Not Found` -- stream does not exist
-- `409 Conflict` -- content type mismatch, stream closed, or sequence conflict
-- `403 Forbidden` -- stale producer epoch
-- `413 Payload Too Large`
-
-### Error Mapping
-
-Map HTTP errors to client-friendly error types so callers don't need to interpret status codes directly.
-
-## Running the Conformance Tests
-
-The conformance test suite is the definitive way to validate a client implementation. It covers 221 tests spanning offset semantics, retry behavior, live streaming, message ordering, and producer operations.
+Once you have the conformance tests wired up, LLM coding agents are remarkably effective at implementing clients. The test suite provides a tight feedback loop -- the agent can run tests, see failures, and iterate. Several of the existing client implementations were built this way.
 
 ### Install
 
@@ -275,13 +90,7 @@ npm install @durable-streams/client-conformance-tests
 
 ### Architecture
 
-The test runner is a Node.js process that:
-
-1. Starts a reference Durable Streams server
-2. Launches your client adapter as a subprocess
-3. Sends JSON commands to the adapter's stdin (one per line)
-4. Reads JSON results from the adapter's stdout (one per line)
-5. Compares results against expectations
+The test runner is a Node.js process that starts a reference server, spawns your client adapter as a subprocess, and communicates via JSON lines over stdin/stdout:
 
 ```
 ┌──────────────────────────────┐
@@ -307,49 +116,100 @@ The test runner is a Node.js process that:
 
 ### Writing an Adapter
 
-Create an executable that reads JSON commands from stdin and writes JSON results to stdout, one per line. The adapter is the bridge between the test runner and your client library.
+Create an executable that reads JSON commands from stdin and writes JSON results to stdout, one per line. The adapter bridges the test runner and your client library.
 
 **Lifecycle:**
 
 1. The test runner starts your adapter as a subprocess
-2. The first command is always `init`, which provides the `serverUrl`
+2. The first command is always `init`, providing the `serverUrl`
 3. Subsequent commands exercise your client's operations
 4. The final command is `shutdown`
 
-**Key commands:**
+**Core commands:**
 
-| Command    | Description                              |
-| ---------- | ---------------------------------------- |
-| `init`     | Receive server URL, report client info   |
-| `create`   | Create a stream                          |
-| `append`   | Append data to a stream                  |
-| `read`     | Read from a stream (catch-up or live)    |
-| `head`     | Get stream metadata                      |
-| `delete`   | Delete a stream                          |
-| `close`    | Close a stream                           |
-| `shutdown` | Clean up and exit                        |
+| Command | Description |
+| ------- | ----------- |
+| `init` | Receive server URL, report client name, version, and supported features |
+| `create` | Create a stream (`PUT`) |
+| `append` | Append data to a stream (`POST`) |
+| `read` | Read from a stream -- catch-up, long-poll, or SSE (`GET`) |
+| `head` | Get stream metadata (`HEAD`) |
+| `close` | Close a stream |
+| `delete` | Delete a stream (`DELETE`) |
+| `shutdown` | Clean up and exit |
 
-**Example: `init` command and response:**
+**Idempotent producer commands** (if your client supports them):
+
+| Command | Description |
+| ------- | ----------- |
+| `connect` | Connect to an existing stream (for producer setup) |
+| `idempotent-append` | Append via `IdempotentProducer` with automatic sequence tracking |
+| `idempotent-append-batch` | Batch append via `IdempotentProducer` |
+| `idempotent-close` | Close a stream via `IdempotentProducer` (with producer headers) |
+| `idempotent-detach` | Detach producer without closing stream |
+
+**Optional commands** (feature-gated):
+
+| Command | Description |
+| ------- | ----------- |
+| `set-dynamic-header` | Configure per-request header evaluation (e.g., OAuth tokens) |
+| `set-dynamic-param` | Configure per-request URL parameter evaluation |
+| `clear-dynamic` | Clear dynamic headers/params |
+| `validate` | Test client-side input validation |
+
+### Feature Reporting
+
+The `init` response tells the runner which features your client supports. Tests requiring unsupported features are skipped:
 
 ```json
-{"type":"init","serverUrl":"http://localhost:3000"}
+{
+  "type": "init",
+  "success": true,
+  "clientName": "my-client",
+  "clientVersion": "1.0.0",
+  "features": {
+    "batching": true,
+    "sse": true,
+    "longPoll": true,
+    "auto": false,
+    "streaming": false,
+    "dynamicHeaders": false
+  }
+}
 ```
 
-```json
-{"type":"init","success":true,"clientName":"my-client","clientVersion":"1.0.0","features":{"sse":true,"longPoll":true}}
-```
+| Feature | Description |
+| ------- | ----------- |
+| `batching` | Client supports automatic batching of appends |
+| `sse` | Client supports SSE live mode |
+| `longPoll` | Client supports long-poll live mode |
+| `auto` | Client supports auto mode (catch-up then auto-select live mode) |
+| `streaming` | Client supports streaming reads |
+| `dynamicHeaders` | Client supports per-request header/param functions |
 
-**Example: `append` command and response:**
+### Command and Result Examples
+
+**Append:**
 
 ```json
-{"type":"append","path":"/my-stream","data":"Hello, World!","seq":1}
+{"type":"append","path":"/my-stream","data":"Hello, World!"}
 ```
 
 ```json
 {"type":"append","success":true,"status":200,"offset":"13"}
 ```
 
-**Example: error response:**
+**Read:**
+
+```json
+{"type":"read","path":"/my-stream","offset":"0","live":"long-poll","timeoutMs":5000}
+```
+
+```json
+{"type":"read","success":true,"status":200,"chunks":[{"data":"Hello, World!","offset":"13"}],"offset":"13","upToDate":true}
+```
+
+**Error:**
 
 ```json
 {"type":"error","success":false,"commandType":"append","status":404,"errorCode":"NOT_FOUND","message":"Stream not found"}
@@ -359,49 +219,88 @@ Create an executable that reads JSON commands from stdin and writes JSON results
 
 Map your client's errors to these standard codes in error results:
 
-| Code                | Meaning                         |
-| ------------------- | ------------------------------- |
-| `NETWORK_ERROR`     | Network connection failed       |
-| `TIMEOUT`           | Operation timed out             |
-| `CONFLICT`          | Stream already exists (409)     |
-| `NOT_FOUND`         | Stream not found (404)          |
-| `SEQUENCE_CONFLICT` | Sequence number conflict (409)  |
-| `STREAM_CLOSED`     | Stream is closed (409)          |
-| `INVALID_OFFSET`    | Invalid offset format (400)     |
-| `UNEXPECTED_STATUS` | Unexpected HTTP status          |
-| `PARSE_ERROR`       | Failed to parse response        |
-| `INTERNAL_ERROR`    | Client internal error           |
-| `NOT_SUPPORTED`     | Operation not supported         |
+| Code | Meaning |
+| ---- | ------- |
+| `NETWORK_ERROR` | Network connection failed |
+| `TIMEOUT` | Operation timed out |
+| `CONFLICT` | Stream already exists (409) |
+| `NOT_FOUND` | Stream not found (404) |
+| `SEQUENCE_CONFLICT` | Sequence number conflict (409) |
+| `STREAM_CLOSED` | Stream is closed (409) |
+| `INVALID_OFFSET` | Invalid offset format (400) |
+| `INVALID_ARGUMENT` | Invalid argument passed to client API |
+| `UNEXPECTED_STATUS` | Unexpected HTTP status |
+| `PARSE_ERROR` | Failed to parse response |
+| `INTERNAL_ERROR` | Client internal error |
+| `NOT_SUPPORTED` | Operation not supported |
 
 ### Running Tests
 
 ```bash
-# Run all tests against your adapter
+# Run all tests
 npx @durable-streams/client-conformance-tests --run ./your-adapter
 
 # Run a specific test suite
 npx @durable-streams/client-conformance-tests --run ./your-adapter --suite producer
+
+# Filter by tag
+npx @durable-streams/client-conformance-tests --run ./your-adapter --tag core
 
 # Verbose output
 npx @durable-streams/client-conformance-tests --run ./your-adapter --verbose
 
 # Stop on first failure
 npx @durable-streams/client-conformance-tests --run ./your-adapter --fail-fast
+
+# Custom timeout (default 30s)
+npx @durable-streams/client-conformance-tests --run ./your-adapter --timeout 60000
 ```
+
+### Adapter Wrapper Script
+
+By convention, adapters use a `run-conformance-adapter.sh` wrapper script that handles environment setup:
+
+```bash
+#!/bin/bash
+cd "$(dirname "$0")"
+exec python3 conformance_adapter.py
+```
+
+This is the path you pass to `--run`.
+
+### Binary Data
+
+Binary data in the adapter protocol is transmitted as base64. The `binary: true` flag on commands and results indicates base64 encoding.
 
 ### Test Coverage
 
-The 221 tests cover:
+The tests cover five categories:
 
 - **Producer** -- stream creation, append operations, sequence ordering, batching, error handling
-- **Consumer** -- catch-up reads, long-poll, SSE, offset handling, error handling
-- **Lifecycle** -- full create/append/read/delete flows, HEAD requests, custom headers
+- **Consumer** -- catch-up reads, long-poll, SSE, offset handling, message ordering, retry/resilience, fault injection, cache headers
+- **Lifecycle** -- full create/append/read/delete flows, HEAD requests, stream closure, custom headers, dynamic headers
+- **Idempotent Producer** -- epoch management, auto-claim, batching, concurrent requests, multi-producer, sequence validation, error handling
+- **Validation** -- client-side input validation (retry options, producer parameters)
+
+### Protocol Types for TypeScript
+
+TypeScript adapters can import the protocol types directly:
+
+```typescript
+import {
+  type TestCommand,
+  type TestResult,
+  parseCommand,
+  serializeResult,
+  ErrorCodes,
+} from "@durable-streams/client-conformance-tests/protocol"
+```
 
 ## Reference Implementations
 
 Use these as examples when building your own client:
 
-- [TypeScript](../packages/client/) -- reference client with full read/write support
+- [TypeScript](../packages/client/) -- reference client with full feature support
 - [Python](../packages/client-py/)
 - [Go](../packages/client-go/)
 - [Elixir](../packages/client-elixir/)
@@ -413,3 +312,7 @@ Use these as examples when building your own client:
 - [Ruby](../packages/client-rb/)
 
 All pass the conformance test suite. See [Client Libraries](clients.md) for details.
+
+---
+
+See also: [Protocol Specification](../PROTOCOL.md) | [Core Concepts](concepts.md) | [Building a Server](building-a-server.md)

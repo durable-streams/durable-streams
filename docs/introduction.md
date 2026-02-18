@@ -2,23 +2,31 @@
 
 **The open protocol for real-time sync to client applications.**
 
-Durable Streams is a persistent stream primitive and HTTP protocol for reliable, resumable, real-time data streaming into client applications. It provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
+Durable Streams is a persistent, URL-addressable stream primitive and HTTP protocol for reliable, resumable, real-time data streaming into client applications. It provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
 
 ## The Missing Primitive
 
-The internet has strong primitives for server-to-server messaging -- Kafka, RabbitMQ, NATS, Kinesis. But client streaming is a different problem. Connections are fragile: tabs get suspended, networks flap, devices switch, pages refresh. When a connection breaks, you either lose in-flight data or build a bespoke backend storage and client resume protocol on top.
+The internet has strong primitives for server-to-server messaging -- Kafka, RabbitMQ, NATS, Kinesis. They give you ordering, delivery semantics, and fault tolerance between backend services. But they're designed for backend infrastructure, not client applications.
+
+Client streaming is a different problem. Connections are fragile: tabs get suspended, networks flap, devices switch, pages refresh. WebSockets are hard to scale, proxy, authenticate, and observe. SSE is HTTP-native but not cacheable by CDNs, not replayable, and has no standard server-side retention or catch-up protocol. With either, you lose data on disconnect or build a bespoke resume protocol on top.
 
 AI products make this painfully visible. Token streaming is the UI for chat and copilots, and agentic apps often stream progress events, tool outputs, and partial results over long-running sessions. When the stream fails, the product fails -- even if the model did the right thing.
 
 While durable streams exist throughout backend infrastructure (database WALs, Kafka topics, event stores), they aren't available as a first-class primitive for client applications. There's no simple, HTTP-based durable stream that sits alongside databases and object storage as a standard cloud primitive.
 
-Durable Streams addresses this gap.
+Durable Streams addresses this gap. It complements backend messaging systems rather than replacing them:
+
+```
+Kafka/RabbitMQ  -->  Application Server  -->  Durable Streams  -->  Clients
+(server-to-server)   (auth, shaping,          (server-to-client)
+                      transformation)
+```
 
 ## What Are Durable Streams
 
 Streams are a first-class primitive that get their own URL. Each stream is an addressable, append-only log that clients can read from any position.
 
-Every position in a stream has an opaque, monotonic offset. Clients persist the last offset they've processed. On reconnect, they resume by asking for "everything after offset X". The server doesn't need per-client session state -- progress is tracked client-side.
+Every position in a stream has an opaque, lexicographically sortable offset. Clients persist the last offset they've processed. On reconnect, they resume by asking for "everything after offset X". The server doesn't need per-client session state -- progress is tracked client-side.
 
 Because reads are addressed by offset-based URLs, historical reads can be cached by CDNs. This makes it feasible to serve large numbers of clients from a single source stream.
 
@@ -83,35 +91,6 @@ Durable Streams is a foundation layer. Higher-level protocols and integrations b
 - **State Protocol** -- structured state sync (insert/update/delete) over durable streams
 - **AI transports** -- durable adapters for Vercel AI SDK, TanStack AI
 - **Application protocols** -- presence, CRDTs (Yjs), collaborative editing
-
-## How It Relates to Existing Tech
-
-### Kafka, RabbitMQ, and other message brokers
-
-Durable Streams complements rather than replaces backend messaging systems. Kafka, RabbitMQ, and similar tools excel at server-to-server messaging -- partitioning, consumer groups, and high-throughput backend event processing.
-
-Durable Streams solves the distinct challenge of reliably streaming data to client applications: web browsers, mobile apps, native clients, and edge workers. These environments have different constraints -- fragile connections, diverse platform capabilities, and the need for HTTP compatibility.
-
-The recommended pattern is to use both together:
-
-```
-Kafka/RabbitMQ  -->  Application Server  -->  Durable Streams  -->  Clients
-(server-to-server)   (shapes data,            (server-to-client)
-                      authorizes)
-```
-
-### SSE and WebSockets
-
-SSE and WebSockets are ephemeral transports. When a connection drops, in-flight data is lost. SSE supports reconnection via `Last-Event-ID`, but there's no standard for what happens on the server side -- no defined log format, no retention semantics, no catch-up protocol.
-
-Durable Streams keeps you in plain HTTP with:
-
-- **Standardized resumption** through opaque offsets
-- **A unified catch-up and live protocol** -- the same API for historical replay and real-time tailing
-- **CDN-cacheable requests** -- offset-based URLs enable aggressive caching and request collapsing
-- **Stateless servers** -- clients track their own offsets; no per-connection state to manage
-
-The result: SSE or long-poll for the last mile, durable log semantics everywhere else.
 
 ## Performance
 

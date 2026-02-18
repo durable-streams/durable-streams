@@ -1,18 +1,31 @@
 # Use Cases
 
-Durable Streams is a delivery primitive. The pattern is the same across use cases: consume events from backend systems -- databases, LLMs, Kafka, queues -- apply auth and transformation, then fan out to clients over HTTP using Durable Streams.
+Durable Streams is a delivery primitive built on plain HTTP -- anything that can make an HTTP request can read from or write to a stream. It can act as a fan-out layer for backend systems, or as a primary data source with direct writes from any client or service.
 
 ```
-Backend Systems → Application Server → Durable Streams → Clients
-(databases, LLMs,   (auth, shaping,      (durable delivery
- Kafka, queues)      transformation)       over HTTP)
+┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
+│  Backend Systems   │ │ Application Server │ │  Direct Writes     │
+│  databases, LLMs,  │ │ auth, shaping,     │ │  any HTTP client   │
+│  Kafka             │ │ transformation     │ │  or service        │
+└─────────┬──────────┘ └─────────┬──────────┘ └─────────┬──────────┘
+          │                      │                      │
+          ▼                      ▼                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                         Durable Streams                          │
+└────────────────────────────────┬─────────────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                            Clients                               │
+│             browsers, mobile, native, workers                    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## AI / LLM Streaming
 
 Token streaming is the UI for chat and copilots. When the stream fails, the product fails -- even if the model did the right thing. Durable Streams lets you resume token streams across page refreshes, tab suspensions, and device switches instead of restarting expensive generations.
 
-The [`@durable-streams/proxy`](../packages/proxy/README.md) package makes existing AI streaming APIs resumable with no code changes. It sits between your client and upstream AI services (OpenAI, Anthropic, etc.), persisting streaming responses to a durable store. If a connection drops, clients resume from where they left off rather than losing partial responses or re-running inference. The proxy includes transports for the [Vercel AI SDK](https://sdk.vercel.ai/) and [TanStack AI](https://tanstack.com/start/latest/docs/framework/react/ai).
+The [`@durable-streams/proxy`](../packages/proxy/README.md) package sits between your backend agent and the client, persisting the agent's streaming responses to a durable stream. If the client disconnects, it resumes from where it left off rather than losing partial responses or re-running inference. The proxy includes transports for the [Vercel AI SDK](https://sdk.vercel.ai/) and [TanStack AI](https://tanstack.com/start/latest/docs/framework/react/ai).
 
 ## Agentic Apps
 

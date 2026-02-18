@@ -1,23 +1,35 @@
 # Client Libraries
 
-Durable Streams has official client libraries in 10 languages. All implement the same [protocol](../PROTOCOL.md) and pass the client conformance test suite (221 tests), ensuring consistent behavior regardless of which language you use.
+Durable Streams has official client libraries in 10 languages. All implement the same [protocol](../PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.
 
-If your language isn't listed here, you can build your own client -- see [Building a Client](building-a-client.md) for a guide.
+If your language isn't listed here, you can build your own -- see [Building a Client](building-a-client.md).
+
+## Common Features
+
+All client libraries share the same core capabilities:
+
+- **Exactly-once writes** -- `IdempotentProducer` uses `(producerId, epoch, seq)` tuples for server-side deduplication, safe to retry on any network error
+- **Offset-based resumption** -- save the offset returned by the server and pass it back on reconnect to resume from exactly where you left off
+- **Long-poll and SSE live modes** -- choose between HTTP long-polling and Server-Sent Events for real-time tailing (note: PHP supports long-poll only)
+- **JSON mode with array flattening** -- JSON streams automatically handle array batching on writes and flattening on reads
+- **Automatic retry on transient errors** -- configurable exponential backoff for network failures and server errors
 
 ## Summary
 
 | Language | Package | Install |
 |----------|---------|---------|
-| TypeScript | `@durable-streams/client` | `npm install @durable-streams/client` |
-| Python | `durable-streams` | `pip install durable-streams` |
-| Go | `durablestreams` | `go get github.com/durable-streams/durable-streams/packages/client-go` |
-| Elixir | `durable_streams` | `{:durable_streams, "~> 0.1.0"}` in `mix.exs` |
-| C# / .NET | `DurableStreams` | `dotnet add package DurableStreams` |
-| Swift | `DurableStreams` | Swift Package Manager (see below) |
-| PHP | `durable-streams/client` | `composer require durable-streams/client` |
-| Java | `durable-streams` | Maven/Gradle (see below) |
-| Rust | `durable-streams` | `cargo add durable-streams` |
-| Ruby | `durable_streams` | `gem install durable_streams` |
+| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client` |
+| [Python](#python) | `durable-streams` | `pip install durable-streams` |
+| [Go](#go) | `durablestreams` | `go get github.com/durable-streams/durable-streams/packages/client-go` |
+| [Elixir](#elixir) | `durable_streams` | `{:durable_streams, "~> 0.1.0"}` in `mix.exs` |
+| [C# / .NET](#c--net) | `DurableStreams` | `dotnet add package DurableStreams` |
+| [Swift](#swift) | `DurableStreams` | Swift Package Manager |
+| [PHP](#php) | `durable-streams/client` | `composer require durable-streams/client` |
+| [Java](#java) | `durable-streams` | Maven / Gradle |
+| [Rust](#rust) | `durable-streams` | `cargo add durable-streams` |
+| [Ruby](#ruby) | `durable_streams` | `gem install durable_streams` |
+
+---
 
 ## TypeScript
 
@@ -90,7 +102,7 @@ for {
 - `IdempotentProducer` with goroutine-based batching and pipelining
 - Functional options pattern (`WithLive()`, `WithOffset()`, `WithContentType()`)
 
-Full documentation: [packages/client-go](../packages/client-go/)
+Full documentation: [README](../packages/client-go/README.md)
 
 ## Elixir
 
@@ -101,9 +113,15 @@ Add to your `mix.exs`:
 ```
 
 ```elixir
+alias DurableStreams.Client
 alias DurableStreams.Stream, as: DS
 
-{:ok, {items, meta}} = DS.read_json(stream, offset: "-1")
+client = Client.new("http://localhost:4437")
+stream = client |> Client.stream("/my-stream") |> DS.create!()
+
+DS.append_json!(stream, %{event: "hello"})
+
+{:ok, {items, _meta}} = DS.read_json(stream, offset: "-1")
 IO.inspect(items)
 ```
 
@@ -204,20 +222,9 @@ Full documentation: [README](../packages/client-php/README.md)
 
 ## Java
 
-### Gradle
-
 ```kotlin
+// Gradle
 implementation("com.durablestreams:durable-streams:0.1.0")
-```
-
-### Maven
-
-```xml
-<dependency>
-    <groupId>com.durablestreams</groupId>
-    <artifactId>durable-streams</artifactId>
-    <version>0.1.0</version>
-</dependency>
 ```
 
 ```java
@@ -276,8 +283,9 @@ gem install durable_streams
 ```ruby
 require 'durable_streams'
 
-stream = DurableStreams.stream("/my-stream")
-stream.each { |msg| puts msg }
+stream = DurableStreams.create("/my-stream", content_type: :json)
+stream << { event: "hello" }
+stream.read.each { |msg| puts msg }
 ```
 
 - Idiomatic Ruby with `Enumerable` integration, `each` / `each_batch`, and `<<` shovel operator
@@ -287,13 +295,3 @@ stream.each { |msg| puts msg }
 - Built-in testing utilities with mock transport for RSpec/Minitest
 
 Full documentation: [README](../packages/client-rb/README.md)
-
-## Common features across all clients
-
-All client libraries share the same core capabilities:
-
-- **Exactly-once writes** -- `IdempotentProducer` uses `(producerId, epoch, seq)` tuples for server-side deduplication, safe to retry on any network error
-- **Offset-based resumption** -- save the offset returned by the server and pass it back on reconnect to resume from exactly where you left off
-- **Long-poll and SSE live modes** -- choose between HTTP long-polling and Server-Sent Events for real-time tailing (note: PHP supports long-poll only)
-- **JSON mode with array flattening** -- JSON streams automatically handle array batching on writes and flattening on reads
-- **Automatic retry on transient errors** -- configurable exponential backoff for network failures and server errors

@@ -2,16 +2,28 @@
 
 This page introduces the key concepts behind the Durable Streams protocol. For the complete specification, see [PROTOCOL.md](../PROTOCOL.md).
 
+- [Streams](#streams)
+- [Offsets](#offsets)
+- [Messages and Content Types](#messages-and-content-types)
+- [Producers](#producers)
+- [Consumers](#consumers)
+- [Live Modes](#live-modes)
+- [Stream Lifecycle](#stream-lifecycle)
+- [CDN Caching](#cdn-caching)
+
 ## Streams
 
 A stream is a **URL-addressable, append-only, durable sequence of bytes**. Each stream lives at its own URL and has a content type set at creation. Once data is written at a position, it never changes -- new data can only be appended to the end.
 
-Streams are strictly ordered by offset and support three fundamental operations: create, append, and read.
+Streams are strictly ordered by offset. The protocol defines six operations:
 
 ```
 PUT /streams/my-stream          # Create
 POST /streams/my-stream         # Append
 GET /streams/my-stream?offset=… # Read
+HEAD /streams/my-stream         # Metadata
+POST /streams/my-stream         # Close (with Stream-Closed: true)
+DELETE /streams/my-stream       # Delete
 ```
 
 The protocol doesn't prescribe any particular URL structure. A stream URL can be anything: `/v1/stream/{id}`, `/events/{topic}`, or whatever makes sense for your application.
@@ -29,6 +41,8 @@ The protocol defines two sentinel values:
 |--------|---------|
 | `"-1"` | Beginning of the stream (equivalent to omitting the offset) |
 | `"now"` | Current tail position -- skip all existing data and read only new messages |
+
+The behavior of `offset=now` varies by read mode: catch-up returns an empty response with the current tail offset, long-poll skips the empty response and starts waiting for new data immediately, and SSE begins streaming from the tail. This lets you subscribe to future data in a single request.
 
 When you read from a stream, the response includes a `Stream-Next-Offset` header telling you where to read next. Store this value and use it for your next request to resume where you left off.
 
@@ -123,6 +137,8 @@ To replay all existing data, start from offset `"-1"` (or omit the offset). The 
 
 `Stream-Up-To-Date` means you've consumed everything available *right now* but more data may be appended later. `Stream-Closed` means the stream is permanently finished.
 
+Servers may implement retention policies that drop data older than a certain threshold. If you request an offset that has been discarded, the server returns `410 Gone`. Handle this by resetting to offset `"-1"` or `"now"` depending on your application's needs.
+
 A typical read loop:
 
 ```
@@ -207,6 +223,23 @@ Content-Type: application/json
 < 201 Created
 ```
 
+Streams can optionally have a time-to-live or absolute expiry:
+
+```
+PUT /streams/my-stream
+Content-Type: application/json
+Stream-TTL: 3600
+
+< 201 Created
+```
+
+| Header | Purpose |
+|--------|---------|
+| `Stream-TTL` | Relative time-to-live in seconds from creation |
+| `Stream-Expires-At` | Absolute expiry time (RFC 3339 timestamp) |
+
+These are mutually exclusive -- provide one or neither, not both.
+
 **Append** data with POST.
 
 ```
@@ -216,6 +249,16 @@ Content-Type: application/json
 {"event": "started"}
 
 < 204 No Content
+< Stream-Next-Offset: 01JQXK5V00
+```
+
+**Check metadata** with HEAD. Returns stream information without transferring data -- useful for checking existence, the tail offset, TTL, and closure status.
+
+```
+HEAD /streams/my-stream
+
+< 200 OK
+< Content-Type: application/json
 < Stream-Next-Offset: 01JQXK5V00
 ```
 

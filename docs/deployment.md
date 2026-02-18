@@ -1,83 +1,20 @@
 # Deployment
 
-There are two ways to run Durable Streams in production: self-hosted with the Caddy plugin, or fully managed on Electric Cloud.
+This page covers production deployment of Durable Streams. For server installation and getting started, see [Servers](servers.md).
 
-For local development, see the [Dev Server](servers.md#dev-server-durable-streamsserver) or use the Caddy plugin's built-in [dev mode](#development-mode).
+There are two ways to run Durable Streams in production: self-hosted with the Caddy plugin, or fully managed on [Electric Cloud](https://electric-sql.com/cloud).
+
+- [Self-Hosted with Caddy](#self-hosted-with-caddy)
+- [Electric Cloud (Hosted)](#electric-cloud-hosted)
+- [CDN Integration](#cdn-integration)
 
 ## Self-Hosted with Caddy
 
-The Caddy plugin is a production-ready Durable Streams server built on [Caddy v2](https://caddyserver.com/). It provides the full protocol implementation with automatic TLS, persistent storage, and battle-tested HTTP serving.
-
-### Installation
-
-#### Install script (recommended)
-
-**macOS and Linux:**
-
-```bash
-curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
-```
-
-Install a specific version:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh -s v0.1.0
-```
-
-Install to a custom directory:
-
-```bash
-INSTALL_DIR=~/.local/bin curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
-```
-
-#### Pre-built binaries
-
-Download the latest release for your platform from [GitHub Releases](https://github.com/durable-streams/durable-streams/releases/latest). Binaries are available for macOS (Intel and Apple Silicon), Linux (AMD64 and ARM64), and Windows (AMD64).
-
-**macOS (Apple Silicon):**
-
-```bash
-curl -L https://github.com/durable-streams/durable-streams/releases/latest/download/durable-streams-server_<VERSION>_darwin_arm64.tar.gz | tar xz
-sudo mv durable-streams-server /usr/local/bin/
-```
-
-**macOS (Intel):**
-
-```bash
-curl -L https://github.com/durable-streams/durable-streams/releases/latest/download/durable-streams-server_<VERSION>_darwin_amd64.tar.gz | tar xz
-sudo mv durable-streams-server /usr/local/bin/
-```
-
-**Linux (x86_64):**
-
-```bash
-curl -L https://github.com/durable-streams/durable-streams/releases/latest/download/durable-streams-server_<VERSION>_linux_amd64.tar.gz | tar xz
-sudo mv durable-streams-server /usr/local/bin/
-```
-
-**Windows:** download the `.zip` file from releases and extract to your PATH.
-
-#### Build from source
-
-Requires Go:
-
-```bash
-go build -o durable-streams-server ./cmd/caddy
-```
-
-### Development Mode
-
-Run the server with zero configuration:
-
-```bash
-durable-streams-server dev
-```
-
-This starts an in-memory server at `http://localhost:4437` with the stream endpoint at `/v1/stream/*`. No Caddyfile required. Good for local development and testing.
+The [Caddy plugin](servers.md#caddy-plugin-production-server) is the recommended server for production. See the [Servers page](servers.md#caddy-plugin-production-server) for installation and quick start.
 
 ### Production Caddyfile
 
-Create a `Caddyfile` for production with persistent storage and your domain:
+For production, create a `Caddyfile` with persistent storage and your domain. Caddy automatically provisions and renews TLS certificates via Let's Encrypt:
 
 ```caddyfile
 {
@@ -92,8 +29,6 @@ streams.example.com {
 	}
 }
 ```
-
-Caddy automatically provisions and renews TLS certificates for your domain via Let's Encrypt. No additional TLS configuration is needed.
 
 To listen on a specific port without automatic TLS (e.g. behind a load balancer):
 
@@ -117,29 +52,18 @@ Start the server:
 durable-streams-server run --config Caddyfile
 ```
 
-### Storage Options
+### Configuration Reference
 
-**In-memory (default)** -- fast, ephemeral storage that resets on restart. Suitable for development and testing:
+All configuration directives for the `durable_streams` block:
 
-```caddyfile
-route /v1/stream/* {
-	durable_streams
-}
-```
+| Directive | Default | Description |
+|-----------|---------|-------------|
+| `data_dir` | _(none -- in-memory)_ | Path to persistent storage directory (LMDB) |
+| `long_poll_timeout` | `30s` | How long the server holds long-poll connections open |
+| `sse_reconnect_interval` | `60s` | How often SSE connections are closed for CDN collapsing |
+| `max_file_handles` | `100` | Maximum number of cached open file handles (file store only) |
 
-**File-backed (LMDB)** -- persistent storage for production. Data survives restarts:
-
-```caddyfile
-route /v1/stream/* {
-	durable_streams {
-		data_dir ./data
-	}
-}
-```
-
-### Timeouts
-
-Configure long-poll and SSE behavior:
+Example with all options:
 
 ```caddyfile
 route /v1/stream/* {
@@ -147,9 +71,48 @@ route /v1/stream/* {
 		data_dir ./data
 		long_poll_timeout 30s
 		sse_reconnect_interval 120s
+		max_file_handles 200
 	}
 }
 ```
+
+### Authentication
+
+The protocol leaves authentication out of scope -- use Caddy's native mechanisms. Here are common patterns:
+
+**Bearer token with forward auth** (recommended for production):
+
+```caddyfile
+api.example.com {
+	route /v1/stream/* {
+		forward_auth localhost:3001 {
+			uri /auth/verify
+			copy_headers Authorization
+		}
+		durable_streams {
+			data_dir ./data
+		}
+	}
+}
+```
+
+**Static API key** (simple, good for internal services):
+
+```caddyfile
+api.example.com {
+	@unauthorized {
+		not header Authorization "Bearer my-secret-key"
+	}
+	route /v1/stream/* {
+		respond @unauthorized 401
+		durable_streams {
+			data_dir ./data
+		}
+	}
+}
+```
+
+See Caddy's [authentication documentation](https://caddyserver.com/docs/caddyfile/directives/forward_auth) for more options including basic auth, JWT validation, and OAuth2 integration.
 
 ### Reverse Proxy
 
@@ -167,6 +130,47 @@ api.example.com {
 		reverse_proxy localhost:3000
 	}
 }
+```
+
+### Running as a Service
+
+**systemd:**
+
+```ini
+[Unit]
+Description=Durable Streams Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/durable-streams-server run --config /etc/durable-streams/Caddyfile
+Restart=always
+RestartSec=5
+User=durable-streams
+Group=durable-streams
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable durable-streams
+sudo systemctl start durable-streams
+```
+
+**Docker:**
+
+```dockerfile
+FROM debian:bookworm-slim
+COPY durable-streams-server /usr/local/bin/
+COPY Caddyfile /etc/durable-streams/Caddyfile
+VOLUME /data
+EXPOSE 4437
+CMD ["durable-streams-server", "run", "--config", "/etc/durable-streams/Caddyfile"]
+```
+
+```bash
+docker run -d -p 4437:4437 -v durable-streams-data:/data my-durable-streams
 ```
 
 ### Known Limitations
@@ -195,11 +199,13 @@ curl -X PUT \
 
 ### What You Get
 
-- **Sync CDN**: reads are served from the edge and don't hit origin
+- **Sync CDN**: all reads are served from the edge and don't hit origin
 - **Scale**: tested to 1M concurrent connections per stream
-- **Throughput**: 240K writes/second, 15-25 MB/sec sustained
+- **Throughput**: 240K writes/second for small messages, 15-25 MB/sec sustained
 - **Unlimited streams**: no cap on the number of streams per service
-- **Simple pricing**: reads are free, 5M writes/month included, pay as you scale beyond that
+- **Simple pricing**: reads are free, 5M writes/month included, then pay as you scale
+
+Electric Cloud also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
 
 ## CDN Integration
 
@@ -212,3 +218,7 @@ The Durable Streams protocol is designed for CDN-friendly fan-out. You don't nee
 **Conditional requests.** ETag support allows clients to make conditional requests, reducing unnecessary data transfer when content hasn't changed.
 
 This architecture means a single origin server can serve a large number of concurrent readers through CDN fan-out, with the CDN absorbing the connection and bandwidth costs of the read path.
+
+---
+
+See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Getting Started](getting-started.md)

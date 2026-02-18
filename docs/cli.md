@@ -69,7 +69,7 @@ durable-stream create logs --content-type text/plain
 durable-stream write <stream_id> [content] [options]
 ```
 
-Content can be provided as an argument or piped from stdin. If no argument is given and stdin is not a TTY, the CLI reads from stdin.
+Content can be provided as an argument or piped from stdin. If no argument is given and stdin is not a TTY, the CLI reads from stdin. Escape sequences (`\n`, `\t`, `\r`, `\\`) in content arguments are converted to their literal equivalents.
 
 **Options:**
 
@@ -77,7 +77,7 @@ Content can be provided as an argument or piped from stdin. If no argument is gi
 | ----------------------- | ---------------------------------------------------- | ---------------------------- |
 | `--content-type <type>` | Content type for the message | `application/octet-stream` |
 | `--json` | Shorthand for `--content-type application/json` | |
-| `--batch-json` | Treat input as a JSON array; store each element as a separate message | |
+| `--batch-json` | Treat input as a JSON array; store each element separately (implies `--json`) | |
 
 **Examples:**
 
@@ -106,7 +106,7 @@ When using `--batch-json`, top-level arrays are flattened into individual messag
 | `[{}, {}]` | 2 messages: `{}`, `{}` |
 | `[[{}, {}]]` | 1 message: `[{}, {}]` |
 
-This matches the protocol's batch semantics.
+This matches the protocol's batch semantics. Without `--batch-json`, JSON values are always stored as a single message, even if they are arrays.
 
 ### `read` -- Read and follow a stream
 
@@ -114,7 +114,9 @@ This matches the protocol's batch semantics.
 durable-stream read <stream_id>
 ```
 
-Reads all existing data from the stream and then follows it for live updates, writing output to stdout. The command runs until interrupted.
+Reads all existing data from the stream and then follows it for live updates, streaming raw bytes to stdout. The command runs until interrupted with Ctrl+C.
+
+For JSON streams, the output is concatenated JSON values -- pipe through `jq` for formatted output.
 
 **Example:**
 
@@ -124,6 +126,9 @@ durable-stream read my-stream
 
 # Pipe stream output to a file
 durable-stream read my-stream > output.txt
+
+# Pretty-print JSON stream output
+durable-stream read my-stream | jq .
 ```
 
 ### `delete` -- Delete a stream

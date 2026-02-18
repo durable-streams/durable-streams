@@ -1,226 +1,121 @@
 # Getting Started
 
-There are two ways to get started with Durable Streams: using curl to interact with the server directly, or using the TypeScript client library to build applications.
+This guide walks you through starting a server, creating your first stream with curl, and then using the TypeScript client library. By the end you'll have a working stream you can write to, read from, and tail in real time.
 
-## Path A: curl + server binary
+## Start a Server
 
-The fastest way to see Durable Streams in action. No code, just HTTP.
+You need a running server to work with. Pick whichever option suits you:
 
-### 1. Download and run the server
+**Option A: Caddy binary (no Node.js required)**
 
-Download the latest server binary for your platform from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest). Builds are available for:
-
-- macOS (Intel and ARM)
-- Linux (AMD64 and ARM64)
-- Windows (AMD64)
-
-Extract the archive and start the server in development mode:
+Download the latest binary for your platform from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest) (macOS, Linux, Windows) and run:
 
 ```bash
 ./durable-streams-server dev
 ```
 
-The server starts on `http://localhost:4437`.
-
-### 2. Create a stream
-
-```bash
-curl -X PUT http://localhost:4437/v1/stream/my-first-stream \
-  -H 'Content-Type: text/plain'
-```
-
-### 3. Append data
-
-```bash
-curl -X POST http://localhost:4437/v1/stream/my-first-stream \
-  -H 'Content-Type: text/plain' \
-  -d 'Hello, Durable Streams!'
-```
-
-### 4. Read the stream
-
-```bash
-curl http://localhost:4437/v1/stream/my-first-stream
-```
-
-The response body contains your data. The `Stream-Next-Offset` header tells you where to resume reading from.
-
-### 5. Watch it live
-
-In one terminal, start tailing the stream with SSE:
-
-```bash
-curl -N http://localhost:4437/v1/stream/my-first-stream?offset=-1&live=sse
-```
-
-In another terminal, append more data:
-
-```bash
-curl -X POST http://localhost:4437/v1/stream/my-first-stream \
-  -H 'Content-Type: text/plain' \
-  -d 'This appears in real time!'
-```
-
-The first terminal shows the new data as it arrives.
-
-For more on the raw HTTP protocol, see [Concepts](concepts.md). For the full command-line interface, see [CLI Reference](cli.md).
-
----
-
-## Path B: TypeScript client
-
-For building applications with the full client library.
-
-### 1. Install the server
-
-Use either the binary from Path A, or install the Node.js development server:
+**Option B: Node.js server**
 
 ```bash
 npm install @durable-streams/server
 ```
 
-Start the dev server:
+Create a file `server.mjs`:
 
-```typescript
+```javascript
 import { DurableStreamTestServer } from "@durable-streams/server"
 
 const server = new DurableStreamTestServer({ port: 4437 })
 await server.start()
 ```
 
-### 2. Install the client
+```bash
+node server.mjs
+```
+
+Either way, the server starts on `http://localhost:4437`.
+
+## Your First Stream
+
+With the server running, you can create, write to, and read from a stream using curl.
+
+**Create a stream:**
+
+```bash
+curl -X PUT http://localhost:4437/v1/stream/hello \
+  -H 'Content-Type: text/plain'
+```
+
+**Write some data:**
+
+```bash
+curl -X POST http://localhost:4437/v1/stream/hello \
+  -H 'Content-Type: text/plain' \
+  -d 'Hello, Durable Streams!'
+```
+
+**Read it back:**
+
+```bash
+curl http://localhost:4437/v1/stream/hello
+```
+
+The response body contains your data. The `Stream-Next-Offset` response header tells you where to resume reading from.
+
+**Watch it live.** In one terminal, start tailing the stream with SSE:
+
+```bash
+curl -N "http://localhost:4437/v1/stream/hello?offset=-1&live=sse"
+```
+
+In another terminal, write more data:
+
+```bash
+curl -X POST http://localhost:4437/v1/stream/hello \
+  -H 'Content-Type: text/plain' \
+  -d 'This appears in real time!'
+```
+
+The new data appears instantly in the first terminal. That's durable streaming -- ordered, resumable, and live.
+
+## Using the TypeScript Client
+
+Install the client library:
 
 ```bash
 npm install @durable-streams/client
 ```
 
-### 3. Read a stream with `stream()`
+### Writing
 
-The `stream()` function provides a fetch-like, read-only API for consuming streams:
-
-```typescript
-import { stream } from "@durable-streams/client"
-
-const res = await stream({
-  url: "http://localhost:4437/v1/stream/my-first-stream",
-  live: false,
-})
-
-const text = await res.text()
-console.log(text)
-```
-
-### 4. Create a stream and write data
-
-Use `DurableStream.create()` to create a stream, then `append()` to write:
+Create a JSON stream and append some messages:
 
 ```typescript
 import { DurableStream } from "@durable-streams/client"
 
 const handle = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/my-stream",
-  contentType: "text/plain",
-})
-
-await handle.append("Hello from the TypeScript client!")
-await handle.append("Another message.")
-```
-
-### 5. Exactly-once writes with `IdempotentProducer`
-
-For reliable, high-throughput writes with exactly-once semantics, use `IdempotentProducer`. It automatically batches and pipelines writes, and the server deduplicates using a `(producerId, epoch, seq)` tuple:
-
-```typescript
-import { DurableStream, IdempotentProducer } from "@durable-streams/client"
-
-const handle = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/events",
+  url: "http://localhost:4437/v1/stream/chat",
   contentType: "application/json",
 })
 
-const producer = new IdempotentProducer(handle, "my-producer", {
-  autoClaim: true,
-  onError: (err) => console.error("Batch failed:", err),
-})
-
-producer.append({ event: "user.created", userId: "123" })
-producer.append({ event: "user.updated", userId: "123" })
-
-await producer.flush()
-await producer.close()
+await handle.append({ user: "alice", text: "Hello!" })
+await handle.append({ user: "bob", text: "Hi there!" })
 ```
 
-### 6. Live tailing
+### Reading
 
-Subscribe to a stream for real-time updates. The client handles reconnection and catch-up automatically:
+Read back the messages with the `stream()` function:
 
 ```typescript
 import { stream } from "@durable-streams/client"
-
-const res = await stream<{ event: string }>({
-  url: "http://localhost:4437/v1/stream/events",
-  live: true,
-})
-
-res.subscribeJson(async (batch) => {
-  for (const item of batch.items) {
-    console.log("Received:", item)
-  }
-})
-```
-
-### 7. Resuming from a saved offset
-
-Every response includes an offset you can persist and use to resume later, picking up exactly where you left off:
-
-```typescript
-import { stream } from "@durable-streams/client"
-
-// First read -- save the offset
-const res = await stream({
-  url: "http://localhost:4437/v1/stream/my-stream",
-  live: false,
-})
-const text = await res.text()
-const savedOffset = res.offset
-
-// Later -- resume from saved offset
-const resumed = await stream({
-  url: "http://localhost:4437/v1/stream/my-stream",
-  offset: savedOffset,
-  live: false,
-})
-const newData = await resumed.text()
-console.log("New data since last read:", newData)
-```
-
-### 8. JSON mode
-
-Create a stream with `contentType: "application/json"` to get automatic message framing. Each `append()` stores one message, and reads return individual JSON items:
-
-```typescript
-import { DurableStream, stream } from "@durable-streams/client"
 
 interface ChatMessage {
   user: string
   text: string
-  timestamp: number
 }
 
-// Create a JSON stream
-const handle = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/chat",
-  contentType: "application/json",
-})
-
-// Append JSON objects
-await handle.append({ user: "alice", text: "Hello!", timestamp: Date.now() })
-await handle.append({ user: "bob", text: "Hi there!", timestamp: Date.now() })
-
-// Read and iterate typed messages
 const res = await stream<ChatMessage>({
   url: "http://localhost:4437/v1/stream/chat",
-  live: false,
 })
 
 for await (const message of res.jsonStream()) {
@@ -228,10 +123,26 @@ for await (const message of res.jsonStream()) {
 }
 ```
 
----
+### Live tailing
 
-## Next steps
+Subscribe to a stream for real-time updates. The client handles reconnection and catch-up automatically:
 
-- [Introduction](introduction.md) -- what Durable Streams is and why it exists
-- [Concepts](concepts.md) -- offsets, live modes, idempotent producers, and JSON mode
-- [CLI Reference](cli.md) -- the command-line tool for managing streams
+```typescript
+const res = await stream<ChatMessage>({
+  url: "http://localhost:4437/v1/stream/chat",
+  live: true,
+})
+
+res.subscribeJson(async (batch) => {
+  for (const item of batch.items) {
+    console.log(`${item.user}: ${item.text}`)
+  }
+})
+```
+
+## Next Steps
+
+- [Core Concepts](concepts.md) -- offsets, resumption, live modes, idempotent producers, and JSON mode
+- [CLI Reference](cli.md) -- command-line tool for working with streams
+- [Client Libraries](clients.md) -- official clients in 10 languages
+- [TypeScript Client README](../packages/client/README.md) -- full TypeScript client API reference
