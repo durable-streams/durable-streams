@@ -33,6 +33,126 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./handler": {
+      "import": {
+        "types": "./dist/handler.d.ts",
+        "default": "./dist/handler.js"
+      },
+      "require": {
+        "types": "./dist/handler.d.cts",
+        "default": "./dist/handler.cjs"
+      }
+    },
+    "./types": {
+      "import": {
+        "types": "./dist/types.d.ts",
+        "default": "./dist/types.js"
+      },
+      "require": {
+        "types": "./dist/types.d.cts",
+        "default": "./dist/types.cjs"
+      }
+    },
+    "./errors": {
+      "import": {
+        "types": "./dist/errors.d.ts",
+        "default": "./dist/errors.js"
+      },
+      "require": {
+        "types": "./dist/errors.d.cts",
+        "default": "./dist/errors.cjs"
+      }
+    },
+    "./constants": {
+      "import": {
+        "types": "./dist/constants.d.ts",
+        "default": "./dist/constants.js"
+      },
+      "require": {
+        "types": "./dist/constants.d.cts",
+        "default": "./dist/constants.cjs"
+      }
+    },
+    "./offsets": {
+      "import": {
+        "types": "./dist/offsets.d.ts",
+        "default": "./dist/offsets.js"
+      },
+      "require": {
+        "types": "./dist/offsets.d.cts",
+        "default": "./dist/offsets.cjs"
+      }
+    },
+    "./cursor": {
+      "import": {
+        "types": "./dist/cursor.d.ts",
+        "default": "./dist/cursor.js"
+      },
+      "require": {
+        "types": "./dist/cursor.d.cts",
+        "default": "./dist/cursor.cjs"
+      }
+    },
+    "./protocol": {
+      "import": {
+        "types": "./dist/protocol.d.ts",
+        "default": "./dist/protocol.js"
+      },
+      "require": {
+        "types": "./dist/protocol.d.cts",
+        "default": "./dist/protocol.cjs"
+      }
+    },
+    "./path": {
+      "import": {
+        "types": "./dist/path.d.ts",
+        "default": "./dist/path.js"
+      },
+      "require": {
+        "types": "./dist/path.d.cts",
+        "default": "./dist/path.cjs"
+      }
+    },
+    "./registry": {
+      "import": {
+        "types": "./dist/registry-hook.d.ts",
+        "default": "./dist/registry-hook.js"
+      },
+      "require": {
+        "types": "./dist/registry-hook.d.cts",
+        "default": "./dist/registry-hook.cjs"
+      }
+    },
+    "./storage/memory": {
+      "import": {
+        "types": "./dist/storage/memory.d.ts",
+        "default": "./dist/storage/memory.js"
+      },
+      "require": {
+        "types": "./dist/storage/memory.d.cts",
+        "default": "./dist/storage/memory.cjs"
+      }
+    },
+    "./storage/file": {
+      "import": {
+        "types": "./dist/file-store.d.ts",
+        "default": "./dist/file-store.js"
+      },
+      "require": {
+        "types": "./dist/file-store.d.cts",
+        "default": "./dist/file-store.cjs"
+      }
+    },
+    "./node/server": {
+      "import": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      },
+      "require": {
+        "types": "./dist/server.d.cts",
+        "default": "./dist/server.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
