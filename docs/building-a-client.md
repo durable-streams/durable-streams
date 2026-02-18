@@ -44,13 +44,13 @@ Always store and forward the `Stream-Next-Offset` header value exactly as receiv
 
 The protocol defines which HTTP status codes are retryable. Your client should classify errors so callers don't need to interpret status codes:
 
-| Retryable | Non-retryable |
-|-----------|---------------|
-| `500 Internal Server Error` | `400 Bad Request` |
-| `503 Service Unavailable` | `404 Not Found` |
-| `429 Too Many Requests` | `409 Conflict` |
-| | `403 Forbidden` |
-| | `413 Payload Too Large` |
+| Retryable                   | Non-retryable           |
+| --------------------------- | ----------------------- |
+| `500 Internal Server Error` | `400 Bad Request`       |
+| `503 Service Unavailable`   | `404 Not Found`         |
+| `429 Too Many Requests`     | `409 Conflict`          |
+|                             | `403 Forbidden`         |
+|                             | `413 Payload Too Large` |
 
 For `429`, respect the `Retry-After` header. For all retryable errors, use exponential backoff with jitter.
 
@@ -127,35 +127,35 @@ Create an executable that reads JSON commands from stdin and writes JSON results
 
 **Core commands:**
 
-| Command | Description |
-| ------- | ----------- |
-| `init` | Receive server URL, report client name, version, and supported features |
-| `create` | Create a stream (`PUT`) |
-| `append` | Append data to a stream (`POST`) |
-| `read` | Read from a stream -- catch-up, long-poll, or SSE (`GET`) |
-| `head` | Get stream metadata (`HEAD`) |
-| `close` | Close a stream |
-| `delete` | Delete a stream (`DELETE`) |
-| `shutdown` | Clean up and exit |
+| Command    | Description                                                             |
+| ---------- | ----------------------------------------------------------------------- |
+| `init`     | Receive server URL, report client name, version, and supported features |
+| `create`   | Create a stream (`PUT`)                                                 |
+| `append`   | Append data to a stream (`POST`)                                        |
+| `read`     | Read from a stream -- catch-up, long-poll, or SSE (`GET`)               |
+| `head`     | Get stream metadata (`HEAD`)                                            |
+| `close`    | Close a stream                                                          |
+| `delete`   | Delete a stream (`DELETE`)                                              |
+| `shutdown` | Clean up and exit                                                       |
 
 **Idempotent producer commands** (if your client supports them):
 
-| Command | Description |
-| ------- | ----------- |
-| `connect` | Connect to an existing stream (for producer setup) |
-| `idempotent-append` | Append via `IdempotentProducer` with automatic sequence tracking |
-| `idempotent-append-batch` | Batch append via `IdempotentProducer` |
-| `idempotent-close` | Close a stream via `IdempotentProducer` (with producer headers) |
-| `idempotent-detach` | Detach producer without closing stream |
+| Command                   | Description                                                      |
+| ------------------------- | ---------------------------------------------------------------- |
+| `connect`                 | Connect to an existing stream (for producer setup)               |
+| `idempotent-append`       | Append via `IdempotentProducer` with automatic sequence tracking |
+| `idempotent-append-batch` | Batch append via `IdempotentProducer`                            |
+| `idempotent-close`        | Close a stream via `IdempotentProducer` (with producer headers)  |
+| `idempotent-detach`       | Detach producer without closing stream                           |
 
 **Optional commands** (feature-gated):
 
-| Command | Description |
-| ------- | ----------- |
+| Command              | Description                                                  |
+| -------------------- | ------------------------------------------------------------ |
 | `set-dynamic-header` | Configure per-request header evaluation (e.g., OAuth tokens) |
-| `set-dynamic-param` | Configure per-request URL parameter evaluation |
-| `clear-dynamic` | Clear dynamic headers/params |
-| `validate` | Test client-side input validation |
+| `set-dynamic-param`  | Configure per-request URL parameter evaluation               |
+| `clear-dynamic`      | Clear dynamic headers/params                                 |
+| `validate`           | Test client-side input validation                            |
 
 ### Feature Reporting
 
@@ -178,61 +178,81 @@ The `init` response tells the runner which features your client supports. Tests 
 }
 ```
 
-| Feature | Description |
-| ------- | ----------- |
-| `batching` | Client supports automatic batching of appends |
-| `sse` | Client supports SSE live mode |
-| `longPoll` | Client supports long-poll live mode |
-| `auto` | Client supports auto mode (catch-up then auto-select live mode) |
-| `streaming` | Client supports streaming reads |
-| `dynamicHeaders` | Client supports per-request header/param functions |
+| Feature          | Description                                                     |
+| ---------------- | --------------------------------------------------------------- |
+| `batching`       | Client supports automatic batching of appends                   |
+| `sse`            | Client supports SSE live mode                                   |
+| `longPoll`       | Client supports long-poll live mode                             |
+| `auto`           | Client supports auto mode (catch-up then auto-select live mode) |
+| `streaming`      | Client supports streaming reads                                 |
+| `dynamicHeaders` | Client supports per-request header/param functions              |
 
 ### Command and Result Examples
 
 **Append:**
 
 ```json
-{"type":"append","path":"/my-stream","data":"Hello, World!"}
+{ "type": "append", "path": "/my-stream", "data": "Hello, World!" }
 ```
 
 ```json
-{"type":"append","success":true,"status":200,"offset":"13"}
+{ "type": "append", "success": true, "status": 200, "offset": "13" }
 ```
 
 **Read:**
 
 ```json
-{"type":"read","path":"/my-stream","offset":"0","live":"long-poll","timeoutMs":5000}
+{
+  "type": "read",
+  "path": "/my-stream",
+  "offset": "0",
+  "live": "long-poll",
+  "timeoutMs": 5000
+}
 ```
 
 ```json
-{"type":"read","success":true,"status":200,"chunks":[{"data":"Hello, World!","offset":"13"}],"offset":"13","upToDate":true}
+{
+  "type": "read",
+  "success": true,
+  "status": 200,
+  "chunks": [{ "data": "Hello, World!", "offset": "13" }],
+  "offset": "13",
+  "upToDate": true
+}
 ```
 
 **Error:**
 
 ```json
-{"type":"error","success":false,"commandType":"append","status":404,"errorCode":"NOT_FOUND","message":"Stream not found"}
+{
+  "type": "error",
+  "success": false,
+  "commandType": "append",
+  "status": 404,
+  "errorCode": "NOT_FOUND",
+  "message": "Stream not found"
+}
 ```
 
 ### Error Codes
 
 Map your client's errors to these standard codes in error results:
 
-| Code | Meaning |
-| ---- | ------- |
-| `NETWORK_ERROR` | Network connection failed |
-| `TIMEOUT` | Operation timed out |
-| `CONFLICT` | Stream already exists (409) |
-| `NOT_FOUND` | Stream not found (404) |
-| `SEQUENCE_CONFLICT` | Sequence number conflict (409) |
-| `STREAM_CLOSED` | Stream is closed (409) |
-| `INVALID_OFFSET` | Invalid offset format (400) |
-| `INVALID_ARGUMENT` | Invalid argument passed to client API |
-| `UNEXPECTED_STATUS` | Unexpected HTTP status |
-| `PARSE_ERROR` | Failed to parse response |
-| `INTERNAL_ERROR` | Client internal error |
-| `NOT_SUPPORTED` | Operation not supported |
+| Code                | Meaning                               |
+| ------------------- | ------------------------------------- |
+| `NETWORK_ERROR`     | Network connection failed             |
+| `TIMEOUT`           | Operation timed out                   |
+| `CONFLICT`          | Stream already exists (409)           |
+| `NOT_FOUND`         | Stream not found (404)                |
+| `SEQUENCE_CONFLICT` | Sequence number conflict (409)        |
+| `STREAM_CLOSED`     | Stream is closed (409)                |
+| `INVALID_OFFSET`    | Invalid offset format (400)           |
+| `INVALID_ARGUMENT`  | Invalid argument passed to client API |
+| `UNEXPECTED_STATUS` | Unexpected HTTP status                |
+| `PARSE_ERROR`       | Failed to parse response              |
+| `INTERNAL_ERROR`    | Client internal error                 |
+| `NOT_SUPPORTED`     | Operation not supported               |
 
 ### Running Tests
 

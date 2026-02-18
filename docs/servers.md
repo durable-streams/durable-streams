@@ -10,10 +10,10 @@ If you want to build your own server implementation, see [Building a Server](bui
 
 ## At a Glance
 
-| Server | Language | Best for |
-|--------|----------|----------|
+| Server                                 | Language             | Best for                          |
+| -------------------------------------- | -------------------- | --------------------------------- |
 | Dev Server (`@durable-streams/server`) | Node.js / TypeScript | Development, testing, prototyping |
-| Caddy Plugin | Go | Production deployments |
+| Caddy Plugin                           | Go                   | Production deployments            |
 
 ## Dev Server (`@durable-streams/server`)
 
@@ -58,22 +58,22 @@ const server = new DurableStreamTestServer({
 
 ### Configuration
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `port` | `number` | `4437` | Port to listen on |
-| `host` | `string` | `"127.0.0.1"` | Host to bind to |
-| `dataDir` | `string` | — | Data directory for file-backed storage; omit for in-memory |
-| `longPollTimeout` | `number` | `30000` | Long-poll timeout in milliseconds |
-| `onStreamCreated` | `StreamLifecycleHook` | — | Hook called when a stream is created |
-| `onStreamDeleted` | `StreamLifecycleHook` | — | Hook called when a stream is deleted |
-| `compression` | `boolean` | `true` | Enable gzip/deflate compression |
-| `cursorIntervalSeconds` | `number` | `20` | Cursor interval for CDN cache collapsing |
+| Option                  | Type                  | Default       | Description                                                |
+| ----------------------- | --------------------- | ------------- | ---------------------------------------------------------- |
+| `port`                  | `number`              | `4437`        | Port to listen on                                          |
+| `host`                  | `string`              | `"127.0.0.1"` | Host to bind to                                            |
+| `dataDir`               | `string`              | —             | Data directory for file-backed storage; omit for in-memory |
+| `longPollTimeout`       | `number`              | `30000`       | Long-poll timeout in milliseconds                          |
+| `onStreamCreated`       | `StreamLifecycleHook` | —             | Hook called when a stream is created                       |
+| `onStreamDeleted`       | `StreamLifecycleHook` | —             | Hook called when a stream is deleted                       |
+| `compression`           | `boolean`             | `true`        | Enable gzip/deflate compression                            |
+| `cursorIntervalSeconds` | `number`              | `20`          | Cursor interval for CDN cache collapsing                   |
 
 ### Lifecycle Hooks
 
 Track stream creation and deletion events:
 
-```typescript
+````typescript
 const server = new DurableStreamTestServer({
   port: 4437,
   onStreamCreated: (event) => {
@@ -102,7 +102,7 @@ Install using the quick-install script:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
-```
+````
 
 Or download a pre-built binary for your platform from [GitHub Releases](https://github.com/durable-streams/durable-streams/releases).
 

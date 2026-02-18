@@ -16,18 +16,18 @@ All client libraries share the same core capabilities:
 
 ## Summary
 
-| Language | Package | Install | Maturity |
-|----------|---------|---------|----------|
-| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client` | Production-Proven |
-| [Python](#python) | `durable-streams` | `pip install durable-streams` | Expert-Reviewed |
-| [Go](#go) | `durablestreams` | `go get github.com/durable-streams/durable-streams/packages/client-go` | Expert-Reviewed |
-| [Elixir](#elixir) | `durable_streams` | `{:durable_streams, "~> 0.1.0"}` in `mix.exs` | Vibe-Engineered |
-| [C# / .NET](#c--net) | `DurableStreams` | `dotnet add package DurableStreams` | Vibe-Engineered |
-| [Swift](#swift) | `DurableStreams` | Swift Package Manager | Vibe-Engineered |
-| [PHP](#php) | `durable-streams/client` | `composer require durable-streams/client` | Vibe-Engineered |
-| [Java](#java) | `durable-streams` | Maven / Gradle | Vibe-Engineered |
-| [Rust](#rust) | `durable-streams` | `cargo add durable-streams` | Vibe-Engineered |
-| [Ruby](#ruby) | `durable_streams` | `gem install durable_streams` | Vibe-Engineered |
+| Language                  | Package                   | Install                                                                | Maturity          |
+| ------------------------- | ------------------------- | ---------------------------------------------------------------------- | ----------------- |
+| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client`                                  | Production-Proven |
+| [Python](#python)         | `durable-streams`         | `pip install durable-streams`                                          | Expert-Reviewed   |
+| [Go](#go)                 | `durablestreams`          | `go get github.com/durable-streams/durable-streams/packages/client-go` | Expert-Reviewed   |
+| [Elixir](#elixir)         | `durable_streams`         | `{:durable_streams, "~> 0.1.0"}` in `mix.exs`                          | Vibe-Engineered   |
+| [C# / .NET](#c--net)      | `DurableStreams`          | `dotnet add package DurableStreams`                                    | Vibe-Engineered   |
+| [Swift](#swift)           | `DurableStreams`          | Swift Package Manager                                                  | Vibe-Engineered   |
+| [PHP](#php)               | `durable-streams/client`  | `composer require durable-streams/client`                              | Vibe-Engineered   |
+| [Java](#java)             | `durable-streams`         | Maven / Gradle                                                         | Vibe-Engineered   |
+| [Rust](#rust)             | `durable-streams`         | `cargo add durable-streams`                                            | Vibe-Engineered   |
+| [Ruby](#ruby)             | `durable_streams`         | `gem install durable_streams`                                          | Vibe-Engineered   |
 
 ## Maturity Levels
 

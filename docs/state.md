@@ -61,15 +61,15 @@ The State Protocol defines a standard format for state change events. Each event
 
 **Fields:**
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | Yes | Entity type discriminator -- routes events to the correct collection |
-| `key` | Yes | Unique identifier for the entity within its type |
-| `value` | For insert/update | The entity data |
-| `old_value` | No | Previous value, useful for conflict detection |
-| `headers.operation` | Yes | One of `"insert"`, `"update"`, or `"delete"` |
-| `headers.txid` | No | Transaction identifier for confirmation |
-| `headers.timestamp` | No | RFC 3339 timestamp |
+| Field               | Required          | Description                                                          |
+| ------------------- | ----------------- | -------------------------------------------------------------------- |
+| `type`              | Yes               | Entity type discriminator -- routes events to the correct collection |
+| `key`               | Yes               | Unique identifier for the entity within its type                     |
+| `value`             | For insert/update | The entity data                                                      |
+| `old_value`         | No                | Previous value, useful for conflict detection                        |
+| `headers.operation` | Yes               | One of `"insert"`, `"update"`, or `"delete"`                         |
+| `headers.txid`      | No                | Transaction identifier for confirmation                              |
+| `headers.timestamp` | No                | RFC 3339 timestamp                                                   |
 
 Multiple entity types coexist in the same stream. A chat room stream might carry `user`, `message`, `reaction`, and `typing` events, all interleaved and processed in order.
 
@@ -77,11 +77,11 @@ Multiple entity types coexist in the same stream. A chat room stream might carry
 
 The protocol also defines control events for stream management, separate from data changes. These have a `control` field in their headers instead of an `operation`:
 
-| Control | Purpose |
-|---------|---------|
+| Control          | Purpose                                                               |
+| ---------------- | --------------------------------------------------------------------- |
 | `snapshot-start` | Marks the beginning of a snapshot -- a complete dump of current state |
-| `snapshot-end` | Marks the end of a snapshot boundary |
-| `reset` | Signals clients to clear their materialized state and restart |
+| `snapshot-end`   | Marks the end of a snapshot boundary                                  |
+| `reset`          | Signals clients to clear their materialized state and restart         |
 
 ```json
 {"headers": {"control": "snapshot-start", "offset": "123456_000"}}
@@ -117,8 +117,8 @@ state.apply({
   headers: { operation: "update" },
 })
 
-const user = state.get("user", "1")       // { name: "Alice Smith" }
-const allUsers = state.getType("user")     // Map of all users
+const user = state.get("user", "1") // { name: "Alice Smith" }
+const allUsers = state.getType("user") // Map of all users
 ```
 
 `MaterializedState` is a good fit when you need straightforward state tracking without reactive queries or schema validation.
@@ -178,7 +178,9 @@ const userSchema = v.object({
 The schema also provides typed event creation helpers:
 
 ```typescript
-schema.users.insert({ value: { id: "1", name: "Alice", email: "alice@example.com" } })
+schema.users.insert({
+  value: { id: "1", name: "Alice", email: "alice@example.com" },
+})
 schema.users.update({ value: updatedUser, oldValue: previousUser })
 schema.users.delete({ key: "1" })
 ```
@@ -210,9 +212,7 @@ import { useLiveQuery } from "@tanstack/react-db"
 import { eq, gt, and, count } from "@tanstack/db"
 
 // All users
-const allUsers = useLiveQuery((q) =>
-  q.from({ users: db.collections.users })
-)
+const allUsers = useLiveQuery((q) => q.from({ users: db.collections.users }))
 
 // Filter
 const activeUsers = useLiveQuery((q) =>
@@ -250,8 +250,8 @@ Framework adapters are available for [React](https://tanstack.com/db/latest/docs
 ### Lifecycle
 
 ```typescript
-await db.preload()                          // Load all data until up-to-date
-db.close()                                  // Stop syncing and cleanup
+await db.preload() // Load all data until up-to-date
+db.close() // Stop syncing and cleanup
 await db.utils.awaitTxId("txid-uuid", 5000) // Wait for a transaction confirmation
 ```
 
@@ -378,9 +378,7 @@ useEffect(() => {
 
 ```typescript
 const txid = crypto.randomUUID()
-await stream.append(
-  schema.users.insert({ value: user, headers: { txid } })
-)
+await stream.append(schema.users.insert({ value: user, headers: { txid } }))
 await db.utils.awaitTxId(txid, 10000) // Wait up to 10 seconds
 ```
 

@@ -56,12 +56,12 @@ durable-streams-server run --config Caddyfile
 
 All configuration directives for the `durable_streams` block:
 
-| Directive | Default | Description |
-|-----------|---------|-------------|
-| `data_dir` | _(none -- in-memory)_ | Path to persistent storage directory (LMDB) |
-| `long_poll_timeout` | `30s` | How long the server holds long-poll connections open |
-| `sse_reconnect_interval` | `60s` | How often SSE connections are closed for CDN collapsing |
-| `max_file_handles` | `100` | Maximum number of cached open file handles (file store only) |
+| Directive                | Default               | Description                                                  |
+| ------------------------ | --------------------- | ------------------------------------------------------------ |
+| `data_dir`               | _(none -- in-memory)_ | Path to persistent storage directory (LMDB)                  |
+| `long_poll_timeout`      | `30s`                 | How long the server holds long-poll connections open         |
+| `sse_reconnect_interval` | `60s`                 | How often SSE connections are closed for CDN collapsing      |
+| `max_file_handles`       | `100`                 | Maximum number of cached open file handles (file store only) |
 
 Example with all options:
 

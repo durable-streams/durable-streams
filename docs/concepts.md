@@ -37,9 +37,9 @@ Every position in a stream is identified by an **offset** -- an opaque string to
 
 The protocol defines two sentinel values:
 
-| Value  | Meaning |
-|--------|---------|
-| `"-1"` | Beginning of the stream (equivalent to omitting the offset) |
+| Value   | Meaning                                                                    |
+| ------- | -------------------------------------------------------------------------- |
+| `"-1"`  | Beginning of the stream (equivalent to omitting the offset)                |
 | `"now"` | Current tail position -- skip all existing data and read only new messages |
 
 The behavior of `offset=now` varies by read mode: catch-up returns an empty response with the current tail offset, long-poll skips the empty response and starts waiting for new data immediately, and SSE begins streaming from the tail. This lets you subscribe to future data in a single request.
@@ -94,11 +94,11 @@ Any HTTP client can append data to a stream with a POST request.
 
 For exactly-once write semantics, a producer can identify itself using three headers:
 
-| Header | Purpose |
-|--------|---------|
-| `Producer-Id` | Stable identifier for the producer (e.g., `"order-service-1"`) |
-| `Producer-Epoch` | Incremented on producer restart to establish a new session |
-| `Producer-Seq` | Monotonically increasing sequence number within an epoch, per request |
+| Header           | Purpose                                                               |
+| ---------------- | --------------------------------------------------------------------- |
+| `Producer-Id`    | Stable identifier for the producer (e.g., `"order-service-1"`)        |
+| `Producer-Epoch` | Incremented on producer restart to establish a new session            |
+| `Producer-Seq`   | Monotonically increasing sequence number within an epoch, per request |
 
 All three headers must be provided together or not at all.
 
@@ -129,13 +129,13 @@ Read data from a stream with a GET request, passing the offset to start from.
 
 To replay all existing data, start from offset `"-1"` (or omit the offset). The server returns available data along with headers that tell you what to do next:
 
-| Header | Meaning |
-|--------|---------|
-| `Stream-Next-Offset` | Use this offset in your next GET request |
-| `Stream-Up-To-Date: true` | You've caught up with all currently available data |
-| `Stream-Closed: true` | The stream is closed -- no more data will ever arrive (EOF) |
+| Header                    | Meaning                                                     |
+| ------------------------- | ----------------------------------------------------------- |
+| `Stream-Next-Offset`      | Use this offset in your next GET request                    |
+| `Stream-Up-To-Date: true` | You've caught up with all currently available data          |
+| `Stream-Closed: true`     | The stream is closed -- no more data will ever arrive (EOF) |
 
-`Stream-Up-To-Date` means you've consumed everything available *right now* but more data may be appended later. `Stream-Closed` means the stream is permanently finished.
+`Stream-Up-To-Date` means you've consumed everything available _right now_ but more data may be appended later. `Stream-Closed` means the stream is permanently finished.
 
 Servers may implement retention policies that drop data older than a certain threshold. If you request an offset that has been discarded, the server returns `410 Gone`. Handle this by resetting to offset `"-1"` or `"now"` depending on your application's needs.
 
@@ -233,10 +233,10 @@ Stream-TTL: 3600
 < 201 Created
 ```
 
-| Header | Purpose |
-|--------|---------|
-| `Stream-TTL` | Relative time-to-live in seconds from creation |
-| `Stream-Expires-At` | Absolute expiry time (RFC 3339 timestamp) |
+| Header              | Purpose                                        |
+| ------------------- | ---------------------------------------------- |
+| `Stream-TTL`        | Relative time-to-live in seconds from creation |
+| `Stream-Expires-At` | Absolute expiry time (RFC 3339 timestamp)      |
 
 These are mutually exclusive -- provide one or neither, not both.
 

@@ -69,7 +69,7 @@ const server = new DurableStreamTestServer({
 
 ### DurableStreamTestServer
 
-```typescript
+````typescript
 interface TestServerOptions {
   port?: number                          // Default: 4437
   host?: string                          // Default: "127.0.0.1"
@@ -114,7 +114,7 @@ export type {
   StreamLifecycleEvent,
   StreamLifecycleHook,
 } from "./types"
-```
+````
 
 ## Testing Your Implementation
 

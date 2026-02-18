@@ -50,9 +50,27 @@ Each metric reports min, max, mean, p50, p75, and p99 values. The JSON output in
   "baseUrl": "http://localhost:4437",
   "timestamp": "2026-02-18T10:30:00Z",
   "results": {
-    "Baseline Ping": { "min": 0.5, "max": 1.2, "mean": 0.7, "p50": 0.6, "unit": "ms" },
-    "Latency - Total RTT": { "min": 2.1, "max": 5.3, "mean": 3.2, "p50": 3.0, "unit": "ms" },
-    "Throughput - Small Messages": { "min": 450, "max": 620, "mean": 530, "p50": 520, "unit": "msg/sec" }
+    "Baseline Ping": {
+      "min": 0.5,
+      "max": 1.2,
+      "mean": 0.7,
+      "p50": 0.6,
+      "unit": "ms"
+    },
+    "Latency - Total RTT": {
+      "min": 2.1,
+      "max": 5.3,
+      "mean": 3.2,
+      "p50": 3.0,
+      "unit": "ms"
+    },
+    "Throughput - Small Messages": {
+      "min": 450,
+      "max": 620,
+      "mean": 530,
+      "p50": 520,
+      "unit": "msg/sec"
+    }
   }
 }
 ```

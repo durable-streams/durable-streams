@@ -120,55 +120,55 @@ See the [Getting Started guide](docs/getting-started.md) for a full walkthrough.
 
 ## Documentation
 
-| Guide | Description |
-|-------|-------------|
-| [Introduction](docs/introduction.md) | What Durable Streams is and why it exists |
-| [Getting Started](docs/getting-started.md) | Set up a server and start streaming |
-| [Core Concepts](docs/concepts.md) | Offsets, live modes, JSON mode, idempotent producers |
-| [Use Cases](docs/use-cases.md) | AI streaming, database sync, event sourcing, and more |
-| [Client Libraries](docs/clients.md) | All 10 official client libraries |
-| [Servers](docs/servers.md) | Dev server and Caddy plugin |
-| [CLI Reference](docs/cli.md) | Command-line tool for stream management |
-| [Deployment](docs/deployment.md) | Production deployment with Caddy or Electric Cloud |
-| [State Protocol](docs/state.md) | Structured state sync (insert/update/delete) over streams |
-| [Building a Client](docs/building-a-client.md) | Implement a client and run conformance tests |
-| [Building a Server](docs/building-a-server.md) | Implement a server and run conformance tests |
-| [Benchmarking](docs/benchmarking.md) | Measure server latency and throughput |
-| [Protocol Specification](PROTOCOL.md) | Full protocol spec |
+| Guide                                          | Description                                               |
+| ---------------------------------------------- | --------------------------------------------------------- |
+| [Introduction](docs/introduction.md)           | What Durable Streams is and why it exists                 |
+| [Getting Started](docs/getting-started.md)     | Set up a server and start streaming                       |
+| [Core Concepts](docs/concepts.md)              | Offsets, live modes, JSON mode, idempotent producers      |
+| [Use Cases](docs/use-cases.md)                 | AI streaming, database sync, event sourcing, and more     |
+| [Client Libraries](docs/clients.md)            | All 10 official client libraries                          |
+| [Servers](docs/servers.md)                     | Dev server and Caddy plugin                               |
+| [CLI Reference](docs/cli.md)                   | Command-line tool for stream management                   |
+| [Deployment](docs/deployment.md)               | Production deployment with Caddy or Electric Cloud        |
+| [State Protocol](docs/state.md)                | Structured state sync (insert/update/delete) over streams |
+| [Building a Client](docs/building-a-client.md) | Implement a client and run conformance tests              |
+| [Building a Server](docs/building-a-server.md) | Implement a server and run conformance tests              |
+| [Benchmarking](docs/benchmarking.md)           | Measure server latency and throughput                     |
+| [Protocol Specification](PROTOCOL.md)          | Full protocol spec                                        |
 
 ## Packages
 
 ### Client Libraries
 
-| Package | Language | Description |
-| ------- | -------- | ----------- |
+| Package                                      | Language   | Description                                   |
+| -------------------------------------------- | ---------- | --------------------------------------------- |
 | [@durable-streams/client](./packages/client) | TypeScript | Reference client with full read/write support |
-| [client-py](./packages/client-py) | Python | Python client library |
-| [client-go](./packages/client-go) | Go | Go client library |
-| [client-elixir](./packages/client-elixir) | Elixir | Elixir client library |
-| [client-dotnet](./packages/client-dotnet) | C#/.NET | .NET client library |
-| [client-swift](./packages/client-swift) | Swift | Swift client library |
-| [client-php](./packages/client-php) | PHP | PHP client library |
-| [client-java](./packages/client-java) | Java | Java client library |
-| [client-rust](./packages/client-rust) | Rust | Rust client library |
-| [client-rb](./packages/client-rb) | Ruby | Ruby client library |
+| [client-py](./packages/client-py)            | Python     | Python client library                         |
+| [client-go](./packages/client-go)            | Go         | Go client library                             |
+| [client-elixir](./packages/client-elixir)    | Elixir     | Elixir client library                         |
+| [client-dotnet](./packages/client-dotnet)    | C#/.NET    | .NET client library                           |
+| [client-swift](./packages/client-swift)      | Swift      | Swift client library                          |
+| [client-php](./packages/client-php)          | PHP        | PHP client library                            |
+| [client-java](./packages/client-java)        | Java       | Java client library                           |
+| [client-rust](./packages/client-rust)        | Rust       | Rust client library                           |
+| [client-rb](./packages/client-rb)            | Ruby       | Ruby client library                           |
 
 ### Servers & Tools
 
-| Package | Description |
-| ------- | ----------- |
-| [@durable-streams/server](./packages/server) | Node.js reference server (development/testing) |
-| [caddy-plugin](./packages/caddy-plugin) | Production Caddy server plugin |
-| [@durable-streams/cli](./packages/cli) | Command-line tool |
-| [@durable-streams/state](./packages/state) | State Protocol (insert/update/delete over streams) |
+| Package                                      | Description                                        |
+| -------------------------------------------- | -------------------------------------------------- |
+| [@durable-streams/server](./packages/server) | Node.js reference server (development/testing)     |
+| [caddy-plugin](./packages/caddy-plugin)      | Production Caddy server plugin                     |
+| [@durable-streams/cli](./packages/cli)       | Command-line tool                                  |
+| [@durable-streams/state](./packages/state)   | State Protocol (insert/update/delete over streams) |
 
 ### Testing & Benchmarks
 
-| Package | Description |
-| ------- | ----------- |
+| Package                                                                          | Description                      |
+| -------------------------------------------------------------------------------- | -------------------------------- |
 | [@durable-streams/server-conformance-tests](./packages/server-conformance-tests) | Server protocol compliance tests |
 | [@durable-streams/client-conformance-tests](./packages/client-conformance-tests) | Client protocol compliance tests |
-| [@durable-streams/benchmarks](./packages/benchmarks) | Performance benchmarking suite |
+| [@durable-streams/benchmarks](./packages/benchmarks)                             | Performance benchmarking suite   |
 
 ### Community Implementations
 

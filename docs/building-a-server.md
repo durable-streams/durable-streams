@@ -15,13 +15,13 @@ The [Protocol Specification](../PROTOCOL.md) is the authoritative reference for 
 
 A conforming server handles these HTTP methods:
 
-| Method | Purpose |
-|--------|---------|
-| `PUT` | Create stream (idempotent) |
-| `POST` | Append to stream, close stream |
-| `GET` | Read -- catch-up, long-poll (`live=long-poll`), SSE (`live=sse`) |
-| `HEAD` | Stream metadata |
-| `DELETE` | Delete stream |
+| Method   | Purpose                                                          |
+| -------- | ---------------------------------------------------------------- |
+| `PUT`    | Create stream (idempotent)                                       |
+| `POST`   | Append to stream, close stream                                   |
+| `GET`    | Read -- catch-up, long-poll (`live=long-poll`), SSE (`live=sse`) |
+| `HEAD`   | Stream metadata                                                  |
+| `DELETE` | Delete stream                                                    |
 
 Servers may implement the read and write paths independently. For example, a database sync server might only implement reads and use its own injection system for writes.
 

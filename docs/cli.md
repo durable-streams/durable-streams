@@ -20,20 +20,20 @@ Once installed globally, the CLI is available as `durable-stream`.
 
 ## Environment Variables
 
-| Variable | Description | Default |
-| ------------- | -------------------------------------------------- | ------------------------------------ |
-| `STREAM_URL` | Base URL of the stream server | `http://localhost:4437/v1/stream` |
-| `STREAM_AUTH` | Authorization header value (e.g., `Bearer my-token`) | _(none)_ |
+| Variable      | Description                                          | Default                           |
+| ------------- | ---------------------------------------------------- | --------------------------------- |
+| `STREAM_URL`  | Base URL of the stream server                        | `http://localhost:4437/v1/stream` |
+| `STREAM_AUTH` | Authorization header value (e.g., `Bearer my-token`) | _(none)_                          |
 
 Both can be overridden per-command with the `--url` and `--auth` flags.
 
 ## Global Options
 
-| Flag | Description |
-| -------------- | ---------------------------------------------------------- |
-| `--url <url>` | Stream server URL (overrides `STREAM_URL`) |
+| Flag             | Description                                          |
+| ---------------- | ---------------------------------------------------- |
+| `--url <url>`    | Stream server URL (overrides `STREAM_URL`)           |
 | `--auth <value>` | Authorization header value (overrides `STREAM_AUTH`) |
-| `--help`, `-h` | Show usage information |
+| `--help`, `-h`   | Show usage information                               |
 
 ## Commands
 
@@ -45,10 +45,10 @@ durable-stream create <stream_id> [options]
 
 **Options:**
 
-| Flag | Description | Default |
-| ----------------------- | -------------------------- | ---------------------------- |
-| `--content-type <type>` | Content type for the stream | `application/octet-stream` |
-| `--json` | Shorthand for `--content-type application/json` | |
+| Flag                    | Description                                     | Default                    |
+| ----------------------- | ----------------------------------------------- | -------------------------- |
+| `--content-type <type>` | Content type for the stream                     | `application/octet-stream` |
+| `--json`                | Shorthand for `--content-type application/json` |                            |
 
 **Examples:**
 
@@ -73,11 +73,11 @@ Content can be provided as an argument or piped from stdin. If no argument is gi
 
 **Options:**
 
-| Flag | Description | Default |
-| ----------------------- | ---------------------------------------------------- | ---------------------------- |
-| `--content-type <type>` | Content type for the message | `application/octet-stream` |
-| `--json` | Shorthand for `--content-type application/json` | |
-| `--batch-json` | Treat input as a JSON array; store each element separately (implies `--json`) | |
+| Flag                    | Description                                                                   | Default                    |
+| ----------------------- | ----------------------------------------------------------------------------- | -------------------------- |
+| `--content-type <type>` | Content type for the message                                                  | `application/octet-stream` |
+| `--json`                | Shorthand for `--content-type application/json`                               |                            |
+| `--batch-json`          | Treat input as a JSON array; store each element separately (implies `--json`) |                            |
 
 **Examples:**
 
@@ -100,11 +100,11 @@ durable-stream write events '[{"a": 1}, {"a": 2}]' --batch-json
 
 When using `--batch-json`, top-level arrays are flattened into individual messages:
 
-| Input | Messages stored |
+| Input        | Messages stored        |
 | ------------ | ---------------------- |
-| `{}` | 1 message: `{}` |
-| `[{}, {}]` | 2 messages: `{}`, `{}` |
-| `[[{}, {}]]` | 1 message: `[{}, {}]` |
+| `{}`         | 1 message: `{}`        |
+| `[{}, {}]`   | 2 messages: `{}`, `{}` |
+| `[[{}, {}]]` | 1 message: `[{}, {}]`  |
 
 This matches the protocol's batch semantics. Without `--batch-json`, JSON values are always stored as a single message, even if they are arrays.
 
