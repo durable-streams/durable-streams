@@ -51,8 +51,8 @@ This will start a Durable Streams server at `http://localhost:4437` with live re
 ### Terminal 2: Use the CLI
 
 ```bash
-# Set the server URL (optional, defaults to http://localhost:4437)
-export STREAM_URL=http://localhost:4437
+# Set the server URL (optional, defaults to http://localhost:4437/v1/stream)
+export STREAM_URL=http://localhost:4437/v1/stream
 
 # Create a stream
 durable-stream-dev create my-stream
@@ -68,7 +68,7 @@ durable-stream-dev read my-stream
 
 ### Environment Variables
 
-- `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437`)
+- `STREAM_URL` - Base URL of the stream server (default: `http://localhost:4437/v1/stream`)
 - `STREAM_AUTH` - Authorization header value (e.g., `Bearer my-token`)
 
 ### Global Options
@@ -154,11 +154,11 @@ durable-stream-dev --auth "ApiKey abc123" read my-stream
 pnpm start:dev
 
 # Terminal 2: Set up the stream
-export STREAM_URL=http://localhost:4437
+export STREAM_URL=http://localhost:4437/v1/stream
 durable-stream-dev create test-stream
 
 # Terminal 3: Start reading (will show data as it arrives)
-export STREAM_URL=http://localhost:4437
+export STREAM_URL=http://localhost:4437/v1/stream
 durable-stream-dev read test-stream
 
 # Back in Terminal 2: Write data and watch it appear in Terminal 3

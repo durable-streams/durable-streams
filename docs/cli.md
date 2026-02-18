@@ -164,7 +164,7 @@ durable-stream --auth "Basic dXNlcjpwYXNz" read my-stream
 A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Getting Started](getting-started.md)):
 
 ```bash
-export STREAM_URL=http://localhost:4437
+export STREAM_URL=http://localhost:4437/v1/stream
 
 # Create a JSON stream
 durable-stream create chat --json

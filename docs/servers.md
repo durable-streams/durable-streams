@@ -41,59 +41,48 @@ console.log("Server running on http://127.0.0.1:4437")
 
 ### Storage Options
 
-**In-memory (default)** -- fast, ephemeral storage that resets on restart:
+**In-memory (default)** -- fast, ephemeral storage that resets on restart. Just omit `dataDir`:
 
 ```typescript
-import { DurableStreamTestServer, StreamStore } from "@durable-streams/server"
-
-const store = new StreamStore()
-const server = new DurableStreamTestServer({ port: 4437, store })
+const server = new DurableStreamTestServer({ port: 4437 })
 ```
 
 **File-backed** -- persistent storage using log files and LMDB for metadata:
 
 ```typescript
-import {
-  DurableStreamTestServer,
-  FileBackedStreamStore,
-} from "@durable-streams/server"
-
-const store = new FileBackedStreamStore({ path: "./data/streams" })
-const server = new DurableStreamTestServer({ port: 4437, store })
+const server = new DurableStreamTestServer({
+  port: 4437,
+  dataDir: "./data/streams",
+})
 ```
 
 ### Configuration
 
-The server accepts the following options:
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `port` | `number` | `4437` | Port to listen on |
+| `host` | `string` | `"127.0.0.1"` | Host to bind to |
+| `dataDir` | `string` | — | Data directory for file-backed storage; omit for in-memory |
+| `longPollTimeout` | `number` | `30000` | Long-poll timeout in milliseconds |
+| `onStreamCreated` | `StreamLifecycleHook` | — | Hook called when a stream is created |
+| `onStreamDeleted` | `StreamLifecycleHook` | — | Hook called when a stream is deleted |
+| `compression` | `boolean` | `true` | Enable gzip/deflate compression |
+| `cursorIntervalSeconds` | `number` | `20` | Cursor interval for CDN cache collapsing |
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `port` | `number` | Port to listen on |
-| `host` | `string` | Host to bind to |
-| `store` | `StreamStore \| FileBackedStreamStore` | Storage backend |
-| `hooks` | `StreamLifecycleHook[]` | Lifecycle hooks (e.g. registry) |
-| `cors` | `boolean` | Enable CORS headers |
-| `cursorOptions` | `CursorOptions` | Cursor configuration |
+### Lifecycle Hooks
 
-### Registry Hooks
-
-Track stream lifecycle events such as creation and deletion:
+Track stream creation and deletion events:
 
 ```typescript
-import {
-  DurableStreamTestServer,
-  createRegistryHooks,
-} from "@durable-streams/server"
-
 const server = new DurableStreamTestServer({
   port: 4437,
-  hooks: createRegistryHooks({
-    registryPath: "__registry__",
-  }),
+  onStreamCreated: (event) => {
+    console.log(`Stream created: ${event.path} (${event.contentType})`)
+  },
+  onStreamDeleted: (event) => {
+    console.log(`Stream deleted: ${event.path}`)
+  },
 })
-```
-
-The registry maintains a system stream that records all stream creates and deletes, useful for building admin UIs or monitoring.
 
 ### When to Use
 
