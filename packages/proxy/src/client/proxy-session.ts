@@ -212,7 +212,6 @@ export function createDurableSession(
         } catch (error) {
           if (isRenewableReadError(error)) {
             await connect()
-            offset = `-1`
             continue
           }
           demuxer.error(error)

@@ -88,49 +88,7 @@ export async function handleConnectStream(
   // Step 4: Derive stream ID deterministically from session ID
   const streamId = deriveStreamId(sessionId)
 
-  // Step 5: Ensure stream exists (HEAD, then PUT if needed)
-  const streamPath = `/v1/streams/${streamId}`
-  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
-  let isNewSession = false
-
-  try {
-    const headResponse = await fetch(fullStreamUrl.toString(), {
-      method: `HEAD`,
-    })
-
-    if (headResponse.status === 404) {
-      // Stream doesn't exist - create it
-      const createResponse = await fetch(fullStreamUrl.toString(), {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `application/octet-stream`,
-          "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
-        },
-      })
-
-      if (!createResponse.ok) {
-        const errorText = await createResponse.text().catch(() => ``)
-        sendError(
-          res,
-          502,
-          `STORAGE_ERROR`,
-          `Failed to create stream: ${errorText}`
-        )
-        return
-      }
-
-      isNewSession = true
-    } else if (!headResponse.ok) {
-      sendError(res, 502, `STORAGE_ERROR`, `Failed to check stream existence`)
-      return
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : `Unknown error`
-    sendError(res, 502, `STORAGE_ERROR`, `Failed to check stream: ${message}`)
-    return
-  }
-
-  // Step 6: If Upstream-URL is provided, authorize via auth endpoint.
+  // Step 5: If Upstream-URL is provided, authorize via auth endpoint.
   if (upstreamUrl && !Array.isArray(upstreamUrl)) {
     const parsedUpstreamUrl = validateUpstreamUrl(upstreamUrl)
     if (!parsedUpstreamUrl) {
@@ -206,7 +164,49 @@ export async function handleConnectStream(
     return
   }
 
-  // Step 7: Generate pre-signed URL
+  // Step 6: Ensure stream exists (HEAD, then PUT if needed).
+  const streamPath = `/v1/streams/${streamId}`
+  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
+  let isNewSession = false
+
+  try {
+    const headResponse = await fetch(fullStreamUrl.toString(), {
+      method: `HEAD`,
+    })
+
+    if (headResponse.status === 404) {
+      // Stream doesn't exist - create it
+      const createResponse = await fetch(fullStreamUrl.toString(), {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/octet-stream`,
+          "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
+        },
+      })
+
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text().catch(() => ``)
+        sendError(
+          res,
+          502,
+          `STORAGE_ERROR`,
+          `Failed to create stream: ${errorText}`
+        )
+        return
+      }
+
+      isNewSession = true
+    } else if (!headResponse.ok) {
+      sendError(res, 502, `STORAGE_ERROR`, `Failed to check stream existence`)
+      return
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Unknown error`
+    sendError(res, 502, `STORAGE_ERROR`, `Failed to check stream: ${message}`)
+    return
+  }
+
+  // Step 7: Generate pre-signed URL.
   const signedUrlTtlHeader = req.headers[`stream-signed-url-ttl`]
   let urlExpirationSeconds =
     options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
@@ -234,7 +234,6 @@ export async function handleConnectStream(
   const responseHeaders = {
     Location: location,
     "Stream-Id": streamId,
-    "Access-Control-Expose-Headers": `Location, Stream-Id`,
   }
   res.writeHead(statusCode, responseHeaders)
   res.end()

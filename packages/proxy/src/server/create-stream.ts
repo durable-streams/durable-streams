@@ -429,7 +429,6 @@ export async function handleCreateStream(
     "Stream-Id": streamId,
     "Upstream-Content-Type": upstreamContentType,
     "Stream-Response-Id": String(responseId),
-    "Access-Control-Expose-Headers": `Location, Stream-Id, Upstream-Content-Type, Stream-Response-Id`,
   })
   res.end() // No body
 
