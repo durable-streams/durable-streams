@@ -10,7 +10,7 @@ npm install @durable-streams/server
 
 ## Overview
 
-This package provides a reference implementation of the Durable Streams protocol for Node.js. It supports both in-memory and file-backed storage modes, making it suitable for development, testing, and production workloads.
+This package provides a reference implementation of the Durable Streams protocol for Node.js. It supports both in-memory and file-backed storage modes, making it suitable for development, testing, and prototyping. For production deployments, use the [Caddy plugin](../caddy-plugin/README.md) or [Electric Cloud](https://electric-sql.com/cloud).
 
 For a standalone binary option, see the [Caddy-based server](https://github.com/durable-streams/durable-streams/releases).
 
@@ -32,16 +32,10 @@ console.log("Server running on http://127.0.0.1:4437")
 
 ### In-Memory (Default)
 
-Fast, ephemeral storage for development and testing:
+Fast, ephemeral storage for development and testing. Omit `dataDir` to use in-memory:
 
 ```typescript
-import { DurableStreamTestServer, StreamStore } from "@durable-streams/server"
-
-const store = new StreamStore()
-const server = new DurableStreamTestServer({
-  port: 4437,
-  store,
-})
+const server = new DurableStreamTestServer({ port: 4437 })
 ```
 
 ### File-Backed
@@ -49,52 +43,43 @@ const server = new DurableStreamTestServer({
 Persistent storage with streams stored as log files and LMDB for metadata:
 
 ```typescript
-import {
-  DurableStreamTestServer,
-  FileBackedStreamStore,
-} from "@durable-streams/server"
-
-const store = new FileBackedStreamStore({
-  path: "./data/streams",
-})
 const server = new DurableStreamTestServer({
   port: 4437,
-  store,
+  dataDir: "./data/streams",
 })
 ```
 
-## Registry Hooks
+## Lifecycle Hooks
 
-Track stream lifecycle events (creation, deletion):
+Track stream creation and deletion events:
 
 ```typescript
-import {
-  DurableStreamTestServer,
-  createRegistryHooks,
-} from "@durable-streams/server"
-
 const server = new DurableStreamTestServer({
   port: 4437,
-  hooks: createRegistryHooks({
-    registryPath: "__registry__",
-  }),
+  onStreamCreated: (event) => {
+    console.log(`Stream created: ${event.path} (${event.contentType})`)
+  },
+  onStreamDeleted: (event) => {
+    console.log(`Stream deleted: ${event.path}`)
+  },
 })
 ```
-
-The registry maintains a system stream that tracks all stream creates and deletes, useful for building admin UIs or monitoring.
 
 ## API
 
 ### DurableStreamTestServer
 
-```typescript
+````typescript
 interface TestServerOptions {
-  port?: number
-  host?: string
-  store?: StreamStore | FileBackedStreamStore
-  hooks?: StreamLifecycleHook[]
-  cors?: boolean
-  cursorOptions?: CursorOptions
+  port?: number                          // Default: 4437
+  host?: string                          // Default: "127.0.0.1"
+  longPollTimeout?: number               // Default: 30000 (ms)
+  dataDir?: string                       // File-backed storage; omit for in-memory
+  onStreamCreated?: StreamLifecycleHook  // Hook for stream creation
+  onStreamDeleted?: StreamLifecycleHook  // Hook for stream deletion
+  compression?: boolean                  // Default: true
+  cursorIntervalSeconds?: number         // Default: 20
+  cursorEpoch?: Date                     // Epoch for cursor calculation
 }
 
 class DurableStreamTestServer {
@@ -104,25 +89,6 @@ class DurableStreamTestServer {
   readonly port: number
   readonly baseUrl: string
 }
-```
-
-### StreamStore
-
-In-memory stream storage:
-
-```typescript
-class StreamStore {
-  create(path: string, contentType: string, options?: CreateOptions): Stream
-  get(path: string): Stream | undefined
-  delete(path: string): boolean
-  append(path: string, data: Uint8Array, seq?: string): void
-  read(path: string, offset: string): ReadResult
-}
-```
-
-### FileBackedStreamStore
-
-File-backed persistent storage (log files for streams, LMDB for metadata) with the same interface as `StreamStore`.
 
 ## Exports
 
@@ -148,7 +114,7 @@ export type {
   StreamLifecycleEvent,
   StreamLifecycleHook,
 } from "./types"
-```
+````
 
 ## Testing Your Implementation
 

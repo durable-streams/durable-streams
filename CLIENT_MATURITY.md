@@ -1,6 +1,6 @@
 # Client Library Maturity Model
 
-Durable Streams clients follow a maturity progression that helps users understand the readiness of each implementation and guides contributors on how to help.
+Durable Streams clients follow a maturity progression that helps users understand the readiness of each implementation and guides contributors on how to help. For an overview of all client libraries and their current maturity levels, see the [Client Libraries](docs/clients.md) documentation.
 
 ## Maturity Levels
 
