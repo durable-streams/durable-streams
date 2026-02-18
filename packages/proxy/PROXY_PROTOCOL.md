@@ -467,9 +467,20 @@ Authenticates via pre-signed URL parameters (`expires` and `signature`) or via s
 
 The response body contains framed binary data (see Section 5). Clients **MUST** parse the frame format to extract individual upstream responses. The byte offset semantics from the base protocol apply — clients can resume reading from any byte offset, including mid-frame. Client implementations **MUST** handle partial frames when resuming from a non-zero offset that falls within a frame.
 
+When `live=sse`, framed bytes are transported via SSE `event: data` events (base protocol Section 5.7):
+
+- If the server includes `Stream-SSE-Data-Encoding: base64`, each SSE data event payload is an independently base64-encoded byte chunk.
+- Clients **MUST** decode each SSE data event payload independently before feeding bytes into the frame parser.
+- If `Stream-SSE-Data-Encoding` is absent, SSE data event payloads are already UTF-8-compatible and can be consumed as-is.
+- SSE `event: control` messages carry stream metadata (`streamNextOffset`, `streamCursor`, `upToDate`, `streamClosed`) per the base protocol.
+
 #### Response Headers
 
 All standard `Stream-*` response headers from the base protocol.
+
+For `live=sse`, servers **MAY** include:
+
+- `Stream-SSE-Data-Encoding: base64` — indicates SSE `event: data` payloads are base64-encoded and must be decoded before frame parsing.
 
 #### Response Codes
 

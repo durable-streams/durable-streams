@@ -545,6 +545,15 @@ All data written to proxy streams uses a binary framing format. Each upstream re
 
 Response IDs are assigned sequentially starting from `1`. The framing applies to all proxy streams, so the format is consistent regardless of whether the stream contains one response or many.
 
+### SSE Transport for Framed Bytes
+
+When reading proxy streams with `live=sse`, framed bytes are carried in SSE `event: data` payloads:
+
+- Servers may include `Stream-SSE-Data-Encoding: base64` to indicate each SSE data event payload is independently base64-encoded.
+- Clients must decode each SSE data event payload independently when this header is present, then feed decoded bytes into the frame parser.
+- SSE `event: control` messages carry metadata (`streamNextOffset`, `streamCursor`, `upToDate`, `streamClosed`) per the base protocol.
+- The framing parser itself is unchanged: it always operates on decoded byte chunks and handles partial frames across chunk boundaries.
+
 **Key design decisions:**
 
 - ASCII type bytes (inspired by PostgreSQL's wire protocol) for human-readable debugging
@@ -674,7 +683,8 @@ session.responses()
        ▼           ▼
 ┌───────────────────────────────┐
 │ GET signed URL (SSE live)     │
-│ → raw framed byte stream      │
+│ → SSE data events carrying    │
+│   framed bytes                │
 └───────────────────────────────┘
          │
          ▼
@@ -695,16 +705,16 @@ A `DurableProxySession` maintains a single SSE connection to the durable stream 
                    │        DurableProxySession           │
                    │                                      │
                    │  ┌──────────────────────────────┐    │
-                   │  │ Single SSE connection         │    │
-                   │  │ GET {streamUrl}?live=sse      │    │
+                   │  │ Single SSE connection        │    │
+                   │  │ GET {streamUrl}?live=sse     │    │
                    │  └──────────┬───────────────────┘    │
-                   │             │ raw framed bytes       │
+                   │             │ decoded framed bytes   │
                    │             ▼                        │
                    │  ┌──────────────────────────────┐    │
-                   │  │ Shared Frame Demultiplexer    │    │
+                   │  │ Shared Frame Demultiplexer   │    │
                    │  │ Parses S/D/C/A/E frames,     │    │
-                   │  │ creates one ProxyResponse per │    │
-                   │  │ response lifecycle            │    │
+                   │  │ creates one ProxyResponse    │    │
+                   │  │ per response, per lifecycle  │    │
                    │  └──────────┬───────────────────┘    │
                    │             │                        │
                    │             │ same ProxyResponse     │
@@ -1110,7 +1120,7 @@ Implement `createDurableProxySession`:
 
 Implement the frame demultiplexer:
 
-1. Parse the binary framing format (S/D/C/A/E frames) from the raw stream
+1. Parse the binary framing format (S/D/C/A/E frames) from decoded byte chunks produced by the shared SSE reader
 2. On Start frame: construct a single `ProxyResponse` object (extends `Response`) with status, headers from the Start frame payload, a `ReadableStream` body fed by subsequent Data frames, and an `abort()` method bound to this response's ID
 3. Route the same `ProxyResponse` object to both `fetch()` (by registered response ID) and `responses()` (all responses)
 4. On terminal frame (C/A/E): close the response's body stream and signal completion
