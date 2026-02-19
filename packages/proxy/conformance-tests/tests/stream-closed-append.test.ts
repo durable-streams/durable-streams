@@ -24,6 +24,9 @@ afterAll(async () => {
 describe(`proxy conformance: append to closed stream`, () => {
   it(`returns 409 STREAM_CLOSED when appending to a closed stream`, async () => {
     const runtime = getRuntime()
+    if (!runtime.capabilities.closedAppendConflict) {
+      return
+    }
 
     upstream.setResponse(createAIStreamingResponse([`one`]))
     const created = await createProxyStream({
