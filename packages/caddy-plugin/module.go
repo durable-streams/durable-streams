@@ -9,6 +9,7 @@ import (
 	"github.com/caddyserver/caddy/v2/caddyconfig/httpcaddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
 	"github.com/durable-streams/durable-streams/packages/caddy-plugin/store"
+	"github.com/durable-streams/durable-streams/packages/caddy-plugin/webhook"
 	"go.uber.org/zap"
 )
 
@@ -32,8 +33,14 @@ type Handler struct {
 	// SSEReconnectInterval is how often SSE connections should reconnect
 	SSEReconnectInterval caddy.Duration `json:"sse_reconnect_interval,omitempty"`
 
-	store  store.Store
-	logger *zap.Logger
+	// WebhookCallbackURL is the base URL for webhook callback endpoints.
+	// If set, enables the webhook subscription system.
+	WebhookCallbackURL string `json:"webhook_callback_url,omitempty"`
+
+	store          store.Store
+	logger         *zap.Logger
+	webhookManager *webhook.Manager
+	webhookRoutes  *webhook.Routes
 }
 
 // CaddyModule returns the Caddy module information
@@ -77,6 +84,20 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		h.logger.Info("using file-backed store", zap.String("data_dir", h.DataDir))
 	}
 
+	// Initialize webhook manager if callback URL is configured
+	if h.WebhookCallbackURL != "" {
+		getTailOffset := func(path string) string {
+			meta, err := h.store.Get(path)
+			if err != nil {
+				return "-1"
+			}
+			return meta.CurrentOffset.String()
+		}
+		h.webhookManager = webhook.NewManager(h.WebhookCallbackURL, getTailOffset, h.logger)
+		h.webhookRoutes = webhook.NewRoutes(h.webhookManager)
+		h.logger.Info("webhook subscriptions enabled", zap.String("callback_url", h.WebhookCallbackURL))
+	}
+
 	return nil
 }
 
@@ -87,6 +108,9 @@ func (h *Handler) Validate() error {
 
 // Cleanup releases resources
 func (h *Handler) Cleanup() error {
+	if h.webhookManager != nil {
+		h.webhookManager.Shutdown()
+	}
 	if h.store != nil {
 		return h.store.Close()
 	}
@@ -139,6 +163,10 @@ func (h *Handler) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Errf("invalid duration: %v", err)
 				}
 				h.SSEReconnectInterval = caddy.Duration(dur)
+			case "webhook_callback_url":
+				if !d.Args(&h.WebhookCallbackURL) {
+					return d.ArgErr()
+				}
 			default:
 				return d.Errf("unknown subdirective: %s", d.Val())
 			}

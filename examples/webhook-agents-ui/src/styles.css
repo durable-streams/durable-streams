@@ -1,0 +1,93 @@
+:root {
+  --heading-font: Inter, sans-serif;
+  --body-font: Inter, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.radix-themes {
+  --default-font-family: var(--body-font);
+}
+
+.radix-themes h1,
+.radix-themes h2,
+.radix-themes h3,
+.radix-themes h4,
+.radix-themes h5,
+.radix-themes h6,
+.radix-themes [class*="Heading"] {
+  font-family: var(--heading-font);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.animate-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes typing {
+  0%, 60%, 100% { opacity: 0.2; }
+  30% { opacity: 1; }
+}
+
+.typing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gray-8);
+  animation: typing 1.2s ease-in-out infinite;
+}
+
+.markdown-content p {
+  margin: 0 0 0.5em;
+}
+
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content pre {
+  background: var(--gray-3);
+  padding: 0.75em;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: var(--font-size-1);
+}
+
+.markdown-content code {
+  background: var(--gray-3);
+  padding: 0.15em 0.3em;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content ul, .markdown-content ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-content a {
+  color: var(--accent-9);
+  text-decoration: underline;
+}
