@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Durable Streams
   text: Reliable client streaming, solved
-  tagline: A persistent stream primitive and HTTP protocol for reliable, resumable, real-time data streaming into client applications.
+  tagline: An open-source stream primitive and HTTP protocol for reliable, resumable, real-time data streaming into client applications.
   actions:
     - theme: brand
       text: Get Started
