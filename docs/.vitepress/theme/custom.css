@@ -286,6 +286,39 @@ body {
   max-width: 780px;
 }
 
+.VPHome .VPHero {
+  overflow: visible;
+  position: relative;
+}
+
+.VPHome .VPHero::after {
+  background-image: url('/img/Icon.svg');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  content: '';
+  height: clamp(420px, 48vw, 660px);
+  opacity: 0.08;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: clamp(-188px, -12.5vw, -112px);
+  width: clamp(420px, 48vw, 660px);
+  z-index: 0;
+}
+
+.VPHome .VPHero .container .main,
+.VPHome .VPHero .container .image {
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 1023px) {
+  .VPHome .VPHero::after {
+    display: none;
+  }
+}
+
 .VPButton.brand {
   background-color: var(--vp-button-brand-bg);
   border-color: var(--vp-button-brand-border);
