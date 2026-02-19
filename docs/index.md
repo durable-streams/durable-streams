@@ -13,7 +13,7 @@ hero:
       text: View on GitHub
       link: https://github.com/durable-streams/durable-streams
     - theme: alt
-      text: Electric Ecosystem
+      text: Electric Cloud
       link: https://electric-sql.com
 
 features:
@@ -37,9 +37,9 @@ features:
 - Want a quick setup? Go to [Getting Started](/getting-started).
 - Need protocol details? Read the [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
-## Electric ecosystem
+## Electric
 
-Durable Streams is part of the broader Electric ecosystem of sync and local-first infrastructure.
+Durable Streams is part of Electric's broader sync and local-first platform.
 
 - [Electric main site](https://electric-sql.com)
 - [Electric Cloud](https://electric-sql.com/cloud)

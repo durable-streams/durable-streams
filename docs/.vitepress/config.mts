@@ -1,79 +1,83 @@
-import { defineConfig } from 'vitepress'
+import { defineConfig } from "vitepress"
 
 export default defineConfig({
-  lang: 'en',
-  title: 'Durable Streams',
+  lang: "en",
+  title: "Durable Streams",
   description:
-    'Persistent, resumable event streams over HTTP with exactly-once semantics.',
-  appearance: 'force-dark',
+    "Persistent, resumable event streams over HTTP with exactly-once semantics.",
+  appearance: "force-dark",
   cleanUrls: true,
-  srcExclude: ['README.md', 'research/**'],
+  srcExclude: ["README.md", "research/**"],
   ignoreDeadLinks: [/^\/PROTOCOL(\.md)?$/],
   themeConfig: {
-    logo: '/img/Icon.svg',
+    logo: "/img/Icon.svg",
     nav: [
-      { text: 'Home', link: '/' },
-      { text: 'About', link: '/introduction' },
-      { text: 'Docs', link: '/getting-started' },
-      { text: 'ElectricSQL', link: 'https://electric-sql.com' },
+      { text: "Home", link: "/" },
+      { text: "About", link: "/introduction" },
+      { text: "Docs", link: "/getting-started" },
+      { text: "ElectricSQL", link: "https://electric-sql.com" },
       {
-        text: 'Star on GitHub',
-        link: 'https://github.com/durable-streams/durable-streams',
+        text: "GitHub",
+        link: "https://github.com/durable-streams/durable-streams",
       },
     ],
     sidebar: [
       {
-        text: 'About',
+        text: "About",
         items: [
-          { text: 'Introduction', link: '/introduction' },
-          { text: 'Getting Started', link: '/getting-started' },
+          { text: "Introduction", link: "/introduction" },
+          { text: "Getting Started", link: "/getting-started" },
         ],
       },
       {
-        text: 'Guides',
+        text: "Guides",
         items: [
-          { text: 'Core Concepts', link: '/concepts' },
-          { text: 'State Protocol', link: '/state' },
-          { text: 'Use Cases', link: '/use-cases' },
-          { text: 'Deployment', link: '/deployment' },
+          { text: "Core Concepts", link: "/concepts" },
+          { text: "State Protocol", link: "/state" },
+          { text: "Use Cases", link: "/use-cases" },
+          { text: "Deployment", link: "/deployment" },
         ],
       },
       {
-        text: 'Implementations',
+        text: "Implementations",
         items: [
-          { text: 'Client Libraries', link: '/clients' },
-          { text: 'Servers', link: '/servers' },
-          { text: 'CLI Reference', link: '/cli' },
+          { text: "Client Libraries", link: "/clients" },
+          { text: "Servers", link: "/servers" },
+          { text: "CLI Reference", link: "/cli" },
         ],
       },
       {
-        text: 'Development',
+        text: "Development",
         items: [
-          { text: 'Building a Client', link: '/building-a-client' },
-          { text: 'Building a Server', link: '/building-a-server' },
-          { text: 'Benchmarking', link: '/benchmarking' },
+          { text: "Building a Client", link: "/building-a-client" },
+          { text: "Building a Server", link: "/building-a-server" },
+          { text: "Benchmarking", link: "/benchmarking" },
         ],
       },
       {
-        text: 'Reference',
+        text: "Reference",
         items: [
           {
-            text: 'Protocol Specification',
-            link: 'https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md',
+            text: "Protocol Specification",
+            link: "https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md",
           },
         ],
       },
     ],
     socialLinks: [
-      { icon: 'discord', link: 'https://discord.electric-sql.com' },
-      { icon: 'github', link: 'https://github.com/durable-streams/durable-streams' },
+      { icon: "discord", link: "https://discord.electric-sql.com" },
+      {
+        icon: "github",
+        link: "https://github.com/durable-streams/durable-streams",
+      },
     ],
     search: {
-      provider: 'local',
+      provider: "local",
     },
     footer: {
-      message: 'Part of the Electric ecosystem.',
-      copyright: '© Durable Streams and ElectricSQL',
+      message:
+        'Released under the <a href="https://github.com/durable-streams/durable-streams/blob/main/LICENSE">MIT License</a>',
+      copyright: '© <a href="https://electric-sql.com/">ElectricSQL</a>',
     },
   },
 })
