@@ -22,9 +22,9 @@
     "changeset": "changeset",
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
     "changeset:publish": "pnpm build && changeset publish",
-    "docs:dev": "vitepress dev docs",
-    "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:dev": "pnpm --filter @durable-streams/docs dev",
+    "docs:build": "pnpm --filter @durable-streams/docs build",
+    "docs:preview": "pnpm --filter @durable-streams/docs preview"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",
@@ -45,8 +45,6 @@
     "prettier": "^3.6.2",
     "tsdown": "^0.9.0",
     "typescript": "^5.9.2",
-    "vitepress": "^1.3.1",
-    "vitepress-plugin-llms": "^1.7.5",
     "vitest": "^4.0.0"
   },
   "lint-staged": {
