@@ -1,3 +1,8 @@
+---
+title: Documentation
+description: Durable Streams docs index and quick navigation.
+---
+
 # Durable Streams Documentation
 
 Durable Streams is a persistent stream primitive and HTTP protocol for reliable, resumable, real-time data streaming into client applications.
@@ -21,7 +26,7 @@ Durable Streams is a persistent stream primitive and HTTP protocol for reliable,
 
 ## Additional Resources
 
-- [Protocol Specification (PROTOCOL.md)](../PROTOCOL.md)
+- [Protocol Specification (PROTOCOL.md)](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md)
 - [GitHub Repository](https://github.com/durable-streams/durable-streams)
 - [Discord Community](https://discord.electric-sql.com)
 - [Electric Cloud](https://electric-sql.com/cloud)

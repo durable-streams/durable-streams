@@ -1,0 +1,211 @@
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 800;
+  src: url('./fonts/OpenSauceOne-Black.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 700;
+  src: url('./fonts/OpenSauceOne-ExtraBold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 600;
+  src: url('./fonts/OpenSauceOne-Bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: italic;
+  font-weight: 600;
+  src: url('./fonts/OpenSauceOne-BoldItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 500;
+  src: url('./fonts/OpenSauceOne-Medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: italic;
+  font-weight: 500;
+  src: url('./fonts/OpenSauceOne-MediumItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 400;
+  src: url('./fonts/OpenSauceOne-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: italic;
+  font-weight: 400;
+  src: url('./fonts/OpenSauceOne-Italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: normal;
+  font-weight: 300;
+  src: url('./fonts/OpenSauceOne-Light.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: OpenSauceOne;
+  font-style: italic;
+  font-weight: 300;
+  src: url('./fonts/OpenSauceOne-LightItalic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: SourceCodePro;
+  font-style: normal;
+  font-weight: 400;
+  src: url('./fonts/SourceCodePro-Regular.woff2') format('woff2');
+}
+
+:root,
+.dark {
+  --vp-nav-logo-height: 30px;
+  --durable-color: #75fbfd;
+  --durable-color-soft: #b8fdfe;
+  --durable-color-deep: #56e8ea;
+
+  --vp-c-brand-1: var(--durable-color);
+  --vp-c-brand-2: var(--durable-color-soft);
+  --vp-c-brand-3: var(--durable-color-deep);
+  --vp-c-brand-soft: rgba(117, 251, 253, 0.16);
+
+  --vp-c-text-1: rgba(255, 255, 245, 0.92);
+  --vp-c-text-2: rgba(235, 235, 245, 0.8);
+  --vp-c-text-3: rgba(235, 235, 245, 0.68);
+
+  --vp-code-color: #9ecbff;
+  --vp-code-font-size: 0.875em;
+  --vp-font-family-base: OpenSauceOne, ui-sans-serif, system-ui, sans-serif,
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  --vp-font-family-mono: SourceCodePro, 'Source Code Pro', ui-monospace, Menlo, Monaco, Consolas,
+    'Liberation Mono', 'Courier New', monospace;
+}
+
+body {
+  font-family:
+    'Open Sauce One',
+    OpenSauceOne,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 600;
+}
+
+.VPNavBar .content-body {
+  padding-top: 1px;
+}
+
+.VPNavBarTitle .logo {
+  margin-top: -1px;
+}
+
+@media (min-width: 1200px) {
+  .VPNavBarMenuLink {
+    padding: 0 11px !important;
+  }
+}
+
+@media (min-width: 1121px) and (max-width: 1199px) {
+  .VPNavBarMenuLink {
+    padding: 0 10px !important;
+  }
+}
+
+@media (min-width: 1060px) and (max-width: 1120px) {
+  .VPNavBarMenuLink {
+    padding: 0 8px !important;
+  }
+}
+
+@media (min-width: 960px) and (max-width: 1059px) {
+  .VPNavBarMenuLink {
+    padding: 0 6px !important;
+  }
+}
+
+@media (min-width: 768px) and (max-width: 959px) {
+  .VPNavBarMenuLink {
+    padding: 0 9px !important;
+  }
+}
+
+.VPHero .text {
+  max-width: 860px;
+}
+
+.VPHero .tagline {
+  max-width: 780px;
+}
+
+.VPButton.brand {
+  color: var(--vp-c-gray-3) !important;
+}
+
+@media (min-width: 768px) {
+  .VPNav a.VPLink[href='https://github.com/durable-streams/durable-streams']::after {
+    display: none !important;
+  }
+  .VPNav a.VPLink[href='https://github.com/durable-streams/durable-streams'] span {
+    border-radius: 999px;
+    padding: 0 17px;
+    line-height: 35px;
+    font-size: 14px;
+    font-weight: 550;
+    color: var(--vp-button-brand-text);
+    border: 1px solid var(--vp-button-brand-border);
+    border-color: var(--vp-button-brand-border);
+    background-color: var(--vp-button-brand-bg);
+    transition:
+      color 0.25s,
+      border-color 0.25s,
+      background-color 0.25s;
+  }
+  .VPNav a.VPLink[href='https://github.com/durable-streams/durable-streams'] span:hover {
+    border-color: var(--vp-button-brand-hover-border);
+    color: var(--vp-button-brand-hover-text);
+    background-color: var(--vp-button-brand-hover-bg);
+  }
+
+  @media (max-width: 959px) {
+    .VPNav a.VPLink[href='https://github.com/durable-streams/durable-streams'] span {
+      line-height: 32px;
+      padding: 0 14px;
+      font-weight: 500;
+    }
+  }
+}
+
+.VPFeature {
+  border: 1px solid rgba(117, 251, 253, 0.2);
+  background: linear-gradient(180deg, rgba(117, 251, 253, 0.08) 0%, rgba(117, 251, 253, 0.04) 100%);
+}
+
+.VPFeature:hover {
+  border-color: rgba(117, 251, 253, 0.5);
+}
+
+.custom-block.tip {
+  border-color: var(--durable-color);
+}

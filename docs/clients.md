@@ -1,6 +1,6 @@
 # Client Libraries
 
-Durable Streams has official client libraries in 10 languages. All implement the same [protocol](../PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.
+Durable Streams has official client libraries in 10 languages. All implement the same [protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.
 
 If your language isn't listed here, you can build your own -- see [Building a Client](building-a-client.md).
 
@@ -39,7 +39,7 @@ Each client follows a maturity progression:
 
 All clients pass the conformance test suite regardless of maturity level. The difference is in API polish, idiomatic patterns, and battle-testing.
 
-If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client Maturity Model](../CLIENT_MATURITY.md) for the review process and checklist.
+If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client Maturity Model](https://github.com/durable-streams/durable-streams/blob/main/CLIENT_MATURITY.md) for the review process and checklist.
 
 ---
 
@@ -62,7 +62,7 @@ const items = await res.json()
 - Dynamic headers and params via sync/async functions for token refresh
 - Full Web Streams API support with Safari/iOS async-iterable compatibility
 
-Full documentation: [README](../packages/client/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client/README.md)
 
 ## Python
 
@@ -84,7 +84,7 @@ with stream("https://streams.example.com/my-stream") as res:
 - Context manager support for clean resource management
 - Custom JSON decoders via `decode=` parameter on `iter_json()`
 
-Full documentation: [README](../packages/client-py/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-py/README.md)
 
 ## Go
 
@@ -114,7 +114,7 @@ for {
 - `IdempotentProducer` with goroutine-based batching and pipelining
 - Functional options pattern (`WithLive()`, `WithOffset()`, `WithContentType()`)
 
-Full documentation: [README](../packages/client-go/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-go/README.md)
 
 ## Elixir
 
@@ -143,7 +143,7 @@ IO.inspect(items)
 - `Consumer` GenServer with automatic reconnection, exponential backoff, and callback-based processing
 - No external dependencies -- uses Erlang's built-in `:httpc` (optional Finch for SSE)
 
-Full documentation: [README](../packages/client-elixir/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-elixir/README.md)
 
 ## C# / .NET
 
@@ -174,7 +174,7 @@ var items = await response.ReadAllJsonAsync<MyEvent>();
 - `StreamCheckpoint` type for easy offset + cursor persistence
 - ASP.NET Core integration with `IAsyncEnumerable` controller actions
 
-Full documentation: [README](../packages/client-dotnet/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-dotnet/README.md)
 
 ## Swift
 
@@ -203,7 +203,7 @@ for try await event in handle.messages(as: MyEvent.self) {
 - Batching presets (`.highThroughput`, `.lowLatency`, `.disabled`)
 - Dynamic headers via `.provider { await getToken() }` closures
 
-Full documentation: [README](../packages/client-swift/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-swift/README.md)
 
 ## PHP
 
@@ -230,7 +230,7 @@ foreach ($response->jsonStream() as $event) {
 - PSR-3 structured logging support
 - **Note:** Long-poll only (no SSE support due to PHP's synchronous execution model)
 
-Full documentation: [README](../packages/client-php/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-php/README.md)
 
 ## Java
 
@@ -255,7 +255,7 @@ try (var chunks = client.read(url)) {
 - `CompletableFuture` async variants for all operations
 - Thread-safe `DurableStream` client and `IdempotentProducer`
 
-Full documentation: [README](../packages/client-java/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-java/README.md)
 
 ## Rust
 
@@ -284,7 +284,7 @@ while let Some(chunk) = reader.next_chunk().await? {
 - Tokio-based async runtime
 - Uses `reqwest` under the hood with connection pooling
 
-Full documentation: [README](../packages/client-rust/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-rust/README.md)
 
 ## Ruby
 
@@ -306,4 +306,4 @@ stream.read.each { |msg| puts msg }
 - Global configuration with `DurableStreams.configure` and isolated contexts for multi-tenant use
 - Built-in testing utilities with mock transport for RSpec/Minitest
 
-Full documentation: [README](../packages/client-rb/README.md)
+Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-rb/README.md)

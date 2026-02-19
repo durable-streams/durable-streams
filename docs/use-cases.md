@@ -25,7 +25,7 @@ Durable Streams is a delivery primitive built on plain HTTP -- anything that can
 
 Token streaming is the UI for chat and copilots. When the stream fails, the product fails -- even if the model did the right thing. Durable Streams lets you resume token streams across page refreshes, tab suspensions, and device switches instead of restarting expensive generations.
 
-The [`@durable-streams/proxy`](../packages/proxy/README.md) package sits between your backend agent and the client, persisting the agent's streaming responses to a durable stream. If the client disconnects, it resumes from where it left off rather than losing partial responses or re-running inference. The proxy includes transports for the [Vercel AI SDK](https://sdk.vercel.ai/) and [TanStack AI](https://tanstack.com/start/latest/docs/framework/react/ai).
+The [`@durable-streams/proxy`](https://github.com/durable-streams/durable-streams/blob/main/packages/proxy/README.md) package sits between your backend agent and the client, persisting the agent's streaming responses to a durable stream. If the client disconnects, it resumes from where it left off rather than losing partial responses or re-running inference. The proxy includes transports for the [Vercel AI SDK](https://sdk.vercel.ai/) and [TanStack AI](https://tanstack.com/start/latest/docs/framework/react/ai).
 
 ## Agentic Apps
 
@@ -45,7 +45,7 @@ Append-only streams are a natural fit for event sourcing. Clients can replay the
 
 ## Real-time Collaboration
 
-Deliver CRDT and operational transform updates with replayable history and clean reconnects. The [`@durable-streams/y-durable-streams`](../packages/y-durable-streams/README.md) package provides a Yjs provider for collaborative editing over Durable Streams. Document history is stored in the stream itself, and presence/awareness data flows over a separate stream.
+Deliver CRDT and operational transform updates with replayable history and clean reconnects. The [`@durable-streams/y-durable-streams`](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/README.md) package provides a Yjs provider for collaborative editing over Durable Streams. Document history is stored in the stream itself, and presence/awareness data flows over a separate stream.
 
 No WebSocket infrastructure is needed -- the provider uses SSE and long-poll transports over standard HTTP, making it simple to deploy behind load balancers and CDNs.
 
@@ -53,7 +53,7 @@ No WebSocket infrastructure is needed -- the provider uses SSE and long-poll tra
 
 Stream live data feeds to dashboards with guaranteed delivery. Offset-based URLs make reads CDN-cacheable, so thousands of concurrent viewers watching the same dashboard become a single upstream request via request collapsing.
 
-See the [Wikipedia events example](../examples/state/) -- a Solid.js dashboard showing live Wikipedia edits with faceted filtering, built on the State Protocol.
+See the [Wikipedia events example](https://github.com/durable-streams/durable-streams/tree/main/examples/state) -- a Solid.js dashboard showing live Wikipedia edits with faceted filtering, built on the State Protocol.
 
 ## Background Job Progress
 

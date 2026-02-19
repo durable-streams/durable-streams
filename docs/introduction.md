@@ -101,5 +101,5 @@ Durable Streams is a foundation layer. Higher-level protocols and integrations b
 ## Next Steps
 
 - [Getting Started](getting-started.md) -- set up and start using Durable Streams
-- [Protocol Specification](../PROTOCOL.md) -- the full protocol spec
+- [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) -- the full protocol spec
 - [Use Cases](use-cases.md) -- common patterns and applications

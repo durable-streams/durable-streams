@@ -145,4 +145,4 @@ res.subscribeJson(async (batch) => {
 - [Core Concepts](concepts.md) -- offsets, resumption, live modes, idempotent producers, and JSON mode
 - [CLI Reference](cli.md) -- command-line tool for working with streams
 - [Client Libraries](clients.md) -- official clients in 10 languages
-- [TypeScript Client README](../packages/client/README.md) -- full TypeScript client API reference
+- [TypeScript Client README](https://github.com/durable-streams/durable-streams/blob/main/packages/client/README.md) -- full TypeScript client API reference

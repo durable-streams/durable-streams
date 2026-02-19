@@ -2,7 +2,7 @@
 
 The Durable Streams protocol is pure HTTP -- any language that can make HTTP requests can implement a client. This guide covers the implementation considerations beyond what the protocol specifies, and how to validate your client against the [conformance test suite](#conformance-tests).
 
-The [Protocol Specification](../PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/client-conformance-tests`](../packages/client-conformance-tests/) package validates your implementation against it -- start your server, wire up an adapter, and the suite tells you what's passing and what's not.
+The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/client-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/client-conformance-tests) package validates your implementation against it -- start your server, wire up an adapter, and the suite tells you what's passing and what's not.
 
 - [What to Implement](#what-to-implement)
 - [Implementation Notes](#implementation-notes)
@@ -25,7 +25,7 @@ A typical client library exposes:
 
 ### Read-Only API
 
-Many use cases only consume streams -- they never create, append, or delete. Where your language supports it, consider offering a separate read-only entry point with a smaller dependency footprint. The [TypeScript client](../packages/client/) does this with a `stream()` function (a fetch-like API for consuming streams) alongside the full `DurableStream` class. This keeps bundle sizes small for browser consumers that only need to read.
+Many use cases only consume streams -- they never create, append, or delete. Where your language supports it, consider offering a separate read-only entry point with a smaller dependency footprint. The [TypeScript client](https://github.com/durable-streams/durable-streams/tree/main/packages/client) does this with a `stream()` function (a fetch-like API for consuming streams) alongside the full `DurableStream` class. This keeps bundle sizes small for browser consumers that only need to read.
 
 ## Implementation Notes
 
@@ -320,19 +320,19 @@ import {
 
 Use these as examples when building your own client:
 
-- [TypeScript](../packages/client/) -- reference client with full feature support
-- [Python](../packages/client-py/)
-- [Go](../packages/client-go/)
-- [Elixir](../packages/client-elixir/)
-- [.NET](../packages/client-dotnet/)
-- [Swift](../packages/client-swift/)
-- [PHP](../packages/client-php/)
-- [Java](../packages/client-java/)
-- [Rust](../packages/client-rust/)
-- [Ruby](../packages/client-rb/)
+- [TypeScript](https://github.com/durable-streams/durable-streams/tree/main/packages/client) -- reference client with full feature support
+- [Python](https://github.com/durable-streams/durable-streams/tree/main/packages/client-py)
+- [Go](https://github.com/durable-streams/durable-streams/tree/main/packages/client-go)
+- [Elixir](https://github.com/durable-streams/durable-streams/tree/main/packages/client-elixir)
+- [.NET](https://github.com/durable-streams/durable-streams/tree/main/packages/client-dotnet)
+- [Swift](https://github.com/durable-streams/durable-streams/tree/main/packages/client-swift)
+- [PHP](https://github.com/durable-streams/durable-streams/tree/main/packages/client-php)
+- [Java](https://github.com/durable-streams/durable-streams/tree/main/packages/client-java)
+- [Rust](https://github.com/durable-streams/durable-streams/tree/main/packages/client-rust)
+- [Ruby](https://github.com/durable-streams/durable-streams/tree/main/packages/client-rb)
 
 All pass the conformance test suite. See [Client Libraries](clients.md) for details.
 
 ---
 
-See also: [Protocol Specification](../PROTOCOL.md) | [Core Concepts](concepts.md) | [Building a Server](building-a-server.md)
+See also: [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) | [Core Concepts](concepts.md) | [Building a Server](building-a-server.md)
