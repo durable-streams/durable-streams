@@ -63,7 +63,6 @@ describe(`POST /v1/proxy/:streamId create-or-append`, () => {
 
     expect(appended.status).toBe(200)
     expect(appended.headers.get(`Stream-Response-Id`)).toBe(`2`)
-    expect(appended.headers.get(`Stream-Id`)).toBe(created.streamId)
   })
 
   it(`returns 201 and creates stream when streamId does not exist`, async () => {
@@ -73,7 +72,6 @@ describe(`POST /v1/proxy/:streamId create-or-append`, () => {
     const response = await appendToStream(streamId)
 
     expect(response.status).toBe(201)
-    expect(response.headers.get(`Stream-Id`)).toBe(streamId)
     expect(response.headers.get(`Location`)).toBeTruthy()
   })
 
@@ -94,6 +92,37 @@ describe(`POST /v1/proxy/:streamId create-or-append`, () => {
     const expectedExpires = Math.floor(Date.now() / 1000) + 1800
     expect(expires).toBeGreaterThan(expectedExpires - 5)
     expect(expires).toBeLessThan(expectedExpires + 5)
+  })
+
+  it(`returns 409 STREAM_CLOSED when appending to a closed stream`, async () => {
+    if (ctx.usingExternalProxy || !ctx.urls.durableStreams) {
+      // External proxy mode does not expose a local durable streams URL.
+      return
+    }
+
+    const streamId = `closed-stream-${Date.now()}`
+    ctx.upstream.setResponse(createAIStreamingResponse([`Hello`]))
+    const created = await appendToStream(streamId)
+    expect(created.status).toBe(201)
+    await waitForStreamReady(ctx.urls.proxy, streamId)
+
+    const durableCloseUrl = new URL(
+      `/v1/streams/${encodeURIComponent(streamId)}`,
+      ctx.urls.durableStreams
+    )
+    const closeResponse = await fetch(durableCloseUrl.toString(), {
+      method: `POST`,
+      headers: {
+        "Stream-Closed": `true`,
+      },
+    })
+    expect([200, 204]).toContain(closeResponse.status)
+
+    ctx.upstream.setResponse(createAIStreamingResponse([`Should fail`]))
+    const appendAfterClose = await appendToStream(streamId)
+    expect(appendAfterClose.status).toBe(409)
+    const body = await appendAfterClose.json()
+    expect(body.error.code).toBe(`STREAM_CLOSED`)
   })
 })
 

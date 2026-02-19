@@ -177,6 +177,26 @@ describe(`POST /v1/proxy/:streamId?action=connect`, () => {
     expect(url.searchParams.get(`signature`)).toBeDefined()
   })
 
+  it(`preserves passthrough query params in connect Location URL`, async () => {
+    const streamId = `session-passthrough-1`
+    const url = new URL(`/v1/proxy/${streamId}`, ctx.urls.proxy)
+    url.searchParams.set(`secret`, TEST_SECRET)
+    url.searchParams.set(`action`, `connect`)
+    url.searchParams.set(`offset`, `4096`)
+    url.searchParams.set(`live`, `sse`)
+
+    const response = await fetch(url.toString(), { method: `POST` })
+    expect([200, 201]).toContain(response.status)
+
+    const location = response.headers.get(`Location`)
+    expect(location).toBeTruthy()
+    const locationUrl = new URL(location!, ctx.urls.proxy)
+    expect(locationUrl.searchParams.get(`offset`)).toBe(`4096`)
+    expect(locationUrl.searchParams.get(`live`)).toBe(`sse`)
+    expect(locationUrl.searchParams.get(`expires`)).toBeTruthy()
+    expect(locationUrl.searchParams.get(`signature`)).toBeTruthy()
+  })
+
   it(`forwards connect handler rejection to client`, async () => {
     ctx.upstream.setResponse({
       status: 403,
@@ -192,6 +212,17 @@ describe(`POST /v1/proxy/:streamId?action=connect`, () => {
     expect(result.status).toBe(401)
     const parsed = JSON.parse(result.body) as { error: { code: string } }
     expect(parsed.error.code).toBe(`CONNECT_REJECTED`)
+  })
+
+  it(`does not return upstream response headers on connect`, async () => {
+    const result = await connectSession({
+      streamId: `session-connect-headers-only`,
+    })
+
+    expect([200, 201]).toContain(result.status)
+    expect(result.headers.get(`Location`)).toBeTruthy()
+    expect(result.headers.get(`Upstream-Content-Type`)).toBeNull()
+    expect(result.headers.get(`Stream-Response-Id`)).toBeNull()
   })
 
   it(`returns 400 when action is invalid`, async () => {

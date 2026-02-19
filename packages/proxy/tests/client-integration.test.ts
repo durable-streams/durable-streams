@@ -597,8 +597,11 @@ describe(`createDurableSession`, () => {
     })
     expect(await response.text()).toBe(`offset`)
 
-    // Wait briefly for the reader loop to issue the second read.
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    // Wait for the reader loop to issue the second read.
+    const waitStart = Date.now()
+    while (readUrls.length < 2 && Date.now() - waitStart < 500) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
     expect(readUrls[0]).toContain(`offset=-1`)
     expect(readUrls[1]).toContain(`offset=22_22`)
     session.close()
