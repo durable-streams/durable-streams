@@ -55,28 +55,46 @@
         "default": "./dist/transports/index.cjs"
       }
     },
+    "./conformance-tests": {
+      "import": {
+        "types": "./dist/conformance-tests/index.d.ts",
+        "default": "./dist/conformance-tests/index.js"
+      },
+      "require": {
+        "types": "./dist/conformance-tests/index.d.cts",
+        "default": "./dist/conformance-tests/index.cjs"
+      }
+    },
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "durable-streams-proxy-conformance": "./dist/conformance-tests/cli.js"
   },
   "sideEffects": false,
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
     "test": "vitest run",
+    "test:conformance:local": "vitest run --config vitest.conformance.config.ts conformance-tests/local-conformance.test.ts --no-coverage --reporter=default --passWithNoTests=false",
+    "test:conformance": "vitest run --config vitest.conformance.config.ts conformance-tests/test-runner.ts --no-coverage --reporter=default --passWithNoTests=false",
+    "test:conformance:watch": "vitest --config vitest.conformance.config.ts conformance-tests/test-runner.ts --no-coverage --reporter=default --passWithNoTests=false",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durable-streams/client": "workspace:*"
+    "@durable-streams/client": "workspace:*",
+    "vitest": "^4.0.0"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
     "@types/node": "^22.0.0",
     "tsdown": "^0.9.0",
-    "typescript": "^5.0.0",
-    "vitest": "^4.0.0"
+    "typescript": "^5.0.0"
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "conformance-tests",
+    "vitest.conformance.config.ts"
   ],
   "engines": {
     "node": ">=18.0.0"

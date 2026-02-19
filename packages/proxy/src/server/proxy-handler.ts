@@ -104,10 +104,10 @@ export function createProxyHandler(
       const match = path.match(PROXY_STREAM)
       if (match) {
         const streamId = decodeURIComponent(match[1]!)
+        const action = url.searchParams.get(`action`)
 
         switch (method) {
           case `POST`: {
-            const action = url.searchParams.get(`action`)
             if (action === `connect`) {
               await handleConnectStream(req, res, streamId, options, isAllowed)
             } else if (action) {
@@ -130,6 +130,15 @@ export function createProxyHandler(
             return
           }
           case `GET`:
+            if (action) {
+              sendError(
+                res,
+                400,
+                `INVALID_ACTION`,
+                `Unknown action for GET: ${action}`
+              )
+              return
+            }
             await handleReadStream(
               req,
               res,
@@ -140,6 +149,15 @@ export function createProxyHandler(
             return
 
           case `HEAD`:
+            if (action) {
+              sendError(
+                res,
+                400,
+                `INVALID_ACTION`,
+                `Unknown action for HEAD: ${action}`
+              )
+              return
+            }
             await handleHeadStream(
               req,
               res,
@@ -154,6 +172,15 @@ export function createProxyHandler(
             return
 
           case `DELETE`:
+            if (action) {
+              sendError(
+                res,
+                400,
+                `INVALID_ACTION`,
+                `Unknown action for DELETE: ${action}`
+              )
+              return
+            }
             await handleDeleteStream(
               req,
               res,

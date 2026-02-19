@@ -6,10 +6,10 @@ import {
   createDurableSession,
   createRequestIdStorageKey,
   loadRequestIdMapping,
-} from "../src/client"
-import { createDurableAdapter } from "../src/transports/tanstack"
-import { createDurableChatTransport } from "../src/transports/vercel"
-import { createAIStreamingResponse, createTestContext } from "./harness"
+} from "../../src/client"
+import { createDurableAdapter } from "../../src/transports/tanstack"
+import { createDurableChatTransport } from "../../src/transports/vercel"
+import { createAIStreamingResponse, createTestContext } from "../harness"
 
 const ctx = createTestContext()
 const TEST_SECRET = `test-secret-key-for-development`

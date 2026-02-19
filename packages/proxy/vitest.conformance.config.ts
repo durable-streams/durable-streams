@@ -4,10 +4,7 @@ import type { ViteUserConfigExport } from "vitest/config"
 
 const config: ViteUserConfigExport = defineConfig({
   test: {
-    include: [
-      `tests/client/client-suite.test.ts`,
-      `tests/server/server-suite.test.ts`,
-    ],
+    include: [`conformance-tests/**/*.ts`],
     exclude: [`**/node_modules/**`],
     testTimeout: 30000,
     hookTimeout: 30000,
