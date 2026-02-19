@@ -3,11 +3,11 @@
  *
  * PATCH /v1/proxy/:streamId?action=abort
  *
- * Aborts an in-progress upstream connection. Pre-signed URL authentication only.
+ * Aborts one or more in-progress upstream connections.
  */
 
-import { validatePreSignedUrl } from "./tokens"
-import { abortConnection } from "./upstream"
+import { validatePreSignedUrl, validateServiceJwt } from "./tokens"
+import { abortConnectionByResponseId, abortConnections } from "./upstream"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -28,38 +28,49 @@ export function handleAbortStream(
 ): void {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
-  // Authentication: pre-signed URL ONLY (no JWT fallback)
+  // Authentication: pre-signed URL or service JWT fallback.
   const expires = url.searchParams.get(`expires`)
   const signature = url.searchParams.get(`signature`)
 
-  if (!expires || !signature) {
-    sendError(
-      res,
-      401,
-      `MISSING_SIGNATURE`,
-      `Pre-signed URL with expires and signature required`
+  if (expires && signature) {
+    const result = validatePreSignedUrl(
+      streamId,
+      expires,
+      signature,
+      options.jwtSecret
     )
-    return
-  }
 
-  const result = validatePreSignedUrl(
-    streamId,
-    expires,
-    signature,
-    options.jwtSecret
-  )
-
-  if (!result.ok) {
-    const code = result.code
-    sendError(
-      res,
-      401,
-      code,
-      code === `SIGNATURE_EXPIRED`
-        ? `Pre-signed URL has expired`
-        : `Invalid signature`
+    if (!result.ok) {
+      const code = result.code
+      sendError(
+        res,
+        401,
+        code,
+        code === `SIGNATURE_EXPIRED`
+          ? `Pre-signed URL has expired`
+          : `Invalid signature`
+      )
+      return
+    }
+  } else {
+    const auth = validateServiceJwt(
+      url.searchParams.get(`secret`),
+      req.headers.authorization,
+      options.jwtSecret
     )
-    return
+
+    if (!auth.ok) {
+      const { code } = auth
+      sendError(
+        res,
+        401,
+        code,
+        code === `MISSING_SECRET`
+          ? `Authentication required`
+          : `Invalid credentials`
+      )
+      return
+    }
   }
 
   // Validate action parameter
@@ -74,8 +85,23 @@ export function handleAbortStream(
     return
   }
 
-  // Abort the connection (idempotent - always succeeds)
-  abortConnection(streamId)
+  const response = url.searchParams.get(`response`)
+  if (response) {
+    const responseId = parseInt(response, 10)
+    if (Number.isNaN(responseId) || responseId < 1) {
+      sendError(
+        res,
+        400,
+        `INVALID_ACTION`,
+        `response query parameter must be a positive integer`
+      )
+      return
+    }
+    abortConnectionByResponseId(streamId, responseId)
+  } else {
+    // Abort all active connections for this stream (idempotent).
+    abortConnections(streamId)
+  }
 
   // 204 No Content
   res.writeHead(204)

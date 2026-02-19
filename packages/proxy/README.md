@@ -147,9 +147,47 @@ Returns `200 OK` with `{"status":"ok"}`.
 
 The package includes a client library for browser and Node.js applications, available at `@durable-streams/proxy/client`.
 
+### createDurableSession
+
+Session API for multi-request streams. A single session appends multiple upstream
+responses to one durable stream and returns demultiplexed `ProxyResponse` objects.
+
+```typescript
+import { createDurableSession } from "@durable-streams/proxy/client"
+
+const session = createDurableSession({
+  proxyUrl: "https://my-proxy.example.com/v1/proxy",
+  proxyAuthorization: "service-secret",
+  sessionId: "conversation-123",
+  storage: localStorage,
+})
+
+await session.connect() // optional; auto-runs on first fetch/responses call
+
+const response = await session.fetch(
+  "https://api.openai.com/v1/chat/completions",
+  {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: "Bearer sk-...", // becomes Upstream-Authorization
+    },
+    body: JSON.stringify({
+      model: "gpt-4",
+      messages: [{ role: "user", content: "Hello" }],
+      stream: true,
+    }),
+    requestId: "turn-1",
+  }
+)
+
+console.log(response.responseId) // numeric stream response ID
+```
+
 ### createDurableFetch
 
-A fetch-like wrapper that routes requests through the proxy, persists stream credentials, and automatically resumes interrupted streams.
+One-off wrapper for non-session usage. Each call creates a stream and returns a
+demultiplexed `ProxyResponse` for that request.
 
 ```typescript
 import { createDurableFetch } from "@durable-streams/proxy/client"
@@ -157,34 +195,24 @@ import { createDurableFetch } from "@durable-streams/proxy/client"
 const durableFetch = createDurableFetch({
   proxyUrl: "https://my-proxy.example.com/v1/proxy",
   proxyAuthorization: "service-secret",
-  autoResume: true,
-  storage: localStorage, // or sessionStorage, or MemoryStorage
 })
 
 const response = await durableFetch(
   "https://api.openai.com/v1/chat/completions",
   {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer sk-...", // Transparently becomes Upstream-Authorization
-    },
     body: JSON.stringify({
-      model: "gpt-4",
       messages: [{ role: "user", content: "Hello" }],
       stream: true,
     }),
-    requestId: "conversation-123", // Optional: enables resume across sessions
+    requestId: "req-abc",
   }
 )
-
-// response.body is a ReadableStream
-// response.wasResumed indicates if this was a resume
-// response.streamUrl is the pre-signed URL for manual operations
-// response.streamId is the stream UUID
 ```
 
-Everything passed to `durableFetch` is aimed at the upstream service. The client transparently relabels `Authorization` to `Upstream-Authorization` and `method` to `Upstream-Method` when sending to the proxy.
+Everything passed to client request calls is aimed at upstream. `Authorization`
+is relabeled to `Upstream-Authorization`, and method is relabeled to
+`Upstream-Method`.
 
 ### createAbortFn
 
@@ -201,7 +229,10 @@ await abort() // Sends PATCH ?action=abort to stop the upstream connection
 
 ### Credential Storage
 
-The client persists stream credentials (pre-signed URL, offset, content type) to enable resume across page reloads and network interruptions. Credentials are scoped by `proxyUrl + requestId` to prevent cross-domain leakage.
+The client stores `requestId -> responseId` mappings for idempotent retry:
+
+- Session key: `{prefix}{proxyUrl}:{sessionId}:{requestId} -> { responseId }`
+- One-off key: `{prefix}{proxyUrl}::{requestId} -> { responseId, streamUrl }`
 
 - **Browser**: Uses `localStorage` by default
 - **Node.js**: Uses `MemoryStorage` (in-process only)
@@ -302,7 +333,7 @@ The proxy uses two authentication mechanisms:
 | --------------- | --------------------- | ------------------------------- |
 | Create (POST)   | Service JWT           | Via `?secret=` or Bearer header |
 | Read (GET)      | Pre-signed URL or JWT | URL from Location header        |
-| Abort (PATCH)   | Pre-signed URL only   | No JWT fallback                 |
+| Abort (PATCH)   | Pre-signed URL or JWT | URL abort or service auth       |
 | Metadata (HEAD) | Service JWT only      | No pre-signed URL fallback      |
 | Delete (DELETE) | Service JWT only      | No pre-signed URL fallback      |
 
@@ -318,33 +349,40 @@ The proxy uses two authentication mechanisms:
 
 ## Tests
 
-The proxy includes a comprehensive test suite. Tests can run against the included reference server or an external proxy implementation.
+The proxy package has two test layers:
+
+- `pnpm test`: package tests only (client integration + client/server unit tests + local conformance via server suite entrypoint)
+- `pnpm test:conformance`: proxy protocol conformance against an external proxy URL
+- `pnpm test:conformance:local`: proxy protocol conformance against the local OSS proxy implementation
+
+Coverage posture:
+
+- Conformance tests prioritize MUST-level protocol behavior first, then add deterministic SHOULD-level checks.
+- Client tests are integration-first, with unit tests for parser/storage internals and edge-case handling.
+
+Command matrix:
+
+| Command                       | Purpose                                                                                             |
+| ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| `pnpm test`                   | Default package test run (`tests/client/client-suite.test.ts`, `tests/server/server-suite.test.ts`) |
+| `pnpm test:conformance:local` | Run all proxy conformance tests against local proxy server                                          |
+| `pnpm test:conformance`       | Run all proxy conformance tests against `PROXY_CONFORMANCE_TEST_URL`                                |
+| `pnpm typecheck`              | TypeScript typecheck                                                                                |
+
+Run conformance tests in-repo:
 
 ```bash
 cd packages/proxy
-pnpm test
+PROXY_CONFORMANCE_TEST_URL=https://my-proxy.example.com pnpm test:conformance
 ```
 
-To test against an external server:
+Run conformance tests from an installed package:
 
 ```bash
-PROXY_CONFORMANCE_URL=https://my-proxy.example.com pnpm test
+npx durable-streams-proxy-conformance --run https://my-proxy.example.com
 ```
 
-External servers must have `http://localhost:*/**` in their allowlist (tests use a mock upstream).
-
-| Category                     | Description                                |
-| ---------------------------- | ------------------------------------------ |
-| `allowlist.test.ts`          | URL validation and pattern matching        |
-| `create-stream.test.ts`      | Stream creation, validation, SSRF blocking |
-| `read-stream.test.ts`        | Stream reading, offset handling            |
-| `abort-stream.test.ts`       | Stream abortion and idempotency            |
-| `head-stream.test.ts`        | Stream metadata retrieval                  |
-| `delete-stream.test.ts`      | Stream deletion and cleanup                |
-| `headers.test.ts`            | Header forwarding and filtering            |
-| `control-messages.test.ts`   | Error handling and stream lifecycle        |
-| `upstream-errors.test.ts`    | Upstream failure handling                  |
-| `client-integration.test.ts` | Client library functionality               |
+External servers must allow local mock upstream calls (typically `http://localhost:*/**`) because the conformance suite controls upstream behavior via a local mock server.
 
 ## License
 

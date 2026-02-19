@@ -18,6 +18,93 @@ function base64urlEncode(input: Buffer): string {
 }
 
 /**
+ * Parsed components of a pre-signed URL.
+ */
+export interface ParsedPreSignedUrl {
+  /** The stream ID from the URL path */
+  streamId: string
+  /** The expires query parameter (Unix timestamp in seconds) */
+  expires: string
+  /** The signature query parameter */
+  signature: string
+}
+
+/**
+ * Parse a pre-signed URL into its components.
+ *
+ * Expected URL format: {origin}/v1/proxy/{streamId}?expires={timestamp}&signature={sig}
+ *
+ * @param url - The pre-signed URL to parse (can be a full URL or header value)
+ * @returns Parsed URL components or null if the URL is malformed
+ */
+export function parsePreSignedUrl(url: string): ParsedPreSignedUrl | null {
+  try {
+    const parsed = new URL(url)
+
+    // Extract streamId from path: /v1/proxy/{streamId}
+    const pathMatch = parsed.pathname.match(/^\/v1\/proxy\/([^/]+)$/)
+    if (!pathMatch) {
+      return null
+    }
+
+    const streamId = decodeURIComponent(pathMatch[1]!)
+    const expires = parsed.searchParams.get(`expires`)
+    const signature = parsed.searchParams.get(`signature`)
+
+    if (!streamId || !expires || !signature) {
+      return null
+    }
+
+    return { streamId, expires, signature }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Result of HMAC validation only (ignoring expiry).
+ */
+export type HmacResult = { ok: true } | { ok: false; code: `SIGNATURE_INVALID` }
+
+/**
+ * Validate HMAC signature of a pre-signed URL (ignoring expiry).
+ *
+ * Use this for write paths where authorization flows through the upstream
+ * and we only need to verify the client received this URL from the proxy.
+ *
+ * @param streamId - The stream ID from the URL path
+ * @param expires - The expires query parameter (Unix timestamp in seconds)
+ * @param signature - The signature query parameter
+ * @param secret - The HMAC secret key
+ * @returns Validation result
+ */
+export function validateHmac(
+  streamId: string,
+  expires: string,
+  signature: string,
+  secret: string
+): HmacResult {
+  // Compute expected signature
+  const expectedSignature = base64urlEncode(
+    createHmac(`sha256`, secret).update(`${streamId}:${expires}`).digest()
+  )
+
+  // Timing-safe comparison
+  const providedBuffer = Buffer.from(signature)
+  const expectedBuffer = Buffer.from(expectedSignature)
+
+  if (providedBuffer.length !== expectedBuffer.length) {
+    return { ok: false, code: `SIGNATURE_INVALID` }
+  }
+
+  if (!timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return { ok: false, code: `SIGNATURE_INVALID` }
+  }
+
+  return { ok: true }
+}
+
+/**
  * Generate a pre-signed URL for accessing a stream.
  *
  * The signature is computed as: base64url(HMAC-SHA256(secret, `${streamId}:${expiresAt}`))
@@ -46,10 +133,13 @@ export function generatePreSignedUrl(
  */
 export type PreSignedUrlResult =
   | { ok: true }
-  | { ok: false; code: `SIGNATURE_EXPIRED` | `SIGNATURE_INVALID` }
+  | { ok: false; code: `SIGNATURE_EXPIRED` }
+  | { ok: false; code: `SIGNATURE_INVALID` }
 
 /**
- * Validate pre-signed URL parameters.
+ * Validate pre-signed URL parameters (HMAC + expiry).
+ *
+ * Use this for read paths where the signed URL is the sole authorization.
  *
  * @param streamId - The stream ID from the URL path
  * @param expires - The expires query parameter (Unix timestamp in seconds)
@@ -63,27 +153,15 @@ export function validatePreSignedUrl(
   signature: string,
   secret: string
 ): PreSignedUrlResult {
+  const hmacResult = validateHmac(streamId, expires, signature, secret)
+  if (!hmacResult.ok) {
+    return hmacResult
+  }
+
   // Check expiration
   const expiresAt = parseInt(expires, 10)
   if (isNaN(expiresAt) || Date.now() > expiresAt * 1000) {
     return { ok: false, code: `SIGNATURE_EXPIRED` }
-  }
-
-  // Compute expected signature
-  const expectedSignature = base64urlEncode(
-    createHmac(`sha256`, secret).update(`${streamId}:${expires}`).digest()
-  )
-
-  // Timing-safe comparison
-  const providedBuffer = Buffer.from(signature)
-  const expectedBuffer = Buffer.from(expectedSignature)
-
-  if (providedBuffer.length !== expectedBuffer.length) {
-    return { ok: false, code: `SIGNATURE_INVALID` }
-  }
-
-  if (!timingSafeEqual(providedBuffer, expectedBuffer)) {
-    return { ok: false, code: `SIGNATURE_INVALID` }
   }
 
   return { ok: true }

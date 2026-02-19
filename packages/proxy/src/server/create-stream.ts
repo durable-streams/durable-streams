@@ -10,6 +10,8 @@ import { randomUUID } from "node:crypto"
 import { generatePreSignedUrl, validateServiceJwt } from "./tokens"
 import { filterHeadersForUpstream, validateUpstreamUrl } from "./allowlist"
 import {
+  createConnection,
+  nextResponseId,
   pipeUpstreamBody,
   registerConnection,
   unregisterConnection,
@@ -32,6 +34,11 @@ const MAX_ERROR_BODY_SIZE = 64 * 1024 // 64KB
  * Upstream request timeout in milliseconds.
  */
 const UPSTREAM_TIMEOUT_MS = 60000 // 60 seconds
+
+/**
+ * Default URL expiration in seconds (7 days).
+ */
+const DEFAULT_URL_EXPIRATION_SECONDS = 604800
 
 /**
  * Collect request body as a Buffer.
@@ -81,6 +88,52 @@ async function readResponseBody(
 }
 
 /**
+ * Result of verifying stream existence and status.
+ */
+type VerifyStreamResult =
+  | { ok: true }
+  | { ok: false; code: `NOT_FOUND` | `STREAM_CLOSED` | `STORAGE_ERROR` }
+
+/**
+ * Verify a stream exists and is not closed.
+ *
+ * @param durableStreamsUrl - URL of the durable streams server
+ * @param streamId - The stream ID to verify
+ * @returns Verification result
+ */
+async function verifyStreamExists(
+  durableStreamsUrl: string,
+  streamId: string
+): Promise<VerifyStreamResult> {
+  const streamPath = `/v1/streams/${streamId}`
+  const fullStreamUrl = new URL(streamPath, durableStreamsUrl)
+
+  try {
+    const headResponse = await fetch(fullStreamUrl.toString(), {
+      method: `HEAD`,
+    })
+
+    if (headResponse.status === 404) {
+      return { ok: false, code: `NOT_FOUND` }
+    }
+
+    if (!headResponse.ok) {
+      return { ok: false, code: `STORAGE_ERROR` }
+    }
+
+    // Check if stream is closed
+    const streamClosed = headResponse.headers.get(`Stream-Closed`)
+    if (streamClosed === `true`) {
+      return { ok: false, code: `STREAM_CLOSED` }
+    }
+
+    return { ok: true }
+  } catch {
+    return { ok: false, code: `STORAGE_ERROR` }
+  }
+}
+
+/**
  * Handle a create stream request.
  *
  * @param req - The incoming HTTP request
@@ -94,7 +147,8 @@ export async function handleCreateStream(
   res: ServerResponse,
   options: ProxyServerOptions,
   isAllowed: (url: string) => boolean,
-  contentTypeStore: Map<string, string>
+  contentTypeStore: Map<string, string>,
+  explicitStreamId?: string
 ): Promise<void> {
   const url = new URL(req.url ?? ``, `http://${req.headers.host}`)
 
@@ -118,7 +172,26 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 2: Validate required headers
+  // Step 2: Check for explicit stream ID path (create-or-append route).
+  let isStreamReuse = false
+
+  if (explicitStreamId) {
+    const verifyResult = await verifyStreamExists(
+      options.durableStreamsUrl,
+      explicitStreamId
+    )
+    if (verifyResult.ok) {
+      isStreamReuse = true
+    } else if (verifyResult.code === `STREAM_CLOSED`) {
+      sendError(res, 409, `STREAM_CLOSED`, `Stream is closed`)
+      return
+    } else if (verifyResult.code === `STORAGE_ERROR`) {
+      sendError(res, 502, `STORAGE_ERROR`, `Failed to verify stream`)
+      return
+    }
+  }
+
+  // Step 3: Validate required headers
   const upstreamUrl = req.headers[`upstream-url`]
   if (!upstreamUrl || Array.isArray(upstreamUrl)) {
     sendError(
@@ -141,7 +214,7 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 3: Validate method
+  // Step 4: Validate method
   const method = upstreamMethod.toUpperCase()
   if (!ALLOWED_METHODS.has(method)) {
     sendError(
@@ -153,7 +226,7 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 4: Validate upstream URL and check allowlist
+  // Step 5: Validate upstream URL and check allowlist
   const parsedUrl = validateUpstreamUrl(upstreamUrl)
   if (!parsedUrl) {
     sendError(res, 403, `UPSTREAM_NOT_ALLOWED`, `Invalid upstream URL`)
@@ -170,10 +243,10 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 5: Generate stream ID (UUIDv4)
-  const streamId = randomUUID()
+  // Step 6: Determine stream ID.
+  const streamId = explicitStreamId ?? randomUUID()
 
-  // Step 6: Prepare upstream request
+  // Step 7: Prepare upstream request
   const upstreamHeaders = filterHeadersForUpstream(
     req.headers as Record<string, string | Array<string> | undefined>,
     parsedUrl.hostname
@@ -242,47 +315,66 @@ export async function handleCreateStream(
     return
   }
 
-  // Step 9: Create durable stream (2xx success path)
+  // Step 9: Create or reuse durable stream (2xx success path)
   const upstreamContentType =
     upstreamResponse.headers.get(`content-type`) ?? `application/octet-stream`
+  const responseId = await nextResponseId(options.durableStreamsUrl, streamId)
 
   // Store upstream content type for GET/HEAD responses
   contentTypeStore.set(streamId, upstreamContentType)
 
-  // Create stream on underlying durable streams server
-  const streamPath = `/v1/streams/${streamId}`
-  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
+  // Only create stream if not reusing
+  if (!isStreamReuse) {
+    const streamPath = `/v1/streams/${streamId}`
+    const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
 
-  try {
-    const createResponse = await fetch(fullStreamUrl.toString(), {
-      method: `PUT`,
-      headers: {
-        "Content-Type": `application/octet-stream`,
-        "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
-      },
-    })
+    try {
+      const createResponse = await fetch(fullStreamUrl.toString(), {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/octet-stream`,
+          "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
+        },
+      })
 
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text().catch(() => ``)
+      if (!createResponse.ok) {
+        const errorText = await createResponse.text().catch(() => ``)
+        contentTypeStore.delete(streamId)
+        sendError(
+          res,
+          502,
+          `STORAGE_ERROR`,
+          `Failed to create stream: ${errorText}`
+        )
+        return
+      }
+    } catch (error) {
       contentTypeStore.delete(streamId)
+      const message = error instanceof Error ? error.message : `Unknown error`
       sendError(
         res,
         502,
         `STORAGE_ERROR`,
-        `Failed to create stream: ${errorText}`
+        `Failed to create stream: ${message}`
       )
       return
     }
-  } catch (error) {
-    contentTypeStore.delete(streamId)
-    const message = error instanceof Error ? error.message : `Unknown error`
-    sendError(res, 502, `STORAGE_ERROR`, `Failed to create stream: ${message}`)
-    return
   }
 
   // Step 10: Generate pre-signed URL and respond
-  const expiresAt =
-    Math.floor(Date.now() / 1000) + (options.urlExpirationSeconds ?? 86400)
+  // Parse Stream-Signed-URL-TTL header for URL expiration
+  const signedUrlTtlHeader = req.headers[`stream-signed-url-ttl`]
+  let urlExpirationSeconds =
+    options.urlExpirationSeconds ?? DEFAULT_URL_EXPIRATION_SECONDS
+
+  if (signedUrlTtlHeader && !Array.isArray(signedUrlTtlHeader)) {
+    const parsedTtl = parseInt(signedUrlTtlHeader, 10)
+    if (!isNaN(parsedTtl) && parsedTtl >= 0) {
+      urlExpirationSeconds = parsedTtl
+    }
+  }
+
+  const expiresAt = Math.floor(Date.now() / 1000) + urlExpirationSeconds
   const proto = req.headers[`x-forwarded-proto`] ?? `http`
   const origin = `${proto}://${req.headers.host}`
   const location = generatePreSignedUrl(
@@ -292,54 +384,43 @@ export async function handleCreateStream(
     expiresAt
   )
 
-  res.writeHead(201, {
+  // Return 200 OK for stream reuse, 201 Created for new stream
+  const statusCode = isStreamReuse ? 200 : 201
+  res.writeHead(statusCode, {
     Location: location,
+    "Stream-Id": streamId,
     "Upstream-Content-Type": upstreamContentType,
-    "Access-Control-Expose-Headers": `Location, Upstream-Content-Type`,
+    "Stream-Response-Id": String(responseId),
   })
   res.end() // No body
 
   // Step 11: Start background piping
-  registerConnection(streamId, {
-    abortController,
-    streamId,
-    startedAt: Date.now(),
-  })
+  const connection = createConnection(streamId, responseId, abortController)
+  registerConnection(connection)
 
   // Pipe in background (don't await)
-  if (upstreamResponse.body) {
-    pipeUpstreamBody(upstreamResponse.body, {
-      durableStreamsUrl: options.durableStreamsUrl,
-      streamId,
-      signal: abortController.signal,
+  pipeUpstreamBody(upstreamResponse.body, {
+    durableStreamsUrl: options.durableStreamsUrl,
+    streamId,
+    responseId,
+    signal: abortController.signal,
+    upstreamStatus: upstreamResponse.status,
+    upstreamHeaders: upstreamResponse.headers,
+  })
+    .catch((error) => {
+      const isExpectedPipeTermination =
+        error instanceof Error &&
+        (error.name === `AbortError` ||
+          (error.name === `TypeError` &&
+            (error.message === `fetch failed` ||
+              error.message === `terminated`)) ||
+          /Failed to write frame to stream .*: (409|410)$/.test(error.message))
+      if (abortController.signal.aborted || isExpectedPipeTermination) {
+        return
+      }
+      console.error(`Error piping upstream body for stream ${streamId}:`, error)
     })
-      .catch(async (error) => {
-        console.error(
-          `Error piping upstream body for stream ${streamId}:`,
-          error
-        )
-        // Attempt to close the stream so readers don't hang indefinitely
-        try {
-          const closeUrl = new URL(
-            `/v1/streams/${streamId}`,
-            options.durableStreamsUrl
-          )
-          await fetch(closeUrl.toString(), {
-            method: `POST`,
-            headers: {
-              "Stream-Closed": `true`,
-              "Content-Length": `0`,
-            },
-          })
-        } catch {
-          // Best-effort close
-        }
-      })
-      .finally(() => {
-        unregisterConnection(streamId)
-      })
-  } else {
-    // No body - unregister immediately
-    unregisterConnection(streamId)
-  }
+    .finally(() => {
+      unregisterConnection(streamId, connection.connectionId)
+    })
 }

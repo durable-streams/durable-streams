@@ -62,6 +62,15 @@ export async function handleHeadStream(
       sendError(res, 404, `STREAM_NOT_FOUND`, `Stream does not exist`)
       return
     }
+    if (!dsResponse.ok) {
+      sendError(
+        res,
+        502,
+        `STORAGE_ERROR`,
+        `Failed to fetch stream metadata from durable storage`
+      )
+      return
+    }
 
     // Build response headers
     const responseHeaders: Record<string, string> = {}
@@ -97,7 +106,7 @@ export async function handleHeadStream(
       `Upstream-Content-Type`,
     ].join(`, `)
 
-    res.writeHead(200, responseHeaders)
+    res.writeHead(dsResponse.status, responseHeaders)
     res.end() // No body for HEAD
   } catch (error) {
     if (!res.headersSent) {

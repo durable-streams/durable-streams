@@ -8,7 +8,7 @@
  */
 
 import { validatePreSignedUrl, validateServiceJwt } from "./tokens"
-import { sendError } from "./response"
+import { sendError, sendExpiredUrlError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
 
@@ -45,14 +45,12 @@ export async function handleReadStream(
 
     if (!result.ok) {
       const { code } = result
-      sendError(
-        res,
-        401,
-        code,
-        code === `SIGNATURE_EXPIRED`
-          ? `Pre-signed URL has expired`
-          : `Invalid signature`
-      )
+      if (code === `SIGNATURE_EXPIRED`) {
+        // Return structured error with streamId for client reconnect.
+        sendExpiredUrlError(res, code, `Pre-signed URL has expired`, streamId)
+      } else {
+        sendError(res, 401, code, `Invalid signature`)
+      }
       return
     }
   } else {
@@ -83,12 +81,16 @@ export async function handleReadStream(
   // Forward query parameters
   const offset = url.searchParams.get(`offset`)
   const live = url.searchParams.get(`live`)
+  const cursor = url.searchParams.get(`cursor`)
 
   if (offset) {
     dsUrl.searchParams.set(`offset`, offset)
   }
   if (live) {
     dsUrl.searchParams.set(`live`, live)
+  }
+  if (cursor) {
+    dsUrl.searchParams.set(`cursor`, cursor)
   }
 
   try {
@@ -99,6 +101,11 @@ export async function handleReadStream(
         Accept: req.headers.accept ?? `*/*`,
       },
     })
+
+    if (dsResponse.status === 404) {
+      sendError(res, 404, `STREAM_NOT_FOUND`, `Stream does not exist`)
+      return
+    }
 
     // Build response headers
     const responseHeaders: Record<string, string> = {}
@@ -111,6 +118,8 @@ export async function handleReadStream(
       `stream-write-units`,
       `stream-closed`,
       `stream-expires-at`,
+      `stream-cursor`,
+      `stream-sse-data-encoding`,
     ]
 
     for (const header of streamHeaders) {
@@ -141,6 +150,8 @@ export async function handleReadStream(
       `Stream-Write-Units`,
       `Stream-Closed`,
       `Stream-Expires-At`,
+      `Stream-Cursor`,
+      `Stream-SSE-Data-Encoding`,
       `Upstream-Content-Type`,
     ].join(`, `)
 

@@ -1,9 +1,13 @@
 import path from "node:path"
 import { defineConfig } from "vitest/config"
+import type { ViteUserConfigExport } from "vitest/config"
 
-export default defineConfig({
+const config: ViteUserConfigExport = defineConfig({
   test: {
-    include: [`src/__tests__/**/*.test.ts`],
+    include: [
+      `tests/client/client-suite.test.ts`,
+      `tests/server/server-suite.test.ts`,
+    ],
     exclude: [`**/node_modules/**`],
     testTimeout: 30000,
     hookTimeout: 30000,
@@ -17,3 +21,5 @@ export default defineConfig({
     },
   },
 })
+
+export default config

@@ -261,6 +261,7 @@ export const HOP_BY_HOP_HEADERS: Set<string> = new Set([
   `proxy-authorization`,
   `te`,
   `trailer`,
+  `trailers`,
   `transfer-encoding`,
   `upgrade`,
   `host`,
@@ -276,6 +277,7 @@ const PROXY_HEADERS: Set<string> = new Set([
   `upstream-url`,
   `upstream-authorization`,
   `upstream-method`,
+  `stream-signed-url-ttl`,
 ])
 
 /**

@@ -32,3 +32,16 @@ export function sendJson(
   })
   res.end(JSON.stringify(data))
 }
+
+/**
+ * Send a structured error response for expired URLs.
+ */
+export function sendExpiredUrlError(
+  res: ServerResponse,
+  code: string,
+  message: string,
+  streamId: string
+): void {
+  res.writeHead(401, { "Content-Type": `application/json` })
+  res.end(JSON.stringify({ error: { code, message, streamId } }))
+}

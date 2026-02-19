@@ -1,13 +1,13 @@
 /**
- * Storage utilities for persisting stream credentials.
+ * Storage utilities for requestId mapping and session credentials.
  */
 
-import type { DurableStorage, StreamCredentials } from "./types"
+import type {
+  DurableStorage,
+  RequestIdMapping,
+  SessionCredentials,
+} from "./types"
 
-/**
- * In-memory storage implementation.
- * Useful for server-side usage or testing.
- */
 export class MemoryStorage implements DurableStorage {
   private store = new Map<string, string>()
 
@@ -28,102 +28,126 @@ export class MemoryStorage implements DurableStorage {
   }
 }
 
-/**
- * Create a scoped storage key for a stream.
- *
- * Keys are scoped by proxy base URL to prevent collisions between
- * different proxy instances using the same request ID.
- *
- * @param prefix - Storage key prefix
- * @param scope - Scope identifier (the normalized proxy base URL)
- * @param requestId - The request ID
- */
-export function createStorageKey(
-  prefix: string,
-  scope: string,
-  requestId: string
-): string {
-  return `${prefix}${scope}:${requestId}`
-}
-
-/**
- * Save stream credentials to storage.
- */
-export function saveCredentials(
-  storage: DurableStorage,
-  prefix: string,
-  scope: string,
-  requestId: string,
-  credentials: StreamCredentials
-): void {
-  const key = createStorageKey(prefix, scope, requestId)
-  storage.setItem(key, JSON.stringify(credentials))
-}
-
-/**
- * Load stream credentials from storage.
- */
-export function loadCredentials(
-  storage: DurableStorage,
-  prefix: string,
-  scope: string,
-  requestId: string
-): StreamCredentials | null {
-  const key = createStorageKey(prefix, scope, requestId)
-  const data = storage.getItem(key)
-
-  if (!data) {
-    return null
+export function getDefaultStorage(): DurableStorage {
+  if (typeof localStorage !== `undefined`) {
+    return localStorage
   }
+  return new MemoryStorage()
+}
 
+export function createRequestIdStorageKey(
+  prefix: string,
+  proxyUrl: string,
+  requestId: string,
+  sessionId?: string
+): string {
+  if (sessionId) {
+    return `${prefix}${proxyUrl}:${sessionId}:${requestId}`
+  }
+  return `${prefix}${proxyUrl}::${requestId}`
+}
+
+export function saveRequestIdMapping(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  requestId: string,
+  mapping: RequestIdMapping,
+  sessionId?: string
+): void {
+  storage.setItem(
+    createRequestIdStorageKey(prefix, proxyUrl, requestId, sessionId),
+    JSON.stringify(mapping)
+  )
+}
+
+export function loadRequestIdMapping(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  requestId: string,
+  sessionId?: string
+): RequestIdMapping | null {
+  const raw = storage.getItem(
+    createRequestIdStorageKey(prefix, proxyUrl, requestId, sessionId)
+  )
+  if (!raw) return null
   try {
-    return JSON.parse(data) as StreamCredentials
+    return JSON.parse(raw) as RequestIdMapping
   } catch {
     return null
   }
 }
 
-/**
- * Remove stream credentials from storage.
- */
-export function removeCredentials(
+export function removeRequestIdMapping(
   storage: DurableStorage,
   prefix: string,
-  scope: string,
-  requestId: string
+  proxyUrl: string,
+  requestId: string,
+  sessionId?: string
 ): void {
-  const key = createStorageKey(prefix, scope, requestId)
-  storage.removeItem(key)
+  storage.removeItem(
+    createRequestIdStorageKey(prefix, proxyUrl, requestId, sessionId)
+  )
 }
 
-/**
- * Check if a stream's pre-signed URL has expired.
- */
-export function isUrlExpired(credentials: StreamCredentials): boolean {
-  return Date.now() > credentials.expiresAtSecs * 1000
+export function createSessionStorageKey(
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string
+): string {
+  return `${prefix}session:${proxyUrl}:${sessionId}`
 }
 
-/**
- * Extract the stream ID from a pre-signed URL.
- *
- * Expected format: .../v1/proxy/{streamId}?expires=...&signature=...
- */
+export function saveSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string,
+  credentials: SessionCredentials
+): void {
+  storage.setItem(
+    createSessionStorageKey(prefix, proxyUrl, sessionId),
+    JSON.stringify(credentials)
+  )
+}
+
+export function loadSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string
+): SessionCredentials | null {
+  const raw = storage.getItem(
+    createSessionStorageKey(prefix, proxyUrl, sessionId)
+  )
+  if (!raw) return null
+  try {
+    return JSON.parse(raw) as SessionCredentials
+  } catch {
+    return null
+  }
+}
+
+export function removeSessionCredentials(
+  storage: DurableStorage,
+  prefix: string,
+  proxyUrl: string,
+  sessionId: string
+): void {
+  storage.removeItem(createSessionStorageKey(prefix, proxyUrl, sessionId))
+}
+
 export function extractStreamIdFromUrl(url: string): string {
   const parsed = new URL(url)
-  const pathParts = parsed.pathname.split(`/`)
-  const last =
-    pathParts[pathParts.length - 1] || pathParts[pathParts.length - 2]
+  const parts = parsed.pathname.split(`/`)
+  const last = parts[parts.length - 1] || parts[parts.length - 2]
   if (!last) {
     throw new Error(`Cannot extract stream ID from URL: ${url}`)
   }
   return decodeURIComponent(last)
 }
 
-/**
- * Extract the expiration timestamp from a pre-signed URL.
- *
- * @returns Unix timestamp in seconds
- */
 export function extractExpiresFromUrl(url: string): number {
   const parsed = new URL(url)
   const expires = parsed.searchParams.get(`expires`)
@@ -133,13 +157,46 @@ export function extractExpiresFromUrl(url: string): number {
   return parseInt(expires, 10)
 }
 
-/**
- * Get the default storage implementation.
- * Uses localStorage in browsers, MemoryStorage elsewhere.
- */
-export function getDefaultStorage(): DurableStorage {
-  if (typeof localStorage !== `undefined`) {
-    return localStorage
+// Legacy aliases retained to reduce breakage while tests migrate.
+export const createStorageKey = (
+  prefix: string,
+  scope: string,
+  requestId: string
+): string => createRequestIdStorageKey(prefix, scope, requestId)
+
+export const saveCredentials = (
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  requestId: string,
+  credentials: RequestIdMapping
+): void =>
+  saveRequestIdMapping(storage, prefix, scope, requestId, {
+    responseId: credentials.responseId,
+    streamUrl: credentials.streamUrl,
+  })
+
+export const loadCredentials = (
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  requestId: string
+): RequestIdMapping | null =>
+  loadRequestIdMapping(storage, prefix, scope, requestId)
+
+export const removeCredentials = (
+  storage: DurableStorage,
+  prefix: string,
+  scope: string,
+  requestId: string
+): void => removeRequestIdMapping(storage, prefix, scope, requestId)
+
+export function isUrlExpired(credentials: { streamUrl?: string }): boolean {
+  if (!credentials.streamUrl) return false
+  try {
+    const expiresAtSecs = extractExpiresFromUrl(credentials.streamUrl)
+    return Date.now() > expiresAtSecs * 1000
+  } catch {
+    return false
   }
-  return new MemoryStorage()
 }

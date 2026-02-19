@@ -354,6 +354,9 @@ importers:
       '@durable-streams/client':
         specifier: workspace:*
         version: link:../client
+      vitest:
+        specifier: ^4.0.0
+        version: 4.0.17(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
     devDependencies:
       '@durable-streams/server':
         specifier: workspace:*
@@ -367,9 +370,6 @@ importers:
       typescript:
         specifier: ^5.0.0
         version: 5.9.3
-      vitest:
-        specifier: ^4.0.0
-        version: 4.0.17(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
 
   packages/server:
     dependencies:

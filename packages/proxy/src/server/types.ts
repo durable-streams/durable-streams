@@ -28,10 +28,14 @@ export interface ProxyServerOptions {
  * State of an active upstream connection.
  */
 export interface UpstreamConnection {
+  /** Unique connection ID for this upstream request */
+  connectionId: string
   /** The AbortController for canceling the upstream request */
   abortController: AbortController
   /** The stream ID this connection is associated with */
   streamId: string
+  /** Response ID assigned to this upstream response */
+  responseId: number
   /** Timestamp when the connection started */
   startedAt: number
 }
