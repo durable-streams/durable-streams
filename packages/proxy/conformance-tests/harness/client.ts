@@ -72,6 +72,7 @@ export async function connectProxyStream(input: {
   streamId: string
   upstreamUrl?: string
   headers?: Record<string, string>
+  body?: unknown
 }): Promise<Response> {
   const runtime = getRuntime()
   const baseUrl = runtime.getBaseUrl()
@@ -81,7 +82,16 @@ export async function connectProxyStream(input: {
   }
   const url = runtime.adapter.connectUrl(baseUrl, input.streamId)
   await runtime.adapter.applyServiceAuth(url, headers)
-  return fetch(url.toString(), { method: `POST`, headers })
+  return fetch(url.toString(), {
+    method: `POST`,
+    headers,
+    body:
+      input.body === undefined
+        ? undefined
+        : typeof input.body === `string`
+          ? input.body
+          : JSON.stringify(input.body),
+  })
 }
 
 export async function readProxyStream(input: {

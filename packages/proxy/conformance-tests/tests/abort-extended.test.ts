@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   abortProxyStream,
   createProxyStream,
@@ -17,6 +17,10 @@ beforeAll(async () => {
   upstream = await createMockUpstream()
 })
 
+beforeEach(() => {
+  upstream.reset()
+})
+
 afterAll(async () => {
   await upstream.stop()
 })
@@ -31,6 +35,35 @@ describe(`proxy conformance: abort extended`, () => {
     url.searchParams.set(`action`, `abort`)
     const response = await fetch(url.toString(), { method: `PATCH` })
     expect(response.status).toBe(401)
+  })
+
+  it(`returns INVALID_ACTION when PATCH action is missing`, async () => {
+    const runtime = getRuntime()
+    const url = runtime.adapter.streamUrl(
+      runtime.getBaseUrl(),
+      `some-stream-id-${Date.now()}`
+    )
+    const headers = new Headers()
+    await runtime.adapter.applyServiceAuth(url, headers)
+    const response = await fetch(url.toString(), { method: `PATCH`, headers })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe(`INVALID_ACTION`)
+  })
+
+  it(`returns INVALID_ACTION for PATCH action=connect`, async () => {
+    const runtime = getRuntime()
+    const url = runtime.adapter.streamUrl(
+      runtime.getBaseUrl(),
+      `some-stream-id-${Date.now()}`
+    )
+    url.searchParams.set(`action`, `connect`)
+    const headers = new Headers()
+    await runtime.adapter.applyServiceAuth(url, headers)
+    const response = await fetch(url.toString(), { method: `PATCH`, headers })
+    expect(response.status).toBe(400)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe(`INVALID_ACTION`)
   })
 
   it(`returns 204 for already completed streams`, async () => {

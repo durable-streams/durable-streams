@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   abortProxyStream,
   createProxyStream,
@@ -17,6 +17,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {

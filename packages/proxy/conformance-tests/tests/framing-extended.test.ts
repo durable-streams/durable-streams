@@ -1,5 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { createProxyStream } from "../harness/client.js"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import {
+  createProxyStream,
+  readProxyStream,
+  waitFor,
+} from "../harness/client.js"
+import { parseFrames } from "../harness/frames.js"
 import {
   createAIStreamingResponse,
   createMockUpstream,
@@ -11,6 +16,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -47,5 +56,47 @@ describe(`proxy conformance: framing extended`, () => {
     })
     expect(append.status).toBe(200)
     expect(append.headers.get(`Stream-Response-Id`)).toBe(`2`)
+  })
+
+  it(`writes Error terminal frame when upstream fails mid-stream`, async () => {
+    if (!getRuntime().capabilities.framing) return
+
+    upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: `hello` } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: `world` } }] })}\n\n`,
+      ],
+      chunkDelayMs: 10,
+      abortAfterChunks: 1,
+    })
+    const created = await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      body: {},
+    })
+    expect(created.status).toBe(201)
+
+    await waitFor(async () => {
+      const read = await readProxyStream({
+        streamUrl: created.streamUrl!,
+        offset: `-1`,
+      })
+      if (read.status !== 200) return false
+      const frames = parseFrames(new Uint8Array(await read.arrayBuffer()))
+      return frames.some((frame) => frame.type === `E`)
+    })
+
+    const read = await readProxyStream({
+      streamUrl: created.streamUrl!,
+      offset: `-1`,
+    })
+    const frames = parseFrames(new Uint8Array(await read.arrayBuffer()))
+    const errorFrame = frames.find((frame) => frame.type === `E`)
+    expect(errorFrame).toBeTruthy()
+    const payload = JSON.parse(
+      new TextDecoder().decode(errorFrame!.payload)
+    ) as { code?: string; message?: string }
+    expect(payload.code).toBeTruthy()
+    expect(payload.message).toBeTruthy()
   })
 })

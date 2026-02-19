@@ -1,5 +1,9 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { abortProxyStream, readProxyStream } from "../harness/client.js"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
+import {
+  abortProxyStream,
+  createProxyStream,
+  readProxyStream,
+} from "../harness/client.js"
 import { parseFrames } from "../harness/frames.js"
 import {
   createMockUpstream,
@@ -12,6 +16,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -85,5 +93,25 @@ describe(`proxy conformance: targeted abort`, () => {
     )
     expect(response1Terminal?.type).toBe(`A`)
     expect(response2Terminal?.type).toBe(`C`)
+  })
+
+  it(`returns 204 when targeted response ID does not exist`, async () => {
+    if (!getRuntime().capabilities.targetedAbort) return
+
+    upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `one` }, { data: `[DONE]` }]),
+      chunkDelayMs: 5,
+    })
+    const created = await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      body: {},
+    })
+    expect(created.status).toBe(201)
+    const abort = await abortProxyStream({
+      streamUrl: created.streamUrl!,
+      responseId: `999`,
+    })
+    expect(abort.status).toBe(204)
   })
 })

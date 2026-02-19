@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { connectProxyStream } from "../harness/client.js"
 import { createMockUpstream } from "../harness/mock-upstream.js"
 import { getRuntime } from "../runtime.js"
@@ -8,6 +8,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {

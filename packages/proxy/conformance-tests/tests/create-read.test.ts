@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   createProxyStream,
   readProxyStream,
@@ -15,6 +15,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -34,7 +38,7 @@ describe(`proxy conformance: create and read`, () => {
       body: { prompt: `test` },
     })
 
-    expect([200, 201]).toContain(created.status)
+    expect(created.status).toBe(201)
     expect(created.streamUrl).toBeTruthy()
     expect(created.streamId).toBeTruthy()
   })

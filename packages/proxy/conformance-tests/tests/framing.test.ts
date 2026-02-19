@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   createProxyStream,
   readProxyStream,
@@ -16,6 +16,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -74,10 +78,13 @@ describe(`proxy conformance: framing`, () => {
 
     const startPayload = JSON.parse(
       new TextDecoder().decode(frames[0]!.payload)
-    ) as { headers?: Record<string, string> }
+    ) as { status?: number; headers?: Record<string, string> }
+    expect(typeof startPayload.status).toBe(`number`)
+    expect(startPayload.headers).toBeTypeOf(`object`)
     const headerNames = Object.keys(startPayload.headers ?? {})
     for (const headerName of headerNames) {
       expect(headerName).toBe(headerName.toLowerCase())
+      expect(typeof startPayload.headers?.[headerName]).toBe(`string`)
     }
   })
 })

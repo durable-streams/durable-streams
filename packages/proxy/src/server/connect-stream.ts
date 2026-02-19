@@ -91,6 +91,8 @@ export async function handleConnectStream(
 
   // Step 5: If Upstream-URL is provided, authorize via auth endpoint.
   if (upstreamUrl && !Array.isArray(upstreamUrl)) {
+    // Only buffer request body when forwarding to auth endpoint.
+    const requestBody = await collectRequestBody(req)
     const parsedUpstreamUrl = validateUpstreamUrl(upstreamUrl)
     if (!parsedUpstreamUrl) {
       sendError(res, 403, `UPSTREAM_NOT_ALLOWED`, `Invalid upstream URL`)
@@ -112,8 +114,6 @@ export async function handleConnectStream(
       parsedUpstreamUrl.hostname
     )
     upstreamHeaders[`Stream-Id`] = streamId
-    const body = await collectRequestBody(req)
-
     const abortController = new AbortController()
     const timeoutId = setTimeout(
       () => abortController.abort(),
@@ -125,7 +125,10 @@ export async function handleConnectStream(
       upstreamResponse = await fetch(upstreamUrl, {
         method: `POST`,
         headers: upstreamHeaders,
-        body: body.length > 0 ? (body as unknown as BodyInit) : undefined,
+        body:
+          requestBody.length > 0
+            ? (requestBody as unknown as BodyInit)
+            : undefined,
         signal: abortController.signal,
         redirect: `manual`,
       })

@@ -2,6 +2,7 @@ export interface ProxyConformanceCapabilities {
   connect?: boolean
   targetedAbort?: boolean
   framing?: boolean
+  closedAppendConflict?: boolean
 }
 
 export interface ProxyConformanceAdapter {
@@ -10,6 +11,7 @@ export interface ProxyConformanceAdapter {
   connectUrl?: (baseUrl: string, streamId: string) => URL
   applyServiceAuth?: (url: URL, headers: Headers) => Promise<void> | void
   normalizeLocation?: (location: string, baseUrl: string) => string
+  closeStream?: (streamId: string) => Promise<void>
 }
 
 export interface ProxyConformanceOptions {
@@ -41,6 +43,7 @@ export function initRuntime(
       connect: options.capabilities?.connect ?? true,
       targetedAbort: options.capabilities?.targetedAbort ?? true,
       framing: options.capabilities?.framing ?? true,
+      closedAppendConflict: options.capabilities?.closedAppendConflict ?? true,
     },
     adapter: {
       createUrl:
@@ -69,6 +72,27 @@ export function initRuntime(
         adapterInput.normalizeLocation ??
         ((location: string, targetBaseUrl: string) =>
           new URL(location, targetBaseUrl).toString()),
+      closeStream:
+        adapterInput.closeStream ??
+        (async (streamId: string) => {
+          const closeUrl = new URL(
+            `/v1/streams/${encodeURIComponent(streamId)}`,
+            options.baseUrl
+          )
+          closeUrl.searchParams.set(`secret`, serviceSecret)
+          const response = await fetch(closeUrl.toString(), {
+            method: `POST`,
+            headers: {
+              "Content-Type": `application/octet-stream`,
+              "Stream-Closed": `true`,
+            },
+          })
+          if (!response.ok && response.status !== 204) {
+            throw new Error(
+              `Failed to close stream ${streamId}: ${response.status}`
+            )
+          }
+        }),
     },
   }
 

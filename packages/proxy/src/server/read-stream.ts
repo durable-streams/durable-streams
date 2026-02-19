@@ -102,6 +102,11 @@ export async function handleReadStream(
       },
     })
 
+    if (dsResponse.status === 404) {
+      sendError(res, 404, `STREAM_NOT_FOUND`, `Stream does not exist`)
+      return
+    }
+
     // Build response headers
     const responseHeaders: Record<string, string> = {}
 

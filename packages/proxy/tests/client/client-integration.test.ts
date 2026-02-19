@@ -677,6 +677,332 @@ describe(`createDurableSession`, () => {
     ).rejects.toThrow(`Unknown frame type`)
     session.close()
   })
+
+  it(`reuses requestId mapping and skips duplicate POST`, async () => {
+    const startPayload = encoder.encode(
+      JSON.stringify({
+        status: 200,
+        headers: { "content-type": `text/plain` },
+      })
+    )
+    const framed = concatBytes(
+      encodeFrame(`S`, 1, startPayload),
+      encodeFrame(`D`, 1, encoder.encode(`idempotent`)),
+      encodeFrame(`C`, 1, new Uint8Array(0))
+    )
+    const sse = [
+      `event: data`,
+      `data: ${toBase64(framed)}`,
+      ``,
+      `event: control`,
+      `data: {"streamNextOffset":"9_9"}`,
+      ``,
+    ].join(`\n`)
+
+    let postCount = 0
+    let readCount = 0
+    let servedResponse = false
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/idempotent-session?expires=1&signature=sig`,
+          },
+        })
+      }
+      if (
+        init?.method === `POST` &&
+        url.includes(`/v1/proxy/idempotent-session`)
+      ) {
+        postCount += 1
+        return new Response(null, {
+          status: 200,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/idempotent-session?expires=1&signature=sig`,
+            "Stream-Response-Id": `1`,
+          },
+        })
+      }
+      if (url.includes(`/v1/proxy/idempotent-session`)) {
+        readCount += 1
+        if (!servedResponse && postCount >= 1) {
+          servedResponse = true
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              "stream-sse-data-encoding": `base64`,
+            },
+          })
+        }
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"${readCount}_${readCount}"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId: `idempotent-session`,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    const first = await session.fetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      requestId: `turn-1`,
+      body: JSON.stringify({ messages: [] }),
+    })
+    expect(first.responseId).toBe(1)
+
+    const second = await session.fetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      requestId: `turn-1`,
+      body: JSON.stringify({ messages: [] }),
+    })
+    expect(second.responseId).toBe(1)
+    expect(postCount).toBe(1)
+    expect(await first.text()).toBe(`idempotent`)
+    session.close()
+  })
+
+  it(`auto-renews session URL after SIGNATURE_EXPIRED`, async () => {
+    const streamId = `auto-renew-session`
+    const startPayload = encoder.encode(
+      JSON.stringify({
+        status: 200,
+        headers: { "content-type": `text/plain` },
+      })
+    )
+    const framed = concatBytes(
+      encodeFrame(`S`, 1, startPayload),
+      encodeFrame(`D`, 1, encoder.encode(`renewed`)),
+      encodeFrame(`C`, 1, new Uint8Array(0))
+    )
+    const sse = [
+      `event: data`,
+      `data: ${toBase64(framed)}`,
+      ``,
+      `event: control`,
+      `data: {"streamNextOffset":"4_4"}`,
+      ``,
+    ].join(`\n`)
+
+    let connectCalls = 0
+    const readUrls: Array<string> = []
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        connectCalls += 1
+        const sig = connectCalls === 1 ? `oldsig` : `newsig`
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/${streamId}?expires=1&signature=${sig}`,
+          },
+        })
+      }
+      if (init?.method === `POST` && url.includes(`/v1/proxy/${streamId}`)) {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/${streamId}?expires=1&signature=oldsig`,
+            "Stream-Response-Id": `1`,
+          },
+        })
+      }
+      if (url.includes(`/v1/proxy/${streamId}`)) {
+        readUrls.push(url)
+        if (url.includes(`signature=oldsig`)) {
+          return new Response(
+            JSON.stringify({
+              error: { code: `SIGNATURE_EXPIRED`, streamId },
+            }),
+            {
+              status: 401,
+              headers: { "content-type": `application/json` },
+            }
+          )
+        }
+        if (url.includes(`signature=newsig`)) {
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              "stream-sse-data-encoding": `base64`,
+            },
+          })
+        }
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    const response = await session.fetch(ctx.urls.upstream + `/v1/chat`, {
+      method: `POST`,
+      body: JSON.stringify({ messages: [] }),
+    })
+
+    expect(await response.text()).toBe(`renewed`)
+    expect(connectCalls).toBeGreaterThanOrEqual(2)
+    expect(readUrls.some((url) => url.includes(`signature=newsig`))).toBe(true)
+    session.close()
+  })
+
+  it(`yields multiple interleaved responses from session.responses()`, async () => {
+    const streamId = `session-interleaved`
+    const start1 = encoder.encode(
+      JSON.stringify({ status: 200, headers: { "content-type": `text/plain` } })
+    )
+    const start2 = encoder.encode(
+      JSON.stringify({ status: 200, headers: { "content-type": `text/plain` } })
+    )
+    const framed = concatBytes(
+      encodeFrame(`S`, 1, start1),
+      encodeFrame(`D`, 1, encoder.encode(`one`)),
+      encodeFrame(`S`, 2, start2),
+      encodeFrame(`D`, 2, encoder.encode(`two`)),
+      encodeFrame(`C`, 1, new Uint8Array(0)),
+      encodeFrame(`C`, 2, new Uint8Array(0))
+    )
+    const sse = [
+      `event: data`,
+      `data: ${toBase64(framed)}`,
+      ``,
+      `event: control`,
+      `data: {"streamNextOffset":"7_7"}`,
+      ``,
+    ].join(`\n`)
+
+    let postCount = 0
+    let readCount = 0
+    const fetchMock: typeof fetch = async (input, init) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/${streamId}?expires=1&signature=sig`,
+          },
+        })
+      }
+      if (init?.method === `POST` && url.includes(`/v1/proxy/${streamId}`)) {
+        postCount += 1
+        return new Response(null, {
+          status: 200,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/${streamId}?expires=1&signature=sig`,
+            "Stream-Response-Id": String(postCount),
+          },
+        })
+      }
+      if (url.includes(`/v1/proxy/${streamId}`)) {
+        readCount += 1
+        if (readCount === 1) {
+          return new Response(sse, {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              "stream-sse-data-encoding": `base64`,
+            },
+          })
+        }
+        return new Response(
+          `event: control\ndata: {"streamNextOffset":"8_8"}\n\n`,
+          {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          }
+        )
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    const iterator = session.responses()[Symbol.asyncIterator]()
+    const [firstFetch, secondFetch] = await Promise.all([
+      session.fetch(ctx.urls.upstream + `/v1/chat`, {
+        method: `POST`,
+        requestId: `resp-1`,
+        body: JSON.stringify({ messages: [] }),
+      }),
+      session.fetch(ctx.urls.upstream + `/v1/chat`, {
+        method: `POST`,
+        requestId: `resp-2`,
+        body: JSON.stringify({ messages: [] }),
+      }),
+    ])
+    const yielded1 = await iterator.next()
+    const yielded2 = await iterator.next()
+
+    const yielded = [yielded1.value, yielded2.value].filter(Boolean) as Array<
+      typeof firstFetch | typeof secondFetch
+    >
+    expect(yielded.map((response) => response.responseId).sort()).toEqual([
+      1, 2,
+    ])
+    expect(await firstFetch.text()).toBe(`one`)
+    expect(await secondFetch.text()).toBe(`two`)
+    session.close()
+  })
+
+  it(`exposes streamId immediately and streamUrl after connect`, async () => {
+    const streamId = `session-properties`
+    const fetchMock: typeof fetch = async (input) => {
+      const url = String(input)
+      if (url.includes(`action=connect`)) {
+        return new Response(null, {
+          status: 201,
+          headers: {
+            Location: `${ctx.urls.proxy}/v1/proxy/${streamId}?expires=1&signature=sig`,
+          },
+        })
+      }
+      return new Response(
+        `event: control\ndata: {"streamNextOffset":"1_1"}\n\n`,
+        {
+          status: 200,
+          headers: { "content-type": `text/event-stream` },
+        }
+      )
+    }
+
+    const session = createDurableSession({
+      proxyUrl: `${ctx.urls.proxy}/v1/proxy`,
+      proxyAuthorization: TEST_SECRET,
+      streamId,
+      storage: new MemoryStorage(),
+      fetch: fetchMock,
+    })
+
+    expect(session.streamId).toBe(streamId)
+    expect(session.streamUrl).toBeNull()
+    await session.connect()
+    expect(session.streamUrl).toContain(`/v1/proxy/${streamId}`)
+    session.close()
+  })
 })
 
 describe(`transport integration`, () => {

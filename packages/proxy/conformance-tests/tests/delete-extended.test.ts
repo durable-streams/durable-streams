@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import {
   createProxyStream,
   deleteProxyStream,
@@ -15,6 +15,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -72,5 +76,18 @@ describe(`proxy conformance: delete extended`, () => {
     expect(deleted.status).toBe(204)
     const read = await readProxyStream({ streamUrl: created.streamUrl! })
     expect([404, 410]).toContain(read.status)
+  })
+
+  it(`rejects DELETE when only pre-signed URL auth is provided`, async () => {
+    upstream.setResponse({
+      headers: { "Content-Type": `text/event-stream` },
+      body: createSSEChunks([{ data: `hello` }]),
+    })
+    const created = await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      body: {},
+    })
+    const response = await fetch(created.streamUrl!, { method: `DELETE` })
+    expect(response.status).toBe(401)
   })
 })

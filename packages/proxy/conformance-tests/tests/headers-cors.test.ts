@@ -1,45 +1,49 @@
-import { describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { createProxyStream } from "../harness/client.js"
+import { createMockUpstream } from "../harness/mock-upstream.js"
 import { getRuntime } from "../runtime.js"
+import type { MockUpstreamServer } from "../harness/mock-upstream.js"
+
+let upstream: MockUpstreamServer
+
+beforeAll(async () => {
+  upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
+})
+
+afterAll(async () => {
+  await upstream.stop()
+})
 
 describe(`proxy conformance: headers and cors`, () => {
-  it(`does not forward proxy-only and selected hop-by-hop headers upstream`, async () => {
-    const runtime = getRuntime()
-    const capturedHeaders: Record<string, string> = {}
+  it(`does not forward proxy-only and hop-by-hop headers upstream`, async () => {
+    upstream.setResponse({ status: 200, body: `ok` })
+    const result = await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      headers: {
+        Authorization: `Bearer proxy-auth-token`,
+        "Upstream-Authorization": `Bearer upstream-auth-token`,
+        "Stream-Signed-URL-TTL": `60`,
+        "Proxy-Authenticate": `Basic realm="test"`,
+        "Proxy-Authorization": `Basic abc123`,
+        Trailers: `x-debug`,
+      },
+      body: {},
+    })
+    expect(result.status).toBe(201)
 
-    const originalFetch = globalThis.fetch
-    try {
-      globalThis.fetch = async (input, init) => {
-        const url = String(input)
-        if (url.startsWith(runtime.getBaseUrl())) {
-          return originalFetch(input, init)
-        }
-        const headers = new Headers(init?.headers ?? {})
-        for (const [k, v] of headers.entries()) capturedHeaders[k] = v
-        return new Response(`ok`, {
-          status: 200,
-          headers: { "Content-Type": `text/plain` },
-        })
-      }
-
-      const result = await createProxyStream({
-        upstreamUrl: `https://api.openai.com/v1/chat`,
-        headers: {
-          "Stream-Signed-URL-TTL": `60`,
-          "Proxy-Authenticate": `Basic realm="test"`,
-          "Proxy-Authorization": `Basic abc123`,
-          trailers: `x-debug`,
-        },
-        body: {},
-      })
-      expect([200, 201]).toContain(result.status)
-      expect(capturedHeaders[`stream-signed-url-ttl`]).toBeUndefined()
-      expect(capturedHeaders[`proxy-authenticate`]).toBeUndefined()
-      expect(capturedHeaders[`proxy-authorization`]).toBeUndefined()
-      expect(capturedHeaders[`trailers`]).toBeUndefined()
-    } finally {
-      globalThis.fetch = originalFetch
-    }
+    const lastRequest = upstream.getLastRequest()
+    expect(lastRequest).toBeTruthy()
+    expect(lastRequest?.headers[`authorization`]).toBe(
+      `Bearer upstream-auth-token`
+    )
+    expect(lastRequest?.headers[`stream-signed-url-ttl`]).toBeUndefined()
+    expect(lastRequest?.headers[`proxy-authenticate`]).toBeUndefined()
+    expect(lastRequest?.headers[`proxy-authorization`]).toBeUndefined()
+    expect(lastRequest?.headers[`trailers`]).toBeUndefined()
   })
 
   it(`returns CORS headers on OPTIONS request`, async () => {

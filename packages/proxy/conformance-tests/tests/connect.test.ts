@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { connectProxyStream } from "../harness/client.js"
 import { createMockUpstream } from "../harness/mock-upstream.js"
 import { getRuntime } from "../runtime.js"
@@ -8,6 +8,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -30,14 +34,14 @@ describe(`proxy conformance: connect`, () => {
       streamId,
       upstreamUrl: upstream.url + `/v1/connect`,
     })
-    expect([200, 201]).toContain(first.status)
+    expect(first.status).toBe(201)
     expect(first.headers.get(`Location`)).toBeTruthy()
 
     const second = await connectProxyStream({
       streamId,
       upstreamUrl: upstream.url + `/v1/connect`,
     })
-    expect([200, 201]).toContain(second.status)
+    expect(second.status).toBe(200)
     expect(second.headers.get(`Location`)).toBeTruthy()
   })
 })

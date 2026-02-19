@@ -408,12 +408,14 @@ export async function handleCreateStream(
     upstreamHeaders: upstreamResponse.headers,
   })
     .catch((error) => {
-      if (
-        abortController.signal.aborted ||
-        (error instanceof Error &&
-          (error.name === `AbortError` ||
-            (error.name === `TypeError` && error.message === `fetch failed`)))
-      ) {
+      const isExpectedPipeTermination =
+        error instanceof Error &&
+        (error.name === `AbortError` ||
+          (error.name === `TypeError` &&
+            (error.message === `fetch failed` ||
+              error.message === `terminated`)) ||
+          /Failed to write frame to stream .*: (409|410)$/.test(error.message))
+      if (abortController.signal.aborted || isExpectedPipeTermination) {
         return
       }
       console.error(`Error piping upstream body for stream ${streamId}:`, error)

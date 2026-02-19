@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { createProxyStream } from "../harness/client.js"
 import { createMockUpstream } from "../harness/mock-upstream.js"
 import { getRuntime } from "../runtime.js"
@@ -8,6 +8,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -26,6 +30,23 @@ describe(`proxy conformance: headers forwarding extended`, () => {
     const lastRequest = upstream.getLastRequest()
     expect(lastRequest?.headers[`authorization`]).toBe(
       `Bearer sk-test-token-12345`
+    )
+  })
+
+  it(`does not forward proxy Authorization when Upstream-Authorization is present`, async () => {
+    upstream.setResponse({ status: 200, body: `ok` })
+    await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      body: {},
+      headers: {
+        Authorization: `Bearer proxy-auth-token`,
+        "Upstream-Authorization": `Bearer upstream-auth-token`,
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const lastRequest = upstream.getLastRequest()
+    expect(lastRequest?.headers[`authorization`]).toBe(
+      `Bearer upstream-auth-token`
     )
   })
 

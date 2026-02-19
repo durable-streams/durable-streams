@@ -1,15 +1,20 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { createProxyStream, readProxyStream } from "../harness/client.js"
 import {
   createMockUpstream,
   createSSEChunks,
 } from "../harness/mock-upstream.js"
+import { getRuntime } from "../runtime.js"
 import type { MockUpstreamServer } from "../harness/mock-upstream.js"
 
 let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -34,6 +39,8 @@ describe(`proxy conformance: read extended`, () => {
     url.searchParams.set(`offset`, `-1`)
     const response = await fetch(url.toString())
     expect(response.status).toBe(401)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect([`MISSING_SECRET`, `MISSING_SIGNATURE`]).toContain(body.error?.code)
   })
 
   it(`returns 401 when signature is invalid`, async () => {
@@ -101,6 +108,22 @@ describe(`proxy conformance: read extended`, () => {
       offset: nextOffset!,
     })
     expect(second.status).toBe(200)
+  })
+
+  it(`returns 404 STREAM_NOT_FOUND for non-existent stream with service auth`, async () => {
+    const runtime = getRuntime()
+    const url = runtime.adapter.streamUrl(
+      runtime.getBaseUrl(),
+      `00000000-0000-0000-0000-000000000000`
+    )
+    url.searchParams.set(`offset`, `-1`)
+    const headers = new Headers()
+    await runtime.adapter.applyServiceAuth(url, headers)
+    const response = await fetch(url.toString(), { method: `GET`, headers })
+
+    expect(response.status).toBe(404)
+    const body = (await response.json()) as { error?: { code?: string } }
+    expect(body.error?.code).toBe(`STREAM_NOT_FOUND`)
   })
 
   it(`includes CORS and exposed headers in read responses`, async () => {

@@ -134,9 +134,11 @@ export async function createMockUpstream(
     setResponse(response: MockResponse) {
       nextResponse = response
       customHandler = null
+      lastRequest = null
     },
     setHandler(handler) {
       customHandler = handler
+      lastRequest = null
     },
     getLastRequest() {
       return lastRequest

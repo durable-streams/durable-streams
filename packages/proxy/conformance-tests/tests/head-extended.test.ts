@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest"
 import { createProxyStream, headProxyStream } from "../harness/client.js"
 import {
   createAIStreamingResponse,
@@ -11,6 +11,10 @@ let upstream: MockUpstreamServer
 
 beforeAll(async () => {
   upstream = await createMockUpstream()
+})
+
+beforeEach(() => {
+  upstream.reset()
 })
 
 afterAll(async () => {
@@ -42,5 +46,15 @@ describe(`proxy conformance: head extended`, () => {
     expect(result.headers.get(`Upstream-Content-Type`)).toContain(
       `text/event-stream`
     )
+  })
+
+  it(`rejects HEAD when only pre-signed URL auth is provided`, async () => {
+    upstream.setResponse(createAIStreamingResponse([`Test`]))
+    const created = await createProxyStream({
+      upstreamUrl: upstream.url + `/v1/chat`,
+      body: {},
+    })
+    const response = await fetch(created.streamUrl!, { method: `HEAD` })
+    expect(response.status).toBe(401)
   })
 })
