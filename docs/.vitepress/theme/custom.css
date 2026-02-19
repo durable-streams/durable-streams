@@ -341,6 +341,10 @@ body {
   border-color: var(--durable-color);
 }
 
+.vp-doc .nowrap {
+  white-space: nowrap;
+}
+
 /* Homepage content styling inspired by Electric section layout. */
 .home-shell {
   margin: 24px 0 40px;
@@ -490,4 +494,25 @@ body {
   .home-strap {
     grid-template-columns: 1.2fr 1fr;
   }
+}
+
+.markdown-link-aside.pager-link {
+  align-items: center;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  color: var(--vp-c-text-2);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  margin-bottom: 12px;
+  min-height: 36px;
+  padding: 0 14px;
+  text-decoration: none;
+  width: 100%;
+}
+
+.markdown-link-aside.pager-link:hover {
+  border-color: rgba(117, 251, 253, 0.45);
+  color: var(--vp-c-text-1);
 }

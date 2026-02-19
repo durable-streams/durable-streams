@@ -1,6 +1,14 @@
 import { defineConfig } from "vitepress"
+import llmstxt from "vitepress-plugin-llms"
 
 export default defineConfig({
+  vite: {
+    plugins: [
+      llmstxt({
+        generateLLMsFullTxt: false,
+      }),
+    ],
+  },
   lang: "en",
   title: "Durable Streams",
   description:
@@ -33,8 +41,8 @@ export default defineConfig({
         text: "Guides",
         items: [
           { text: "Core Concepts", link: "/concepts" },
-          { text: "State Protocol", link: "/state" },
           { text: "Use Cases", link: "/use-cases" },
+          { text: "CLI Reference", link: "/cli" },
           { text: "Deployment", link: "/deployment" },
         ],
       },
@@ -43,7 +51,12 @@ export default defineConfig({
         items: [
           { text: "Client Libraries", link: "/clients" },
           { text: "Servers", link: "/servers" },
-          { text: "CLI Reference", link: "/cli" },
+        ],
+      },
+      {
+        text: "Extended layers",
+        items: [
+          { text: "State Protocol", link: "/state" },
         ],
       },
       {

@@ -16,18 +16,18 @@ All client libraries share the same core capabilities:
 
 ## Summary
 
-| Language                  | Package                   | Install                                                                | Maturity          |
-| ------------------------- | ------------------------- | ---------------------------------------------------------------------- | ----------------- |
-| [TypeScript](#typescript) | `@durable-streams/client` | `npm install @durable-streams/client`                                  | Production-Proven |
-| [Python](#python)         | `durable-streams`         | `pip install durable-streams`                                          | Expert-Reviewed   |
-| [Go](#go)                 | `durablestreams`          | `go get github.com/durable-streams/durable-streams/packages/client-go` | Expert-Reviewed   |
-| [Elixir](#elixir)         | `durable_streams`         | `{:durable_streams, "~> 0.1.0"}` in `mix.exs`                          | Vibe-Engineered   |
-| [C# / .NET](#c--net)      | `DurableStreams`          | `dotnet add package DurableStreams`                                    | Vibe-Engineered   |
-| [Swift](#swift)           | `DurableStreams`          | Swift Package Manager                                                  | Vibe-Engineered   |
-| [PHP](#php)               | `durable-streams/client`  | `composer require durable-streams/client`                              | Vibe-Engineered   |
-| [Java](#java)             | `durable-streams`         | Maven / Gradle                                                         | Vibe-Engineered   |
-| [Rust](#rust)             | `durable-streams`         | `cargo add durable-streams`                                            | Vibe-Engineered   |
-| [Ruby](#ruby)             | `durable_streams`         | `gem install durable_streams`                                          | Vibe-Engineered   |
+| Language                  | Install                                                                | Maturity                                      |
+| ------------------------- | ---------------------------------------------------------------------- | --------------------------------------------- |
+| [TypeScript](#typescript) | `npm install @durable-streams/client`                                  | <span class="nowrap">Production-Proven</span> |
+| [Python](#python)         | `pip install durable-streams`                                          | <span class="nowrap">Expert-Reviewed</span>   |
+| [Go](#go)                 | `go get github.com/durable-streams/durable-streams/packages/client-go` | <span class="nowrap">Expert-Reviewed</span>   |
+| [Elixir](#elixir)         | Add `{:durable_streams, "~> 0.1.0"}` to `mix.exs`                      | <span class="nowrap">Vibe-Engineered</span>   |
+| [C# / .NET](#c--net)      | `dotnet add package DurableStreams`                                    | <span class="nowrap">Vibe-Engineered</span>   |
+| [Swift](#swift)           | Swift Package Manager (`DurableStreams`)                               | <span class="nowrap">Vibe-Engineered</span>   |
+| [PHP](#php)               | `composer require durable-streams/client`                              | <span class="nowrap">Vibe-Engineered</span>   |
+| [Java](#java)             | Maven / Gradle (`durable-streams`)                                     | <span class="nowrap">Vibe-Engineered</span>   |
+| [Rust](#rust)             | `cargo add durable-streams`                                            | <span class="nowrap">Vibe-Engineered</span>   |
+| [Ruby](#ruby)             | `gem install durable_streams`                                          | <span class="nowrap">Vibe-Engineered</span>   |
 
 ## Maturity Levels
 
@@ -40,8 +40,6 @@ Each client follows a maturity progression:
 All clients pass the conformance test suite regardless of maturity level. The difference is in API polish, idiomatic patterns, and battle-testing.
 
 If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client Maturity Model](https://github.com/durable-streams/durable-streams/blob/main/CLIENT_MATURITY.md) for the review process and checklist.
-
----
 
 ## TypeScript
 
