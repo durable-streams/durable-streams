@@ -32,7 +32,7 @@ This separation means you adopt what you need:
 - **Real-time database sync?** Add the State Protocol for typed collections with insert/update/delete operations.
 - **Both in the same app?** Different streams can use different protocols. An AI response stream and a session state stream can coexist, each using the protocol that fits.
 
-> See the full [State Protocol Specification](../packages/state/STATE-PROTOCOL.md) for the formal wire format and requirements.
+> See the full [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) for the formal wire format and requirements.
 
 ## Installation
 
@@ -408,9 +408,9 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 ## Learn More
 
-- [State Protocol Specification](../packages/state/STATE-PROTOCOL.md) -- full protocol spec
-- [Package README](../packages/state/README.md) -- complete API reference
-- [Examples](../examples/state/) -- background jobs dashboard and Wikipedia live events demo
+- [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) -- full protocol spec
+- [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/state/README.md) -- complete API reference
+- [Examples](https://github.com/durable-streams/durable-streams/tree/main/examples/state) -- background jobs dashboard and Wikipedia live events demo
 - [TanStack DB](https://tanstack.com/db) -- reactive collections and query engine
 - [Standard Schema](https://standardschema.dev/) -- schema validation
 

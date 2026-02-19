@@ -2,6 +2,7 @@ linkWorkspacePackages: true
 preferWorkspacePackages: true
 
 packages:
+  - docs
   - packages/*
   - examples/*
   - examples/**/*

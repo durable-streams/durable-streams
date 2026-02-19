@@ -1,6 +1,6 @@
 # Servers
 
-Durable Streams has two official server implementations: a Node.js development server and a production-ready Caddy plugin. Both fully implement the [Durable Streams protocol](../PROTOCOL.md).
+Durable Streams has two official server implementations: a Node.js development server and a production-ready Caddy plugin. Both fully implement the [Durable Streams protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
 If you want to build your own server implementation, see [Building a Server](building-a-server.md).
 
@@ -90,7 +90,7 @@ const server = new DurableStreamTestServer({
 - Automated testing and CI
 - Embedding a Durable Streams server in a Node.js application
 
-Full documentation: [Dev Server README](../packages/server/README.md)
+Full documentation: [Dev Server README](https://github.com/durable-streams/durable-streams/blob/main/packages/server/README.md)
 
 ## Caddy Plugin (Production Server)
 
@@ -173,7 +173,7 @@ See the [Deployment guide](deployment.md) for production Caddyfile examples, con
 - Production deployments
 - Anything beyond local development where you need persistence, TLS, or operational reliability
 
-Full documentation: [Caddy Plugin README](../packages/caddy-plugin/README.md)
+Full documentation: [Caddy Plugin README](https://github.com/durable-streams/durable-streams/blob/main/packages/caddy-plugin/README.md)
 
 ## Which Server Should I Use?
 

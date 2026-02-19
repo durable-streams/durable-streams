@@ -2,7 +2,7 @@
 
 The Durable Streams protocol is designed to support server implementations in any language or platform. A server exposes a single URL-per-stream HTTP interface -- the protocol does not prescribe URL structure, so you can organize streams however you choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths).
 
-The [Protocol Specification](../PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](../packages/server-conformance-tests/) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see [Servers](servers.md).
+The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see [Servers](servers.md).
 
 - [What to Implement](#what-to-implement)
 - [Storage Layer](#storage-layer)
@@ -37,7 +37,7 @@ Your storage backend needs to support these operations:
 
 Possible backends include in-memory stores (for development), file-based storage (log files with LMDB indexes), relational databases (Postgres, SQLite), and object storage (S3).
 
-The reference implementations use in-memory and file-backed stores. See the [Dev Server](../packages/server/) and [Caddy Plugin](../packages/caddy-plugin/) source for concrete examples.
+The reference implementations use in-memory and file-backed stores. See the [Dev Server](https://github.com/durable-streams/durable-streams/tree/main/packages/server) and [Caddy Plugin](https://github.com/durable-streams/durable-streams/tree/main/packages/caddy-plugin) source for concrete examples.
 
 ## Key Protocol Requirements
 
@@ -87,7 +87,7 @@ Handle `Producer-Id`, `Producer-Epoch`, and `Producer-Seq` request headers on PO
 - A new epoch must start at `seq=0`
 - Producer state and log appends should be committed atomically where possible
 
-See [Section 5.2.1 of the protocol spec](../PROTOCOL.md#521-idempotent-producers) for the full validation logic.
+See [Section 5.2.1 of the protocol spec](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md#521-idempotent-producers) for the full validation logic.
 
 ### JSON Mode
 
@@ -222,11 +222,11 @@ The 232 tests cover:
 
 Two official implementations are available as reference:
 
-- **Node.js Dev Server** ([packages/server](../packages/server/)) -- a TypeScript implementation good for understanding the basics. Uses in-memory or file-backed storage.
-- **Caddy Plugin** ([packages/caddy-plugin](../packages/caddy-plugin/)) -- a production-grade Go implementation built as a Caddy v2 plugin. Uses LMDB for persistence.
+- **Node.js Dev Server** ([packages/server](https://github.com/durable-streams/durable-streams/tree/main/packages/server)) -- a TypeScript implementation good for understanding the basics. Uses in-memory or file-backed storage.
+- **Caddy Plugin** ([packages/caddy-plugin](https://github.com/durable-streams/durable-streams/tree/main/packages/caddy-plugin)) -- a production-grade Go implementation built as a Caddy v2 plugin. Uses LMDB for persistence.
 
 See [Servers](servers.md) for usage details on both.
 
 ---
 
-See also: [Protocol Specification](../PROTOCOL.md) | [Core Concepts](concepts.md) | [Benchmarking](benchmarking.md) | [Building a Client](building-a-client.md)
+See also: [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) | [Core Concepts](concepts.md) | [Benchmarking](benchmarking.md) | [Building a Client](building-a-client.md)
