@@ -1,13 +1,14 @@
 [build]
-  command = "pnpm docs:build"
-  publish = "docs/.vitepress/dist"
+  base = "docs"
+  command = "pnpm build"
+  publish = ".vitepress/dist"
 
 [build.environment]
   NODE_VERSION = "22"
   PNPM_VERSION = "10.25.0"
 
 [context.production]
-  command = "pnpm docs:build"
+  command = "pnpm build"
 
 [context.deploy-preview]
-  command = "pnpm docs:build"
+  command = "pnpm build"
