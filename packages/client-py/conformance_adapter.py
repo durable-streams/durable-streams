@@ -142,6 +142,8 @@ def map_error_code(err: Exception) -> tuple[str, int | None]:
             return ERROR_CODES["PARSE_ERROR"], None
         if code == "BAD_REQUEST":
             return ERROR_CODES["INVALID_OFFSET"], 400
+        if code == "PRECONDITION_FAILED":
+            return "PRECONDITION_FAILED", 412
         if status == 404:
             return ERROR_CODES["NOT_FOUND"], 404
         if status == 409:
@@ -315,6 +317,9 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     if cmd.get("seq") is not None:
         seq = str(cmd["seq"])
 
+    # Get ifMatch if provided
+    if_match = cmd.get("ifMatch")
+
     # Retry loop for 5xx errors (matching TypeScript client behavior)
     max_retries = 3
     base_delay = 0.1  # 100ms
@@ -322,7 +327,7 @@ def handle_append(cmd: dict[str, Any]) -> dict[str, Any]:
     for attempt in range(max_retries + 1):
         try:
             ds = DurableStream(url, content_type=content_type, headers=merged_headers, batching=False)
-            ds.append(data, seq=seq)
+            ds.append(data, seq=seq, if_match=if_match)
             head = ds.head()
             ds.close()
 

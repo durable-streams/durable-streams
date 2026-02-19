@@ -161,17 +161,29 @@ public final class DurableStream implements AutoCloseable {
      * Append data to a stream.
      */
     public AppendResult append(String url, byte[] data) throws DurableStreamException {
-        return append(url, data, null);
+        return append(url, data, null, null);
     }
 
     /**
-     * Append data with sequence number (package-private for testing).
+     * Append data with If-Match header for optimistic concurrency control.
+     *
+     * @param url Stream URL
+     * @param data Data to append
+     * @param ifMatch ETag value for optimistic concurrency control (optional)
+     * @throws PreconditionFailedException if the If-Match ETag doesn't match the current stream ETag
      */
-    AppendResult append(String url, byte[] data, Long seq) throws DurableStreamException {
+    public AppendResult append(String url, byte[] data, String ifMatch) throws DurableStreamException {
+        return append(url, data, null, ifMatch);
+    }
+
+    /**
+     * Append data with sequence number and If-Match header (package-private for testing).
+     */
+    AppendResult append(String url, byte[] data, Long seq, String ifMatch) throws DurableStreamException {
         if (data == null || data.length == 0) {
             throw new DurableStreamException("Cannot append empty data");
         }
-        HttpRequest request = buildAppendRequest(url, data, seq);
+        HttpRequest request = buildAppendRequest(url, data, seq, ifMatch);
         return executeWithRetry(request, "append", response -> parseAppendResponse(response, url, seq));
     }
 
@@ -183,7 +195,7 @@ public final class DurableStream implements AutoCloseable {
             if (data == null || data.length == 0) {
                 return CompletableFuture.failedFuture(new DurableStreamException("Cannot append empty data"));
             }
-            HttpRequest request = buildAppendRequest(url, data, null);
+            HttpRequest request = buildAppendRequest(url, data, null, null);
             return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
                     .thenApply(response -> parseAppendResponse(response, url, null));
         } catch (Exception e) {
@@ -489,7 +501,7 @@ public final class DurableStream implements AutoCloseable {
         return result;
     }
 
-    private HttpRequest buildAppendRequest(String url, byte[] data, Long seq) {
+    private HttpRequest buildAppendRequest(String url, byte[] data, Long seq, String ifMatch) {
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(buildUrlWithParams(url)))
                 .POST(HttpRequest.BodyPublishers.ofByteArray(data))
@@ -501,6 +513,9 @@ public final class DurableStream implements AutoCloseable {
         builder.header("Content-Type", contentType != null ? contentType : "application/octet-stream");
         if (seq != null) {
             builder.header("Stream-Seq", String.valueOf(seq));
+        }
+        if (ifMatch != null) {
+            builder.header("If-Match", ifMatch);
         }
 
         return builder.build();
@@ -643,6 +658,13 @@ public final class DurableStream implements AutoCloseable {
                     response.headers().firstValue("Stream-Seq").orElse("unknown"),
                     seq != null ? String.valueOf(seq) : "unknown"
             );
+        } else if (status == 412) {
+            String currentETag = response.headers().firstValue("ETag").orElse(null);
+            String currentOffsetStr = response.headers().firstValue("Stream-Next-Offset").orElse(null);
+            Offset currentOffset = currentOffsetStr != null ? Offset.of(currentOffsetStr) : null;
+            String streamClosedStr = response.headers().firstValue("Stream-Closed").orElse(null);
+            boolean streamClosed = "true".equalsIgnoreCase(streamClosedStr);
+            throw new PreconditionFailedException(currentETag, currentOffset, streamClosed);
         } else {
             throw new DurableStreamException("Append failed with status: " + status, status);
         }

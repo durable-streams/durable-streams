@@ -73,3 +73,26 @@ defmodule DurableStreams.CloseResult do
           final_offset: String.t()
         }
 end
+
+defmodule DurableStreams.PreconditionFailed do
+  @moduledoc """
+  Error returned when an If-Match precondition fails (412 response).
+
+  This occurs when using optimistic concurrency control and another writer
+  has modified the stream since the last read.
+
+  ## Fields
+
+  - `current_etag` - The current ETag of the stream
+  - `current_offset` - The current tail offset of the stream
+  - `stream_closed` - Whether the stream is closed
+  """
+
+  defstruct [:current_etag, :current_offset, stream_closed: false]
+
+  @type t :: %__MODULE__{
+          current_etag: String.t() | nil,
+          current_offset: String.t() | nil,
+          stream_closed: boolean()
+        }
+end

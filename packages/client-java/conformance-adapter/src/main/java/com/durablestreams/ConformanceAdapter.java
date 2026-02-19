@@ -201,6 +201,7 @@ public class ConformanceAdapter {
         Boolean binary = (Boolean) cmd.get("binary");
         Number seqNum = (Number) cmd.get("seq");
         Long seq = seqNum != null ? seqNum.longValue() : null;
+        String ifMatch = (String) cmd.get("ifMatch");
 
         byte[] bytes;
         if (Boolean.TRUE.equals(binary) && data != null) {
@@ -243,7 +244,7 @@ public class ConformanceAdapter {
             }
 
             try {
-                AppendResult appendResult = client.append(url, bytes, seq);
+                AppendResult appendResult = client.append(url, bytes, seq, ifMatch);
 
                 // Get offset - prefer from AppendResult, fallback to head()
                 String offset = null;
@@ -1052,6 +1053,7 @@ public class ConformanceAdapter {
         if (e instanceof StreamClosedException) return "STREAM_CLOSED";
         if (e instanceof SequenceConflictException) return "SEQUENCE_CONFLICT";
         if (e instanceof StaleEpochException) return "STALE_EPOCH";
+        if (e instanceof PreconditionFailedException) return "PRECONDITION_FAILED";
         if (e instanceof OffsetGoneException) return "INVALID_OFFSET";
         if (e instanceof ParseErrorException) return "PARSE_ERROR";
         return "UNEXPECTED_STATUS";

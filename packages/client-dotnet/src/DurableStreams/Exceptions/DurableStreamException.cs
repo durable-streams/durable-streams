@@ -48,7 +48,10 @@ public enum DurableStreamErrorCode
     ParseError,
 
     /// <summary>Stream is closed (409 with Stream-Closed header).</summary>
-    StreamClosed
+    StreamClosed,
+
+    /// <summary>Precondition failed (412) - ETag mismatch for If-Match.</summary>
+    PreconditionFailed
 }
 
 /// <summary>
@@ -100,6 +103,7 @@ public class DurableStreamException : Exception
             404 => (DurableStreamErrorCode.NotFound, "Stream not found"),
             409 => (DurableStreamErrorCode.ConflictExists, "Conflict"),
             410 => (DurableStreamErrorCode.OffsetGone, "Offset no longer available"),
+            412 => (DurableStreamErrorCode.PreconditionFailed, "Precondition failed"),
             429 => (DurableStreamErrorCode.RateLimited, "Rate limited"),
             _ when statusCode >= 500 => (DurableStreamErrorCode.Unknown, $"Server error: {statusCode}"),
             _ => (DurableStreamErrorCode.Unknown, $"Unexpected status: {statusCode}")
@@ -189,5 +193,43 @@ public class StreamClosedException : DurableStreamException
     public StreamClosedException(string url)
         : base($"Stream is closed: {url}", DurableStreamErrorCode.StreamClosed, 409, url)
     {
+    }
+}
+
+/// <summary>
+/// Thrown when an If-Match precondition fails (412 response).
+/// This occurs when using optimistic concurrency control and another writer
+/// has modified the stream since the last read.
+/// </summary>
+public class PreconditionFailedException : DurableStreamException
+{
+    /// <summary>
+    /// The current ETag of the stream.
+    /// </summary>
+    public string? CurrentETag { get; }
+
+    /// <summary>
+    /// The current tail offset of the stream.
+    /// </summary>
+    public Offset? CurrentOffset { get; }
+
+    /// <summary>
+    /// Whether the stream is closed.
+    /// </summary>
+    public bool StreamClosed { get; }
+
+    /// <summary>
+    /// Creates a new PreconditionFailedException.
+    /// </summary>
+    public PreconditionFailedException(string? currentETag, Offset? currentOffset, bool streamClosed, string? url = null)
+        : base(
+            "Precondition failed: stream was modified by another writer",
+            DurableStreamErrorCode.PreconditionFailed,
+            412,
+            url)
+    {
+        CurrentETag = currentETag;
+        CurrentOffset = currentOffset;
+        StreamClosed = streamClosed;
     }
 }

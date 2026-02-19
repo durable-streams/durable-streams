@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from durable_streams._errors import (
+    PreconditionFailedError,
     SeqConflictError,
     StreamClosedError,
     StreamExistsError,
@@ -573,6 +574,7 @@ class DurableStream:
         *,
         seq: str | None = None,
         content_type: str | None = None,
+        if_match: str | None = None,
     ) -> AppendResult:
         """
         Append data to the stream.
@@ -585,23 +587,32 @@ class DurableStream:
             data: Data to append (bytes, string, or JSON-serializable value)
             seq: Optional sequence number for writer coordination
             content_type: Optional content type override
+            if_match: Optional If-Match header for optimistic concurrency control.
+                      Format: `"<offset>"` (quoted string per HTTP spec).
+                      When set, the append will only succeed if the stream's
+                      current offset matches this value.
 
         Returns:
             AppendResult with the new tail offset
 
         Raises:
             SeqConflictError: If seq is lower than last appended
+            PreconditionFailedError: If if_match precondition fails (412)
             DurableStreamError: For other protocol errors
         """
+        if if_match is not None:
+            # If-Match requires direct append (no batching)
+            return self._append_direct(data, seq, content_type, if_match)
         if self._batching:
             return self._append_with_batching(data, seq, content_type)
-        return self._append_direct(data, seq, content_type)
+        return self._append_direct(data, seq, content_type, None)
 
     def _append_direct(
         self,
         data: Any,
         seq: str | None,
         content_type: str | None,
+        if_match: str | None,
     ) -> AppendResult:
         """Direct append without batching."""
         resolved_headers = resolve_headers_sync(self._headers)
@@ -615,6 +626,9 @@ class DurableStream:
         if seq:
             resolved_headers[STREAM_SEQ_HEADER] = seq
 
+        if if_match:
+            resolved_headers["if-match"] = if_match
+
         # For JSON mode, wrap in array (server flattens one level)
         if is_json_content_type(ct):
             body = json.dumps(wrap_for_json_append(data)).encode("utf-8")
@@ -627,6 +641,19 @@ class DurableStream:
             content=body,
             timeout=self._timeout,
         )
+
+        if response.status_code == 412:
+            current_etag = response.headers.get("etag")
+            current_offset = response.headers.get(STREAM_NEXT_OFFSET_HEADER)
+            stream_closed = (
+                response.headers.get(STREAM_CLOSED_HEADER, "").lower() == "true"
+            )
+            raise PreconditionFailedError(
+                url=self._url,
+                current_etag=current_etag,
+                current_offset=current_offset,
+                stream_closed=stream_closed,
+            )
 
         if response.status_code == 409:
             is_closed = (

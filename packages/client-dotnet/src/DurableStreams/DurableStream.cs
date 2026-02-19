@@ -179,6 +179,11 @@ public sealed class DurableStream
             request.Headers.TryAddWithoutValidation(Headers.StreamSeq, options.Seq);
         }
 
+        if (options?.IfMatch != null)
+        {
+            request.Headers.TryAddWithoutValidation(Headers.IfMatch, options.IfMatch);
+        }
+
         var contentType = _contentType ?? ContentTypes.OctetStream;
         request.Content = new ByteArrayContent(data.ToArray());
         request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
@@ -198,6 +203,16 @@ public sealed class DurableStream
 
                 throw new DurableStreamException(
                     "Sequence conflict", DurableStreamErrorCode.ConflictSeq, 409, _url);
+            }
+
+            if (response.StatusCode == HttpStatusCode.PreconditionFailed)
+            {
+                var currentETag = HttpHelpers.GetHeader(response, Headers.ETag);
+                var currentOffsetStr = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
+                var currentOffset = currentOffsetStr != null ? new Offset(currentOffsetStr) : (Offset?)null;
+                var streamClosedHeader = HttpHelpers.GetHeader(response, Headers.StreamClosed);
+                var streamClosed = string.Equals(streamClosedHeader, "true", StringComparison.OrdinalIgnoreCase);
+                throw new PreconditionFailedException(currentETag, currentOffset, streamClosed, _url);
             }
 
             throw response.StatusCode switch

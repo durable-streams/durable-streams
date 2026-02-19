@@ -32,7 +32,7 @@ defmodule DurableStreams.Stream do
 
   require Logger
 
-  alias DurableStreams.{Client, HTTP, ReadChunk, AppendResult, HeadResult, CloseResult}
+  alias DurableStreams.{Client, HTTP, ReadChunk, AppendResult, HeadResult, CloseResult, PreconditionFailed}
 
   defstruct [:client, :path, :content_type, :extra_headers]
 
@@ -306,6 +306,7 @@ defmodule DurableStreams.Stream do
 
   - `:headers` - Additional headers
   - `:seq` - Sequence number for stream-level ordering
+  - `:if_match` - ETag for optimistic concurrency control (fails with 412 if mismatched)
   - `:producer_id` - Producer ID for idempotent writes
   - `:epoch` - Producer epoch for fencing
   - `:producer_seq` - Producer sequence number for deduplication
@@ -314,6 +315,7 @@ defmodule DurableStreams.Stream do
   def append(%__MODULE__{} = stream, data, opts \\ []) do
     extra_headers = Keyword.get(opts, :headers, %{})
     seq = Keyword.get(opts, :seq)
+    if_match = Keyword.get(opts, :if_match)
     producer_id = Keyword.get(opts, :producer_id)
     epoch = Keyword.get(opts, :epoch)
     producer_seq = Keyword.get(opts, :producer_seq)
@@ -323,6 +325,7 @@ defmodule DurableStreams.Stream do
     headers =
       [{"content-type", content_type}]
       |> maybe_add_header("stream-seq", seq && to_string(seq))
+      |> maybe_add_header("if-match", if_match)
       |> maybe_add_header("producer-id", producer_id)
       |> maybe_add_header("producer-epoch", epoch && to_string(epoch))
       |> maybe_add_header("producer-seq", producer_seq && to_string(producer_seq))
@@ -347,6 +350,16 @@ defmodule DurableStreams.Stream do
       {:ok, 403, resp_headers, _body} ->
         epoch = HTTP.get_header(resp_headers, "producer-epoch")
         {:error, {:stale_epoch, epoch}}
+
+      {:ok, 412, resp_headers, _body} ->
+        current_etag = HTTP.get_header(resp_headers, "etag")
+        current_offset = HTTP.get_header(resp_headers, "stream-next-offset")
+        stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"
+        {:error, {:precondition_failed, %PreconditionFailed{
+          current_etag: current_etag,
+          current_offset: current_offset,
+          stream_closed: stream_closed
+        }}}
 
       {:ok, 409, resp_headers, body} ->
         stream_closed = String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "") == "true"

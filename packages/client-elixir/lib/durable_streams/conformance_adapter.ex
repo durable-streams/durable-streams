@@ -238,6 +238,7 @@ defmodule DurableStreams.ConformanceAdapter do
     data = cmd["data"] || ""
     binary = cmd["binary"] || false
     seq = cmd["seq"]
+    if_match = cmd["ifMatch"]
     headers = cmd["headers"] || %{}
 
     # Decode base64 if binary
@@ -264,6 +265,7 @@ defmodule DurableStreams.ConformanceAdapter do
     opts =
       [headers: merged_headers]
       |> maybe_add_opt(:seq, seq)
+      |> maybe_add_opt(:if_match, if_match)
 
     case Stream.append(stream, data, opts) do
       {:ok, %{next_offset: offset}} ->
@@ -1243,6 +1245,10 @@ defmodule DurableStreams.ConformanceAdapter do
 
   defp map_error(cmd_type, :stream_closed) do
     error_result(cmd_type, "STREAM_CLOSED", "Stream is closed", 409)
+  end
+
+  defp map_error(cmd_type, {:precondition_failed, _details}) do
+    error_result(cmd_type, "PRECONDITION_FAILED", "Precondition failed", 412)
   end
 
   defp map_error(cmd_type, :stream_closed, path) when is_binary(path) do

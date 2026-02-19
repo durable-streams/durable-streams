@@ -47,6 +47,7 @@ struct Command: Codable {
     var target: ValidationTarget?
     var maxBatchBytes: Int?
     var closed: Bool?
+    var ifMatch: String?
 }
 
 struct ValidationTarget: Codable {
@@ -704,7 +705,7 @@ func handleAppend(_ cmd: Command) async -> Result {
                 )
             } else {
                 // Simple append with optional Stream-Seq
-                let result = try await handle.appendSync(finalBody, contentType: contentType, seq: cmd.seq)
+                let result = try await handle.appendSync(finalBody, contentType: contentType, seq: cmd.seq, ifMatch: cmd.ifMatch)
 
                 return Result(
                     type: "append",
@@ -1966,6 +1967,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "PARSE_ERROR"
     case .streamClosed:
         errorCode = "STREAM_CLOSED"
+    case .preconditionFailed:
+        errorCode = "PRECONDITION_FAILED"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }

@@ -159,6 +159,8 @@ function statusToCode(status: number): DurableStreamErrorCode {
       // Could be CONFLICT_SEQ or CONFLICT_EXISTS depending on context
       // Default to CONFLICT_SEQ, caller can override
       return `CONFLICT_SEQ`
+    case 412:
+      return `PRECONDITION_FAILED`
     case 429:
       return `RATE_LIMITED`
     case 503:
@@ -195,6 +197,51 @@ export class StreamClosedError extends DurableStreamError {
     super(`Cannot append to closed stream`, `STREAM_CLOSED`, 409, url)
     this.name = `StreamClosedError`
     this.finalOffset = finalOffset
+  }
+}
+
+/**
+ * Error thrown when an If-Match precondition fails (412 Precondition Failed).
+ * This occurs when using optimistic concurrency control and another writer
+ * has modified the stream since the last read.
+ */
+export class PreconditionFailedError extends DurableStreamError {
+  readonly code = `PRECONDITION_FAILED` as const
+  readonly status = 412
+
+  /**
+   * The current ETag (offset) of the stream.
+   * Can be used to retry with the updated offset.
+   */
+  readonly currentETag?: string
+
+  /**
+   * The current offset of the stream (from Stream-Next-Offset header).
+   * Can be used to retry with the updated offset.
+   */
+  readonly currentOffset?: string
+
+  /**
+   * Whether the stream is closed.
+   */
+  readonly streamClosed: boolean
+
+  constructor(
+    url?: string,
+    currentETag?: string,
+    currentOffset?: string,
+    streamClosed = false
+  ) {
+    super(
+      `Precondition failed: stream offset has changed (concurrent modification)`,
+      `PRECONDITION_FAILED`,
+      412,
+      url
+    )
+    this.name = `PreconditionFailedError`
+    this.currentETag = currentETag
+    this.currentOffset = currentOffset
+    this.streamClosed = streamClosed
   }
 }
 

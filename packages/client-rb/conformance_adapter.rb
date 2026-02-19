@@ -122,6 +122,8 @@ def map_error_code(err)
     [ErrorCode::STREAM_CLOSED, 409]
   when DurableStreams::SeqConflictError
     [ErrorCode::SEQUENCE_CONFLICT, 409]
+  when DurableStreams::PreconditionFailedError
+    ["PRECONDITION_FAILED", 412]
   when DurableStreams::BadRequestError
     [ErrorCode::INVALID_OFFSET, 400]
   when DurableStreams::TimeoutError
@@ -268,6 +270,9 @@ def handle_append(cmd)
   # Get seq if provided
   seq = cmd["seq"]&.to_s
 
+  # Get ifMatch if provided
+  if_match = cmd["ifMatch"]
+
   # Create stream and append
   stream = DurableStreams::Stream.new(
     url,
@@ -275,7 +280,7 @@ def handle_append(cmd)
     headers: merged_headers,
     batching: false
   )
-  stream.append(data, seq: seq)
+  stream.append(data, seq: seq, if_match: if_match)
   head = stream.head
 
   result = {

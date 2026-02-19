@@ -4,7 +4,7 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
+import { StreamStore, normalizeContentType } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
 import type { CursorOptions } from "./cursor"
@@ -427,7 +427,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-Match, Producer-Id, Producer-Epoch, Producer-Seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -1231,7 +1231,65 @@ export class DurableStreamTestServer {
       }
     }
 
+    const ifMatch = req.headers[`if-match`]
+
+    // If-Match and producer headers are mutually exclusive (Section 5.2.2)
+    if (ifMatch && hasProducerHeaders) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(`If-Match and producer headers are mutually exclusive`)
+      return
+    }
+
+    const stream = this.store.get(path)
+    if (!stream) {
+      res.writeHead(404, { "content-type": `text/plain` })
+      res.end(`Stream not found`)
+      return
+    }
+
     const body = await this.readBody(req)
+
+    // Error precedence: check stream closure before If-Match.
+    // Skip for close-only requests (idempotent) and producer requests (handled downstream).
+    const isCloseOnlyRequest = body.length === 0 && closeStream
+
+    if (stream.closed && !isCloseOnlyRequest && !hasAllProducerHeaders) {
+      res.writeHead(409, {
+        "content-type": `text/plain`,
+        [STREAM_CLOSED_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: stream.currentOffset,
+      })
+      res.end(`Stream is closed`)
+      return
+    }
+
+    // Content-type mismatch check (before If-Match per error precedence)
+    if (contentType && stream.contentType && body.length > 0) {
+      const providedType = normalizeContentType(contentType)
+      const streamType = normalizeContentType(stream.contentType)
+      if (providedType !== streamType) {
+        res.writeHead(409, { "content-type": `text/plain` })
+        res.end(`Content-type mismatch`)
+        return
+      }
+    }
+
+    if (ifMatch) {
+      const currentETag = `"${stream.currentOffset}"`
+
+      if (ifMatch !== currentETag) {
+        const headers: Record<string, string> = {
+          etag: currentETag,
+          [STREAM_OFFSET_HEADER]: stream.currentOffset,
+        }
+        if (stream.closed) {
+          headers[STREAM_CLOSED_HEADER] = `true`
+        }
+        res.writeHead(412, headers)
+        res.end()
+        return
+      }
+    }
 
     // Handle close-only request (empty body with Stream-Closed: true)
     // Note: Content-Type validation is skipped for close-only requests per protocol Section 5.2
@@ -1478,6 +1536,7 @@ export class DurableStreamTestServer {
     const message = result as { offset: string }
     const responseHeaders: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: message.offset,
+      etag: `"${message.offset}"`,
     }
     // Include Stream-Closed if stream was closed with this append
     if (closeStream) {

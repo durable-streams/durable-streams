@@ -220,6 +220,7 @@ async Task<object> HandleAppend(JsonElement root)
     var data = root.GetProperty("data").GetString()!;
     var binary = GetOptionalBool(root, "binary");
     var seq = GetOptionalStringOrNumber(root, "seq");
+    var ifMatch = root.TryGetProperty("ifMatch", out var ifMatchProp) ? ifMatchProp.GetString() : null;
     var headers = GetHeaders(root);
 
     try
@@ -249,6 +250,7 @@ async Task<object> HandleAppend(JsonElement root)
         var result = await stream.AppendAsync(bytes, new AppendOptions
         {
             Seq = seq,
+            IfMatch = ifMatch,
             Headers = headersSent
         });
 
@@ -1393,6 +1395,7 @@ object CreateErrorFromException(string commandType, Exception ex)
         StaleEpochException => ("FORBIDDEN", 403),
         SequenceGapException => ("SEQUENCE_CONFLICT", 409),
         StreamClosedException => ("STREAM_CLOSED", 409),
+        PreconditionFailedException => ("PRECONDITION_FAILED", 412),
         DurableStreamException dse => (MapErrorCode(dse), dse.StatusCode ?? 500),
         InvalidOperationException when ex.Message.Contains("SSE") || ex.Message.Contains("JSON") => ("PARSE_ERROR", null as int?),
         OperationCanceledException => ("TIMEOUT", null as int?),
