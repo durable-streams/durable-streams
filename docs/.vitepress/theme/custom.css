@@ -2,77 +2,77 @@
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 800;
-  src: url('./fonts/OpenSauceOne-Black.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Black.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 700;
-  src: url('./fonts/OpenSauceOne-ExtraBold.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-ExtraBold.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 600;
-  src: url('./fonts/OpenSauceOne-Bold.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Bold.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: italic;
   font-weight: 600;
-  src: url('./fonts/OpenSauceOne-BoldItalic.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-BoldItalic.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 500;
-  src: url('./fonts/OpenSauceOne-Medium.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Medium.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: italic;
   font-weight: 500;
-  src: url('./fonts/OpenSauceOne-MediumItalic.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-MediumItalic.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 400;
-  src: url('./fonts/OpenSauceOne-Regular.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Regular.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: italic;
   font-weight: 400;
-  src: url('./fonts/OpenSauceOne-Italic.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Italic.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: normal;
   font-weight: 300;
-  src: url('./fonts/OpenSauceOne-Light.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-Light.woff2") format("woff2");
 }
 
 @font-face {
   font-family: OpenSauceOne;
   font-style: italic;
   font-weight: 300;
-  src: url('./fonts/OpenSauceOne-LightItalic.woff2') format('woff2');
+  src: url("./fonts/OpenSauceOne-LightItalic.woff2") format("woff2");
 }
 
 @font-face {
   font-family: SourceCodePro;
   font-style: normal;
   font-weight: 400;
-  src: url('./fonts/SourceCodePro-Regular.woff2') format('woff2');
+  src: url("./fonts/SourceCodePro-Regular.woff2") format("woff2");
 }
 
 :root,
@@ -98,10 +98,12 @@
   --vp-code-bg: var(--vp-c-bg-elv);
   --vp-code-color: #9ecbff;
   --vp-code-font-size: 0.875em;
-  --vp-font-family-base: OpenSauceOne, ui-sans-serif, system-ui, sans-serif,
-    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
-  --vp-font-family-mono: SourceCodePro, 'Source Code Pro', ui-monospace, Menlo, Monaco, Consolas,
-    'Liberation Mono', 'Courier New', monospace;
+  --vp-font-family-base:
+    OpenSauceOne, ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji",
+    "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --vp-font-family-mono:
+    SourceCodePro, "Source Code Pro", ui-monospace, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
 }
 
 .Layout {
@@ -110,11 +112,11 @@
 
 body {
   font-family:
-    'Open Sauce One',
+    "Open Sauce One",
     OpenSauceOne,
     -apple-system,
     BlinkMacSystemFont,
-    'Segoe UI',
+    "Segoe UI",
     sans-serif;
 }
 
@@ -147,7 +149,7 @@ body {
     width: 1px;
     height: 24px;
     background-color: var(--vp-c-divider);
-    content: '';
+    content: "";
   }
 }
 
@@ -292,11 +294,11 @@ body {
 }
 
 .VPHome .VPHero::after {
-  background-image: url('/img/Icon.svg');
+  background-image: url("/img/Icon.svg");
   background-position: center;
   background-repeat: no-repeat;
   background-size: contain;
-  content: '';
+  content: "";
   height: clamp(420px, 48vw, 660px);
   opacity: 0.08;
   pointer-events: none;
@@ -411,7 +413,11 @@ body {
 }
 
 .home-card {
-  background: linear-gradient(180deg, rgba(117, 251, 253, 0.08) 0%, rgba(117, 251, 253, 0.03) 100%);
+  background: linear-gradient(
+    180deg,
+    rgba(117, 251, 253, 0.08) 0%,
+    rgba(117, 251, 253, 0.03) 100%
+  );
   border: 1px solid rgba(117, 251, 253, 0.22);
   border-radius: 16px;
   padding: 18px 20px;
@@ -431,7 +437,7 @@ body {
   margin: 8px 0;
 }
 
-.code-card div[class*='language-'] {
+.code-card div[class*="language-"] {
   margin: 0 !important;
 }
 
@@ -475,7 +481,11 @@ body {
 
 .home-strap {
   align-items: center;
-  background: linear-gradient(135deg, rgba(117, 251, 253, 0.18) 0%, rgba(117, 251, 253, 0.06) 62%);
+  background: linear-gradient(
+    135deg,
+    rgba(117, 251, 253, 0.18) 0%,
+    rgba(117, 251, 253, 0.06) 62%
+  );
   border: 1px solid rgba(117, 251, 253, 0.3);
   border-radius: 18px;
   display: grid;

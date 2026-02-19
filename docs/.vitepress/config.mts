@@ -55,9 +55,7 @@ export default defineConfig({
       },
       {
         text: "Extended layers",
-        items: [
-          { text: "State Protocol", link: "/state" },
-        ],
+        items: [{ text: "State Protocol", link: "/state" }],
       },
       {
         text: "Development",
