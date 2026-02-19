@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -261,9 +262,8 @@ func (bs *BatchedStream) Close() error {
 	return nil
 }
 
-// isJSONContentType checks if the content type is JSON.
+// isJSONContentType checks if the content type is JSON (application/json or +json suffix).
 func isJSONContentType(ct string) bool {
-	// Simple check - could be more robust
-	return ct == "application/json" ||
-		len(ct) > 16 && ct[:16] == "application/json"
+	normalized := normalizeContentType(ct)
+	return normalized == "application/json" || strings.HasSuffix(normalized, "+json")
 }

@@ -137,11 +137,49 @@ export const SSE_CLOSED_FIELD = `streamClosed`
 /**
  * Content types that are natively compatible with SSE (UTF-8 text).
  * Binary content types are also supported via automatic base64 encoding.
+ * Note: Use isSseCompatibleContentType() for checking, which also handles +json suffix.
  */
 export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
   `text/`,
   `application/json`,
 ]
+
+/**
+ * Normalize content-type by extracting the media type (before any semicolon).
+ * Handles cases like "application/json; charset=utf-8".
+ */
+export function normalizeContentType(
+  contentType: string | null | undefined
+): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
+}
+
+/**
+ * Check if content-type indicates JSON mode.
+ * Matches application/json and any +json suffix (e.g., application/vnd.api+json).
+ */
+export function isJsonContentType(
+  contentType: string | null | undefined
+): boolean {
+  const normalized = normalizeContentType(contentType)
+  return normalized === `application/json` || normalized.endsWith(`+json`)
+}
+
+/**
+ * Check if content-type is compatible with SSE (UTF-8 text or JSON).
+ * Matches text/* prefixes and JSON content types (including +json suffix).
+ */
+export function isSseCompatibleContentType(
+  contentType: string | null | undefined
+): boolean {
+  const normalized = normalizeContentType(contentType)
+  return (
+    normalized.startsWith(`text/`) ||
+    normalized === `application/json` ||
+    normalized.endsWith(`+json`)
+  )
+}
 
 /**
  * Protocol query parameters that should not be set by users.

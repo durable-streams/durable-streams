@@ -18,6 +18,17 @@ use tokio::sync::Mutex;
 
 const CLIENT_VERSION: &str = "0.1.0";
 
+/// Check if content type indicates JSON (application/json or +json suffix).
+fn is_json_content_type(content_type: &str) -> bool {
+    let normalized = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    normalized == "application/json" || normalized.ends_with("+json")
+}
+
 // Command types from the test runner
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -455,7 +466,7 @@ async fn handle_read(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Resu
     let is_json_stream = app_state
         .stream_content_types
         .get(&path)
-        .map(|ct| ct.to_lowercase().contains("application/json"))
+        .map(|ct| is_json_content_type(ct))
         .unwrap_or(false);
 
     let timeout_ms = cmd.timeout_ms.unwrap_or(5000);
@@ -798,7 +809,7 @@ async fn handle_idempotent_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Com
     let data = cmd.data.unwrap_or_default();
 
     // For JSON streams, the data is already JSON string
-    let is_json = content_type.to_lowercase().contains("application/json");
+    let is_json = is_json_content_type(&content_type);
 
     if is_json {
         match serde_json::from_str::<Value>(&data) {
@@ -862,7 +873,7 @@ async fn handle_idempotent_append_batch(state: &Arc<Mutex<Option<AppState>>>, cm
         .build();
 
     let items = cmd.items.unwrap_or_default();
-    let is_json = content_type.to_lowercase().contains("application/json");
+    let is_json = is_json_content_type(&content_type);
 
     for item in items {
         if is_json {

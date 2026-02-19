@@ -265,7 +265,7 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	if liveMode == "sse" {
 		// Auto-detect binary content types for base64 encoding
 		ct := strings.ToLower(store.ExtractMediaType(meta.ContentType))
-		isTextCompatible := strings.HasPrefix(ct, "text/") || ct == "application/json"
+		isTextCompatible := strings.HasPrefix(ct, "text/") || store.IsJSONContentType(meta.ContentType)
 		useBase64 := !isTextCompatible
 
 		// For SSE with offset=now, convert to actual tail offset

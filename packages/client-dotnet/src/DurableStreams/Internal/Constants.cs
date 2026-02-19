@@ -40,6 +40,21 @@ internal static class ContentTypes
     public const string OctetStream = "application/octet-stream";
     public const string TextPlain = "text/plain";
     public const string EventStream = "text/event-stream";
+
+    /// <summary>
+    /// Check if content type indicates JSON (application/json or +json suffix).
+    /// </summary>
+    public static bool IsJson(string? contentType)
+    {
+        if (string.IsNullOrEmpty(contentType))
+            return false;
+
+        // Extract media type before semicolon and normalize
+        var idx = contentType.IndexOf(';');
+        var mediaType = idx >= 0 ? contentType[..idx].Trim().ToLowerInvariant() : contentType.Trim().ToLowerInvariant();
+
+        return mediaType == Json || mediaType.EndsWith("+json");
+    }
 }
 
 /// <summary>

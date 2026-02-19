@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"time"
 )
@@ -496,7 +495,7 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 
 // appendToStream handles the actual append logic, including JSON mode
 func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts AppendOptions, allowEmpty bool) (Offset, error) {
-	isJSON := isJSONContentType(stream.metadata.ContentType)
+	isJSON := IsJSONContentType(stream.metadata.ContentType)
 
 	if isJSON {
 		// JSON mode: parse and potentially flatten arrays
@@ -644,7 +643,7 @@ func (s *MemoryStore) FormatResponse(path string, messages []Message) ([]byte, e
 		return nil, ErrStreamNotFound
 	}
 
-	if isJSONContentType(stream.metadata.ContentType) {
+	if IsJSONContentType(stream.metadata.ContentType) {
 		return formatJSONResponse(messages), nil
 	}
 
@@ -692,12 +691,6 @@ func (m *longPollManager) notify(path string) {
 // This is the same as notify - waiters will wake up and check stream state
 func (m *longPollManager) notifyClosed(path string) {
 	m.notify(path)
-}
-
-// JSON helper functions
-func isJSONContentType(ct string) bool {
-	mediaType := strings.ToLower(extractMediaType(ct))
-	return mediaType == "application/json"
 }
 
 // processJSONAppend processes JSON data for append, flattening top-level arrays

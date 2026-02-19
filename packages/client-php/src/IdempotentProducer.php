@@ -449,7 +449,7 @@ final class IdempotentProducer
         $headers['Content-Type'] = $contentType;
 
         $body = $data ?? '';
-        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+        if ($data !== null && isJsonContentType($contentType)) {
             $body = '[' . $data . ']';
         }
 

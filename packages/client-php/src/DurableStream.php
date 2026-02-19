@@ -82,7 +82,7 @@ final class DurableStream
         }
 
         $body = $data;
-        if ($data !== null && str_contains(strtolower($contentType), 'application/json')) {
+        if ($data !== null && isJsonContentType($contentType)) {
             $body = '[' . $data . ']';
         }
 
@@ -279,7 +279,7 @@ final class DurableStream
 
         // For JSON streams, wrap data in array if provided
         $body = $data ?? '';
-        if ($data !== null && str_contains(strtolower($ct), 'application/json')) {
+        if ($data !== null && isJsonContentType($ct)) {
             $body = '[' . $data . ']';
         }
 

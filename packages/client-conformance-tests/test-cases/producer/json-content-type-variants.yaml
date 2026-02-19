@@ -1,0 +1,212 @@
+id: json-content-type-variants
+name: JSON Content Type Variants
+description: Tests that +json suffix content types are treated as JSON mode
+category: producer
+tags:
+  - json
+  - content-type
+
+tests:
+  - id: plus-json-suffix-basic
+    name: Content type with +json suffix uses JSON mode
+    description: Streams with +json suffix (like application/vnd.api+json) should use JSON mode semantics
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/vnd.api+json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"data": "test"}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # JSON mode returns data as array
+          data: '[{"data":"test"}]'
+          upToDate: true
+
+  - id: plus-json-array-flattening
+    name: Array flattening works with +json suffix
+    description: JSON array flattening should work with +json suffix content types
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/ld+json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '[{"@id": "1"}, {"@id": "2"}]'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          dataContainsAll:
+            - '"@id":"1"'
+            - '"@id":"2"'
+          upToDate: true
+
+  - id: hal-json-content-type
+    name: HAL+JSON content type uses JSON mode
+    description: application/hal+json should use JSON mode
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/hal+json
+    operations:
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: hal-producer
+        epoch: 0
+        data: '{"_links": {"self": {"href": "/test"}}}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '[{"_links":{"self":{"href":"/test"}}}]'
+          upToDate: true
+
+  - id: json-charset-parameter
+    name: JSON with charset parameter uses JSON mode
+    description: application/json with charset parameter should use JSON mode
+    setup:
+      - action: create
+        as: streamPath
+        contentType: "application/json; charset=utf-8"
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"charset": "handled"}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '[{"charset":"handled"}]'
+          upToDate: true
+
+  - id: plus-json-case-insensitive
+    name: Content type matching is case-insensitive
+    description: JSON mode detection should be case-insensitive
+    setup:
+      - action: create
+        as: streamPath
+        contentType: "Application/VND.API+JSON"
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"case": "insensitive"}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '[{"case":"insensitive"}]'
+          upToDate: true
+
+  # Negative tests - content types that should NOT be JSON mode
+  - id: plus-xml-not-json-mode
+    name: Content type with +xml suffix is NOT JSON mode
+    description: application/foo+xml should NOT use JSON mode (per RFC 6839)
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/atom+xml
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "<entry>test</entry>"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # Non-JSON mode returns raw data, not wrapped in array
+          data: "<entry>test</entry>"
+          upToDate: true
+
+  - id: text-json-not-json-mode
+    name: text/json is NOT treated as JSON mode
+    description: Only application/json and +json suffix trigger JSON mode
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '{"test": 1}'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          # text/json is NOT JSON mode - raw data returned
+          data: '{"test": 1}'
+          upToDate: true
+
+  # RFC 8259 compliance - JSON can have any root value type
+  - id: json-primitive-number
+    name: JSON primitive number at root
+    description: Per RFC 8259, JSON text can be a number at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: "42"
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "[42]"
+          upToDate: true
+
+  - id: json-primitive-string
+    name: JSON primitive string at root
+    description: Per RFC 8259, JSON text can be a string at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: append
+        path: ${streamPath}
+        data: '"hello world"'
+        expect:
+          status: 200
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: '["hello world"]'
+          upToDate: true
+
+  - id: json-primitive-boolean-null
+    name: JSON primitive boolean and null at root
+    description: Per RFC 8259, JSON text can be boolean or null at root level
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: idempotent-append-batch
+        path: ${streamPath}
+        producerId: primitive-producer
+        epoch: 0
+        items:
+          - data: "true"
+          - data: "false"
+          - data: "null"
+        expect:
+          allSucceed: true
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "[true,false,null]"
+          upToDate: true

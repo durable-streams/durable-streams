@@ -1,3 +1,4 @@
+import { isJsonContentType } from "./constants"
 import type { DurableStreamErrorCode } from "./types"
 
 /**
@@ -40,7 +41,7 @@ export class FetchError extends Error {
 
     const contentType = response.headers.get(`content-type`)
     if (!response.bodyUsed) {
-      if (contentType && contentType.includes(`application/json`)) {
+      if (isJsonContentType(contentType)) {
         try {
           json = (await response.json()) as object
         } catch {
@@ -111,7 +112,7 @@ export class DurableStreamError extends Error {
 
     const contentType = response.headers.get(`content-type`)
     if (!response.bodyUsed) {
-      if (contentType && contentType.includes(`application/json`)) {
+      if (isJsonContentType(contentType)) {
         try {
           details = await response.json()
         } catch {

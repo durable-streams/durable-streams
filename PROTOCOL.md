@@ -778,11 +778,22 @@ Clients **MAY** use any content type for their streams, including:
 
 ### 7.1. JSON Mode
 
-Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
+Streams created with JSON content types have special semantics for message boundaries and batch operations. JSON Mode applies to:
+
+- `application/json`
+- Any content type with a `+json` suffix (e.g., `application/vnd.api+json`, `application/ld+json`, `application/hal+json`)
+
+The `+json` structured syntax suffix is defined by [RFC 6839](https://www.rfc-editor.org/rfc/rfc6839) and indicates that the content follows JSON representation format. Servers **MUST** treat these content types identically for JSON Mode processing. Content type matching is case-insensitive and ignores parameters (e.g., `application/json; charset=utf-8` is treated as `application/json`).
+
+**Note:** Other structured syntax suffixes (e.g., `+xml`, `+der`, `+zip`) do **NOT** trigger JSON Mode. Only `application/json` and types ending with `+json` are treated as JSON.
+
+#### Encoding
+
+Per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259), JSON mode payloads **MUST** be UTF-8 encoded. Receivers **MUST** interpret JSON mode payloads as UTF-8. If a `charset` parameter is present, it **MUST** be ignored (RFC 8259 specifies that `application/json` has no charset parameter).
 
 #### Message Boundaries
 
-For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
+For JSON streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
 
 #### Array Flattening for Batch Operations
 
@@ -805,7 +816,7 @@ PUT requests with an empty array body (`[]`) are valid and create an empty strea
 
 #### JSON Validation
 
-Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
+Servers **MUST** validate that appended data is valid JSON per [RFC 8259](https://www.rfc-editor.org/rfc/rfc8259). Valid JSON values include objects, arrays, strings, numbers, booleans (`true`, `false`), and `null`. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
 
 #### Response Format
 

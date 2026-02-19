@@ -1078,7 +1078,22 @@ public class ConformanceAdapter {
             return false;
         }
         String contentType = headers.get("content-type");
-        return contentType != null && contentType.toLowerCase().contains("application/json");
+        return isJsonContentType(contentType);
+    }
+
+    /**
+     * Check if content type indicates JSON (application/json or +json suffix).
+     */
+    private static boolean isJsonContentType(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
+        String normalized = contentType.toLowerCase(Locale.ROOT);
+        int idx = normalized.indexOf(';');
+        if (idx >= 0) {
+            normalized = normalized.substring(0, idx).trim();
+        }
+        return normalized.equals("application/json") || normalized.endsWith("+json");
     }
 
     private static Map<String, Object> errorResult(String commandType, String errorCode, String message, int status) {
