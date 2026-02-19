@@ -58,6 +58,6 @@ jobs:
 
       - name: Comment on PRs about release
         if: steps.changesets.outputs.published == 'true'
-        uses: tanstack/config/.github/comment-on-release@main
+        uses: ./.github/comment-on-release
         with:
           published-packages: ${{ steps.changesets.outputs.publishedPackages }}
