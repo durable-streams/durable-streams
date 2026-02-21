@@ -24,6 +24,8 @@ export interface CollectionDefinition<T = unknown> {
   type: string
   /** The property name in T that serves as the primary key */
   primaryKey: string
+  /** Allow applying synced transactions while optimistic transactions are persisting. */
+  allowSyncWhilePersisting?: boolean
 }
 
 /**
@@ -504,9 +506,11 @@ class EventDispatcher {
 function createStreamSyncConfig<T extends object>(
   eventType: string,
   dispatcher: EventDispatcher,
-  primaryKey: string
+  primaryKey: string,
+  allowSyncWhilePersisting?: boolean
 ): SyncConfig<T, string> {
   return {
+    allowSyncWhilePersisting,
     sync: ({ begin, write, commit, markReady, truncate }) => {
       // Register this collection's handler with the dispatcher
       dispatcher.registerHandler(eventType, {
@@ -781,7 +785,8 @@ export function createStreamDB<
       sync: createStreamSyncConfig(
         definition.type,
         dispatcher,
-        definition.primaryKey
+        definition.primaryKey,
+        definition.allowSyncWhilePersisting
       ),
       startSync: true, // Start syncing immediately
       // Disable GC - we manage lifecycle via db.close()
