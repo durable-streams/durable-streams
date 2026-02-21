@@ -15,6 +15,22 @@ import type {
 // ============================================================================
 
 /**
+ * Field parsers for transforming raw JSON values to typed JavaScript values.
+ * Maps field names to parser functions that transform the raw value.
+ *
+ * @example
+ * ```typescript
+ * const parser: FieldParsers<MyType> = {
+ *   createdAt: (v) => new Date(v as string),
+ *   updatedAt: (v) => new Date(v as string),
+ * }
+ * ```
+ */
+export type FieldParsers<T> = {
+  [K in keyof T]?: (value: unknown) => T[K]
+}
+
+/**
  * Definition for a single collection in the stream state
  */
 export interface CollectionDefinition<T = unknown> {
@@ -24,6 +40,11 @@ export interface CollectionDefinition<T = unknown> {
   type: string
   /** The property name in T that serves as the primary key */
   primaryKey: string
+  /**
+   * Optional field parsers to transform raw JSON values.
+   * Applied to incoming stream data before writing to the collection.
+   */
+  parser?: FieldParsers<T>
 }
 
 /**
@@ -218,6 +239,12 @@ class EventDispatcher {
   /** Map from event type to collection handler */
   private handlers = new Map<string, CollectionSyncHandler>()
 
+  /** Map from event type to field parsers */
+  private parsers = new Map<
+    string,
+    Record<string, (value: unknown) => unknown>
+  >()
+
   /** Handlers that have pending writes (need commit) */
   private pendingHandlers = new Set<CollectionSyncHandler>()
 
@@ -259,6 +286,16 @@ class EventDispatcher {
   }
 
   /**
+   * Register field parsers for a specific event type
+   */
+  registerParser(
+    eventType: string,
+    parser: Record<string, (value: unknown) => unknown>
+  ): void {
+    this.parsers.set(eventType, parser)
+  }
+
+  /**
    * Dispatch a change event to the appropriate collection.
    * Writes are buffered until commit() is called via markUpToDate().
    */
@@ -292,6 +329,18 @@ class EventDispatcher {
 
     // Create a shallow copy to avoid mutating the original
     const value = { ...originalValue }
+
+    // Apply field parsers if defined for this event type
+    const parser = this.parsers.get(event.type)
+    if (parser) {
+      for (const [field, parse] of Object.entries(parser)) {
+        if (field in value) {
+          ;(value as Record<string, unknown>)[field] = parse(
+            (value as Record<string, unknown>)[field]
+          )
+        }
+      }
+    }
 
     // Set the primary key field on the value object from the event key
     ;(value as any)[handler.primaryKey] = event.key
@@ -798,6 +847,11 @@ export function createStreamDB<
     })
 
     collectionInstances[name] = collection
+
+    // Register field parsers if defined
+    if (definition.parser) {
+      dispatcher.registerParser(definition.type, definition.parser)
+    }
   }
 
   // Stream consumer state (lazy initialization)
