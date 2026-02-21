@@ -1,0 +1,35 @@
+{
+  "name": "ai-session-ui",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx server.ts",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.23",
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@durable-streams/ai-session": "workspace:*",
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/server": "workspace:*",
+    "@durable-streams/state": "workspace:*",
+    "@tanstack/db": "^0.5.23",
+    "@tanstack/react-db": "^0.1.67",
+    "ai": "^6.0.49",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "streamdown": "^2.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0"
+  }
+}
