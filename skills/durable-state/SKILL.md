@@ -8,7 +8,7 @@ description: >
   format, insert/update/delete/upsert helpers, useLiveQuery reactive queries,
   preload lifecycle, and SSR clientOnly$ wrapping.
 type: core
-library: "@durable-streams"
+library: "@durable-streams/state"
 library_version: "pre-1.0"
 sources:
   - "durable-streams:packages/state/src/stream-db.ts"

@@ -8,7 +8,7 @@ description: >
   for stream management (create, write, read, delete), STREAM_URL env var,
   port 4437, certificate trust troubleshooting.
 type: lifecycle
-library: "@durable-streams"
+library: "@durable-streams/cli"
 library_version: "pre-1.0"
 sources:
   - "durable-streams:README.md"
@@ -40,7 +40,7 @@ INSTALL_DIR=~/.local/bin curl -sSL https://raw.githubusercontent.com/durable-str
 durable-streams-server dev
 ```
 
-Starts an in-memory server at `http://localhost:4437`. Streams at `/v1/stream/*`. Data is lost on restart — use for development only.
+Starts an in-memory server at `http://localhost:4437`. Streams at `/v1/stream/*`. Data is lost on restart — use for development only. Note: HTTP mode limits browsers to 6 concurrent connections per origin. For more than a few live streams, use HTTPS (see below).
 
 ### Install the client and CLI
 
@@ -137,10 +137,14 @@ CLI options: `--url` overrides `STREAM_URL`, `--auth` sets Authorization header.
 ### Stream URL construction in code
 
 ```typescript
+// HTTPS (recommended — enables HTTP/2 multiplexing)
+const streamUrl = "https://localhost:4437/v1/stream/my-events"
+
+// HTTP (zero-config dev only — 6 concurrent connection limit in browsers)
 const streamUrl = "http://localhost:4437/v1/stream/my-events"
 
-// Or from environment
-const baseUrl = process.env.STREAM_URL || "http://localhost:4437"
+// From environment
+const baseUrl = process.env.STREAM_URL || "https://localhost:4437"
 const streamUrl = `${baseUrl}/v1/stream/my-events`
 ```
 

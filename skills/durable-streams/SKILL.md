@@ -7,7 +7,7 @@ description: >
   lifecycle, live modes (SSE, long-poll), JSON framing, producer headers,
   zombie fencing, StreamResponse consumption, and dynamic auth headers.
 type: core
-library: "@durable-streams"
+library: "@durable-streams/client"
 library_version: "pre-1.0"
 sources:
   - "durable-streams:packages/client/src/durable-stream.ts"
@@ -30,7 +30,7 @@ Persistent, resumable, append-only event streams over HTTP. Clients write data w
 | High-throughput exactly-once writes | `IdempotentProducer`     | Batching, pipelining, dedup, auto-retry |
 | One-off write (rare)                | `DurableStream.append()` | Simple but no retry safety              |
 
-Use `IdempotentProducer` for any repeated writes. `DurableStream.append()` is for one-off writes only — it lacks retry safety, so a network failure means lost or duplicated data.
+Use `IdempotentProducer` for any repeated writes. `DurableStream.append()` is for one-off writes only — it sends no producer headers, so it is not idempotent. Retries after network ambiguity can duplicate data, and there is no dedup to catch it.
 
 ## Setup
 
@@ -296,7 +296,7 @@ for (const event of events) {
 await producer.flush()
 ```
 
-`DurableStream.append()` is for one-off writes only. `IdempotentProducer` is faster (batching + pipelining), idempotent (exactly-once via dedup), and resilient (auto-retry on failure).
+`DurableStream.append()` is for one-off writes only — it sends no producer headers, so retries after network ambiguity can duplicate data. `IdempotentProducer` is faster (batching + pipelining), idempotent (exactly-once via dedup), and resilient (auto-retry on failure).
 
 Source: Maintainer interview
 
