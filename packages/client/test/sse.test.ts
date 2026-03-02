@@ -417,6 +417,129 @@ data: {"streamNextOffset":"100"}
     expect(items[1]).toEqual({ id: 2 })
   })
 
+  it(`should support jsonStream when multiple data events precede one control`, async () => {
+    const StreamResponseImpl = await getStreamResponseImpl()
+
+    const sseText = `event: data
+data: [{"id":1}]
+
+event: data
+data: [{"id":2}]
+
+event: control
+data: {"streamNextOffset":"100","upToDate":true}
+
+`
+    const encoder = new TextEncoder()
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+
+    const firstResponse = new Response(sseBody, {
+      status: 200,
+      headers: { "content-type": `text/event-stream` },
+    })
+
+    const streamResponse = new StreamResponseImpl<{ id: number }>({
+      url: `http://test.com/stream`,
+      contentType: `application/json`,
+      live: `sse`,
+      startOffset: `0`,
+      isJsonMode: true,
+      initialOffset: `0`,
+      initialCursor: undefined,
+      initialUpToDate: false,
+      initialStreamClosed: false,
+      firstResponse,
+      abortController: new AbortController(),
+      fetchNext: vi.fn(),
+    })
+
+    const items: Array<{ id: number }> = []
+    const reader = streamResponse.jsonStream().getReader()
+    let result = await reader.read()
+    while (!result.done) {
+      items.push(result.value)
+      result = await reader.read()
+    }
+
+    expect(items).toHaveLength(2)
+    expect(items[0]).toEqual({ id: 1 })
+    expect(items[1]).toEqual({ id: 2 })
+  })
+
+  it(`should not stall jsonStream when an empty data batch precedes non-empty data`, async () => {
+    const StreamResponseImpl = await getStreamResponseImpl()
+
+    const sseText = `event: data
+data: []
+
+event: control
+data: {"streamNextOffset":"100","upToDate":false}
+
+event: data
+data: [{"id":1}]
+
+event: control
+data: {"streamNextOffset":"200","upToDate":true}
+
+`
+    const encoder = new TextEncoder()
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+
+    const firstResponse = new Response(sseBody, {
+      status: 200,
+      headers: { "content-type": `text/event-stream` },
+    })
+
+    const streamResponse = new StreamResponseImpl<{ id: number }>({
+      url: `http://test.com/stream`,
+      contentType: `application/json`,
+      live: `sse`,
+      startOffset: `0`,
+      isJsonMode: true,
+      initialOffset: `0`,
+      initialCursor: undefined,
+      initialUpToDate: false,
+      initialStreamClosed: false,
+      firstResponse,
+      abortController: new AbortController(),
+      fetchNext: vi.fn(),
+    })
+
+    const reader = streamResponse.jsonStream().getReader()
+    const readWithTimeout = async () =>
+      Promise.race([
+        reader.read(),
+        new Promise<`timeout`>((resolve) => {
+          setTimeout(() => resolve(`timeout`), 300)
+        }),
+      ])
+
+    const first = await readWithTimeout()
+    expect(first).not.toBe(`timeout`)
+    if (first === `timeout`) {
+      throw new Error(`jsonStream stalled after empty batch`)
+    }
+    expect(first.done).toBe(false)
+    expect(first.value).toEqual({ id: 1 })
+
+    const second = await readWithTimeout()
+    expect(second).not.toBe(`timeout`)
+    if (second === `timeout`) {
+      throw new Error(`jsonStream stalled waiting for stream completion`)
+    }
+    expect(second.done).toBe(true)
+  })
+
   it(`should support bodyStream with SSE`, async () => {
     const StreamResponseImpl = await getStreamResponseImpl()
 
