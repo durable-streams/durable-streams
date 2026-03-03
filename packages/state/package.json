@@ -39,6 +39,7 @@
   "files": [
     "dist",
     "src",
+    "skills",
     "state-protocol.schema.json",
     "STATE-PROTOCOL.md"
   ],

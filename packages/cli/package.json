@@ -40,7 +40,8 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "skills"
   ],
   "keywords": [
     "cli",
