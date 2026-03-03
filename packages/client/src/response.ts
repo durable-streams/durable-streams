@@ -591,7 +591,8 @@ export class StreamResponseImpl<
           this.upToDate,
           this.streamClosed,
           this.contentType,
-          this.#encoding
+          this.#encoding,
+          this.#isJsonMode
         )
 
         // Try to reconnect
@@ -621,7 +622,8 @@ export class StreamResponseImpl<
           controlEvent.upToDate ?? false,
           controlEvent.streamClosed ?? false,
           this.contentType,
-          this.#encoding
+          this.#encoding,
+          this.#isJsonMode
         )
         return { type: `response`, response }
       }
@@ -1014,34 +1016,40 @@ export class StreamResponseImpl<
           return
         }
 
-        // Get next response
-        const { done, value: response } = await reader.read()
-        if (done) {
-          this.#markClosed()
-          controller.close()
-          return
+        // Keep reading until we can enqueue at least one item.
+        // This avoids stalling when a response contains an empty JSON array.
+        let result = await reader.read()
+        while (!result.done) {
+          const response = result.value
+
+          // Parse JSON and flatten arrays (handle empty responses gracefully)
+          const text = await response.text()
+          const content = text.trim() || `[]` // Default to empty array if no content or whitespace
+          let parsed: TJson | Array<TJson>
+          try {
+            parsed = JSON.parse(content) as TJson | Array<TJson>
+          } catch (err) {
+            const preview =
+              content.length > 100 ? content.slice(0, 100) + `...` : content
+            throw new DurableStreamError(
+              `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
+              `PARSE_ERROR`
+            )
+          }
+          pendingItems = Array.isArray(parsed) ? parsed : [parsed]
+
+          if (pendingItems.length > 0) {
+            controller.enqueue(pendingItems.shift())
+            return
+          }
+
+          // Empty JSON batch; read the next response.
+          result = await reader.read()
         }
 
-        // Parse JSON and flatten arrays (handle empty responses gracefully)
-        const text = await response.text()
-        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        let parsed: TJson | Array<TJson>
-        try {
-          parsed = JSON.parse(content) as TJson | Array<TJson>
-        } catch (err) {
-          const preview =
-            content.length > 100 ? content.slice(0, 100) + `...` : content
-          throw new DurableStreamError(
-            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
-            `PARSE_ERROR`
-          )
-        }
-        pendingItems = Array.isArray(parsed) ? parsed : [parsed]
-
-        // Enqueue first item
-        if (pendingItems.length > 0) {
-          controller.enqueue(pendingItems.shift())
-        }
+        this.#markClosed()
+        controller.close()
+        return
       },
 
       cancel: () => {
@@ -1395,7 +1403,8 @@ function createSSESyntheticResponseFromParts(
   upToDate: boolean,
   streamClosed: boolean,
   contentType: string | undefined,
-  encoding: `base64` | undefined
+  encoding: `base64` | undefined,
+  isJsonMode?: boolean
 ): Response {
   const headers: Record<string, string> = {
     "content-type": contentType ?? `application/json`,
@@ -1443,6 +1452,22 @@ function createSSESyntheticResponseFromParts(
       }
       body = combined.buffer
     }
+  } else if (isJsonMode) {
+    const mergedParts: Array<string> = []
+    for (const part of dataParts) {
+      const trimmed = part.trim()
+      if (trimmed.length === 0) continue
+
+      if (trimmed.startsWith(`[`) && trimmed.endsWith(`]`)) {
+        const inner = trimmed.slice(1, -1).trim()
+        if (inner.length > 0) {
+          mergedParts.push(inner)
+        }
+      } else {
+        mergedParts.push(trimmed)
+      }
+    }
+    body = `[${mergedParts.join(`,`)}]`
   } else {
     body = dataParts.join(``)
   }
