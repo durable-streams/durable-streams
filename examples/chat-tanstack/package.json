@@ -1,0 +1,33 @@
+{
+  "name": "@durable-streams/example-proxy-chat-tanstack",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "start": "node .output/server/index.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/ai": "latest",
+    "@tanstack/ai-openai": "latest",
+    "@tanstack/ai-react": "latest",
+    "@tanstack/react-router": "latest",
+    "@tanstack/react-start": "latest",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "latest",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "latest",
+    "tailwindcss": "latest",
+    "typescript": "~5.9.3",
+    "vite": "latest",
+    "vite-tsconfig-paths": "latest"
+  }
+}
