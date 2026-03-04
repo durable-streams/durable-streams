@@ -1,0 +1,59 @@
+{
+  "name": "@durable-streams/aisdk-transport",
+  "version": "0.0.0",
+  "description": "Vercel AI SDK transport adapters for Durable Streams",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/aisdk-transport"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "vercel-ai-sdk",
+    "ai",
+    "streaming",
+    "typescript"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "ai": "latest"
+  },
+  "devDependencies": {
+    "tsdown": "^0.9.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
