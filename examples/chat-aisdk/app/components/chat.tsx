@@ -2,7 +2,7 @@
 
 import { useChat } from "@ai-sdk/react"
 import { useEffect, useMemo, useRef, useState } from "react"
-import { DefaultChatTransport } from "ai"
+import { createDurableChatTransport } from "@durable-streams/aisdk-transport"
 import type { UIMessage } from "ai"
 
 export function Chat({
@@ -13,10 +13,7 @@ export function Chat({
   initialMessages?: Array<UIMessage>
 }) {
   const transport = useMemo(
-    () =>
-      new DefaultChatTransport({
-        api: `/api/chat`,
-      }),
+    () => createDurableChatTransport({ api: `/api/chat` }),
     []
   )
 
@@ -24,6 +21,7 @@ export function Chat({
     id,
     messages: initialMessages,
     transport,
+    resume: true,
   })
 
   // useChat can briefly report empty messages after navigation/reload.
