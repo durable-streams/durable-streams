@@ -1,7 +1,13 @@
 import { openai } from "@ai-sdk/openai"
 import { convertToModelMessages, streamText } from "ai"
-import { saveChatMessages } from "../../lib/chat-store"
-import { assertOpenAiApiKeyConfigured } from "../../utils"
+import { toDurableStreamResponse } from "@durable-streams/aisdk-transport"
+import { saveChat, saveChatMessages } from "../../lib/chat-store"
+import {
+  DURABLE_STREAMS_WRITE_HEADERS,
+  assertOpenAiApiKeyConfigured,
+  buildReadProxyUrl,
+  buildWriteStreamUrl,
+} from "../../utils"
 import type { UIMessage } from "ai"
 
 export async function POST(request: Request) {
@@ -19,14 +25,31 @@ export async function POST(request: Request) {
     messages: await convertToModelMessages(messages),
   })
 
-  result.consumeStream()
+  // Each generation writes to its own durable stream path.
+  const streamPath = `chat/${id}/${crypto.randomUUID()}`
 
-  return result.toUIMessageStreamResponse({
-    originalMessages: messages,
-    onFinish: ({ messages }) => {
-      if (id) {
-        void saveChatMessages({ id, messages })
-      }
-    },
-  })
+  if (id) {
+    // Persist the currently active stream so a page refresh can reconnect.
+    await saveChat({ id, activeStreamId: streamPath })
+  }
+
+  return toDurableStreamResponse(
+    result.toUIMessageStream({
+      originalMessages: messages,
+      onFinish: ({ messages: finalMessages }) => {
+        if (id) {
+          // Persist completion and clear active stream atomically to avoid races.
+          void saveChat({ id, messages: finalMessages, activeStreamId: null })
+        }
+      },
+    }),
+    {
+      stream: {
+        writeUrl: buildWriteStreamUrl(streamPath),
+        // Return an app route for reads so auth/secrets stay server-side.
+        readUrl: buildReadProxyUrl(request, streamPath),
+        headers: DURABLE_STREAMS_WRITE_HEADERS,
+      },
+    }
+  )
 }
