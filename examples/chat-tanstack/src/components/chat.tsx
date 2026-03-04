@@ -1,21 +1,35 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
-import { fetchServerSentEvents, useChat } from "@tanstack/ai-react"
+import { useChat } from "@tanstack/ai-react"
+import { durableStreamConnection } from "@durable-streams/tanstack-ai-transport"
 import type { UIMessage } from "@tanstack/ai-react"
 
 export function Chat({
   id,
   initialMessages = [],
-  resumeOffset: _resumeOffset,
+  resumeOffset,
 }: {
   id: string
   initialMessages?: Array<UIMessage>
   resumeOffset?: string
 }) {
+  /**
+   * Durable session integration:
+   * - `postUrl` endpoint (`/api/chat`) accepts a new user prompt and starts model generation.
+   * - `readUrl` endpoint (`/api/chat-stream`) resolves the stream from chat id server-side.
+   * - `initialOffset` lets this client resume from the SSR snapshot point instead of replaying
+   *   the full stream on first subscribe.
+   * The connection object is memoized by chat id/offset so `useChat` keeps a stable transport.
+   */
   const connection = useMemo(
-    () => fetchServerSentEvents(`/api/chat?id=${encodeURIComponent(id)}`),
-    [id]
+    () =>
+      durableStreamConnection({
+        postUrl: `/api/chat?id=${encodeURIComponent(id)}`,
+        readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
+        initialOffset: resumeOffset,
+      }),
+    [id, resumeOffset]
   )
 
   const [input, setInput] = useState(``)

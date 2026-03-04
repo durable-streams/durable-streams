@@ -4,12 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "tsx start-dev.ts",
+    "dev:app": "vite dev",
+    "dev:streams": "pnpm --filter @durable-streams/cli start:dev",
     "build": "vite build",
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/tanstack-ai-transport": "workspace:*",
     "@tanstack/ai": "latest",
     "@tanstack/ai-openai": "latest",
     "@tanstack/ai-react": "latest",
@@ -26,6 +30,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "latest",
     "tailwindcss": "latest",
+    "tsx": "latest",
     "typescript": "~5.9.3",
     "vite": "latest",
     "vite-tsconfig-paths": "latest"

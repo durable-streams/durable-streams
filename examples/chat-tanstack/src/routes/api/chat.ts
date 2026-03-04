@@ -1,20 +1,37 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { chat, toServerSentEventsResponse } from "@tanstack/ai"
+import { chat } from "@tanstack/ai"
 import { openaiText } from "@tanstack/ai-openai"
+import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
+import {
+  DURABLE_STREAMS_WRITE_HEADERS,
+  buildChatStreamPath,
+  buildWriteStreamUrl,
+} from "~/lib/durable-streams-config"
 import { saveChatMessages } from "~/lib/chat-store"
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error(`OPENAI_API_KEY is not configured`)
 }
 
+function extractLatestUserMessage(messages: Array<any>): any | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message?.role === `user`) {
+      return message
+    }
+  }
+  return undefined
+}
+
 export const Route = createFileRoute(`/api/chat`)({
   server: {
     handlers: {
       POST: async ({ request }) => {
+        const requestUrl = new URL(request.url)
         const requestBody = await request.json()
         const messages = requestBody.messages as Array<any>
         const idFromBody = requestBody.id as string | undefined
-        const idFromQuery = new URL(request.url).searchParams.get(`id`)
+        const idFromQuery = requestUrl.searchParams.get(`id`)
         const id = idFromBody ?? idFromQuery ?? undefined
 
         if (!id) {
@@ -24,14 +41,36 @@ export const Route = createFileRoute(`/api/chat`)({
           )
         }
 
+        // Durable session model: one append-only stream per chat id.
+        const streamPath = buildChatStreamPath(id)
+        const writeUrl = buildWriteStreamUrl(streamPath)
+        // Clients read via our local proxy route so read auth stays server-controlled.
+        const readUrl = new URL(`/api/chat-stream`, requestUrl)
+        readUrl.searchParams.set(`id`, id)
+
+        // Explicitly append only the new prompt message for this request.
+        const latestUserMessage = extractLatestUserMessage(messages)
+        const newMessages = latestUserMessage ? [latestUserMessage] : []
+
+        // Keep lightweight local metadata (title/listing), not full transcript storage.
         await saveChatMessages({ id, messages })
 
-        const stream = chat({
+        // Start model generation; chunks are piped to the same durable stream.
+        const responseStream = chat({
           adapter: openaiText(`gpt-4o-mini`),
           messages,
         })
 
-        return toServerSentEventsResponse(stream)
+        // Helper appends newMessages, streams response chunks, and returns stream URL.
+        return toDurableChatSessionResponse({
+          stream: {
+            writeUrl,
+            readUrl: readUrl.toString(),
+            headers: DURABLE_STREAMS_WRITE_HEADERS,
+          },
+          newMessages,
+          responseStream,
+        })
       },
     },
   },
