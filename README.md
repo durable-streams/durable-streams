@@ -242,7 +242,7 @@ const resumed = await handle.stream({ offset: savedOffset, live: false })
 
 ```typescript
 // Subscribe to live updates
-const res = await handle.stream({ live: "auto" })
+const res = await handle.stream({ live: true })
 
 res.subscribeJson(async (batch) => {
   for (const item of batch.items) {
@@ -633,7 +633,7 @@ for (const change of db.changes()) {
 // Client: receive and apply changes (works in browsers, React Native, native apps)
 const res = await handle.stream<Change>({
   offset: lastSeenOffset,
-  live: "auto",
+  live: true,
 })
 res.subscribeJson(async (batch) => {
   for (const change of batch.items) {
@@ -696,7 +696,7 @@ await producer.flush() // Ensure all tokens are delivered
 await producer.close()
 
 // Client: resume from last seen position (refresh-safe)
-const res = await stream.stream({ offset: lastSeenOffset, live: "auto" })
+const res = await stream.stream({ offset: lastSeenOffset, live: true })
 res.subscribe((chunk) => {
   renderTokens(chunk.data)
   saveOffset(chunk.offset) // Persist for next resume
