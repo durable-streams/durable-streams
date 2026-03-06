@@ -20,6 +20,7 @@ export default [
       `packages/caddy-plugin/**`,
       `packages/client-py/**`,
       `scripts/**`,
+      `**/bin/**`,
     ],
   },
   {
