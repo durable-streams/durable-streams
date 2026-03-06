@@ -86,6 +86,24 @@ npx @durable-streams/server-conformance-tests --run http://localhost:4437
 npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
 ```
 
+### Programmatic dev server with stream creation
+
+```typescript
+import { DurableStreamTestServer } from "@durable-streams/server"
+import { DurableStream } from "@durable-streams/client"
+
+const server = new DurableStreamTestServer({ port: 0 }) // Random port
+await server.start()
+
+// Streams must be created before clients can connect
+await DurableStream.create({
+  url: `${server.url}/v1/stream/my-app`,
+  contentType: "application/json",
+})
+
+console.log(`Dev server running on ${server.url}`)
+```
+
 ### Programmatic dev server in tests
 
 ```typescript

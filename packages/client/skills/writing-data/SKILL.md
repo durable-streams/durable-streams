@@ -55,7 +55,7 @@ const producer = new IdempotentProducer(handle, "my-service", {
 
 // Fire-and-forget writes — automatically batched and deduplicated
 for (const event of events) {
-  producer.append(event)
+  producer.append(JSON.stringify(event))
 }
 
 // Ensure all pending writes are delivered
@@ -152,7 +152,7 @@ const handle = await DurableStream.create({
   contentType: "application/json",
 })
 for (const event of events) {
-  await handle.append(event) // No dedup, no batching, sequential
+  await handle.append(JSON.stringify(event)) // No dedup, no batching, sequential
 }
 ```
 
@@ -168,7 +168,7 @@ const producer = new IdempotentProducer(handle, "my-service", {
   onError: (err) => console.error(err),
 })
 for (const event of events) {
-  producer.append(event) // Fire-and-forget, batched, deduplicated
+  producer.append(JSON.stringify(event)) // Fire-and-forget, batched, deduplicated
 }
 await producer.flush()
 ```
@@ -208,7 +208,7 @@ Wrong:
 
 ```typescript
 for (const event of events) {
-  await producer.append(event) // Defeats pipelining!
+  await producer.append(JSON.stringify(event)) // Defeats pipelining!
 }
 ```
 
@@ -216,7 +216,7 @@ Correct:
 
 ```typescript
 for (const event of events) {
-  producer.append(event) // Fire-and-forget
+  producer.append(JSON.stringify(event)) // Fire-and-forget
 }
 await producer.flush() // Wait for all to complete
 ```
@@ -225,25 +225,21 @@ await producer.flush() // Wait for all to complete
 
 Source: packages/client/src/idempotent-producer.ts
 
-### HIGH Passing objects to append on non-JSON streams
+### HIGH Passing objects to append instead of strings
 
 Wrong:
 
 ```typescript
-// text/plain stream
 producer.append({ event: "user.created" }) // throws!
 ```
 
 Correct:
 
 ```typescript
-// text/plain stream — manually serialize
-producer.append(JSON.stringify({ event: "user.created" }) + "\n")
-
-// OR use application/json content type for auto-handling
+producer.append(JSON.stringify({ event: "user.created" }))
 ```
 
-`IdempotentProducer.append()` accepts strings or `Uint8Array` for byte streams. Only JSON-mode streams (`contentType: "application/json"`) auto-serialize objects.
+`IdempotentProducer.append()` accepts only `string` or `Uint8Array` — it does **not** auto-serialize objects, even for JSON-mode streams. Always call `JSON.stringify()` before appending.
 
 Source: packages/client/src/idempotent-producer.ts
 

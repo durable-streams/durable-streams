@@ -54,11 +54,16 @@ const db = createStreamDB({
 })
 
 // The stream must already exist on the server before preload().
-// Create it first if needed:
-await DurableStream.create({
-  url: "https://your-server.com/v1/stream/my-app",
-  contentType: "application/json",
-}).catch(() => {}) // Ignore if already exists
+// Use DurableStream.connect() to attach to an existing stream,
+// or create it first if it doesn't exist yet:
+try {
+  await DurableStream.create({
+    url: "https://your-server.com/v1/stream/my-app",
+    contentType: "application/json",
+  })
+} catch (e) {
+  if (e.code !== "CONFLICT_EXISTS") throw e // Already exists is fine
+}
 
 // Connect and load initial data
 await db.preload()

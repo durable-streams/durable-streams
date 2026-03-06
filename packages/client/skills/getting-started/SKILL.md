@@ -121,7 +121,7 @@ const producer = new IdempotentProducer(handle, "my-service", {
   onError: (err) => console.error("Write failed:", err),
 })
 
-producer.append({ event: "world" }) // Fire-and-forget
+producer.append(JSON.stringify({ event: "world" })) // Fire-and-forget
 await producer.flush() // Ensure delivery before shutdown
 await producer.close()
 ```
@@ -215,6 +215,8 @@ Source: packages/client/src/types.ts LiveMode type
 
 - [writing-data](../writing-data/SKILL.md) — IdempotentProducer for production-grade writes
 - [server-deployment](../server-deployment/SKILL.md) — Setting up a server to develop against
+
+Note: Streams must be created with `DurableStream.create()` before they can be read. See the writing-data skill for stream creation.
 
 ## Version
 
