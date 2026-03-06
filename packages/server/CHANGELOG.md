@@ -1,5 +1,13 @@
 # @durable-streams/server
 
+## 0.2.2
+
+### Patch Changes
+
+- Updated dependencies [[`6d50b29`](https://github.com/durable-streams/durable-streams/commit/6d50b29b544a48cca161232d881a06b44cdebcb8), [`054de99`](https://github.com/durable-streams/durable-streams/commit/054de99b0a3b97009a55e94d6f829ef38b520d41), [`054de99`](https://github.com/durable-streams/durable-streams/commit/054de99b0a3b97009a55e94d6f829ef38b520d41)]:
+  - @durable-streams/client@0.2.2
+  - @durable-streams/state@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes

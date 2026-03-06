@@ -130,6 +130,58 @@ tests:
           upToDate: true
           chunkCount: 0
 
+  - id: sse-json-empty-stream
+    name: SSE on empty JSON stream
+    description: SSE JSON mode should handle empty streams without stalling
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+    operations:
+      - action: read
+        path: ${streamPath}
+        live: sse
+        waitForUpToDate: true
+        expect:
+          upToDate: true
+          chunkCount: 0
+
+  - id: sse-json-receives-new-data-after-empty-catchup
+    name: SSE JSON receives new data after initial empty catch-up
+    description: |
+      In JSON mode, reading from tail may first produce an empty catch-up batch.
+      Client must continue and receive subsequent appended JSON data.
+    requiredFeatures: [json]
+    setup:
+      - action: create
+        as: streamPath
+        contentType: application/json
+      - action: append
+        path: ${streamPath}
+        json: { id: 0 }
+        expect:
+          storeOffsetAs: tailOffset
+    operations:
+      - action: read
+        path: ${streamPath}
+        offset: ${tailOffset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      - action: wait
+        ms: 200
+      - action: server-append
+        path: ${streamPath}
+        data: '{"id":1}'
+      - action: await
+        ref: readOp
+        expect:
+          dataContains: '"id":1'
+          minChunks: 1
+
   - id: sse-binary-data
     name: SSE with binary data
     description: SSE should correctly transmit binary data with auto-detected base64 encoding
