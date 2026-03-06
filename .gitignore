@@ -198,3 +198,9 @@ examples/yjs-demo/.tanstack
 # Local Netlify folder
 .netlify
 .claude/
+
+# opensrc - source code for packages
+opensrc/
+
+# Effect context folder
+.context/

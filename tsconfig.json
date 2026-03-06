@@ -32,6 +32,8 @@
     "**/test/**",
     "**/*.test.ts",
     "packages/caddy-plugin/**",
-    "examples/yjs-demo/**"
+    "packages/client-effect/**",
+    "examples/yjs-demo/**",
+    "opensrc"
   ]
 }
