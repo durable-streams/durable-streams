@@ -33,7 +33,7 @@ const server = new DurableStreamTestServer({
 })
 
 await server.start()
-console.log(`Dev server running on ${server.baseUrl}`)
+console.log(`Dev server running on ${server.url}`)
 ```
 
 ### Production server (Caddy binary)
@@ -94,7 +94,7 @@ import { DurableStreamTestServer } from "@durable-streams/server"
 const server = new DurableStreamTestServer({ port: 0 }) // Random port
 await server.start()
 
-// Run your tests against server.baseUrl
+// Run your tests against server.url
 
 await server.stop()
 ```

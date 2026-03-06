@@ -29,6 +29,7 @@ optimistic actions, and transaction confirmation.
 
 ```typescript
 import { createStreamDB, createStateSchema } from "@durable-streams/state"
+import { DurableStream } from "@durable-streams/client"
 import { z } from "zod"
 
 const schema = createStateSchema({
@@ -52,7 +53,14 @@ const db = createStreamDB({
   state: schema,
 })
 
-// Connect and load initial data (lazy — stream not created until this call)
+// The stream must already exist on the server before preload().
+// Create it first if needed:
+await DurableStream.create({
+  url: "https://your-server.com/v1/stream/my-app",
+  contentType: "application/json",
+}).catch(() => {}) // Ignore if already exists
+
+// Connect and load initial data
 await db.preload()
 
 // Access TanStack DB collections
@@ -111,7 +119,9 @@ const db = createStreamDB({
       mutationFn: async (user) => {
         const txid = crypto.randomUUID()
         await stream.append(
-          schema.users.insert({ value: user, headers: { txid } })
+          JSON.stringify(
+            schema.users.insert({ value: user, headers: { txid } })
+          )
         )
         await db.utils.awaitTxId(txid, 10000) // Wait for confirmation
       },
@@ -141,6 +151,20 @@ function App() {
   return <Dashboard db={db} />
 }
 ```
+
+### SSR: StreamDB is client-only
+
+StreamDB holds open HTTP connections and relies on browser/Node.js runtime features. In meta-frameworks (TanStack Start, Next.js, Remix), ensure StreamDB only runs on the client:
+
+```typescript
+// TanStack Start / React Router — mark the route as client-only
+export const Route = createFileRoute("/dashboard")({
+  ssr: false,
+  component: Dashboard,
+})
+```
+
+Without `ssr: false`, the server-side render will attempt to create StreamDB and fail or produce `instanceof` mismatches between server and client bundles.
 
 ## Common Mistakes
 
@@ -198,7 +222,7 @@ Wrong:
 
 ```typescript
 mutationFn: async (user) => {
-  await stream.append(schema.users.insert({ value: user }))
+  await stream.append(JSON.stringify(schema.users.insert({ value: user })))
   // No confirmation — optimistic state may diverge from server
 }
 ```
@@ -208,7 +232,9 @@ Correct:
 ```typescript
 mutationFn: async (user) => {
   const txid = crypto.randomUUID()
-  await stream.append(schema.users.insert({ value: user, headers: { txid } }))
+  await stream.append(
+    JSON.stringify(schema.users.insert({ value: user, headers: { txid } }))
+  )
   await db.utils.awaitTxId(txid, 10000) // Wait up to 10 seconds
 }
 ```
