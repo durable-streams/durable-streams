@@ -36,9 +36,15 @@
     "./package.json": "./package.json"
   },
   "sideEffects": false,
+  "bin": {
+    "intent": "./bin/intent.js"
+  },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills",
+    "bin",
+    "!skills/_artifacts"
   ],
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",
@@ -46,6 +52,7 @@
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
+    "@tanstack/intent": "latest",
     "fast-check": "^4.4.0",
     "tsdown": "^0.9.0"
   },

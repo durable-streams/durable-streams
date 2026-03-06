@@ -313,6 +313,9 @@ importers:
       '@durable-streams/server':
         specifier: workspace:*
         version: link:../server
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.10
       fast-check:
         specifier: ^4.4.0
         version: 4.5.3
@@ -439,6 +442,9 @@ importers:
       '@tanstack/db':
         specifier: latest
         version: 0.5.22(typescript@5.9.3)
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.10
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
@@ -1620,6 +1626,10 @@ packages:
   '@tanstack/history@1.153.2':
     resolution: {integrity: sha512-TVa0Wju5w6JZGq/S74Q7TQNtKXDatJaB4NYrhMZVU9ETlkgpr35NhDfOzsCJ93P0KCo1ZoDodlFp3c54/dLsyw==}
     engines: {node: '>=12'}
+
+  '@tanstack/intent@0.0.10':
+    resolution: {integrity: sha512-NPZHsLs4DsBe801Bfvv/qsnNwrFtw4dpSuatpA7mORB8ohd43HjntBI/FN37B8V3cNMrNdPi8xIKDzdmKZI5aA==}
+    hasBin: true
 
   '@tanstack/pacer-lite@0.2.1':
     resolution: {integrity: sha512-3PouiFjR4B6x1c969/Pl4ZIJleof1M0n6fNX8NRiC9Sqv1g06CVDlEaXUR4212ycGFyfq4q+t8Gi37Xy+z34iQ==}
@@ -5225,6 +5235,10 @@ snapshots:
       - typescript
 
   '@tanstack/history@1.153.2': {}
+
+  '@tanstack/intent@0.0.10':
+    dependencies:
+      yaml: 2.8.2
 
   '@tanstack/pacer-lite@0.2.1': {}
 
