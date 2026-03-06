@@ -27,7 +27,7 @@ provide typed helpers for creating change events.
 
 ```typescript
 import { createStateSchema } from "@durable-streams/state"
-import { z } from "zod"
+import { z } from "zod" // Use the correct import for your Zod version (e.g. "zod/v4" for Zod v4)
 
 const userSchema = z.object({
   id: z.string(),
