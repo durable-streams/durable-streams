@@ -1,5 +1,15 @@
 # @durable-streams/client
 
+## 0.2.2
+
+### Patch Changes
+
+- Add TanStack Intent skills for AI coding agents. Skills cover getting started, reading streams, writing data, server deployment, go-to-production checklist, state schema, stream-db, and Yjs sync. Fix `live: "auto"` references in README to `live: true`. ([#270](https://github.com/durable-streams/durable-streams/pull/270))
+
+- Refactor StreamResponseImpl to use an immutable state machine for sync state (offset, cursor, upToDate, streamClosed). ([#254](https://github.com/durable-streams/durable-streams/pull/254))
+
+- Extract pure helper functions from StreamResponseImpl class to module-level functions ([#254](https://github.com/durable-streams/durable-streams/pull/254))
+
 ## 0.2.1
 
 ### Patch Changes
