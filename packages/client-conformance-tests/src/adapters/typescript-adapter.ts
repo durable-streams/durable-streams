@@ -782,16 +782,6 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
 
       try {
         switch (target.target) {
-          case `retry-options`: {
-            // TypeScript client doesn't have a separate RetryOptions class
-            // The retry options are validated when passed to stream() or IdempotentProducer
-            // For now, just return success since TS uses the fetch defaults
-            return {
-              type: `validate`,
-              success: true,
-            }
-          }
-
           case `idempotent-producer`: {
             // Try to create an IdempotentProducer with the given options
             const ds = new DurableStream({
