@@ -20,6 +20,17 @@ var dynamicHeaders = new Dictionary<string, Func<string>>();
 var dynamicParams = new Dictionary<string, Func<string>>();
 var dynamicCounters = new Dictionary<string, int>();
 
+// Helper function for JSON content type detection
+static bool IsJsonContentType(string? contentType)
+{
+    if (string.IsNullOrEmpty(contentType))
+        return false;
+
+    var idx = contentType.IndexOf(';');
+    var mediaType = idx >= 0 ? contentType[..idx].Trim().ToLowerInvariant() : contentType.Trim().ToLowerInvariant();
+    return mediaType == "application/json" || mediaType.EndsWith("+json");
+}
+
 // Main loop - read JSON commands from stdin, write results to stdout
 using var reader = new StreamReader(Console.OpenStandardInput(), Encoding.UTF8);
 using var writer = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
@@ -377,7 +388,7 @@ async Task<object> HandleRead(JsonElement root)
         var cachedContentType = streamContentTypes.GetValueOrDefault(path);
         var responseContentType = response.ContentType;
         var effectiveContentType = responseContentType ?? cachedContentType;
-        var isJson = effectiveContentType?.Contains("application/json") == true;
+        var isJson = IsJsonContentType(effectiveContentType);
 
         try
         {

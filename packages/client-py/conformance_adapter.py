@@ -64,6 +64,12 @@ def _normalize_content_type(content_type: str | None) -> str:
         return ""
     return content_type.split(";")[0].strip().lower()
 
+
+def _is_json_content_type(content_type: str | None) -> bool:
+    """Check if content type indicates JSON (application/json or +json suffix)."""
+    normalized = _normalize_content_type(content_type)
+    return normalized == "application/json" or normalized.endswith("+json")
+
 # Dynamic headers/params state
 class DynamicValue:
     """Represents a dynamic value that can be evaluated per-request."""
@@ -384,7 +390,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
 
     # Determine if we should use JSON parsing based on content type
     content_type = stream_content_types.get(cmd["path"])
-    is_json = _normalize_content_type(content_type) == "application/json"
+    is_json = _is_json_content_type(content_type)
 
     chunks: list[dict[str, Any]] = []
     final_offset = offset

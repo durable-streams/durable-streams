@@ -176,6 +176,12 @@ func normalizeContentType(contentType string) string {
 	return strings.TrimSpace(strings.ToLower(contentType))
 }
 
+// isJSONContentType checks if content type is JSON (application/json or +json suffix).
+func isJSONContentType(contentType string) bool {
+	normalized := normalizeContentType(contentType)
+	return normalized == "application/json" || strings.HasSuffix(normalized, "+json")
+}
+
 func getProducer(cmd Command, cfg durablestreams.IdempotentProducerConfig) (*durablestreams.IdempotentProducer, error) {
 	key := producerKey{path: cmd.Path, producerID: cmd.ProducerID}
 	if producer, ok := producers[key]; ok {
@@ -589,7 +595,7 @@ func handleRead(cmd Command) Result {
 
 	// Check if this is a JSON stream
 	contentType := streamContentTypes[cmd.Path]
-	isJSON := normalizeContentType(contentType) == "application/json"
+	isJSON := isJSONContentType(contentType)
 
 	for len(chunks) < maxChunks {
 		chunk, err := it.Next()

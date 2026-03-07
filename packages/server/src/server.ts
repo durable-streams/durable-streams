@@ -4,7 +4,7 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
+import { StreamStore, isJsonContentType, normalizeContentType } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
 import type { CursorOptions } from "./cursor"
@@ -751,9 +751,9 @@ export class DurableStreamTestServer {
     // Determine if this is a binary stream that needs base64 encoding in SSE mode
     let useBase64 = false
     if (live === `sse`) {
-      const ct = stream.contentType?.toLowerCase().split(`;`)[0]?.trim() ?? ``
+      const ct = normalizeContentType(stream.contentType)
       const isTextCompatible =
-        ct.startsWith(`text/`) || ct === `application/json`
+        ct.startsWith(`text/`) || isJsonContentType(stream.contentType)
       useBase64 = !isTextCompatible
     }
 
@@ -792,7 +792,7 @@ export class DurableStreamTestServer {
       // and some CDNs may behave unexpectedly with both headers
 
       // For JSON mode, return empty array; otherwise empty body
-      const isJsonMode = stream.contentType?.includes(`application/json`)
+      const isJsonMode = isJsonContentType(stream.contentType)
       const responseBody = isJsonMode ? `[]` : ``
 
       res.writeHead(200, headers)
@@ -997,7 +997,7 @@ export class DurableStreamTestServer {
     })
 
     // Get content type for formatting
-    const isJsonStream = stream?.contentType?.includes(`application/json`)
+    const isJsonStream = isJsonContentType(stream?.contentType)
 
     // Send initial data and then wait for more
     // Note: isConnected and isShuttingDown can change asynchronously

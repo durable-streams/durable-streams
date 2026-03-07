@@ -29,6 +29,17 @@ pub(crate) const HEADER_STREAM_CLOSED: &str = "stream-closed";
 /// Maximum retries for transient errors on append operations
 const MAX_APPEND_RETRIES: u32 = 3;
 
+/// Check if content type indicates JSON (application/json or +json suffix).
+pub(crate) fn is_json_content_type(content_type: &str) -> bool {
+    let normalized = content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase();
+    normalized == "application/json" || normalized.ends_with("+json")
+}
+
 /// A handle to a durable stream.
 ///
 /// This is a lightweight, cloneable object - not a persistent connection.
@@ -388,7 +399,7 @@ impl DurableStream {
         // Add data if provided
         if let Some(data) = options.data {
             // For JSON streams, wrap data in array
-            let body = if content_type.to_lowercase().contains("application/json") {
+            let body = if is_json_content_type(content_type) {
                 let mut wrapped = Vec::with_capacity(data.len() + 2);
                 wrapped.push(b'[');
                 wrapped.extend_from_slice(&data);
