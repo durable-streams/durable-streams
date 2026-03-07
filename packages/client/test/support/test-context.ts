@@ -5,14 +5,14 @@
 
 import { test } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
-import type { StreamStore } from "@durable-streams/server"
+import type { StreamManager } from "@durable-streams/server"
 
 /**
  * Base test fixture with server and abort controller.
  */
 export const testWithServer = test.extend<{
   server: DurableStreamTestServer
-  store: StreamStore
+  store: StreamManager
   baseUrl: string
   aborter: AbortController
 }>({
@@ -54,7 +54,7 @@ export const testWithStream = testWithServer.extend<{
   // Create a unique stream for each test
   streamPath: async ({ store, task }, use) => {
     const streamPath = `/test-stream-${task.id}-${Math.random().toString(16).slice(2)}`
-    store.create(streamPath, { contentType: `application/octet-stream` })
+    await store.create(streamPath, { contentType: `application/octet-stream` })
     await use(streamPath)
     // Cleanup happens when server stops
   },
@@ -75,7 +75,7 @@ export const testWithTextStream = testWithServer.extend<{
   // Create a text/plain stream for SSE testing
   streamPath: async ({ store, task }, use) => {
     const streamPath = `/test-text-stream-${task.id}-${Math.random().toString(16).slice(2)}`
-    store.create(streamPath, { contentType: `text/plain` })
+    await store.create(streamPath, { contentType: `text/plain` })
     await use(streamPath)
   },
 
@@ -94,7 +94,7 @@ export const testWithJsonStream = testWithServer.extend<{
   // Create an application/json stream
   streamPath: async ({ store, task }, use) => {
     const streamPath = `/test-json-stream-${task.id}-${Math.random().toString(16).slice(2)}`
-    store.create(streamPath, { contentType: `application/json` })
+    await store.create(streamPath, { contentType: `application/json` })
     await use(streamPath)
   },
 

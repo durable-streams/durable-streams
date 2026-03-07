@@ -1,6 +1,8 @@
 /**
- * File-backed stream storage implementation using LMDB for metadata
+ * File-backed Store implementation using LMDB for metadata
  * and append-only log files for stream data.
+ *
+ * No protocol logic — just store, read, wait, and metadata CRUD.
  */
 
 import * as fs from "node:fs"
@@ -10,29 +12,14 @@ import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
-import {
-  formatJsonResponse,
-  normalizeContentType,
-  processJsonAppend,
-} from "./store"
-import type { AppendOptions, AppendResult } from "./store"
-import type { Database } from "lmdb"
 import type {
-  PendingLongPoll,
-  ProducerState,
-  ProducerValidationResult,
-  Stream,
-  StreamMessage,
-} from "./types"
-
-/**
- * Serializable producer state for LMDB storage.
- */
-interface SerializableProducerState {
-  epoch: number
-  lastSeq: number
-  lastUpdated: number
-}
+  AppendMetadata,
+  Store,
+  StoreConfig,
+  StoredMessage,
+  StreamInfo,
+} from "./store"
+import type { Database } from "lmdb"
 
 /**
  * Stream metadata stored in LMDB.
@@ -54,25 +41,24 @@ interface StreamMetadata {
    */
   directoryName: string
   /**
-   * Producer states for idempotent writes.
-   * Stored as a plain object for LMDB serialization.
-   */
-  producers?: Record<string, SerializableProducerState>
-  /**
    * Whether the stream is closed (no further appends permitted).
    * Once set to true, this is permanent and durable.
    */
   closed?: boolean
   /**
+   * Producer states for idempotent writes.
+   * Stored as a plain object for LMDB serialization.
+   */
+  producers?: Record<
+    string,
+    { epoch: number; lastSeq: number; lastUpdated: number }
+  >
+  /**
    * The producer tuple that closed this stream (for idempotent close).
    * If set, duplicate close requests with this tuple return 204.
    * CRITICAL: Must be persisted for duplicate detection after restart.
    */
-  closedBy?: {
-    producerId: string
-    epoch: number
-    seq: number
-  }
+  closedBy?: { producerId: string; epoch: number; seq: number }
 }
 
 /**
@@ -177,7 +163,7 @@ class FileHandlePool {
   }
 }
 
-export interface FileBackedStreamStoreOptions {
+export interface FileStoreOptions {
   dataDir: string
   maxFileHandles?: number
 }
@@ -194,23 +180,26 @@ function generateUniqueDirectoryName(streamPath: string): string {
   return `${encoded}~${timestamp}~${random}`
 }
 
-/**
- * File-backed implementation of StreamStore.
- * Maintains the same interface as the in-memory StreamStore for drop-in compatibility.
- */
-export class FileBackedStreamStore {
+interface PendingWaiter {
+  path: string
+  offset: string
+  resolve: (result: {
+    messages: Array<StoredMessage>
+    timedOut: boolean
+  }) => void
+  timeoutId: ReturnType<typeof setTimeout>
+  abortHandler?: () => void
+  signal?: AbortSignal
+}
+
+export class FileStore implements Store {
   private db: Database
   private fileManager: StreamFileManager
   private fileHandlePool: FileHandlePool
-  private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
-  /**
-   * Per-producer locks for serializing validation+append operations.
-   * Key: "{streamPath}:{producerId}"
-   */
-  private producerLocks = new Map<string, Promise<unknown>>()
+  private waiters: Array<PendingWaiter> = []
 
-  constructor(options: FileBackedStreamStoreOptions) {
+  constructor(options: FileStoreOptions) {
     this.dataDir = options.dataDir
 
     // Initialize LMDB
@@ -235,7 +224,7 @@ export class FileBackedStreamStore {
    * Validates that LMDB metadata matches actual file contents and reconciles any mismatches.
    */
   private recover(): void {
-    console.log(`[FileBackedStreamStore] Starting recovery...`)
+    console.log(`[FileStore] Starting recovery...`)
 
     let recovered = 0
     let reconciled = 0
@@ -256,7 +245,6 @@ export class FileBackedStreamStore {
         if (typeof key !== `string`) continue
 
         const streamMeta = value as StreamMetadata
-        const streamPath = key.replace(`stream:`, ``)
 
         // Get segment file path
         const segmentPath = path.join(
@@ -269,7 +257,7 @@ export class FileBackedStreamStore {
         // Check if file exists
         if (!fs.existsSync(segmentPath)) {
           console.warn(
-            `[FileBackedStreamStore] Recovery: Stream file missing for ${streamPath}, removing from LMDB`
+            `[FileStore] Recovery: Stream file missing for ${key.replace(`stream:`, ``)}, removing from LMDB`
           )
           this.db.removeSync(key)
           errors++
@@ -282,14 +270,16 @@ export class FileBackedStreamStore {
         // Check if offset matches
         if (trueOffset !== streamMeta.currentOffset) {
           console.warn(
-            `[FileBackedStreamStore] Recovery: Offset mismatch for ${streamPath}: ` +
+            `[FileStore] Recovery: Offset mismatch for ${key.replace(`stream:`, ``)}: ` +
               `LMDB says ${streamMeta.currentOffset}, file says ${trueOffset}. Reconciling to file.`
           )
 
           // Update LMDB to match file (source of truth)
+          const fileStats = fs.statSync(segmentPath)
           const reconciledMeta: StreamMetadata = {
             ...streamMeta,
             currentOffset: trueOffset,
+            totalBytes: fileStats.size,
           }
           this.db.putSync(key, reconciledMeta)
           reconciled++
@@ -297,13 +287,13 @@ export class FileBackedStreamStore {
 
         recovered++
       } catch (err) {
-        console.error(`[FileBackedStreamStore] Error recovering stream:`, err)
+        console.error(`[FileStore] Error recovering stream:`, err)
         errors++
       }
     }
 
     console.log(
-      `[FileBackedStreamStore] Recovery complete: ${recovered} streams, ` +
+      `[FileStore] Recovery complete: ${recovered} streams, ` +
         `${reconciled} reconciled, ${errors} errors`
     )
   }
@@ -348,188 +338,24 @@ export class FileBackedStreamStore {
       // Return offset in format "readSeq_byteOffset" with zero-padding
       return `0000000000000000_${String(currentDataOffset).padStart(16, `0`)}`
     } catch (err) {
-      console.error(
-        `[FileBackedStreamStore] Error scanning file ${segmentPath}:`,
-        err
-      )
+      console.error(`[FileStore] Error scanning file ${segmentPath}:`, err)
       // Return empty offset on error
       return `0000000000000000_0000000000000000`
     }
   }
 
-  /**
-   * Convert LMDB metadata to Stream object.
-   */
-  private streamMetaToStream(meta: StreamMetadata): Stream {
-    // Convert producers from object to Map if present
-    let producers: Map<string, ProducerState> | undefined
-    if (meta.producers) {
-      producers = new Map()
-      for (const [id, state] of Object.entries(meta.producers)) {
-        producers.set(id, { ...state })
-      }
-    }
-
-    return {
-      path: meta.path,
-      contentType: meta.contentType,
-      messages: [], // Messages not stored in memory
-      currentOffset: meta.currentOffset,
-      lastSeq: meta.lastSeq,
-      ttlSeconds: meta.ttlSeconds,
-      expiresAt: meta.expiresAt,
-      createdAt: meta.createdAt,
-      producers,
-      closed: meta.closed,
-      closedBy: meta.closedBy,
-    }
-  }
-
-  /**
-   * Validate producer state WITHOUT mutating.
-   * Returns proposed state to commit after successful append.
-   *
-   * IMPORTANT: This function does NOT mutate producer state. The caller must
-   * commit the proposedState after successful append (file write + fsync + LMDB).
-   * This ensures atomicity: if any step fails, producer state is not advanced.
-   */
-  private validateProducer(
-    meta: StreamMetadata,
-    producerId: string,
-    epoch: number,
-    seq: number
-  ): ProducerValidationResult {
-    // Initialize producers map if needed (safe - just ensures map exists)
-    if (!meta.producers) {
-      meta.producers = {}
-    }
-
-    const state = meta.producers[producerId]
-    const now = Date.now()
-
-    // New producer - accept if seq is 0
-    if (!state) {
-      if (seq !== 0) {
-        return {
-          status: `sequence_gap`,
-          expectedSeq: 0,
-          receivedSeq: seq,
-        }
-      }
-      // Return proposed state, don't mutate yet
-      return {
-        status: `accepted`,
-        isNew: true,
-        producerId,
-        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
-      }
-    }
-
-    // Epoch validation (client-declared, server-validated)
-    if (epoch < state.epoch) {
-      return { status: `stale_epoch`, currentEpoch: state.epoch }
-    }
-
-    if (epoch > state.epoch) {
-      // New epoch must start at seq=0
-      if (seq !== 0) {
-        return { status: `invalid_epoch_seq` }
-      }
-      // Return proposed state for new epoch, don't mutate yet
-      return {
-        status: `accepted`,
-        isNew: true,
-        producerId,
-        proposedState: { epoch, lastSeq: 0, lastUpdated: now },
-      }
-    }
-
-    // Same epoch: sequence validation
-    if (seq <= state.lastSeq) {
-      return { status: `duplicate`, lastSeq: state.lastSeq }
-    }
-
-    if (seq === state.lastSeq + 1) {
-      // Return proposed state, don't mutate yet
-      return {
-        status: `accepted`,
-        isNew: false,
-        producerId,
-        proposedState: { epoch, lastSeq: seq, lastUpdated: now },
-      }
-    }
-
-    // Sequence gap
-    return {
-      status: `sequence_gap`,
-      expectedSeq: state.lastSeq + 1,
-      receivedSeq: seq,
-    }
-  }
-
-  /**
-   * Acquire a lock for serialized producer operations.
-   * Returns a release function.
-   */
-  private async acquireProducerLock(
-    streamPath: string,
-    producerId: string
-  ): Promise<() => void> {
-    const lockKey = `${streamPath}:${producerId}`
-
-    // Wait for any existing lock
-    while (this.producerLocks.has(lockKey)) {
-      await this.producerLocks.get(lockKey)
-    }
-
-    // Create our lock
-    let releaseLock: () => void
-    const lockPromise = new Promise<void>((resolve) => {
-      releaseLock = resolve
-    })
-    this.producerLocks.set(lockKey, lockPromise)
-
-    return () => {
-      this.producerLocks.delete(lockKey)
-      releaseLock!()
-    }
-  }
-
-  /**
-   * Get the current epoch for a producer on a stream.
-   * Returns undefined if the producer doesn't exist or stream not found.
-   */
-  getProducerEpoch(streamPath: string, producerId: string): number | undefined {
-    const meta = this.getMetaIfNotExpired(streamPath)
-    if (!meta?.producers) {
-      return undefined
-    }
-    return meta.producers[producerId]?.epoch
-  }
-
-  /**
-   * Check if a stream is expired based on TTL or Expires-At.
-   */
   private isExpired(meta: StreamMetadata): boolean {
     const now = Date.now()
-
     // Check absolute expiry time
     if (meta.expiresAt) {
       const expiryTime = new Date(meta.expiresAt).getTime()
       // Treat invalid dates (NaN) as expired (fail closed)
-      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
-        return true
-      }
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) return true
     }
-
     // Check TTL (relative to creation time)
     if (meta.ttlSeconds !== undefined) {
-      const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
-      if (now >= expiryTime) {
-        return true
-      }
+      if (now >= meta.createdAt + meta.ttlSeconds * 1000) return true
     }
-
     return false
   }
 
@@ -540,85 +366,32 @@ export class FileBackedStreamStore {
   private getMetaIfNotExpired(streamPath: string): StreamMetadata | undefined {
     const key = `stream:${streamPath}`
     const meta = this.db.get(key) as StreamMetadata | undefined
-    if (!meta) {
-      return undefined
-    }
+    if (!meta) return undefined
     if (this.isExpired(meta)) {
       // Delete expired stream
-      this.delete(streamPath)
+      this.deleteInternal(streamPath)
       return undefined
     }
     return meta
   }
 
-  /**
-   * Close the store, closing all file handles and database.
-   * All data is already fsynced on each append, so no final flush needed.
-   */
-  async close(): Promise<void> {
-    await this.fileHandlePool.closeAll()
-    await this.db.close()
-  }
-
-  // ============================================================================
-  // StreamStore interface methods (to be implemented)
-  // ============================================================================
-
-  async create(
-    streamPath: string,
-    options: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-      closed?: boolean
-    } = {}
-  ): Promise<Stream> {
-    // Use getMetaIfNotExpired to treat expired streams as non-existent
-    const existing = this.getMetaIfNotExpired(streamPath)
-
-    if (existing) {
-      // Check if config matches (idempotent create)
-      // MIME types are case-insensitive per RFC 2045
-      const normalizeMimeType = (ct: string | undefined) =>
-        (ct ?? `application/octet-stream`).toLowerCase()
-      const contentTypeMatches =
-        normalizeMimeType(options.contentType) ===
-        normalizeMimeType(existing.contentType)
-      const ttlMatches = options.ttlSeconds === existing.ttlSeconds
-      const expiresMatches = options.expiresAt === existing.expiresAt
-      const closedMatches =
-        (options.closed ?? false) === (existing.closed ?? false)
-
-      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
-        // Idempotent success - return existing stream
-        return this.streamMetaToStream(existing)
-      } else {
-        // Config mismatch - conflict
-        throw new Error(
-          `Stream already exists with different configuration: ${streamPath}`
-        )
-      }
-    }
+  async create(streamPath: string, config: StoreConfig): Promise<boolean> {
+    if (this.getMetaIfNotExpired(streamPath)) return false
 
     // Define key for LMDB operations
     const key = `stream:${streamPath}`
 
-    // Initialize metadata
-    // Note: We set closed to false initially, then set it true after appending initial data
-    // This prevents the closed check from rejecting the initial append
     const streamMeta: StreamMetadata = {
       path: streamPath,
-      contentType: options.contentType,
+      contentType: config.contentType,
       currentOffset: `0000000000000000_0000000000000000`,
-      lastSeq: undefined,
-      ttlSeconds: options.ttlSeconds,
-      expiresAt: options.expiresAt,
+      ttlSeconds: config.ttlSeconds,
+      expiresAt: config.expiresAt,
       createdAt: Date.now(),
       segmentCount: 1,
       totalBytes: 0,
       directoryName: generateUniqueDirectoryName(streamPath),
-      closed: false, // Set to false initially, will be updated after initial append if needed
+      closed: false,
     }
 
     // Create stream directory and empty segment file immediately
@@ -633,55 +406,43 @@ export class FileBackedStreamStore {
       const segmentPath = path.join(streamDir, `segment_00000.log`)
       fs.writeFileSync(segmentPath, ``)
     } catch (err) {
-      console.error(
-        `[FileBackedStreamStore] Error creating stream directory:`,
-        err
-      )
+      console.error(`[FileStore] Error creating stream directory:`, err)
       throw err
     }
 
     // Save to LMDB
     this.db.putSync(key, streamMeta)
-
-    // Append initial data if provided
-    if (options.initialData && options.initialData.length > 0) {
-      await this.append(streamPath, options.initialData, {
-        contentType: options.contentType,
-        isInitialCreate: true,
-      })
-    }
-
-    // Now set closed flag if requested (after initial append succeeded)
-    if (options.closed) {
-      const updatedMeta = this.db.get(key) as StreamMetadata
-      updatedMeta.closed = true
-      this.db.putSync(key, updatedMeta)
-    }
-
-    // Re-fetch updated metadata
-    const updated = this.db.get(key) as StreamMetadata
-    return this.streamMetaToStream(updated)
+    return true
   }
 
-  get(streamPath: string): Stream | undefined {
+  async head(streamPath: string): Promise<StreamInfo | undefined> {
     const meta = this.getMetaIfNotExpired(streamPath)
-    return meta ? this.streamMetaToStream(meta) : undefined
+    if (!meta) return undefined
+    return {
+      contentType: meta.contentType,
+      currentOffset: meta.currentOffset,
+      createdAt: meta.createdAt,
+      ttlSeconds: meta.ttlSeconds,
+      expiresAt: meta.expiresAt,
+      closed: meta.closed ?? false,
+      lastSeq: meta.lastSeq,
+      producers: meta.producers,
+      closedBy: meta.closedBy,
+    }
   }
 
-  has(streamPath: string): boolean {
-    return this.getMetaIfNotExpired(streamPath) !== undefined
+  async delete(streamPath: string): Promise<boolean> {
+    return this.deleteInternal(streamPath)
   }
 
-  delete(streamPath: string): boolean {
+  private deleteInternal(streamPath: string): boolean {
     const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
 
-    if (!streamMeta) {
-      return false
-    }
+    if (!streamMeta) return false
 
     // Cancel any pending long-polls for this stream
-    this.cancelLongPollsForStream(streamPath)
+    this.cancelWaitersForStream(streamPath)
 
     // Close any open file handle for this stream's segment file
     // This is important especially on Windows where open handles block deletion
@@ -692,7 +453,7 @@ export class FileBackedStreamStore {
       `segment_00000.log`
     )
     this.fileHandlePool.closeFileHandle(segmentPath).catch((err: Error) => {
-      console.error(`[FileBackedStreamStore] Error closing file handle:`, err)
+      console.error(`[FileStore] Error closing file handle:`, err)
     })
 
     // Delete from LMDB
@@ -703,10 +464,7 @@ export class FileBackedStreamStore {
     this.fileManager
       .deleteDirectoryByName(streamMeta.directoryName)
       .catch((err: Error) => {
-        console.error(
-          `[FileBackedStreamStore] Error deleting stream directory:`,
-          err
-        )
+        console.error(`[FileStore] Error deleting stream directory:`, err)
       })
 
     return true
@@ -715,99 +473,10 @@ export class FileBackedStreamStore {
   async append(
     streamPath: string,
     data: Uint8Array,
-    options: AppendOptions & { isInitialCreate?: boolean } = {}
-  ): Promise<StreamMessage | AppendResult | null> {
+    metadata?: AppendMetadata
+  ): Promise<string> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
-
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
-    }
-
-    // Check if stream is closed
-    if (streamMeta.closed) {
-      // Check if this is a duplicate of the closing request (idempotent retry)
-      if (
-        options.producerId &&
-        streamMeta.closedBy &&
-        streamMeta.closedBy.producerId === options.producerId &&
-        streamMeta.closedBy.epoch === options.producerEpoch &&
-        streamMeta.closedBy.seq === options.producerSeq
-      ) {
-        // Idempotent success - return 204 with Stream-Closed
-        return {
-          message: null,
-          streamClosed: true,
-          producerResult: {
-            status: `duplicate`,
-            lastSeq: options.producerSeq,
-          },
-        }
-      }
-
-      // Different request - stream is closed, reject
-      return {
-        message: null,
-        streamClosed: true,
-      }
-    }
-
-    // Check content type match using normalization (handles charset parameters)
-    if (options.contentType && streamMeta.contentType) {
-      const providedType = normalizeContentType(options.contentType)
-      const streamType = normalizeContentType(streamMeta.contentType)
-      if (providedType !== streamType) {
-        throw new Error(
-          `Content-type mismatch: expected ${streamMeta.contentType}, got ${options.contentType}`
-        )
-      }
-    }
-
-    // Handle producer validation FIRST if producer headers are present
-    // This must happen before Stream-Seq check so that retries with both
-    // producer headers AND Stream-Seq can return 204 (duplicate) instead of
-    // failing the Stream-Seq conflict check.
-    let producerResult: ProducerValidationResult | undefined
-    if (
-      options.producerId !== undefined &&
-      options.producerEpoch !== undefined &&
-      options.producerSeq !== undefined
-    ) {
-      producerResult = this.validateProducer(
-        streamMeta,
-        options.producerId,
-        options.producerEpoch,
-        options.producerSeq
-      )
-
-      // Return early for non-accepted results (duplicate, stale epoch, gap)
-      // IMPORTANT: Return 204 for duplicate BEFORE Stream-Seq check
-      if (producerResult.status !== `accepted`) {
-        return { message: null, producerResult }
-      }
-    }
-
-    // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
-    // This happens AFTER producer validation so retries can be deduplicated
-    if (options.seq !== undefined) {
-      if (
-        streamMeta.lastSeq !== undefined &&
-        options.seq <= streamMeta.lastSeq
-      ) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
-        )
-      }
-    }
-
-    // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
-    let processedData = data
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      processedData = processJsonAppend(data, options.isInitialCreate ?? false)
-      // If empty array in create mode, return null (empty stream created successfully)
-      if (processedData.length === 0) {
-        return null
-      }
-    }
+    if (!streamMeta) throw new Error(`Stream not found: ${streamPath}`)
 
     // Parse current offset
     const parts = streamMeta.currentOffset.split(`_`).map(Number)
@@ -815,7 +484,7 @@ export class FileBackedStreamStore {
     const byteOffset = parts[1]!
 
     // Calculate new offset with zero-padding for lexicographic sorting (only data bytes, not framing)
-    const newByteOffset = byteOffset + processedData.length
+    const newByteOffset = byteOffset + data.length
     const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     // Get segment file path (directory was created in create())
@@ -833,12 +502,8 @@ export class FileBackedStreamStore {
     //    Combine into single buffer for single syscall, and wait for write
     //    to be flushed to kernel before calling fsync
     const lengthBuf = Buffer.allocUnsafe(4)
-    lengthBuf.writeUInt32BE(processedData.length, 0)
-    const frameBuf = Buffer.concat([
-      lengthBuf,
-      processedData,
-      Buffer.from(`\n`),
-    ])
+    lengthBuf.writeUInt32BE(data.length, 0)
+    const frameBuf = Buffer.concat([lengthBuf, data, Buffer.from(`\n`)])
     await new Promise<void>((resolve, reject) => {
       stream.write(frameBuf, (err) => {
         if (err) reject(err)
@@ -846,244 +511,40 @@ export class FileBackedStreamStore {
       })
     })
 
-    // 2. Create message object for return value
-    const message: StreamMessage = {
-      data: processedData,
-      offset: newOffset,
-      timestamp: Date.now(),
-    }
-
-    // 3. Flush to disk (blocks here until durable)
+    // 2. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
 
-    // 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
-    //    This includes both the offset update and producer state update
-    //    Producer state is committed HERE (not in validateProducer) for atomicity
-    const updatedProducers = { ...streamMeta.producers }
-    if (producerResult && producerResult.status === `accepted`) {
-      updatedProducers[producerResult.producerId] = producerResult.proposedState
-    }
-
-    // Build closedBy if closing with producer headers
-    let closedBy: StreamMetadata[`closedBy`] = undefined
-    if (options.close && options.producerId) {
-      closedBy = {
-        producerId: options.producerId,
-        epoch: options.producerEpoch!,
-        seq: options.producerSeq!,
-      }
-    }
-
+    // 3. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
+    const key = `stream:${streamPath}`
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
-      lastSeq: options.seq ?? streamMeta.lastSeq,
-      totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
-      producers: updatedProducers,
-      closed: options.close ? true : streamMeta.closed,
-      closedBy: closedBy ?? streamMeta.closedBy,
+      totalBytes: streamMeta.totalBytes + data.length + 5, // +4 for length, +1 for newline
     }
-    const key = `stream:${streamPath}`
+    if (metadata?.lastSeq !== undefined) updatedMeta.lastSeq = metadata.lastSeq
+    if (metadata?.closed !== undefined) updatedMeta.closed = metadata.closed
+    if (metadata?.producers !== undefined)
+      updatedMeta.producers = metadata.producers
+    if (metadata?.closedBy !== undefined)
+      updatedMeta.closedBy = metadata.closedBy
     this.db.putSync(key, updatedMeta)
 
-    // 5. Notify long-polls (data is now readable from disk)
-    this.notifyLongPolls(streamPath)
-
-    // 5a. If stream was closed, also notify long-polls of closure
-    if (options.close) {
-      this.notifyLongPollsClosed(streamPath)
+    // 4. Notify long-polls (data is now readable from disk)
+    this.notifyWaiters(streamPath)
+    // 4a. If stream was closed, also notify long-polls of closure
+    if (metadata?.closed) {
+      this.notifyWaitersClosed(streamPath)
     }
 
-    // 6. Return AppendResult if producer headers were used or stream was closed
-    if (producerResult || options.close) {
-      return {
-        message,
-        producerResult,
-        streamClosed: options.close,
-      }
-    }
-
-    return message
+    return newOffset
   }
 
-  /**
-   * Append with producer serialization for concurrent request handling.
-   * This ensures that validation+append is atomic per producer.
-   */
-  async appendWithProducer(
-    streamPath: string,
-    data: Uint8Array,
-    options: AppendOptions
-  ): Promise<AppendResult> {
-    if (!options.producerId) {
-      // No producer - just do a normal append
-      const result = await this.append(streamPath, data, options)
-      if (result && `message` in result) {
-        return result
-      }
-      return { message: result }
-    }
-
-    // Acquire lock for this producer
-    const releaseLock = await this.acquireProducerLock(
-      streamPath,
-      options.producerId
-    )
-
-    try {
-      const result = await this.append(streamPath, data, options)
-      if (result && `message` in result) {
-        return result
-      }
-      return { message: result }
-    } finally {
-      releaseLock()
-    }
-  }
-
-  /**
-   * Close a stream without appending data.
-   * @returns The final offset, or null if stream doesn't exist
-   */
-  closeStream(
-    streamPath: string
-  ): { finalOffset: string; alreadyClosed: boolean } | null {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-    if (!streamMeta) {
-      return null
-    }
-
-    const alreadyClosed = streamMeta.closed ?? false
-
-    // Update LMDB to mark stream as closed
-    const key = `stream:${streamPath}`
-    const updatedMeta: StreamMetadata = {
-      ...streamMeta,
-      closed: true,
-    }
-    this.db.putSync(key, updatedMeta)
-
-    // Notify any pending long-polls that the stream is closed
-    this.notifyLongPollsClosed(streamPath)
-
-    return {
-      finalOffset: streamMeta.currentOffset,
-      alreadyClosed,
-    }
-  }
-
-  /**
-   * Close a stream with producer headers for idempotent close-only operations.
-   * Participates in producer sequencing for deduplication.
-   * @returns The final offset and producer result, or null if stream doesn't exist
-   */
-  async closeStreamWithProducer(
-    streamPath: string,
-    options: {
-      producerId: string
-      producerEpoch: number
-      producerSeq: number
-    }
-  ): Promise<{
-    finalOffset: string
-    alreadyClosed: boolean
-    producerResult?: ProducerValidationResult
-  } | null> {
-    // Acquire producer lock for serialization
-    const releaseLock = await this.acquireProducerLock(
-      streamPath,
-      options.producerId
-    )
-
-    try {
-      const streamMeta = this.getMetaIfNotExpired(streamPath)
-      if (!streamMeta) {
-        return null
-      }
-
-      // Check if already closed
-      if (streamMeta.closed) {
-        // Check if this is the same producer tuple (duplicate - idempotent success)
-        if (
-          streamMeta.closedBy &&
-          streamMeta.closedBy.producerId === options.producerId &&
-          streamMeta.closedBy.epoch === options.producerEpoch &&
-          streamMeta.closedBy.seq === options.producerSeq
-        ) {
-          return {
-            finalOffset: streamMeta.currentOffset,
-            alreadyClosed: true,
-            producerResult: {
-              status: `duplicate`,
-              lastSeq: options.producerSeq,
-            },
-          }
-        }
-
-        // Different producer trying to close an already-closed stream - conflict
-        return {
-          finalOffset: streamMeta.currentOffset,
-          alreadyClosed: true,
-          producerResult: { status: `stream_closed` },
-        }
-      }
-
-      // Validate producer state
-      const producerResult = this.validateProducer(
-        streamMeta,
-        options.producerId,
-        options.producerEpoch,
-        options.producerSeq
-      )
-
-      // Return early for non-accepted results
-      if (producerResult.status !== `accepted`) {
-        return {
-          finalOffset: streamMeta.currentOffset,
-          alreadyClosed: streamMeta.closed ?? false,
-          producerResult,
-        }
-      }
-
-      // Commit producer state and close stream atomically in LMDB
-      const key = `stream:${streamPath}`
-      const updatedProducers = { ...streamMeta.producers }
-      updatedProducers[producerResult.producerId] = producerResult.proposedState
-
-      const updatedMeta: StreamMetadata = {
-        ...streamMeta,
-        closed: true,
-        closedBy: {
-          producerId: options.producerId,
-          epoch: options.producerEpoch,
-          seq: options.producerSeq,
-        },
-        producers: updatedProducers,
-      }
-      this.db.putSync(key, updatedMeta)
-
-      // Notify any pending long-polls
-      this.notifyLongPollsClosed(streamPath)
-
-      return {
-        finalOffset: streamMeta.currentOffset,
-        alreadyClosed: false,
-        producerResult,
-      }
-    } finally {
-      releaseLock()
-    }
-  }
-
-  read(
+  async read(
     streamPath: string,
     offset?: string
-  ): { messages: Array<StreamMessage>; upToDate: boolean } {
+  ): Promise<{ messages: Array<StoredMessage>; currentOffset: string }> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
-
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
-    }
+    if (!streamMeta) throw new Error(`Stream not found: ${streamPath}`)
 
     // Parse offsets
     const startOffset = offset ?? `0000000000000000_0000000000000000`
@@ -1095,12 +556,12 @@ export class FileBackedStreamStore {
 
     // Early return if no data available
     if (streamMeta.currentOffset === `0000000000000000_0000000000000000`) {
-      return { messages: [], upToDate: true }
+      return { messages: [], currentOffset: streamMeta.currentOffset }
     }
 
     // If start offset is at or past current offset, return empty
     if (startByte >= currentByte) {
-      return { messages: [], upToDate: true }
+      return { messages: [], currentOffset: streamMeta.currentOffset }
     }
 
     // Get segment file path using unique directory name
@@ -1113,11 +574,11 @@ export class FileBackedStreamStore {
 
     // Check if file exists
     if (!fs.existsSync(segmentPath)) {
-      return { messages: [], upToDate: true }
+      return { messages: [], currentOffset: streamMeta.currentOffset }
     }
 
     // Read and parse messages from file
-    const messages: Array<StreamMessage> = []
+    const messages: Array<StoredMessage> = []
 
     try {
       // Calculate file position from offset
@@ -1154,147 +615,121 @@ export class FileBackedStreamStore {
           messages.push({
             data: new Uint8Array(messageData),
             offset: `${String(currentSeq).padStart(16, `0`)}_${String(messageOffset).padStart(16, `0`)}`,
-            timestamp: 0, // Not stored in MVP
           })
         }
 
         currentDataOffset = messageOffset
       }
     } catch (err) {
-      console.error(`[FileBackedStreamStore] Error reading file:`, err)
+      console.error(`[FileStore] Error reading file:`, err)
     }
 
-    return { messages, upToDate: true }
+    return { messages, currentOffset: streamMeta.currentOffset }
   }
 
-  async waitForMessages(
+  async waitForData(
     streamPath: string,
     offset: string,
-    timeoutMs: number
-  ): Promise<{
-    messages: Array<StreamMessage>
-    timedOut: boolean
-    streamClosed?: boolean
-  }> {
+    timeoutMs: number,
+    signal?: AbortSignal
+  ): Promise<{ messages: Array<StoredMessage>; timedOut: boolean }> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
+    if (!streamMeta) throw new Error(`Stream not found: ${streamPath}`)
 
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
-    }
+    const { messages } = await this.read(streamPath, offset)
+    if (messages.length > 0) return { messages, timedOut: false }
 
     // If stream is closed and client is at tail, return immediately
     if (streamMeta.closed && offset === streamMeta.currentOffset) {
-      return { messages: [], timedOut: false, streamClosed: true }
-    }
-
-    // Check if there are already new messages
-    const { messages } = this.read(streamPath, offset)
-    if (messages.length > 0) {
-      return { messages, timedOut: false, streamClosed: streamMeta.closed }
-    }
-
-    // If stream is closed (but client not at tail), return what we have
-    if (streamMeta.closed) {
-      return { messages: [], timedOut: false, streamClosed: true }
+      return { messages: [], timedOut: false }
     }
 
     // Wait for new messages
     return new Promise((resolve) => {
       const timeoutId = setTimeout(() => {
-        // Remove from pending
-        this.removePendingLongPoll(pending)
-        // Check if stream was closed during wait
-        const currentMeta = this.getMetaIfNotExpired(streamPath)
-        resolve({
-          messages: [],
-          timedOut: true,
-          streamClosed: currentMeta?.closed,
-        })
+        this.removeWaiter(waiter)
+        resolve({ messages: [], timedOut: true })
       }, timeoutMs)
 
-      const pending: PendingLongPoll = {
+      const waiter: PendingWaiter = {
         path: streamPath,
         offset,
-        resolve: (msgs) => {
+        resolve: (result) => {
           clearTimeout(timeoutId)
-          this.removePendingLongPoll(pending)
-          // Check if stream was closed
-          const currentMeta = this.getMetaIfNotExpired(streamPath)
-          resolve({
-            messages: msgs,
-            timedOut: false,
-            streamClosed: currentMeta?.closed,
-          })
+          this.removeWaiter(waiter)
+          resolve(result)
         },
         timeoutId,
+        signal,
       }
 
-      this.pendingLongPolls.push(pending)
+      if (signal) {
+        const abortHandler = () => {
+          clearTimeout(timeoutId)
+          this.removeWaiter(waiter)
+          resolve({ messages: [], timedOut: true })
+        }
+        waiter.abortHandler = abortHandler
+        signal.addEventListener(`abort`, abortHandler, { once: true })
+      }
+
+      this.waiters.push(waiter)
     })
   }
 
-  /**
-   * Format messages for response.
-   * For JSON mode, wraps concatenated data in array brackets.
-   * @throws Error if stream doesn't exist or is expired
-   */
-  formatResponse(
+  async update(
     streamPath: string,
-    messages: Array<StreamMessage>
-  ): Uint8Array {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-
-    if (!streamMeta) {
-      throw new Error(`Stream not found: ${streamPath}`)
+    updates: {
+      closed?: boolean
+      lastSeq?: string
+      producers?: Record<
+        string,
+        { epoch: number; lastSeq: number; lastUpdated: number }
+      >
+      closedBy?: { producerId: string; epoch: number; seq: number }
     }
+  ): Promise<void> {
+    const key = `stream:${streamPath}`
+    const meta = this.db.get(key) as StreamMetadata | undefined
+    if (!meta) throw new Error(`Stream not found: ${streamPath}`)
 
-    // Concatenate all message data
-    const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
-    const concatenated = new Uint8Array(totalSize)
-    let offset = 0
-    for (const msg of messages) {
-      concatenated.set(msg.data, offset)
-      offset += msg.data.length
+    const updatedMeta: StreamMetadata = { ...meta }
+    if (updates.closed !== undefined) updatedMeta.closed = updates.closed
+    if (updates.lastSeq !== undefined) updatedMeta.lastSeq = updates.lastSeq
+    if (updates.producers !== undefined)
+      updatedMeta.producers = updates.producers
+    if (updates.closedBy !== undefined) updatedMeta.closedBy = updates.closedBy
+
+    this.db.putSync(key, updatedMeta)
+
+    if (updates.closed) {
+      this.notifyWaitersClosed(streamPath)
     }
-
-    // For JSON mode, wrap in array brackets
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      return formatJsonResponse(concatenated)
-    }
-
-    return concatenated
-  }
-
-  getCurrentOffset(streamPath: string): string | undefined {
-    const streamMeta = this.getMetaIfNotExpired(streamPath)
-    return streamMeta?.currentOffset
   }
 
   clear(): void {
     // Cancel all pending long-polls and resolve them with empty result
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
+    for (const waiter of this.waiters) {
+      clearTimeout(waiter.timeoutId)
+      if (waiter.abortHandler && waiter.signal) {
+        waiter.signal.removeEventListener(`abort`, waiter.abortHandler)
+      }
       // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
+      waiter.resolve({ messages: [], timedOut: true })
     }
-    this.pendingLongPolls = []
+    this.waiters = []
 
     // Clear all streams from LMDB
-    const range = this.db.getRange({
-      start: `stream:`,
-      end: `stream:\xFF`,
-    })
-
+    const range = this.db.getRange({ start: `stream:`, end: `stream:\xFF` })
     // Convert to array to avoid iterator issues
     const entries = Array.from(range)
-
     for (const { key } of entries) {
-      this.db.removeSync(key)
+      this.db.removeSync(key as string)
     }
 
     // Clear file handle pool
     this.fileHandlePool.closeAll().catch((err: Error) => {
-      console.error(`[FileBackedStreamStore] Error closing handles:`, err)
+      console.error(`[FileStore] Error closing handles during clear:`, err)
     })
 
     // Note: Files are not deleted in clear() with unique directory names
@@ -1302,80 +737,61 @@ export class FileBackedStreamStore {
   }
 
   /**
-   * Cancel all pending long-polls (used during shutdown).
+   * Close the store, closing all file handles and database.
+   * All data is already fsynced on each append, so no final flush needed.
    */
-  cancelAllWaits(): void {
-    for (const pending of this.pendingLongPolls) {
-      clearTimeout(pending.timeoutId)
-      // Resolve with empty result to unblock waiting handlers
-      pending.resolve([])
-    }
-    this.pendingLongPolls = []
-  }
-
-  list(): Array<string> {
-    const paths: Array<string> = []
-
-    const range = this.db.getRange({
-      start: `stream:`,
-      end: `stream:\xFF`,
-    })
-
-    // Convert to array to avoid iterator issues
-    const entries = Array.from(range)
-
-    for (const { key } of entries) {
-      // Key should be a string in our schema
-      if (typeof key === `string`) {
-        paths.push(key.replace(`stream:`, ``))
+  async close(): Promise<void> {
+    for (const waiter of this.waiters) {
+      clearTimeout(waiter.timeoutId)
+      if (waiter.abortHandler && waiter.signal) {
+        waiter.signal.removeEventListener(`abort`, waiter.abortHandler)
       }
+      waiter.resolve({ messages: [], timedOut: true })
     }
+    this.waiters = []
 
-    return paths
+    await this.fileHandlePool.closeAll()
+    await this.db.close()
   }
 
-  // ============================================================================
-  // Private helper methods for long-poll support
-  // ============================================================================
-
-  private notifyLongPolls(streamPath: string): void {
-    const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
-
-    for (const pending of toNotify) {
-      const { messages } = this.read(streamPath, pending.offset)
-      if (messages.length > 0) {
-        pending.resolve(messages)
-      }
+  private notifyWaiters(streamPath: string): void {
+    const toNotify = this.waiters.filter((w) => w.path === streamPath)
+    for (const waiter of toNotify) {
+      this.read(streamPath, waiter.offset)
+        .then(({ messages }) => {
+          if (messages.length > 0) {
+            waiter.resolve({ messages, timedOut: false })
+          }
+        })
+        .catch(() => {})
     }
   }
 
-  /**
-   * Notify pending long-polls that a stream has been closed.
-   * They should wake up immediately and return Stream-Closed: true.
-   */
-  private notifyLongPollsClosed(streamPath: string): void {
-    const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
-    for (const pending of toNotify) {
+  private notifyWaitersClosed(streamPath: string): void {
+    const toNotify = this.waiters.filter((w) => w.path === streamPath)
+    for (const waiter of toNotify) {
       // Resolve with empty messages - the caller will check stream.closed
-      pending.resolve([])
+      waiter.resolve({ messages: [], timedOut: false })
     }
   }
 
-  private cancelLongPollsForStream(streamPath: string): void {
-    const toCancel = this.pendingLongPolls.filter((p) => p.path === streamPath)
-    for (const pending of toCancel) {
-      clearTimeout(pending.timeoutId)
-      pending.resolve([])
+  private cancelWaitersForStream(streamPath: string): void {
+    const toCancel = this.waiters.filter((w) => w.path === streamPath)
+    for (const waiter of toCancel) {
+      clearTimeout(waiter.timeoutId)
+      if (waiter.abortHandler && waiter.signal) {
+        waiter.signal.removeEventListener(`abort`, waiter.abortHandler)
+      }
+      waiter.resolve({ messages: [], timedOut: true })
     }
-    this.pendingLongPolls = this.pendingLongPolls.filter(
-      (p) => p.path !== streamPath
-    )
+    this.waiters = this.waiters.filter((w) => w.path !== streamPath)
   }
 
-  private removePendingLongPoll(pending: PendingLongPoll): void {
-    const index = this.pendingLongPolls.indexOf(pending)
-    if (index !== -1) {
-      this.pendingLongPolls.splice(index, 1)
+  private removeWaiter(waiter: PendingWaiter): void {
+    if (waiter.abortHandler && waiter.signal) {
+      waiter.signal.removeEventListener(`abort`, waiter.abortHandler)
     }
+    const index = this.waiters.indexOf(waiter)
+    if (index !== -1) this.waiters.splice(index, 1)
   }
 }

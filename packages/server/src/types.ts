@@ -2,6 +2,8 @@
  * Types for the in-memory durable streams test server.
  */
 
+import type { Store, StoredMessage } from "./store"
+
 /**
  * A single message in a stream.
  */
@@ -150,6 +152,11 @@ export interface TestServerOptions {
   dataDir?: string
 
   /**
+   * Custom storage implementation. Overrides dataDir if provided.
+   */
+  storage?: Store
+
+  /**
    * Hook called when a stream is created.
    */
   onStreamCreated?: StreamLifecycleHook
@@ -237,7 +244,7 @@ export interface PendingLongPoll {
   /**
    * Resolve function.
    */
-  resolve: (messages: Array<StreamMessage>) => void
+  resolve: (messages: Array<StoredMessage>) => void
 
   /**
    * Timeout ID.

@@ -6,8 +6,7 @@
 import { DurableStream } from "@durable-streams/client"
 import { createStateSchema } from "@durable-streams/state"
 import type { StreamLifecycleHook } from "./types"
-import type { StreamStore } from "./store"
-import type { FileBackedStreamStore } from "./file-store"
+import type { StreamManager } from "./stream-manager"
 
 const REGISTRY_PATH = `/v1/stream/__registry__`
 
@@ -59,7 +58,7 @@ const registryStateSchema = createStateSchema({
  * Any client can read this stream to discover all streams and their lifecycle events.
  */
 export function createRegistryHooks(
-  store: StreamStore | FileBackedStreamStore,
+  store: StreamManager,
   serverUrl: string
 ): {
   onStreamCreated: StreamLifecycleHook
@@ -71,7 +70,7 @@ export function createRegistryHooks(
   })
 
   const ensureRegistryExists = async () => {
-    if (!store.has(REGISTRY_PATH)) {
+    if (!(await store.has(REGISTRY_PATH))) {
       await DurableStream.create({
         url: `${serverUrl}${REGISTRY_PATH}`,
         contentType: `application/json`,
