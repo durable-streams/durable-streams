@@ -78,7 +78,6 @@ async function writeSourceToStream(
 }
 
 export async function toDurableStreamResponse(
-  source: AsyncIterable<unknown>,
   options: ToDurableStreamResponseOptions
 ): Promise<Response> {
   const mode = options.mode ?? `immediate`
@@ -95,7 +94,7 @@ export async function toDurableStreamResponse(
   })
 
   await ensureStreamExists(stream, contentType, createIfMissing)
-  const writer = writeSourceToStream(source, stream, contentType)
+  const writer = writeSourceToStream(options.source, stream, contentType)
 
   if (mode === `await`) {
     const finalOffset = await writer

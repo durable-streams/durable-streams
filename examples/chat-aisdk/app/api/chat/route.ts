@@ -33,8 +33,8 @@ export async function POST(request: Request) {
     await saveChat({ id, activeStreamId: streamPath })
   }
 
-  return toDurableStreamResponse(
-    result.toUIMessageStream({
+  return toDurableStreamResponse({
+    source: result.toUIMessageStream({
       originalMessages: messages,
       onFinish: ({ messages: finalMessages }) => {
         if (id) {
@@ -43,13 +43,11 @@ export async function POST(request: Request) {
         }
       },
     }),
-    {
-      stream: {
-        writeUrl: buildWriteStreamUrl(streamPath),
-        // Return an app route for reads so auth/secrets stay server-side.
-        readUrl: buildReadProxyUrl(request, streamPath),
-        headers: DURABLE_STREAMS_WRITE_HEADERS,
-      },
-    }
-  )
+    stream: {
+      writeUrl: buildWriteStreamUrl(streamPath),
+      // Return an app route for reads so auth/secrets stay server-side.
+      readUrl: buildReadProxyUrl(request, streamPath),
+      headers: DURABLE_STREAMS_WRITE_HEADERS,
+    },
+  })
 }
