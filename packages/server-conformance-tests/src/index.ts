@@ -5,6 +5,7 @@
  * any server implementation to verify protocol compliance.
  */
 
+import { createServer } from "node:http"
 import { describe, expect, test } from "vitest"
 import * as fc from "fast-check"
 import {
@@ -19,6 +20,12 @@ export interface ConformanceTestOptions {
   baseUrl: string
   /** Timeout for long-poll tests in milliseconds (default: 20000) */
   longPollTimeoutMs?: number
+  /**
+   * Optional externally reachable base URL for schema fixtures.
+   * When provided, schema URL tests use {schemaFixtureBaseUrl}/schema.json
+   * instead of a local loopback fixture server.
+   */
+  schemaFixtureBaseUrl?: string
 }
 
 /**
@@ -137,6 +144,47 @@ function parseSSEEvents(
   }
 
   return events
+}
+
+async function createSchemaFixtureServer(
+  schemaDocument: Record<string, unknown>,
+  statusCode = 200,
+  schemaFixtureBaseUrl?: string
+): Promise<{ url: string; stop: () => Promise<void> }> {
+  if (schemaFixtureBaseUrl) {
+    const normalizedBase = schemaFixtureBaseUrl.endsWith(`/`)
+      ? schemaFixtureBaseUrl
+      : `${schemaFixtureBaseUrl}/`
+    return {
+      url: new URL(`schema.json`, normalizedBase).toString(),
+      stop: async () => {},
+    }
+  }
+
+  const server = createServer((req, res) => {
+    if (req.url !== `/schema.json`) {
+      res.writeHead(404)
+      res.end(`not found`)
+      return
+    }
+
+    res.writeHead(statusCode, { "content-type": `application/json` })
+    res.end(JSON.stringify(schemaDocument))
+  })
+
+  await new Promise<void>((resolve) => server.listen(0, `127.0.0.1`, resolve))
+  const address = server.address()
+  if (!address || typeof address === `string`) {
+    throw new Error(`could not determine schema fixture address`)
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/schema.json`,
+    stop: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve()))
+      ),
+  }
 }
 
 /**
@@ -4382,6 +4430,460 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         42,
       ])
       expect(data.length).toBe(4)
+    })
+
+    test(`should support inline schema create with HEAD metadata and GET ?schema`, async () => {
+      const streamPath = `/v1/stream/json-schema-inline-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schema),
+      })
+      expect(createResponse.status).toBe(201)
+      expect(createResponse.headers.get(`content-type`)).toBe(
+        `application/json`
+      )
+
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headResponse.status).toBe(200)
+      const digest = headResponse.headers.get(`stream-schema-digest`)
+      expect(digest).toMatch(/^sha-256:[a-f0-9]{64}$/)
+      const link = headResponse.headers.get(`link`)
+      expect(link).toContain(`rel="describedby"`)
+      expect(link).toContain(`${streamPath}?schema`)
+
+      const getSchemaResponse = await fetch(
+        `${getBaseUrl()}${streamPath}?schema`,
+        {
+          method: `GET`,
+        }
+      )
+      expect(getSchemaResponse.status).toBe(200)
+      expect(getSchemaResponse.headers.get(`content-type`)).toBe(
+        `application/schema+json`
+      )
+      const effectiveSchema = (await getSchemaResponse.json()) as Record<
+        string,
+        unknown
+      >
+      expect(effectiveSchema.$schema).toBe(
+        `https://json-schema.org/draft/2020-12/schema`
+      )
+      expect(getSchemaResponse.headers.get(`stream-schema-digest`)).toBe(digest)
+    })
+
+    test(`should return 422 when JSON payload violates attached schema`, async () => {
+      const streamPath = `/v1/stream/json-schema-422-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schema),
+      })
+      expect(createResponse.status).toBe(201)
+
+      const invalidAppend = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ nope: true }),
+      })
+      expect(invalidAppend.status).toBe(422)
+
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+      expect(readResponse.status).toBe(200)
+      const items = (await readResponse.json()) as Array<unknown>
+      expect(items).toEqual([])
+    })
+
+    test(`should support schema URL attachment and idempotent schema equivalence`, async () => {
+      const streamPath = `/v1/stream/json-schema-url-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const fixture = await createSchemaFixtureServer(
+        schema,
+        200,
+        options.schemaFixtureBaseUrl
+      )
+      try {
+        const createFromURL = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "content-type": `application/json`,
+            "stream-schema-url": fixture.url,
+          },
+          body: JSON.stringify([{ event: `created` }]),
+        })
+        expect(createFromURL.status).toBe(201)
+
+        const idempotentInline = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "content-type": `application/schema+json`,
+            "stream-content-type": `application/json`,
+          },
+          body: JSON.stringify(schema),
+        })
+        expect(idempotentInline.status).toBe(200)
+
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(200)
+        expect(headResponse.headers.get(`stream-schema-url`)).toBe(fixture.url)
+      } finally {
+        await fixture.stop()
+      }
+    })
+
+    test(`should enforce ?schema exclusivity and return 404 for streams without schema`, async () => {
+      const streamPath = `/v1/stream/json-schema-query-${Date.now()}`
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+      })
+      expect(createResponse.status).toBe(201)
+
+      const noSchemaResponse = await fetch(
+        `${getBaseUrl()}${streamPath}?schema`,
+        {
+          method: `GET`,
+        }
+      )
+      expect(noSchemaResponse.status).toBe(404)
+
+      const invalidComboResponse = await fetch(
+        `${getBaseUrl()}${streamPath}?schema&offset=-1`,
+        {
+          method: `GET`,
+        }
+      )
+      expect(invalidComboResponse.status).toBe(400)
+    })
+
+    test(`should reject unsupported schema dialect for inline schema create`, async () => {
+      const streamPath = `/v1/stream/json-schema-unsupported-dialect-${Date.now()}`
+      const unsupportedSchema = {
+        $schema: `https://json-schema.org/draft-07/schema#`,
+        type: `object`,
+      }
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(unsupportedSchema),
+      })
+
+      expect(response.status).toBe(400)
+    })
+
+    test(`should reject invalid schema URL forms`, async () => {
+      const nonAbsolutePath = `/v1/stream/json-schema-url-relative-${Date.now()}`
+      const relativeResponse = await fetch(
+        `${getBaseUrl()}${nonAbsolutePath}`,
+        {
+          method: `PUT`,
+          headers: {
+            "content-type": `application/json`,
+            "stream-schema-url": `/schema.json`,
+          },
+        }
+      )
+      expect(relativeResponse.status).toBe(400)
+
+      const nonHttpPath = `/v1/stream/json-schema-url-ftp-${Date.now()}`
+      const ftpResponse = await fetch(`${getBaseUrl()}${nonHttpPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/json`,
+          "stream-schema-url": `ftp://example.com/schema.json`,
+        },
+      })
+      expect(ftpResponse.status).toBe(400)
+    })
+
+    test(`should reject schema attachment modes on non-JSON streams`, async () => {
+      const inlinePath = `/v1/stream/schema-inline-non-json-${Date.now()}`
+      const inlineResponse = await fetch(`${getBaseUrl()}${inlinePath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `text/plain`,
+        },
+        body: JSON.stringify({ type: `object` }),
+      })
+      expect(inlineResponse.status).toBe(400)
+
+      const urlPath = `/v1/stream/schema-url-non-json-${Date.now()}`
+      const urlResponse = await fetch(`${getBaseUrl()}${urlPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `text/plain`,
+          "stream-schema-url": `https://example.com/schema.json`,
+        },
+      })
+      expect(urlResponse.status).toBe(400)
+    })
+
+    test(`should reject ?schema when combined with live or cursor`, async () => {
+      const streamPath = `/v1/stream/json-schema-query-live-cursor-${Date.now()}`
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+      })
+      expect(createResponse.status).toBe(201)
+
+      const withLive = await fetch(
+        `${getBaseUrl()}${streamPath}?schema&live=sse`,
+        {
+          method: `GET`,
+        }
+      )
+      expect(withLive.status).toBe(400)
+
+      const withCursor = await fetch(
+        `${getBaseUrl()}${streamPath}?schema&cursor=123`,
+        {
+          method: `GET`,
+        }
+      )
+      expect(withCursor.status).toBe(400)
+    })
+
+    test(`should reject invalid initial JSON body with 422 for schema URL mode`, async () => {
+      const streamPath = `/v1/stream/json-schema-initial-422-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const fixture = await createSchemaFixtureServer(
+        schema,
+        200,
+        options.schemaFixtureBaseUrl
+      )
+      try {
+        const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "content-type": `application/json`,
+            "stream-schema-url": fixture.url,
+          },
+          body: JSON.stringify({ nope: true }),
+        })
+        expect(response.status).toBe(422)
+
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(404)
+      } finally {
+        await fixture.stop()
+      }
+    })
+
+    test(`should reject mixed JSON batch atomically when one message fails schema`, async () => {
+      const streamPath = `/v1/stream/json-schema-atomic-batch-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schema),
+      })
+      expect(createResponse.status).toBe(201)
+
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify([{ event: `ok` }, { nope: true }]),
+      })
+      expect(appendResponse.status).toBe(422)
+
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`)
+      const data = (await readResponse.json()) as Array<unknown>
+      expect(data).toEqual([])
+    })
+
+    test(`should preserve 400 for malformed JSON syntax even when schema is attached`, async () => {
+      const streamPath = `/v1/stream/json-schema-malformed-json-${Date.now()}`
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schema),
+      })
+      expect(createResponse.status).toBe(201)
+
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: `{ invalid json`,
+      })
+      expect(appendResponse.status).toBe(400)
+    })
+
+    test(`should reject semantically invalid schema documents`, async () => {
+      const streamPath = `/v1/stream/json-schema-invalid-doc-${Date.now()}`
+      const invalidSchema = {
+        $schema: `https://json-schema.org/draft/2020-12/schema`,
+        type: 123,
+      }
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(invalidSchema),
+      })
+      expect(response.status).toBe(400)
+    })
+
+    test(`should reject schemas that require external $ref resolution`, async () => {
+      const streamPath = `/v1/stream/json-schema-external-ref-${Date.now()}`
+      const schemaWithExternalRef = {
+        $schema: `https://json-schema.org/draft/2020-12/schema`,
+        $ref: `https://example.com/schemas/external.json`,
+      }
+
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schemaWithExternalRef),
+      })
+      expect(response.status).toBe(400)
+    })
+
+    test(`should advertise absolute schema Link metadata on HEAD`, async () => {
+      const streamPath = `/v1/stream/json-schema-head-link-${Date.now()}`
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify({ type: `object` }),
+      })
+      expect(createResponse.status).toBe(201)
+
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headResponse.status).toBe(200)
+      const link = headResponse.headers.get(`link`) ?? ``
+      const match = link.match(
+        /^<([^>]+)>;\s*rel="describedby";\s*type="application\/schema\+json"$/
+      )
+      expect(match).toBeTruthy()
+      expect(
+        match?.[1]?.startsWith(`http://`) || match?.[1]?.startsWith(`https://`)
+      ).toBe(true)
+    })
+
+    test(`should return 409 for schema config mismatch and 200 for matching idempotent PUT`, async () => {
+      const streamPath = `/v1/stream/json-schema-idempotency-${Date.now()}`
+      const schemaA = {
+        type: `object`,
+        required: [`event`],
+        properties: {
+          event: { type: `string` },
+        },
+      }
+      const schemaB = {
+        type: `object`,
+        required: [`kind`],
+        properties: {
+          kind: { type: `string` },
+        },
+      }
+
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schemaA),
+      })
+      expect(createResponse.status).toBe(201)
+
+      const idempotentResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schemaA),
+      })
+      expect(idempotentResponse.status).toBe(200)
+
+      const mismatchResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "content-type": `application/schema+json`,
+          "stream-content-type": `application/json`,
+        },
+        body: JSON.stringify(schemaB),
+      })
+      expect(mismatchResponse.status).toBe(409)
     })
   })
 

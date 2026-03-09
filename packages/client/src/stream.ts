@@ -7,15 +7,19 @@
 import fastq from "fastq"
 
 import {
+  DurableStreamError,
   InvalidSignalError,
   MissingStreamUrlError,
   StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
 import {
+  SCHEMA_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
+  STREAM_CONTENT_TYPE_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SCHEMA_URL_HEADER,
   STREAM_SEQ_HEADER,
   STREAM_TTL_HEADER,
 } from "./constants"
@@ -207,6 +211,9 @@ export class DurableStream {
       expiresAt: opts.expiresAt,
       body: opts.body,
       closed: opts.closed,
+      schema: opts.schema,
+      schemaUrl: opts.schemaUrl,
+      streamContentType: opts.streamContentType,
     })
     return stream
   }
@@ -238,6 +245,16 @@ export class DurableStream {
   static async head(opts: DurableStreamOptions): Promise<HeadResult> {
     const stream = new DurableStream(opts)
     return stream.head()
+  }
+
+  /**
+   * Retrieve a stream's attached schema without creating a persistent handle.
+   */
+  static async getSchema(
+    opts: DurableStreamOptions
+  ): Promise<Record<string, unknown>> {
+    const stream = new DurableStream(opts)
+    return stream.getSchema({ signal: opts.signal })
   }
 
   /**
@@ -296,10 +313,16 @@ export class DurableStream {
   async create(opts?: Omit<CreateOptions, keyof StreamOptions>): Promise<this> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest()
 
-    const contentType = opts?.contentType ?? this.#options.contentType
-    if (contentType) {
-      requestHeaders[`content-type`] = contentType
+    const hasInlineSchema = opts?.schema !== undefined
+    const hasSchemaUrl = opts?.schemaUrl !== undefined
+    if (hasInlineSchema && hasSchemaUrl) {
+      throw new DurableStreamError(
+        `Cannot provide both inline schema and schemaUrl`,
+        `BAD_REQUEST`
+      )
     }
+
+    const contentType = opts?.contentType ?? this.#options.contentType
     if (opts?.ttlSeconds !== undefined) {
       requestHeaders[STREAM_TTL_HEADER] = String(opts.ttlSeconds)
     }
@@ -310,7 +333,32 @@ export class DurableStream {
       requestHeaders[STREAM_CLOSED_HEADER] = `true`
     }
 
-    const body = encodeBody(opts?.body)
+    let body: BodyInit | undefined
+    if (hasInlineSchema) {
+      const inlineOpts = opts
+      if (inlineOpts.body !== undefined) {
+        throw new DurableStreamError(
+          `Inline schema create cannot include initial body`,
+          `BAD_REQUEST`
+        )
+      }
+
+      requestHeaders[`content-type`] = `application/schema+json`
+      requestHeaders[STREAM_CONTENT_TYPE_HEADER] =
+        inlineOpts.streamContentType ?? `application/json`
+      body = encodeBody(inlineOpts.schema)
+    } else {
+      const effectiveContentType = hasSchemaUrl
+        ? (contentType ?? `application/json`)
+        : contentType
+      if (effectiveContentType) {
+        requestHeaders[`content-type`] = effectiveContentType
+      }
+      if (opts?.schemaUrl) {
+        requestHeaders[STREAM_SCHEMA_URL_HEADER] = opts.schemaUrl
+      }
+      body = encodeBody(opts?.body)
+    }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
       method: `PUT`,
@@ -332,6 +380,28 @@ export class DurableStream {
     }
 
     return this
+  }
+
+  /**
+   * Retrieve the attached schema document for this stream.
+   */
+  async getSchema(opts?: {
+    signal?: AbortSignal
+  }): Promise<Record<string, unknown>> {
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+    fetchUrl.searchParams.set(SCHEMA_QUERY_PARAM, ``)
+
+    const response = await this.#fetchClient(fetchUrl.toString(), {
+      method: `GET`,
+      headers: requestHeaders,
+      signal: opts?.signal ?? this.#options.signal,
+    })
+
+    if (!response.ok) {
+      await handleErrorResponse(response, this.url)
+    }
+
+    return (await response.json()) as Record<string, unknown>
   }
 
   /**

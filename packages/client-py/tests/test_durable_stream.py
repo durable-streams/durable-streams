@@ -6,6 +6,7 @@ Matches TypeScript client test coverage from stream.test.ts.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import httpx
@@ -577,6 +578,94 @@ class TestDurableStreamCreate_Static:
 
         assert handle.url == "https://example.com/stream"
         assert handle.content_type == "application/json"
+
+
+class TestDurableStreamSchema:
+    """Tests for schema create/retrieval APIs."""
+
+    def test_create_stream_with_inline_schema_sets_headers_and_body(self):
+        """Should use application/schema+json and Stream-Content-Type."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.put.return_value = MockResponse(
+            status_code=201,
+            headers={"content-type": "application/json"},
+        )
+        handle = DurableStream("https://example.com/stream", client=mock_client)
+        schema = {
+            "type": "object",
+            "required": ["event"],
+            "properties": {"event": {"type": "string"}},
+        }
+
+        handle.create_stream(schema=schema)
+
+        call_kwargs = mock_client.put.call_args[1]
+        headers = call_kwargs["headers"]
+        assert headers["content-type"] == "application/schema+json"
+        assert headers["Stream-Content-Type"] == "application/json"
+        assert json.loads(call_kwargs["content"].decode("utf-8")) == schema
+
+    def test_create_stream_with_schema_url_sets_header_and_default_content_type(self):
+        """Should set Stream-Schema-Url and default content-type."""
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_client.put.return_value = MockResponse(
+            status_code=201,
+            headers={"content-type": "application/json"},
+        )
+        handle = DurableStream("https://example.com/stream", client=mock_client)
+
+        handle.create_stream(schema_url="https://schemas.example.com/event.json")
+
+        call_kwargs = mock_client.put.call_args[1]
+        headers = call_kwargs["headers"]
+        assert headers["Stream-Schema-Url"] == "https://schemas.example.com/event.json"
+        assert headers["content-type"] == "application/json"
+
+    def test_create_stream_rejects_conflicting_schema_options(self):
+        """Should reject schema+schema_url and schema+body combinations."""
+        handle = DurableStream("https://example.com/stream", client=MagicMock(spec=httpx.Client))
+
+        with pytest.raises(ValueError, match="both schema and schema_url"):
+            handle.create_stream(schema={}, schema_url="https://schemas.example.com/event.json")
+
+        with pytest.raises(ValueError, match="cannot include initial body"):
+            handle.create_stream(schema={}, body={"event": "created"})
+
+    def test_get_schema_fetches_schema_query_param(self):
+        """Should request ?schema and return parsed document."""
+        schema = {"type": "object", "properties": {"id": {"type": "string"}}}
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.headers = httpx.Headers({"content-type": "application/schema+json"})
+        mock_response.text = ""
+        mock_response.json.return_value = schema
+        mock_client.get.return_value = mock_response
+        handle = DurableStream("https://example.com/stream", client=mock_client)
+
+        result = handle.get_schema()
+
+        assert result == schema
+        called_url = str(mock_client.get.call_args[0][0])
+        assert "schema=" in called_url
+
+    def test_get_schema_static_fetches_schema(self):
+        """Should support one-shot static schema retrieval."""
+        schema = {"type": "object"}
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.headers = httpx.Headers({"content-type": "application/schema+json"})
+        mock_response.text = ""
+        mock_response.json.return_value = schema
+        mock_client.get.return_value = mock_response
+
+        result = DurableStream.get_schema_static(
+            "https://example.com/stream",
+            client=mock_client,
+        )
+
+        assert result == schema
 
 
 class TestDurableStreamMergedHeadersParams:

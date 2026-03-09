@@ -4,9 +4,14 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
-import { StreamStore } from "./store"
+import { StreamStore, normalizeContentType } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
+import {
+  SchemaDocumentError,
+  SchemaValidationFailureError,
+  parseAndNormalizeSchemaDocument,
+} from "./json-schema"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
@@ -19,6 +24,9 @@ const STREAM_SEQ_HEADER = `Stream-Seq`
 const STREAM_TTL_HEADER = `Stream-TTL`
 const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 const STREAM_SSE_DATA_ENCODING_HEADER = `Stream-SSE-Data-Encoding`
+const STREAM_CONTENT_TYPE_HEADER = `Stream-Content-Type`
+const STREAM_SCHEMA_URL_HEADER = `Stream-Schema-Url`
+const STREAM_SCHEMA_DIGEST_HEADER = `Stream-Schema-Digest`
 
 // Idempotent producer headers
 const PRODUCER_ID_HEADER = `Producer-Id`
@@ -40,6 +48,10 @@ const STREAM_CLOSED_HEADER = `Stream-Closed`
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
 const CURSOR_QUERY_PARAM = `cursor`
+const SCHEMA_QUERY_PARAM = `schema`
+
+const JSON_CONTENT_TYPE = `application/json`
+const JSON_SCHEMA_CONTENT_TYPE = `application/schema+json`
 
 /**
  * Encode data for SSE format.
@@ -427,11 +439,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Stream-Content-Type, Stream-Schema-Url, Producer-Id, Producer-Epoch, Producer-Seq`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Stream-Schema-Digest, Stream-Schema-Url, Link, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -494,7 +506,7 @@ export class DurableStreamTestServer {
           await this.handleCreate(path, req, res)
           break
         case `HEAD`:
-          this.handleHead(path, res)
+          this.handleHead(path, req, res)
           break
         case `GET`:
           await this.handleRead(path, url, req, res)
@@ -511,7 +523,13 @@ export class DurableStreamTestServer {
       }
     } catch (err) {
       if (err instanceof Error) {
-        if (err.message.includes(`not found`)) {
+        if (err instanceof SchemaValidationFailureError) {
+          res.writeHead(422, { "content-type": `text/plain` })
+          res.end(`JSON schema validation failed`)
+        } else if (err instanceof SchemaDocumentError) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(err.message)
+        } else if (err.message.includes(`not found`)) {
           res.writeHead(404, { "content-type": `text/plain` })
           res.end(`Stream not found`)
         } else if (
@@ -548,23 +566,24 @@ export class DurableStreamTestServer {
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<void> {
-    let contentType = req.headers[`content-type`]
+    const requestContentType = this.getSingleHeader(req, `content-type`)
+    const streamContentTypeHeader = this.getSingleHeader(
+      req,
+      STREAM_CONTENT_TYPE_HEADER.toLowerCase()
+    )
+    const schemaUrlHeader = this.getSingleHeader(
+      req,
+      STREAM_SCHEMA_URL_HEADER.toLowerCase()
+    )
 
-    // Sanitize content-type: if empty or invalid, use default
-    if (
-      !contentType ||
-      contentType.trim() === `` ||
-      !/^[\w-]+\/[\w-]+/.test(contentType)
-    ) {
-      contentType = `application/octet-stream`
-    }
+    const normalizedRequestContentType =
+      normalizeContentType(requestContentType)
+    const normalizedStreamContentType = normalizeContentType(
+      streamContentTypeHeader
+    )
 
-    const ttlHeader = req.headers[STREAM_TTL_HEADER.toLowerCase()] as
-      | string
-      | undefined
-    const expiresAtHeader = req.headers[
-      STREAM_EXPIRES_AT_HEADER.toLowerCase()
-    ] as string | undefined
+    const ttlHeader = req.headers[STREAM_TTL_HEADER.toLowerCase()]
+    const expiresAtHeader = req.headers[STREAM_EXPIRES_AT_HEADER.toLowerCase()]
 
     // Parse Stream-Closed header
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
@@ -578,17 +597,18 @@ export class DurableStreamTestServer {
     }
 
     let ttlSeconds: number | undefined
-    if (ttlHeader) {
+    const ttlHeaderValue = Array.isArray(ttlHeader) ? ttlHeader[0] : ttlHeader
+    if (ttlHeaderValue) {
       // Strict TTL validation: must be a positive integer without leading zeros,
       // plus signs, decimals, whitespace, or non-decimal notation
       const ttlPattern = /^(0|[1-9]\d*)$/
-      if (!ttlPattern.test(ttlHeader)) {
+      if (!ttlPattern.test(ttlHeaderValue)) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Stream-TTL value`)
         return
       }
 
-      ttlSeconds = parseInt(ttlHeader, 10)
+      ttlSeconds = parseInt(ttlHeaderValue, 10)
       if (isNaN(ttlSeconds) || ttlSeconds < 0) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Stream-TTL value`)
@@ -597,8 +617,11 @@ export class DurableStreamTestServer {
     }
 
     // Validate Expires-At timestamp format (ISO 8601)
-    if (expiresAtHeader) {
-      const timestamp = new Date(expiresAtHeader)
+    const expiresAtHeaderValue = Array.isArray(expiresAtHeader)
+      ? expiresAtHeader[0]
+      : expiresAtHeader
+    if (expiresAtHeaderValue) {
+      const timestamp = new Date(expiresAtHeaderValue)
       if (isNaN(timestamp.getTime())) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Invalid Stream-Expires-At timestamp`)
@@ -606,8 +629,78 @@ export class DurableStreamTestServer {
       }
     }
 
-    // Read body if present
     const body = await this.readBody(req)
+
+    const isInlineSchemaMode =
+      normalizedRequestContentType === JSON_SCHEMA_CONTENT_TYPE
+    const hasSchemaUrl = Boolean(schemaUrlHeader)
+
+    if (isInlineSchemaMode && hasSchemaUrl) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(
+        `Cannot combine inline schema with ${STREAM_SCHEMA_URL_HEADER} header`
+      )
+      return
+    }
+
+    if (!isInlineSchemaMode && streamContentTypeHeader) {
+      res.writeHead(400, { "content-type": `text/plain` })
+      res.end(
+        `${STREAM_CONTENT_TYPE_HEADER} is only valid with Content-Type: ${JSON_SCHEMA_CONTENT_TYPE}`
+      )
+      return
+    }
+
+    let contentType = requestContentType
+    let initialData: Uint8Array | undefined = body.length > 0 ? body : undefined
+    let schemaDigest: string | undefined
+    let schemaDocument: Record<string, unknown> | undefined
+    let schemaSourceUrl: string | undefined
+
+    if (isInlineSchemaMode) {
+      if (normalizedStreamContentType !== JSON_CONTENT_TYPE) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(
+          `${STREAM_CONTENT_TYPE_HEADER} must be application/json for inline schema creation`
+        )
+        return
+      }
+
+      if (body.length === 0) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Inline schema document body is required`)
+        return
+      }
+
+      const normalized = parseAndNormalizeSchemaDocument(body)
+      contentType = JSON_CONTENT_TYPE
+      initialData = undefined
+      schemaDigest = normalized.schemaDigest
+      schemaDocument = normalized.schemaDocument
+    } else if (hasSchemaUrl) {
+      if (normalizedRequestContentType !== JSON_CONTENT_TYPE) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(
+          `${STREAM_SCHEMA_URL_HEADER} requires Content-Type: application/json`
+        )
+        return
+      }
+
+      const normalized = await this.resolveSchemaFromUrl(schemaUrlHeader!)
+      contentType = JSON_CONTENT_TYPE
+      schemaDigest = normalized.schemaDigest
+      schemaDocument = normalized.schemaDocument
+      schemaSourceUrl = schemaUrlHeader
+    } else {
+      // Sanitize content-type: if empty or invalid, use default
+      if (
+        !contentType ||
+        contentType.trim() === `` ||
+        !/^[\w-]+\/[\w-]+/.test(contentType)
+      ) {
+        contentType = `application/octet-stream`
+      }
+    }
 
     const isNew = !this.store.has(path)
 
@@ -616,9 +709,12 @@ export class DurableStreamTestServer {
       this.store.create(path, {
         contentType,
         ttlSeconds,
-        expiresAt: expiresAtHeader,
-        initialData: body.length > 0 ? body : undefined,
+        expiresAt: expiresAtHeaderValue,
+        initialData,
         closed: createClosed,
+        schemaDigest,
+        schemaDocument,
+        schemaSourceUrl,
       })
     )
 
@@ -630,7 +726,7 @@ export class DurableStreamTestServer {
         this.options.onStreamCreated({
           type: `created`,
           path,
-          contentType,
+          contentType: stream.contentType,
           timestamp: Date.now(),
         })
       )
@@ -638,7 +734,7 @@ export class DurableStreamTestServer {
 
     // Return 201 for new streams, 200 for idempotent creates
     const headers: Record<string, string> = {
-      "content-type": contentType,
+      "content-type": stream.contentType ?? contentType,
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
     }
 
@@ -659,7 +755,11 @@ export class DurableStreamTestServer {
   /**
    * Handle HEAD - get metadata
    */
-  private handleHead(path: string, res: ServerResponse): void {
+  private handleHead(
+    path: string,
+    req: IncomingMessage,
+    res: ServerResponse
+  ): void {
     const stream = this.store.get(path)
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
@@ -688,6 +788,15 @@ export class DurableStreamTestServer {
     headers[`etag`] =
       `"${Buffer.from(path).toString(`base64`)}:-1:${stream.currentOffset}${closedSuffix}"`
 
+    if (stream.schemaDigest && stream.schemaDocument) {
+      headers[STREAM_SCHEMA_DIGEST_HEADER] = stream.schemaDigest
+      headers[`link`] =
+        `<${this.getAbsoluteSchemaUrl(req, path)}>; rel="describedby"; type="application/schema+json"`
+      if (stream.schemaSourceUrl) {
+        headers[STREAM_SCHEMA_URL_HEADER] = stream.schemaSourceUrl
+      }
+    }
+
     res.writeHead(200, headers)
     res.end()
   }
@@ -711,6 +820,30 @@ export class DurableStreamTestServer {
     const offset = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined
     const live = url.searchParams.get(LIVE_QUERY_PARAM)
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
+    const schemaRequested = url.searchParams.has(SCHEMA_QUERY_PARAM)
+
+    if (schemaRequested) {
+      if (offset !== undefined || live !== null || cursor !== undefined) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(
+          `${SCHEMA_QUERY_PARAM} cannot be combined with offset, live, or cursor`
+        )
+        return
+      }
+
+      if (!stream.schemaDocument || !stream.schemaDigest) {
+        res.writeHead(404, { "content-type": `text/plain` })
+        res.end(`Schema not found`)
+        return
+      }
+
+      res.writeHead(200, {
+        "content-type": JSON_SCHEMA_CONTENT_TYPE,
+        [STREAM_SCHEMA_DIGEST_HEADER]: stream.schemaDigest,
+      })
+      res.end(JSON.stringify(stream.schemaDocument))
+      return
+    }
 
     // Validate offset parameter
     if (offset !== undefined) {
@@ -1619,5 +1752,60 @@ export class DurableStreamTestServer {
 
       req.on(`error`, reject)
     })
+  }
+
+  private getAbsoluteSchemaUrl(req: IncomingMessage, path: string): string {
+    const host = req.headers.host ?? new URL(this.url).host
+    const forwardedProto = this.getSingleHeader(req, `x-forwarded-proto`)
+    const proto =
+      forwardedProto ??
+      ((req.socket as { encrypted?: boolean }).encrypted ? `https` : `http`)
+    return `${proto}://${host}${path}?${SCHEMA_QUERY_PARAM}`
+  }
+
+  private getSingleHeader(
+    req: IncomingMessage,
+    name: string
+  ): string | undefined {
+    const value = req.headers[name]
+    if (Array.isArray(value)) {
+      return value[0]
+    }
+    return value
+  }
+
+  private async resolveSchemaFromUrl(schemaUrl: string): Promise<{
+    schemaDigest: string
+    schemaDocument: Record<string, unknown>
+  }> {
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(schemaUrl)
+    } catch {
+      throw new SchemaDocumentError(`Invalid schema URL`)
+    }
+
+    if (parsedUrl.protocol !== `http:` && parsedUrl.protocol !== `https:`) {
+      throw new SchemaDocumentError(`Invalid schema URL`)
+    }
+
+    let response: Response
+    try {
+      response = await fetch(parsedUrl.toString(), {
+        method: `GET`,
+        headers: {
+          accept: `${JSON_SCHEMA_CONTENT_TYPE}, application/json`,
+        },
+      })
+    } catch {
+      throw new SchemaDocumentError(`Invalid schema URL`)
+    }
+
+    if (response.status !== 200) {
+      throw new SchemaDocumentError(`Invalid schema URL`)
+    }
+
+    const body = new Uint8Array(await response.arrayBuffer())
+    return parseAndNormalizeSchemaDocument(body)
   }
 }

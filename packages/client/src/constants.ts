@@ -52,6 +52,22 @@ export const STREAM_TTL_HEADER = `Stream-TTL`
  */
 export const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 
+/**
+ * Request header for stream payload content type when Content-Type describes
+ * inline schema metadata body.
+ */
+export const STREAM_CONTENT_TYPE_HEADER = `Stream-Content-Type`
+
+/**
+ * Request/response header for schema source URL.
+ */
+export const STREAM_SCHEMA_URL_HEADER = `Stream-Schema-Url`
+
+/**
+ * Response header for canonical schema digest identity.
+ */
+export const STREAM_SCHEMA_DIGEST_HEADER = `Stream-Schema-Digest`
+
 // ============================================================================
 // Idempotent Producer Headers
 // ============================================================================
@@ -104,6 +120,11 @@ export const LIVE_QUERY_PARAM = `live`
 export const CURSOR_QUERY_PARAM = `cursor`
 
 /**
+ * Query parameter for retrieving a stream's attached schema.
+ */
+export const SCHEMA_QUERY_PARAM = `schema`
+
+/**
  * Response header indicating SSE data encoding (e.g., base64 for binary streams).
  */
 export const STREAM_SSE_DATA_ENCODING_HEADER = `stream-sse-data-encoding`
@@ -150,4 +171,5 @@ export const DURABLE_STREAM_PROTOCOL_QUERY_PARAMS: Array<string> = [
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
+  SCHEMA_QUERY_PARAM,
 ]

@@ -6,6 +6,7 @@ Tests the async API matching the sync API coverage.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -492,6 +493,115 @@ class TestAsyncDurableStreamStaticMethods:
         )
 
         mock_client.delete.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_get_schema_static_async(self):
+        """Should retrieve schema via static async helper."""
+        schema = {"type": "object"}
+        response = MagicMock()
+        response.is_success = True
+        response.headers = httpx.Headers({"content-type": "application/schema+json"})
+        response.text = ""
+        response.json.return_value = schema
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=response)
+
+        result = await AsyncDurableStream.get_schema_static(
+            "https://example.com/stream",
+            client=mock_client,
+        )
+
+        assert result == schema
+
+
+class TestAsyncDurableStreamSchema:
+    """Tests for async schema create/retrieval APIs."""
+
+    @pytest.mark.anyio
+    async def test_create_stream_with_inline_schema_sets_headers_and_body(self):
+        """Should send inline schema with schema headers."""
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.put = AsyncMock(
+            return_value=MockAsyncResponse(
+                status_code=201,
+                headers={"content-type": "application/json"},
+            )
+        )
+        handle = AsyncDurableStream("https://example.com/stream", client=mock_client)
+        schema = {
+            "type": "object",
+            "required": ["event"],
+            "properties": {"event": {"type": "string"}},
+        }
+
+        await handle.create_stream(schema=schema)
+
+        call_kwargs = mock_client.put.call_args[1]
+        headers = call_kwargs["headers"]
+        assert headers["content-type"] == "application/schema+json"
+        assert headers["Stream-Content-Type"] == "application/json"
+        assert json.loads(call_kwargs["content"].decode("utf-8")) == schema
+        await handle.aclose()
+
+    @pytest.mark.anyio
+    async def test_create_stream_with_schema_url_sets_header(self):
+        """Should send Stream-Schema-Url with default content-type."""
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.put = AsyncMock(
+            return_value=MockAsyncResponse(
+                status_code=201,
+                headers={"content-type": "application/json"},
+            )
+        )
+        handle = AsyncDurableStream("https://example.com/stream", client=mock_client)
+
+        await handle.create_stream(schema_url="https://schemas.example.com/event.json")
+
+        call_kwargs = mock_client.put.call_args[1]
+        headers = call_kwargs["headers"]
+        assert headers["Stream-Schema-Url"] == "https://schemas.example.com/event.json"
+        assert headers["content-type"] == "application/json"
+        await handle.aclose()
+
+    @pytest.mark.anyio
+    async def test_create_stream_rejects_conflicting_schema_options(self):
+        """Should reject schema+schema_url and schema+body combinations."""
+        handle = AsyncDurableStream(
+            "https://example.com/stream",
+            client=MagicMock(spec=httpx.AsyncClient),
+        )
+
+        with pytest.raises(ValueError, match="both schema and schema_url"):
+            await handle.create_stream(
+                schema={},
+                schema_url="https://schemas.example.com/event.json",
+            )
+
+        with pytest.raises(ValueError, match="cannot include initial body"):
+            await handle.create_stream(schema={}, body={"event": "created"})
+        await handle.aclose()
+
+    @pytest.mark.anyio
+    async def test_get_schema_requests_schema_query_param(self):
+        """Should call GET with ?schema and return schema document."""
+        schema = {"type": "object", "properties": {"id": {"type": "string"}}}
+        response = MagicMock()
+        response.is_success = True
+        response.headers = httpx.Headers({"content-type": "application/schema+json"})
+        response.text = ""
+        response.json.return_value = schema
+
+        mock_client = MagicMock(spec=httpx.AsyncClient)
+        mock_client.get = AsyncMock(return_value=response)
+        handle = AsyncDurableStream("https://example.com/stream", client=mock_client)
+
+        result = await handle.get_schema()
+
+        assert result == schema
+        called_url = str(mock_client.get.call_args[0][0])
+        assert "schema=" in called_url
+        await handle.aclose()
 
 
 class TestAsyncDurableStreamErrors:

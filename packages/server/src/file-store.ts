@@ -15,7 +15,8 @@ import {
   normalizeContentType,
   processJsonAppend,
 } from "./store"
-import type { AppendOptions, AppendResult } from "./store"
+import { createSchemaMessageValidator } from "./json-schema"
+import type { AppendOptions, AppendResult, CreateOptions } from "./store"
 import type { Database } from "lmdb"
 import type {
   PendingLongPoll,
@@ -40,6 +41,9 @@ interface SerializableProducerState {
 interface StreamMetadata {
   path: string
   contentType?: string
+  schemaDigest?: string
+  schemaDocument?: Record<string, unknown>
+  schemaSourceUrl?: string
   currentOffset: string
   lastSeq?: string
   ttlSeconds?: number
@@ -209,6 +213,10 @@ export class FileBackedStreamStore {
    * Key: "{streamPath}:{producerId}"
    */
   private producerLocks = new Map<string, Promise<unknown>>()
+  private schemaValidators = new Map<
+    string,
+    ReturnType<typeof createSchemaMessageValidator>
+  >()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -373,6 +381,9 @@ export class FileBackedStreamStore {
     return {
       path: meta.path,
       contentType: meta.contentType,
+      schemaDigest: meta.schemaDigest,
+      schemaDocument: meta.schemaDocument,
+      schemaSourceUrl: meta.schemaSourceUrl,
       messages: [], // Messages not stored in memory
       currentOffset: meta.currentOffset,
       lastSeq: meta.lastSeq,
@@ -383,6 +394,23 @@ export class FileBackedStreamStore {
       closed: meta.closed,
       closedBy: meta.closedBy,
     }
+  }
+
+  private getSchemaValidator(
+    streamMeta: StreamMetadata
+  ): ((value: unknown) => boolean) | undefined {
+    if (!streamMeta.schemaDocument || !streamMeta.schemaDigest) {
+      return undefined
+    }
+
+    const cached = this.schemaValidators.get(streamMeta.schemaDigest)
+    if (cached) {
+      return cached
+    }
+
+    const compiled = createSchemaMessageValidator(streamMeta.schemaDocument)
+    this.schemaValidators.set(streamMeta.schemaDigest, compiled)
+    return compiled
   }
 
   /**
@@ -566,13 +594,7 @@ export class FileBackedStreamStore {
 
   async create(
     streamPath: string,
-    options: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-      closed?: boolean
-    } = {}
+    options: CreateOptions = {}
   ): Promise<Stream> {
     // Use getMetaIfNotExpired to treat expired streams as non-existent
     const existing = this.getMetaIfNotExpired(streamPath)
@@ -589,8 +611,15 @@ export class FileBackedStreamStore {
       const expiresMatches = options.expiresAt === existing.expiresAt
       const closedMatches =
         (options.closed ?? false) === (existing.closed ?? false)
+      const schemaDigestMatches = options.schemaDigest === existing.schemaDigest
 
-      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
+      if (
+        contentTypeMatches &&
+        ttlMatches &&
+        expiresMatches &&
+        closedMatches &&
+        schemaDigestMatches
+      ) {
         // Idempotent success - return existing stream
         return this.streamMetaToStream(existing)
       } else {
@@ -610,6 +639,9 @@ export class FileBackedStreamStore {
     const streamMeta: StreamMetadata = {
       path: streamPath,
       contentType: options.contentType,
+      schemaDigest: options.schemaDigest,
+      schemaDocument: options.schemaDocument,
+      schemaSourceUrl: options.schemaSourceUrl,
       currentOffset: `0000000000000000_0000000000000000`,
       lastSeq: undefined,
       ttlSeconds: options.ttlSeconds,
@@ -640,27 +672,61 @@ export class FileBackedStreamStore {
       throw err
     }
 
-    // Save to LMDB
+    // Save to LMDB, then perform any initial append.
+    // If initial append fails (e.g. schema validation), rollback everything so
+    // failed creates never leave partial stream state behind.
     this.db.putSync(key, streamMeta)
 
-    // Append initial data if provided
-    if (options.initialData && options.initialData.length > 0) {
-      await this.append(streamPath, options.initialData, {
-        contentType: options.contentType,
-        isInitialCreate: true,
-      })
-    }
+    try {
+      // Append initial data if provided
+      if (options.initialData && options.initialData.length > 0) {
+        await this.append(streamPath, options.initialData, {
+          contentType: options.contentType,
+          isInitialCreate: true,
+        })
+      }
 
-    // Now set closed flag if requested (after initial append succeeded)
-    if (options.closed) {
-      const updatedMeta = this.db.get(key) as StreamMetadata
-      updatedMeta.closed = true
-      this.db.putSync(key, updatedMeta)
-    }
+      // Now set closed flag if requested (after initial append succeeded)
+      if (options.closed) {
+        const updatedMeta = this.db.get(key) as StreamMetadata
+        updatedMeta.closed = true
+        this.db.putSync(key, updatedMeta)
+      }
 
-    // Re-fetch updated metadata
-    const updated = this.db.get(key) as StreamMetadata
-    return this.streamMetaToStream(updated)
+      // Re-fetch updated metadata
+      const updated = this.db.get(key) as StreamMetadata
+      return this.streamMetaToStream(updated)
+    } catch (err) {
+      // Best-effort rollback; preserve original error for caller.
+      this.cancelLongPollsForStream(streamPath)
+      this.db.removeSync(key)
+
+      const segmentPath = path.join(
+        this.dataDir,
+        `streams`,
+        streamMeta.directoryName,
+        `segment_00000.log`
+      )
+      try {
+        await this.fileHandlePool.closeFileHandle(segmentPath)
+      } catch (closeErr) {
+        console.error(
+          `[FileBackedStreamStore] Error closing file handle during create rollback:`,
+          closeErr
+        )
+      }
+
+      try {
+        await this.fileManager.deleteDirectoryByName(streamMeta.directoryName)
+      } catch (deleteErr) {
+        console.error(
+          `[FileBackedStreamStore] Error deleting directory during create rollback:`,
+          deleteErr
+        )
+      }
+
+      throw err
+    }
   }
 
   get(streamPath: string): Stream | undefined {
@@ -802,7 +868,11 @@ export class FileBackedStreamStore {
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      processedData = processJsonAppend(data, options.isInitialCreate ?? false)
+      processedData = processJsonAppend(
+        data,
+        options.isInitialCreate ?? false,
+        this.getSchemaValidator(streamMeta)
+      )
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
         return null
@@ -1296,6 +1366,7 @@ export class FileBackedStreamStore {
     this.fileHandlePool.closeAll().catch((err: Error) => {
       console.error(`[FileBackedStreamStore] Error closing handles:`, err)
     })
+    this.schemaValidators.clear()
 
     // Note: Files are not deleted in clear() with unique directory names
     // New streams get fresh directories, so old files won't interfere

@@ -2,6 +2,10 @@
  * In-memory stream storage.
  */
 
+import {
+  SchemaValidationFailureError,
+  createSchemaMessageValidator,
+} from "./json-schema"
 import type {
   PendingLongPoll,
   ProducerValidationResult,
@@ -33,7 +37,8 @@ export function normalizeContentType(contentType: string | undefined): string {
  */
 export function processJsonAppend(
   data: Uint8Array,
-  isInitialCreate = false
+  isInitialCreate = false,
+  validateJsonMessage?: (value: unknown) => boolean
 ): Uint8Array {
   const text = new TextDecoder().decode(data)
 
@@ -45,8 +50,7 @@ export function processJsonAppend(
     throw new Error(`Invalid JSON`)
   }
 
-  // If it's an array, extract elements and join with commas
-  let result: string
+  let logicalMessages: Array<unknown>
   if (Array.isArray(parsed)) {
     if (parsed.length === 0) {
       // Empty arrays are valid for PUT (creates empty stream)
@@ -56,13 +60,21 @@ export function processJsonAppend(
       }
       throw new Error(`Empty arrays are not allowed`)
     }
-    const elements = parsed.map((item) => JSON.stringify(item))
-    result = elements.join(`,`) + `,`
+    logicalMessages = parsed
   } else {
-    // Single value - re-serialize to normalize whitespace (single-line JSON)
-    result = JSON.stringify(parsed) + `,`
+    logicalMessages = [parsed]
   }
 
+  if (validateJsonMessage) {
+    for (const message of logicalMessages) {
+      if (!validateJsonMessage(message)) {
+        throw new SchemaValidationFailureError()
+      }
+    }
+  }
+
+  const result =
+    logicalMessages.map((item) => JSON.stringify(item)).join(`,`) + `,`
   return new TextEncoder().encode(result)
 }
 
@@ -102,6 +114,20 @@ export interface AppendOptions {
 }
 
 /**
+ * Options for create operations.
+ */
+export interface CreateOptions {
+  contentType?: string
+  ttlSeconds?: number
+  expiresAt?: string
+  initialData?: Uint8Array
+  closed?: boolean
+  schemaDigest?: string
+  schemaDocument?: Record<string, unknown>
+  schemaSourceUrl?: string
+}
+
+/**
  * Result of an append operation.
  */
 export interface AppendResult {
@@ -113,6 +139,10 @@ export interface AppendResult {
 export class StreamStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
+  private schemaValidators = new Map<
+    string,
+    ReturnType<typeof createSchemaMessageValidator>
+  >()
   /**
    * Per-producer locks for serializing validation+append operations.
    * Key: "{streamPath}:{producerId}"
@@ -167,16 +197,7 @@ export class StreamStore {
    * @throws Error if stream already exists with different config
    * @returns existing stream if config matches (idempotent)
    */
-  create(
-    path: string,
-    options: {
-      contentType?: string
-      ttlSeconds?: number
-      expiresAt?: string
-      initialData?: Uint8Array
-      closed?: boolean
-    } = {}
-  ): Stream {
+  create(path: string, options: CreateOptions = {}): Stream {
     // Use getIfNotExpired to treat expired streams as non-existent
     const existing = this.getIfNotExpired(path)
     if (existing) {
@@ -190,8 +211,15 @@ export class StreamStore {
       const expiresMatches = options.expiresAt === existing.expiresAt
       const closedMatches =
         (options.closed ?? false) === (existing.closed ?? false)
+      const schemaDigestMatches = options.schemaDigest === existing.schemaDigest
 
-      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
+      if (
+        contentTypeMatches &&
+        ttlMatches &&
+        expiresMatches &&
+        closedMatches &&
+        schemaDigestMatches
+      ) {
         // Idempotent success - return existing stream
         return existing
       } else {
@@ -211,6 +239,9 @@ export class StreamStore {
       expiresAt: options.expiresAt,
       createdAt: Date.now(),
       closed: options.closed ?? false,
+      schemaDigest: options.schemaDigest,
+      schemaDocument: options.schemaDocument,
+      schemaSourceUrl: options.schemaSourceUrl,
     }
 
     // If initial data is provided, append it
@@ -828,6 +859,7 @@ export class StreamStore {
     }
     this.pendingLongPolls = []
     this.streams.clear()
+    this.schemaValidators.clear()
   }
 
   /**
@@ -853,6 +885,23 @@ export class StreamStore {
   // Private helpers
   // ============================================================================
 
+  private getSchemaValidator(
+    stream: Stream
+  ): ((value: unknown) => boolean) | undefined {
+    if (!stream.schemaDocument || !stream.schemaDigest) {
+      return undefined
+    }
+
+    const cached = this.schemaValidators.get(stream.schemaDigest)
+    if (cached) {
+      return cached
+    }
+
+    const compiled = createSchemaMessageValidator(stream.schemaDocument)
+    this.schemaValidators.set(stream.schemaDigest, compiled)
+    return compiled
+  }
+
   private appendToStream(
     stream: Stream,
     data: Uint8Array,
@@ -861,7 +910,11 @@ export class StreamStore {
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
     let processedData = data
     if (normalizeContentType(stream.contentType) === `application/json`) {
-      processedData = processJsonAppend(data, isInitialCreate)
+      processedData = processJsonAppend(
+        data,
+        isInitialCreate,
+        this.getSchemaValidator(stream)
+      )
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
         return null

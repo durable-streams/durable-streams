@@ -45,6 +45,8 @@
     "@durable-streams/client": "workspace:*",
     "@durable-streams/state": "workspace:*",
     "@neophi/sieve-cache": "^1.0.0",
+    "ajv": "^8.18.0",
+    "json-canonicalize": "^2.0.0",
     "lmdb": "^3.3.0"
   },
   "devDependencies": {
