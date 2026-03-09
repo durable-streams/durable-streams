@@ -49,6 +49,12 @@ pnpm test:run -- --client typescript
 pnpm test:run -- --client python
 pnpm test:run -- --client go
 
+# Run just the server conformance tests
+pnpm vitest run --project server
+
+# Run a specific server test file
+pnpm vitest run --project server packages/server/test/conformance.test.ts
+
 # Run Go tests directly
 cd packages/caddy-plugin && go test ./...
 

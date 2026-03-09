@@ -25,3 +25,16 @@ export type {
   StreamLifecycleEvent,
   StreamLifecycleHook,
 } from "./types"
+export { WebhookManager } from "./webhook-manager"
+export { WebhookStore } from "./webhook-store"
+export { globMatch } from "./webhook-glob"
+export type {
+  Subscription,
+  ConsumerInstance,
+  ConsumerState,
+  CallbackRequest,
+  CallbackResponse,
+  CallbackSuccess,
+  CallbackError,
+  CallbackErrorCode,
+} from "./webhook-types"

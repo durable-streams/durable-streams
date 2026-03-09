@@ -46,7 +46,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Authorization")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
@@ -57,6 +57,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return nil
+	}
+
+	// Check webhook routes before normal stream handling
+	if h.webhookRoutes != nil {
+		if h.webhookRoutes.HandleRequest(w, r) {
+			return nil
+		}
 	}
 
 	// Extract stream path from URL
@@ -159,6 +166,14 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Include Stream-Closed header if stream is closed
 	if meta.Closed {
 		w.Header().Set(HeaderStreamClosed, "true")
+	}
+
+	// Notify webhook manager of stream creation and initial data
+	if wasCreated && h.webhookManager != nil {
+		h.webhookManager.OnStreamCreated(path)
+		if len(initialData) > 0 {
+			h.webhookManager.OnStreamAppend(path)
+		}
 	}
 
 	if wasCreated {
@@ -812,8 +827,8 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	result, err := h.store.Append(path, body, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamClosed) {
-			// Stream is closed - return 409 with Stream-Closed header
 			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
 			http.Error(w, "stream is closed", http.StatusConflict)
 			return nil
 		}
@@ -873,6 +888,11 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return nil
 	}
 
+	// Notify webhook manager of new data (non-duplicate only)
+	if h.webhookManager != nil {
+		h.webhookManager.OnStreamAppend(path)
+	}
+
 	// For non-producer appends, return 204 No Content
 	// For producer appends (new writes), return 200 OK to distinguish from duplicates
 	if opts.ProducerId != "" {
@@ -891,6 +911,11 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, path stri
 			return newHTTPError(http.StatusNotFound, "stream not found")
 		}
 		return err
+	}
+
+	// Notify webhook manager of stream deletion
+	if h.webhookManager != nil {
+		h.webhookManager.OnStreamDeleted(path)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

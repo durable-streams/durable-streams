@@ -814,7 +814,7 @@ export function createStreamDB<
 
     // Start streaming (this is where the connection actually happens)
     streamResponse = await stream.stream<StateEvent>({
-      live: true,
+      live: `sse`,
       signal: abortController.signal,
     })
 

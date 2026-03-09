@@ -1,0 +1,15 @@
+{
+  "name": "@durable-streams/example-webhook-agents",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@durable-streams/server": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4"
+  }
+}

@@ -45,6 +45,7 @@
     "@durable-streams/client": "workspace:*",
     "@durable-streams/state": "workspace:*",
     "@neophi/sieve-cache": "^1.0.0",
+    "@opentelemetry/api": "^1.9.0",
     "lmdb": "^3.3.0"
   },
   "devDependencies": {
