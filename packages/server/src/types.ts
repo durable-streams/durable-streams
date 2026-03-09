@@ -38,6 +38,21 @@ export interface Stream {
   contentType?: string
 
   /**
+   * Canonical identity of the pinned effective schema document.
+   */
+  schemaDigest?: string
+
+  /**
+   * Pinned effective schema document used for validation.
+   */
+  schemaDocument?: Record<string, unknown>
+
+  /**
+   * Original schema URL used at create time (informational metadata).
+   */
+  schemaSourceUrl?: string
+
+  /**
    * Messages in the stream.
    */
   messages: Array<StreamMessage>

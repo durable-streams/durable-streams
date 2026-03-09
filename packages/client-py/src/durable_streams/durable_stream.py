@@ -32,9 +32,12 @@ from durable_streams._parse import (
 )
 from durable_streams._response import StreamResponse
 from durable_streams._types import (
+    SCHEMA_QUERY_PARAM,
     STREAM_CLOSED_HEADER,
+    STREAM_CONTENT_TYPE_HEADER,
     STREAM_EXPIRES_AT_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
+    STREAM_SCHEMA_URL_HEADER,
     STREAM_SEQ_HEADER,
     STREAM_TTL_HEADER,
     AppendResult,
@@ -208,6 +211,9 @@ class DurableStream:
         ttl_seconds: int | None = None,
         expires_at: str | None = None,
         body: bytes | str | Any | None = None,
+        schema: dict[str, Any] | None = None,
+        schema_url: str | None = None,
+        stream_content_type: str | None = None,
         headers: HeadersLike | None = None,
         params: ParamsLike | None = None,
         client: httpx.Client | None = None,
@@ -252,6 +258,9 @@ class DurableStream:
                 ttl_seconds=ttl_seconds,
                 expires_at=expires_at,
                 body=body,
+                schema=schema,
+                schema_url=schema_url,
+                stream_content_type=stream_content_type,
                 closed=closed,
             )
         except Exception:
@@ -329,6 +338,32 @@ class DurableStream:
             if client is None:
                 handle.close()
 
+    @classmethod
+    def get_schema_static(
+        cls,
+        url: str,
+        *,
+        headers: HeadersLike | None = None,
+        params: ParamsLike | None = None,
+        client: httpx.Client | None = None,
+        timeout: float | httpx.Timeout | None = None,
+    ) -> dict[str, Any]:
+        """
+        Retrieve a stream's attached schema without creating a persistent handle.
+        """
+        handle = cls(
+            url,
+            headers=headers,
+            params=params,
+            client=client,
+            timeout=timeout,
+        )
+        try:
+            return handle.get_schema()
+        finally:
+            if client is None:
+                handle.close()
+
     # === Instance methods ===
 
     def head(self) -> HeadResult:
@@ -391,6 +426,9 @@ class DurableStream:
         ttl_seconds: int | None = None,
         expires_at: str | None = None,
         body: bytes | str | Any | None = None,
+        schema: dict[str, Any] | None = None,
+        schema_url: str | None = None,
+        stream_content_type: str | None = None,
         closed: bool = False,
     ) -> None:
         """
@@ -410,9 +448,12 @@ class DurableStream:
         resolved_params = resolve_params_sync(self._params)
         request_url = build_url_with_params(self._url, resolved_params)
 
+        if schema is not None and schema_url is not None:
+            raise ValueError("Cannot provide both schema and schema_url")
+        if schema is not None and body is not None:
+            raise ValueError("Inline schema create cannot include initial body")
+
         ct = content_type or self._content_type
-        if ct:
-            resolved_headers["content-type"] = ct
         if ttl_seconds is not None:
             resolved_headers[STREAM_TTL_HEADER] = str(ttl_seconds)
         if expires_at:
@@ -421,8 +462,21 @@ class DurableStream:
             resolved_headers[STREAM_CLOSED_HEADER] = "true"
 
         request_body: bytes | None = None
-        if body is not None:
-            request_body = encode_body(body)
+        if schema is not None:
+            resolved_headers["content-type"] = "application/schema+json"
+            resolved_headers[STREAM_CONTENT_TYPE_HEADER] = (
+                stream_content_type or "application/json"
+            )
+            request_body = json.dumps(schema).encode("utf-8")
+        else:
+            if schema_url is not None:
+                resolved_headers[STREAM_SCHEMA_URL_HEADER] = schema_url
+                if ct is None:
+                    ct = "application/json"
+            if ct:
+                resolved_headers["content-type"] = ct
+            if body is not None:
+                request_body = encode_body(body)
 
         response = self._client.put(
             request_url,
@@ -448,8 +502,38 @@ class DurableStream:
         response_ct = response.headers.get("content-type")
         if response_ct:
             self._content_type = response_ct
+        elif schema is not None:
+            self._content_type = stream_content_type or "application/json"
         elif ct:
             self._content_type = ct
+
+    def get_schema(self) -> dict[str, Any]:
+        """
+        Retrieve the attached schema document for this stream.
+        """
+        resolved_headers = resolve_headers_sync(self._headers)
+        resolved_params = resolve_params_sync(self._params)
+        request_url = build_url_with_params(
+            self._url,
+            {**resolved_params, SCHEMA_QUERY_PARAM: ""},
+        )
+
+        response = self._client.get(
+            request_url,
+            headers=resolved_headers,
+            timeout=self._timeout,
+        )
+
+        if not response.is_success:
+            headers_dict = parse_httpx_headers(response.headers)
+            raise error_from_status(
+                response.status_code,
+                self._url,
+                body=response.text,
+                headers=headers_dict,
+            )
+
+        return response.json()
 
     def delete(self) -> None:
         """

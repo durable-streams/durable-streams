@@ -55,6 +55,11 @@ export type ParamsRecord = {
   [key: string]: string | (() => MaybePromise<string>) | undefined
 }
 
+/**
+ * JSON Schema document shape used by schema-aware create/retrieval APIs.
+ */
+export type SchemaDocument = Record<string, unknown>
+
 // ============================================================================
 // Live Mode Types
 // ============================================================================
@@ -354,6 +359,24 @@ export interface CreateOptions extends StreamHandleOptions {
    * Initial body to append on creation.
    */
   body?: BodyInit | Uint8Array | string
+
+  /**
+   * Inline JSON Schema document for schema-bound JSON stream creation.
+   * When provided, the create request body is the schema document (not
+   * initial stream data), and `body` must be omitted.
+   */
+  schema?: SchemaDocument
+
+  /**
+   * Schema URL for schema-bound JSON stream creation.
+   */
+  schemaUrl?: string
+
+  /**
+   * Stream payload type for inline schema creation.
+   * Defaults to `application/json` when `schema` is provided.
+   */
+  streamContentType?: string
 
   /**
    * Enable automatic batching for append() calls.

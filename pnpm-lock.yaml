@@ -92,7 +92,7 @@ importers:
         version: link:../../../packages/state
       '@tanstack/solid-db':
         specifier: latest
-        version: 0.2.2(solid-js@1.9.10)(typescript@5.9.3)
+        version: 0.2.11(solid-js@1.9.10)(typescript@5.9.3)
       solid-js:
         specifier: ^1.9.3
         version: 1.9.10
@@ -145,7 +145,7 @@ importers:
         version: link:../../packages/state
       '@tanstack/react-db':
         specifier: latest
-        version: 0.1.66(react@19.2.3)(typescript@5.9.3)
+        version: 0.1.75(react@19.2.3)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: ^1.139.14
         version: 1.154.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -200,7 +200,7 @@ importers:
         version: link:../../packages/y-durable-streams
       '@tanstack/react-db':
         specifier: latest
-        version: 0.1.66(react@19.2.3)(typescript@5.9.3)
+        version: 0.1.75(react@19.2.3)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: ^1.139.14
         version: 1.154.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -382,6 +382,12 @@ importers:
       '@neophi/sieve-cache':
         specifier: ^1.0.0
         version: 1.5.0
+      ajv:
+        specifier: ^8.18.0
+        version: 8.18.0
+      json-canonicalize:
+        specifier: ^2.0.0
+        version: 2.0.0
       lmdb:
         specifier: ^3.3.0
         version: 3.4.4
@@ -438,7 +444,7 @@ importers:
         version: link:../server
       '@tanstack/db':
         specifier: latest
-        version: 0.5.22(typescript@5.9.3)
+        version: 0.5.31(typescript@5.9.3)
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
@@ -1608,8 +1614,8 @@ packages:
     peerDependencies:
       typescript: '>=4.7'
 
-  '@tanstack/db@0.5.22':
-    resolution: {integrity: sha512-Qh33d9Idw7lEa/sg7veJfG8EUmSMtBzRkk/ghAVIDA3MJWAjyGOzU29TVZaM7K36BegTL8T/yVVlAFqjn/G2pw==}
+  '@tanstack/db@0.5.31':
+    resolution: {integrity: sha512-q2gCcFLkQec6AwA8aSDDOEAT7hlyVn67J/kseUoZfEPyiokmx1oBekg27tywirmlSqc3Q5GUi5Vt/mjQ85gQmQ==}
     peerDependencies:
       typescript: '>=4.7'
 
@@ -1629,8 +1635,8 @@ packages:
     resolution: {integrity: sha512-hTW2rLeZLBMmpwVzWmUJ5L50hPlf4Ea74rZtecbT6qQYCT16JEAbryfHm1u07KIICI2vEArsm2YguckjODqx0w==}
     engines: {node: '>=18'}
 
-  '@tanstack/react-db@0.1.66':
-    resolution: {integrity: sha512-BEFrXv0pa3KPZfLmfrR6KU1QwUtDPQoV/PdJYGhVEsOwYf61yVQkuFOqK2aGYOynipMdACl5N6TXs82mS4fB6A==}
+  '@tanstack/react-db@0.1.75':
+    resolution: {integrity: sha512-23LVu1zArKXaPug7euZO07SsEjATfzvLQSuCOW+C4bK6V17CL6129EbrW23q9KUwnMkp8VpLOpqZniNY4ib3ig==}
     peerDependencies:
       react: '>=16.8.0'
 
@@ -1720,8 +1726,8 @@ packages:
     resolution: {integrity: sha512-N24G4LpfyK8dOlnP8BvNdkuxg1xQljkyl6PcrdiPSA301pOjatRT1y8wuCCJZKVVD8gkd0MpCZ0VEjRMGILOtA==}
     engines: {node: '>=12'}
 
-  '@tanstack/solid-db@0.2.2':
-    resolution: {integrity: sha512-bwHWjy8LXxk8v9ozZv+DnY40sotM3YllMHSDHohdZuwf0cX5DROW3BiFWIedIkZyVLQUoc/64SnXekt1rTDcAg==}
+  '@tanstack/solid-db@0.2.11':
+    resolution: {integrity: sha512-Heus8tB51Up5CiXrwqzm8kEsYIeshHKPQRZFPIiiQ03HDSHk7lXrue4T3lQspbFIvFKNE0NFw+OJZQX2tgGdMw==}
     peerDependencies:
       solid-js: '>=1.9.0'
 
@@ -2095,6 +2101,9 @@ packages:
 
   ajv@8.13.0:
     resolution: {integrity: sha512-PRA911Blj99jR5RMeTunVbNXMF6Lp4vZXnk5GQjcnUWUTsrXtekg/pnmFFI2u/I36Y/2bITGS30GZCXei6uNkA==}
+
+  ajv@8.18.0:
+    resolution: {integrity: sha512-PlXPeEWMXMZ7sPYOHqmDyCJzcfNrUr3fGNKtezX14ykXOEIvyK81d+qydx89KY5O71FKMPaQ2vBfBFI5NHR63A==}
 
   ansi-colors@4.1.3:
     resolution: {integrity: sha512-/6w/C21Pm1A7aZitlI5Ni/2J6FFQN8i1Cvz3kHABAAbw93v/NlvKdVOqz7CCWz/3iv/JplRSEEZ83XION15ovw==}
@@ -2619,6 +2628,9 @@ packages:
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
 
+  fast-uri@3.1.0:
+    resolution: {integrity: sha512-iPeeDKJSWf4IEOasVVrknXpaBV0IApz/gp7S2bb7Z4Lljbl2MGJRqInZiUrQwV16cpzw/D3S5j5Julj/gT52AA==}
+
   fastq@1.20.1:
     resolution: {integrity: sha512-GGToxJ/w1x32s/D2EKND7kTil4n8OVk/9mycTc4VDza13lOvpUZTGX3mFSCtV9ksdGBVzvsyAVLM6mHFThxXxw==}
 
@@ -2901,6 +2913,9 @@ packages:
 
   json-buffer@3.0.1:
     resolution: {integrity: sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ==}
+
+  json-canonicalize@2.0.0:
+    resolution: {integrity: sha512-yyrnK/mEm6Na3ChbJUWueXdapueW0p380RUyTW87XGb1ww8l8hU0pRrGC3vSWHe9CxrbPHX2fGUOZpNiHR0IIg==}
 
   json-schema-traverse@0.4.1:
     resolution: {integrity: sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==}
@@ -5201,7 +5216,7 @@ snapshots:
       sorted-btree: 1.8.1
       typescript: 5.9.3
 
-  '@tanstack/db@0.5.22(typescript@5.9.3)':
+  '@tanstack/db@0.5.31(typescript@5.9.3)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       '@tanstack/db-ivm': 0.1.17(typescript@5.9.3)
@@ -5237,9 +5252,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@tanstack/react-db@0.1.66(react@19.2.3)(typescript@5.9.3)':
+  '@tanstack/react-db@0.1.75(react@19.2.3)(typescript@5.9.3)':
     dependencies:
-      '@tanstack/db': 0.5.22(typescript@5.9.3)
+      '@tanstack/db': 0.5.31(typescript@5.9.3)
       react: 19.2.3
       use-sync-external-store: 1.6.0(react@19.2.3)
     transitivePeerDependencies:
@@ -5360,10 +5375,10 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@tanstack/solid-db@0.2.2(solid-js@1.9.10)(typescript@5.9.3)':
+  '@tanstack/solid-db@0.2.11(solid-js@1.9.10)(typescript@5.9.3)':
     dependencies:
       '@solid-primitives/map': 0.7.2(solid-js@1.9.10)
-      '@tanstack/db': 0.5.22(typescript@5.9.3)
+      '@tanstack/db': 0.5.31(typescript@5.9.3)
       solid-js: 1.9.10
     transitivePeerDependencies:
       - typescript
@@ -5803,6 +5818,13 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
       uri-js: 4.4.1
+
+  ajv@8.18.0:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      fast-uri: 3.1.0
+      json-schema-traverse: 1.0.0
+      require-from-string: 2.0.2
 
   ansi-colors@4.1.3: {}
 
@@ -6366,6 +6388,8 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
+  fast-uri@3.1.0: {}
+
   fastq@1.20.1:
     dependencies:
       reusify: 1.1.0
@@ -6605,6 +6629,8 @@ snapshots:
   jsesc@3.1.0: {}
 
   json-buffer@3.0.1: {}
+
+  json-canonicalize@2.0.0: {}
 
   json-schema-traverse@0.4.1: {}
 

@@ -114,10 +114,14 @@ STREAM_CLOSED_HEADER = "Stream-Closed"
 STREAM_SEQ_HEADER = "Stream-Seq"
 STREAM_TTL_HEADER = "Stream-TTL"
 STREAM_EXPIRES_AT_HEADER = "Stream-Expires-At"
+STREAM_CONTENT_TYPE_HEADER = "Stream-Content-Type"
+STREAM_SCHEMA_URL_HEADER = "Stream-Schema-Url"
+STREAM_SCHEMA_DIGEST_HEADER = "Stream-Schema-Digest"
 
 OFFSET_QUERY_PARAM = "offset"
 LIVE_QUERY_PARAM = "live"
 CURSOR_QUERY_PARAM = "cursor"
+SCHEMA_QUERY_PARAM = "schema"
 
 # Response header for SSE data encoding (server auto-detects and sets this)
 STREAM_SSE_DATA_ENCODING_HEADER = "stream-sse-data-encoding"

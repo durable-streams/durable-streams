@@ -523,6 +523,118 @@ describe(`DurableStream`, () => {
 
       await expect(stream.create()).rejects.toThrow()
     })
+
+    it(`should send inline schema payload with schema headers`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 201,
+          headers: { "content-type": `application/json` },
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+      const schema = {
+        type: `object`,
+        required: [`event`],
+        properties: { event: { type: `string` } },
+      }
+
+      await stream.create({ schema })
+
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      const headers = callArgs.headers as Record<string, string>
+      expect(headers[`content-type`]).toBe(`application/schema+json`)
+      expect(headers[`Stream-Content-Type`]).toBe(`application/json`)
+      expect(callArgs.body).toBeInstanceOf(Uint8Array)
+      const encodedBody = callArgs.body as Uint8Array
+      expect(new TextDecoder().decode(encodedBody)).toBe(JSON.stringify(schema))
+    })
+
+    it(`should send schema URL header and default content-type`, async () => {
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(null, {
+          status: 201,
+          headers: { "content-type": `application/json` },
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await stream.create({
+        schemaUrl: `https://schemas.example.com/event.json`,
+      })
+
+      const callArgs = mockFetch.mock.calls[0]![1] as RequestInit
+      const headers = callArgs.headers as Record<string, string>
+      expect(headers[`Stream-Schema-Url`]).toBe(
+        `https://schemas.example.com/event.json`
+      )
+      expect(headers[`content-type`]).toBe(`application/json`)
+    })
+
+    it(`should reject conflicting schema create options`, async () => {
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: vi.fn(),
+      })
+      await expect(
+        stream.create({
+          schema: {},
+          schemaUrl: `https://example.com/schema.json`,
+        })
+      ).rejects.toThrow(`Cannot provide both inline schema and schemaUrl`)
+      await expect(
+        stream.create({ schema: {}, body: { event: `created` } })
+      ).rejects.toThrow(`Inline schema create cannot include initial body`)
+    })
+  })
+
+  describe(`getSchema`, () => {
+    it(`should GET schema endpoint and return parsed schema`, async () => {
+      const schema = { type: `object`, properties: { id: { type: `string` } } }
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(schema), {
+          status: 200,
+          headers: { "content-type": `application/schema+json` },
+        })
+      )
+
+      const stream = new DurableStream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+      })
+
+      await expect(stream.getSchema()).resolves.toEqual(schema)
+
+      expect(mockFetch).toHaveBeenCalledTimes(1)
+      const calledUrl = String(mockFetch.mock.calls[0]![0])
+      const request = mockFetch.mock.calls[0]![1] as RequestInit
+      expect(calledUrl).toContain(`schema=`)
+      expect(request.method).toBe(`GET`)
+    })
+
+    it(`should support static getSchema helper`, async () => {
+      const schema = { type: `object` }
+      const mockFetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify(schema), {
+          status: 200,
+          headers: { "content-type": `application/schema+json` },
+        })
+      )
+
+      await expect(
+        DurableStream.getSchema({
+          url: `https://example.com/stream`,
+          fetch: mockFetch,
+        })
+      ).resolves.toEqual(schema)
+    })
   })
 
   describe(`append`, () => {
