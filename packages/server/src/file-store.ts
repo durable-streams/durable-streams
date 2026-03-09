@@ -672,27 +672,61 @@ export class FileBackedStreamStore {
       throw err
     }
 
-    // Save to LMDB
+    // Save to LMDB, then perform any initial append.
+    // If initial append fails (e.g. schema validation), rollback everything so
+    // failed creates never leave partial stream state behind.
     this.db.putSync(key, streamMeta)
 
-    // Append initial data if provided
-    if (options.initialData && options.initialData.length > 0) {
-      await this.append(streamPath, options.initialData, {
-        contentType: options.contentType,
-        isInitialCreate: true,
-      })
-    }
+    try {
+      // Append initial data if provided
+      if (options.initialData && options.initialData.length > 0) {
+        await this.append(streamPath, options.initialData, {
+          contentType: options.contentType,
+          isInitialCreate: true,
+        })
+      }
 
-    // Now set closed flag if requested (after initial append succeeded)
-    if (options.closed) {
-      const updatedMeta = this.db.get(key) as StreamMetadata
-      updatedMeta.closed = true
-      this.db.putSync(key, updatedMeta)
-    }
+      // Now set closed flag if requested (after initial append succeeded)
+      if (options.closed) {
+        const updatedMeta = this.db.get(key) as StreamMetadata
+        updatedMeta.closed = true
+        this.db.putSync(key, updatedMeta)
+      }
 
-    // Re-fetch updated metadata
-    const updated = this.db.get(key) as StreamMetadata
-    return this.streamMetaToStream(updated)
+      // Re-fetch updated metadata
+      const updated = this.db.get(key) as StreamMetadata
+      return this.streamMetaToStream(updated)
+    } catch (err) {
+      // Best-effort rollback; preserve original error for caller.
+      this.cancelLongPollsForStream(streamPath)
+      this.db.removeSync(key)
+
+      const segmentPath = path.join(
+        this.dataDir,
+        `streams`,
+        streamMeta.directoryName,
+        `segment_00000.log`
+      )
+      try {
+        await this.fileHandlePool.closeFileHandle(segmentPath)
+      } catch (closeErr) {
+        console.error(
+          `[FileBackedStreamStore] Error closing file handle during create rollback:`,
+          closeErr
+        )
+      }
+
+      try {
+        await this.fileManager.deleteDirectoryByName(streamMeta.directoryName)
+      } catch (deleteErr) {
+        console.error(
+          `[FileBackedStreamStore] Error deleting directory during create rollback:`,
+          deleteErr
+        )
+      }
+
+      throw err
+    }
   }
 
   get(streamPath: string): Stream | undefined {

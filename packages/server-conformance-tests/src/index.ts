@@ -20,6 +20,12 @@ export interface ConformanceTestOptions {
   baseUrl: string
   /** Timeout for long-poll tests in milliseconds (default: 20000) */
   longPollTimeoutMs?: number
+  /**
+   * Optional externally reachable base URL for schema fixtures.
+   * When provided, schema URL tests use {schemaFixtureBaseUrl}/schema.json
+   * instead of a local loopback fixture server.
+   */
+  schemaFixtureBaseUrl?: string
 }
 
 /**
@@ -142,8 +148,19 @@ function parseSSEEvents(
 
 async function createSchemaFixtureServer(
   schemaDocument: Record<string, unknown>,
-  statusCode = 200
+  statusCode = 200,
+  schemaFixtureBaseUrl?: string
 ): Promise<{ url: string; stop: () => Promise<void> }> {
+  if (schemaFixtureBaseUrl) {
+    const normalizedBase = schemaFixtureBaseUrl.endsWith(`/`)
+      ? schemaFixtureBaseUrl
+      : `${schemaFixtureBaseUrl}/`
+    return {
+      url: new URL(`schema.json`, normalizedBase).toString(),
+      stop: async () => {},
+    }
+  }
+
   const server = createServer((req, res) => {
     if (req.url !== `/schema.json`) {
       res.writeHead(404)
@@ -4511,7 +4528,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       }
 
-      const fixture = await createSchemaFixtureServer(schema)
+      const fixture = await createSchemaFixtureServer(
+        schema,
+        200,
+        options.schemaFixtureBaseUrl
+      )
       try {
         const createFromURL = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
@@ -4670,7 +4691,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       }
 
-      const fixture = await createSchemaFixtureServer(schema)
+      const fixture = await createSchemaFixtureServer(
+        schema,
+        200,
+        options.schemaFixtureBaseUrl
+      )
       try {
         const response = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
@@ -4681,6 +4706,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           body: JSON.stringify({ nope: true }),
         })
         expect(response.status).toBe(422)
+
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(404)
       } finally {
         await fixture.stop()
       }
