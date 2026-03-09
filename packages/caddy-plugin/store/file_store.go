@@ -19,6 +19,8 @@ type FileStore struct {
 	metaStore  *BboltMetadataStore
 	writerPool *FilePool
 	longPoll   *longPollManager
+	// Cached validators by schema digest.
+	schemaValidators map[string]func(any) error
 
 	// Cache of stream metadata for quick access
 	metaCache   map[string]*StreamMetadata
@@ -72,11 +74,12 @@ func NewFileStore(cfg FileStoreConfig) (*FileStore, error) {
 		longPoll: &longPollManager{
 			waiters: make(map[string][]chan struct{}),
 		},
-		metaCache:     make(map[string]*StreamMetadata),
-		dirCache:      make(map[string]string),
-		producerLocks: make(map[string]*sync.Mutex),
-		cleanupStop:   make(chan struct{}),
-		cleanupDone:   make(chan struct{}),
+		metaCache:        make(map[string]*StreamMetadata),
+		dirCache:         make(map[string]string),
+		producerLocks:    make(map[string]*sync.Mutex),
+		schemaValidators: make(map[string]func(any) error),
+		cleanupStop:      make(chan struct{}),
+		cleanupDone:      make(chan struct{}),
 	}
 
 	// Load existing streams into cache
@@ -149,13 +152,16 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	}
 
 	meta := &StreamMetadata{
-		Path:          path,
-		ContentType:   contentType,
-		CurrentOffset: ZeroOffset,
-		TTLSeconds:    opts.TTLSeconds,
-		ExpiresAt:     opts.ExpiresAt,
-		CreatedAt:     time.Now(),
-		Closed:        opts.Closed, // Support creating stream in closed state
+		Path:            path,
+		ContentType:     contentType,
+		CurrentOffset:   ZeroOffset,
+		TTLSeconds:      opts.TTLSeconds,
+		ExpiresAt:       opts.ExpiresAt,
+		CreatedAt:       time.Now(),
+		Closed:          opts.Closed, // Support creating stream in closed state
+		SchemaDigest:    opts.SchemaDigest,
+		SchemaDocument:  bytes.Clone(opts.SchemaDocument),
+		SchemaSourceURL: opts.SchemaSourceURL,
 	}
 
 	// Handle initial data
@@ -514,8 +520,13 @@ func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []
 	isJSON := IsJSONContentType(meta.ContentType)
 
 	if isJSON {
+		schemaValidator, err := s.getSchemaValidator(meta)
+		if err != nil {
+			return Offset{}, err
+		}
+
 		// JSON mode: parse and potentially flatten arrays
-		messages, err := processJSONAppend(data, allowEmpty)
+		messages, err := processJSONAppend(data, allowEmpty, schemaValidator)
 		if err != nil {
 			return Offset{}, err
 		}
@@ -549,6 +560,26 @@ func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []
 	}
 
 	return meta.CurrentOffset.Add(uint64(n)), nil
+}
+
+func (s *FileStore) getSchemaValidator(meta *StreamMetadata) (func(any) error, error) {
+	if meta.SchemaDigest == "" || len(meta.SchemaDocument) == 0 {
+		return nil, nil
+	}
+	if validator, ok := s.schemaValidators[meta.SchemaDigest]; ok {
+		return validator, nil
+	}
+
+	compiled, err := NewSchemaMessageValidator(meta.SchemaDocument)
+	if err != nil {
+		return nil, err
+	}
+
+	validator := func(value any) error {
+		return compiled.Validate(value)
+	}
+	s.schemaValidators[meta.SchemaDigest] = validator
+	return validator, nil
 }
 
 // Read reads messages from a stream

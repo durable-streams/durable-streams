@@ -34,6 +34,10 @@ type bboltMetadata struct {
 	// Stream closure state
 	Closed   bool                   `json:"closed,omitempty"`
 	ClosedBy *bboltClosedByProducer `json:"closed_by,omitempty"`
+	// Optional JSON schema metadata (for application/json streams).
+	SchemaDigest    string          `json:"schema_digest,omitempty"`
+	SchemaDocument  json.RawMessage `json:"schema_document,omitempty"`
+	SchemaSourceURL string          `json:"schema_source_url,omitempty"`
 }
 
 // bboltClosedByProducer is the serialized form of ClosedByProducer
@@ -95,14 +99,17 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 
 	// Convert to serializable form
 	bm := bboltMetadata{
-		Path:          meta.Path,
-		ContentType:   meta.ContentType,
-		CurrentOffset: meta.CurrentOffset.String(),
-		LastSeq:       meta.LastSeq,
-		TTLSeconds:    meta.TTLSeconds,
-		CreatedAt:     meta.CreatedAt.Unix(),
-		DirectoryName: directoryName,
-		Closed:        meta.Closed,
+		Path:            meta.Path,
+		ContentType:     meta.ContentType,
+		CurrentOffset:   meta.CurrentOffset.String(),
+		LastSeq:         meta.LastSeq,
+		TTLSeconds:      meta.TTLSeconds,
+		CreatedAt:       meta.CreatedAt.Unix(),
+		DirectoryName:   directoryName,
+		Closed:          meta.Closed,
+		SchemaDigest:    meta.SchemaDigest,
+		SchemaDocument:  bytesCloneJSONRawMessage(meta.SchemaDocument),
+		SchemaSourceURL: meta.SchemaSourceURL,
 	}
 	if meta.ExpiresAt != nil {
 		ts := meta.ExpiresAt.Unix()
@@ -175,12 +182,15 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 		}
 
 		meta = &StreamMetadata{
-			Path:          bm.Path,
-			ContentType:   bm.ContentType,
-			CurrentOffset: offset,
-			LastSeq:       bm.LastSeq,
-			TTLSeconds:    bm.TTLSeconds,
-			Closed:        bm.Closed,
+			Path:            bm.Path,
+			ContentType:     bm.ContentType,
+			CurrentOffset:   offset,
+			LastSeq:         bm.LastSeq,
+			TTLSeconds:      bm.TTLSeconds,
+			Closed:          bm.Closed,
+			SchemaDigest:    bm.SchemaDigest,
+			SchemaDocument:  bytesCloneJSONRawMessage(bm.SchemaDocument),
+			SchemaSourceURL: bm.SchemaSourceURL,
 		}
 
 		if bm.ExpiresAt != nil {
@@ -417,12 +427,15 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 			}
 
 			meta := &StreamMetadata{
-				Path:          bm.Path,
-				ContentType:   bm.ContentType,
-				CurrentOffset: offset,
-				LastSeq:       bm.LastSeq,
-				TTLSeconds:    bm.TTLSeconds,
-				Closed:        bm.Closed,
+				Path:            bm.Path,
+				ContentType:     bm.ContentType,
+				CurrentOffset:   offset,
+				LastSeq:         bm.LastSeq,
+				TTLSeconds:      bm.TTLSeconds,
+				Closed:          bm.Closed,
+				SchemaDigest:    bm.SchemaDigest,
+				SchemaDocument:  bytesCloneJSONRawMessage(bm.SchemaDocument),
+				SchemaSourceURL: bm.SchemaSourceURL,
 			}
 			if bm.ExpiresAt != nil {
 				t := timeFromUnix(*bm.ExpiresAt)
@@ -535,4 +548,13 @@ func (s *BboltMetadataStore) Path() string {
 // timeFromUnix converts a Unix timestamp to time.Time
 func timeFromUnix(ts int64) (t time.Time) {
 	return time.Unix(ts, 0)
+}
+
+func bytesCloneJSONRawMessage(src json.RawMessage) json.RawMessage {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	return dst
 }

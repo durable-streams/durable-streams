@@ -14,6 +14,8 @@ type MemoryStore struct {
 	mu       sync.RWMutex
 	streams  map[string]*memoryStream
 	longPoll *longPollManager
+	// Cached validators by schema digest.
+	schemaValidators map[string]func(any) error
 
 	// Per-producer locks for serializing validation+append
 	// Key: "{streamPath}:{producerId}"
@@ -39,7 +41,8 @@ func NewMemoryStore() *MemoryStore {
 		longPoll: &longPollManager{
 			waiters: make(map[string][]chan struct{}),
 		},
-		producerLocks: make(map[string]*sync.Mutex),
+		producerLocks:    make(map[string]*sync.Mutex),
+		schemaValidators: make(map[string]func(any) error),
 	}
 }
 
@@ -174,13 +177,16 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	}
 
 	meta := StreamMetadata{
-		Path:          path,
-		ContentType:   contentType,
-		CurrentOffset: ZeroOffset,
-		TTLSeconds:    opts.TTLSeconds,
-		ExpiresAt:     opts.ExpiresAt,
-		CreatedAt:     time.Now(),
-		Closed:        opts.Closed, // Support creating stream in closed state
+		Path:            path,
+		ContentType:     contentType,
+		CurrentOffset:   ZeroOffset,
+		TTLSeconds:      opts.TTLSeconds,
+		ExpiresAt:       opts.ExpiresAt,
+		CreatedAt:       time.Now(),
+		Closed:          opts.Closed, // Support creating stream in closed state
+		SchemaDigest:    opts.SchemaDigest,
+		SchemaDocument:  bytes.Clone(opts.SchemaDocument),
+		SchemaSourceURL: opts.SchemaSourceURL,
 	}
 
 	stream := &memoryStream{
@@ -499,8 +505,13 @@ func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts App
 	isJSON := isJSONContentType(stream.metadata.ContentType)
 
 	if isJSON {
+		schemaValidator, err := s.getSchemaValidator(&stream.metadata)
+		if err != nil {
+			return Offset{}, err
+		}
+
 		// JSON mode: parse and potentially flatten arrays
-		messages, err := processJSONAppend(data, allowEmpty)
+		messages, err := processJSONAppend(data, allowEmpty, schemaValidator)
 		if err != nil {
 			return Offset{}, err
 		}
@@ -524,6 +535,26 @@ func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts App
 	})
 	stream.data = append(stream.data, data...)
 	return newOffset, nil
+}
+
+func (s *MemoryStore) getSchemaValidator(meta *StreamMetadata) (func(any) error, error) {
+	if meta.SchemaDigest == "" || len(meta.SchemaDocument) == 0 {
+		return nil, nil
+	}
+
+	if validator, ok := s.schemaValidators[meta.SchemaDigest]; ok {
+		return validator, nil
+	}
+
+	compiled, err := NewSchemaMessageValidator(meta.SchemaDocument)
+	if err != nil {
+		return nil, err
+	}
+	validator := func(value any) error {
+		return compiled.Validate(value)
+	}
+	s.schemaValidators[meta.SchemaDigest] = validator
+	return validator, nil
 }
 
 func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) {
@@ -701,7 +732,7 @@ func isJSONContentType(ct string) bool {
 }
 
 // processJSONAppend processes JSON data for append, flattening top-level arrays
-func processJSONAppend(data []byte, allowEmpty bool) ([][]byte, error) {
+func processJSONAppend(data []byte, allowEmpty bool, validateSchema func(any) error) ([][]byte, error) {
 	// Validate JSON
 	if !json.Valid(data) {
 		return nil, ErrInvalidJSON
@@ -722,6 +753,19 @@ func processJSONAppend(data []byte, allowEmpty bool) ([][]byte, error) {
 			// Return empty slice for empty array on create
 			return [][]byte{}, nil
 		}
+		// Validate all logical messages before appending, ensuring atomicity.
+		if validateSchema != nil {
+			for _, elem := range arr {
+				var value any
+				if err := json.Unmarshal(elem, &value); err != nil {
+					return nil, ErrInvalidJSON
+				}
+				if err := validateSchema(value); err != nil {
+					return nil, ErrSchemaValidation
+				}
+			}
+		}
+
 		// Flatten one level
 		result := make([][]byte, len(arr))
 		for i, elem := range arr {
@@ -731,6 +775,16 @@ func processJSONAppend(data []byte, allowEmpty bool) ([][]byte, error) {
 	}
 
 	// Single value
+	if validateSchema != nil {
+		var value any
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return nil, ErrInvalidJSON
+		}
+		if err := validateSchema(value); err != nil {
+			return nil, ErrSchemaValidation
+		}
+	}
+
 	return [][]byte{trimmed}, nil
 }
 

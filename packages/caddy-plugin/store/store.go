@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -18,6 +19,8 @@ var (
 	ErrInvalidOffset       = errors.New("invalid offset")
 	ErrEmptyJSONArray      = errors.New("empty JSON array not allowed")
 	ErrInvalidJSON         = errors.New("invalid JSON")
+	ErrSchemaValidation    = errors.New("json schema validation failed")
+	ErrInvalidSchema       = errors.New("invalid JSON schema document")
 	ErrStreamClosed        = errors.New("stream is closed")
 )
 
@@ -147,11 +150,14 @@ type ClosedByProducer struct {
 
 // CreateOptions contains options for creating a stream
 type CreateOptions struct {
-	ContentType string
-	TTLSeconds  *int64
-	ExpiresAt   *time.Time
-	InitialData []byte
-	Closed      bool // Create stream in closed state
+	ContentType     string
+	TTLSeconds      *int64
+	ExpiresAt       *time.Time
+	InitialData     []byte
+	Closed          bool            // Create stream in closed state
+	SchemaDigest    string          // Canonical digest of effective schema document
+	SchemaDocument  json.RawMessage // Pinned effective schema document
+	SchemaSourceURL string          // Original schema source URL, when created from URL
 }
 
 // AppendOptions contains options for appending to a stream
@@ -184,16 +190,19 @@ type Message struct {
 
 // StreamMetadata contains metadata about a stream
 type StreamMetadata struct {
-	Path          string
-	ContentType   string
-	CurrentOffset Offset
-	LastSeq       string // Last Stream-Seq value
-	TTLSeconds    *int64
-	ExpiresAt     *time.Time
-	CreatedAt     time.Time
-	Producers     map[string]*ProducerState // Producer ID -> state
-	Closed        bool                      // Stream is closed (no more appends allowed)
-	ClosedBy      *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
+	Path            string
+	ContentType     string
+	CurrentOffset   Offset
+	LastSeq         string // Last Stream-Seq value
+	TTLSeconds      *int64
+	ExpiresAt       *time.Time
+	CreatedAt       time.Time
+	Producers       map[string]*ProducerState // Producer ID -> state
+	Closed          bool                      // Stream is closed (no more appends allowed)
+	ClosedBy        *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
+	SchemaDigest    string
+	SchemaDocument  json.RawMessage
+	SchemaSourceURL string
 }
 
 // IsExpired checks if the stream has expired based on TTL or ExpiresAt
@@ -241,6 +250,11 @@ func (m *StreamMetadata) ConfigMatches(opts CreateOptions) bool {
 
 	// Closed status must match
 	if m.Closed != opts.Closed {
+		return false
+	}
+
+	// Schema identity must match for idempotent create
+	if m.SchemaDigest != opts.SchemaDigest {
 		return false
 	}
 

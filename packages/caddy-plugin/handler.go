@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,6 +29,9 @@ const (
 	HeaderStreamExpiresAt       = "Stream-Expires-At"
 	HeaderStreamClosed          = "Stream-Closed"
 	HeaderStreamSSEDataEncoding = "Stream-SSE-Data-Encoding"
+	HeaderStreamContentType     = "Stream-Content-Type"
+	HeaderStreamSchemaURL       = "Stream-Schema-Url"
+	HeaderStreamSchemaDigest    = "Stream-Schema-Digest"
 
 	// Idempotent producer headers
 	HeaderProducerId          = "Producer-Id"
@@ -37,17 +41,25 @@ const (
 	HeaderProducerReceivedSeq = "Producer-Received-Seq"
 )
 
+const (
+	QuerySchema = "schema"
+
+	contentTypeJSON       = "application/json"
+	contentTypeJSONSchema = "application/schema+json"
+)
+
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
 // Per SSE spec, these are all valid line terminators that could be used for injection attacks
 var sseLineTerminators = regexp.MustCompile(`\r\n|\r|\n`)
+var mediaTypePattern = regexp.MustCompile(`^[\w-]+/[\w-]+`)
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Stream-Content-Type, Stream-Schema-Url, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Stream-Schema-Digest, Stream-Schema-Url, Link, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -93,7 +105,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 // handleCreate handles PUT requests to create a stream
 func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path string) error {
 	// Parse headers
-	contentType := r.Header.Get("Content-Type")
+	requestContentType := r.Header.Get("Content-Type")
+	streamContentTypeHeader := r.Header.Get(HeaderStreamContentType)
+	schemaURLHeader := r.Header.Get(HeaderStreamSchemaURL)
+	normalizedRequestContentType := strings.ToLower(store.ExtractMediaType(requestContentType))
+	normalizedStreamContentType := strings.ToLower(store.ExtractMediaType(streamContentTypeHeader))
 	ttlStr := r.Header.Get(HeaderStreamTTL)
 	expiresAtStr := r.Header.Get(HeaderStreamExpiresAt)
 	closedStr := r.Header.Get(HeaderStreamClosed)
@@ -127,27 +143,90 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	// Read optional initial body
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return newHTTPError(http.StatusBadRequest, "failed to read body")
+	}
 	var initialData []byte
-	if r.ContentLength > 0 {
-		var err error
-		initialData, err = io.ReadAll(r.Body)
+	if len(body) > 0 {
+		initialData = body
+	}
+
+	isInlineSchemaMode := normalizedRequestContentType == contentTypeJSONSchema
+	hasSchemaURL := schemaURLHeader != ""
+
+	if isInlineSchemaMode && hasSchemaURL {
+		return newHTTPError(http.StatusBadRequest, "cannot combine inline schema with Stream-Schema-Url header")
+	}
+	if !isInlineSchemaMode && streamContentTypeHeader != "" {
+		return newHTTPError(http.StatusBadRequest, "Stream-Content-Type is only valid with Content-Type: application/schema+json")
+	}
+
+	contentType := requestContentType
+	var schemaDigest string
+	var schemaDocument json.RawMessage
+	var schemaSourceURL string
+
+	if isInlineSchemaMode {
+		if normalizedStreamContentType != contentTypeJSON {
+			return newHTTPError(http.StatusBadRequest, "Stream-Content-Type must be application/json for inline schema creation")
+		}
+		if len(body) == 0 {
+			return newHTTPError(http.StatusBadRequest, "inline schema document body is required")
+		}
+
+		normalized, err := store.ParseAndNormalizeSchemaDocument(body)
 		if err != nil {
-			return newHTTPError(http.StatusBadRequest, "failed to read body")
+			return newHTTPError(http.StatusBadRequest, "invalid JSON schema document")
+		}
+		contentType = contentTypeJSON
+		initialData = nil
+		schemaDigest = normalized.SchemaDigest
+		schemaDocument = normalized.SchemaDocument
+	} else if hasSchemaURL {
+		if normalizedRequestContentType != contentTypeJSON {
+			return newHTTPError(http.StatusBadRequest, "Stream-Schema-Url requires Content-Type: application/json")
+		}
+
+		normalized, err := h.resolveSchemaFromURL(schemaURLHeader)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid schema URL")
+		}
+		contentType = contentTypeJSON
+		schemaDigest = normalized.SchemaDigest
+		schemaDocument = normalized.SchemaDocument
+		schemaSourceURL = schemaURLHeader
+	} else {
+		// Sanitize content-type: if empty or invalid, use default
+		if contentType == "" || !mediaTypePattern.MatchString(contentType) {
+			contentType = "application/octet-stream"
 		}
 	}
 
 	opts := store.CreateOptions{
-		ContentType: contentType,
-		TTLSeconds:  ttlSeconds,
-		ExpiresAt:   expiresAt,
-		InitialData: initialData,
-		Closed:      createClosed,
+		ContentType:     contentType,
+		TTLSeconds:      ttlSeconds,
+		ExpiresAt:       expiresAt,
+		InitialData:     initialData,
+		Closed:          createClosed,
+		SchemaDigest:    schemaDigest,
+		SchemaDocument:  schemaDocument,
+		SchemaSourceURL: schemaSourceURL,
 	}
 
 	meta, wasCreated, err := h.store.Create(path, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrConfigMismatch) {
 			return newHTTPError(http.StatusConflict, "stream exists with different configuration")
+		}
+		if errors.Is(err, store.ErrSchemaValidation) {
+			return newHTTPError(http.StatusUnprocessableEntity, "JSON schema validation failed")
+		}
+		if errors.Is(err, store.ErrInvalidSchema) {
+			return newHTTPError(http.StatusBadRequest, "invalid JSON schema document")
+		}
+		if errors.Is(err, store.ErrInvalidJSON) {
+			return newHTTPError(http.StatusBadRequest, "invalid JSON")
 		}
 		return err
 	}
@@ -212,6 +291,14 @@ func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request, path string
 		w.Header().Set(HeaderStreamClosed, "true")
 	}
 
+	if meta.SchemaDigest != "" && len(meta.SchemaDocument) > 0 {
+		w.Header().Set(HeaderStreamSchemaDigest, meta.SchemaDigest)
+		w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="describedby"; type="application/schema+json"`, h.getAbsoluteSchemaURL(r, path)))
+		if meta.SchemaSourceURL != "" {
+			w.Header().Set(HeaderStreamSchemaURL, meta.SchemaSourceURL)
+		}
+	}
+
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -229,6 +316,26 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 
 	// Check for explicit empty offset parameter (different from missing offset)
 	query := r.URL.Query()
+	_, schemaRequested := query[QuerySchema]
+	if schemaRequested {
+		_, hasOffset := query["offset"]
+		_, hasLive := query["live"]
+		_, hasCursor := query["cursor"]
+		if hasOffset || hasLive || hasCursor {
+			return newHTTPError(http.StatusBadRequest, "schema cannot be combined with offset, live, or cursor")
+		}
+
+		if meta.SchemaDigest == "" || len(meta.SchemaDocument) == 0 {
+			return newHTTPError(http.StatusNotFound, "schema not found")
+		}
+
+		w.Header().Set("Content-Type", contentTypeJSONSchema)
+		w.Header().Set(HeaderStreamSchemaDigest, meta.SchemaDigest)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(meta.SchemaDocument)
+		return nil
+	}
+
 	offsetValues, offsetProvided := query["offset"]
 	offsetStr := ""
 	if offsetProvided {
@@ -814,6 +921,7 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		if errors.Is(err, store.ErrStreamClosed) {
 			// Stream is closed - return 409 with Stream-Closed header
 			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
 			http.Error(w, "stream is closed", http.StatusConflict)
 			return nil
 		}
@@ -828,6 +936,9 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		}
 		if errors.Is(err, store.ErrEmptyJSONArray) {
 			return newHTTPError(http.StatusBadRequest, "empty JSON array not allowed")
+		}
+		if errors.Is(err, store.ErrSchemaValidation) {
+			return newHTTPError(http.StatusUnprocessableEntity, "JSON schema validation failed")
 		}
 		if errors.Is(err, store.ErrPartialProducer) {
 			return newHTTPError(http.StatusBadRequest, "all producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together")
@@ -938,6 +1049,61 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 
 	h.logger.Error("internal error", zap.Error(err))
 	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+func (h *Handler) getAbsoluteSchemaURL(r *http.Request, path string) string {
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	}
+
+	host := r.Host
+	if forwardedHost := r.Header.Get("X-Forwarded-Host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+
+	return fmt.Sprintf("%s://%s%s?%s", scheme, host, path, QuerySchema)
+}
+
+func (h *Handler) resolveSchemaFromURL(schemaURL string) (*store.NormalizedSchema, error) {
+	parsed, err := url.Parse(schemaURL)
+	if err != nil || !parsed.IsAbs() {
+		return nil, store.ErrInvalidSchema
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, store.ErrInvalidSchema
+	}
+
+	req, err := http.NewRequest(http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, store.ErrInvalidSchema
+	}
+	req.Header.Set("Accept", "application/schema+json, application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, store.ErrInvalidSchema
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, store.ErrInvalidSchema
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, store.ErrInvalidSchema
+	}
+
+	normalized, err := store.ParseAndNormalizeSchemaDocument(body)
+	if err != nil {
+		return nil, err
+	}
+	return normalized, nil
 }
 
 // nonNegativeIntegerRegex matches valid non-negative integer strings (no floats, no negatives)
