@@ -53,7 +53,8 @@ Wrap your UI message stream with `toDurableStreamResponse`:
 ```ts
 import { toDurableStreamResponse } from "@durable-streams/aisdk-transport"
 
-return toDurableStreamResponse(result.toUIMessageStream(), {
+return toDurableStreamResponse({
+  source: result.toUIMessageStream(),
   stream: {
     writeUrl: buildWriteStreamUrl(streamPath),
     readUrl: buildReadProxyUrl(request, streamPath),
@@ -76,15 +77,15 @@ When it finishes, save final messages and clear `activeStreamId`.
 ```ts
 await saveChat({ id, activeStreamId: streamPath })
 
-return toDurableStreamResponse(
-  result.toUIMessageStream({
+return toDurableStreamResponse({
+  source: result.toUIMessageStream({
     originalMessages: messages,
     onFinish: ({ messages: finalMessages }) => {
       void saveChat({ id, messages: finalMessages, activeStreamId: null })
     },
   }),
-  { stream: { writeUrl, readUrl, headers } }
-)
+  stream: { writeUrl, readUrl, headers },
+})
 ```
 
 ### B. Add reconnect endpoint
@@ -126,12 +127,13 @@ Creates an AI SDK `ChatTransport` that:
 3. Reads the durable stream as JSON+SSE and returns `ReadableStream<UIMessageChunk>`
 4. Supports reconnect via `GET reconnectApi` (or default `${api}/${chatId}/stream`)
 
-### `toDurableStreamResponse(source, options)`
+### `toDurableStreamResponse({ source, ...options })`
 
 Writes AI SDK UI message chunks into Durable Streams and returns a pointer response.
 
 Options:
 
+- `source`: required async iterable of AI SDK UI message chunks
 - `stream.writeUrl`: required durable write URL
 - `stream.readUrl`: optional URL exposed to clients (`Location` + JSON body)
 - `stream.headers`: optional write headers

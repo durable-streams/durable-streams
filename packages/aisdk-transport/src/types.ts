@@ -14,6 +14,7 @@ export type ToDurableStreamResponseMode = `immediate` | `await`
 export type WaitUntil = (promise: Promise<unknown>) => void
 
 export type ToDurableStreamResponseOptions = {
+  source: AsyncIterable<unknown>
   stream: DurableStreamTarget
   mode?: ToDurableStreamResponseMode
   waitUntil?: WaitUntil
