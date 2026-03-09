@@ -51,7 +51,6 @@ const (
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
 // Per SSE spec, these are all valid line terminators that could be used for injection attacks
 var sseLineTerminators = regexp.MustCompile(`\r\n|\r|\n`)
-var mediaTypePattern = regexp.MustCompile(`^[\w-]+/[\w-]+`)
 
 // ServeHTTP implements caddyhttp.MiddlewareHandler
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
@@ -197,8 +196,8 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		schemaDocument = normalized.SchemaDocument
 		schemaSourceURL = schemaURLHeader
 	} else {
-		// Sanitize content-type: if empty or invalid, use default
-		if contentType == "" || !mediaTypePattern.MatchString(contentType) {
+		// Default only when missing/empty.
+		if strings.TrimSpace(contentType) == "" {
 			contentType = "application/octet-stream"
 		}
 	}
