@@ -53,10 +53,14 @@ Without server-side push, building this requires external orchestration (separat
 
 ### Overview
 
-Add a webhook-based push delivery system to Durable Streams. The core concepts:
+Add a webhook-based push delivery system to Durable Streams.
 
-- **Subscription**: A registration that maps a glob pattern to a webhook URL. When streams matching the pattern receive events, the server notifies the webhook.
-- **Consumer Instance**: Spawned when a stream matches a subscription's pattern. Each instance has its own identity, epoch (for fencing), offsets, and can dynamically subscribe to additional streams.
+**Important:** Durable Streams webhooks do **not** deliver event data inline. They are purely **wake-up signals** that manage a consumer's lifecycle — waking it when there is work, and tracking that it has acknowledged processing. The consumer reads the actual event data itself using the standard HTTP read protocol.
+
+The core concepts:
+
+- **Subscription**: A registration that maps a glob pattern to a webhook URL. When streams matching the pattern receive events, the server sends a lightweight notification to wake the consumer.
+- **Consumer Instance**: Spawned when a stream matches a subscription's pattern. Because a glob like `/agents/*` can match many streams, each matched stream gets its own consumer instance with independent identity, epoch (for fencing), offsets, and lifecycle. The consumer can also dynamically subscribe to additional streams.
 - **Callback**: A scoped URL that consumer instances use to acknowledge progress, subscribe to additional streams, and signal completion.
 
 ### Subscription Model
@@ -171,7 +175,7 @@ This definition drives wake decisions, re-wake after timeouts, and whether `{don
 
 **Timeout (45 seconds):** Any callback request (including empty `{}`) resets the timeout. If no callback activity occurs within 45 seconds, the consumer transitions to IDLE. Consumers doing slow processing should send periodic callbacks (even just re-acking the same offset) to stay alive.
 
-**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. The stream path is URL-encoded to avoid parsing ambiguity (paths contain `/`). Multiple subscriptions can match the same stream, each creating independent consumer instances.
+**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many different streams — for example, `/agents/task-1`, `/agents/task-2`, etc. The `consumer_id` is therefore unique per _stream_, not per subscription — it encodes both the subscription and the specific stream the consumer tracks. The stream path portion is URL-encoded to avoid parsing ambiguity (e.g., `my-sub:%2Fagents%2Ftask-1`). Multiple subscriptions matching the same stream create independent consumer instances.
 
 ### Wake-up Notification
 

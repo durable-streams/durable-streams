@@ -717,9 +717,11 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 
 ## 6. Webhook Subscriptions
 
-Webhook subscriptions enable serverless functions and AI agents to react to stream events without maintaining persistent connections. Unlike traditional webhooks that deliver data inline, Durable Streams webhooks are **wake-up signals** — the notification tells the consumer _which_ streams have new events, and the consumer reads the actual data using the standard HTTP protocol (Sections 3–4).
+Webhook subscriptions enable serverless functions and AI agents to react to stream events without maintaining persistent connections.
 
-The lifecycle works like this: a subscription maps a glob pattern to a webhook URL. When a matching stream receives events, the server POSTs a notification to wake the consumer. The consumer claims the wake, reads events through normal Durable Streams reads, acknowledges progress via a callback API, and signals completion when done. The server tracks offsets across all subscribed streams so the consumer resumes exactly where it left off on the next wake.
+**Important:** Durable Streams webhooks do **not** deliver event data inline. They are purely **wake-up signals** that manage a consumer's lifecycle — waking it when there is work, and tracking that it has acknowledged processing. The consumer reads the actual event data itself using the standard HTTP read protocol (Sections 3–4).
+
+The lifecycle: a subscription maps a glob pattern to a webhook URL. When a matching stream receives new events, the server POSTs a lightweight notification to wake the consumer. The consumer claims the wake via a callback API, reads events through normal Durable Streams reads, acknowledges progress (so the server knows where it left off), and signals completion when done. On the next wake, the consumer resumes exactly where it left off — no data is lost or re-delivered.
 
 ### 6.1. Subscription Model
 
@@ -749,7 +751,7 @@ When a stream is created or receives events that match the pattern, the server s
 
 A consumer instance is spawned when a stream matches a subscription's pattern. Each instance has its own identity, epoch, offset tracking, and can dynamically subscribe to additional streams.
 
-**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many streams — each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. The consumer ID encodes both the subscription and the specific stream it tracks. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumer instances.
+**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many different streams — for example, `/agents/task-1`, `/agents/task-2`, etc. Each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. The `consumer_id` is therefore unique per _stream_, not per subscription — it encodes both the subscription and the specific stream the consumer tracks. The stream path portion is URL-encoded to avoid parsing ambiguity (e.g., `my-sub:%2Fagents%2Ftask-1`). Multiple subscriptions matching the same stream create independent consumer instances.
 
 **States:**
 
