@@ -16,7 +16,7 @@ export function Chat({
 }) {
   /**
    * Durable session integration:
-   * - `postUrl` endpoint (`/api/chat`) accepts a new user prompt and starts model generation.
+   * - `sendUrl` endpoint (`/api/chat`) accepts a new user prompt and starts model generation.
    * - `readUrl` endpoint (`/api/chat-stream`) resolves the stream from chat id server-side.
    * - `initialOffset` lets this client resume from the SSR snapshot point instead of replaying
    *   the full stream on first subscribe.
@@ -25,7 +25,7 @@ export function Chat({
   const connection = useMemo(
     () =>
       durableStreamConnection({
-        postUrl: `/api/chat?id=${encodeURIComponent(id)}`,
+        sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
         readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
         initialOffset: resumeOffset,
       }),

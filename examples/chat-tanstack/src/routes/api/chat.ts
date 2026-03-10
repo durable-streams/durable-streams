@@ -44,10 +44,6 @@ export const Route = createFileRoute(`/api/chat`)({
         // Durable session model: one append-only stream per chat id.
         const streamPath = buildChatStreamPath(id)
         const writeUrl = buildWriteStreamUrl(streamPath)
-        // Clients read via our local proxy route so read auth stays server-controlled.
-        const readUrl = new URL(`/api/chat-stream`, requestUrl)
-        readUrl.searchParams.set(`id`, id)
-
         // Explicitly append only the new prompt message for this request.
         const latestUserMessage = extractLatestUserMessage(messages)
         const newMessages = latestUserMessage ? [latestUserMessage] : []
@@ -65,7 +61,6 @@ export const Route = createFileRoute(`/api/chat`)({
         return toDurableChatSessionResponse({
           stream: {
             writeUrl,
-            readUrl: readUrl.toString(),
             headers: DURABLE_STREAMS_WRITE_HEADERS,
           },
           newMessages,

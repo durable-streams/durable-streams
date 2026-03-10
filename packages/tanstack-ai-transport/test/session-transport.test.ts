@@ -3,6 +3,7 @@ import {
   durableStreamConnection,
   materializeSnapshotFromDurableStream,
 } from "../src/client"
+import { toDurableChatSessionResponse } from "../src/server"
 
 type MockBatch = {
   items: ReadonlyArray<any>
@@ -17,10 +18,53 @@ type MockStreamResponse = {
   json: <T>() => Promise<Array<T>>
 }
 
-const streamMock = vi.fn()
+const {
+  streamMock,
+  createMock,
+  appendMock,
+  MockDurableStream,
+  MockDurableStreamError,
+} = vi.hoisted(() => {
+  const streamMock = vi.fn()
+  const createMock = vi.fn()
+  const appendMock = vi.fn()
+
+  class MockDurableStream {
+    constructor(_options: any) {}
+
+    create(...args: Array<any>) {
+      return createMock(...args)
+    }
+
+    append(...args: Array<any>) {
+      return appendMock(...args)
+    }
+  }
+
+  class MockDurableStreamError extends Error {
+    status?: number
+    code?: string
+
+    constructor(message: string, options?: { status?: number; code?: string }) {
+      super(message)
+      this.status = options?.status
+      this.code = options?.code
+    }
+  }
+
+  return {
+    streamMock,
+    createMock,
+    appendMock,
+    MockDurableStream,
+    MockDurableStreamError,
+  }
+})
 
 vi.mock(`@durable-streams/client`, () => ({
   stream: (...args: Array<any>) => streamMock(...args),
+  DurableStream: MockDurableStream,
+  DurableStreamError: MockDurableStreamError,
 }))
 
 function createStreamingResponse(
@@ -72,6 +116,8 @@ async function take(
 describe(`tanstack durable session transport`, () => {
   beforeEach(() => {
     streamMock.mockReset()
+    createMock.mockReset().mockResolvedValue(undefined)
+    appendMock.mockReset().mockResolvedValue(undefined)
   })
 
   it(`materializes snapshot text from incremental deltas`, async () => {
@@ -130,7 +176,7 @@ describe(`tanstack durable session transport`, () => {
     )
 
     const connection = durableStreamConnection({
-      postUrl: `http://example.com/api/chat`,
+      sendUrl: `http://example.com/api/chat`,
       readUrl: `http://example.com/api/chat-stream?path=chat/abc`,
     })
 
@@ -152,7 +198,7 @@ describe(`tanstack durable session transport`, () => {
     )
 
     const connection = durableStreamConnection({
-      postUrl: `http://example.com/api/chat`,
+      sendUrl: `http://example.com/api/chat`,
       readUrl: `http://example.com/api/chat-stream?path=chat/abc`,
       initialOffset: `42`,
     })
@@ -201,7 +247,7 @@ describe(`tanstack durable session transport`, () => {
       )
 
     const connection = durableStreamConnection({
-      postUrl: `http://example.com/api/chat`,
+      sendUrl: `http://example.com/api/chat`,
       readUrl: `http://example.com/api/chat-stream?path=chat/abc`,
       initialOffset: `5`,
     })
@@ -215,5 +261,51 @@ describe(`tanstack durable session transport`, () => {
         offset: `20`,
       })
     )
+  })
+
+  it(`returns empty immediate chat-session response`, async () => {
+    const response = await toDurableChatSessionResponse({
+      stream: {
+        writeUrl: `http://example.com/chat/abc`,
+      },
+      newMessages: [
+        {
+          id: `user-1`,
+          role: `user`,
+          parts: [{ type: `text`, content: `Hello` }],
+        },
+      ],
+      responseStream: (async function* () {
+        yield {
+          type: `TEXT_MESSAGE_START`,
+          messageId: `assistant-1`,
+          role: `assistant`,
+        }
+        yield {
+          type: `TEXT_MESSAGE_CONTENT`,
+          messageId: `assistant-1`,
+          delta: `Hi there`,
+        }
+      })(),
+    })
+
+    expect(response.status).toBe(202)
+    expect(response.headers.get(`Location`)).toBeNull()
+    expect(await response.text()).toBe(``)
+  })
+
+  it(`returns empty await chat-session response`, async () => {
+    const response = await toDurableChatSessionResponse({
+      stream: {
+        writeUrl: `http://example.com/chat/abc`,
+      },
+      mode: `await`,
+      newMessages: [],
+      responseStream: (async function* () {})(),
+    })
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get(`Location`)).toBeNull()
+    expect(await response.text()).toBe(``)
   })
 })

@@ -14,7 +14,7 @@ export type DurableSessionConnection = {
 export type DurableStreamConnection = DurableSessionConnection
 
 export type DurableStreamConnectionOptions = {
-  postUrl: string
+  sendUrl: string
   readUrl?: string
   initialOffset?: string
   emitSnapshotOnSubscribe?: boolean
@@ -29,6 +29,11 @@ export type DurableStreamTarget = {
   contentType?: string
   createIfMissing?: boolean
 }
+
+export type DurableChatSessionStreamTarget = Pick<
+  DurableStreamTarget,
+  `writeUrl` | `headers` | `createIfMissing`
+>
 
 export type ToDurableStreamResponseMode = `immediate` | `await`
 
@@ -54,10 +59,9 @@ export type DurableSessionMessage = {
 }
 
 export type ToDurableChatSessionResponseOptions = {
-  stream: DurableStreamTarget
+  stream: DurableChatSessionStreamTarget
   newMessages: Array<DurableSessionMessage>
   responseStream: AsyncIterable<TanStackChunk>
   mode?: ToDurableStreamResponseMode
   waitUntil?: WaitUntil
-  exposeLocationHeader?: boolean
 }

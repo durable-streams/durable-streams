@@ -58,11 +58,11 @@ function resolveUrl(streamUrl: string, baseUrl: string): string {
 export function durableStreamConnection(
   options: DurableStreamConnectionOptions
 ): DurableStreamConnection {
-  const postUrl = options.postUrl
+  const sendUrl = options.sendUrl
   const state = {
     streamUrl: options.readUrl
-      ? resolveUrl(options.readUrl, postUrl)
-      : resolveUrl(postUrl, postUrl),
+      ? resolveUrl(options.readUrl, sendUrl)
+      : resolveUrl(sendUrl, sendUrl),
     offset: options.initialOffset,
   }
 
@@ -120,7 +120,7 @@ export function durableStreamConnection(
       abortSignal?: AbortSignal
     ): Promise<void> {
       const fetchClient = options.fetchClient ?? fetch
-      const response = await fetchClient(postUrl, {
+      const response = await fetchClient(sendUrl, {
         method: `POST`,
         headers: {
           "Content-Type": `application/json`,

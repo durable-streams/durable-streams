@@ -17,6 +17,7 @@ export {
 } from "./client"
 
 export type {
+  DurableChatSessionStreamTarget,
   DurableSessionConnection,
   DurableSessionMessage,
   DurableSessionMessagePart,

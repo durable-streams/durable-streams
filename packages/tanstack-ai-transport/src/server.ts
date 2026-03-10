@@ -251,7 +251,6 @@ export async function toDurableChatSessionResponse(
 ): Promise<Response> {
   const mode = options.mode ?? `immediate`
   const contentType = DEFAULT_CONTENT_TYPE
-  const readUrl = resolveUrl(options.stream.readUrl ?? options.stream.writeUrl)
   const stream = await ensureDurableChatSessionStream(options.stream)
 
   const newMessageChunks = options.newMessages.flatMap((message) =>
@@ -267,10 +266,10 @@ export async function toDurableChatSessionResponse(
 
   if (mode === `await`) {
     await writeAssistant
-    return Response.json(
-      { streamUrl: readUrl },
-      { status: 200, headers: { Location: readUrl } }
-    )
+    return new Response(null, {
+      status: 200,
+      headers: { "Cache-Control": `no-store` },
+    })
   }
 
   const backgroundTask = writeAssistant.catch((error) => {
@@ -278,16 +277,8 @@ export async function toDurableChatSessionResponse(
   })
   options.waitUntil?.(backgroundTask)
 
-  const responseHeaders = new Headers({
-    Location: readUrl,
-    "Cache-Control": `no-store`,
+  return new Response(null, {
+    status: 202,
+    headers: { "Cache-Control": `no-store` },
   })
-  if (options.exposeLocationHeader !== false) {
-    responseHeaders.set(`Access-Control-Expose-Headers`, `Location`)
-  }
-
-  return Response.json(
-    { streamUrl: readUrl },
-    { status: 202, headers: responseHeaders }
-  )
 }

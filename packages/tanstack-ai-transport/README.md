@@ -27,7 +27,7 @@ pnpm add @durable-streams/tanstack-ai-transport @durable-streams/client
 import { durableStreamConnection } from "@durable-streams/tanstack-ai-transport"
 
 const connection = durableStreamConnection({
-  postUrl: "/api/chat?id=chat_123",
+  sendUrl: "/api/chat?id=chat_123",
   readUrl: "/api/chat-stream?id=chat_123",
   initialOffset: undefined,
 })
@@ -43,7 +43,6 @@ import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-trans
 return toDurableChatSessionResponse({
   stream: {
     writeUrl,
-    readUrl,
     headers,
   },
   newMessages: [latestUserMessage],
@@ -51,7 +50,7 @@ return toDurableChatSessionResponse({
 })
 ```
 
-This appends the new user message to the durable stream, pipes AI response chunks, and returns `{ streamUrl }`.
+This appends the new user message to the durable stream, pipes AI response chunks, and returns an empty success response.
 
 ## Integration guide (recommended chat session flow)
 
@@ -59,7 +58,7 @@ This appends the new user message to the durable stream, pipes AI response chunk
 
 ```ts
 const connection = durableStreamConnection({
-  postUrl: `/api/chat?id=${chatId}`,
+  sendUrl: `/api/chat?id=${chatId}`,
   readUrl: `/api/chat-stream?id=${encodeURIComponent(chatId)}`,
   initialOffset: resumeOffsetFromSSR,
 })
@@ -70,7 +69,7 @@ Use with `useChat({ id: chatId, connection, live: true })`.
 ### 2) POST route (`/api/chat`)
 
 - Validate chat id
-- Build durable stream write/read URLs
+- Build durable stream write URL
 - Keep `newMessages` explicit (usually latest user message)
 - Start your model stream (`responseStream`)
 - Return `toDurableChatSessionResponse(...)`
@@ -106,8 +105,8 @@ Creates a TanStack-compatible `connection` object with:
 
 `DurableStreamConnectionOptions`:
 
-- `postUrl: string` (required) - where `send(...)` POSTs
-- `readUrl?: string` - where `subscribe(...)` reads from (defaults to `postUrl`)
+- `sendUrl: string` (required) - where `send(...)` POSTs
+- `readUrl?: string` - where `subscribe(...)` reads from (defaults to `sendUrl`)
 - `initialOffset?: string` - initial durable offset for resuming
 - `emitSnapshotOnSubscribe?: boolean` (default `true`) - emit synthetic `MESSAGES_SNAPSHOT` on initial catch-up
 - `headers?: HeadersInit` - applied to both read and write requests
@@ -115,7 +114,7 @@ Creates a TanStack-compatible `connection` object with:
 
 Behavior:
 
-- `send(...)` POSTs `{ messages, data }` to `postUrl`
+- `send(...)` POSTs `{ messages, data }` to `sendUrl`
 - `subscribe(...)` reads durable JSON stream batches and yields TanStack chunks
 - internal offset is updated as batches arrive, so later subscribes continue from the latest seen offset
 
@@ -145,17 +144,15 @@ High-level helper for chat session writes.
 
 `ToDurableChatSessionResponseOptions`:
 
-- `stream: DurableStreamTarget` (write/read URLs, headers, createIfMissing)
+- `stream: DurableChatSessionStreamTarget` (`writeUrl`, `headers`, `createIfMissing`)
 - `newMessages: DurableSessionMessage[]` - explicitly appended prompt messages
 - `responseStream: AsyncIterable<TanStackChunk>` - model chunk source
 - `mode?: "immediate" | "await"` (default `immediate`)
 - `waitUntil?: (promise: Promise<unknown>) => void`
-- `exposeLocationHeader?: boolean` (default `true`)
 
 Notes:
 
 - chat session streams are always `application/json`
-- rejects non-JSON `stream.contentType` for this API
 - appends `newMessages` using `toMessageEchoChunks(...)`
 - sanitizes chunks before writing
 
@@ -198,6 +195,7 @@ Pipes async chunk source with `sanitizeChunkForStorage` applied.
 - `DurableSessionConnection`
 - `DurableStreamConnection` (alias)
 - `DurableStreamConnectionOptions`
+- `DurableChatSessionStreamTarget`
 - `DurableStreamTarget`
 - `ToDurableStreamResponseMode`
 - `ToDurableStreamResponseOptions`
@@ -223,20 +221,18 @@ Pipes async chunk source with `sanitizeChunkForStorage` applied.
 ### `toDurableChatSessionResponse(..., { mode: "immediate" })`
 
 - Status: `202`
-- Header: `Location: <read-url>`
-- Body: `{ "streamUrl": "<read-url>" }`
+- Body: empty
 
 ### `toDurableChatSessionResponse(..., { mode: "await" })`
 
 - Status: `200`
-- Header: `Location: <read-url>`
-- Body: `{ "streamUrl": "<read-url>" }`
+- Body: empty
 
 ## `waitUntil` usage
 
 ```ts
 return toDurableChatSessionResponse({
-  stream: { writeUrl, readUrl, headers },
+  stream: { writeUrl, headers },
   newMessages,
   responseStream,
   waitUntil: ctx.waitUntil.bind(ctx),
