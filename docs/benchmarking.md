@@ -77,4 +77,4 @@ Each metric reports min, max, mean, p50, p75, and p99 values. The JSON output in
 
 ---
 
-See also: [Building a Server](building-a-server.md) | [Hosting](hosting.md) | [Servers](servers.md)
+See also: [Building a Server](building-a-server.md) | [Hosting & Servers](hosting.md)

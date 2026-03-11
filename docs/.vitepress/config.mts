@@ -59,8 +59,7 @@ export default defineConfig({
       {
         text: "Reference",
         items: [
-          { text: "Hosting", link: "/hosting" },
-          { text: "Servers", link: "/servers" },
+          { text: "Hosting & Servers", link: "/hosting" },
           { text: "Building a client", link: "/building-a-client" },
           { text: "Building a server", link: "/building-a-server" },
           { text: "Benchmarking", link: "/benchmarking" },

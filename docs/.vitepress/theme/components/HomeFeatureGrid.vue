@@ -68,7 +68,7 @@ const items = [
         <div class="home-feature-icon" :data-icon="item.icon">
           <img
             v-if="item.icon === 'tanstack'"
-            src="https://electric-sql.com/img/icons/tanstack.svg"
+            src="/img/icons/tanstack.svg"
             alt=""
             class="tanstack-icon"
           />

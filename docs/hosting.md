@@ -1,18 +1,123 @@
-# Hosting
+# Hosting & Servers
 
 Run Durable Streams in production either with managed hosting on [Electric Cloud](https://electric-sql.com/cloud) or by self-hosting the server with [Caddy](#self-hosted-with-caddy).
 
-::: info Hosted on Electric
-Want managed hosting? [Electric](https://electric-sql.com/cloud) provides fully managed Durable Streams, so you can skip operating the server yourself.
+<HostedElectricCard />
 
-Includes edge-served reads via Sync CDN, support for large fan-out workloads, high write throughput, unlimited streams per service, and simple usage-based pricing.
+## At a Glance
 
-Electric also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
-:::
+| Server                                 | Language             | Best for                          |
+| -------------------------------------- | -------------------- | --------------------------------- |
+| Dev Server (`@durable-streams/server`) | Node.js / TypeScript | Development, testing, prototyping |
+| Caddy Plugin                           | Go                   | Production deployments            |
+| Electric                               | Hosted               | Managed production hosting        |
+
+## Node Server
+
+The Node server in `@durable-streams/server` is the reference implementation for development, testing, CI, and embedded Node.js use cases.
+
+Install it with:
+
+```bash
+npm install @durable-streams/server
+```
+
+Start it in-process:
+
+```typescript
+import { DurableStreamTestServer } from "@durable-streams/server"
+
+const server = new DurableStreamTestServer({
+  port: 4437,
+  host: "127.0.0.1",
+})
+
+await server.start()
+```
+
+Use `dataDir` for file-backed local persistence, or omit it for the default in-memory mode.
+
+### Storage Options
+
+**In-memory (default)** -- fast, ephemeral storage that resets on restart:
+
+```typescript
+const server = new DurableStreamTestServer({ port: 4437 })
+```
+
+**File-backed** -- persistent storage using log files and LMDB for metadata:
+
+```typescript
+const server = new DurableStreamTestServer({
+  port: 4437,
+  dataDir: "./data/streams",
+})
+```
+
+### Configuration
+
+| Option                  | Type                  | Default       | Description                                                |
+| ----------------------- | --------------------- | ------------- | ---------------------------------------------------------- |
+| `port`                  | `number`              | `4437`        | Port to listen on                                          |
+| `host`                  | `string`              | `"127.0.0.1"` | Host to bind to                                            |
+| `dataDir`               | `string`              | —             | Data directory for file-backed storage; omit for in-memory |
+| `longPollTimeout`       | `number`              | `30000`       | Long-poll timeout in milliseconds                          |
+| `onStreamCreated`       | `StreamLifecycleHook` | —             | Hook called when a stream is created                       |
+| `onStreamDeleted`       | `StreamLifecycleHook` | —             | Hook called when a stream is deleted                       |
+| `compression`           | `boolean`             | `true`        | Enable gzip/deflate compression                            |
+| `cursorIntervalSeconds` | `number`              | `20`          | Cursor interval for CDN cache collapsing                   |
+
+### Lifecycle Hooks
+
+```typescript
+const server = new DurableStreamTestServer({
+  port: 4437,
+  onStreamCreated: (event) => {
+    console.log(`Stream created: ${event.path} (${event.contentType})`)
+  },
+  onStreamDeleted: (event) => {
+    console.log(`Stream deleted: ${event.path}`)
+  },
+})
+```
+
+### When to Use
+
+- Local development and prototyping
+- Automated testing and CI
+- Embedding a Durable Streams server in a Node.js application
+
+Full documentation: [Dev Server README](https://github.com/durable-streams/durable-streams/blob/main/packages/server/README.md)
 
 ## Self-Hosted with Caddy
 
-The [Caddy plugin](servers.md#caddy-plugin-production-server) is the recommended server for production. See the [Servers page](servers.md#caddy-plugin-production-server) for installation and Quickstart.
+The Caddy plugin is the recommended server for production.
+
+### Installation
+
+Install using the quick-install script:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
+```
+
+Or download a pre-built binary for your platform from [GitHub Releases](https://github.com/durable-streams/durable-streams/releases).
+
+To build from source:
+
+```bash
+go build -o durable-streams-server ./cmd/caddy
+```
+
+### Quickstart
+
+Run the server in dev mode with zero configuration:
+
+```bash
+durable-streams-server dev
+```
+
+This starts an in-memory server at `http://localhost:4437` with the stream endpoint at `/v1/stream/*`. No Caddyfile required.
 
 ### Production Caddyfile
 
@@ -181,6 +286,12 @@ docker run -d -p 4437:4437 -v durable-streams-data:/data my-durable-streams
 
 The practical impact is low. The likely failure mode is a false `409` (sequence gap) on restart, not duplicate data. Clients can recover by incrementing their epoch. See [issue #143](https://github.com/durable-streams/durable-streams/issues/143) for details.
 
+## Which Server Should I Use?
+
+- **Just getting started or developing locally?** Use the Node server in `@durable-streams/server`.
+- **Deploying to production?** Use the Caddy plugin for self-hosted deployments, or [Electric Cloud](https://electric-sql.com/cloud) for managed hosting.
+- **Building your own server?** See [Building a Server](building-a-server.md) for protocol implementation guidance.
+
 ## CDN Integration
 
 The Durable Streams protocol is designed for CDN-friendly fan-out. You don't need Electric Cloud to benefit from this -- the same properties apply when self-hosting behind any CDN.
@@ -195,4 +306,4 @@ This architecture means a single origin server can serve a large number of concu
 
 ---
 
-See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Quickstart](quickstart.md)
+See also: [Core Concepts](concepts.md) | [Quickstart](quickstart.md) | [Building a Server](building-a-server.md)
