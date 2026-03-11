@@ -184,7 +184,8 @@ const items = [
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 18px;
   color: inherit;
-  display: block;
+  display: flex;
+  flex-direction: column;
   padding: 20px 22px 18px;
   text-decoration: none;
   transition:
@@ -253,6 +254,7 @@ const items = [
 .home-feature-link {
   color: var(--durable-color);
   font-weight: 600;
+  margin-top: auto;
 }
 
 .home-feature-link::after {
