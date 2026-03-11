@@ -2,6 +2,10 @@ import { defineConfig } from "vitepress"
 import llmstxt from "vitepress-plugin-llms"
 
 export default defineConfig({
+  head: [
+    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
+    ["meta", { name: "twitter:card", content: "summary_large_image" }],
+  ],
   vite: {
     plugins: [
       llmstxt({
