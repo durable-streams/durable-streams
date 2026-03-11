@@ -1,4 +1,4 @@
-# Quick Start
+# Quickstart
 
 This is the shortest path to a working Durable Streams server and a live stream you can write to, read from, and tail in real time.
 

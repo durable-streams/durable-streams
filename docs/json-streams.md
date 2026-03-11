@@ -101,3 +101,4 @@ with stream("http://localhost:4437/v1/stream/events") as res:
 
 - [Core Concepts](concepts.md#messages-and-content-types)
 - [State Streams](state.md) for structured state sync on top of JSON streams
+- [StateDB](state-db.md) for reactive collections and queries on top of state streams

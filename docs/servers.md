@@ -21,7 +21,7 @@ A reference server implementation for Node.js. Ideal for development, testing, a
 npm install @durable-streams/server
 ```
 
-### Quick Start
+### Quickstart
 
 ```typescript
 import { DurableStreamTestServer } from "@durable-streams/server"
@@ -108,7 +108,7 @@ To build from source:
 go build -o durable-streams-server ./cmd/caddy
 ```
 
-### Quick Start
+### Quickstart
 
 Run the server in dev mode with zero configuration:
 
@@ -179,4 +179,4 @@ Full documentation: [Caddy Plugin README](https://github.com/durable-streams/dur
 
 ---
 
-See also: [Hosting](hosting.md) | [Quick Start](quick-start.md) | [Building a Server](building-a-server.md)
+See also: [Hosting](hosting.md) | [Quickstart](quickstart.md) | [Building a Server](building-a-server.md)

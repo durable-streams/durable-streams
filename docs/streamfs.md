@@ -1,60 +1,87 @@
 # StreamFS
 
-Use Durable Streams as the basis for a resumable filesystem when you want chunked reads and writes for binary or plain-text content.
+StreamFS is a shared filesystem for AI agents built on Durable Streams.
 
-There is not a dedicated `streamFS` package in this branch, but the core protocol already supports the underlying pattern.
+It provides filesystem semantics on top of durable streams, including files, directories, metadata, content streams, and watch-based synchronization across multiple agents.
 
-## Create a byte stream
-
-```bash
-curl -X PUT http://localhost:4437/v1/stream/files/demo.bin \
-  -H 'Content-Type: application/octet-stream'
-```
-
-## Append chunks
+## Install
 
 ```bash
-curl -X POST http://localhost:4437/v1/stream/files/demo.bin \
-  -H 'Content-Type: application/octet-stream' \
-  --data-binary @chunk-1.bin
+pnpm add @durable-streams/stream-fs
 ```
 
-Append more chunks with additional `POST` requests. Each append advances the stream offset.
-
-## Resume reads
-
-```bash
-curl "http://localhost:4437/v1/stream/files/demo.bin?offset=-1"
-```
-
-Save the returned `Stream-Next-Offset` header, then continue from there later:
-
-```bash
-curl "http://localhost:4437/v1/stream/files/demo.bin?offset=<saved-offset>"
-```
-
-## TypeScript example
+## Initialize a filesystem
 
 ```typescript
-import { DurableStream, stream } from "@durable-streams/client"
+import { StreamFilesystem } from "@durable-streams/stream-fs"
 
-const fileStream = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/files/demo.bin",
-  contentType: "application/octet-stream",
+const fs = new StreamFilesystem({
+  baseUrl: "http://localhost:4437",
+  streamPrefix: "/fs/myproject",
 })
 
-await fileStream.append(new Uint8Array([1, 2, 3, 4]))
-
-const res = await stream({
-  url: "http://localhost:4437/v1/stream/files/demo.bin",
-  offset: "-1",
-})
-
-const bytes = await res.body()
-console.log(bytes)
+await fs.initialize()
 ```
 
-## When to use it
+StreamFS stores state in:
 
-- Use byte streams for binary blobs, chunked exports, and custom framing formats.
-- Use [JSON Streams](json-streams.md) instead when you want structured message boundaries handled for you.
+- a metadata stream at `/_metadata`
+- content streams at `/_content/{id}`
+
+## Create and read files
+
+```typescript
+await fs.createFile("/notes.md", "# My Notes\n\nHello, world!")
+
+const content = await fs.readTextFile("/notes.md")
+console.log(content)
+```
+
+You can also read raw bytes with `readFile()` and replace content with `writeFile()`.
+
+## Directories and metadata
+
+```typescript
+await fs.mkdir("/docs")
+
+const entries = await fs.list("/")
+const exists = fs.exists("/notes.md")
+const stats = fs.stat("/notes.md")
+```
+
+StreamFS also supports `move()`, `deleteFile()`, `rmdir()`, and `isDirectory()`.
+
+## Watch for changes
+
+```typescript
+const watcher = fs.watch({ path: "/", recursive: true })
+
+watcher.on("all", (eventType, path, metadata) => {
+  console.log(eventType, path, metadata)
+})
+
+watcher.on("ready", () => {
+  console.log("watcher ready")
+})
+
+watcher.on("error", (error) => {
+  console.error(error)
+})
+```
+
+The watcher emits chokidar-style events: `add`, `change`, `unlink`, `addDir`, and `unlinkDir`.
+
+## Why it fits AI agents
+
+- Shared filesystem state across multiple agents
+- Eventual consistency over durable streams
+- Stale-write detection via `PreconditionFailedError`
+- Text patch support for efficient edits
+- Durable replay through metadata and content streams
+
+## More
+
+- `StreamFilesystem`
+- `streamFsTools`
+- [Core Concepts](concepts.md)
+- [JSON Streams](json-streams.md)

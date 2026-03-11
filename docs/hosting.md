@@ -2,17 +2,17 @@
 
 Run Durable Streams in production either with managed hosting on [Electric Cloud](https://electric-sql.com/cloud) or by self-hosting the server with [Caddy](#self-hosted-with-caddy).
 
-::: info Hosted on Electric Cloud
-Want managed hosting? [Electric Cloud](https://electric-sql.com/cloud) provides fully managed Durable Streams, so you can skip operating the server yourself.
+::: info Hosted on Electric
+Want managed hosting? [Electric](https://electric-sql.com/cloud) provides fully managed Durable Streams, so you can skip operating the server yourself.
 
 Includes edge-served reads via Sync CDN, support for large fan-out workloads, high write throughput, unlimited streams per service, and simple usage-based pricing.
 
-Electric Cloud also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
+Electric also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
 :::
 
 ## Self-Hosted with Caddy
 
-The [Caddy plugin](servers.md#caddy-plugin-production-server) is the recommended server for production. See the [Servers page](servers.md#caddy-plugin-production-server) for installation and quick start.
+The [Caddy plugin](servers.md#caddy-plugin-production-server) is the recommended server for production. See the [Servers page](servers.md#caddy-plugin-production-server) for installation and Quickstart.
 
 ### Production Caddyfile
 
@@ -195,4 +195,4 @@ This architecture means a single origin server can serve a large number of concu
 
 ---
 
-See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Quick Start](quick-start.md)
+See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Quickstart](quickstart.md)

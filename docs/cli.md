@@ -161,7 +161,7 @@ durable-stream --auth "Basic dXNlcjpwYXNz" read my-stream
 
 ## Workflow Example
 
-A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Quick Start](quick-start.md)):
+A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Quickstart](quickstart.md)):
 
 ```bash
 export STREAM_URL=http://localhost:4437/v1/stream

@@ -21,7 +21,7 @@ export default defineConfig({
     logo: "/img/Icon.svg",
     nav: [
       { text: "Home", link: "/" },
-      { text: "Docs", link: "/quick-start" },
+      { text: "Docs", link: "/quickstart" },
       {
         text: "GitHub",
         link: "https://github.com/durable-streams/durable-streams",
@@ -31,7 +31,7 @@ export default defineConfig({
       {
         text: "Docs",
         items: [
-          { text: "Quick Start", link: "/quick-start" },
+          { text: "Quickstart", link: "/quickstart" },
           { text: "Core concepts", link: "/concepts" },
         ],
       },
@@ -52,6 +52,7 @@ export default defineConfig({
           { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
           { text: "Durable State", link: "/state" },
           { text: "Durable Proxy", link: "/proxy" },
+          { text: "StateDB", link: "/state-db" },
           { text: "StreamFS", link: "/streamfs" },
         ],
       },

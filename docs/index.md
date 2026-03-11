@@ -7,8 +7,8 @@ hero:
   tagline: The missing primitive for building resilient, collaborative AI apps and agentic systems.
   actions:
     - theme: brand
-      text: Quick Start
-      link: /quick-start
+      text: Quickstart
+      link: /quickstart
     - theme: alt
       text: Usage
       link: /typescript-client

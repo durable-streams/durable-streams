@@ -286,4 +286,4 @@ The protocol is designed to work well with CDNs and HTTP caches.
 
 For the complete protocol specification -- including exact header semantics, error codes, validation rules, and edge cases -- see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
-See also: [Quick Start](quick-start.md) | [Building a Client](building-a-client.md) | [Building a Server](building-a-server.md)
+See also: [Quickstart](quickstart.md) | [Building a Client](building-a-client.md) | [Building a Server](building-a-server.md)
