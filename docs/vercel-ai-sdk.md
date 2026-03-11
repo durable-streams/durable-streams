@@ -1,8 +1,8 @@
 # Vercel AI SDK
 
-Use `@durable-streams/aisdk-transport` to make Vercel AI SDK `useChat` generations durable and resumable.
+Use `@durable-streams/aisdk-transport` to make [Vercel AI SDK](https://ai-sdk.dev) `useChat` generations durable and resumable.
 
-This is the integration to use when you want a chat generation to survive refreshes and reconnect cleanly to the same stream.
+This is the integration to use when you want a chat generation to survive refreshes and reconnect cleanly to the same stream. It plugs into the AI SDK's [transport layer](https://ai-sdk.dev/docs/ai-sdk-ui/transport#transport), so you can keep the normal `useChat` flow while swapping in a durable transport.
 
 ## Install
 
@@ -12,7 +12,7 @@ pnpm add @durable-streams/aisdk-transport
 
 ## Client
 
-Swap the default transport for `createDurableChatTransport`:
+Swap the default transport for `createDurableChatTransport`, following the same transport model documented in the AI SDK [transport docs](https://ai-sdk.dev/docs/ai-sdk-ui/transport#transport):
 
 ```typescript
 import { useChat } from "@ai-sdk/react"
@@ -56,8 +56,3 @@ See the working example in:
 
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/aisdk-transport/README.md)
 - [Example app](https://github.com/durable-streams/durable-streams/tree/main/examples/chat-aisdk)
-
-## More
-
-- [Proxy](proxy.md) if you want a more transparent proxy-based integration
-- [TanStack AI](tanstack-ai.md) for the TanStack AI transport path

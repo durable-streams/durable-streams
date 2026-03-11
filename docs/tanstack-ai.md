@@ -1,8 +1,8 @@
 # TanStack AI
 
-Use `@durable-streams/tanstack-ai-transport` when you want TanStack AI chat sessions with resumability, resilience, and built-in support for multi-tab, multi-device, and multi-user sharing.
+Use `@durable-streams/tanstack-ai-transport` when you want [TanStack AI](https://tanstack.com/ai) chat sessions with resumability, resilience, and built-in support for multi-tab, multi-device, and multi-user sharing.
 
-This transport writes chat session state into Durable Streams and reads it back through a durable connection, so subscribers can resume from offsets and keep multiple clients attached to the same session state.
+This transport writes chat session state into Durable Streams and reads it back through a durable connection, so subscribers can resume from offsets and keep multiple clients attached to the same session state. It plugs into TanStack AI's [streaming connection adapter](https://tanstack.com/ai/latest/docs/guides/streaming#connection-adapters) layer.
 
 ## Install
 
@@ -57,7 +57,7 @@ const connection = durableStreamConnection({
 })
 ```
 
-Use it with:
+Use it with `useChat`, following the same pattern as TanStack AI's [connection adapters](https://tanstack.com/ai/latest/docs/guides/streaming#connection-adapters):
 
 ```typescript
 useChat({ id: chatId, connection, live: true })
@@ -78,9 +78,9 @@ Your `POST /api/chat` route should:
 Your `GET /api/chat-stream` route should:
 
 - accept a chat `id`
-- build the upstream durable read URL on the server
+- build the upstream durable read URL on the durable stream server
 - forward read query params like `offset` and `live`
-- add server-side durable read auth headers
+- add durable stream server-side read auth headers
 - return the upstream body and headers
 
 ### 4. SSR hydrate and resume
@@ -88,7 +88,10 @@ Your `GET /api/chat-stream` route should:
 For page loaders, use:
 
 ```typescript
-materializeSnapshotFromDurableStream({ readUrl, headers })
+const { messages, offset } = await materializeSnapshotFromDurableStream({
+  readUrl,
+  headers,
+})
 ```
 
 Then send `messages` and `offset` to the client, and use that `offset` as `initialOffset` when creating the durable connection.
@@ -99,8 +102,3 @@ This avoids replaying the entire session during first subscribe.
 
 - [Package README](https://github.com/durable-streams/durable-streams/blob/samwillis/transport-tanstack-ai/packages/tanstack-ai-transport/README.md)
 - [Chat example README](https://github.com/durable-streams/durable-streams/blob/samwillis/transport-tanstack-ai/examples/chat-tanstack/README.md)
-
-## More
-
-- [Vercel AI SDK](vercel-ai-sdk.md) for the AI SDK transport path
-- [Durable Proxy](proxy.md) for the proxy-based integration path
