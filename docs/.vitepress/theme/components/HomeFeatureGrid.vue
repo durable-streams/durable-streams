@@ -14,13 +14,6 @@ const items = [
     icon: "code",
   },
   {
-    title: "JSON Streams",
-    details:
-      "Use `application/json` streams with preserved message boundaries and array flattening.",
-    href: "/json-streams",
-    icon: "json",
-  },
-  {
     title: "TanStack AI",
     details:
       "Add durable transport to TanStack AI flows with the proxy transport adapter.",
@@ -33,6 +26,13 @@ const items = [
       "Make AI SDK `useChat` generations survive refreshes and reconnect cleanly.",
     href: "/vercel-ai-sdk",
     icon: "vercel",
+  },
+  {
+    title: "JSON Streams",
+    details:
+      "Use `application/json` streams with preserved message boundaries and array flattening.",
+    href: "/json-streams",
+    icon: "json",
   },
   {
     title: "State Streams",
@@ -201,7 +201,7 @@ const items = [
 .home-feature-header {
   align-items: center;
   display: flex;
-  gap: 14px;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
@@ -218,9 +218,9 @@ const items = [
   color: var(--durable-color);
   display: inline-flex;
   flex: 0 0 auto;
-  height: 42px;
+  height: 32px;
+  width: 32px;
   justify-content: center;
-  width: 42px;
 }
 
 .home-feature-icon img,

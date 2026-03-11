@@ -4,7 +4,7 @@ layout: home
 hero:
   name: Durable Streams
   text: Persistent, addressable, real-time streams
-  tagline: An open protocol and set of tools for reliable, resumable streaming into browsers, apps, workers, and AI products.
+  tagline: The missing primitive for building resilient, collaborative AI apps and agentic systems.
   actions:
     - theme: brand
       text: Quick Start
