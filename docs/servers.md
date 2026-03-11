@@ -4,10 +4,6 @@ Durable Streams has two official server implementations: a Node.js development s
 
 If you want to build your own server implementation, see [Building a Server](building-a-server.md).
 
-- [Dev Server (`@durable-streams/server`)](#dev-server-durable-streamsserver)
-- [Caddy Plugin (Production Server)](#caddy-plugin-production-server)
-- [Which Server Should I Use?](#which-server-should-i-use)
-
 ## At a Glance
 
 | Server                                 | Language             | Best for                          |
@@ -166,7 +162,7 @@ route /v1/stream/* {
 }
 ```
 
-See the [Deployment guide](deployment.md) for production Caddyfile examples, configuration reference, authentication, reverse proxy, systemd/Docker, and known limitations.
+See the [Hosting guide](hosting.md) for production Caddyfile examples, configuration reference, authentication, reverse proxy, systemd/Docker, and known limitations.
 
 ### When to Use
 
@@ -178,9 +174,9 @@ Full documentation: [Caddy Plugin README](https://github.com/durable-streams/dur
 ## Which Server Should I Use?
 
 - **Just getting started or developing locally?** Use the [Dev Server](#dev-server-durable-streamsserver). It installs via npm and runs in-process with your Node.js app.
-- **Deploying to production?** Use the [Caddy Plugin](#caddy-plugin-production-server) for self-hosted, or [Electric Cloud](https://electric-sql.com/cloud) for a fully managed service. See [Deployment](deployment.md) for details.
+- **Deploying to production?** Use the [Caddy Plugin](#caddy-plugin-production-server) for self-hosted, or [Electric Cloud](https://electric-sql.com/cloud) for a fully managed service. See [Hosting](hosting.md) for details.
 - **Building your own server?** See [Building a Server](building-a-server.md) for protocol implementation guidance.
 
 ---
 
-See also: [Deployment](deployment.md) | [Getting Started](getting-started.md) | [Building a Server](building-a-server.md)
+See also: [Hosting](hosting.md) | [Quick Start](quick-start.md) | [Building a Server](building-a-server.md)

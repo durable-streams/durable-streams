@@ -62,42 +62,25 @@ The protocol is:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
-Read more in the [Introduction](docs/introduction.md) and [Use Cases](docs/use-cases.md).
+Read more on the docs site:
+
+- [Quick Start](docs/quick-start.md)
+- [TypeScript client](docs/typescript-client.md)
+- [JSON Streams](docs/json-streams.md)
+- [Vercel AI SDK](docs/vercel-ai-sdk.md)
+- [TanStack AI](docs/tanstack-ai.md)
+- [State Streams](docs/state.md)
+- [Durable Proxy](docs/proxy.md)
 
 ## Quick Start
 
-Install the TypeScript client and a development server:
+Download the latest `durable-streams-server` binary from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest) and start it in dev mode:
 
 ```bash
-npm install @durable-streams/client @durable-streams/server
+./durable-streams-server dev
 ```
 
-Start a server and write/read a stream:
-
-```typescript
-import { DurableStreamTestServer } from "@durable-streams/server"
-import { DurableStream } from "@durable-streams/client"
-
-// Start a dev server
-const server = new DurableStreamTestServer({ port: 4437 })
-await server.start()
-
-// Create a stream
-const stream = await DurableStream.create({
-  url: "http://localhost:4437/v1/stream/my-stream",
-  contentType: "application/json",
-})
-
-// Append data
-await stream.append({ event: "user.created", userId: "123" })
-
-// Read it back
-const res = await stream.stream({ live: false })
-const items = await res.json()
-console.log(items) // [{ event: "user.created", userId: "123" }]
-```
-
-Or try it with curl:
+Then create, append to, and read a stream with curl:
 
 ```bash
 # Create
@@ -116,25 +99,29 @@ curl "http://localhost:4437/v1/stream/my-stream?offset=-1"
 curl "http://localhost:4437/v1/stream/my-stream?offset=-1&live=long-poll"
 ```
 
-See the [Getting Started guide](docs/getting-started.md) for a full walkthrough.
+See the [Quick Start guide](docs/quick-start.md) for the minimal setup path.
 
 ## Documentation
 
-| Guide                                          | Description                                               |
-| ---------------------------------------------- | --------------------------------------------------------- |
-| [Introduction](docs/introduction.md)           | What Durable Streams is and why it exists                 |
-| [Getting Started](docs/getting-started.md)     | Set up a server and start streaming                       |
-| [Core Concepts](docs/concepts.md)              | Offsets, live modes, JSON mode, idempotent producers      |
-| [Use Cases](docs/use-cases.md)                 | AI streaming, database sync, event sourcing, and more     |
-| [Client Libraries](docs/clients.md)            | All 10 official client libraries                          |
-| [Servers](docs/servers.md)                     | Dev server and Caddy plugin                               |
-| [CLI Reference](docs/cli.md)                   | Command-line tool for stream management                   |
-| [Deployment](docs/deployment.md)               | Production deployment with Caddy or Electric Cloud        |
-| [State Protocol](docs/state.md)                | Structured state sync (insert/update/delete) over streams |
-| [Building a Client](docs/building-a-client.md) | Implement a client and run conformance tests              |
-| [Building a Server](docs/building-a-server.md) | Implement a server and run conformance tests              |
-| [Benchmarking](docs/benchmarking.md)           | Measure server latency and throughput                     |
-| [Protocol Specification](PROTOCOL.md)          | Full protocol spec                                        |
+### Quick Start
+
+- [Quick Start](docs/quick-start.md) -- start the server and create your first stream
+
+### Usage
+
+- [CLI](docs/cli.md) -- work with streams from the terminal
+- [TypeScript client](docs/typescript-client.md) -- use the TypeScript client directly
+- [JSON Streams](docs/json-streams.md) -- structured message streams
+- [TanStack AI](docs/tanstack-ai.md) -- durable TanStack AI transport
+- [Vercel AI SDK](docs/vercel-ai-sdk.md) -- durable Vercel AI SDK transport
+- [State Streams](docs/state.md) -- typed state sync over streams
+- [Durable Proxy](docs/proxy.md) -- durable proxy for existing AI streaming APIs
+- [Stream FS](docs/streamfs.md) -- file-like byte stream patterns
+
+### Reference
+
+- [Servers](docs/servers.md) -- official server implementations
+- [Protocol](PROTOCOL.md) -- full protocol specification
 
 ## Packages
 

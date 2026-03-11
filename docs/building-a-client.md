@@ -4,11 +4,6 @@ The Durable Streams protocol is pure HTTP -- any language that can make HTTP req
 
 The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/client-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/client-conformance-tests) package validates your implementation against it -- start your server, wire up an adapter, and the suite tells you what's passing and what's not.
 
-- [What to Implement](#what-to-implement)
-- [Implementation Notes](#implementation-notes)
-- [Conformance Tests](#conformance-tests)
-- [Reference Implementations](#reference-implementations)
-
 ## What to Implement
 
 A complete client covers six HTTP operations (create, append, read, head, close, delete), two live modes (long-poll and SSE), JSON mode, idempotent producers, and retry logic. Not all of these are required -- a useful client can start with just append and catch-up reads.

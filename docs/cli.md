@@ -1,4 +1,4 @@
-# CLI Reference
+# CLI
 
 The Durable Streams CLI is a command-line tool for creating, writing to, reading from, and managing streams. It connects to any Durable Streams server over HTTP.
 
@@ -161,7 +161,7 @@ durable-stream --auth "Basic dXNlcjpwYXNz" read my-stream
 
 ## Workflow Example
 
-A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Getting Started](getting-started.md)):
+A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Quick Start](quick-start.md)):
 
 ```bash
 export STREAM_URL=http://localhost:4437/v1/stream

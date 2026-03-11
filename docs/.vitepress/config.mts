@@ -21,9 +21,7 @@ export default defineConfig({
     logo: "/img/Icon.svg",
     nav: [
       { text: "Home", link: "/" },
-      { text: "About", link: "/introduction" },
-      { text: "Docs", link: "/getting-started" },
-      { text: "ElectricSQL", link: "https://electric-sql.com" },
+      { text: "Docs", link: "/quick-start" },
       {
         text: "GitHub",
         link: "https://github.com/durable-streams/durable-streams",
@@ -31,45 +29,42 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: "About",
+        text: "Docs",
         items: [
-          { text: "Introduction", link: "/introduction" },
-          { text: "Getting Started", link: "/getting-started" },
+          { text: "Quick Start", link: "/quick-start" },
+          { text: "Core concepts", link: "/concepts" },
         ],
       },
       {
-        text: "Guides",
+        text: "Usage",
         items: [
-          { text: "Core Concepts", link: "/concepts" },
-          { text: "Use Cases", link: "/use-cases" },
-          { text: "CLI Reference", link: "/cli" },
-          { text: "Deployment", link: "/deployment" },
-        ],
-      },
-      {
-        text: "Implementations",
-        items: [
-          { text: "Client Libraries", link: "/clients" },
-          { text: "Servers", link: "/servers" },
-        ],
-      },
-      {
-        text: "Extended layers",
-        items: [{ text: "State Protocol", link: "/state" }],
-      },
-      {
-        text: "Development",
-        items: [
-          { text: "Building a Client", link: "/building-a-client" },
-          { text: "Building a Server", link: "/building-a-server" },
-          { text: "Benchmarking", link: "/benchmarking" },
+          { text: "CLI", link: "/cli" },
+          {
+            text: "Clients",
+            items: [
+              { text: "TypeScript", link: "/typescript-client" },
+              { text: "Python", link: "/python-client" },
+              { text: "Other clients", link: "/clients" },
+            ],
+          },
+          { text: "JSON Streams", link: "/json-streams" },
+          { text: "TanStack AI", link: "/tanstack-ai" },
+          { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
+          { text: "State Streams", link: "/state" },
+          { text: "Durable Proxy", link: "/proxy" },
+          { text: "Stream FS", link: "/streamfs" },
         ],
       },
       {
         text: "Reference",
         items: [
+          { text: "Hosting", link: "/hosting" },
+          { text: "Servers", link: "/servers" },
+          { text: "Building a client", link: "/building-a-client" },
+          { text: "Building a server", link: "/building-a-server" },
+          { text: "Benchmarking", link: "/benchmarking" },
           {
-            text: "Protocol Specification",
+            text: "Protocol",
             link: "https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md",
           },
         ],

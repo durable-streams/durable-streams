@@ -4,13 +4,6 @@ The Durable Streams protocol is designed to support server implementations in an
 
 The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see [Servers](servers.md).
 
-- [What to Implement](#what-to-implement)
-- [Storage Layer](#storage-layer)
-- [Key Protocol Requirements](#key-protocol-requirements)
-- [Optional Features](#optional-features)
-- [Conformance Tests](#conformance-tests)
-- [Reference Implementations](#reference-implementations)
-
 ## What to Implement
 
 A conforming server handles these HTTP methods:

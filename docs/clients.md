@@ -1,4 +1,4 @@
-# Client Libraries
+# Other Clients
 
 Durable Streams has official client libraries in 10 languages. All implement the same [protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.
 
@@ -43,46 +43,19 @@ If you're an expert in a language with a Vibe-Engineered client, we'd love your 
 
 ## TypeScript
 
-```bash
-npm install @durable-streams/client
-```
+See the dedicated [TypeScript client](typescript-client.md) page for installation, read/write examples, and exactly-once producer usage.
 
-```typescript
-import { stream } from "@durable-streams/client"
+Full documentation: [TypeScript client](typescript-client.md)
 
-const res = await stream({ url: "https://streams.example.com/my-stream" })
-const items = await res.json()
-```
-
-- Fetch-like `stream()` API with multiple consumption patterns (promises, ReadableStreams, subscribers)
-- `IdempotentProducer` with automatic batching and pipelining (up to 5 concurrent batches)
-- Rich `StreamResponse` with `.json()`, `.text()`, `.body()`, `.jsonStream()`, and subscriber methods
-- Dynamic headers and params via sync/async functions for token refresh
-- Full Web Streams API support with Safari/iOS async-iterable compatibility
-
-Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client/README.md)
+Package README: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client/README.md)
 
 ## Python
 
-```bash
-pip install durable-streams
-```
+See the dedicated [Python client](python-client.md) page for sync and async APIs, stream handles, and `IdempotentProducer` usage.
 
-```python
-from durable_streams import stream
+Full documentation: [Python client](python-client.md)
 
-with stream("https://streams.example.com/my-stream") as res:
-    for item in res.iter_json():
-        print(item)
-```
-
-- Both sync (`stream()` / `DurableStream`) and async (`astream()` / `AsyncDurableStream`) APIs
-- Generator-based streaming for memory-efficient consumption
-- `IdempotentProducer` with fire-and-forget `append_nowait()` and automatic batching
-- Context manager support for clean resource management
-- Custom JSON decoders via `decode=` parameter on `iter_json()`
-
-Full documentation: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-py/README.md)
+Package README: [README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-py/README.md)
 
 ## Go
 

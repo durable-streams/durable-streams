@@ -8,25 +8,13 @@ const extraClasses = [screenMenu ? "is-mobile" : ""]
 <template>
   <div :class="[...classes, ...extraClasses]">
     <div class="cta-lg">
-      <VPButton
-        href="https://electric-sql.com/cloud"
-        theme="brand"
-        text="Electric Cloud"
-      />
+      <VPButton href="/hosting" theme="brand" text="Hosting" />
     </div>
     <div class="cta-md">
-      <VPButton
-        href="https://electric-sql.com/cloud"
-        theme="brand"
-        text="Electric Cloud"
-      />
+      <VPButton href="/hosting" theme="brand" text="Hosting" />
     </div>
     <div class="cta-sm">
-      <VPButton
-        href="https://electric-sql.com/cloud"
-        theme="brand"
-        text="Electric Cloud"
-      />
+      <VPButton href="/hosting" theme="brand" text="Hosting" />
     </div>
   </div>
 </template>

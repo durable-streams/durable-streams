@@ -1,15 +1,6 @@
 # Core Concepts
 
-This page introduces the key concepts behind the Durable Streams protocol. For the complete specification, see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
-
-- [Streams](#streams)
-- [Offsets](#offsets)
-- [Messages and Content Types](#messages-and-content-types)
-- [Producers](#producers)
-- [Consumers](#consumers)
-- [Live Modes](#live-modes)
-- [Stream Lifecycle](#stream-lifecycle)
-- [CDN Caching](#cdn-caching)
+Learn the key concepts behind the Durable Streams protocol here. For the complete specification, see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
 ## Streams
 
@@ -295,4 +286,4 @@ The protocol is designed to work well with CDNs and HTTP caches.
 
 For the complete protocol specification -- including exact header semantics, error codes, validation rules, and edge cases -- see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
-See also: [Getting Started](getting-started.md) | [Building a Client](building-a-client.md) | [Building a Server](building-a-server.md)
+See also: [Quick Start](quick-start.md) | [Building a Client](building-a-client.md) | [Building a Server](building-a-server.md)

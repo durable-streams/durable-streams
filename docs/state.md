@@ -1,36 +1,17 @@
-# State Protocol
+# State Streams
 
-Durable Streams gives you ordered, resumable byte delivery. The State Protocol adds semantic meaning on top: `insert`, `update`, and `delete` operations on typed entities. It provides the vocabulary you need for database-style sync -- presence tracking, chat rooms, feature flags, collaborative state -- without prescribing how you store or query that state.
-
-- [Protocol Overview](#protocol-overview)
-- [Installation](#installation)
-- [Change Events](#change-events)
-- [Control Events](#control-events)
-- [MaterializedState](#materializedstate)
-- [StreamDB with TanStack DB](#streamdb-with-tanstack-db)
-- [Optimistic Actions](#optimistic-actions)
-- [Common Patterns](#common-patterns)
-- [Best Practices](#best-practices)
-- [Durable Sessions](#durable-sessions)
+State Streams add structured state changes on top of Durable Streams. Instead of treating a stream as raw bytes, you work with typed `insert`, `update`, and `delete` events.
 
 ## Protocol Overview
 
-Durable Streams handles reliable delivery of bytes over HTTP. Many applications need more than raw bytes -- they need structured state changes with CRUD semantics. Rather than baking this into the core protocol, the State Protocol is a composable layer on top.
+State Streams use JSON streams (`Content-Type: application/json`) and define two message types:
 
-The protocol operates on JSON streams (`Content-Type: application/json`) and defines two message types:
+- **Change messages** for `insert`, `update`, and `delete`
+- **Control messages** for snapshot boundaries and resets
 
-- **Change messages** carry CRUD operations (`insert`, `update`, `delete`) on typed entities, each identified by a `type` discriminator and a `key`.
-- **Control messages** manage stream lifecycle -- snapshot boundaries and resets.
+Clients append these events to a stream and materialize state by applying them in order.
 
-Clients write change messages using the standard Durable Streams append operation and read them back as JSON arrays. State is materialized by applying these events sequentially: inserts add entities, updates replace them, deletes remove them. Multiple entity types can coexist in the same stream.
-
-The protocol deliberately does not prescribe how state is stored (in-memory, IndexedDB, SQLite), how queries run, or how conflicts are resolved. These are left to implementations.
-
-This separation means you adopt what you need:
-
-- **AI token streaming?** Use Durable Streams directly -- tokens are a natural fit for an append-only byte stream.
-- **Real-time database sync?** Add the State Protocol for typed collections with insert/update/delete operations.
-- **Both in the same app?** Different streams can use different protocols. An AI response stream and a session state stream can coexist, each using the protocol that fits.
+Use Durable Streams directly for raw token or byte streaming. Use State Streams when you want database-style sync semantics on top.
 
 > See the full [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) for the formal wire format and requirements.
 

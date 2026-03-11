@@ -1,12 +1,14 @@
-# Deployment
+# Hosting
 
-This page covers production deployment of Durable Streams. For server installation and getting started, see [Servers](servers.md).
+Run Durable Streams in production either with managed hosting on [Electric Cloud](https://electric-sql.com/cloud) or by self-hosting the server with [Caddy](#self-hosted-with-caddy).
 
-There are two ways to run Durable Streams in production: self-hosted with the Caddy plugin, or fully managed on [Electric Cloud](https://electric-sql.com/cloud).
+::: info Hosted on Electric Cloud
+Want managed hosting? [Electric Cloud](https://electric-sql.com/cloud) provides fully managed Durable Streams, so you can skip operating the server yourself.
 
-- [Self-Hosted with Caddy](#self-hosted-with-caddy)
-- [Electric Cloud (Hosted)](#electric-cloud-hosted)
-- [CDN Integration](#cdn-integration)
+Includes edge-served reads via Sync CDN, support for large fan-out workloads, high write throughput, unlimited streams per service, and simple usage-based pricing.
+
+Electric Cloud also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
+:::
 
 ## Self-Hosted with Caddy
 
@@ -179,34 +181,6 @@ docker run -d -p 4437:4437 -v durable-streams-data:/data my-durable-streams
 
 The practical impact is low. The likely failure mode is a false `409` (sequence gap) on restart, not duplicate data. Clients can recover by incrementing their epoch. See [issue #143](https://github.com/durable-streams/durable-streams/issues/143) for details.
 
-## Electric Cloud (Hosted)
-
-[Electric Cloud](https://electric-sql.com/cloud) provides fully managed Durable Streams hosting. No server to deploy or manage.
-
-### Getting Started
-
-1. Sign up at [electric-sql.com/cloud](https://electric-sql.com/cloud) and create a service
-2. Create streams using the API with your service credentials:
-
-```bash
-curl -X PUT \
-  -H "Authorization: Bearer <your-token>" \
-  -H "Content-Type: application/json" \
-  "https://api.electric-sql.cloud/v1/stream/<your-service-id>/my-stream"
-```
-
-3. Point your clients at the stream URL and start reading and writing
-
-### What You Get
-
-- **Sync CDN**: all reads are served from the edge and don't hit origin
-- **Scale**: tested to 1M concurrent connections per stream
-- **Throughput**: 240K writes/second for small messages, 15-25 MB/sec sustained
-- **Unlimited streams**: no cap on the number of streams per service
-- **Simple pricing**: reads are free, 5M writes/month included, then pay as you scale
-
-Electric Cloud also hosts [Postgres sync](https://electric-sql.com/products/postgres-sync), so you can combine real-time streams with synced relational data in the same app.
-
 ## CDN Integration
 
 The Durable Streams protocol is designed for CDN-friendly fan-out. You don't need Electric Cloud to benefit from this -- the same properties apply when self-hosting behind any CDN.
@@ -221,4 +195,4 @@ This architecture means a single origin server can serve a large number of concu
 
 ---
 
-See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Getting Started](getting-started.md)
+See also: [Servers](servers.md) | [Core Concepts](concepts.md) | [Quick Start](quick-start.md)
