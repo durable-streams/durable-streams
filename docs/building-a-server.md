@@ -119,19 +119,7 @@ npm install @durable-streams/server-conformance-tests
 
 The test suite uses [vitest](https://vitest.dev/) internally. It starts, makes HTTP requests to your server, and validates responses against the protocol spec. Each test uses unique stream paths, so tests are isolated and can run in parallel.
 
-```
-┌──────────────────────────────┐
-│   Test Runner (vitest)       │
-│  - 232 protocol tests        │
-│  - Property-based fuzzing    │
-│  - Direct HTTP assertions    │
-└──────────────┬───────────────┘
-               │ HTTP (fetch)
-               v
-┌──────────────────────────────┐
-│     Your Server              │
-└──────────────────────────────┘
-```
+<ServerConformanceDiagram />
 
 ### CLI Usage
 

@@ -87,27 +87,7 @@ npm install @durable-streams/client-conformance-tests
 
 The test runner is a Node.js process that starts a reference server, spawns your client adapter as a subprocess, and communicates via JSON lines over stdin/stdout:
 
-```
-┌──────────────────────────────┐
-│     Test Runner (Node.js)    │
-│  - YAML test cases           │
-│  - Reference server          │
-│  - Result validation         │
-└──────────────┬───────────────┘
-               │ stdin/stdout (JSON lines)
-               v
-┌──────────────────────────────┐
-│   Your Client Adapter        │
-│  - Reads commands from stdin │
-│  - Calls your client SDK     │
-│  - Writes results to stdout  │
-└──────────────┬───────────────┘
-               │ HTTP
-               v
-┌──────────────────────────────┐
-│     Reference Server         │
-└──────────────────────────────┘
-```
+<ClientAdapterDiagram />
 
 ### Writing an Adapter
 
