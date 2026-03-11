@@ -7,37 +7,37 @@ const items = [
     icon: "terminal",
   },
   {
-    title: "TypeScript client",
+    title: "TypeScript Client",
     details:
-      "Use the TypeScript client for read APIs, writes, and exactly-once producers.",
+      "Client for reading and writing from either client or server.",
     href: "/typescript-client",
     icon: "code",
   },
   {
     title: "TanStack AI",
     details:
-      "Add durable transport to TanStack AI flows with the proxy transport adapter.",
+      "Realtime multi-tab, multi-device and multi-user AI chat sessions.",
     href: "/tanstack-ai",
     icon: "tanstack",
   },
   {
     title: "Vercel AI SDK",
     details:
-      "Make AI SDK `useChat` generations survive refreshes and reconnect cleanly.",
+      "useChat generations that survive refreshes and reconnections.",
     href: "/vercel-ai-sdk",
     icon: "vercel",
   },
   {
     title: "JSON Streams",
     details:
-      "Use `application/json` streams with preserved message boundaries and array flattening.",
+      "Stream JSON messages with preserved message boundaries.",
     href: "/json-streams",
     icon: "json",
   },
   {
-    title: "State Streams",
+    title: "Durable State",
     details:
-      "Layer typed state sync and TanStack DB collections on top of durable streams.",
+      "State sync and TanStack DB collections on top of durable streams.",
     href: "/state",
     icon: "layers",
   },
@@ -48,8 +48,8 @@ const items = [
     icon: "proxy",
   },
   {
-    title: "Stream FS",
-    details: "Model file-like byte streams with resumable reads and chunked writes.",
+    title: "StreamFS",
+    details: "A filesystem for AI agents with real-time sync built on durable streams.",
     href: "/streamfs",
     icon: "folder",
   },
@@ -70,6 +70,7 @@ const items = [
             v-if="item.icon === 'tanstack'"
             src="https://electric-sql.com/img/icons/tanstack.svg"
             alt=""
+            class="tanstack-icon"
           />
           <svg
             v-else-if="item.icon === 'terminal'"
@@ -115,6 +116,7 @@ const items = [
           </svg>
           <svg
             v-else-if="item.icon === 'vercel'"
+            class="vercel-icon"
             viewBox="0 0 76 65"
             fill="currentColor"
             aria-hidden="true"
@@ -175,7 +177,7 @@ const items = [
 <style scoped>
 .home-feature-grid {
   display: grid;
-  gap: 18px;
+  gap: 22px;
   margin: 22px auto 46px;
 }
 
@@ -207,7 +209,7 @@ const items = [
 
 .home-feature-header h2 {
   border-top: 0 !important;
-  font-size: 20px;
+  font-size: 18px;
   line-height: 1.15;
   margin: 0;
   padding-top: 0 !important;
@@ -218,8 +220,8 @@ const items = [
   color: var(--durable-color);
   display: inline-flex;
   flex: 0 0 auto;
-  height: 32px;
-  width: 32px;
+  height: 28px;
+  width: 28px;
   justify-content: center;
 }
 
@@ -271,5 +273,13 @@ const items = [
   .home-feature-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
+}
+
+.tanstack-icon {
+  transform: scale(1.2);
+}
+
+.vercel-icon {
+  transform: scale(0.8);
 }
 </style>

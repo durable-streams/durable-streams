@@ -1,6 +1,6 @@
-# Stream FS
+# StreamFS
 
-Use Durable Streams as a file-like byte stream when you want resumable reads and chunked writes for binary or plain-text content.
+Use Durable Streams as the basis for a resumable filesystem when you want chunked reads and writes for binary or plain-text content.
 
 There is not a dedicated `streamFS` package in this branch, but the core protocol already supports the underlying pattern.
 

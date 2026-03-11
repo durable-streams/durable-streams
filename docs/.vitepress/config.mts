@@ -50,9 +50,9 @@ export default defineConfig({
           { text: "JSON Streams", link: "/json-streams" },
           { text: "TanStack AI", link: "/tanstack-ai" },
           { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
-          { text: "State Streams", link: "/state" },
+          { text: "Durable State", link: "/state" },
           { text: "Durable Proxy", link: "/proxy" },
-          { text: "Stream FS", link: "/streamfs" },
+          { text: "StreamFS", link: "/streamfs" },
         ],
       },
       {
@@ -81,9 +81,10 @@ export default defineConfig({
       provider: "local",
     },
     footer: {
-      message:
+      copyright:
         'Released under the <a href="https://github.com/durable-streams/durable-streams/blob/main/LICENSE">MIT License</a>',
-      copyright: '© <a href="https://electric-sql.com/">ElectricSQL</a>',
+      message:
+        'Made with ❤️ by the team that built <a href="https://electric-sql.com/">ElectricSQL</a>',
     },
   },
 })
