@@ -397,4 +397,4 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 ---
 
-See also: [Core Concepts](concepts.md) | [Use Cases](use-cases.md) | [Clients](clients.md)
+See also: [Core Concepts](concepts.md) | [JSON Streams](json-streams.md) | [Clients](clients.md)
