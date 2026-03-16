@@ -50,15 +50,22 @@ export default defineConfig({
               { text: "Python", link: "/python-client" },
               { text: "Other clients", link: "/clients" },
             ],
+            collapsed: false
           },
           { text: "JSON Streams", link: "/json-streams" },
+          { text: "Durable Proxy", link: "/durable-proxy" },
+          { text: "Durable State", link: "/durable-state" },
+          { text: "StreamDB", link: "/stream-db" },
+          { text: "StreamFS", link: "/stream-fs" },
+        ],
+      },
+      {
+        text: "Integrations",
+        items: [
           { text: "TanStack AI", link: "/tanstack-ai" },
           { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
-          { text: "Durable State", link: "/state" },
-          { text: "Durable Proxy", link: "/proxy" },
-          { text: "StateDB", link: "/state-db" },
-          { text: "StreamFS", link: "/streamfs" },
-        ],
+          { text: "AnyCable", link: "https://docs.anycable.io/anycable-go/durable_streams"},
+        ]
       },
       {
         text: "Reference",

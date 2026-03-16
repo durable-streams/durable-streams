@@ -21,7 +21,7 @@ Use Durable Streams directly for raw token or byte streaming. Use Durable State 
 npm install @durable-streams/state @tanstack/db
 ```
 
-`@tanstack/db` is only needed for [StateDB](state-db.md). If you only need `MaterializedState`, you can skip it.
+`@tanstack/db` is only needed for [StreamDB](stream-db.md). If you only need `MaterializedState`, you can skip it.
 
 ## Change Events
 
@@ -104,11 +104,11 @@ const allUsers = state.getType("user") // Map of all users
 
 `MaterializedState` is a good fit when you need straightforward state tracking without reactive queries or schema validation.
 
-## StateDB
+## StreamDB
 
-For applications that need reactive queries, filtering, joins, and optimistic updates, use [StateDB](state-db.md).
+For applications that need reactive queries, filtering, joins, and optimistic updates, use [StreamDB](stream-db.md).
 
-StateDB is the `createStreamDB` / `StreamDB` layer in `@durable-streams/state`, built on top of State Streams and [TanStack DB](https://tanstack.com/db).
+StreamDB is the `createStreamDB` / `StreamDB` layer in `@durable-streams/state`, built on top of State Streams and [TanStack DB](https://tanstack.com/db).
 
 ## Durable Sessions
 
@@ -127,7 +127,7 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 ## Learn More
 
 - [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) -- full protocol spec
-- [StateDB](state-db.md) -- reactive collections, queries, and optimistic actions
+- [StreamDB](stream-db.md) -- reactive collections, queries, and optimistic actions
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/state/README.md) -- complete API reference
 - [Examples](https://github.com/durable-streams/durable-streams/tree/main/examples/state) -- background jobs dashboard and Wikipedia live events demo
 - [TanStack DB](https://tanstack.com/db) -- reactive collections and query engine
@@ -135,4 +135,4 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 ---
 
-See also: [Core Concepts](concepts.md) | [JSON Streams](json-streams.md) | [StateDB](state-db.md)
+See also: [Core Concepts](concepts.md) | [JSON Streams](json-streams.md) | [StreamDB](stream-db.md)

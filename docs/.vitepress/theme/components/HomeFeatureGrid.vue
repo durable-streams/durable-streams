@@ -38,19 +38,19 @@ const items = [
     title: "Durable State",
     details:
       "State sync and TanStack DB collections on top of durable streams.",
-    href: "/state",
+    href: "/durable-state",
     icon: "layers",
   },
   {
     title: "StreamDB",
     details: "A filesystem for AI agents with real-time sync built on durable streams.",
-    href: "/streamdb",
+    href: "/stream-db",
     icon: "folder",
   },
   {
     title: "StreamFS",
     details: "A filesystem for AI agents with real-time sync built on durable streams.",
-    href: "/streamfs",
+    href: "/stream-fs",
     icon: "folder",
   },
 ]
