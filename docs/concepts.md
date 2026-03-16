@@ -1,4 +1,4 @@
-# Core Concepts
+# Core concepts
 
 Learn the key concepts behind the Durable Streams protocol here. For the complete specification, see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
@@ -45,7 +45,7 @@ GET /streams/my-stream?offset=-1
 < …response body…
 ```
 
-## Messages and Content Types
+## Messages and content types
 
 A stream's content type is set at creation and determines how the server handles message boundaries.
 
@@ -147,7 +147,7 @@ loop:
     # caught up -- switch to live mode or poll again later
 ```
 
-## Live Modes
+## Live modes
 
 Once a consumer has caught up, it can subscribe to new data in real time using one of two live modes.
 
@@ -201,7 +201,7 @@ If a `control` event includes `streamClosed: true`, the stream is finished -- do
 
 Both modes can be used interchangeably against the same stream.
 
-## Stream Lifecycle
+## Stream lifecycle
 
 A stream moves through a simple lifecycle:
 
@@ -272,7 +272,7 @@ DELETE /streams/my-stream
 < 204 No Content
 ```
 
-## CDN Caching
+## CDN caching
 
 The protocol is designed to work well with CDNs and HTTP caches.
 
@@ -286,4 +286,4 @@ The protocol is designed to work well with CDNs and HTTP caches.
 
 For the complete protocol specification -- including exact header semantics, error codes, validation rules, and edge cases -- see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).
 
-See also: [Quickstart](quickstart.md) | [Building a Client](building-a-client.md) | [Building a Server](building-a-server.md)
+See also: [Quickstart](quickstart.md) | [Building a client](building-a-client.md) | [Building a server](building-a-server.md)

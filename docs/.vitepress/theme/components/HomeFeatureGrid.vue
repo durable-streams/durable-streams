@@ -2,54 +2,54 @@
 const items = [
   {
     title: "CLI",
-    details: "Create, append, read, and tail streams from the terminal.",
+    details: "Create, read, append-to and tail streams",
     href: "/cli",
     icon: "terminal",
   },
   {
-    title: "TypeScript",
+    title: "Clients",
     details:
-      "Client for reading and writing from either client or server.",
+      "TypeScript, Python and other languages",
     href: "/typescript-client",
     icon: "code",
   },
   {
     title: "TanStack AI",
     details:
-      "Realtime multi-tab, multi-device and multi-user AI chat sessions.",
+      "Durable Session <span class=\"hide-at-md\">support</span> for TanStack AI apps",
     href: "/tanstack-ai",
     icon: "tanstack",
   },
   {
     title: "Vercel AI SDK",
     details:
-      "useChat generations that survive refreshes and reconnections.",
+      "Durable Transport <span class=\"hide-at-md\">adapter</span> for AI SDK apps",
     href: "/vercel-ai-sdk",
     icon: "vercel",
   },
   {
-    title: "JSON Streams",
+    title: "JSON streams",
     details:
-      "Stream JSON messages with preserved message boundaries.",
-    href: "/json-streams",
+      "Stream structured data using JSON messages",
+    href: "/json-mode",
     icon: "json",
   },
   {
     title: "Durable State",
     details:
-      "State sync and TanStack DB collections on top of durable streams.",
+      "Sync structured state over durable streams",
     href: "/durable-state",
     icon: "layers",
   },
   {
     title: "StreamDB",
-    details: "A filesystem for AI agents with real-time sync built on durable streams.",
+    details: "A type-safe, reactive database in a stream",
     href: "/stream-db",
-    icon: "folder",
+    icon: "database",
   },
   {
     title: "StreamFS",
-    details: "A filesystem for AI agents with real-time sync built on durable streams.",
+    details: "A filesystem real-time sync in a stream",
     href: "/stream-fs",
     icon: "folder",
   },
@@ -165,10 +165,24 @@ const items = [
           >
             <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z" />
           </svg>
+          <svg
+            v-else-if="item.icon === 'database'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <ellipse cx="12" cy="5" rx="8" ry="3" />
+            <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+            <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+          </svg>
         </div>
         <h2>{{ item.title }}</h2>
       </div>
-      <p>{{ item.details }}</p>
+      <p v-html="item.details" />
       <span class="home-feature-link">Open guide</span>
     </a>
   </section>
@@ -177,7 +191,7 @@ const items = [
 <style scoped>
 .home-feature-grid {
   display: grid;
-  gap: 22px;
+  gap: 24px;
   margin: 22px auto 46px;
 }
 
@@ -188,7 +202,7 @@ const items = [
   color: inherit;
   display: flex;
   flex-direction: column;
-  padding: 20px 22px 18px;
+  padding: 24px 26px 22px;
   text-decoration: none;
   transition:
     border-color 0.18s ease,
@@ -247,16 +261,16 @@ const items = [
 
 .home-feature-card p {
   color: var(--vp-c-text-2);
-  font-size: 16px;
-  font-weight: 550;
+  font-size: 15px;
+  font-weight: 500;
   line-height: 1.55;
   margin: 0 0 14px;
 }
-
 .home-feature-link {
   color: var(--durable-color);
-  font-weight: 600;
-  margin-top: auto;
+  font-weight: 500;
+  margin-top: 6px;
+  font-size: 14px;
 }
 
 .home-feature-link::after {
@@ -268,10 +282,17 @@ const items = [
     grid-template-columns: 1fr 1fr;
   }
 }
-
+@media (min-width: 768px) and (max-width: 920px) {
+  .home-feature-card p {
+    max-width: 200px;
+  }
+}
 @media (min-width: 1100px) {
   .home-feature-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .home-feature-card p {
+    max-width: 200px;
   }
 }
 
@@ -281,5 +302,15 @@ const items = [
 
 .vercel-icon {
   transform: scale(0.8);
+}
+</style>
+<style>
+.hide-at-md {
+  display: inline;
+}
+@media (min-width: 1100px) and (max-width: 1200px){
+  .hide-at-md {
+    display: none;
+  }
 }
 </style>

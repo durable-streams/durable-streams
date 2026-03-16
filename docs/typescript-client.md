@@ -1,4 +1,4 @@
-# TypeScript Client
+# TypeScript client
 
 Use `@durable-streams/client` when you want direct read and write access to Durable Streams from TypeScript.
 
@@ -121,7 +121,7 @@ res.subscribeJson(async (batch) => {
 ## When to use it
 
 - Use the TypeScript client when you are building directly on the protocol.
-- Use [JSON Streams](json-streams.md) when your stream payloads are structured messages.
+- Use [JSON mode](json-mode.md) when your stream payloads are structured messages.
 - Use [Vercel AI SDK](vercel-ai-sdk.md) or [TanStack AI](tanstack-ai.md) when you want higher-level AI integrations.
 
 ## More

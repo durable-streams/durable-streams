@@ -1,8 +1,8 @@
-# StateDB
+# StreamDB
 
-StateDB is the reactive database layer built with `createStreamDB` in `@durable-streams/state`.
+StreamDB is a type-safe reactive database in a durable stream.
 
-Use it when you want typed collections, reactive queries, and optimistic actions on top of [State Streams](state.md).
+Pass in a [StandardSchema](#define-a-standardschema) and get typed collections, reactive queries, and optimistic actions on top of [Durable State](durable-state.md).
 
 ## Installation
 
@@ -10,9 +10,9 @@ Use it when you want typed collections, reactive queries, and optimistic actions
 npm install @durable-streams/state @tanstack/db
 ```
 
-`@tanstack/db` is a peer dependency required for StateDB collections and queries.
+`@tanstack/db` is a peer dependency required for StreamDB collections and queries.
 
-## Schema Definition
+## Define a StandardSchema
 
 Define your state structure with `createStateSchema`. Each collection maps an entity type to a [Standard Schema](https://standardschema.dev/) validator and a primary key field:
 
@@ -59,7 +59,7 @@ schema.users.update({ value: updatedUser, oldValue: previousUser })
 schema.users.delete({ key: "1" })
 ```
 
-## Creating a StateDB
+## Create a StreamDB
 
 `createStreamDB` connects your schema to a Durable Stream and creates a reactive, stream-backed database:
 
@@ -77,9 +77,9 @@ await db.preload()
 
 Calling `preload()` reads the stream from the beginning, materializes the current state, and then stays connected for live updates.
 
-## Reactive Queries
+## Reactive queries
 
-StateDB collections are TanStack DB collections. Use `useLiveQuery` for queries that update automatically when data changes:
+StreamDB collections are TanStack DB collections. Use `useLiveQuery` for queries that update automatically when data changes:
 
 ```typescript
 import { useLiveQuery } from "@tanstack/react-db"
@@ -124,9 +124,9 @@ db.close()
 await db.utils.awaitTxId("txid-uuid", 5000)
 ```
 
-## Optimistic Actions
+## Optimistic actions
 
-StateDB supports optimistic mutations through TanStack DB's action system. Actions update local state immediately while persisting changes to the stream asynchronously:
+StreamDB supports optimistic mutations through TanStack DB's action system. Actions update local state immediately while persisting changes to the stream asynchronously:
 
 ```typescript
 const db = createStreamDB({
@@ -153,9 +153,9 @@ await db.actions.addUser({ id: "1", name: "Alice", email: "alice@example.com" })
 
 If the server mutation fails, TanStack DB rolls back the optimistic update.
 
-## Common Patterns
+## Common patterns
 
-### Key/Value Store
+### Key/value store
 
 ```typescript
 const schema = createStateSchema({
@@ -171,7 +171,7 @@ await stream.append(
 )
 ```
 
-### Presence Tracking
+### Presence tracking
 
 ```typescript
 const schema = createStateSchema({
@@ -189,7 +189,7 @@ await stream.append(
 )
 ```
 
-### Multi-Type Chat Room
+### Multi-type chat room
 
 ```typescript
 const schema = createStateSchema({
@@ -204,9 +204,9 @@ await stream.append(schema.messages.insert({ value: message }))
 await stream.append(schema.reactions.insert({ value: reaction }))
 ```
 
-## Best Practices
+## Best practices
 
-**Use object values.** StateDB requires object values, not primitives, for the primary key pattern:
+**Use object values.** StreamDB requires object values, not primitives, for the primary key pattern:
 
 ```typescript
 // Won't work
@@ -243,9 +243,9 @@ const userSchema = z.object({
 })
 ```
 
-## Learn More
+## Learn more
 
-- [State Streams](state.md) for the underlying protocol
+- [Durable State](durable-state.md) for the underlying protocol
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/state/README.md)
 - [Examples](https://github.com/durable-streams/durable-streams/tree/main/examples/state)
 - [TanStack DB](https://tanstack.com/db)

@@ -1,10 +1,10 @@
-# Building a Server
+# Building a server
 
 The Durable Streams protocol is designed to support server implementations in any language or platform. A server exposes a single URL-per-stream HTTP interface -- the protocol does not prescribe URL structure, so you can organize streams however you choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths).
 
-The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see the [Deployment](deployment.md) docs.
+The [Protocol specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see the [Deployment](deployment.md) docs.
 
-## What to Implement
+## What to implement
 
 A conforming server handles these HTTP methods:
 
@@ -18,7 +18,7 @@ A conforming server handles these HTTP methods:
 
 Servers may implement the read and write paths independently. For example, a database sync server might only implement reads and use its own injection system for writes.
 
-## Storage Layer
+## Storage layer
 
 Your storage backend needs to support these operations:
 
@@ -32,45 +32,45 @@ Possible backends include in-memory stores (for development), file-based storage
 
 The reference implementations use in-memory and file-backed stores. See the [Dev Server](https://github.com/durable-streams/durable-streams/tree/main/packages/server) and [Caddy Plugin](https://github.com/durable-streams/durable-streams/tree/main/packages/caddy-plugin) source for concrete examples.
 
-## Key Protocol Requirements
+## Key protocol requirements
 
 These invariants are enforced by the conformance tests and must hold for any server implementation.
 
-### Byte-exact Resumption
+### Byte-exact resumption
 
 Reading from an offset must return exactly the bytes that follow that offset -- no skips, no duplicates. A client that reads a stream in chunks using `Stream-Next-Offset` must reconstruct the exact same byte sequence as reading the entire stream at once.
 
-### Offset Monotonicity
+### Offset monotonicity
 
 Offsets must be strictly increasing. Every append must produce an offset that is lexicographically greater than all previously assigned offsets. Schemes that can produce duplicate or non-monotonic values (such as raw UTC timestamps) are not conforming.
 
-### Stream Closure (EOF)
+### Stream closure (EOF)
 
 Once a stream is closed, no further appends are permitted. Closure is durable (survives restarts) and monotonic (cannot be reversed). Readers observe closure as a `Stream-Closed: true` header when they reach the final offset.
 
 When rejecting appends to a closed stream, the response must include both `Stream-Closed: true` and `Stream-Next-Offset` so clients can detect the condition programmatically.
 
-### Idempotent Creates
+### Idempotent creates
 
 `PUT` must be idempotent: creating a stream that already exists with matching configuration returns `200 OK`. Mismatched configuration returns `409 Conflict`.
 
-### Content-Type Preservation
+### Content-Type preservation
 
 The content type is set on stream creation and returned on every read. Appends with a mismatched content type are rejected with `409 Conflict`.
 
-### Long-Poll Closure Behavior
+### Long-poll closure behavior
 
 When the stream is closed and the client is at the tail, return `204 No Content` with `Stream-Closed: true` immediately -- do not wait for the timeout.
 
-### HEAD Non-Cacheability
+### HEAD non-cacheability
 
 HEAD responses should include `Cache-Control: no-store` to prevent stale metadata.
 
-## Optional Features
+## Optional features
 
 These features are tested by the conformance suite but are not strictly required for a minimal implementation.
 
-### Idempotent Producers
+### Idempotent producers
 
 Handle `Producer-Id`, `Producer-Epoch`, and `Producer-Seq` request headers on POST for exactly-once write semantics. The server tracks `(producerId, epoch, lastSeq)` state per stream and deduplicates retries. Key behaviors:
 
@@ -82,7 +82,7 @@ Handle `Producer-Id`, `Producer-Epoch`, and `Producer-Seq` request headers on PO
 
 See [Section 5.2.1 of the protocol spec](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md#521-idempotent-producers) for the full validation logic.
 
-### JSON Mode
+### JSON mode
 
 Streams with `Content-Type: application/json` have special semantics:
 
@@ -92,7 +92,7 @@ Streams with `Content-Type: application/json` have special semantics:
 - Empty array POSTs (`[]`) are rejected with `400`
 - POST bodies must be valid JSON
 
-### Caching Headers
+### Caching headers
 
 Support CDN-friendly caching:
 
@@ -101,11 +101,11 @@ Support CDN-friendly caching:
 - ETags must vary with closure status so clients don't receive stale `304` responses that hide an EOF signal
 - `Stream-Cursor` on live responses to enable CDN request collapsing
 
-### TTL / Expiry
+### TTL / expiry
 
 Support `Stream-TTL` and `Stream-Expires-At` headers on PUT for automatic stream cleanup after a time-to-live. The two headers are mutually exclusive.
 
-## Conformance Tests
+## Conformance tests
 
 The conformance test suite is the definitive way to verify your server implements the protocol correctly. Unlike the client conformance tests (which use a stdin/stdout adapter protocol), the server tests make HTTP requests directly against your running server -- no adapter needed.
 
@@ -121,7 +121,7 @@ The test suite uses [vitest](https://vitest.dev/) internally. It starts, makes H
 
 <ServerConformanceDiagram />
 
-### CLI Usage
+### CLI usage
 
 Run tests once against a running server (for CI):
 
@@ -138,7 +138,7 @@ npx @durable-streams/server-conformance-tests --watch src http://localhost:4437
 npx @durable-streams/server-conformance-tests --watch src lib http://localhost:4437
 ```
 
-### Programmatic Usage
+### Programmatic usage
 
 Run the tests from your own test suite:
 
@@ -161,7 +161,7 @@ describe("My Server", () => {
 })
 ```
 
-### CI Integration
+### CI integration
 
 ```yaml
 # GitHub Actions example
@@ -179,7 +179,7 @@ jobs:
       - run: npx @durable-streams/server-conformance-tests --run http://localhost:4437
 ```
 
-### Test Coverage
+### Test coverage
 
 The 232 tests cover:
 
@@ -199,7 +199,7 @@ The 232 tests cover:
 - **Property-based fuzzing** -- random append/read sequences via fast-check
 - **Malformed input fuzzing** -- security-focused edge cases
 
-## Reference Implementations
+## Reference implementations
 
 Two official implementations are available as reference:
 
@@ -210,4 +210,4 @@ See [Deployment](deployment.md) for usage details on the official server options
 
 ---
 
-See also: [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) | [Core Concepts](concepts.md) | [Benchmarking](benchmarking.md) | [Building a Client](building-a-client.md)
+See also: [Protocol specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) | [Core concepts](concepts.md) | [Benchmarking](benchmarking.md) | [Building a client](building-a-client.md)

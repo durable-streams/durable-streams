@@ -1,4 +1,4 @@
-# Python Client
+# Python client
 
 Use `durable-streams` when you want direct read and write access to Durable Streams from Python.
 
@@ -108,5 +108,5 @@ asyncio.run(main())
 ## More
 
 - [Python client README](https://github.com/durable-streams/durable-streams/blob/main/packages/client-py/README.md)
-- [JSON Streams](json-streams.md) for structured message streams
+- [JSON mode](json-mode.md) for structured message streams
 - [Other clients](clients.md) for the rest of the official client libraries

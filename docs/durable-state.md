@@ -2,7 +2,7 @@
 
 Durable State adds structured state changes on top of Durable Streams. Instead of treating a stream as raw bytes, you work with typed `insert`, `update`, and `delete` events.
 
-## Protocol Overview
+## Protocol overview
 
 Durable State uses JSON streams (`Content-Type: application/json`) and define two message types:
 
@@ -13,7 +13,7 @@ Clients append these events to a stream and materialize state by applying them i
 
 Use Durable Streams directly for raw token or byte streaming. Use Durable State when you want database-style sync semantics on top.
 
-> See the full [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) for the formal wire format and requirements.
+> See the full [State protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) for the formal wire format and requirements.
 
 ## Installation
 
@@ -23,7 +23,7 @@ npm install @durable-streams/state @tanstack/db
 
 `@tanstack/db` is only needed for [StreamDB](stream-db.md). If you only need `MaterializedState`, you can skip it.
 
-## Change Events
+## Change events
 
 The State Protocol defines a standard format for state change events. Each event targets a typed entity identified by `type` and `key`, and carries an operation in its `headers`:
 
@@ -54,7 +54,7 @@ The State Protocol defines a standard format for state change events. Each event
 
 Multiple entity types coexist in the same stream. A chat room stream might carry `user`, `message`, `reaction`, and `typing` events, all interleaved and processed in order.
 
-## Control Events
+## Control events
 
 The protocol also defines control events for stream management, separate from data changes. These have a `control` field in their headers instead of an `operation`:
 
@@ -124,9 +124,9 @@ This enables scenarios where an AI agent streams tokens into a session while str
 
 For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](https://electric-sql.com/blog/2026/01/12/durable-sessions-for-collaborative-ai) blog post.
 
-## Learn More
+## Learn more
 
-- [State Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) -- full protocol spec
+- [State protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) -- full protocol spec
 - [StreamDB](stream-db.md) -- reactive collections, queries, and optimistic actions
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/state/README.md) -- complete API reference
 - [Examples](https://github.com/durable-streams/durable-streams/tree/main/examples/state) -- background jobs dashboard and Wikipedia live events demo
@@ -135,4 +135,4 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 ---
 
-See also: [Core Concepts](concepts.md) | [JSON Streams](json-streams.md) | [StreamDB](stream-db.md)
+See also: [Core concepts](concepts.md) | [JSON mode](json-mode.md) | [StreamDB](stream-db.md)

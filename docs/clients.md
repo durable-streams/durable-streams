@@ -1,10 +1,10 @@
-# Other Clients
+# Other clients
 
 Durable Streams has official client libraries in 10 languages. All implement the same [protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.
 
-If your language isn't listed here, you can build your own -- see [Building a Client](building-a-client.md).
+If your language isn't listed here, you can build your own -- see [Building a client](building-a-client.md).
 
-## Common Features
+## Common features
 
 All client libraries share the same core capabilities:
 
@@ -29,7 +29,7 @@ All client libraries share the same core capabilities:
 | [Rust](#rust)             | `cargo add durable-streams`                                            | <span class="nowrap">Vibe-Engineered</span>   |
 | [Ruby](#ruby)             | `gem install durable_streams`                                          | <span class="nowrap">Vibe-Engineered</span>   |
 
-## Maturity Levels
+## Maturity levels
 
 Each client follows a maturity progression:
 
@@ -39,7 +39,7 @@ Each client follows a maturity progression:
 
 All clients pass the conformance test suite regardless of maturity level. The difference is in API polish, idiomatic patterns, and battle-testing.
 
-If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client Maturity Model](https://github.com/durable-streams/durable-streams/blob/main/CLIENT_MATURITY.md) for the review process and checklist.
+If you're an expert in a language with a Vibe-Engineered client, we'd love your help leveling it up. See the [Client maturity model](https://github.com/durable-streams/durable-streams/blob/main/CLIENT_MATURITY.md) for the review process and checklist.
 
 ## TypeScript
 

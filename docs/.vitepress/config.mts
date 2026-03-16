@@ -29,7 +29,7 @@ export default defineConfig({
       {
         text: "GitHub",
         link: "https://github.com/durable-streams/durable-streams",
-      },
+      }
     ],
     sidebar: [
       {
@@ -52,7 +52,7 @@ export default defineConfig({
             ],
             collapsed: false
           },
-          { text: "JSON Streams", link: "/json-streams" },
+          { text: "JSON mode", link: "/json-mode" },
           { text: "Durable Proxy", link: "/durable-proxy" },
           { text: "Durable State", link: "/durable-state" },
           { text: "StreamDB", link: "/stream-db" },
@@ -82,9 +82,10 @@ export default defineConfig({
       },
     ],
     socialLinks: [
-      { icon: "discord", link: "https://discord.electric-sql.com" },
+      { icon: "discord", link: "https://discord.gg/VMRbuXQkkz" },
       {
         icon: "github",
+        text: "GitHub",
         link: "https://github.com/durable-streams/durable-streams",
       },
     ],
@@ -93,9 +94,9 @@ export default defineConfig({
     },
     footer: {
       copyright:
-        'Released under the <a href="https://github.com/durable-streams/durable-streams/blob/main/LICENSE">MIT License</a>',
+        'Released as an <a href="https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md">Open&nbsp;Protocol</a> under the <a href="https://github.com/durable-streams/durable-streams/blob/main/LICENSE">MIT&nbsp;License</a>.',
       message:
-        'Made with ❤️ by the team that built <a href="https://electric-sql.com/">ElectricSQL</a>',
+        'Made with ♥️ by the team behind <span class="no-wrap"><a href="https://electric-sql.com">ElectricSQL</a>, <a href="https://pglite.dev">PGlite</a> and <a href="https://tanstack.com">TanStack&nbsp;DB</a></span>.',
     },
   },
 })

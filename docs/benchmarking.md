@@ -23,7 +23,7 @@ runBenchmarks({
 
 Results are printed to the console and written to `benchmark-results.json` in the current directory.
 
-## What's Measured
+## What's measured
 
 ### Latency
 
@@ -33,7 +33,7 @@ Results are printed to the console and written to `benchmark-results.json` in th
 
 Target: < 10ms overhead per round-trip.
 
-### Message Throughput
+### Message throughput
 
 - **Small messages** -- 1,000 messages of 100 bytes each, batched with concurrency
 - **Large messages** -- 50 messages of 1MB each
@@ -77,4 +77,4 @@ Each metric reports min, max, mean, p50, p75, and p99 values. The JSON output in
 
 ---
 
-See also: [Building a Server](building-a-server.md) | [Deployment](deployment.md)
+See also: [Building a server](building-a-server.md) | [Deployment](deployment.md)

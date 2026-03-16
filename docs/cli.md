@@ -18,7 +18,7 @@ npx @durable-streams/cli <command> [options]
 
 Once installed globally, the CLI is available as `durable-stream`.
 
-## Environment Variables
+## Environment variables
 
 | Variable      | Description                                          | Default                           |
 | ------------- | ---------------------------------------------------- | --------------------------------- |
@@ -27,7 +27,7 @@ Once installed globally, the CLI is available as `durable-stream`.
 
 Both can be overridden per-command with the `--url` and `--auth` flags.
 
-## Global Options
+## Global options
 
 | Flag             | Description                                          |
 | ---------------- | ---------------------------------------------------- |
@@ -159,7 +159,7 @@ durable-stream --auth "Bearer my-token" read my-stream
 durable-stream --auth "Basic dXNlcjpwYXNz" read my-stream
 ```
 
-## Workflow Example
+## Workflow example
 
 A complete session using the CLI, assuming a server is running on `localhost:4437` (see [Quickstart](quickstart.md)):
 
