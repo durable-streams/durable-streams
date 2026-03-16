@@ -8,36 +8,33 @@ const items = [
   },
   {
     title: "Clients",
-    details:
-      "TypeScript, Python and other languages",
+    details: "TypeScript, Python and other languages",
     href: "/typescript-client",
     icon: "code",
   },
   {
     title: "TanStack AI",
     details:
-      "Durable Session <span class=\"hide-at-md\">support</span> for TanStack AI apps",
+      'Durable Session <span class="hide-at-md">support</span> for TanStack AI apps',
     href: "/tanstack-ai",
     icon: "tanstack",
   },
   {
     title: "Vercel AI SDK",
     details:
-      "Durable Transport <span class=\"hide-at-md\">adapter</span> for AI SDK apps",
+      'Durable Transport <span class="hide-at-md">adapter</span> for AI SDK apps',
     href: "/vercel-ai-sdk",
     icon: "vercel",
   },
   {
     title: "JSON streams",
-    details:
-      "Stream structured data using JSON messages",
+    details: "Stream structured data using JSON messages",
     href: "/json-mode",
     icon: "json",
   },
   {
     title: "Durable State",
-    details:
-      "Sync structured state over durable streams",
+    details: "Sync structured state over durable streams",
     href: "/durable-state",
     icon: "layers",
   },
@@ -108,8 +105,12 @@ const items = [
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <path d="M8 4c-2 0-3 1-3 3v2c0 1.5-.5 2.5-2 3 1.5.5 2 1.5 2 3v2c0 2 1 3 3 3" />
-            <path d="M16 4c2 0 3 1 3 3v2c0 1.5.5 2.5 2 3-1.5.5-2 1.5-2 3v2c0 2-1 3-3 3" />
+            <path
+              d="M8 4c-2 0-3 1-3 3v2c0 1.5-.5 2.5-2 3 1.5.5 2 1.5 2 3v2c0 2 1 3 3 3"
+            />
+            <path
+              d="M16 4c2 0 3 1 3 3v2c0 1.5.5 2.5 2 3-1.5.5-2 1.5-2 3v2c0 2-1 3-3 3"
+            />
             <path d="M11 9h2" />
             <path d="M11 15h2" />
             <path d="M11 12h2" />
@@ -163,7 +164,9 @@ const items = [
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z" />
+            <path
+              d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
+            />
           </svg>
           <svg
             v-else-if="item.icon === 'database'"
@@ -175,9 +178,9 @@ const items = [
             stroke-linejoin="round"
             aria-hidden="true"
           >
-            <ellipse cx="12" cy="5" rx="8" ry="3" />
-            <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
-            <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+            <ellipse cx="12" cy="7" rx="8" ry="2.5" />
+            <path d="M4 7v12c0 1.38 3.58 2.5 8 2.5s8-1.12 8-2.5V7" />
+            <path d="M4 13c0 1.38 3.58 2.5 8 2.5s8-1.12 8-2.5" />
           </svg>
         </div>
         <h2>{{ item.title }}</h2>
@@ -308,7 +311,7 @@ const items = [
 .hide-at-md {
   display: inline;
 }
-@media (min-width: 1100px) and (max-width: 1200px){
+@media (min-width: 1100px) and (max-width: 1200px) {
   .hide-at-md {
     display: none;
   }

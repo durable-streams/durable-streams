@@ -113,6 +113,9 @@
 a {
   cursor: pointer;
 }
+.no-wrap {
+  white-space: nowrap;
+}
 
 body {
   font-family:
@@ -327,7 +330,6 @@ body {
     max-width: 400px;
     font-size: 16px;
   }
-
 }
 
 .VPHome .VPHero {
@@ -600,4 +602,8 @@ body {
 .markdown-link-aside.pager-link:hover {
   border-color: rgba(117, 251, 253, 0.45);
   color: var(--vp-c-text-1);
+}
+
+.copyright {
+  margin: 0.5rem 0;
 }

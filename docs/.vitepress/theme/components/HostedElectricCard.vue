@@ -8,9 +8,7 @@
           </div>
           <div class="hosting-cloud-text">
             <h3>Electric Cloud</h3>
-            <p>
-              Scalable, turnkey hosting of Durable Streams.
-            </p>
+            <p>Scalable, turnkey hosting of Durable Streams.</p>
           </div>
           <div class="hosting-cloud-actions">
             <span class="hosting-cloud-button">Learn more</span>
@@ -40,8 +38,7 @@
   background:
     linear-gradient(to right, var(--vp-c-bg-soft) 45%, transparent 85%),
     linear-gradient(rgba(26, 27, 30, 0.5), rgba(26, 27, 30, 0.5)),
-    url("/img/home/dashboard-stream.jpg") right top /
-      auto 109% no-repeat,
+    url("/img/home/dashboard-stream.jpg") right top / auto 109% no-repeat,
     var(--vp-c-bg-soft);
   border: 1px solid rgba(42, 44, 52, 0.5);
   border-radius: 12px;
@@ -75,7 +72,6 @@
   margin: 0 0 12px;
   padding-top: 0 !important;
 }
-
 
 .hosting-cloud-text p {
   color: var(--vp-c-text-2);
@@ -118,8 +114,7 @@
     background:
       linear-gradient(to right, var(--vp-c-bg-soft) 40%, transparent 85%),
       linear-gradient(rgba(26, 27, 30, 0.6), rgba(26, 27, 30, 0.6)),
-      url("/img/home/dashboard-stream.jpg") right top /
-        auto 109% no-repeat,
+      url("/img/home/dashboard-stream.jpg") right top / auto 109% no-repeat,
       var(--vp-c-bg-soft);
     padding: 40px 32px 46px;
   }
@@ -139,8 +134,7 @@
     background:
       linear-gradient(to right, var(--vp-c-bg-soft) 40%, transparent 85%),
       linear-gradient(rgba(26, 27, 30, 0.8), rgba(26, 27, 30, 0.8)),
-      url("/img/home/dashboard-stream.jpg") right top /
-        auto 109% no-repeat,
+      url("/img/home/dashboard-stream.jpg") right top / auto 109% no-repeat,
       var(--vp-c-bg-soft);
     padding: 32px 24px 40px;
   }

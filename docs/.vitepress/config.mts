@@ -29,7 +29,7 @@ export default defineConfig({
       {
         text: "GitHub",
         link: "https://github.com/durable-streams/durable-streams",
-      }
+      },
     ],
     sidebar: [
       {
@@ -50,7 +50,7 @@ export default defineConfig({
               { text: "Python", link: "/python-client" },
               { text: "Other clients", link: "/clients" },
             ],
-            collapsed: false
+            collapsed: false,
           },
           { text: "JSON mode", link: "/json-mode" },
           { text: "Durable Proxy", link: "/durable-proxy" },
@@ -64,8 +64,11 @@ export default defineConfig({
         items: [
           { text: "TanStack AI", link: "/tanstack-ai" },
           { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
-          { text: "AnyCable", link: "https://docs.anycable.io/anycable-go/durable_streams"},
-        ]
+          {
+            text: "AnyCable",
+            link: "https://docs.anycable.io/anycable-go/durable_streams",
+          },
+        ],
       },
       {
         text: "Reference",
