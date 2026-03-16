@@ -110,6 +110,10 @@
   overflow-x: hidden;
 }
 
+a {
+  cursor: pointer;
+}
+
 body {
   font-family:
     "Open Sauce One",
@@ -129,7 +133,11 @@ body {
 }
 
 .VPNavBarTitle .logo {
-  margin-top: -1px;
+  margin-right: 12px;
+  margin-top: 1px;
+}
+.VPNavBarTitle span {
+  margin-top: 1px;
 }
 
 @media (min-width: 768px) {
@@ -281,11 +289,45 @@ body {
 }
 
 .VPHero .text {
-  max-width: 860px;
+  max-width: 580px;
+  color: var(--vp-c-text-1);
+  font-size: 42px;
+  line-height: 1.25;
+  margin-top: 10px;
+  margin-bottom: 2px;
 }
 
 .VPHero .tagline {
-  max-width: 780px;
+  max-width: 580px;
+  color: var(--vp-c-text-2);
+  font-size: 21px;
+}
+
+@media (max-width: 959px) {
+  .VPHero .text {
+    max-width: 580px;
+    font-size: 38px;
+    margin-top: 10px;
+    margin-bottom: 2px;
+  }
+  .VPHero .tagline {
+    max-width: 500px;
+    font-size: 18px;
+  }
+}
+
+@media (max-width: 639px) {
+  .VPHero .text {
+    max-width: 400px;
+    font-size: 26px;
+    margin-top: 10px;
+    margin-bottom: 2px;
+  }
+  .VPHero .tagline {
+    max-width: 400px;
+    font-size: 16px;
+  }
+
 }
 
 .VPHome .VPHero {
@@ -300,7 +342,7 @@ body {
   background-size: contain;
   content: "";
   height: clamp(420px, 48vw, 660px);
-  opacity: 0.08;
+  opacity: 0.16;
   pointer-events: none;
   position: absolute;
   right: 0;

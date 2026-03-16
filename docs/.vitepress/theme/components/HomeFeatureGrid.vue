@@ -7,7 +7,7 @@ const items = [
     icon: "terminal",
   },
   {
-    title: "TypeScript Client",
+    title: "TypeScript",
     details:
       "Client for reading and writing from either client or server.",
     href: "/typescript-client",
@@ -42,10 +42,10 @@ const items = [
     icon: "layers",
   },
   {
-    title: "Durable Proxy",
-    details: "Put durable resumability in front of existing AI streaming endpoints.",
-    href: "/proxy",
-    icon: "proxy",
+    title: "StreamDB",
+    details: "A filesystem for AI agents with real-time sync built on durable streams.",
+    href: "/streamdb",
+    icon: "folder",
   },
   {
     title: "StreamFS",

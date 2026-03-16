@@ -7,9 +7,9 @@
             <img src="/img/icons/ddn.svg" alt="Electric" />
           </div>
           <div class="hosting-cloud-text">
-            <h3>Hosted on Electric</h3>
+            <h3>Electric Cloud</h3>
             <p>
-              Scalable, turnkey Durable Streams hosting with usage‑based pricing.
+              Scalable, turnkey hosting of Durable Streams.
             </p>
           </div>
           <div class="hosting-cloud-actions">
@@ -26,9 +26,12 @@
   margin: 28px 0 34px;
   width: 100%;
 }
+.hosting-cloud-card:hover {
+  border: none !important;
+}
 
 .hosting-cloud-link {
-  color: inherit;
+  color: inherit !important;
   display: block;
   text-decoration: none;
 }
@@ -50,7 +53,7 @@
 }
 
 .hosting-cloud-link:hover .hosting-cloud-surface {
-  border-color: rgba(117, 251, 253, 0.3);
+  border-color: rgba(208, 188, 255, 0.3);
   transform: translateY(-1px);
 }
 
@@ -72,6 +75,7 @@
   margin: 0 0 12px;
   padding-top: 0 !important;
 }
+
 
 .hosting-cloud-text p {
   color: var(--vp-c-text-2);
