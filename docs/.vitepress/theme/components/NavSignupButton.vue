@@ -8,13 +8,10 @@ const extraClasses = [screenMenu ? "is-mobile" : ""]
 <template>
   <div :class="[...classes, ...extraClasses]">
     <div class="cta-lg">
-      <VPButton href="/hosting" theme="brand" text="Hosting" />
+      <VPButton href="/deployment" theme="brand" text="Deploy now" />
     </div>
     <div class="cta-md">
-      <VPButton href="/hosting" theme="brand" text="Hosting" />
-    </div>
-    <div class="cta-sm">
-      <VPButton href="/hosting" theme="brand" text="Hosting" />
+      <VPButton href="/deployment" theme="brand" text="Deploy now" />
     </div>
   </div>
 </template>

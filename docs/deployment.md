@@ -1,10 +1,10 @@
-# Hosting & Servers
+# Deployment
 
-Run Durable Streams in production either with managed hosting on [Electric Cloud](https://electric-sql.com/cloud) or by self-hosting the server with [Caddy](#self-hosted-with-caddy).
+[Self-host with Caddy](#self-hosted-with-caddy) or run in production using [Electric Cloud](https://electric-sql.com/cloud).
 
 <HostedElectricCard />
 
-## At a Glance
+## At a glance
 
 | Server                                 | Language             | Best for                          |
 | -------------------------------------- | -------------------- | --------------------------------- |
@@ -12,7 +12,7 @@ Run Durable Streams in production either with managed hosting on [Electric Cloud
 | Caddy Plugin                           | Go                   | Production deployments            |
 | Electric                               | Hosted               | Managed production hosting        |
 
-## Node Server
+## Node server
 
 The Node server in `@durable-streams/server` is the reference implementation for development, testing, CI, and embedded Node.js use cases.
 

@@ -2,7 +2,7 @@
 
 The Durable Streams protocol is designed to support server implementations in any language or platform. A server exposes a single URL-per-stream HTTP interface -- the protocol does not prescribe URL structure, so you can organize streams however you choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths).
 
-The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see [Hosting & Servers](hosting.md).
+The [Protocol Specification](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) is the authoritative reference for HTTP operations, headers, response codes, and content modes. The [`@durable-streams/server-conformance-tests`](https://github.com/durable-streams/durable-streams/tree/main/packages/server-conformance-tests) package validates your implementation against it -- point it at your running server and it tells you what's passing and what's not. For existing server implementations, see the [Deployment](deployment.md) docs.
 
 ## What to Implement
 
@@ -206,7 +206,7 @@ Two official implementations are available as reference:
 - **Node.js Dev Server** ([packages/server](https://github.com/durable-streams/durable-streams/tree/main/packages/server)) -- a TypeScript implementation good for understanding the basics. Uses in-memory or file-backed storage.
 - **Caddy Plugin** ([packages/caddy-plugin](https://github.com/durable-streams/durable-streams/tree/main/packages/caddy-plugin)) -- a production-grade Go implementation built as a Caddy v2 plugin. Uses LMDB for persistence.
 
-See [Hosting & Servers](hosting.md) for usage details on the official server options.
+See [Deployment](deployment.md) for usage details on the official server options.
 
 ---
 
