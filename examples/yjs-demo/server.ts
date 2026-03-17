@@ -30,7 +30,6 @@ async function main() {
     host: `0.0.0.0`,
     dsServerUrl: dsUrl,
     compactionThreshold: 1024 * 1024, // 1MB
-    minUpdatesBeforeCompaction: 100,
   })
 
   const yjsUrl = await yjsServer.start()

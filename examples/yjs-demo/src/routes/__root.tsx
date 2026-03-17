@@ -16,7 +16,7 @@ import type { RoomMetadata } from "../utils/schemas"
 import "../styles.css"
 
 function RoomItem({ room }: { room: RoomMetadata }) {
-  const { registryDB, serverEndpoint } = useRegistryContext()
+  const { registryDB, dsEndpoint } = useRegistryContext()
   const navigate = useNavigate()
   const [isDeleting, setIsDeleting] = useState(false)
 
@@ -30,7 +30,7 @@ function RoomItem({ room }: { room: RoomMetadata }) {
     try {
       // Delete the room stream
       const stream = new DurableStream({
-        url: `${serverEndpoint}/v1/stream/rooms/${room.roomId}`,
+        url: `${dsEndpoint}/v1/stream/rooms/${room.roomId}`,
         contentType: `application/octet-stream`,
       })
       await stream.delete()

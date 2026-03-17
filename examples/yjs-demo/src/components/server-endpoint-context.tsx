@@ -7,6 +7,7 @@ import type { ReactNode } from "react"
 
 interface ServerEndpointContextValue {
   serverEndpoint: string
+  dsEndpoint: string
 }
 
 const ServerEndpointContext = createContext<ServerEndpointContextValue | null>(
@@ -34,22 +35,32 @@ export function useServerEndpoint(): ServerEndpointContextValue {
  * current hostname with default Yjs server port (4438).
  */
 function getServerEndpoint(): string {
-  // Use environment variable if set
   if (import.meta.env.VITE_SERVER_URL) {
     return import.meta.env.VITE_SERVER_URL
   }
 
-  // Fallback: use current hostname with default Yjs server port
   const hostname =
     typeof window !== `undefined` ? window.location.hostname : `localhost`
   return `http://${hostname}:4438`
 }
 
+function getDsEndpoint(): string {
+  if (import.meta.env.VITE_DS_URL) {
+    return import.meta.env.VITE_DS_URL
+  }
+
+  const hostname =
+    typeof window !== `undefined` ? window.location.hostname : `localhost`
+  return `http://${hostname}:4437`
+}
+
 export function ServerEndpointProvider({ children }: { children: ReactNode }) {
   const serverEndpoint = getServerEndpoint()
+  const dsEndpoint = getDsEndpoint()
 
   const value: ServerEndpointContextValue = {
     serverEndpoint,
+    dsEndpoint,
   }
 
   return (
