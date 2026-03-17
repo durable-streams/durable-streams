@@ -19,6 +19,7 @@ var (
 	ErrEmptyJSONArray      = errors.New("empty JSON array not allowed")
 	ErrInvalidJSON         = errors.New("invalid JSON")
 	ErrStreamClosed        = errors.New("stream is closed")
+	ErrPreconditionFailed  = errors.New("If-Match precondition failed")
 )
 
 // Producer validation errors
@@ -159,6 +160,7 @@ type AppendOptions struct {
 	Seq         string // Stream-Seq header value for coordination
 	ContentType string // Content-Type to validate against stream
 	Close       bool   // Close stream after append (Stream-Closed: true)
+	IfMatch     string // If-Match ETag for atomic CAS (checked under lock)
 
 	// Idempotent producer fields (all must be set together, or none)
 	ProducerId    string // Producer-Id header

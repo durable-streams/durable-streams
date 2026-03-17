@@ -6,6 +6,7 @@ namespace DurableStreams\Internal;
 
 use DurableStreams\Exception\DurableStreamException;
 use DurableStreams\Exception\MessageTooLargeException;
+use DurableStreams\Exception\PreconditionFailedException;
 use DurableStreams\Exception\RateLimitedException;
 use DurableStreams\Exception\SeqConflictException;
 use DurableStreams\Exception\StreamClosedException;
@@ -81,6 +82,12 @@ trait HttpErrorHandler
 
             case 403:
                 throw new DurableStreamException($body ?: 'Forbidden', 'FORBIDDEN', $status, $headers);
+
+            case 412:
+                $currentETag = $headers['etag'] ?? null;
+                $currentOffset = $headers['stream-next-offset'] ?? null;
+                $streamClosed = strtolower($headers['stream-closed'] ?? '') === 'true';
+                throw new PreconditionFailedException($currentETag, $currentOffset, $streamClosed, $headers);
 
             case 413:
                 throw MessageTooLargeException::fromServerResponse($body, $headers);

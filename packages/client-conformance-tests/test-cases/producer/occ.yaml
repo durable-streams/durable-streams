@@ -1,0 +1,165 @@
+id: producer-occ
+name: Optimistic Concurrency Control (OCC)
+description: Tests for If-Match header support on append operations
+category: producer
+tags:
+  - core
+  - occ
+  - concurrency
+
+tests:
+  - id: append-with-matching-if-match
+    name: Append with matching If-Match succeeds
+    description: Client should successfully append when If-Match matches current offset
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+        saveAs: headResult
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "first"}'
+        ifMatch: '"${headResult.offset}"'
+        expect:
+          status: 200
+
+  - id: append-with-stale-if-match
+    name: Append with stale If-Match returns 412
+    description: Client should receive 412 when If-Match doesn't match current offset
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "first"}'
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "second"}'
+        ifMatch: '"0"'
+        expect:
+          status: 412
+          errorCode: PRECONDITION_FAILED
+
+  - id: append-with-unquoted-if-match
+    name: Unquoted If-Match value returns 412
+    description: If-Match values must be quoted per HTTP spec; unquoted values should not match
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+        saveAs: headResult
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "test"}'
+        ifMatch: "${headResult.offset}"
+        expect:
+          status: 412
+          errorCode: PRECONDITION_FAILED
+
+  - id: append-if-match-nonexistent
+    name: Append with If-Match to non-existent stream returns 404
+    description: If-Match should not affect 404 behavior for non-existent streams
+    operations:
+      - action: append
+        path: /nonexistent-occ-stream
+        data: '{"event": "test"}'
+        ifMatch: '"0"'
+        expect:
+          status: 404
+          errorCode: NOT_FOUND
+
+  - id: append-if-match-closed-stream
+    name: Append with If-Match to closed stream returns 409
+    description: Stream closure takes precedence over If-Match precondition
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        closed: true
+        expect:
+          status: 201
+      - action: append
+        path: ${streamPath}
+        data: '{"event": "test"}'
+        ifMatch: '"0"'
+        expect:
+          status: 409
+          errorCode: STREAM_CLOSED
+
+  - id: concurrent-writers-conflict
+    name: Second writer fails with 412 after first writer appends
+    description: Simulates concurrent write scenario where second writer has stale offset
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+        saveAs: initialState
+      - action: append
+        path: ${streamPath}
+        data: '{"writer": "first"}'
+        expect:
+          status: 200
+      - action: append
+        path: ${streamPath}
+        data: '{"writer": "second"}'
+        ifMatch: '"${initialState.offset}"'
+        expect:
+          status: 412
+          errorCode: PRECONDITION_FAILED
+
+  - id: retry-after-412
+    name: Successful append after 412 with updated If-Match
+    description: Client can retry with new offset after receiving 412
+    operations:
+      - action: create
+        as: streamPath
+        contentType: application/json
+        expect:
+          status: 201
+      - action: head
+        path: ${streamPath}
+        expect:
+          status: 200
+        saveAs: initialState
+      - action: append
+        path: ${streamPath}
+        data: '{"writer": "first"}'
+        expect:
+          status: 200
+        saveAs: firstAppend
+      - action: append
+        path: ${streamPath}
+        data: '{"writer": "second"}'
+        ifMatch: '"${initialState.offset}"'
+        expect:
+          status: 412
+          errorCode: PRECONDITION_FAILED
+      - action: append
+        path: ${streamPath}
+        data: '{"writer": "second"}'
+        ifMatch: '"${firstAppend.offset}"'
+        expect:
+          status: 200

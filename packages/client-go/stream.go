@@ -239,6 +239,12 @@ func (s *Stream) Append(ctx context.Context, data []byte, opts ...AppendOption) 
 		}
 		// Could be sequence conflict or content-type mismatch
 		return nil, newStreamError("append", s.url, resp.StatusCode, ErrSeqConflict)
+	case http.StatusPreconditionFailed:
+		return nil, newStreamError("append", s.url, resp.StatusCode, &PreconditionFailedError{
+			CurrentETag:   resp.Header.Get(headerETag),
+			CurrentOffset: Offset(resp.Header.Get(headerStreamOffset)),
+			StreamClosed:  resp.Header.Get(headerStreamClosed) == "true",
+		})
 	default:
 		return nil, newStreamError("append", s.url, resp.StatusCode, errorFromStatus(resp.StatusCode))
 	}

@@ -27,6 +27,13 @@ pub enum StreamError {
     #[error("stream is closed")]
     StreamClosed,
 
+    #[error("precondition failed: stream was modified by another writer")]
+    PreconditionFailed {
+        current_etag: Option<String>,
+        current_offset: Option<String>,
+        stream_closed: bool,
+    },
+
     #[error("offset gone (retention/compaction): {offset}")]
     OffsetGone { offset: String },
 
@@ -80,6 +87,11 @@ impl StreamError {
             410 => StreamError::OffsetGone {
                 offset: String::new(),
             },
+            412 => StreamError::PreconditionFailed {
+                current_etag: None,
+                current_offset: None,
+                stream_closed: false,
+            },
             429 => StreamError::RateLimited { retry_after: None },
             _ if status >= 500 => StreamError::ServerError {
                 status,
@@ -114,6 +126,7 @@ impl StreamError {
             StreamError::BadRequest { .. } => Some(400),
             StreamError::ServerError { status, .. } => Some(*status),
             StreamError::OffsetGone { .. } => Some(410),
+            StreamError::PreconditionFailed { .. } => Some(412),
             StreamError::SeqConflict => Some(409),
             StreamError::StreamClosed => Some(409),
             _ => None,
@@ -127,6 +140,7 @@ impl StreamError {
             StreamError::Conflict => "CONFLICT",
             StreamError::SeqConflict => "SEQUENCE_CONFLICT",
             StreamError::StreamClosed => "STREAM_CLOSED",
+            StreamError::PreconditionFailed { .. } => "PRECONDITION_FAILED",
             StreamError::OffsetGone { .. } => "INVALID_OFFSET",
             StreamError::BadRequest { .. } => "INVALID_OFFSET",
             StreamError::Unauthorized => "UNAUTHORIZED",

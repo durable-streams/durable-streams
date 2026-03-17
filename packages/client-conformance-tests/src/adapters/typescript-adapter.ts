@@ -287,7 +287,10 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           body = command.data
         }
 
-        await ds.append(body, { seq: command.seq?.toString() })
+        await ds.append(body, {
+          seq: command.seq?.toString(),
+          ifMatch: command.ifMatch,
+        })
         const head = await ds.head()
 
         return {
@@ -882,6 +885,9 @@ function errorResult(
       status = 400
     } else if (err.code === `PARSE_ERROR`) {
       errorCode = ErrorCodes.PARSE_ERROR
+    } else if (err.code === `PRECONDITION_FAILED`) {
+      errorCode = ErrorCodes.PRECONDITION_FAILED
+      status = 412
     }
 
     return {
@@ -911,6 +917,8 @@ function errorResult(
       } else {
         errorCode = ErrorCodes.CONFLICT
       }
+    } else if (err.status === 412) {
+      errorCode = ErrorCodes.PRECONDITION_FAILED
     } else if (err.status === 400) {
       // Check if this is an invalid offset error
       if (msg.includes(`offset`) || msg.includes(`invalid`)) {

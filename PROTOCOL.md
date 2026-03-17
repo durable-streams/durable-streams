@@ -228,6 +228,14 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - **Close-only requests are idempotent**: if the stream is already closed and the request includes `Stream-Closed: true` with an empty body, servers **SHOULD** return `204 No Content` with `Stream-Closed: true`.
   - **Append-and-close requests are NOT idempotent** (without idempotent producer headers): if the stream is already closed and the request includes a body but no idempotent producer headers, servers **MUST** return `409 Conflict` with `Stream-Closed: true`, since the body cannot be appended. However, if idempotent producer semantics apply and the request matches the `(producerId, epoch, seq)` tuple that performed the closing append, servers treat it as a deduplicated success (see Section 5.2.1).
 
+- `If-Match: <etag>` (optional)
+  - Enables optimistic concurrency control (OCC). The append will only succeed if the stream's current ETag matches the provided value.
+  - The ETag corresponds to the stream's current tail offset (the value that would be returned in `Stream-Next-Offset` for a HEAD request).
+  - Format: `If-Match: "<offset>"` (quoted string per HTTP spec, [RFC 9110 Section 8.8.3](https://www.rfc-editor.org/rfc/rfc9110#section-8.8.3))
+  - The wildcard form `If-Match: *` is intentionally **not supported**. Since POST to a non-existent stream already returns `404 Not Found`, "append if exists" semantics are the default behavior.
+  - If the ETag does not match, the server **MUST** return `412 Precondition Failed` with the current ETag in the response headers.
+  - **MUST NOT** be used together with idempotent producer headers (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`). If both `If-Match` and any producer header are present, servers **MUST** return `400 Bad Request`. These mechanisms solve different problems and have conflicting retry semantics (see Section 5.2.2).
+
 #### Request Body
 
 - Bytes to append to the stream. Servers **MUST** reject POST requests with an empty body (Content-Length: 0 or no body) with `400 Bad Request`, **unless** the `Stream-Closed: true` header is present (which allows closing without appending data).
@@ -235,16 +243,18 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Codes
 
 - `204 No Content`: Append successful (or stream already closed when closing idempotently)
-- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`)
+- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`, or both `If-Match` and producer headers provided)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
 - `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
+- `412 Precondition Failed`: `If-Match` header provided but ETag does not match the stream's current state
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on success)
 
 - `Stream-Next-Offset: <offset>`: The new tail offset after the append
+- `ETag: "<offset>"`: The new tail offset as a quoted ETag (same value as `Stream-Next-Offset` but in ETag format). Enables chained CAS operations without a separate HEAD request.
 - `Stream-Closed: true`: Present when the stream is now closed (either by this request or previously)
 
 #### Response Headers (on 409 Conflict due to closed stream)
@@ -257,11 +267,26 @@ When a client attempts to append to a closed stream (without `Stream-Closed: tru
 
 This allows clients to detect and handle the "stream already closed" condition programmatically without parsing the response body. Servers **SHOULD** keep the response body empty or use a standardized error format; clients **SHOULD NOT** rely on parsing the body to determine the reason for rejection.
 
-**Error Precedence:** When an append request would trigger multiple conflict conditions (e.g., stream is closed AND content type mismatches), servers **SHOULD** check the stream's closed status first. This ensures clients receive the `Stream-Closed: true` header, enabling correct error handling. The recommended precedence is:
+#### Response Headers (on 412 Precondition Failed)
 
-1. Stream closed → `409 Conflict` with `Stream-Closed: true`
-2. Content type mismatch → `409 Conflict`
-3. Sequence regression → `409 Conflict`
+When an append fails due to an `If-Match` precondition:
+
+- `412 Precondition Failed` status code
+- `ETag: "<current-offset>"`: The stream's current ETag (tail offset)
+- `Stream-Next-Offset: <offset>`: The current tail offset
+- `Stream-Closed: true` (if applicable): Present if the stream is closed
+
+This allows clients to detect concurrent modifications and decide how to handle the conflict (retry with new offset, merge, or abort).
+
+**Error Precedence:** When an append request would trigger multiple error conditions, servers **SHOULD** check in this order. This ensures clients receive the most informative error response:
+
+1. Stream does not exist → `404 Not Found`
+2. Stream closed → `409 Conflict` with `Stream-Closed: true`
+3. Content type mismatch → `409 Conflict`
+4. If-Match + Producer headers mutual exclusivity → `400 Bad Request`
+5. If-Match precondition failed → `412 Precondition Failed`
+6. Producer validation errors → `400`/`403`/`409` as appropriate
+7. Sequence regression → `409 Conflict`
 
 ### 5.2.1. Idempotent Producers
 
@@ -399,6 +424,54 @@ When a closed stream receives an append from an idempotent producer:
 
 - If the `(producerId, epoch, seq)` matches the request that closed the stream, return `204 No Content` (duplicate/idempotent success) with `Stream-Closed: true`
 - Otherwise, return `409 Conflict` with `Stream-Closed: true` (stream is closed, no further appends allowed)
+
+### 5.2.2. Optimistic Concurrency Control (OCC)
+
+The `If-Match` header provides optimistic concurrency control for append operations. This enables multiple writers to safely coordinate without idempotent producer semantics.
+
+#### Use Cases
+
+- **Multi-writer coordination**: Detect when another writer has modified the stream since the last read
+- **Compare-and-swap patterns**: Conditionally append only if the stream hasn't changed
+- **Conflict detection**: Identify concurrent modifications and resolve at the application level
+
+#### Mechanism
+
+1. Client performs a HEAD request to get the current `Stream-Next-Offset` (which serves as the ETag)
+2. Client sends POST with `If-Match: "<offset>"` header
+3. If the stream's current offset matches, append succeeds with `ETag` in the response (enabling chained CAS)
+4. If another writer appended since the HEAD, server returns `412 Precondition Failed` with the current ETag
+
+#### Atomicity
+
+The ETag comparison and append **MUST** be performed atomically. No other append may interleave between the comparison and the write. This ensures that a successful `If-Match` response guarantees the append was applied at exactly the expected offset.
+
+#### Retry Guidance
+
+OCC is a single-shot compare-and-swap: each attempt either succeeds or fails with `412`. There is no built-in retry mechanism.
+
+When a `412` response is received, clients can retry by using the offset from the `412` response's `Stream-Next-Offset` header (or `ETag`) as the new `If-Match` value. This is safe because the `412` response always reflects the stream's current state.
+
+Clients **SHOULD** limit retries (recommended maximum: 3 attempts) to avoid unbounded contention loops under high concurrency. If retries are exhausted, the client should surface the conflict to the application layer.
+
+#### Mutual Exclusivity with Idempotent Producers
+
+`If-Match` and idempotent producer headers (`Producer-Id`, `Producer-Epoch`, `Producer-Seq`) are **mutually exclusive**. If a request includes both `If-Match` and any producer header, servers **MUST** return `400 Bad Request`.
+
+**Rationale**: These mechanisms solve different problems with conflicting retry semantics:
+
+| Mechanism            | Problem Solved                | Retry Behavior                    |
+| -------------------- | ----------------------------- | --------------------------------- |
+| Idempotent Producers | Safe retries from same writer | Retries succeed (deduplicated)    |
+| OCC (If-Match)       | Detect concurrent writes      | Retries may fail (offset changed) |
+
+If both were allowed, a retry of a successful request would fail with `412` because the offset changed after the original request succeeded. This breaks the retry safety that idempotent producers are designed to provide.
+
+**Use case guidance**:
+
+- **Single writer, unreliable network**: Use idempotent producers
+- **Multiple writers, conflict detection**: Use OCC (`If-Match`)
+- **Multiple writers with retry safety**: Use idempotent producers with application-level conflict resolution
 
 ### 5.3. Close Stream
 

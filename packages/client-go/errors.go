@@ -40,6 +40,11 @@ var (
 
 	// ErrBadRequest indicates a malformed request (400).
 	ErrBadRequest = errors.New("durablestreams: bad request")
+
+	// ErrPreconditionFailed indicates an If-Match precondition failure (412).
+	// This occurs when using optimistic concurrency control and another writer
+	// has modified the stream since the last read.
+	ErrPreconditionFailed = errors.New("durablestreams: precondition failed (concurrent modification)")
 )
 
 // StreamError wraps errors with additional context about the failed operation.
@@ -91,9 +96,34 @@ func errorFromStatus(statusCode int) error {
 		return ErrStreamExists // Could also be ErrSeqConflict or ErrContentTypeMismatch depending on context
 	case 410:
 		return ErrOffsetGone
+	case 412:
+		return ErrPreconditionFailed
 	case 429:
 		return ErrRateLimited
 	default:
 		return fmt.Errorf("unexpected status code: %d", statusCode)
 	}
+}
+
+// PreconditionFailedError provides detailed information about a 412 response.
+// This occurs when an If-Match precondition fails due to concurrent modification.
+type PreconditionFailedError struct {
+	// CurrentETag is the current ETag of the stream.
+	CurrentETag string
+
+	// CurrentOffset is the current tail offset of the stream.
+	CurrentOffset Offset
+
+	// StreamClosed indicates whether the stream is closed.
+	StreamClosed bool
+}
+
+// Error implements the error interface.
+func (e *PreconditionFailedError) Error() string {
+	return fmt.Sprintf("durablestreams: precondition failed - current offset: %s, closed: %v", e.CurrentOffset, e.StreamClosed)
+}
+
+// Is implements errors.Is support.
+func (e *PreconditionFailedError) Is(target error) bool {
+	return target == ErrPreconditionFailed
 }
