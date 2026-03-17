@@ -126,6 +126,14 @@ This ensures:
 5. Verify: All clients now pass the conformance test
 ```
 
+## Docs Site (`docs/`)
+
+The docs site uses VitePress. When writing or editing docs content:
+
+- **Use sentence case for all headings and link text** — not Title Case. Capitalize only the first word and proper names.
+- **Proper names stay capitalized**: Durable Streams, Durable State, Durable Proxy, Durable Sessions, Electric Cloud, TypeScript, Python, TanStack AI, Vercel AI SDK, StateDB, StreamFS, Caddy, Caddyfile, SSE, CDN, CLI, API, etc.
+- Examples: "Building a client", "Core concepts", "JSON mode", "Conformance tests" — not "Building a Client", "Core Concepts", "JSON Mode", "Conformance Tests".
+
 ## Code Style
 
 - Follow existing patterns in the codebase
