@@ -14,10 +14,10 @@ function getServerUrl(): string {
     return import.meta.env.VITE_SERVER_URL
   }
 
-  // Fallback: use current hostname with default port
+  // Fallback: use current hostname with default Yjs server port
   const hostname =
     typeof window !== `undefined` ? window.location.hostname : `localhost`
-  return `http://${hostname}:4437`
+  return `http://${hostname}:4438`
 }
 
 export const SERVER_URL = getServerUrl()

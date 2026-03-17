@@ -108,11 +108,14 @@ function CreateRoomForm() {
     try {
       const roomId = crypto.randomUUID()
 
-      // Create the room stream first
-      await DurableStream.create({
-        url: `${serverEndpoint}/v1/stream/rooms/${roomId}`,
-        contentType: `application/octet-stream`,
-      })
+      // Create the Yjs document stream via PUT to the Yjs API
+      const createResponse = await fetch(
+        `${serverEndpoint}/v1/yjs/rooms/docs/${roomId}`,
+        { method: `PUT` }
+      )
+      if (!createResponse.ok && createResponse.status !== 409) {
+        throw new Error(`Failed to create document: ${createResponse.status}`)
+      }
 
       // Add to registry
       const metadata: RoomMetadata = {
