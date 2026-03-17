@@ -198,3 +198,6 @@ examples/yjs-demo/.tanstack
 # Local Netlify folder
 .netlify
 .claude/
+
+# MacOS
+.DS_Store
