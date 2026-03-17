@@ -2,6 +2,7 @@
 title: Python client
 description: >-
   Python client for Durable Streams with sync and async APIs. Generator-based stream consumption and IdempotentProducer for exactly-once writes.
+outline: [2, 3]
 ---
 
 # Python client

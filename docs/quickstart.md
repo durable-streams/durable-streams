@@ -2,6 +2,7 @@
 title: Quickstart
 description: >-
   Get started with Durable Streams by following the Quickstart guide.
+outline: [2, 3]
 ---
 
 # Quickstart

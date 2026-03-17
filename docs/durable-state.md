@@ -2,6 +2,7 @@
 title: Durable State
 description: >-
   Structured state changes on top of Durable Streams. Work with typed insert, update, and delete events using MaterializedState, StreamDB, and Durable Sessions.
+outline: [2, 3]
 ---
 
 # Durable State

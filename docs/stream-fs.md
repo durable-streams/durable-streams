@@ -2,6 +2,7 @@
 title: StreamFS
 description: >-
   Shared filesystem for AI agents built on Durable Streams. Provides files, directories, metadata, content streams, and watch-based synchronization across agents.
+outline: [2, 3]
 ---
 
 # StreamFS

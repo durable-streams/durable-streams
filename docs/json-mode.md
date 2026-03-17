@@ -2,6 +2,7 @@
 title: JSON mode
 description: >-
   Stream structured data using JSON messages over a Durable Stream.
+outline: [2, 3]
 ---
 
 # JSON mode

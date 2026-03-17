@@ -2,6 +2,7 @@
 title: Building a client
 description: >-
   Use the conformance tests to one-shot a Durable Streams client in any language.
+outline: [2, 3]
 ---
 
 # Building a client

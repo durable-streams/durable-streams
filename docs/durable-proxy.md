@@ -2,6 +2,7 @@
 title: Durable Proxy
 description: >-
   Put durable, resumable streaming in front of existing AI streaming APIs. Persists upstream responses into Durable Streams so clients can reconnect and resume reads.
+outline: [2, 3]
 ---
 
 # Durable Proxy

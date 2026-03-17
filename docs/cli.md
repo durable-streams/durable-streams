@@ -2,6 +2,7 @@
 title: CLI
 description: >-
   Command-line tool for creating, writing to, reading from, and managing Durable Streams. Supports piped input, JSON mode, batch writes, and token authentication.
+outline: [2, 3]
 ---
 
 # CLI

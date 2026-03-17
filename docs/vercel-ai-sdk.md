@@ -2,6 +2,7 @@
 title: Vercel AI SDK
 description: >-
   Vercel AI SDK Transport that makes chat sessions resumable, resilient, and shareable across tabs, devices, users and agents.
+outline: [2, 3]
 ---
 
 # Vercel AI SDK
