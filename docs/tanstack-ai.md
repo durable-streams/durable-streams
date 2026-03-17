@@ -55,7 +55,7 @@ If you choose to materialize the history from the session stream, you can use th
 
 ### Install
 
-Install the dependencies in your TanStack AI apps:
+Install the dependencies:
 
 ```bash
 pnpm add @durable-streams/client @durable-streams/tanstack-ai-transport
@@ -63,7 +63,7 @@ pnpm add @durable-streams/client @durable-streams/tanstack-ai-transport
 
 ### Client
 
-Then in your client, create a durable connection adapter:
+In your client, create a durable connection adapter:
 
 ```tsx
 import { durableStreamConnection } from "@durable-streams/tanstack-ai-transport"
@@ -75,7 +75,7 @@ const connection = durableStreamConnection({
 })
 ```
 
-Pass this connection to `useChat` from `@tanstack/ai-react`.
+Pass this connection to your `ChatClient`, e.g.: using the `useChat` hook from a package like [`@tanstack/ai-react`](https://tanstack.com/ai/latest/docs/api/ai-react).
 
 ## Server
 
