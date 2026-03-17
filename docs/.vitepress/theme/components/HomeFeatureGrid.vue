@@ -46,7 +46,7 @@ const items = [
   },
   {
     title: "StreamFS",
-    details: "A filesystem real-time sync in a stream",
+    details: "A reactive agent filesystem in a stream",
     href: "/stream-fs",
     icon: "folder",
   },
