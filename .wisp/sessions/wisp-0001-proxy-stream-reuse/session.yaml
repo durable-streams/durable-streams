@@ -1,6 +1,0 @@
-repo: durable-streams/durable-streams
-spec: docs/rfcs/0001-proxy-stream-reuse.md
-branch: wisp/0001-proxy-stream-reuse
-sprite_name: wisp-0001-proxy-stream-re-f18eff
-started_at: 2026-02-01T10:26:22.758032-08:00
-status: completed
