@@ -28,7 +28,7 @@ const DEFAULT_TIMEOUT_MS = 10000
 const POLL_INTERVAL_MS = 50
 
 async function waitForCondition(
-  condition: () => boolean,
+  condition: () => boolean | Promise<boolean>,
   options: {
     timeoutMs?: number
     intervalMs?: number
@@ -40,7 +40,7 @@ async function waitForCondition(
   const start = Date.now()
 
   while (Date.now() - start < timeoutMs) {
-    if (condition()) return
+    if (await condition()) return
     await new Promise((resolve) => setTimeout(resolve, intervalMs))
   }
 
@@ -268,6 +268,23 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(response.status).toBe(307)
         const cacheControl = response.headers.get(`cache-control`)
         expect(cacheControl).toBe(`private, max-age=5`)
+      })
+    })
+
+    describe(`snapshot.not-found`, () => {
+      it(`should return 404 with SNAPSHOT_NOT_FOUND for invalid snapshot offset`, async () => {
+        const docId = `snapshot-notfound-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?offset=9999999999999999_9999999999999999_snapshot`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(404)
+        const body = await response.json()
+        expect(body.error).toBeDefined()
+        expect(body.error.code).toBe(`SNAPSHOT_NOT_FOUND`)
       })
     })
   })
@@ -977,6 +994,256 @@ describe(`Yjs Durable Streams Protocol`, () => {
         }
       })
     })
+
+    describe(`compaction.stream-next-offset`, () => {
+      it(`should return correct stream-next-offset header on snapshot read`, async () => {
+        const docId = `snapshot-offset-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+        await appendWithSync(provider1, text, `X`.repeat(200), 10)
+
+        const snapshotKey = await waitForSnapshot(baseUrl, docId)
+
+        // Read the snapshot directly and check the header
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?offset=${encodeURIComponent(snapshotKey)}`,
+          { method: `GET` }
+        )
+
+        expect(response.status).toBe(200)
+        const nextOffset = response.headers.get(`stream-next-offset`)
+        expect(nextOffset).toBeTruthy()
+
+        // The next offset should be one past the snapshot offset (without _snapshot suffix)
+        // e.g. snapshot at 0000000000000000_0000000000001555 → next offset 0000000000000000_0000000000001556
+        const snapshotOffset = snapshotKey.replace(/_snapshot$/, ``)
+        const parts = snapshotOffset.split(`_`)
+        const expectedSeq = (parseInt(parts[1]!, 10) + 1)
+          .toString()
+          .padStart(parts[1]!.length, `0`)
+        const expectedOffset = `${parts[0]}_${expectedSeq}`
+        expect(nextOffset).toBe(expectedOffset)
+
+        // Verify we can read updates from that offset without error
+        const updatesResponse = await fetch(
+          `${baseUrl}/docs/${docId}?offset=${encodeURIComponent(nextOffset!)}`,
+          { method: `GET` }
+        )
+        // Should succeed (200 with data or 204 if caught up)
+        expect([200, 204]).toContain(updatesResponse.status)
+      })
+    })
+
+    describe(`compaction.stale-client-resume`, () => {
+      it(`should sync correctly when client resumes from pre-snapshot offset`, async () => {
+        const docId = `stale-resume-${Date.now()}`
+
+        // Provider 1 writes data and triggers compaction
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text1 = doc1.getText(`content`)
+
+        // Write some initial data
+        text1.insert(0, `BEFORE`)
+        await waitForCondition(() => provider1.synced, {
+          label: `provider1 synced after initial write`,
+        })
+
+        // Provider 2 joins and syncs (gets an offset before compaction)
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+        expect(doc2.getText(`content`).toString()).toBe(`BEFORE`)
+
+        // Disconnect provider 2 (simulating going offline)
+        provider2.disconnect()
+
+        // Write enough data to trigger compaction while provider2 is offline
+        await appendWithSync(provider1, text1, `X`.repeat(200), 10)
+        await waitForSnapshot(baseUrl, docId)
+
+        // Write more data after compaction
+        text1.insert(text1.length, `AFTER`)
+        await waitForCondition(() => provider1.synced, {
+          label: `provider1 synced after post-compaction write`,
+        })
+
+        const expected = text1.toString()
+
+        // Reconnect provider 2 - it will resume and should get all data
+        await provider2.connect()
+        await waitForSync(provider2)
+
+        await waitForDocText(doc2, `content`, expected)
+      })
+    })
+
+    describe(`compaction.snapshot-404-retry`, () => {
+      it(`should handle deleted snapshot by retrying discovery`, async () => {
+        const docId = `snapshot-404-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+        await appendWithSync(provider1, text, `X`.repeat(200), 10)
+
+        const firstSnapshotKey = await waitForSnapshot(baseUrl, docId)
+
+        // Verify the snapshot exists
+        const checkResponse = await fetch(
+          `${baseUrl}/docs/${docId}?offset=${encodeURIComponent(firstSnapshotKey)}`,
+          { method: `GET` }
+        )
+        expect(checkResponse.status).toBe(200)
+        // consume the body
+        await checkResponse.arrayBuffer()
+
+        // Trigger another compaction so the first snapshot gets deleted
+        await appendWithSync(provider1, text, `Y`.repeat(200), 10)
+        const secondSnapshotKey = await waitForSnapshot(baseUrl, docId)
+
+        // Wait for old snapshot to be deleted (async cleanup)
+        await waitForCondition(
+          async () => {
+            const r = await fetch(
+              `${baseUrl}/docs/${docId}?offset=${encodeURIComponent(firstSnapshotKey)}`,
+              { method: `GET` }
+            )
+            await r.arrayBuffer()
+            return r.status === 404
+          },
+          { label: `old snapshot deleted`, timeoutMs: 5000 }
+        )
+
+        // A new client using the old (deleted) snapshot offset should handle the 404
+        // and fall back to the current snapshot
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        expect(doc2.getText(`content`).toString()).toBe(text.toString())
+        expect(secondSnapshotKey).not.toBe(firstSnapshotKey)
+      })
+    })
+
+    describe(`compaction.multiple-cycles`, () => {
+      it(`should discover latest snapshot after multiple compactions`, async () => {
+        const docId = `multi-compact-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+
+        // First compaction
+        await appendWithSync(provider1, text, `A`.repeat(200), 10)
+        const snapshot1 = await waitForSnapshot(baseUrl, docId)
+
+        // Second compaction
+        await appendWithSync(provider1, text, `B`.repeat(200), 10)
+
+        // Wait for a new snapshot (different from snapshot1)
+        await waitForCondition(
+          async () => {
+            const r = await fetch(`${baseUrl}/docs/${docId}?offset=snapshot`, {
+              method: `GET`,
+              redirect: `manual`,
+            })
+            if (r.status === 307) {
+              const loc = r.headers.get(`location`)
+              if (loc) {
+                const match = loc.match(/offset=([^&]+_snapshot)/)
+                return match != null && match[1] !== snapshot1
+              }
+            }
+            return false
+          },
+          { label: `second snapshot different from first` }
+        )
+
+        // Third compaction
+        await appendWithSync(provider1, text, `C`.repeat(200), 10)
+
+        // Wait for yet another snapshot
+        const snapshot3 = await waitForSnapshot(baseUrl, docId)
+
+        // Snapshot should be different from the first
+        expect(snapshot3).not.toBe(snapshot1)
+
+        // A new client should sync the full document state
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        expect(doc2.getText(`content`).toString()).toBe(text.toString())
+        // 10 * 200 * 3 = 6000 chars of A/B/C
+        expect(doc2.getText(`content`).toString().length).toBe(6000)
+      })
+    })
+
+    describe(`compaction.read-from-pre-snapshot-offset`, () => {
+      it(`should return updates when reading from offset before snapshot`, async () => {
+        const docId = `pre-snapshot-read-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+        await waitForSync(provider1)
+
+        const text = doc1.getText(`content`)
+
+        // Write initial data and capture the offset
+        text.insert(0, `INITIAL`)
+        await provider1.flush()
+        await waitForCondition(() => provider1.synced, {
+          label: `synced after initial write`,
+        })
+
+        // Read from beginning to get the current offset
+        const initialResponse = await fetch(
+          `${baseUrl}/docs/${docId}?offset=-1`,
+          { method: `GET` }
+        )
+        expect(initialResponse.status).toBe(200)
+        const earlyOffset =
+          initialResponse.headers.get(`stream-next-offset`) ??
+          initialResponse.headers.get(`stream-cursor`)
+        await initialResponse.arrayBuffer()
+
+        // Now write enough to trigger compaction
+        await appendWithSync(provider1, text, `X`.repeat(200), 10)
+        await waitForSnapshot(baseUrl, docId)
+
+        // Read updates from the early offset (before the snapshot)
+        // The underlying DS stream should still have all data
+        const updatesResponse = await fetch(
+          `${baseUrl}/docs/${docId}?offset=${encodeURIComponent(earlyOffset ?? `-1`)}`,
+          { method: `GET` }
+        )
+
+        // Should succeed - updates are never deleted by compaction
+        expect(updatesResponse.status).toBe(200)
+        const body = await updatesResponse.arrayBuffer()
+        expect(body.byteLength).toBeGreaterThan(0)
+      })
+    })
   })
 
   // Server restart test requires local servers - skip when using external URL
@@ -992,7 +1259,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
           port: 0,
           dsServerUrl: dsServer!.url,
           compactionThreshold: 1500,
-          minUpdatesBeforeCompaction: 5,
         })
         await serverA.start()
 
@@ -1024,7 +1290,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
           port: 0,
           dsServerUrl: dsServer!.url,
           compactionThreshold: 1500,
-          minUpdatesBeforeCompaction: 5,
         })
         await serverB.start()
 

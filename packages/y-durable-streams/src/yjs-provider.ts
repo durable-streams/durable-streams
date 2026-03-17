@@ -561,7 +561,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       try {
         const response = await stream.stream({
           offset: currentOffset,
-          live: `auto`, // Auto: first request returns immediately, then long-poll on reconnect
+          live: true,
           signal: ctx.controller.signal,
         })
 
@@ -715,15 +715,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.awareness.clientID,
       ])
 
-      const stream = new DurableStream({
-        url: this.awarenessUrl(),
-        headers: this.headers,
-        contentType: `application/octet-stream`,
-      })
-
-      stream
-        .append(encoded, { contentType: `application/octet-stream` })
-        .catch(() => {})
+      // POST through the Yjs server so it base64-encodes for SSE compatibility
+      fetch(this.awarenessUrl(), {
+        method: `POST`,
+        headers: {
+          ...(this.headers as Record<string, string>),
+          "content-type": `application/octet-stream`,
+        },
+        body: encoded,
+      }).catch(() => {})
     } catch {
       // Ignore errors during disconnect
     }
@@ -752,14 +752,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           changedClients
         )
 
-        const stream = new DurableStream({
-          url: this.awarenessUrl(),
-          headers: this.headers,
-          contentType: `application/octet-stream`,
-        })
-
-        await stream.append(encoded, {
-          contentType: `application/octet-stream`,
+        // POST through the Yjs server so it base64-encodes for SSE compatibility
+        await fetch(this.awarenessUrl(), {
+          method: `POST`,
+          headers: {
+            ...(this.headers as Record<string, string>),
+            "content-type": `application/octet-stream`,
+          },
+          body: encoded,
         })
       }
     } catch (err) {

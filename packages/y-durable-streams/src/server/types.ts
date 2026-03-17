@@ -26,13 +26,6 @@ export interface YjsServerOptions {
   compactionThreshold?: number
 
   /**
-   * Minimum number of updates before considering compaction.
-   * Prevents compaction of small documents with few updates.
-   * @default 100
-   */
-  minUpdatesBeforeCompaction?: number
-
-  /**
    * Optional headers to send to the durable streams server.
    */
   dsServerHeaders?: Record<string, string>
@@ -50,9 +43,6 @@ export interface YjsDocumentState {
 
   /** Cumulative size of updates since last compaction (bytes) */
   updatesSizeBytes: number
-
-  /** Number of updates since last compaction */
-  updatesCount: number
 
   /** Whether compaction is currently in progress */
   compacting: boolean

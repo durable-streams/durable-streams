@@ -23,7 +23,6 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
 
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
-const DEFAULT_MIN_UPDATES = 100
 
 /**
  * Check if an error is a 409 Conflict (already exists) error.
@@ -78,7 +77,6 @@ export class YjsServer {
   private readonly dsServerUrl: string
   private readonly dsServerHeaders: Record<string, string>
   private readonly compactionThreshold: number
-  private readonly minUpdatesBeforeCompaction: number
   private readonly port: number
   private readonly host: string
 
@@ -97,8 +95,6 @@ export class YjsServer {
     this.dsServerHeaders = options.dsServerHeaders ?? {}
     this.compactionThreshold =
       options.compactionThreshold ?? DEFAULT_COMPACTION_THRESHOLD
-    this.minUpdatesBeforeCompaction =
-      options.minUpdatesBeforeCompaction ?? DEFAULT_MIN_UPDATES
     this.port = options.port ?? 0
     this.host = options.host ?? `127.0.0.1`
 
@@ -401,9 +397,8 @@ export class YjsServer {
     res.writeHead(307, {
       location: redirectPath,
       "cache-control": `private, max-age=5`,
-      "content-type": `application/json`,
     })
-    res.end(JSON.stringify({ redirect: redirectPath }))
+    res.end()
   }
 
   /**
@@ -578,11 +573,18 @@ export class YjsServer {
   /**
    * Increment an offset string for the next read position.
    * Offsets are formatted as "{timestamp}_{sequence}" padded strings.
+   * Increments the sequence portion by 1 so the client reads from the
+   * position after the snapshot, not from the snapshot offset itself.
    */
   private incrementOffset(offset: string): string {
-    // For now, return the offset as-is - the client will read from this position
-    // The DS server handles offset semantics
-    return offset
+    const parts = offset.split(`_`)
+    if (parts.length !== 2) return offset
+
+    const seq = parseInt(parts[1]!, 10)
+    if (isNaN(seq)) return offset
+
+    const nextSeq = (seq + 1).toString().padStart(parts[1]!.length, `0`)
+    return `${parts[0]}_${nextSeq}`
   }
 
   // ---- Proxies to .updates stream ----
@@ -706,13 +708,11 @@ export class YjsServer {
         this.documentStates.set(stateKey, {
           snapshotOffset: null,
           updatesSizeBytes: 0,
-          updatesCount: 0,
           compacting: false,
         })
       }
       const state = this.documentStates.get(stateKey)!
       state.updatesSizeBytes += body.length
-      state.updatesCount += 1
 
       // Trigger compaction if thresholds met
       if (this.shouldTriggerCompaction(state)) {
@@ -912,9 +912,7 @@ export class YjsServer {
 
   shouldTriggerCompaction(state: YjsDocumentState): boolean {
     return (
-      !state.compacting &&
-      state.updatesSizeBytes >= this.compactionThreshold &&
-      state.updatesCount >= this.minUpdatesBeforeCompaction
+      !state.compacting && state.updatesSizeBytes >= this.compactionThreshold
     )
   }
 
@@ -949,7 +947,6 @@ export class YjsServer {
     const state = this.documentStates.get(this.stateKey(service, docPath))
     if (state) {
       state.updatesSizeBytes = 0
-      state.updatesCount = 0
     }
   }
 

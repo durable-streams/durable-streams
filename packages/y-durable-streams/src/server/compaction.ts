@@ -130,6 +130,8 @@ export class Compactor {
 
       // Load updates since the current snapshot (or from start if none)
       // This avoids reapplying full history on each compaction.
+      // When a snapshot exists, read from the offset after the snapshot
+      // (snapshot was built from data up to and including snapshotOffset).
       const updatesUrl = `${dsServerUrl}${YjsStreamPaths.dsStream(service, docPath)}`
       const updatesStream = new DurableStream({
         url: updatesUrl,
@@ -137,8 +139,10 @@ export class Compactor {
         contentType: `application/octet-stream`,
       })
 
-      const updatesOffset = state.snapshotOffset ?? `-1`
-      let currentEndOffset = updatesOffset
+      const updatesOffset = state.snapshotOffset
+        ? incrementOffset(state.snapshotOffset)
+        : `-1`
+      let currentEndOffset = state.snapshotOffset ?? `-1`
 
       try {
         const response = await updatesStream.stream({
@@ -287,6 +291,21 @@ export class Compactor {
       }
     }
   }
+}
+
+/**
+ * Increment an offset string by 1 in the sequence portion.
+ * Offsets are formatted as "{timestamp}_{sequence}" with zero-padded parts.
+ */
+function incrementOffset(offset: string): string {
+  const parts = offset.split(`_`)
+  if (parts.length !== 2) return offset
+
+  const seq = parseInt(parts[1]!, 10)
+  if (isNaN(seq)) return offset
+
+  const nextSeq = (seq + 1).toString().padStart(parts[1]!.length, `0`)
+  return `${parts[0]}_${nextSeq}`
 }
 
 /**
