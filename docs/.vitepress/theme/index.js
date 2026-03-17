@@ -5,7 +5,7 @@ import HomeFeatureGrid from "./components/HomeFeatureGrid.vue"
 import HostedElectricCard from "./components/HostedElectricCard.vue"
 import NavSignupButton from "./components/NavSignupButton.vue"
 import ServerConformanceDiagram from "./components/ServerConformanceDiagram.vue"
-import YoutubeEmbed from './components/YoutubeEmbed.vue'
+import YoutubeEmbed from "./components/YoutubeEmbed.vue"
 import Layout from "./Layout.vue"
 
 export default {
@@ -21,4 +21,3 @@ export default {
   extends: DefaultTheme,
   Layout,
 }
-
