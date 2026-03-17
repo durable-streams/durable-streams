@@ -23,7 +23,7 @@ The Durable Streams TanStack AI integration provide a durable connection adapter
 This allows your app to:
 
 1. [work across patchy connectivity](https://electric-sql.com/blog/2025/04/09/building-ai-apps-on-sync), page refreshes, re-renders, etc.
-2. [support multi-user and multi-agent collaboration](/blog/2026/01/12/durable-sessions-for-collaborative-ai) across multiple tabs and devices, both asynchronously and in real-time
+2. [support multi-user and multi-agent collaboration](https://electric-sql.com/blog/2026/01/12/durable-sessions-for-collaborative-ai) across multiple tabs and devices, both asynchronously and in real-time
 
 ## How it works
 
@@ -35,7 +35,7 @@ Because Durable Streams are resilient and resumeable, with exactly-once message 
 
 Then, because any client connecting to the same session subscribes and writes to the same Durable Stream, this naturally works across tabs, devices, users and agents. Both in real-time and asynchronously &mdash; clients can read, join and fork the session at any time.
 
-We call this the [Durable Session pattern](/blog/2026/01/12/durable-sessions-for-collaborative-ai) for building resilient, collaborative AI apps.
+We call this the [Durable Session pattern](https://electric-sql.com/blog/2026/01/12/durable-sessions-for-collaborative-ai) for building resilient, collaborative AI apps.
 
 <div class="embed-container top" style="padding-bottom: 62.283737%">
   <YoutubeEmbed video-id="81KXwxld7dw" />
