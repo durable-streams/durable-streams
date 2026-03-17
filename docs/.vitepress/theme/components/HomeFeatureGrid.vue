@@ -27,7 +27,7 @@ const items = [
     icon: "vercel",
   },
   {
-    title: "JSON streams",
+    title: "JSON mode",
     details: "Stream structured data using JSON messages",
     href: "/json-mode",
     icon: "json",

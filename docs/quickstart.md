@@ -6,8 +6,6 @@ description: >-
 
 # Quickstart
 
-Get started with Durable Streams by following the Quickstart guide.
-
 Get a Durable Streams server running in seconds. Create a stream, append data, read it back, and tail it live using curl.
 
 ## 1. Start the server

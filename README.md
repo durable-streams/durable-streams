@@ -1,3 +1,11 @@
+<p align="left">
+  <a href="https://github.com/durable-streams/durable-streams/actions"><img src="https://github.com/durable-streams/durable-streams/actions/workflows/client-tests.yml/badge.svg"></a>
+  <a href="https://github.com/electric-sql/electric/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License - MIT"></a>
+  <a href="https://electric-sql.com/blog/2025/12/09/announcing-durable-streams"><img src="https://img.shields.io/badge/status-beta-orange" alt="Status - Beta"></a>
+  <a href="https://discord.gg/VMRbuXQkkz"><img src="https://img.shields.io/discord/933657521581858818?color=5969EA&label=discord" alt="Chat - Discord"></a>
+  <a href="https://x.com/DurableStreams" target="_blank"><img src="https://img.shields.io/twitter/follow/DurableStreams.svg?style=social&label=Follow @DurableStreams"></a>
+</p><br />
+
 <picture>
   <source media="(prefers-color-scheme: dark)"
       srcset="docs/img/icon-128.png"
@@ -14,16 +22,20 @@
 
 # Durable Streams
 
-**The open protocol for real-time sync to client applications**
+Durable Streams is an open protocol for persistent, addressable real-time streams.
 
-HTTP-based durable streams for streaming data reliably to web browsers, mobile apps, and native clients with offset-based resumability.
+## The data primitive for agents
 
-Durable Streams provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams with support for catch-up reads and live tailing.
+Durable Streams are a flexible data primitive for resilient, collaborative AI apps and agentic systems.
+
+The Durable Streams protocol provides a simple, production-proven protocol for creating and consuming ordered, replayable data streams over HTTP, with support for catch-up reads and live tailing.
+
+Use it to stream data reliably to web browsers, mobile apps, and native clients with low-latency, high-scalability, offset-based resumability and exactly-once message delivery over public Internet.
 
 > [!TIP]
 > Read the [Announcing Durable Streams](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams) post on the Electric blog.
 
-## The Missing Primitive
+## Why Durable Streams?
 
 Modern applications frequently need ordered, durable sequences of data that can be replayed from arbitrary points and tailed in real time. Common patterns include:
 
@@ -62,65 +74,29 @@ The protocol is:
 - 🎯 **Flexible** - Content-type agnostic byte streams
 - 🔌 **Composable** - Build higher-level abstractions on top (like Electric's real-time Postgres sync engine)
 
-Read more on the docs site:
+## Quickstart
 
-- [Quick Start](docs/quick-start.md)
-- [TypeScript client](docs/typescript-client.md)
-- [JSON Streams](docs/json-streams.md)
-- [Vercel AI SDK](docs/vercel-ai-sdk.md)
-- [TanStack AI](docs/tanstack-ai.md)
-- [State Streams](docs/state.md)
-- [Durable Proxy](docs/proxy.md)
+- [Quickstart](https://durablestreams.com/quickstart) -- start the server and create your first stream
 
-## Quick Start
+## Usage
 
-Download the latest `durable-streams-server` binary from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest) and start it in dev mode:
+- [CLI](https://durablestreams.com/cli) -- create, read, append-to and tail streams
+- [Clients](https://durablestreams.com/typescript-client) -- TypeScript, Python and other languages
+- [JSON mode](https://durablestreams.com/json-mode) -- stream structured data using JSON messages
+- [Durable Proxy](https://durablestreams.com/durable-proxy) -- durable proxy for AI token streams
+- [Durable State](https://durablestreams.com/durable-state) -- sync structured state over durable streams
+- [StreamDB](https://durablestreams.com/stream-db) -- type-safe, reactive database in a stream
+- [StreamFS](https://durablestreams.com/stream-fs) -- filesystem with real-time sync in a stream
 
-```bash
-./durable-streams-server dev
-```
+## Integrations
 
-Then create, append to, and read a stream with curl:
+- [TanStack AI](https://durablestreams.com/tanstack-ai)
+- [Vercel AI SDK](https://durablestreams.com/vercel-ai-sdk)
+- [AnyCable](https://docs.anycable.io/anycable-go/durable_streams)
 
-```bash
-# Create
-curl -X PUT http://localhost:4437/v1/stream/my-stream \
-  -H "Content-Type: application/json"
+## Reference
 
-# Append
-curl -X POST http://localhost:4437/v1/stream/my-stream \
-  -H "Content-Type: application/json" \
-  -d '{"event":"user.created","userId":"123"}'
-
-# Read from beginning
-curl "http://localhost:4437/v1/stream/my-stream?offset=-1"
-
-# Live tail
-curl "http://localhost:4437/v1/stream/my-stream?offset=-1&live=long-poll"
-```
-
-See the [Quick Start guide](docs/quick-start.md) for the minimal setup path.
-
-## Documentation
-
-### Quick Start
-
-- [Quick Start](docs/quick-start.md) -- start the server and create your first stream
-
-### Usage
-
-- [CLI](docs/cli.md) -- work with streams from the terminal
-- [TypeScript client](docs/typescript-client.md) -- use the TypeScript client directly
-- [JSON Streams](docs/json-streams.md) -- structured message streams
-- [TanStack AI](docs/tanstack-ai.md) -- durable TanStack AI transport
-- [Vercel AI SDK](docs/vercel-ai-sdk.md) -- durable Vercel AI SDK transport
-- [State Streams](docs/state.md) -- typed state sync over streams
-- [Durable Proxy](docs/proxy.md) -- durable proxy for existing AI streaming APIs
-- [Stream FS](docs/streamfs.md) -- file-like byte stream patterns
-
-### Reference
-
-- [Servers](docs/servers.md) -- official server implementations
+- [Servers](https://durablestreams.com/servers.md) -- official server implementations
 - [Protocol](PROTOCOL.md) -- full protocol specification
 
 ## Packages
