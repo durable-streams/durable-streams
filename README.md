@@ -22,9 +22,11 @@
 
 # Durable Streams
 
-Durable Streams is an open protocol for persistent, addressable real-time streams.
+Durable Streams are the data primitive for the agent loop.
 
-## The data primitive for agents
+Persistent, addressable, real‑time streams for building resilient agent sessions and collaborative multi-user, multi-agent systems.
+
+## The data primitive for the agent loop
 
 Durable Streams are a flexible data primitive for resilient, collaborative AI apps and agentic systems.
 
@@ -33,7 +35,7 @@ The Durable Streams protocol provides a simple, production-proven protocol for c
 Use it to stream data reliably to web browsers, mobile apps, and native clients with low-latency, high-scalability, offset-based resumability and exactly-once message delivery over public Internet.
 
 > [!TIP]
-> Read the [Announcing Durable Streams](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams) post on the Electric blog.
+> Read the [Announcing Durable Streams](https://electric-sql.com/blog/2025/12/09/announcing-durable-streams) and [Durable Sessions - the key pattern for collaborative AI](https://electric-sql.com/blog/2026/01/12/durable-sessions-for-collaborative-ai) posts on the Electric blog.
 
 ## Why Durable Streams?
 
@@ -163,4 +165,4 @@ We use [changesets](https://github.com/changesets/changesets) for version manage
 
 ## License
 
-Apache 2.0 -- see [LICENSE](./LICENSE)
+MIT -- see [LICENSE](./LICENSE)

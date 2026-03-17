@@ -6,9 +6,15 @@ description: >-
 
 # Quickstart
 
+Durable Streams are the data primitive for the agent loop.
+
+Persistent, addressable, real‑time streams for building resilient agent sessions and collaborative multi-user, multi-agent systems.
+
+## Get started
+
 Get a Durable Streams server running in seconds. Create a stream, append data, read it back, and tail it live using curl.
 
-## 1. Start the server
+### 1. Start the server
 
 Download the latest `durable-streams-server` binary from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest), then run:
 
@@ -18,14 +24,14 @@ Download the latest `durable-streams-server` binary from the [GitHub releases pa
 
 This starts an in-memory server on `http://localhost:4437` with the stream endpoint at `/v1/stream/*`.
 
-## 2. Create a stream
+### 2. Create a stream
 
 ```bash
 curl -X PUT http://localhost:4437/v1/stream/hello \
   -H 'Content-Type: text/plain'
 ```
 
-## 3. Append some data
+### 3. Append some data
 
 ```bash
 curl -X POST http://localhost:4437/v1/stream/hello \
@@ -33,7 +39,7 @@ curl -X POST http://localhost:4437/v1/stream/hello \
   -d 'Hello, Durable Streams!'
 ```
 
-## 4. Read it back
+### 4. Read it back
 
 ```bash
 curl "http://localhost:4437/v1/stream/hello?offset=-1"
@@ -41,7 +47,7 @@ curl "http://localhost:4437/v1/stream/hello?offset=-1"
 
 The response body contains your stream contents. Save the `Stream-Next-Offset` response header if you want to resume from the same position later.
 
-## 5. Tail it live
+### 5. Tail it live
 
 In one terminal:
 
@@ -61,6 +67,11 @@ The first terminal will receive the new data immediately.
 
 ## Next steps
 
-- [Core concepts](concepts.md) for offsets, live modes, and resumption
-- [CLI](cli.md) for terminal workflows
-- [TypeScript client](typescript-client.md) for the TypeScript client
+Raw durable streams are awesome but it's what you do with them that counts. Dive into the [core concepts](/concepts) and see all of the ways you can use Durable Streams to build resilient, collaborative multi-agent systems.
+
+Including, working with structured data and integrating into AI SDKs:
+
+- [JSON mode](/json-mode) -- stream structured data using JSON messages
+- [StreamDB](/stream-db) -- type-safe, reactive database in a stream
+- [TanStack AI](/tanstack-ai) -- durable session support for TanStack AI apps
+- [Vercel AI SDK](/vercel-ai-sdk) -- durable Transport adapter for AI SDK apps
