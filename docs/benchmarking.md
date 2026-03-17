@@ -1,3 +1,10 @@
+---
+title: Benchmarking
+description: >-
+  Benchmarks package to measure server performance. Use it to validate that your server meets performance expectations or to compare configurations.
+outline: [2, 3]
+---
+
 # Benchmarking
 
 The `@durable-streams/benchmarks` package measures server performance -- latency overhead and message throughput. Use it to validate that your server meets performance expectations or to compare configurations.

@@ -1,3 +1,9 @@
+---
+title: TypeScript client
+description: >-
+  TypeScript client for Durable Streams. Fetch-like stream() for reads and IdempotentProducer for exactly-once writes with batching and retries.
+---
+
 # TypeScript client
 
 Use `@durable-streams/client` when you want direct read and write access to Durable Streams from TypeScript.

@@ -1,3 +1,9 @@
+---
+title: Durable Proxy
+description: >-
+  Put durable, resumable streaming in front of existing AI streaming APIs. Persists upstream responses into Durable Streams so clients can reconnect and resume reads.
+---
+
 # Durable Proxy
 
 Use `@durable-streams/proxy` when you want to put durable, resumable streaming in front of existing AI streaming APIs.

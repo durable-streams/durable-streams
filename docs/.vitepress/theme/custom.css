@@ -292,7 +292,7 @@ body {
 }
 
 .VPHero .text {
-  max-width: 580px;
+  max-width: 640px;
   color: var(--vp-c-text-1);
   font-size: 42px;
   line-height: 1.25;

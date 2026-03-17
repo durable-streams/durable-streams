@@ -1,3 +1,9 @@
+---
+title: TanStack AI
+description: >-
+  TanStack AI connection adapter for Durable Streams. Make chat sessions resumable, resilient, and shareable across tabs, devices, users and agents.
+---
+
 # TanStack AI
 
 Use `@durable-streams/tanstack-ai-transport` when you want [TanStack AI](https://tanstack.com/ai) chat sessions with resumability, resilience, and built-in support for multi-tab, multi-device, and multi-user sharing.

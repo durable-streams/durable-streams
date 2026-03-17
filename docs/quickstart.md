@@ -1,6 +1,14 @@
+---
+title: Quickstart
+description: >-
+  Get started with Durable Streams by following the Quickstart guide.
+---
+
 # Quickstart
 
-This is the shortest path to a working Durable Streams server and a live stream you can write to, read from, and tail in real time.
+Get started with Durable Streams by following the Quickstart guide.
+
+Get a Durable Streams server running in seconds. Create a stream, append data, read it back, and tail it live using curl.
 
 ## 1. Start the server
 

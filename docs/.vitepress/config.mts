@@ -1,10 +1,32 @@
 import { defineConfig } from "vitepress"
 import llmstxt from "vitepress-plugin-llms"
+import { buildMetaImageUrl } from './theme/meta-image'
 
 export default defineConfig({
   head: [
-    ["link", { rel: "icon", type: "image/png", href: "/favicon.png" }],
-    ["meta", { name: "twitter:card", content: "summary_large_image" }],
+    [
+      "link",
+      {
+        rel: "icon",
+        type: "image/png",
+        href: "/favicon.png"
+      }
+    ],
+    [
+      "meta",
+      {
+        name: "twitter:card",
+        content: "summary_large_image"
+      }
+    ],
+    [
+      'script',
+      {
+        defer: 'defer',
+        'data-domain': 'electric-sql.com',
+        src: 'https://plausible.io/js/script.js',
+      },
+    ],
   ],
   vite: {
     plugins: [
@@ -86,14 +108,15 @@ export default defineConfig({
     ],
     socialLinks: [
       { icon: "discord", link: "https://discord.gg/VMRbuXQkkz" },
-      {
-        icon: "github",
-        text: "GitHub",
-        link: "https://github.com/durable-streams/durable-streams",
-      },
+      { icon: "x", link: "https://x.com/DurableStreams" },
+      { icon: "github", link: "https://github.com/durable-streams/durable-streams" },
     ],
     search: {
       provider: "local",
+    },
+    editLink: {
+      pattern:
+        'https://github.com/durable-streams/durable-streams/edit/main/docs/:path',
     },
     footer: {
       copyright:
@@ -101,5 +124,42 @@ export default defineConfig({
       message:
         'Made with ♥️ by the team behind <span class="no-wrap"><a href="https://electric-sql.com">ElectricSQL</a>, <a href="https://pglite.dev">PGlite</a> and <a href="https://tanstack.com">TanStack&nbsp;DB</a></span>.',
     },
+  },
+  transformHead: ({ pageData, siteData }) => {
+    const fm = pageData.frontmatter
+    const head = []
+
+    const pageTitle = fm.title || siteData.title
+    const titleTemplate = fm.titleTemplate || ':title | Durable Streams'
+    const title = titleTemplate.replace(':title', pageTitle)
+    const description = fm.description || siteData.description
+
+    const PRODUCTION_URL = 'https://durablestreams.com'
+    const LOCAL_DEV_URL = 'http://localhost:5173'
+    const DEFAULT_IMAGE = '/img/meta.png'
+
+    const siteOrigin =
+      process.env.CONTEXT === 'production'
+        ? process.env.URL || PRODUCTION_URL
+        : process.env.DEPLOY_PRIME_URL ||
+          (process.env.NODE_ENV === 'development'
+            ? LOCAL_DEV_URL
+            : PRODUCTION_URL)
+
+    const image = buildMetaImageUrl(fm.image || DEFAULT_IMAGE, siteOrigin)
+
+    head.push(['meta', { name: 'twitter:card', content: 'summary_large_image' }])
+    head.push(['meta', { name: 'twitter:site', content: '@DurableStreams' }])
+    head.push(['meta', { name: 'twitter:title', content: title }])
+    head.push(['meta', { name: 'twitter:description', content: description }])
+    head.push(['meta', { name: 'twitter:image', content: image }])
+    head.push(['meta', { property: 'og:title', content: title }])
+    head.push(['meta', { property: 'og:description', content: description }])
+    head.push(['meta', { property: 'og:image', content: image }])
+
+    return head
+  },
+  transformPageData(pageData) {
+    pageData.frontmatter.editLink = pageData.relativePath.startsWith('docs')
   },
 })

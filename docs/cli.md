@@ -1,3 +1,9 @@
+---
+title: CLI
+description: >-
+  Command-line tool for creating, writing to, reading from, and managing Durable Streams. Supports piped input, JSON mode, batch writes, and token authentication.
+---
+
 # CLI
 
 The Durable Streams CLI is a command-line tool for creating, writing to, reading from, and managing streams. It connects to any Durable Streams server over HTTP.

@@ -1,3 +1,9 @@
+---
+title: StreamDB
+description: >-
+  Type-safe reactive database in a durable stream. Define schemas with StandardSchema, query with TanStack DB, and use optimistic actions on top of Durable State.
+---
+
 # StreamDB
 
 StreamDB is a type-safe reactive database in a durable stream.

@@ -1,3 +1,9 @@
+---
+title: Core concepts
+description: >-
+  Key concepts behind the Durable Streams protocol: streams, offsets, content types, producers, consumers, live modes, stream lifecycle, and CDN caching.
+---
+
 # Core concepts
 
 Learn the key concepts behind the Durable Streams protocol here. For the complete specification, see [PROTOCOL.md](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md).

@@ -1,3 +1,9 @@
+---
+title: Building a client
+description: >-
+  Use the conformance tests to one-shot a Durable Streams client in any language.
+---
+
 # Building a client
 
 The Durable Streams protocol is pure HTTP -- any language that can make HTTP requests can implement a client. This guide covers the implementation considerations beyond what the protocol specifies, and how to validate your client against the [conformance test suite](#conformance-tests).

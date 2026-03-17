@@ -1,3 +1,9 @@
+---
+title: Durable State
+description: >-
+  Structured state changes on top of Durable Streams. Work with typed insert, update, and delete events using MaterializedState, StreamDB, and Durable Sessions.
+---
+
 # Durable State
 
 Durable State adds structured state changes on top of Durable Streams. Instead of treating a stream as raw bytes, you work with typed `insert`, `update`, and `delete` events.

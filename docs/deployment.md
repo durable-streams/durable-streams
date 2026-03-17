@@ -1,3 +1,9 @@
+---
+title: Deployment
+description: >-
+  How to deploy Durable Streams, including self-hosting with Caddy and running in production with Electric Cloud.
+---
+
 # Deployment
 
 [Self-host with Caddy](#self-hosted-with-caddy) or run in production using [Electric Cloud](https://electric-sql.com/cloud).

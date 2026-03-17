@@ -1,3 +1,9 @@
+---
+title: Building a server
+description: >-
+  Use the conformance tests to one-shot a Durable Streams server. Covers protocol requirements, storage layer design and reference implementations.
+---
+
 # Building a server
 
 The Durable Streams protocol is designed to support server implementations in any language or platform. A server exposes a single URL-per-stream HTTP interface -- the protocol does not prescribe URL structure, so you can organize streams however you choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths).

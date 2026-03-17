@@ -1,3 +1,9 @@
+---
+title: Clients
+description: >-
+  Durable Streams client libraries for a wide range of languages, including TypeScript, Python, Go, Elixir, .NET, Swift, PHP, Java, Rust, and Ruby.
+---
+
 # Other clients
 
 Durable Streams has official client libraries in 10 languages. All implement the same [protocol](https://github.com/durable-streams/durable-streams/blob/main/PROTOCOL.md) and pass the client conformance test suite, ensuring consistent behavior regardless of which language you use.

@@ -1,3 +1,9 @@
+---
+title: Python client
+description: >-
+  Python client for Durable Streams with sync and async APIs. Generator-based stream consumption and IdempotentProducer for exactly-once writes.
+---
+
 # Python client
 
 Use `durable-streams` when you want direct read and write access to Durable Streams from Python.

@@ -1,14 +1,20 @@
+---
+title: JSON mode
+description: >-
+  Stream structured data using JSON messages over a Durable Stream.
+---
+
 # JSON mode
 
-Use JSON mode when you want structured messages with preserved boundaries.
+Stream structured data using JSON messages over a Durable Stream.
 
-JSON mode is enabled by creating the stream with `Content-Type: application/json`.
+JSON mode is enabled by creating the stream with `Content-Type: application/json`. Use it when you want to stream structured messages with preserved message boundaries.
 
 ## What JSON mode does
 
-- Each `POST` stores a distinct JSON message.
-- Posting a JSON array stores each element as its own message.
-- `GET` returns a JSON array of messages for the requested range.
+- each `POST` stores a distinct JSON message
+- posting a JSON array stores each element as its own message
+- `GET` returns a JSON array of messages for the requested range
 
 ## Create a JSON stream
 
