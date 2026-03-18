@@ -97,51 +97,12 @@ abstract class FetchingState extends ActiveState {
     // 3. Transition to SyncingState
     return { action: "accepted", state: new SyncingState(shared) }
   }
-
-  protected checkStaleResponse(
-    input: ResponseMetadataInput
-  ): ResponseTransition | null {
-    // Base: detect offset stall (response offset === request offset)
-    if (input.offset === input.requestOffset) {
-      // Offset didn't advance — response is stale (likely CDN-cached)
-      return {
-        action: "stale-retry",
-        state: new StaleRetryState({
-          ...this.currentFields,
-          cacheBuster: input.createCacheBuster(),
-          retryCount: 1,
-        }),
-      }
-    }
-    return null
-  }
-}
-
-// StaleRetryState overrides to increment its own counter:
-class StaleRetryState extends FetchingState {
-  protected checkStaleResponse(
-    input: ResponseMetadataInput
-  ): ResponseTransition | null {
-    if (input.offset === input.requestOffset) {
-      const nextCount = this.#retryCount + 1
-      if (nextCount > MAX_STALE_CACHE_RETRIES) {
-        return { action: "fatal", message: "..." }
-      }
-      return {
-        action: "stale-retry",
-        state: new StaleRetryState({
-          ...this.currentFields,
-          cacheBuster: input.createCacheBuster(),
-          retryCount: nextCount,
-        }),
-      }
-    }
-    return null // offset advanced — stale retry succeeded
-  }
 }
 ```
 
-`ResponseMetadataInput` contains: `offset`, `cursor`, `upToDate`, `streamClosed` (from response headers), plus `requestOffset` (the offset the request was made with, for stale detection).
+`ResponseMetadataInput` contains: `offset`, `cursor`, `upToDate`, `streamClosed` (from response headers).
+
+**No offset-comparison stale detection in the state machine.** The durable-streams protocol explicitly allows `200 OK` responses with `Stream-Next-Offset` equal to the requested offset for valid "at tail" reads (PROTOCOL.md Section 5.6). Comparing offsets would false-positive on every catch-up that reaches the tail. Instead, stale detection lives entirely in the fast-loop detector (Feature 3), which catches the _pattern_ of repeated same-offset requests over time — not individual responses. StaleRetryState is entered from the request loop when the detector fires, and carries only a `cacheBuster` for URL construction. The detector's own escalation ladder handles retry counting and fatal errors.
 
 `handleMessageBatch()` is defined on `ActiveState`. States that implement it: `SyncingState` (transitions to `LiveState` on up-to-date), `LiveState` (stays live), `ReplayingState` (suppresses duplicates, transitions to `LiveState`). `InitialState` and `StaleRetryState` inherit base behavior from `FetchingState`.
 
@@ -152,8 +113,7 @@ State methods return typed results:
 ```typescript
 type ResponseTransition =
   | { action: "accepted"; state: ActiveState }
-  | { action: "stale-retry"; state: StaleRetryState }
-  | { action: "fatal"; message: string }
+  | { action: "ignored"; state: StreamState } // ErrorState/PausedState no-ops
 
 type MessageBatchTransition = {
   state: ActiveState
@@ -162,35 +122,44 @@ type MessageBatchTransition = {
 }
 ```
 
+Note: `stale-retry` is NOT a response-level transition. StaleRetryState is entered from the request loop when the fast-loop detector fires (see Feature 3). The `ignored` action covers ErrorState and PausedState delegation where no transition occurs.
+
 ### State transitions
 
 Summary of all valid transitions:
 
-| From            | Event                                  | To                      | Condition                                                                 |
-| --------------- | -------------------------------------- | ----------------------- | ------------------------------------------------------------------------- |
-| InitialState    | response (accepted)                    | SyncingState            | First successful response                                                 |
-| InitialState    | response (stale)                       | StaleRetryState         | Response offset == request offset (didn't advance)                        |
-| SyncingState    | messages (up-to-date)                  | LiveState               | `upToDate` message received                                               |
-| SyncingState    | messages (up-to-date)                  | ReplayingState          | If replay mode entry conditions met (checked before LiveState transition) |
-| SyncingState    | response (stale)                       | StaleRetryState         | Response offset == request offset (didn't advance)                        |
-| StaleRetryState | response (accepted)                    | SyncingState            | Cache-busted request advances offset                                      |
-| StaleRetryState | response (fatal)                       | throws                  | 3 consecutive stale retries                                               |
-| LiveState       | sseClose (short)                       | LiveState               | Bump short connection counter                                             |
-| LiveState       | sseClose (threshold)                   | LiveState               | Set `sseFallbackToLongPolling = true`                                     |
-| ReplayingState  | messages (up-to-date, cursor match)    | LiveState               | Suppress batch (CDN cached response)                                      |
-| ReplayingState  | messages (up-to-date, cursor mismatch) | LiveState               | Pass batch through (fresh data)                                           |
-| Any ActiveState | pause                                  | PausedState             | PauseLock acquired                                                        |
-| Any ActiveState | error                                  | ErrorState              | Exception during request/processing                                       |
-| PausedState     | resume                                 | (previous ActiveState)  | PauseLock released                                                        |
-| PausedState     | pause                                  | PausedState             | Idempotent (returns `this`)                                               |
-| ErrorState      | retry                                  | (previous ActiveState)  | `onError` returns retry opts                                              |
-| ErrorState      | pause                                  | PausedState(ErrorState) | PauseLock acquired while in error                                         |
+**State machine transitions** (driven by `handleResponseMetadata`, `handleMessageBatch`, `handleSseConnectionClosed`):
 
-No-op rules:
+| From            | Event                                  | To                                           | Condition                             |
+| --------------- | -------------------------------------- | -------------------------------------------- | ------------------------------------- |
+| InitialState    | response (accepted)                    | SyncingState                                 | First successful response             |
+| SyncingState    | messages (up-to-date)                  | LiveState                                    | `upToDate` message received           |
+| StaleRetryState | response (accepted)                    | SyncingState                                 | Cache-busted request succeeds         |
+| LiveState       | sseClose (short)                       | LiveState                                    | Bump short connection counter         |
+| LiveState       | sseClose (threshold)                   | LiveState                                    | Set `sseFallbackToLongPolling = true` |
+| ReplayingState  | messages (up-to-date, cursor match)    | LiveState                                    | Suppress batch (CDN cached response)  |
+| ReplayingState  | messages (up-to-date, cursor mismatch) | LiveState                                    | Pass batch through (fresh data)       |
+| Any ActiveState | pause                                  | PausedState(ActiveState)                     | PauseLock acquired                    |
+| Any state       | error                                  | ErrorState(previous)                         | Exception during request/processing   |
+| PausedState     | resume                                 | (previousState — ActiveState or ErrorState)  | PauseLock released                    |
+| PausedState     | pause                                  | PausedState (same instance)                  | Idempotent (returns `this`)           |
+| ErrorState      | retry                                  | (previousState — ActiveState or PausedState) | `onError` returns retry opts          |
+| ErrorState      | pause                                  | PausedState(ErrorState)                      | PauseLock acquired while in error     |
+
+**Request-loop transitions** (not driven by state methods):
+
+| Trigger                  | From              | To                     | Condition                                                                                                       |
+| ------------------------ | ----------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Fast-loop detector fires | Any FetchingState | StaleRetryState        | Detector returns `clear-and-reset`                                                                              |
+| Fast-loop detector fatal | StaleRetryState   | throws FetchError(502) | 5 consecutive detections                                                                                        |
+| Replay mode entry        | SyncingState      | ReplayingState         | Checked once after first response: not yet up-to-date, `upToDateTracker.shouldEnterReplayMode()` returns cursor |
+
+**No-op / ignored rules:**
 
 - `resume` on non-PausedState returns `this`
 - `retry` on non-ErrorState returns `this`
-- `response`/`messages`/`sseClose` on ErrorState return `this` (ignored)
+- `response` on ErrorState returns `{ action: "ignored", state: this }`
+- `messages`/`sseClose` on ErrorState return `this` (ignored)
 - `messages`/`sseClose` on PausedState return `this` (ignored)
 - `response` on PausedState delegates to `previousState`, preserving PausedState wrapper
 
@@ -407,11 +376,11 @@ This matches Electric's order. Key consequences:
 
 ### Adaptation for durable-streams
 
-No shape handles that expire via 409. Two layers of stale detection:
+No shape handles that expire via 409.
 
-**Layer 1 — State machine (`handleResponseMetadata`)**: When a response's offset matches the request offset (didn't advance), `checkStaleResponse()` transitions to `StaleRetryState`. The state carries a `retryCount` that increments on each consecutive stale response. After `MAX_STALE_CACHE_RETRIES` (3), returns `{ action: "fatal" }`. This is the primary detection mechanism.
+**Key protocol constraint**: The durable-streams protocol allows valid `200 OK` responses with `Stream-Next-Offset` equal to the requested offset for "at tail" reads (PROTOCOL.md Section 5.6). This means offset comparison alone CANNOT detect stale CDN responses — it would false-positive on every catch-up that reaches the tail.
 
-**Layer 2 — Fast-loop detector (request loop)**: Catches rapid request patterns (5+ requests at same offset in 500ms) that the state machine might miss — e.g., if the response technically has a different offset but the stream isn't making progress. This is a secondary safety net, not the primary entry point.
+**Stale detection lives entirely in the fast-loop detector** (Feature 3). The detector catches the _pattern_ of repeated same-offset requests over time (5+ requests at the same offset in 500ms), which distinguishes CDN loops from valid at-tail responses. A valid at-tail read returns upToDate + the client transitions to live mode; a CDN loop keeps hitting the same offset rapidly without upToDate.
 
 ### StaleRetryState (in `stream-response-state.ts`)
 
@@ -419,7 +388,6 @@ No shape handles that expire via 409. Two layers of stale detection:
 class StaleRetryState extends FetchingState {
   readonly kind = "stale-retry"
   readonly #cacheBuster: string // random: `${Date.now()}-${random}`
-  readonly #retryCount: number // max 3 before fatal
 
   applyUrlParams(url: URL): void {
     super.applyUrlParams(url)
@@ -430,11 +398,11 @@ class StaleRetryState extends FetchingState {
 
 ### Entry and exit
 
-- **Entry (primary)**: `handleResponseMetadata()` detects offset stall → `checkStaleResponse()` returns `{ action: "stale-retry" }` with cache buster and `retryCount: 1`.
-- **Entry (secondary)**: Fast-loop detector catches rapid same-offset patterns as a safety net.
-- **Retry escalation**: `StaleRetryState.checkStaleResponse()` increments `retryCount` on each stale response. Counter lives in the state, not the detector.
-- **Exit (success)**: Cache-busted request advances offset → `checkStaleResponse()` returns null → transitions to SyncingState.
-- **Exit (fatal)**: `retryCount` exceeds `MAX_STALE_CACHE_RETRIES` (3) → returns `{ action: "fatal" }`.
+- **Entry**: Fast-loop detector returns `clear-and-reset` → request loop creates `StaleRetryState` with fresh `cacheBuster`. The detector's escalation ladder handles retry counting (see Feature 3).
+- **Exit (success)**: Cache-busted request advances the offset or returns `upToDate` → fast-loop detector resets → request loop transitions to `SyncingState`.
+- **Exit (fatal)**: Fast-loop detector reaches detection 5 → throws `FetchError(502)`.
+
+StaleRetryState carries only a `cacheBuster` for URL construction. It does NOT carry a retry counter — the fast-loop detector owns the escalation state.
 
 ### Duplicate-URL guard
 
@@ -537,7 +505,7 @@ class PrefetchQueue {
 Infers next chunk URL from response headers:
 
 - Read `Stream-Next-Offset` and `Stream-Cursor`
-- Return `null` when: `Stream-Closed: true`, `live=*` request, or required headers missing
+- Return `null` when: `Stream-Closed: true`, `Stream-Up-To-Date: true`, `live=*` request, or required headers missing. The `Stream-Up-To-Date` check is critical — without it, the prefetch queue chases duplicate tail URLs when catch-up reaches the end of the stream.
 
 ### createFetchWithChunkBuffer middleware
 
