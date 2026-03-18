@@ -46,7 +46,7 @@ StreamState (abstract base)
 │          overrides handleMessageBatch() for cursor-based suppression.
 │
 ├── PausedState                (kind: "paused")  — wraps ActiveState | ErrorState
-└── ErrorState                 (kind: "error")   — wraps ActiveState, carries error
+└── ErrorState                 (kind: "error")   — wraps ActiveState | PausedState, carries error
 ```
 
 ### Adaptation from Electric
@@ -101,8 +101,42 @@ abstract class FetchingState extends ActiveState {
   protected checkStaleResponse(
     input: ResponseMetadataInput
   ): ResponseTransition | null {
-    // Override in StaleRetryState for cache buster escalation
-    return null // base: no stale detection
+    // Base: detect offset stall (response offset === request offset)
+    if (input.offset === input.requestOffset) {
+      // Offset didn't advance — response is stale (likely CDN-cached)
+      return {
+        action: "stale-retry",
+        state: new StaleRetryState({
+          ...this.currentFields,
+          cacheBuster: input.createCacheBuster(),
+          retryCount: 1,
+        }),
+      }
+    }
+    return null
+  }
+}
+
+// StaleRetryState overrides to increment its own counter:
+class StaleRetryState extends FetchingState {
+  protected checkStaleResponse(
+    input: ResponseMetadataInput
+  ): ResponseTransition | null {
+    if (input.offset === input.requestOffset) {
+      const nextCount = this.#retryCount + 1
+      if (nextCount > MAX_STALE_CACHE_RETRIES) {
+        return { action: "fatal", message: "..." }
+      }
+      return {
+        action: "stale-retry",
+        state: new StaleRetryState({
+          ...this.currentFields,
+          cacheBuster: input.createCacheBuster(),
+          retryCount: nextCount,
+        }),
+      }
+    }
+    return null // offset advanced — stale retry succeeded
   }
 }
 ```
@@ -135,10 +169,10 @@ Summary of all valid transitions:
 | From            | Event                                  | To                      | Condition                                                                 |
 | --------------- | -------------------------------------- | ----------------------- | ------------------------------------------------------------------------- |
 | InitialState    | response (accepted)                    | SyncingState            | First successful response                                                 |
-| InitialState    | response (stale)                       | StaleRetryState         | Fast-loop detected                                                        |
+| InitialState    | response (stale)                       | StaleRetryState         | Response offset == request offset (didn't advance)                        |
 | SyncingState    | messages (up-to-date)                  | LiveState               | `upToDate` message received                                               |
 | SyncingState    | messages (up-to-date)                  | ReplayingState          | If replay mode entry conditions met (checked before LiveState transition) |
-| SyncingState    | response (stale)                       | StaleRetryState         | Fast-loop detected                                                        |
+| SyncingState    | response (stale)                       | StaleRetryState         | Response offset == request offset (didn't advance)                        |
 | StaleRetryState | response (accepted)                    | SyncingState            | Cache-busted request advances offset                                      |
 | StaleRetryState | response (fatal)                       | throws                  | 3 consecutive stale retries                                               |
 | LiveState       | sseClose (short)                       | LiveState               | Bump short connection counter                                             |
@@ -268,18 +302,22 @@ The fast-loop detector catches _successful_ responses (HTTP 200) that don't adva
 ```typescript
 class ErrorState extends StreamState {
   readonly kind = "error"
-  readonly #previousState: ActiveState
+  readonly #previousState: ActiveState | PausedState
   readonly error: Error
 
-  constructor(previousState: ActiveState | ErrorState, error: Error) {
-    // Flatten: ErrorState(ErrorState(X)) → ErrorState(X)
+  constructor(
+    previousState: ActiveState | PausedState | ErrorState,
+    error: Error
+  ) {
+    // Flatten same-type nesting: ErrorState(ErrorState(X)) → ErrorState(X)
+    // Cross-type nesting preserved: ErrorState(PausedState(X)) is valid
     this.#previousState =
       previousState instanceof ErrorState
         ? previousState.#previousState
         : previousState
   }
 
-  retry(): ActiveState {
+  retry(): ActiveState | PausedState {
     return this.#previousState
   }
   pause(): PausedState {
@@ -339,24 +377,41 @@ On 2xx responses, validates required protocol headers:
 
 Throws `MissingHeadersError` (new error class) listing absent headers.
 
+**`MissingHeadersError` is non-retryable.** Stripped/CORS-hidden protocol headers are not recoverable — retrying would spin forever on a broken proxy. The request loop must propagate this error immediately, bypassing ErrorState and `onError`. This matches Electric's behavior where `MissingHeadersError` is explicitly excluded from retry logic.
+
 ### Middleware chain
 
-When `fetch(url)` is called, the request flows through the chain in this order:
+Composition order (outermost wraps innermost). When `fetch(url)` is called, the outermost middleware runs first and delegates inward:
 
-1. `createFetchWithBackoff` — retry with exponential backoff (outermost)
-2. `createFetchWithConsumedBody` — eagerly reads response body
-3. `createFetchWithChunkBuffer` — speculative prefetch (feature 8)
-4. `createFetchWithResponseHeadersCheck` — validates protocol headers
-5. `globalThis.fetch` — raw network call (innermost)
+```typescript
+fetchClient = createFetchWithConsumedBody(
+  // 1. outermost: eagerly read body
+  createFetchWithResponseHeadersCheck(
+    // 2. validate protocol headers
+    createFetchWithChunkBuffer(
+      // 3. speculative prefetch (feature 8)
+      createFetchWithBackoff(baseFetch, backoff) // 4. retry with exponential backoff
+    )
+  )
+)
+```
+
+This matches Electric's order. Key consequences:
+
+- **Backoff is innermost** — prefetched requests go through backoff (get retried on network errors)
+- **Header validation is outside backoff** — `MissingHeadersError` surfaces immediately without retries
+- **Chunk buffer is outside backoff** — prefetched requests get the full retry stack
+- **Consumed body is outermost** — ensures body is always read regardless of what inner layers do
 
 ## Feature 6: CDN cache busting (StaleRetryState)
 
 ### Adaptation for durable-streams
 
-No shape handles that expire via 409. Stale detection is based on:
+No shape handles that expire via 409. Two layers of stale detection:
 
-1. Response doesn't advance the offset (same offset as request)
-2. Fast-loop detector triggers
+**Layer 1 — State machine (`handleResponseMetadata`)**: When a response's offset matches the request offset (didn't advance), `checkStaleResponse()` transitions to `StaleRetryState`. The state carries a `retryCount` that increments on each consecutive stale response. After `MAX_STALE_CACHE_RETRIES` (3), returns `{ action: "fatal" }`. This is the primary detection mechanism.
+
+**Layer 2 — Fast-loop detector (request loop)**: Catches rapid request patterns (5+ requests at same offset in 500ms) that the state machine might miss — e.g., if the response technically has a different offset but the stream isn't making progress. This is a secondary safety net, not the primary entry point.
 
 ### StaleRetryState (in `stream-response-state.ts`)
 
@@ -375,8 +430,11 @@ class StaleRetryState extends FetchingState {
 
 ### Entry and exit
 
-- **Entry**: Fast-loop detector returns `clear-and-reset` → transition to StaleRetryState.
-- **Exit**: Cache-busted request advances offset → transition to SyncingState. 3 consecutive failures → fatal.
+- **Entry (primary)**: `handleResponseMetadata()` detects offset stall → `checkStaleResponse()` returns `{ action: "stale-retry" }` with cache buster and `retryCount: 1`.
+- **Entry (secondary)**: Fast-loop detector catches rapid same-offset patterns as a safety net.
+- **Retry escalation**: `StaleRetryState.checkStaleResponse()` increments `retryCount` on each stale response. Counter lives in the state, not the detector.
+- **Exit (success)**: Cache-busted request advances offset → `checkStaleResponse()` returns null → transitions to SyncingState.
+- **Exit (fatal)**: `retryCount` exceeds `MAX_STALE_CACHE_RETRIES` (3) → returns `{ action: "fatal" }`.
 
 ### Duplicate-URL guard
 
@@ -419,7 +477,7 @@ Key behaviors:
 - **TTL**: 60s (CDN cache expiry)
 - **Write throttle**: 60s
 - **LRU eviction**: 250 entries
-- **Canonical stream key**: URL stripped of protocol params (`offset`, `cursor`, `live`)
+- **Canonical stream key**: URL stripped of all protocol-varying params (`offset`, `cursor`, `live`, `cache_buster`). Must include `cache_buster` — otherwise stale-retry URLs and normal URLs land in different replay buckets, breaking suppression after the stale-cache path fires.
 - `localStorage` I/O wrapped in try/catch
 
 ### ReplayingState (in `stream-response-state.ts`)
@@ -548,6 +606,7 @@ Adapted from Electric's 373-line spec:
 | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
 | `src/stream-response-state.ts`       | Full rewrite — new hierarchy with 7 states                                                                                  |
 | `src/response.ts`                    | Replace pause mechanism with PauseLock, wire in wake detection, fast-loop, ErrorState recovery, replay mode, chunk prefetch |
+| `src/stream-api.ts`                  | Wire mid-stream ErrorState/onError into the outer retry loop for unified error contract                                     |
 | `src/fetch.ts`                       | Update backoff defaults, add header validation middleware, add chunk prefetch middleware                                    |
 | `src/error.ts`                       | Add `MissingHeadersError` class                                                                                             |
 | `src/types.ts`                       | Add new option types (FastLoopOptions, PrefetchOptions, UpToDateStorageOption)                                              |
