@@ -40,7 +40,10 @@ StreamState (abstract base)
 │   │      Methods: shouldUseSse(), handleSseConnectionClosed()
 │   │
 │   └── ReplayingState         (kind: "replaying")
-│          Carries replayCursor, suppresses duplicate batches
+│          Carries replayCursor, suppresses duplicate batches.
+│          Extends ActiveState directly (not FetchingState). Implements its own
+│          handleResponseMetadata() (delegates to base shared-field parsing) and
+│          overrides handleMessageBatch() for cursor-based suppression.
 │
 ├── PausedState                (kind: "paused")  — wraps ActiveState | ErrorState
 └── ErrorState                 (kind: "error")   — wraps ActiveState, carries error
@@ -72,16 +75,51 @@ Each state adds its own params via `applyUrlParams(url)`:
 - **LiveState**: adds `live=long-poll` or `live=sse`, plus cursor
 - **ReplayingState**: same as FetchingState (syncing phase)
 
+### handleResponseMetadata() template method
+
+`FetchingState` defines the response-handling template:
+
+```typescript
+abstract class FetchingState extends ActiveState {
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    // 1. Check for stale response (offset didn't advance)
+    const staleResult = this.checkStaleResponse(input)
+    if (staleResult) return staleResult
+
+    // 2. Parse response headers into shared fields
+    const shared = {
+      offset: input.offset ?? this.offset,
+      cursor: input.cursor ?? this.cursor,
+      upToDate: input.upToDate,
+      streamClosed: this.streamClosed || input.streamClosed,
+    }
+
+    // 3. Transition to SyncingState
+    return { action: "accepted", state: new SyncingState(shared) }
+  }
+
+  protected checkStaleResponse(
+    input: ResponseMetadataInput
+  ): ResponseTransition | null {
+    // Override in StaleRetryState for cache buster escalation
+    return null // base: no stale detection
+  }
+}
+```
+
+`ResponseMetadataInput` contains: `offset`, `cursor`, `upToDate`, `streamClosed` (from response headers), plus `requestOffset` (the offset the request was made with, for stale detection).
+
+`handleMessageBatch()` is defined on `ActiveState`. States that implement it: `SyncingState` (transitions to `LiveState` on up-to-date), `LiveState` (stays live), `ReplayingState` (suppresses duplicates, transitions to `LiveState`). `InitialState` and `StaleRetryState` inherit base behavior from `FetchingState`.
+
 ### Typed transition objects
 
 State methods return typed results:
 
 ```typescript
-type ResponseTransition = {
-  action: "accepted" | "stale-retry"
-  state: ActiveState
-  exceededMaxRetries?: boolean
-}
+type ResponseTransition =
+  | { action: "accepted"; state: ActiveState }
+  | { action: "stale-retry"; state: StaleRetryState }
+  | { action: "fatal"; message: string }
 
 type MessageBatchTransition = {
   state: ActiveState
@@ -89,6 +127,38 @@ type MessageBatchTransition = {
   becameUpToDate: boolean
 }
 ```
+
+### State transitions
+
+Summary of all valid transitions:
+
+| From            | Event                                  | To                      | Condition                                                                 |
+| --------------- | -------------------------------------- | ----------------------- | ------------------------------------------------------------------------- |
+| InitialState    | response (accepted)                    | SyncingState            | First successful response                                                 |
+| InitialState    | response (stale)                       | StaleRetryState         | Fast-loop detected                                                        |
+| SyncingState    | messages (up-to-date)                  | LiveState               | `upToDate` message received                                               |
+| SyncingState    | messages (up-to-date)                  | ReplayingState          | If replay mode entry conditions met (checked before LiveState transition) |
+| SyncingState    | response (stale)                       | StaleRetryState         | Fast-loop detected                                                        |
+| StaleRetryState | response (accepted)                    | SyncingState            | Cache-busted request advances offset                                      |
+| StaleRetryState | response (fatal)                       | throws                  | 3 consecutive stale retries                                               |
+| LiveState       | sseClose (short)                       | LiveState               | Bump short connection counter                                             |
+| LiveState       | sseClose (threshold)                   | LiveState               | Set `sseFallbackToLongPolling = true`                                     |
+| ReplayingState  | messages (up-to-date, cursor match)    | LiveState               | Suppress batch (CDN cached response)                                      |
+| ReplayingState  | messages (up-to-date, cursor mismatch) | LiveState               | Pass batch through (fresh data)                                           |
+| Any ActiveState | pause                                  | PausedState             | PauseLock acquired                                                        |
+| Any ActiveState | error                                  | ErrorState              | Exception during request/processing                                       |
+| PausedState     | resume                                 | (previous ActiveState)  | PauseLock released                                                        |
+| PausedState     | pause                                  | PausedState             | Idempotent (returns `this`)                                               |
+| ErrorState      | retry                                  | (previous ActiveState)  | `onError` returns retry opts                                              |
+| ErrorState      | pause                                  | PausedState(ErrorState) | PauseLock acquired while in error                                         |
+
+No-op rules:
+
+- `resume` on non-PausedState returns `this`
+- `retry` on non-ErrorState returns `this`
+- `response`/`messages`/`sseClose` on ErrorState return `this` (ignored)
+- `messages`/`sseClose` on PausedState return `this` (ignored)
+- `response` on PausedState delegates to `previousState`, preserving PausedState wrapper
 
 ## Feature 1: PauseLock
 
@@ -122,7 +192,6 @@ class PauseLock {
 ### Pause reasons
 
 - `'visibility'` — document hidden/visible
-- `'system-wake'` — wake detection (feature 2)
 
 ## Feature 2: System wake detection
 
@@ -146,7 +215,7 @@ function subscribeToWakeDetection(options: WakeDetectionOptions): () => void
 
 - Skip in browsers (visibility API handles it via PauseLock).
 - `timer.unref()` so it doesn't keep Node/Bun alive.
-- On wake: abort current request with `SYSTEM_WAKE` reason, request loop restarts from current offset.
+- On wake: abort current in-flight request with `SYSTEM_WAKE` reason. The request loop's existing catch logic detects the abort and immediately re-fetches from the current offset. Wake detection does NOT use PauseLock — it's a one-shot abort, not a pause/resume cycle.
 - Subscribe in `#start()`, not the constructor (lesson from Electric PR #3918).
 - Idempotency guard to prevent duplicate timers.
 - Reset cleanup reference on teardown.
@@ -190,6 +259,8 @@ Sliding time window of `{ timestamp, offset }` entries. Before each non-live req
 
 Called in the request loop before each non-live fetch. Live requests clear the detector.
 
+The fast-loop detector catches _successful_ responses (HTTP 200) that don't advance the offset — e.g., a CDN serving stale cached data. These bypass the backoff middleware entirely since they return 200 OK. That's why the 500ms/5-request threshold works despite the 1s initial backoff: errors hit backoff, but stale 200s don't.
+
 ## Feature 4: ErrorState + resumable onError
 
 ### ErrorState (in `stream-response-state.ts`)
@@ -230,6 +301,8 @@ Currently, errors during active long-poll/SSE loop call `#markError()` and perma
 
 The same `onError` handler signature works for both initial errors and mid-stream errors.
 
+`retry()` returns the exact `previousState` instance, preserving all fields (offset, cursor, cache buster, replay cursor, SSE resilience counters, etc.). The request loop resumes exactly where it left off. If `PausedState` wraps an `ErrorState` and is resumed, the request loop checks the unwrapped state's kind and re-enters error handling if `kind === 'error'`.
+
 ## Feature 5: Fetch middleware enhancements
 
 ### 5a: Backoff defaults update
@@ -262,19 +335,19 @@ function createFetchWithResponseHeadersCheck(
 On 2xx responses, validates required protocol headers:
 
 - Always required: `Stream-Next-Offset`
-- When request has `live=long-poll` or `live=sse`: also `Stream-Cursor`
+- When request has `live=long-poll` or `live=sse` AND response does NOT have `Stream-Closed: true`: also `Stream-Cursor` (servers may omit cursor on closed streams per protocol)
 
 Throws `MissingHeadersError` (new error class) listing absent headers.
 
-### Middleware chain order (innermost → outermost)
+### Middleware chain
 
-```
-globalThis.fetch
-  └── createFetchWithResponseHeadersCheck
-        └── createFetchWithChunkBuffer        (feature 8)
-              └── createFetchWithConsumedBody
-                    └── createFetchWithBackoff
-```
+When `fetch(url)` is called, the request flows through the chain in this order:
+
+1. `createFetchWithBackoff` — retry with exponential backoff (outermost)
+2. `createFetchWithConsumedBody` — eagerly reads response body
+3. `createFetchWithChunkBuffer` — speculative prefetch (feature 8)
+4. `createFetchWithResponseHeadersCheck` — validates protocol headers
+5. `globalThis.fetch` — raw network call (innermost)
 
 ## Feature 6: CDN cache busting (StaleRetryState)
 
@@ -308,6 +381,10 @@ class StaleRetryState extends FetchingState {
 ### Duplicate-URL guard
 
 Safety net in request loop: detects when same URL would be sent twice for non-live GET requests. Adds cache buster on detection, throws after 5 consecutive duplicates. Skipped for live requests (same URL is normal).
+
+### `cache_buster` is a client-only concern
+
+The `cache_buster` query parameter is for CDN cache invalidation only. Servers MUST ignore unknown query parameters per protocol (verify Caddy plugin passes unknown params through). No change to PROTOCOL.md needed.
 
 ### No `expiredShapesCache`
 
@@ -369,9 +446,13 @@ class ReplayingState extends ActiveState {
 
 ### Entry conditions
 
+Checked once in the request loop after the first response transitions from InitialState to SyncingState:
+
 1. Stream not yet up-to-date
 2. Current state is InitialState or SyncingState (NOT StaleRetryState)
 3. `upToDateTracker.shouldEnterReplayMode(streamKey)` returns non-null cursor
+
+If all conditions met, transition to `ReplayingState` with the returned cursor.
 
 One-shot gate: always transitions to LiveState on up-to-date. Only long-poll (SSE not served from CDN cache).
 
@@ -476,11 +557,11 @@ Adapted from Electric's 373-line spec:
 
 ## Implementation phases
 
-| Phase | Features                                                                                  | Dependencies                                |
-| ----- | ----------------------------------------------------------------------------------------- | ------------------------------------------- |
-| 1     | State machine restructure + SPEC.md + truth table tests, PauseLock, System Wake Detection | Foundation — everything else builds on this |
-| 2     | Fast-Loop Detection, ErrorState + Resumable onError                                       | Requires Phase 1 state machine              |
-| 3     | Backoff defaults, Header validation middleware, CDN Cache Busting (StaleRetryState)       | Requires Phase 2 ErrorState                 |
-| 4     | Replay Mode (UpToDateTracker + ReplayingState), Chunk Prefetching                         | Requires Phase 3 StaleRetryState            |
+| Phase | Features                                                                                  | Dependencies                                                                                |
+| ----- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 1     | State machine restructure + SPEC.md + truth table tests, PauseLock, System Wake Detection | Foundation — everything else builds on this                                                 |
+| 2     | Fast-Loop Detection, ErrorState + Resumable onError                                       | Requires Phase 1 state machine                                                              |
+| 3     | Backoff defaults, Header validation middleware, CDN Cache Busting (StaleRetryState)       | Requires Phase 1 state machine. ErrorState (Phase 2) improves recovery but is not blocking  |
+| 4     | Replay Mode (UpToDateTracker + ReplayingState), Chunk Prefetching                         | Requires Phase 1 state machine. StaleRetryState constraint C1 needed for replay entry guard |
 
 Each phase can be a separate PR.
