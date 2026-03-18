@@ -591,7 +591,6 @@ export class YjsServer {
 
   /**
    * GET - Proxy to read from .updates stream.
-   * Maps live=true to long-poll for updates.
    */
   private async handleUpdatesRead(
     req: IncomingMessage,
@@ -609,7 +608,6 @@ export class YjsServer {
       params.set(`offset`, offset)
     }
     if (live) {
-      // live=true means "server picks transport" - use long-poll for updates
       params.set(`live`, live === `true` ? `long-poll` : live)
     }
     const query = params.toString()
@@ -617,7 +615,12 @@ export class YjsServer {
       dsPath = `${dsPath}?${query}`
     }
 
-    await this.proxyToDsServer(req, res, dsPath)
+    // Use flush-aware proxy for SSE to ensure immediate delivery
+    if (live === `sse`) {
+      await this.proxyWithSseFlush(req, res, dsPath)
+    } else {
+      await this.proxyToDsServer(req, res, dsPath)
+    }
   }
 
   /**
@@ -795,9 +798,17 @@ export class YjsServer {
   ): Promise<void> {
     const targetUrl = `${this.dsServerUrl}${path}`
 
+    // Forward request headers
+    const headers: Record<string, string> = { ...this.dsServerHeaders }
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase() !== `host` && value) {
+        headers[key] = Array.isArray(value) ? value.join(`, `) : value
+      }
+    }
+
     const response = await fetch(targetUrl, {
       method: `GET`,
-      headers: this.dsServerHeaders,
+      headers,
     })
 
     // Forward headers with SSE additions (skip content-encoding/length - fetch decompresses)
@@ -855,7 +866,6 @@ export class YjsServer {
       state = {
         snapshotOffset: null,
         updatesSizeBytes: 0,
-        updatesCount: 0,
         compacting: false,
       }
       this.documentStates.set(stateKey, state)

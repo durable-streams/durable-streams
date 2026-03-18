@@ -561,7 +561,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       try {
         const response = await stream.stream({
           offset: currentOffset,
-          live: true,
+          live: `sse`,
           signal: ctx.controller.signal,
         })
 
@@ -585,7 +585,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
 
         await response.closed
         markSynced()
-        return
+        // SSE connection closed (server closes ~60s per protocol) — reconnect
+        continue
       } catch (err) {
         if (isStale()) {
           markSynced()
@@ -783,7 +784,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     try {
       const response = await stream.stream({
         offset: `now`,
-        live: true,
+        live: `sse`,
         signal,
       })
       // Ensure closed promise is handled to avoid unhandled rejections.

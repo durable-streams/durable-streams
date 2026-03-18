@@ -39,9 +39,10 @@ function getServerEndpoint(): string {
     return import.meta.env.VITE_SERVER_URL
   }
 
-  const hostname =
-    typeof window !== `undefined` ? window.location.hostname : `localhost`
-  return `http://${hostname}:4438`
+  // Same origin — Caddy proxies everything
+  return typeof window !== `undefined`
+    ? window.location.origin
+    : `https://localhost:4443`
 }
 
 function getDsEndpoint(): string {
@@ -49,9 +50,10 @@ function getDsEndpoint(): string {
     return import.meta.env.VITE_DS_URL
   }
 
-  const hostname =
-    typeof window !== `undefined` ? window.location.hostname : `localhost`
-  return `http://${hostname}:4437`
+  // Same origin — Caddy proxies everything
+  return typeof window !== `undefined`
+    ? window.location.origin
+    : `https://localhost:4443`
 }
 
 export function ServerEndpointProvider({ children }: { children: ReactNode }) {

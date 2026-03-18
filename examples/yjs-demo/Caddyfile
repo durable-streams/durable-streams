@@ -1,0 +1,20 @@
+{
+	admin off
+}
+
+localhost:4443 {
+	# Durable Streams handler (binary streams, registry)
+	route /v1/stream/* {
+		durable_streams
+	}
+
+	# Reverse proxy to Yjs server (Node.js) — flush immediately for SSE
+	route /v1/yjs/* {
+		reverse_proxy localhost:4438 {
+			flush_interval -1
+		}
+	}
+
+	# Reverse proxy everything else to Vite dev server
+	reverse_proxy localhost:3001
+}
