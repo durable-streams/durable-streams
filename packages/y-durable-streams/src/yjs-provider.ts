@@ -642,6 +642,23 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     }
   }
 
+  /**
+   * Apply lib0-framed awareness updates from the server.
+   */
+  private applyAwarenessUpdates(data: Uint8Array): void {
+    if (data.length === 0 || !this.awareness) return
+
+    const decoder = decoding.createDecoder(data)
+    while (decoding.hasContent(decoder)) {
+      const update = decoding.readVarUint8Array(decoder)
+      try {
+        awarenessProtocol.applyAwarenessUpdate(this.awareness, update, `server`)
+      } catch {
+        // Ignore invalid awareness updates - they're ephemeral
+      }
+    }
+  }
+
   // ---- Document updates ----
 
   private handleDocumentUpdate = (
@@ -716,6 +733,11 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.awareness.clientID,
       ])
 
+      // Frame awareness update with lib0 encoding, consistent with document updates.
+      const encoder = encoding.createEncoder()
+      encoding.writeVarUint8Array(encoder, encoded)
+      const framedUpdate = encoding.toUint8Array(encoder)
+
       const stream = new DurableStream({
         url: this.awarenessUrl(),
         headers: this.headers,
@@ -723,7 +745,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       })
 
       stream
-        .append(encoded, { contentType: `application/octet-stream` })
+        .append(framedUpdate, { contentType: `application/octet-stream` })
         .catch(() => {})
     } catch {
       // Ignore errors during disconnect
@@ -753,13 +775,18 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           changedClients
         )
 
+        // Frame awareness update with lib0 encoding, consistent with document updates.
+        const encoder = encoding.createEncoder()
+        encoding.writeVarUint8Array(encoder, encoded)
+        const framedUpdate = encoding.toUint8Array(encoder)
+
         const stream = new DurableStream({
           url: this.awarenessUrl(),
           headers: this.headers,
           contentType: `application/octet-stream`,
         })
 
-        await stream.append(encoded, {
+        await stream.append(framedUpdate, {
           contentType: `application/octet-stream`,
         })
       }
@@ -798,15 +825,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         if (signal.aborted) return
 
         if (chunk.data.length > 0) {
-          try {
-            awarenessProtocol.applyAwarenessUpdate(
-              this.awareness!,
-              chunk.data,
-              `server`
-            )
-          } catch {
-            // Ignore invalid awareness updates - they're ephemeral
-          }
+          this.applyAwarenessUpdates(chunk.data)
         }
       })
 
