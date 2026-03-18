@@ -318,7 +318,7 @@ The `offset=now` sentinel (per [PROTOCOL]) means "start from current tail positi
 
 #### Response (SSE)
 
-Server-Sent Events stream per the Durable Streams Protocol format.
+Server-Sent Events stream per the Durable Streams Protocol format. Since awareness streams use `application/octet-stream`, the base protocol automatically base64-encodes SSE data events and includes the `Stream-SSE-Data-Encoding: base64` header. Clients using a Durable Streams client library receive decoded binary transparently.
 
 ```
 Content-Type: text/event-stream
@@ -687,19 +687,19 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 #### A.1.2. Document Operations
 
-| Test                          | Description                                                            |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| `write.creates-document`      | POST to new doc creates stream implicitly                              |
-| `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                      |
-| `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                      |
-| `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data              |
-| `write.multiple-rapid-bursts` | Multiple bursts of rapid writes are correctly stored and synced        |
-| `updates.read-from-offset`    | GET updates with offset returns updates from that position             |
-| `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                       |
-| `updates.live-long-poll`      | GET with `live=long-poll` holds connection, receives new updates       |
-| `updates.live-sse`            | GET with `live=sse` returns SSE stream with base64-encoded updates     |
-| `updates.live-timeout`        | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds |
-| `doc.path-with-slashes`       | Document paths containing forward slashes work correctly               |
+| Test                          | Description                                                                       |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| `write.creates-document`      | POST to new doc creates stream implicitly                                         |
+| `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                                 |
+| `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                                 |
+| `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data                         |
+| `write.multiple-rapid-bursts` | Multiple bursts of rapid writes are correctly stored and synced                   |
+| `updates.read-from-offset`    | GET updates with offset returns updates from that position                        |
+| `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                                  |
+| `updates.live-long-poll`      | GET with `live=long-poll` holds connection, receives new updates                  |
+| `updates.live-sse`            | GET with `live=sse` returns SSE stream (base64 encoding handled by base protocol) |
+| `updates.live-timeout`        | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds            |
+| `doc.path-with-slashes`       | Document paths containing forward slashes work correctly                          |
 
 #### A.1.3. Awareness
 
@@ -708,7 +708,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `awareness.lazy-creation`      | Awareness stream created on first access                                                       |
 | `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                               |
 | `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                     |
-| `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream with base64-encoded updates                       |
+| `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream (base64 encoding handled by base protocol)        |
 | `awareness.write`              | POST to `?awareness=<name>` appends to awareness stream, returns 204 with `Stream-Next-Offset` |
 | `awareness.broadcast`          | POST awareness delivered to SSE subscribers in real-time                                       |
 | `awareness.ttl`                | Awareness stream expires after 1 hour                                                          |
