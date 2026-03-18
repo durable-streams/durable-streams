@@ -5,6 +5,9 @@ description: >-
 outline: [2, 3]
 ---
 
+<img src="/img/icons/vercel.svg" width="56px" />
+<br />
+
 # Vercel AI SDK
 
 Use `@durable-streams/aisdk-transport` to make [Vercel AI SDK](https://ai-sdk.dev) `useChat` generations durable and resumable and shareable across tabs, devices, users and agents.
