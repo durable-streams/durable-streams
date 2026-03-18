@@ -535,7 +535,7 @@ Client                                    Server
   │ Local Y.Doc change                      │
   │                                         │
   │ POST /docs/my-doc                       │
-  │ <yjs update binary>                     │
+  │ <lib0-framed yjs update>               │
   │────────────────────────────────────────>│
   │                                         │
   │ 204 No Content                          │
@@ -557,7 +557,7 @@ Client                                    Server
   │ (live stream - no history, live only)   │
   │                                         │
   │ POST /docs/my-doc?awareness=default     │
-  │ <awareness update>                      │
+  │ <lib0-framed awareness update>         │
   │────────────────────────────────────────>│
   │                                         │
   │ 204 No Content                          │

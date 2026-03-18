@@ -630,6 +630,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   }
 
   /**
+   * Frame data with lib0 length-prefix encoding for transport.
+   */
+  private static frameUpdate(data: Uint8Array): Uint8Array {
+    const encoder = encoding.createEncoder()
+    encoding.writeVarUint8Array(encoder, data)
+    return encoding.toUint8Array(encoder)
+  }
+
+  /**
    * Apply lib0-framed updates from the server.
    */
   private applyUpdates(data: Uint8Array): void {
@@ -648,14 +657,22 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private applyAwarenessUpdates(data: Uint8Array): void {
     if (data.length === 0 || !this.awareness) return
 
-    const decoder = decoding.createDecoder(data)
-    while (decoding.hasContent(decoder)) {
-      const update = decoding.readVarUint8Array(decoder)
-      try {
-        awarenessProtocol.applyAwarenessUpdate(this.awareness, update, `server`)
-      } catch {
-        // Ignore invalid awareness updates - they're ephemeral
+    try {
+      const decoder = decoding.createDecoder(data)
+      while (decoding.hasContent(decoder)) {
+        const update = decoding.readVarUint8Array(decoder)
+        try {
+          awarenessProtocol.applyAwarenessUpdate(
+            this.awareness,
+            update,
+            `server`
+          )
+        } catch {
+          // Ignore invalid awareness updates - they're ephemeral
+        }
       }
+    } catch {
+      // Ignore malformed lib0 frames - awareness is ephemeral
     }
   }
 
@@ -677,11 +694,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     // by concatenating bytes. Without framing, concatenated raw Yjs updates
     // would be invalid. With framing, each update is length-prefixed so
     // concatenation produces valid lib0-framed data.
-    const encoder = encoding.createEncoder()
-    encoding.writeVarUint8Array(encoder, update)
-    const framedUpdate = encoding.toUint8Array(encoder)
-
-    producer.append(framedUpdate)
+    producer.append(YjsProvider.frameUpdate(update))
   }
 
   // ---- Awareness ----
@@ -733,11 +746,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.awareness.clientID,
       ])
 
-      // Frame awareness update with lib0 encoding, consistent with document updates.
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint8Array(encoder, encoded)
-      const framedUpdate = encoding.toUint8Array(encoder)
-
       const stream = new DurableStream({
         url: this.awarenessUrl(),
         headers: this.headers,
@@ -745,7 +753,9 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       })
 
       stream
-        .append(framedUpdate, { contentType: `application/octet-stream` })
+        .append(YjsProvider.frameUpdate(encoded), {
+          contentType: `application/octet-stream`,
+        })
         .catch(() => {})
     } catch {
       // Ignore errors during disconnect
@@ -775,18 +785,13 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           changedClients
         )
 
-        // Frame awareness update with lib0 encoding, consistent with document updates.
-        const encoder = encoding.createEncoder()
-        encoding.writeVarUint8Array(encoder, encoded)
-        const framedUpdate = encoding.toUint8Array(encoder)
-
         const stream = new DurableStream({
           url: this.awarenessUrl(),
           headers: this.headers,
           contentType: `application/octet-stream`,
         })
 
-        await stream.append(framedUpdate, {
+        await stream.append(YjsProvider.frameUpdate(encoded), {
           contentType: `application/octet-stream`,
         })
       }
