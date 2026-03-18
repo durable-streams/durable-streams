@@ -9,7 +9,7 @@ outline: [2, 3]
 
 Use `@durable-streams/aisdk-transport` to make [Vercel AI SDK](https://ai-sdk.dev) `useChat` generations durable and resumable and shareable across tabs, devices, users and agents.
 
-This is the integration to use when you want a chat generation to survive refreshes and reconnect cleanly to the same stream. It plugs into the AI SDK's [transport layer](https://ai-sdk.dev/docs/ai-sdk-ui/transport#transport), so you can keep the normal `useChat` flow while swapping in a durable transport.
+This is the integration to use when you want a chat generation to survive refreshes and reconnect cleanly to the same stream. It plugs into the AI SDK's [Transport layer](https://ai-sdk.dev/docs/ai-sdk-ui/transport#transport), so you can keep the normal `useChat` flow while swapping in a durable transport.
 
 ## Install
 
