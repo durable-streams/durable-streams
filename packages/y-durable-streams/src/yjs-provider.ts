@@ -715,15 +715,15 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         this.awareness.clientID,
       ])
 
-      // POST through the Yjs server so it base64-encodes for SSE compatibility
-      fetch(this.awarenessUrl(), {
-        method: `POST`,
-        headers: {
-          ...(this.headers as Record<string, string>),
-          "content-type": `application/octet-stream`,
-        },
-        body: encoded,
-      }).catch(() => {})
+      const stream = new DurableStream({
+        url: this.awarenessUrl(),
+        headers: this.headers,
+        contentType: `application/octet-stream`,
+      })
+
+      stream
+        .append(encoded, { contentType: `application/octet-stream` })
+        .catch(() => {})
     } catch {
       // Ignore errors during disconnect
     }
@@ -752,14 +752,14 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           changedClients
         )
 
-        // POST through the Yjs server so it base64-encodes for SSE compatibility
-        await fetch(this.awarenessUrl(), {
-          method: `POST`,
-          headers: {
-            ...(this.headers as Record<string, string>),
-            "content-type": `application/octet-stream`,
-          },
-          body: encoded,
+        const stream = new DurableStream({
+          url: this.awarenessUrl(),
+          headers: this.headers,
+          contentType: `application/octet-stream`,
+        })
+
+        await stream.append(encoded, {
+          contentType: `application/octet-stream`,
         })
       }
     } catch (err) {
@@ -777,13 +777,13 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const stream = new DurableStream({
       url: this.awarenessUrl(),
       headers: this.headers,
-      contentType: `text/plain`,
+      contentType: `application/octet-stream`,
     })
 
     try {
       const response = await stream.stream({
         offset: `now`,
-        live: `sse`, // Use SSE for awareness per protocol
+        live: true,
         signal,
       })
       // Ensure closed promise is handled to avoid unhandled rejections.
@@ -792,28 +792,24 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       // Reset retry count on successful connection
       this.awarenessRetryCount = 0
 
-      const bodyStream = response.bodyStream()
-
-      for await (const value of bodyStream) {
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change asynchronously
+      // eslint-disable-next-line @typescript-eslint/require-await
+      response.subscribeBytes(async (chunk) => {
         if (signal.aborted) return
 
-        if (value.length > 0) {
-          // value is Uint8Array of text/plain data (base64 string)
-          const base64 = new TextDecoder().decode(value)
-          const binary = this.base64ToUint8Array(base64)
-
+        if (chunk.data.length > 0) {
           try {
             awarenessProtocol.applyAwarenessUpdate(
-              this.awareness,
-              binary,
+              this.awareness!,
+              chunk.data,
               `server`
             )
           } catch {
             // Ignore invalid awareness updates - they're ephemeral
           }
         }
-      }
+      })
+
+      await response.closed
 
       // Stream ended cleanly (EOF) - resubscribe if still connected
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- signal.aborted can change asynchronously
@@ -872,10 +868,5 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         (err.code === `UNAUTHORIZED` || err.code === `FORBIDDEN`)) ||
       (err instanceof FetchError && (err.status === 401 || err.status === 403))
     )
-  }
-
-  private base64ToUint8Array(base64: string): Uint8Array {
-    const binary = atob(base64)
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0))
   }
 }

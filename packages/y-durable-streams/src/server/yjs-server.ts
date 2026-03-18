@@ -742,59 +742,14 @@ export class YjsServer {
     )
 
     if (method === `POST`) {
-      // Ensure awareness stream exists, then append base64-encoded payload
+      // Ensure awareness stream exists, then proxy raw binary
       await this.ensureAwarenessStream(
         route.service,
         route.docPath,
         awarenessName
       )
 
-      const body = await this.readBody(req)
-      // Awareness writes are binary, but SSE is text-only. Encode to base64
-      // before appending so reads over SSE deliver base64 strings.
-      const base64 = Buffer.from(body).toString(`base64`)
-
-      const dsUrl = new URL(dsPath, this.dsServerUrl)
-
-      // Forward producer headers if present
-      const headers: Record<string, string> = {
-        ...this.dsServerHeaders,
-        "content-type": `text/plain`,
-      }
-      for (const h of [
-        `producer-id`,
-        `producer-epoch`,
-        `producer-seq`,
-        `stream-producer-id`,
-        `stream-producer-epoch`,
-        `stream-producer-seq`,
-      ]) {
-        const v = req.headers[h]
-        if (typeof v === `string`) headers[h] = v
-      }
-
-      const dsResponse = await fetch(dsUrl.toString(), {
-        method: `POST`,
-        headers,
-        body: Buffer.from(base64),
-      })
-
-      // Forward response headers (skip content-encoding/length - fetch decompresses)
-      const responseHeaders: Record<string, string> = {}
-      dsResponse.headers.forEach((value, key) => {
-        if (key === `content-encoding` || key === `content-length`) return
-        responseHeaders[key] = value
-      })
-
-      res.writeHead(dsResponse.status, responseHeaders)
-
-      if (dsResponse.body) {
-        for await (const chunk of dsResponse.body) {
-          res.write(chunk)
-        }
-      }
-
-      res.end()
+      await this.proxyToDsServer(req, res, dsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -881,7 +836,7 @@ export class YjsServer {
       await DurableStream.create({
         url: awarenessUrl,
         headers: this.dsServerHeaders,
-        contentType: `text/plain`,
+        contentType: `application/octet-stream`,
       })
     } catch (err) {
       if (!isConflictExistsError(err)) {
