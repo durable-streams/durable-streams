@@ -1,0 +1,252 @@
+id: epoch-transition-live-tailing
+name: Epoch Transition During Live Tailing
+description: |
+  Tests that live-tailing consumers (SSE and long-poll) continue to receive
+  events after producer epoch transitions caused by autoClaim.
+
+  When a second IdempotentProducer with autoClaim=true writes to a stream,
+  it triggers a 403 (stale epoch) and retries with epoch+1. This epoch
+  transition must not disrupt active SSE or long-poll consumers.
+
+  See: https://github.com/durable-streams/durable-streams/issues/292
+category: consumer
+tags:
+  - live
+  - epoch
+  - autoclaim
+  - regression
+
+tests:
+  - id: sse-receives-data-after-epoch-transition
+    name: SSE consumer receives data after producer epoch transition
+    description: |
+      A consumer live-tailing via SSE must continue receiving events when
+      a second producer with autoClaim causes an epoch transition on the
+      same stream. Reproduces issue #292.
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # First producer writes via server-append to establish epoch 0
+      - action: server-append
+        path: ${streamPath}
+        data: "from-producer-1"
+        producerId: epoch-sse-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+          storeOffsetAs: firstOffset
+
+      # Start SSE consumer in background, tailing from the first offset
+      - action: read
+        path: ${streamPath}
+        offset: ${firstOffset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 5000
+        background: true
+        as: sseRead
+
+      # Wait for SSE connection to establish
+      - action: wait
+        ms: 500
+
+      # Second producer with autoClaim writes to the same stream.
+      # This triggers a 403 (stale epoch) because epoch 0 is already claimed,
+      # then auto-recovers with epoch 1.
+      # The epoch transition should NOT break the SSE consumer.
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: epoch-sse-producer
+        epoch: 0
+        autoClaim: true
+        data: "from-producer-2"
+        expect:
+          success: true
+
+      # The SSE consumer must receive the second producer's data
+      - action: await
+        ref: sseRead
+        expect:
+          dataContains: "from-producer-2"
+          minChunks: 1
+
+  - id: longpoll-receives-data-after-epoch-transition
+    name: Long-poll consumer receives data after producer epoch transition
+    description: |
+      A consumer live-tailing via long-poll must continue receiving events
+      when a second producer with autoClaim causes an epoch transition.
+      Reproduces issue #292.
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # First producer writes via server-append to establish epoch 0
+      - action: server-append
+        path: ${streamPath}
+        data: "from-producer-1"
+        producerId: epoch-lp-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+          storeOffsetAs: firstOffset
+
+      # Start long-poll consumer in background, tailing from the first offset
+      - action: read
+        path: ${streamPath}
+        offset: ${firstOffset}
+        live: long-poll
+        timeoutMs: 5000
+        background: true
+        as: longPollRead
+
+      # Wait for long-poll request to reach the server
+      - action: wait
+        ms: 500
+
+      # Second producer with autoClaim triggers epoch bump
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: epoch-lp-producer
+        epoch: 0
+        autoClaim: true
+        data: "from-producer-2"
+        expect:
+          success: true
+
+      # The long-poll consumer must receive the second producer's data
+      - action: await
+        ref: longPollRead
+        expect:
+          dataContains: "from-producer-2"
+          minChunks: 1
+
+  - id: sse-receives-data-after-multiple-epoch-transitions
+    name: SSE consumer survives multiple epoch transitions
+    description: |
+      A consumer live-tailing via SSE should continue receiving events
+      even when multiple successive epoch transitions occur from different
+      producers using autoClaim.
+    requires:
+      - sse
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch 0 via server-append
+      - action: server-append
+        path: ${streamPath}
+        data: "epoch-0-data"
+        producerId: multi-epoch-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+
+      # Bump to epoch 1 via autoClaim (gets 403 on epoch 0, claims epoch 1)
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: multi-epoch-producer
+        epoch: 0
+        autoClaim: true
+        data: "epoch-1-data"
+        expect:
+          success: true
+
+      # Get current tail offset via head
+      - action: head
+        path: ${streamPath}
+        expect:
+          storeAs: headResult
+
+      # Start SSE consumer tailing from latest
+      - action: read
+        path: ${streamPath}
+        offset: ${headResult.offset}
+        live: sse
+        maxChunks: 1
+        timeoutMs: 5000
+        background: true
+        as: sseRead
+
+      # Wait for SSE connection
+      - action: wait
+        ms: 500
+
+      # Third producer bumps epoch again (gets 403 on epoch 0, claims epoch 2)
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: multi-epoch-producer
+        epoch: 0
+        autoClaim: true
+        data: "epoch-2-data"
+        expect:
+          success: true
+
+      # Consumer must receive the latest write
+      - action: await
+        ref: sseRead
+        expect:
+          dataContains: "epoch-2-data"
+          minChunks: 1
+
+  - id: catchup-read-after-epoch-transitions
+    name: Catch-up read sees all data after epoch transitions
+    description: |
+      Even if a live consumer missed events during epoch transitions,
+      a catch-up read (live: false) must return all data. This verifies
+      the data is present in the stream even when live delivery fails.
+    setup:
+      - action: create
+        as: streamPath
+        contentType: text/plain
+    operations:
+      # Establish epoch 0 via server-append
+      - action: server-append
+        path: ${streamPath}
+        data: "first-write"
+        producerId: catchup-producer
+        producerEpoch: 0
+        producerSeq: 0
+        expect:
+          status: 200
+
+      # Second producer with autoClaim (epoch transition to 1)
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: catchup-producer
+        epoch: 0
+        autoClaim: true
+        data: "second-write"
+        expect:
+          success: true
+
+      # Third producer with autoClaim (epoch transition to 2)
+      - action: idempotent-append
+        path: ${streamPath}
+        producerId: catchup-producer
+        epoch: 0
+        autoClaim: true
+        data: "third-write"
+        expect:
+          success: true
+
+      # Catch-up read should see everything
+      - action: read
+        path: ${streamPath}
+        live: false
+        expect:
+          dataContainsAll:
+            - "first-write"
+            - "second-write"
+            - "third-write"
+          upToDate: true

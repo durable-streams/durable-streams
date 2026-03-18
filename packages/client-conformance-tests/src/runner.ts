@@ -1016,6 +1016,31 @@ function validateExpectation(
 ): string | null {
   if (!expect) return null
 
+  // Check success (explicit assertion that operation succeeded or failed)
+  if (expect.success !== undefined) {
+    if (result.success !== expect.success) {
+      const detail =
+        !result.success && `error` in result
+          ? ` (error: ${(result as { error?: string }).error})`
+          : ``
+      return `Expected success=${expect.success}, got ${result.success}${detail}`
+    }
+  }
+
+  // When expecting read data but the read failed, fail explicitly rather than
+  // silently skipping all data checks (see issue #292)
+  if (isErrorResult(result)) {
+    const expectsReadData =
+      expect.dataContains !== undefined ||
+      expect.dataContainsAll !== undefined ||
+      expect.dataExact !== undefined ||
+      expect.data !== undefined ||
+      expect.minChunks !== undefined
+    if (expectsReadData && result.commandType === `read`) {
+      return `Expected read data but read operation failed (error: ${result.message})`
+    }
+  }
+
   // Check status
   if (expect.status !== undefined && `status` in result) {
     if (result.status !== expect.status) {
