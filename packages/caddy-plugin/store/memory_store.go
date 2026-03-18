@@ -548,9 +548,17 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 		}
 	}
 
-	upToDate := offset.Equal(stream.metadata.CurrentOffset) || len(messages) == 0 && len(stream.messages) > 0
-	if len(stream.messages) == 0 {
+	// upToDate is true when client has reached the tail of the stream:
+	// - requested offset equals current tail (no new messages)
+	// - last returned message is at the current tail
+	// - stream is empty
+	var upToDate bool
+	if len(messages) > 0 {
+		upToDate = messages[len(messages)-1].Offset.Equal(stream.metadata.CurrentOffset)
+	} else if len(stream.messages) == 0 {
 		upToDate = true
+	} else {
+		upToDate = offset.Equal(stream.metadata.CurrentOffset)
 	}
 
 	return messages, upToDate, nil
