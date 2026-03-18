@@ -7,6 +7,7 @@ import type { ReactNode } from "react"
 
 interface ServerEndpointContextValue {
   serverEndpoint: string
+  dsEndpoint: string
 }
 
 const ServerEndpointContext = createContext<ServerEndpointContextValue | null>(
@@ -30,29 +31,38 @@ export function useServerEndpoint(): ServerEndpointContextValue {
 /**
  * Get the server endpoint URL.
  *
- * In development mode, uses Vite's proxy (/api) to avoid CORS issues.
- * Set VITE_PROXY_TARGET in vite.config.ts to configure the proxy target.
- *
- * In production mode, uses VITE_SERVER_URL environment variable or
- * falls back to the current hostname with default port.
+ * Uses VITE_SERVER_URL environment variable or falls back to the
+ * current hostname with default Yjs server port (4438).
  */
 function getServerEndpoint(): string {
-  // In production, use environment variable or fallback
   if (import.meta.env.VITE_SERVER_URL) {
     return import.meta.env.VITE_SERVER_URL
   }
 
-  // Fallback: use current hostname with default port
-  const hostname =
-    typeof window !== `undefined` ? window.location.hostname : `localhost`
-  return `http://${hostname}:4437`
+  // Same origin — Caddy proxies everything
+  return typeof window !== `undefined`
+    ? window.location.origin
+    : `https://localhost:4443`
+}
+
+function getDsEndpoint(): string {
+  if (import.meta.env.VITE_DS_URL) {
+    return import.meta.env.VITE_DS_URL
+  }
+
+  // Same origin — Caddy proxies everything
+  return typeof window !== `undefined`
+    ? window.location.origin
+    : `https://localhost:4443`
 }
 
 export function ServerEndpointProvider({ children }: { children: ReactNode }) {
   const serverEndpoint = getServerEndpoint()
+  const dsEndpoint = getDsEndpoint()
 
   const value: ServerEndpointContextValue = {
     serverEndpoint,
+    dsEndpoint,
   }
 
   return (

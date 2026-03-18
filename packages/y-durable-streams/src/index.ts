@@ -7,19 +7,13 @@
  * @packageDocumentation
  */
 
-// Main provider class and constants
-export {
-  DurableStreamsProvider,
-  AWARENESS_HEARTBEAT_INTERVAL,
-} from "./y-durable-streams"
+export { YjsProvider, AWARENESS_HEARTBEAT_INTERVAL } from "./yjs-provider"
 
-// Types
 export type {
-  DurableStreamsProviderOptions,
-  DurableStreamsProviderEvents,
-  ProviderStatus,
-  StreamConfig,
-  AwarenessConfig,
-  AwarenessUpdate,
-  TransportMode,
-} from "./types"
+  YjsProviderOptions,
+  YjsProviderEvents,
+  YjsProviderStatus,
+} from "./yjs-provider"
+
+// Server exports are available via "@durable-streams/y-durable-streams/server"
+// They are NOT re-exported here to keep the main entry point browser-compatible

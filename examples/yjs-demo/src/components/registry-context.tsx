@@ -63,6 +63,7 @@ function createRegistryDB(url: string) {
 interface RegistryContextValue {
   registryDB: Awaited<ReturnType<typeof createRegistryDB>>
   serverEndpoint: string
+  dsEndpoint: string
 }
 
 const RegistryContext = createContext<RegistryContextValue | null>(null)
@@ -86,7 +87,7 @@ interface RegistryState {
 }
 
 export function RegistryProvider({ children }: { children: ReactNode }) {
-  const { serverEndpoint } = useServerEndpoint()
+  const { serverEndpoint, dsEndpoint } = useServerEndpoint()
   const [state, setState] = useState<RegistryState>({
     registryDB: null,
     error: null,
@@ -101,7 +102,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
       setState({ registryDB: null, error: null, isLoading: true })
 
       try {
-        const registryUrl = `${serverEndpoint}/v1/stream/__yjs_rooms`
+        const registryUrl = `${dsEndpoint}/v1/stream/__yjs_rooms`
 
         console.log(`[Registry] Connecting to registry stream...`, registryUrl)
         // Create registry stream
@@ -151,7 +152,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
         registryDB.close()
       }
     }
-  }, [serverEndpoint])
+  }, [dsEndpoint])
 
   // Show loading state
   if (state.isLoading) {
@@ -188,7 +189,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
   // Provide context when ready
   return (
     <RegistryContext.Provider
-      value={{ registryDB: state.registryDB, serverEndpoint }}
+      value={{ registryDB: state.registryDB, serverEndpoint, dsEndpoint }}
     >
       {children}
     </RegistryContext.Provider>
